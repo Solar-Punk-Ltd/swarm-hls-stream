@@ -1,0 +1,133 @@
+.stream-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  aspect-ratio: 16/9;
+  background: #000;
+  cursor: pointer;
+  transform-origin: center;
+  transition: transform 0.2s ease;
+  will-change: transform;
+
+  &:hover {
+    transform: scale(1.02);
+    z-index: 2;
+
+    .stream-preview-overlay {
+      background-color: rgba(0, 0, 0, 0.7);
+    }
+  }
+
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 5px solid #8841e495;
+    border-top: 5px solid #ff8a50;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+
+  &-video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    border-radius: inherit;
+    position: relative;
+    z-index: 0;
+  }
+
+  &-overlay {
+    position: absolute;
+    inset: 0;
+    background-color: #000000;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 1rem;
+    z-index: 1;
+    transition: background-color 0.3s ease;
+  }
+
+  &-button-wrapper {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+    pointer-events: none;
+
+    img {
+      position: absolute;
+      width: 3rem;
+      height: 3rem;
+      pointer-events: auto;
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+    }
+  }
+
+  &-error {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  &-button {
+    background: none;
+    border: none;
+    color: white;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    padding: 0;
+    position: relative;
+
+    &-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+      margin-top: 8px;
+    }
+
+    &-state {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: #ff4757;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    &-duration {
+      align-self: flex-end;
+      font-size: 0.9rem;
+      opacity: 0.9;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+      margin: 0 auto;
+      margin-bottom: 8px;
+    }
+  }
+}

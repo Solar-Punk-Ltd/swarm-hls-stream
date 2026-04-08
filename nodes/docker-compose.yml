@@ -1,0 +1,44 @@
+services:
+  bee-uploader:
+    image: ethersphere/bee:2.7.1
+    container_name: bee-uploader
+    env_file: ../.env
+    restart: unless-stopped
+    ports:
+      - "${BEE_UPLOADER_API_PORT:-1633}:1633"
+      - "${BEE_UPLOADER_P2P_PORT:-1634}:1634"
+    volumes:
+      - ${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}:/home/bee/.bee
+    environment:
+      BEE_API_ADDR: ":1633"
+      BEE_P2P_ADDR: ":1634"
+      BEE_BLOCKCHAIN_RPC_ENDPOINT: ${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      BEE_FULL_NODE: ${BEE_UPLOADER_FULL_NODE:-false}
+      BEE_SWAP_ENABLE: "true"
+      BEE_CORS_ALLOWED_ORIGINS: "*"
+      BEE_NAT_ADDR: "${BEE_UPLOADER_NAT_ADDR:-localhost}:${BEE_UPLOADER_P2P_PORT:-1634}"
+      BEE_VERBOSITY: ${BEE_VERBOSITY:-5}
+      BEE_PASSWORD: ${BEE_UPLOADER_PASSWORD:-}
+    command: start
+
+  bee-gateway:
+    image: ethersphere/bee:2.7.1
+    container_name: bee-gateway
+    env_file: ../.env
+    restart: unless-stopped
+    ports:
+      - "${BEE_GATEWAY_API_PORT:-1733}:1633"
+      - "${BEE_GATEWAY_P2P_PORT:-1734}:1634"
+    volumes:
+      - ${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}:/home/bee/.bee
+    environment:
+      BEE_API_ADDR: ":1633"
+      BEE_P2P_ADDR: ":1634"
+      BEE_BLOCKCHAIN_RPC_ENDPOINT: ${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      BEE_FULL_NODE: "false"
+      BEE_SWAP_ENABLE: "false"
+      BEE_CORS_ALLOWED_ORIGINS: "*"
+      BEE_NAT_ADDR: "${BEE_GATEWAY_NAT_ADDR:-localhost}:${BEE_GATEWAY_P2P_PORT:-1734}"
+      BEE_VERBOSITY: ${BEE_VERBOSITY:-5}
+      BEE_PASSWORD: ${BEE_GATEWAY_PASSWORD:-}
+    command: start

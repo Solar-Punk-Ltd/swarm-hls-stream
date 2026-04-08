@@ -1,0 +1,109 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  # --- Bee Nodes ---
+
+  bee-uploader:
+    image: ethersphere/bee:2.7.1
+    container_name: bee-uploader
+    profiles: ["bee-uploader"]
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${BEE_UPLOADER_API_PORT:-1633}:${BEE_UPLOADER_API_PORT:-1633}"
+      - "${BEE_UPLOADER_P2P_PORT:-1634}:${BEE_UPLOADER_P2P_PORT:-1634}"
+    volumes:
+      - ${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}:/home/bee/.bee
+    environment:
+      BEE_API_ADDR: ":${BEE_UPLOADER_API_PORT:-1633}"
+      BEE_P2P_ADDR: ":${BEE_UPLOADER_P2P_PORT:-1634}"
+      BEE_BLOCKCHAIN_RPC_ENDPOINT: ${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      BEE_FULL_NODE: ${BEE_UPLOADER_FULL_NODE:-false}
+      BEE_SWAP_ENABLE: "true"
+      BEE_CORS_ALLOWED_ORIGINS: "*"
+      BEE_NAT_ADDR: "${BEE_UPLOADER_NAT_ADDR:-localhost}:${BEE_UPLOADER_P2P_PORT:-1634}"
+      BEE_VERBOSITY: ${BEE_VERBOSITY:-5}
+      BEE_PASSWORD_FILE: /home/bee/.bee/password
+    command: start
+
+  bee-gateway:
+    image: ethersphere/bee:2.7.1
+    container_name: bee-gateway
+    profiles: ["bee-gateway"]
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${BEE_GATEWAY_API_PORT:-1733}:${BEE_GATEWAY_API_PORT:-1733}"
+      - "${BEE_GATEWAY_P2P_PORT:-1734}:${BEE_GATEWAY_P2P_PORT:-1734}"
+    volumes:
+      - ${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}:/home/bee/.bee
+    environment:
+      BEE_API_ADDR: ":${BEE_GATEWAY_API_PORT:-1733}"
+      BEE_P2P_ADDR: ":${BEE_GATEWAY_P2P_PORT:-1734}"
+      BEE_BLOCKCHAIN_RPC_ENDPOINT: ${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      BEE_FULL_NODE: "false"
+      BEE_SWAP_ENABLE: "false"
+      BEE_CORS_ALLOWED_ORIGINS: "*"
+      BEE_NAT_ADDR: "${BEE_GATEWAY_NAT_ADDR:-localhost}:${BEE_GATEWAY_P2P_PORT:-1734}"
+      BEE_VERBOSITY: ${BEE_VERBOSITY:-5}
+      BEE_PASSWORD_FILE: /home/bee/.bee/password
+    command: start
+
+  # --- Stream Uploader ---
+
+  stream-uploader:
+    image: stream-uploader
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.uploader
+    container_name: stream-uploader
+    profiles: ["stream-uploader"]
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${API_PORT:-3000}:${API_PORT:-3000}"
+    volumes:
+      - uploader-state:/app/state
+      - srs-media:/media
+    environment:
+      BEE_URL: ${BEE_URL:-http://bee-uploader:1633}
+      STAMP: ${STAMP}
+      STREAM_KEY: ${STREAM_KEY}
+      STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}
+      MANIFEST_ACCESS_URL: ${MANIFEST_ACCESS_URL:-}
+      API_PORT: ${API_PORT:-3000}
+      STATE_DIR: /app/state
+      MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-100}
+      RECOVERY_TIMEOUT: ${RECOVERY_TIMEOUT:-60000}
+      ENGINE: ${ENGINE:-srs}
+      MEDIA_PATH: /media
+
+  # --- SRS Media Server ---
+
+  srs:
+    image: ossrs/srs:6
+    container_name: srs
+    profiles: ["srs"]
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${SRS_SRT_PORT:-10080}:10080/udp"
+      - "1935:1935"
+      - "8080:8080"
+    volumes:
+      - ../engines/srs/srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
+      - ../engines/srs/entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro
+      - srs-media:/usr/local/srs/objs/nginx/html
+    entrypoint: ["/bin/bash", "/usr/local/srs/conf/entrypoint.sh"]
+    environment:
+      SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
+      SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}
+      SRS_ADAPTER_PORT: ${API_PORT:-3000}
+
+volumes:
+  srs-media:
+  uploader-state:

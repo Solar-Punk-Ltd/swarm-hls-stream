@@ -1,0 +1,23 @@
+.main-layout {
+  height: calc(100vh - 160px);
+  padding-top: 160px;
+}
+
+.main-layout-header {
+  position: absolute;
+  top: 27px;
+  left: 0px;
+  padding: 30px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.logo {
+  width: auto;
+  height: 60px;
+  max-width: 161px;
+  z-index: 1;
+}

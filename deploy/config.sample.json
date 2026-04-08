@@ -1,0 +1,8 @@
+{
+  "services": {
+    "srs": "localhost",
+    "stream-uploader": "localhost",
+    "bee-uploader": "localhost",
+    "bee-gateway": "localhost"
+  }
+}

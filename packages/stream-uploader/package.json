@@ -1,0 +1,29 @@
+{
+  "name": "@swarm-hls-stream/stream-uploader",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "rimraf dist && tsc",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ethersphere/bee-js": "^9.0.3",
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1",
+    "p-queue": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.8.1",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "@typescript-eslint/parser": "^6.14.0",
+    "eslint": "^8.55.0",
+    "eslint-import-resolver-typescript": "^4.3.4",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-simple-import-sort": "^10.0.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^6.0.2"
+  }
+}

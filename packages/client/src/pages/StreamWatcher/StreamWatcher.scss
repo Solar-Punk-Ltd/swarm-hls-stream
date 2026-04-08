@@ -1,0 +1,16 @@
+.stream-item-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: calc(100vh - 190px);
+}
+.stream-video {
+  display: flex;
+  width: 100%;
+  border-radius: 12px;
+  box-shadow: 0 4px 4px 0 #00000040;
+}
+
+.stream-audio {
+  width: 100%;
+}

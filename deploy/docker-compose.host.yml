@@ -1,0 +1,15 @@
+# Override: run all services in host network mode.
+# Activated by setting COMPOSE_NETWORK=host in .env
+
+services:
+  bee-uploader:
+    network_mode: host
+
+  bee-gateway:
+    network_mode: host
+
+  stream-uploader:
+    network_mode: host
+
+  srs:
+    network_mode: host

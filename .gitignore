@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.DS_Store
+*.log
+coverage
+.vscode
+state/
+nodes/data/
+nodes/backups/
+deploy/data/
+deploy/config.json
+deploy/.env.deploy
+*.tsbuildinfo

@@ -1,0 +1,17 @@
+services:
+  srs:
+    image: ossrs/srs:6
+    container_name: srs
+    env_file: ../../.env
+    network_mode: host
+    restart: unless-stopped
+    entrypoint: ['/bin/bash', '/usr/local/srs/conf/entrypoint.sh']
+    volumes:
+      - ./srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
+      - ./entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro
+      # HLS output — shared with the Node app's media directory
+      - ${SRS_MEDIA_PATH:-./media}:/usr/local/srs/objs/nginx/html
+    environment:
+      SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
+      SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-localhost}
+      SRS_ADAPTER_PORT: ${SRS_ADAPTER_PORT:-3000}

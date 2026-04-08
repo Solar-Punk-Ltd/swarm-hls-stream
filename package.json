@@ -1,0 +1,35 @@
+{
+  "name": "swarm-hls-stream",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "build:uploader": "pnpm --filter @swarm-hls-stream/stream-uploader build",
+    "build:client": "pnpm --filter @swarm-hls-stream/client build",
+    "dev": "pnpm --filter @swarm-hls-stream/client dev",
+    "start:uploader": "pnpm --filter @swarm-hls-stream/stream-uploader start",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "stamp:setup": "tsx packages/cli/src/index.ts stamp-setup",
+    "stamp:buy": "tsx packages/cli/src/index.ts stamp-buy",
+    "stamp:check": "tsx packages/cli/src/index.ts stamp-check",
+    "node:status": "tsx packages/cli/src/index.ts node-status",
+    "node:addresses": "tsx packages/cli/src/index.ts node-addresses",
+    "node:wallets": "tsx packages/cli/src/index.ts node-wallets",
+    "srs:up": "cd engines/srs && docker compose up -d",
+    "srs:down": "cd engines/srs && docker compose down",
+    "srs:logs": "cd engines/srs && docker compose logs -f"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.0",
+    "@commitlint/config-conventional": "^19.8.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.0",
+    "prettier": "^2.8.8",
+    "tsx": "^4.19.4"
+  }
+}
