@@ -168,6 +168,13 @@ resolve_adapter_host() {
   srs_target=$(get_target "$SVC_SRS")
   uploader_target=$(get_target "$SVC_UPLOADER")
 
+  if is_native "$uploader_target"; then
+    # stream-uploader runs on the host machine outside Docker.
+    # SRS reaches it via the host-gateway alias added in docker-compose.yml.
+    echo "host.docker.internal"
+    return
+  fi
+
   if [ "$srs_target" = "$uploader_target" ]; then
     if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
       echo "localhost"

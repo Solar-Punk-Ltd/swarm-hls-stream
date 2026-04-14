@@ -94,6 +94,8 @@ services:
       - "${SRS_SRT_PORT:-10080}:10080/udp"
       - "1935:1935"
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ../engines/srs/srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
       - ../engines/srs/entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro
