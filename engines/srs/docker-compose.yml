@@ -17,7 +17,6 @@ services:
       - "${SRS_SRT_PORT:-10080}:10080/udp"
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
-      SRS_ADAPTER_HOST: host.docker.internal # ← key change
       SRS_ADAPTER_PORT: ${SRS_ADAPTER_PORT:-3000}
     extra_hosts:
       - "host.docker.internal:host-gateway"

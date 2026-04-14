@@ -1,0 +1,11 @@
+services:
+  srs:
+    ports:
+      - "1935:1935"
+      - "1985:1985"
+      - "8080:8080"
+      - "${SRS_SRT_PORT:-10080}:10080/udp"
+    environment:
+      SRS_ADAPTER_HOST: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
