@@ -73,7 +73,12 @@ function hostFromTarget(target: string): string {
  * Resolve a bee node target from config.json + .env.
  * Returns null if the service is explicitly disabled.
  */
-function resolveBeeTarget(service: string, portEnvVar: string, defaultPort: number, fallbackUrlEnvVar?: string): BeeTarget | null {
+function resolveBeeTarget(
+  service: string,
+  portEnvVar: string,
+  defaultPort: number,
+  fallbackUrlEnvVar?: string,
+): BeeTarget | null {
   const config = readConfig();
   const target = config.services[service];
   const port = parseInt(process.env[portEnvVar] || '', 10) || defaultPort;
@@ -83,7 +88,7 @@ function resolveBeeTarget(service: string, portEnvVar: string, defaultPort: numb
   }
 
   // Missing from config — try fallback env var, then localhost
-  if (!target) {
+  if (!target || target === 'disabled') {
     if (fallbackUrlEnvVar) {
       const fallbackUrl = process.env[fallbackUrlEnvVar];
       if (fallbackUrl) {
@@ -110,8 +115,13 @@ function resolveBeeTarget(service: string, portEnvVar: string, defaultPort: numb
  * Resolve bee-uploader target. Falls back to BEE_URL env var, then localhost.
  */
 export function resolveBeeUploaderTarget(): BeeTarget {
-  return resolveBeeTarget(SVC_BEE_UPLOADER, 'BEE_UPLOADER_API_PORT', DEFAULT_BEE_UPLOADER_PORT, 'BEE_URL')
-    ?? { url: `http://localhost:${DEFAULT_BEE_UPLOADER_PORT}`, host: 'localhost', port: DEFAULT_BEE_UPLOADER_PORT };
+  return (
+    resolveBeeTarget(SVC_BEE_UPLOADER, 'BEE_UPLOADER_API_PORT', DEFAULT_BEE_UPLOADER_PORT, 'BEE_URL') ?? {
+      url: `http://localhost:${DEFAULT_BEE_UPLOADER_PORT}`,
+      host: 'localhost',
+      port: DEFAULT_BEE_UPLOADER_PORT,
+    }
+  );
 }
 
 /**

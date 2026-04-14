@@ -12,7 +12,7 @@ readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "$SVC_UPLOADER" "$
 # --- Targets ---
 readonly TARGET_LOCAL="localhost"
 readonly TARGET_NATIVE="native"
-readonly TARGET_DISABLED="false"
+readonly TARGET_DISABLED="disabled"
 
 # --- Paths ---
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
