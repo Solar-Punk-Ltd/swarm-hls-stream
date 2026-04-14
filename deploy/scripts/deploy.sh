@@ -244,6 +244,7 @@ sync_to_remote() {
   rsync -az --delete \
     "$DEPLOY_DIR/docker-compose.yml" \
     "$DEPLOY_DIR/docker-compose.host.yml" \
+    "$DEPLOY_DIR/docker-compose.nat.yml" \
     "$DEPLOY_DIR/Dockerfile.uploader" \
     "$target:$REMOTE_BASE/deploy/"
 

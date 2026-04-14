@@ -167,6 +167,9 @@ build_compose_files() {
   if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
     flags="$flags -f $base/docker-compose.host.yml"
   fi
+  if [ -n "${BEE_UPLOADER_NAT_ADDR:-}" ] || [ -n "${BEE_GATEWAY_NAT_ADDR:-}" ]; then
+    flags="$flags -f $base/docker-compose.nat.yml"
+  fi
   echo "$flags"
 }
 
