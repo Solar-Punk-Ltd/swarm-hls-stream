@@ -1,0 +1,5 @@
+services:
+  srs:
+    network_mode: host
+    environment:
+      SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-localhost}

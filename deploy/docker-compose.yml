@@ -25,7 +25,6 @@ services:
       BEE_FULL_NODE: ${BEE_UPLOADER_FULL_NODE:-false}
       BEE_SWAP_ENABLE: "true"
       BEE_CORS_ALLOWED_ORIGINS: "*"
-      BEE_NAT_ADDR: "${BEE_UPLOADER_NAT_ADDR:-localhost}:${BEE_UPLOADER_P2P_PORT:-1634}"
       BEE_VERBOSITY: ${BEE_VERBOSITY:-5}
       BEE_PASSWORD_FILE: /home/bee/.bee/password
     command: start
@@ -48,7 +47,6 @@ services:
       BEE_FULL_NODE: "false"
       BEE_SWAP_ENABLE: "false"
       BEE_CORS_ALLOWED_ORIGINS: "*"
-      BEE_NAT_ADDR: "${BEE_GATEWAY_NAT_ADDR:-localhost}:${BEE_GATEWAY_P2P_PORT:-1734}"
       BEE_VERBOSITY: ${BEE_VERBOSITY:-5}
       BEE_PASSWORD_FILE: /home/bee/.bee/password
     command: start
@@ -94,6 +92,8 @@ services:
       - "${SRS_SRT_PORT:-10080}:10080/udp"
       - "1935:1935"
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ../engines/srs/srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
       - ../engines/srs/entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro

@@ -1,0 +1,12 @@
+# Override: set BEE_NAT_ADDR for nodes that have a public IP configured.
+# Activated automatically by deploy scripts when BEE_UPLOADER_NAT_ADDR
+# or BEE_GATEWAY_NAT_ADDR is set in .env.
+
+services:
+  bee-uploader:
+    environment:
+      BEE_NAT_ADDR: "${BEE_UPLOADER_NAT_ADDR}:${BEE_UPLOADER_P2P_PORT:-1634}"
+
+  bee-gateway:
+    environment:
+      BEE_NAT_ADDR: "${BEE_GATEWAY_NAT_ADDR}:${BEE_GATEWAY_P2P_PORT:-1734}"

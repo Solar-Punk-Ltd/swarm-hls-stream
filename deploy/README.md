@@ -24,7 +24,14 @@ Creates `config.json`, `.env`, and builds packages. Then edit both files:
 
 ### config.json
 
-Each service maps to a target: `"localhost"`, `"user@host"`, or `false` (disabled).
+Each service maps to a target:
+
+| Value | Meaning |
+| --- | --- |
+| `"localhost"` | Run in Docker on this machine |
+| `"user@host"` | Deploy via SSH + rsync to a remote server |
+| `"native"` | Service runs as a host process outside Docker — deploy skips it |
+| `false` | Disabled, not deployed |
 
 ```json
 {
@@ -40,6 +47,23 @@ Each service maps to a target: `"localhost"`, `"user@host"`, or `false` (disable
 Targets support SSH aliases (e.g. `"my-server"` if defined in `~/.ssh/config`).
 
 **Constraint:** `srs` and `stream-uploader` must be on the same target (shared media volume).
+
+### Local development / debugging stream-uploader natively
+
+Set `stream-uploader` to `"native"` to run it as a host process (e.g. `pnpm dev`) while SRS still runs in Docker:
+
+```json
+{
+  "services": {
+    "srs": "localhost",
+    "stream-uploader": "native",
+    "bee-uploader": "localhost",
+    "bee-gateway": "localhost"
+  }
+}
+```
+
+The deploy script will skip stream-uploader and configure SRS to reach it via `host.docker.internal`. `"native"` is only valid when `srs` is `"localhost"`.
 
 ### .env
 

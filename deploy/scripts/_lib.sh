@@ -11,7 +11,8 @@ readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "$SVC_UPLOADER" "$
 
 # --- Targets ---
 readonly TARGET_LOCAL="localhost"
-readonly TARGET_DISABLED="false"
+readonly TARGET_NATIVE="native"
+readonly TARGET_DISABLED="disabled"
 
 # --- Paths ---
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,9 +82,16 @@ is_local() {
   [ "$target" = "$TARGET_LOCAL" ]
 }
 
+# "native" means the service runs on the host machine outside Docker (e.g. `pnpm dev`).
+# The deploy script skips it; SRS reaches it via host.docker.internal.
+is_native() {
+  local target="$1"
+  [ "$target" = "$TARGET_NATIVE" ]
+}
+
 is_remote() {
   local target="$1"
-  is_enabled "$target" && ! is_local "$target"
+  is_enabled "$target" && ! is_local "$target" && ! is_native "$target"
 }
 
 # Extract the real hostname/IP from a target.
@@ -111,13 +119,13 @@ host_from_target() {
 
 # --- Service grouping ---
 
-# Get unique enabled targets from config.
+# Get unique enabled Docker targets from config (excludes "native" — those run outside compose).
 get_targets() {
   local seen=()
   for svc in "${ALL_SERVICES[@]}"; do
     local target
     target=$(get_target "$svc")
-    if is_enabled "$target"; then
+    if is_enabled "$target" && ! is_native "$target"; then
       # Check if already seen
       local found=false
       for s in "${seen[@]}"; do
@@ -152,12 +160,15 @@ build_profile_flags() {
   echo "$flags"
 }
 
-# Build compose file flags (-f). Adds host override when COMPOSE_NETWORK=host.
+# Build compose file flags (-f). Adds overrides when COMPOSE_NETWORK=host or NAT addrs are set.
 build_compose_files() {
   local base="$1"
   local flags="-f $base/docker-compose.yml"
   if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
     flags="$flags -f $base/docker-compose.host.yml"
+  fi
+  if [ -n "${BEE_UPLOADER_NAT_ADDR:-}" ] || [ -n "${BEE_GATEWAY_NAT_ADDR:-}" ]; then
+    flags="$flags -f $base/docker-compose.nat.yml"
   fi
   echo "$flags"
 }
@@ -181,11 +192,20 @@ validate_config() {
   srs_target=$(get_target "$SVC_SRS")
   uploader_target=$(get_target "$SVC_UPLOADER")
 
-  # SRS and stream-uploader must be co-located (shared media volume)
-  if is_enabled "$srs_target" && [ "$srs_target" != "$uploader_target" ]; then
-    echo -e "${RED}ERROR: srs and stream-uploader must be on the same target.${NC}"
-    echo "They share the media volume for HLS segments."
-    exit 1
+  # SRS and stream-uploader must be co-located (shared media volume).
+  # Exception: uploader="native" is allowed only when srs="localhost".
+  if is_enabled "$srs_target" && is_enabled "$uploader_target"; then
+    if is_native "$uploader_target"; then
+      if ! is_local "$srs_target"; then
+        echo -e "${RED}ERROR: stream-uploader=\"native\" requires srs=\"localhost\".${NC}"
+        echo "Native mode only works when SRS runs on the same machine."
+        exit 1
+      fi
+    elif [ "$srs_target" != "$uploader_target" ]; then
+      echo -e "${RED}ERROR: srs and stream-uploader must be on the same target.${NC}"
+      echo "They share the media volume for HLS segments."
+      exit 1
+    fi
   fi
 }
 
@@ -213,7 +233,9 @@ print_services() {
   for svc in "${ALL_SERVICES[@]}"; do
     local target
     target=$(get_target "$svc")
-    if is_enabled "$target"; then
+    if is_native "$target"; then
+      echo -e "  ${CYAN}◆${NC} $svc → native (host process)"
+    elif is_enabled "$target"; then
       echo -e "  ${GREEN}●${NC} $svc → $target"
     else
       echo -e "  ${YELLOW}○${NC} $svc → disabled"
