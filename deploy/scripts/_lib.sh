@@ -19,9 +19,147 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
 readonly ROOT_DIR="$(dirname "$DEPLOY_DIR")"
 readonly CONFIG_FILE="$DEPLOY_DIR/config.json"
-readonly ENV_FILE="$ROOT_DIR/.env"
 readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
-readonly REMOTE_BASE="~/swarm-hls-stream"
+
+# --- Profile (deployment instance) ---
+# Set by parse_profile_args; defaults to "default".
+# - PROFILE         logical name, used as docker compose project name
+# - ENV_FILE        $ROOT_DIR/.env for default; $ROOT_DIR/.env.<profile> otherwise.
+#                   The non-default file is REQUIRED — require_env errors if it is missing
+#                   so a typo in --profile= doesn't silently deploy the wrong stack.
+# - REMOTE_BASE     ~/swarm-hls-stream for default, ~/swarm-hls-stream-<profile> otherwise
+# - PORT_PREFIX     integer offset added to every host-mapped port (0 = no shift).
+#                   Lets a profile reuse the base ports from .env without listing each one.
+PROFILE="default"
+ENV_FILE="$ROOT_DIR/.env"
+REMOTE_BASE="~/swarm-hls-stream"
+PORT_PREFIX=0
+
+# Populated by parse_profile_args with the argv minus the --profile / --portPrefix flags.
+REST_ARGS=()
+
+# Ports that get shifted by PORT_PREFIX when apply_port_prefix runs.
+# Defaults match docker-compose.yml `:-NNNN` fallbacks and .env.sample.
+readonly PORT_VARS=(
+  "BEE_UPLOADER_API_PORT:1633"
+  "BEE_UPLOADER_P2P_PORT:1634"
+  "BEE_GATEWAY_API_PORT:1733"
+  "BEE_GATEWAY_P2P_PORT:1734"
+  "API_PORT:3000"
+  "SRS_SRT_PORT:10080"
+  "SRS_RTMP_PORT:1935"
+  "SRS_HTTP_PORT:8080"
+)
+
+# Parse profile + portPrefix flags from argv.
+# Accepted: --profile=<n>, --profile <n>, --portPrefix=<N>, --portPrefix <N>
+# Caller pattern:
+#   parse_profile_args "$@"
+#   set -- "${REST_ARGS[@]}"
+# Side effects: sets PROFILE, ENV_FILE, REMOTE_BASE, PORT_PREFIX, REST_ARGS globals.
+parse_profile_args() {
+  REST_ARGS=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --profile=*)
+        PROFILE="${1#*=}"
+        shift
+        ;;
+      --profile)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --profile requires a value${NC}" >&2
+          exit 1
+        fi
+        PROFILE="$2"
+        shift 2
+        ;;
+      --portPrefix=*)
+        PORT_PREFIX="${1#*=}"
+        shift
+        ;;
+      --portPrefix)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --portPrefix requires a value${NC}" >&2
+          exit 1
+        fi
+        PORT_PREFIX="$2"
+        shift 2
+        ;;
+      *)
+        REST_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if ! [[ "$PROFILE" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; then
+    echo -e "${RED}ERROR: invalid profile name: $PROFILE${NC}" >&2
+    echo "Profile must match ^[a-z0-9][a-z0-9-]{0,30}$" >&2
+    exit 1
+  fi
+
+  # PORT_PREFIX is prepended to default ports as a string ("2" + "1633" = "21633").
+  # 0 = no prefix. Restrict to 1-9 — multi-digit prefixes push 5-digit defaults
+  # (SRS_SRT_PORT=10080) past 65535.
+  if ! [[ "$PORT_PREFIX" =~ ^[0-9]$ ]]; then
+    echo -e "${RED}ERROR: --portPrefix must be a single digit 0-9 (got: $PORT_PREFIX)${NC}" >&2
+    exit 1
+  fi
+
+  if [ "$PROFILE" != "default" ]; then
+    ENV_FILE="$ROOT_DIR/.env.$PROFILE"
+    REMOTE_BASE="~/swarm-hls-stream-$PROFILE"
+  fi
+}
+
+# Holds KEY=VALUE\n lines for ports that apply_port_prefix has resolved (either prefixed
+# defaults, or just defaults). Written into the docker-compose override env file so the
+# values are guaranteed to reach compose's interpolation regardless of `--env-file` quirks.
+PORT_OVERRIDES_TEXT=""
+
+# Apply PORT_PREFIX to PORT_VARS that aren't already set in the env file.
+# Rule: explicit env values win. Where the env doesn't set a port, the value becomes
+# "${PORT_PREFIX}${default}" (string prepend) — e.g. PORT_PREFIX=2 + default 1633 = 21633.
+# PORT_PREFIX=0 leaves defaults untouched (compose's `${VAR:-default}` then takes over).
+# Runs after load_env so .env.<profile> values are visible as overrides.
+# Also keeps SRS_ADAPTER_PORT in lock-step with the resolved API_PORT.
+apply_port_prefix() {
+  local entry name default current shifted
+  PORT_OVERRIDES_TEXT=""
+  for entry in "${PORT_VARS[@]}"; do
+    name="${entry%%:*}"
+    default="${entry##*:}"
+    current="${!name:-}"
+
+    # Env file already set this port explicitly — honor it, no prefix.
+    if [ -n "$current" ]; then
+      continue
+    fi
+
+    if [ "$PORT_PREFIX" = "0" ]; then
+      shifted="$default"
+    else
+      shifted="${PORT_PREFIX}${default}"
+    fi
+
+    if ! [[ "$shifted" =~ ^[1-9][0-9]*$ ]]; then
+      echo -e "${RED}ERROR: computed $name=$shifted is not a valid port${NC}" >&2
+      exit 1
+    fi
+    if [ "$shifted" -gt 65535 ]; then
+      echo -e "${RED}ERROR: ${name}=${shifted} exceeds 65535. Set ${name} explicitly in $ENV_FILE or use a smaller --portPrefix.${NC}" >&2
+      exit 1
+    fi
+    export "$name=$shifted"
+    PORT_OVERRIDES_TEXT+="${name}=${shifted}\n"
+  done
+
+  # SRS webhook target — mirrors the resolved API port (env or prefixed default).
+  if [ -n "${API_PORT:-}" ]; then
+    export SRS_ADAPTER_PORT="$API_PORT"
+    PORT_OVERRIDES_TEXT+="SRS_ADAPTER_PORT=${API_PORT}\n"
+  fi
+}
 
 # --- Default ports ---
 readonly DEFAULT_API_PORT=3000
@@ -55,7 +193,15 @@ require_config() {
 
 require_env() {
   if [ ! -f "$ENV_FILE" ]; then
-    echo -e "${RED}ERROR: $ENV_FILE not found. Run setup.sh first.${NC}"
+    if [ "$PROFILE" != "default" ]; then
+      echo -e "${RED}ERROR: $ENV_FILE not found.${NC}" >&2
+      echo "Profile '$PROFILE' requires $ROOT_DIR/.env.$PROFILE" >&2
+      echo "Copy and edit:" >&2
+      echo "  cp $ROOT_DIR/.env $ROOT_DIR/.env.$PROFILE" >&2
+      echo "Then change ports / STAMP / STREAM_KEY / data dirs for this profile." >&2
+    else
+      echo -e "${RED}ERROR: $ENV_FILE not found. Run setup.sh first.${NC}" >&2
+    fi
     exit 1
   fi
 }
@@ -173,6 +319,11 @@ build_compose_files() {
   echo "$flags"
 }
 
+# Compose project flag (-p <profile>) — namespaces containers/volumes per profile.
+compose_project_flag() {
+  echo "-p $PROFILE"
+}
+
 # --- Env helpers ---
 
 # Load .env values into current shell.
@@ -229,6 +380,14 @@ log_error() {
 
 print_services() {
   echo ""
+  echo "Profile: $PROFILE  (env: $ENV_FILE)"
+  if [ "$PORT_PREFIX" != "0" ]; then
+    echo "Port prefix: \"$PORT_PREFIX\" (prepended to defaults; explicit env values win)"
+    echo "  bee-uploader  api=${BEE_UPLOADER_API_PORT:-?}  p2p=${BEE_UPLOADER_P2P_PORT:-?}"
+    echo "  bee-gateway   api=${BEE_GATEWAY_API_PORT:-?}  p2p=${BEE_GATEWAY_P2P_PORT:-?}"
+    echo "  stream-uplder api=${API_PORT:-?}"
+    echo "  srs           srt=${SRS_SRT_PORT:-?}  rtmp=${SRS_RTMP_PORT:-?}  http=${SRS_HTTP_PORT:-?}"
+  fi
   echo "Deployment topology:"
   for svc in "${ALL_SERVICES[@]}"; do
     local target
