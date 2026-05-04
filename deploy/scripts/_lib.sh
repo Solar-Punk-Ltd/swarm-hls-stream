@@ -7,7 +7,8 @@ readonly SVC_SRS="srs"
 readonly SVC_UPLOADER="stream-uploader"
 readonly SVC_BEE_UPLOADER="bee-uploader"
 readonly SVC_BEE_GATEWAY="bee-gateway"
-readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "$SVC_UPLOADER" "$SVC_SRS")
+readonly SVC_CLIENT="client"
+readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "$SVC_UPLOADER" "$SVC_SRS" "$SVC_CLIENT")
 
 # --- Targets ---
 readonly TARGET_LOCAL="localhost"
@@ -45,10 +46,11 @@ readonly PORT_VARS=(
   "BEE_UPLOADER_P2P_PORT:1634"
   "BEE_GATEWAY_API_PORT:1733"
   "BEE_GATEWAY_P2P_PORT:1734"
-  "API_PORT:3000"
-  "SRS_SRT_PORT:10080"
+  "API_PORT:1300"
+  "SRS_SRT_PORT:1188"
   "SRS_RTMP_PORT:1935"
-  "SRS_HTTP_PORT:8080"
+  "SRS_HTTP_PORT:1180"
+  "CLIENT_PORT:1173"
 )
 
 # Parse profile + portPrefix flags from argv.
@@ -117,11 +119,16 @@ parse_profile_args() {
 # values are guaranteed to reach compose's interpolation regardless of `--env-file` quirks.
 PORT_OVERRIDES_TEXT=""
 
-# Apply PORT_PREFIX to PORT_VARS that aren't already set in the env file.
-# Rule: explicit env values win. Where the env doesn't set a port, the value becomes
-# "${PORT_PREFIX}${default}" (string prepend) — e.g. PORT_PREFIX=2 + default 1633 = 21633.
-# PORT_PREFIX=0 leaves defaults untouched (compose's `${VAR:-default}` then takes over).
-# Runs after load_env so .env.<profile> values are visible as overrides.
+# Resolve every PORT_VAR and write the chosen value into PORT_OVERRIDES_TEXT
+# (which deploy.sh injects into .env.deploy as a 2nd --env-file for compose).
+#
+# Rule:
+#   - PORT_PREFIX=0 (no --portPrefix flag): keep env values; only fill the
+#     unset ports with their built-in default.
+#   - PORT_PREFIX=1-9: AUTHORITATIVE — every port becomes "${PORT_PREFIX}${default}",
+#     regardless of any value in .env.<profile>. This avoids surprises where a
+#     hand-edited port in the env file silently survives the prefix.
+#
 # Also keeps SRS_ADAPTER_PORT in lock-step with the resolved API_PORT.
 apply_port_prefix() {
   local entry name default current shifted
@@ -131,15 +138,16 @@ apply_port_prefix() {
     default="${entry##*:}"
     current="${!name:-}"
 
-    # Env file already set this port explicitly — honor it, no prefix.
-    if [ -n "$current" ]; then
-      continue
-    fi
-
     if [ "$PORT_PREFIX" = "0" ]; then
+      # No prefix: env wins, default fills any gap. Skip if env already set,
+      # else fall through and emit the default into the override file.
+      if [ -n "$current" ]; then
+        continue
+      fi
       shifted="$default"
     else
-      shifted="${PORT_PREFIX}${default}"
+      # Replace the first digit of the default port with PORT_PREFIX.
+      shifted="${PORT_PREFIX}${default:1}"
     fi
 
     if ! [[ "$shifted" =~ ^[1-9][0-9]*$ ]]; then
@@ -147,7 +155,7 @@ apply_port_prefix() {
       exit 1
     fi
     if [ "$shifted" -gt 65535 ]; then
-      echo -e "${RED}ERROR: ${name}=${shifted} exceeds 65535. Set ${name} explicitly in $ENV_FILE or use a smaller --portPrefix.${NC}" >&2
+      echo -e "${RED}ERROR: ${name}=${shifted} exceeds 65535. Lower --portPrefix or set ${name} explicitly (omit --portPrefix to use env values).${NC}" >&2
       exit 1
     fi
     export "$name=$shifted"
@@ -339,9 +347,11 @@ load_env() {
 # --- Validation ---
 
 validate_config() {
-  local srs_target uploader_target
+  local srs_target uploader_target client_target gateway_target
   srs_target=$(get_target "$SVC_SRS")
   uploader_target=$(get_target "$SVC_UPLOADER")
+  client_target=$(get_target "$SVC_CLIENT")
+  gateway_target=$(get_target "$SVC_BEE_GATEWAY")
 
   # SRS and stream-uploader must be co-located (shared media volume).
   # Exception: uploader="native" is allowed only when srs="localhost".
@@ -355,6 +365,17 @@ validate_config() {
     elif [ "$srs_target" != "$uploader_target" ]; then
       echo -e "${RED}ERROR: srs and stream-uploader must be on the same target.${NC}"
       echo "They share the media volume for HLS segments."
+      exit 1
+    fi
+  fi
+
+  # client and bee-gateway must be co-located — the client's nginx proxies /bee/
+  # to the bee-gateway service via docker DNS, which only resolves within the same
+  # compose project / network.
+  if is_enabled "$client_target" && is_enabled "$gateway_target"; then
+    if [ "$client_target" != "$gateway_target" ]; then
+      echo -e "${RED}ERROR: client and bee-gateway must be on the same target.${NC}"
+      echo "The client container proxies /bee/ to bee-gateway over the compose network."
       exit 1
     fi
   fi
@@ -387,6 +408,7 @@ print_services() {
     echo "  bee-gateway   api=${BEE_GATEWAY_API_PORT:-?}  p2p=${BEE_GATEWAY_P2P_PORT:-?}"
     echo "  stream-uplder api=${API_PORT:-?}"
     echo "  srs           srt=${SRS_SRT_PORT:-?}  rtmp=${SRS_RTMP_PORT:-?}  http=${SRS_HTTP_PORT:-?}"
+    echo "  client        http=${CLIENT_PORT:-?}"
   fi
   echo "Deployment topology:"
   for svc in "${ALL_SERVICES[@]}"; do

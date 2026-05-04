@@ -1,0 +1,38 @@
+# Rendered by nginx:alpine's docker-entrypoint.d/20-envsubst-on-templates.sh
+# at container start. Only ${BEE_GATEWAY_HOST} and ${BEE_GATEWAY_PORT} are
+# substituted (NGINX_ENVSUBST_FILTER set in the Dockerfile) — nginx's own
+# $host / $proxy_add_x_forwarded_for variables pass through untouched.
+
+server {
+  listen 80;
+  server_name _;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  # SPA fallback — react-router-dom v7 wants every unknown path to serve index.html
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  # Reverse-proxy the read-only bee-gateway. The client bundle was built with
+  # VITE_READER_BEE_URL=/bee so it calls back to this same origin.
+  location /bee/ {
+    proxy_pass http://${BEE_GATEWAY_HOST}:${BEE_GATEWAY_PORT}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # bee responses can be large (manifests, .ts segments); don't buffer them.
+    proxy_buffering off;
+    proxy_request_buffering off;
+  }
+
+  # Static assets cache headers — Vite emits hashed filenames so they're safe to cache hard.
+  location /assets/ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    try_files $uri =404;
+  }
+}

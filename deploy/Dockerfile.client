@@ -1,0 +1,47 @@
+# Multi-stage build for the React client.
+# Build context is the monorepo root (see `context: ..` in docker-compose.yml).
+#
+# Per-profile VITE_APP_OWNER / VITE_APP_RAW_TOPIC are baked into the bundle at
+# build time; with docker compose project namespacing each profile gets its
+# own image, so streamer1 and streamer2 ship their own pre-built JS.
+
+# --- Build stage --------------------------------------------------------
+FROM node:20-alpine AS build
+WORKDIR /app
+
+# Build args (declare → ENV so Vite picks them up via process.env.VITE_*).
+# VITE_READER_BEE_URL defaults to "/bee" so the bundle calls a relative path
+# served by this container's nginx, which proxies to the bee-gateway service.
+ARG VITE_READER_BEE_URL=/bee
+ARG VITE_APP_OWNER=
+ARG VITE_APP_RAW_TOPIC=swarm-stream
+ENV VITE_READER_BEE_URL=$VITE_READER_BEE_URL \
+    VITE_APP_OWNER=$VITE_APP_OWNER \
+    VITE_APP_RAW_TOPIC=$VITE_APP_RAW_TOPIC
+
+RUN corepack enable && corepack prepare pnpm@9 --activate
+
+# Workspace lockfile + just the client package manifest first, for layer caching.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/client/package.json packages/client/
+
+RUN pnpm install --frozen-lockfile --filter "@swarm-hls-stream/client..."
+
+# Now the client source — separate layer so manifest-only changes don't bust install.
+COPY packages/client packages/client
+
+RUN pnpm --filter @swarm-hls-stream/client build
+
+# --- Runtime stage ------------------------------------------------------
+FROM nginx:1.27-alpine
+
+COPY --from=build /app/packages/client/dist /usr/share/nginx/html
+COPY deploy/client-nginx.conf.template /etc/nginx/templates/default.conf.template
+
+# Restrict envsubst to *our* placeholders so nginx's own $variables ($host, etc.)
+# are left alone when the entrypoint processes the template.
+ENV NGINX_ENVSUBST_FILTER='BEE_GATEWAY_HOST|BEE_GATEWAY_PORT' \
+    BEE_GATEWAY_HOST=bee-gateway \
+    BEE_GATEWAY_PORT=1733
+
+EXPOSE 80

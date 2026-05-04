@@ -22,7 +22,7 @@ usage() {
   echo "Targets read from config.json."
   echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
   echo "--portPrefix=<digit> (1-9) is prepended to default *_PORT values (1633 -> 21633 with =2)."
-  echo "Explicit values in .env.<profile> always win; prefix only fills in unset ports."
+  echo "When set, the prefix is authoritative — port lines in .env.<profile> are ignored."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -250,12 +250,14 @@ sync_to_remote() {
   # Ensure remote directory structure exists
   ssh "$target" "mkdir -p $REMOTE_BASE/deploy/scripts $REMOTE_BASE/engines/srs $REMOTE_BASE/packages/stream-uploader $REMOTE_BASE/nodes"
 
-  # Always sync compose, Dockerfile, scripts
+  # Always sync compose, Dockerfiles, nginx template, scripts
   rsync -az --delete \
     "$DEPLOY_DIR/docker-compose.yml" \
     "$DEPLOY_DIR/docker-compose.host.yml" \
     "$DEPLOY_DIR/docker-compose.nat.yml" \
     "$DEPLOY_DIR/Dockerfile.uploader" \
+    "$DEPLOY_DIR/Dockerfile.client" \
+    "$DEPLOY_DIR/client-nginx.conf.template" \
     "$target:$REMOTE_BASE/deploy/"
 
   # Sync root .env
@@ -265,10 +267,12 @@ sync_to_remote() {
 
   local need_srs=false
   local need_uploader=false
+  local need_client=false
 
   for svc in "${services[@]}"; do
     [ "$svc" = "$SVC_SRS" ] && need_srs=true
     [ "$svc" = "$SVC_UPLOADER" ] && need_uploader=true
+    [ "$svc" = "$SVC_CLIENT" ] && need_client=true
   done
 
   if [ "$need_srs" = "true" ]; then
@@ -286,6 +290,21 @@ sync_to_remote() {
     rsync -az \
       "$ROOT_DIR/packages/stream-uploader/package.json" \
       "$target:$REMOTE_BASE/packages/stream-uploader/"
+  fi
+
+  # The client image is built INSIDE the container (multi-stage Dockerfile.client),
+  # so we sync the source tree + workspace files instead of a prebuilt dist.
+  if [ "$need_client" = "true" ]; then
+    rsync -az --delete \
+      --exclude 'node_modules' --exclude 'dist' --exclude '.tsbuildinfo' \
+      "$ROOT_DIR/packages/client/" \
+      "$target:$REMOTE_BASE/packages/client/"
+
+    rsync -az \
+      "$ROOT_DIR/package.json" \
+      "$ROOT_DIR/pnpm-lock.yaml" \
+      "$ROOT_DIR/pnpm-workspace.yaml" \
+      "$target:$REMOTE_BASE/"
   fi
 
   # Sync node init script

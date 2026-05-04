@@ -61,6 +61,9 @@ check_target() {
       "$SVC_SRS")
         check_service "$SVC_SRS" "http://$host:${SRS_HTTP_PORT:-8080}"
         ;;
+      "$SVC_CLIENT")
+        check_service "$SVC_CLIENT" "http://$host:${CLIENT_PORT:-5173}/"
+        ;;
     esac
   done
 

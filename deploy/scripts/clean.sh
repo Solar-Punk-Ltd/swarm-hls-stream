@@ -126,18 +126,43 @@ clean_target() {
     compose_files=$(build_compose_files "$DEPLOY_DIR")
     profiles=$(build_profile_flags "${services[@]}")
     cd "$DEPLOY_DIR"
+    # Run compose down with stderr visible so the user actually sees what was removed.
+    # `|| true` lets us continue to the safety-net sweep below even when compose has
+    # nothing to do (or the env/config drifted since the deploy).
     # shellcheck disable=SC2086
-    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles $down_flags --remove-orphans 2>/dev/null || true
-    if [ "$REMOVE_VOLUMES" = "true" ]; then log_ok "Removed containers + volumes"; else log_ok "Removed containers"; fi
+    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles $down_flags --remove-orphans || true
+
+    # Safety net: nuke any leftover containers labelled with this compose project,
+    # in case config.json or the env file has drifted since the deploy and `down`
+    # couldn't find the service definition. Filter by docker's standard label.
+    local leftover
+    leftover=$(docker ps -aq --filter "label=com.docker.compose.project=$PROFILE" 2>/dev/null || true)
+    if [ -n "$leftover" ]; then
+      log_warn "Force-removing stragglers labelled com.docker.compose.project=$PROFILE"
+      # shellcheck disable=SC2086
+      docker rm -f $leftover
+    fi
+    if [ "$REMOVE_VOLUMES" = "true" ]; then log_ok "Local clean done (containers + volumes)"; else log_ok "Local clean done (containers)"; fi
   else
     local remote_compose_files profiles
     remote_compose_files=$(build_compose_files "$REMOTE_BASE/deploy")
     profiles=$(build_profile_flags "${services[@]}")
+    # Capture compose's exit code on the remote so we can tell whether anything happened.
     ssh "$target" bash -s <<REMOTE_SCRIPT
       set -e
+      if [ ! -d $REMOTE_BASE/deploy ]; then
+        echo "  (no $REMOTE_BASE/deploy on this host — nothing to clean)"
+        exit 0
+      fi
       cd $REMOTE_BASE/deploy
-      docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env $profiles $down_flags --remove-orphans 2>/dev/null || true
-      if [ "$REMOVE_VOLUMES" = "true" ]; then echo "  Removed containers + volumes"; else echo "  Removed containers"; fi
+      docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env $profiles $down_flags --remove-orphans || true
+
+      # Safety net (same idea as local): catch any container labelled with this project.
+      LEFTOVER=\$(docker ps -aq --filter "label=com.docker.compose.project=$PROFILE" 2>/dev/null || true)
+      if [ -n "\$LEFTOVER" ]; then
+        echo "  Force-removing stragglers labelled com.docker.compose.project=$PROFILE"
+        docker rm -f \$LEFTOVER
+      fi
 REMOTE_SCRIPT
 
     if [ "$REMOVE_ALL" = "true" ]; then
@@ -170,11 +195,35 @@ if [ "$ASSUME_YES" != "true" ]; then
   fi
 fi
 
+visited_local=false
 for target in $(get_targets); do
   services=($(get_filtered_services_for_target "$target"))
   [ ${#services[@]} -eq 0 ] && continue
+  is_local "$target" && visited_local=true
   clean_target "$target" "${services[@]}"
 done
+
+# Always sweep localhost for stragglers tagged with this compose project, even if
+# config.json now points everything at a remote target. Catches the case where a
+# profile was deployed locally and config.json was edited afterwards.
+if [ "$visited_local" = "false" ]; then
+  local_leftover=$(docker ps -aq --filter "label=com.docker.compose.project=$PROFILE" 2>/dev/null || true)
+  if [ -n "$local_leftover" ]; then
+    echo ""
+    log_warn "Found local containers labelled com.docker.compose.project=$PROFILE (config.json doesn't include localhost — sweeping anyway)"
+    # shellcheck disable=SC2086
+    docker rm -f $local_leftover
+    if [ "$REMOVE_VOLUMES" = "true" ]; then
+      # Docker compose-managed volumes carry the same project label.
+      local_vols=$(docker volume ls -q --filter "label=com.docker.compose.project=$PROFILE" 2>/dev/null || true)
+      if [ -n "$local_vols" ]; then
+        # shellcheck disable=SC2086
+        docker volume rm $local_vols || true
+      fi
+    fi
+    log_ok "Local sweep done"
+  fi
+fi
 
 echo ""
 echo "=== Clean complete ==="

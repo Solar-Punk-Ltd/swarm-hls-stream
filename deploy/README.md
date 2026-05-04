@@ -100,7 +100,7 @@ A profile is a deployment instance — same topology (from `config.json`), separ
 
 #### --portPrefix
 
-`--portPrefix=<digit>` (single digit, 1-9) **prepends** that digit to the default value of every port var the deploy knows about. Explicit values in `.env.<profile>` always win — the prefix only fills in *missing* ports, so a profile env can mix a few hand-picked ports with prefixed defaults.
+`--portPrefix=<digit>` (single digit, 1-9) **prepends** that digit to the *default* value of every port var the deploy knows about. When the flag is given it is **authoritative** — any port values present in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portPrefix=0`) to fall back to env-file values.
 
 | Var                   | Default | `--portPrefix=1` | `--portPrefix=2` | `--portPrefix=3` |
 | --------------------- | ------: | ---------------: | ---------------: | ---------------: |
@@ -227,9 +227,30 @@ OBS/FFmpeg ──SRT──> SRS (port 10080)
 
 ## Services
 
-| Service           | Image                            | Description                         |
-| ----------------- | -------------------------------- | ----------------------------------- |
-| `bee-uploader`    | `ethersphere/bee:2.7.1`          | Bee node for uploading to Swarm     |
-| `bee-gateway`     | `ethersphere/bee:2.7.1`          | Bee node for reading (optional)     |
-| `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm |
-| `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS transcoding         |
+| Service           | Image                            | Description                                          |
+| ----------------- | -------------------------------- | ---------------------------------------------------- |
+| `bee-uploader`    | `ethersphere/bee:2.7.1`          | Bee node for uploading to Swarm                      |
+| `bee-gateway`     | `ethersphere/bee:2.7.1`          | Bee node for reading (paired with `client`)          |
+| `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm                  |
+| `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS transcoding                          |
+| `client`          | Built from `Dockerfile.client`   | React viewer (nginx) — proxies `/bee/` → bee-gateway |
+
+### Viewer stack (`client` + `bee-gateway`)
+
+The React client is bundled into a multi-stage docker image: Node builds `packages/client/dist`, nginx serves it on port `80` and reverse-proxies `/bee/` to the `bee-gateway` service over the compose network. The bundle is built with **per-profile** `VITE_APP_OWNER` / `VITE_APP_RAW_TOPIC` baked in (build args wired through `docker-compose.yml`), so streamer1's image and streamer2's image are different and live under their own compose project namespaces.
+
+`client` and `bee-gateway` must be on the same target (nginx proxies via the docker service name).
+
+```bash
+# Spin up two viewer instances side-by-side. Each profile env file sets its own
+# VITE_APP_OWNER + STREAM_LIST_TOPIC pointing at a different streamer's feed.
+deploy.sh --profile=viewer1 --portPrefix=4 client bee-gateway
+deploy.sh --profile=viewer2 --portPrefix=5 client bee-gateway
+```
+
+Effective host ports for viewer1 (prefix `4`):
+
+- client → `http://localhost:45173`
+- bee-gateway API → `http://localhost:41733` (also reachable via `http://localhost:45173/bee/`)
+
+Health check (`./deploy/scripts/health.sh --profile=viewer1`) hits `/` on the client port and `/health` on the gateway port.
