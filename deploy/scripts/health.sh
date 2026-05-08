@@ -5,7 +5,13 @@ source "$(cd "$(dirname "$0")" && pwd)/_lib.sh"
 
 require_jq
 require_config
+
+# Profile flag drives ENV_FILE / REMOTE_BASE / docker compose project name.
+parse_profile_args "$@"
+set -- "${REST_ARGS[@]}"
+
 load_env
+apply_port_prefix
 
 check_service() {
   local name="$1"
@@ -53,7 +59,10 @@ check_target() {
         check_service "$SVC_UPLOADER" "http://$host:${API_PORT:-$DEFAULT_API_PORT}/health"
         ;;
       "$SVC_SRS")
-        check_service "$SVC_SRS" "http://$host:8080"
+        check_service "$SVC_SRS" "http://$host:${SRS_HTTP_PORT:-8080}"
+        ;;
+      "$SVC_CLIENT")
+        check_service "$SVC_CLIENT" "http://$host:${CLIENT_PORT:-5173}/"
         ;;
     esac
   done
@@ -61,16 +70,17 @@ check_target() {
   # Show container status
   echo ""
   echo "  Containers:"
-  local profiles compose_files
+  local profiles compose_files project_flag
   profiles=$(build_profile_flags "${services[@]}")
   compose_files=$(build_compose_files "$DEPLOY_DIR")
+  project_flag=$(compose_project_flag)
   if is_local "$target"; then
     # shellcheck disable=SC2086
-    docker compose $compose_files --env-file "$ENV_FILE" $profiles ps --format "    {{.Name}}: {{.Status}}" 2>/dev/null || echo "    (docker compose not available)"
+    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles ps --format "    {{.Name}}: {{.Status}}" 2>/dev/null || echo "    (docker compose not available)"
   else
     local remote_compose_files
     remote_compose_files=$(build_compose_files "$REMOTE_BASE/deploy")
-    ssh "$target" "cd $REMOTE_BASE/deploy && docker compose $remote_compose_files --env-file $REMOTE_BASE/.env $profiles ps --format '    {{.Name}}: {{.Status}}'" 2>/dev/null || echo "    (unreachable)"
+    ssh "$target" "cd $REMOTE_BASE/deploy && docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env $profiles ps --format '    {{.Name}}: {{.Status}}'" 2>/dev/null || echo "    (unreachable)"
   fi
 }
 

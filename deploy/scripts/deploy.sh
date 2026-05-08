@@ -6,27 +6,37 @@ source "$(cd "$(dirname "$0")" && pwd)/_lib.sh"
 
 require_jq
 require_config
-require_env
-load_env
 
 # --- Usage ---
 
 usage() {
-  echo "Usage: deploy.sh [service...]"
+  echo "Usage: deploy.sh [--profile=<name>] [--portPrefix=<digit>] [service...]"
   echo ""
-  echo "  deploy.sh                          Deploy all enabled services"
-  echo "  deploy.sh bee-uploader             Deploy only bee-uploader"
-  echo "  deploy.sh bee-uploader bee-gateway  Deploy only bee nodes"
-  echo "  deploy.sh srs stream-uploader      Deploy only the streaming stack"
+  echo "  deploy.sh                                                             Deploy enabled services (default profile)"
+  echo "  deploy.sh --profile=streamer1                                         Deploy under profile streamer1 (.env.streamer1)"
+  echo "  deploy.sh --profile=streamer1 --portPrefix=1                          Same; missing ports get default prefixed with '1'"
+  echo "  deploy.sh --profile=streamer2 --portPrefix=2                          Streamer2 with prefix '2'"
+  echo "  deploy.sh --profile=streamer1 srs stream-uploader bee-uploader        Deploy only the streaming stack for profile streamer1"
   echo ""
   echo "Services: ${ALL_SERVICES[*]}"
-  echo "Targets are read from config.json."
+  echo "Targets read from config.json."
+  echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
+  echo "--portPrefix=<digit> (1-9) is prepended to default *_PORT values (1633 -> 21633 with =2)."
+  echo "When set, the prefix is authoritative — port lines in .env.<profile> are ignored."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
 fi
+
+# Profile flag drives ENV_FILE / REMOTE_BASE / docker compose project name.
+parse_profile_args "$@"
+set -- "${REST_ARGS[@]}"
+
+require_env
+load_env
+apply_port_prefix
 
 # --- Parse service filter ---
 
@@ -240,12 +250,14 @@ sync_to_remote() {
   # Ensure remote directory structure exists
   ssh "$target" "mkdir -p $REMOTE_BASE/deploy/scripts $REMOTE_BASE/engines/srs $REMOTE_BASE/packages/stream-uploader $REMOTE_BASE/nodes"
 
-  # Always sync compose, Dockerfile, scripts
+  # Always sync compose, Dockerfiles, nginx template, scripts
   rsync -az --delete \
     "$DEPLOY_DIR/docker-compose.yml" \
     "$DEPLOY_DIR/docker-compose.host.yml" \
     "$DEPLOY_DIR/docker-compose.nat.yml" \
     "$DEPLOY_DIR/Dockerfile.uploader" \
+    "$DEPLOY_DIR/Dockerfile.client" \
+    "$DEPLOY_DIR/client-nginx.conf.template" \
     "$target:$REMOTE_BASE/deploy/"
 
   # Sync root .env
@@ -255,10 +267,12 @@ sync_to_remote() {
 
   local need_srs=false
   local need_uploader=false
+  local need_client=false
 
   for svc in "${services[@]}"; do
     [ "$svc" = "$SVC_SRS" ] && need_srs=true
     [ "$svc" = "$SVC_UPLOADER" ] && need_uploader=true
+    [ "$svc" = "$SVC_CLIENT" ] && need_client=true
   done
 
   if [ "$need_srs" = "true" ]; then
@@ -278,6 +292,21 @@ sync_to_remote() {
       "$target:$REMOTE_BASE/packages/stream-uploader/"
   fi
 
+  # The client image is built INSIDE the container (multi-stage Dockerfile.client),
+  # so we sync the source tree + workspace files instead of a prebuilt dist.
+  if [ "$need_client" = "true" ]; then
+    rsync -az --delete \
+      --exclude 'node_modules' --exclude 'dist' --exclude '.tsbuildinfo' \
+      "$ROOT_DIR/packages/client/" \
+      "$target:$REMOTE_BASE/packages/client/"
+
+    rsync -az \
+      "$ROOT_DIR/package.json" \
+      "$ROOT_DIR/pnpm-lock.yaml" \
+      "$ROOT_DIR/pnpm-workspace.yaml" \
+      "$target:$REMOTE_BASE/"
+  fi
+
   # Sync node init script
   rsync -az "$ROOT_DIR/nodes/init-node.sh" "$target:$REMOTE_BASE/nodes/"
 }
@@ -288,7 +317,11 @@ generate_env_overrides() {
   local target="$1"
   shift
   local services=("$@")
-  local overrides=""
+  # Start with the prefix-resolved port lines (apply_port_prefix populates this).
+  # These need to land in the override file passed to docker compose so the values
+  # actually reach interpolation — `--env-file=<.env.profile>` alone causes shell
+  # exports to be ignored in some Compose versions for vars not present in that file.
+  local overrides="$PORT_OVERRIDES_TEXT"
 
   for svc in "${services[@]}"; do
     if [ "$svc" = "$SVC_UPLOADER" ]; then
@@ -305,7 +338,9 @@ generate_env_overrides() {
     fi
   done
 
-  echo -e "$overrides"
+  # printf '%b' interprets backslash escapes in $overrides — and unlike `echo -e`
+  # it works under POSIX `sh` too (so `sh deploy.sh` doesn't write a literal "-e").
+  printf '%b' "$overrides"
 }
 
 # --- Deploy to a target ---
@@ -331,7 +366,7 @@ deploy_target() {
 
     # Write overrides to temp file
     local override_file="$DEPLOY_DIR/.env.deploy"
-    echo -e "$overrides" > "$override_file"
+    printf '%b' "$overrides" > "$override_file"
 
     # Export overrides into current env for compose
     if [ -n "$overrides" ]; then
@@ -342,8 +377,15 @@ deploy_target() {
     fi
 
     cd "$DEPLOY_DIR"
+    local project_flag override_envfile_flag=""
+    project_flag=$(compose_project_flag)
+    # Pass .env.deploy as a SECOND --env-file so its keys (port prefixes, BEE_URL,
+    # SRS_ADAPTER_HOST) override the user's .env.<profile> values during interpolation.
+    if [ -s "$override_file" ]; then
+      override_envfile_flag="--env-file $override_file"
+    fi
     # shellcheck disable=SC2086
-    docker compose $compose_files --env-file "$ENV_FILE" $profiles up -d --build
+    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $override_envfile_flag $profiles up -d --build
 
     rm -f "$override_file"
     log_ok "Local deploy complete"
@@ -353,15 +395,16 @@ deploy_target() {
     init_bee_dirs "$target" "${services[@]}"
 
     # Write overrides into remote .env.deploy
-    local remote_compose_files
+    local remote_compose_files project_flag
     remote_compose_files=$(build_compose_files "$REMOTE_BASE/deploy")
+    project_flag=$(compose_project_flag)
     ssh "$target" bash -s <<REMOTE_SCRIPT
       set -e
       cd $REMOTE_BASE/deploy
 
       # Write env overrides
       cat > .env.deploy <<'ENVEOF'
-$(echo -e "$overrides")
+$(printf '%b' "$overrides")
 ENVEOF
 
       # Source overrides into env, then run compose with root .env
@@ -370,7 +413,9 @@ ENVEOF
       set +a
 
       chmod +x scripts/*.sh
-      docker compose $remote_compose_files --env-file $REMOTE_BASE/.env $profiles up -d --build
+      OVERRIDE_FLAG=""
+      if [ -s .env.deploy ]; then OVERRIDE_FLAG="--env-file .env.deploy"; fi
+      docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env \$OVERRIDE_FLAG $profiles up -d --build
 
       rm -f .env.deploy
       echo "Stack started on \$(hostname)"

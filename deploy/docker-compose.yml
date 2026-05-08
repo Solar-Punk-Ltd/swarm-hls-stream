@@ -9,8 +9,7 @@ services:
 
   bee-uploader:
     image: ethersphere/bee:2.7.1
-    container_name: bee-uploader
-    profiles: ["bee-uploader"]
+    profiles: [ "bee-uploader" ]
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -31,8 +30,7 @@ services:
 
   bee-gateway:
     image: ethersphere/bee:2.7.1
-    container_name: bee-gateway
-    profiles: ["bee-gateway"]
+    profiles: [ "bee-gateway" ]
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -58,8 +56,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.uploader
-    container_name: stream-uploader
-    profiles: ["stream-uploader"]
+    profiles: [ "stream-uploader" ]
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -80,25 +77,49 @@ services:
       ENGINE: ${ENGINE:-srs}
       MEDIA_PATH: /media
 
+  # --- React Client (viewer) ---
+
+  client:
+    image: stream-client
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.client
+      args:
+        # Build-time Vite vars — baked into the JS bundle. Per-profile values
+        # come from .env.<profile> (loaded by deploy.sh) and `--env-file`.
+        VITE_READER_BEE_URL: ${VITE_READER_BEE_URL:-/bee}
+        VITE_APP_OWNER: ${VITE_APP_OWNER:-}
+        VITE_APP_RAW_TOPIC: ${VITE_APP_RAW_TOPIC:-swarm-stream}
+    profiles: ["client"]
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${CLIENT_PORT:-5173}:80"
+    environment:
+      # Runtime — used by client-nginx.conf.template via envsubst.
+      # Default points to the bee-gateway service on the same compose network;
+      # override CLIENT_BEE_GATEWAY_HOST/PORT in .env.<profile> to proxy elsewhere.
+      BEE_GATEWAY_HOST: ${CLIENT_BEE_GATEWAY_HOST:-bee-gateway}
+      BEE_GATEWAY_PORT: ${CLIENT_BEE_GATEWAY_PORT:-${BEE_GATEWAY_API_PORT:-1733}}
+
   # --- SRS Media Server ---
 
   srs:
     image: ossrs/srs:6
-    container_name: srs
-    profiles: ["srs"]
+    profiles: [ "srs" ]
     restart: unless-stopped
     logging: *default-logging
     ports:
       - "${SRS_SRT_PORT:-10080}:10080/udp"
-      - "1935:1935"
-      - "8080:8080"
+      - "${SRS_RTMP_PORT:-1935}:1935"
+      - "${SRS_HTTP_PORT:-8080}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ../engines/srs/srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
       - ../engines/srs/entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro
       - srs-media:/usr/local/srs/objs/nginx/html
-    entrypoint: ["/bin/bash", "/usr/local/srs/conf/entrypoint.sh"]
+    entrypoint: [ "/bin/bash", "/usr/local/srs/conf/entrypoint.sh" ]
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
       SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}

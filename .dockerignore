@@ -1,0 +1,27 @@
+# Keep `docker build` context small — both Dockerfile.uploader and Dockerfile.client
+# use the repo root (`..` from deploy/) as their context.
+
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+**/.cache
+
+# Ignore everything bee/srs persists on the host
+deploy/data
+nodes/data
+nodes/backups
+state
+
+# Misc dev junk
+.git
+**/.DS_Store
+**/*.log
+**/*.tsbuildinfo
+.vscode
+.env
+.env.*
+!.env.sample
+
+# Other deploys' artifacts
+deploy/.env.deploy

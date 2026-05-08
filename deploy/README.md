@@ -74,33 +74,81 @@ Single `.env` in monorepo root, shared by dev and deploy. See [.env.sample](../.
 ### deploy.sh
 
 ```bash
-deploy.sh [service...]           # deploy specified services (or all if none given)
+deploy.sh [--profile=<name>] [--portPrefix=<N>] [service...]
 ```
 
 ```bash
-deploy.sh bee-uploader           # just the bee node
-deploy.sh srs stream-uploader    # just the streaming stack
-deploy.sh                        # everything enabled in config.json
+deploy.sh bee-uploader                              # just the bee node (default profile)
+deploy.sh srs stream-uploader                       # just the streaming stack (default profile)
+deploy.sh                                           # everything enabled in config.json (default profile)
+deploy.sh --profile=streamer1                       # full stack as isolated streamer1 instance
+deploy.sh --profile=streamer1 --portPrefix=1        # ...prefix '1' on missing default ports
+deploy.sh --profile=streamer2 --portPrefix=2        # streamer2 with prefix '2'
 ```
+
+> Always run with bash: `bash ./deploy/scripts/deploy.sh ...` or `./deploy/scripts/deploy.sh ...`. Invoking it via `sh` (POSIX) breaks bash-only features used in the script.
+
+#### Profiles
+
+A profile is a deployment instance — same topology (from `config.json`), separate identity. Each profile gets its own:
+
+- **Docker compose project name** (`-p <profile>`) — namespaces containers and named volumes (`streamer1-bee-uploader-1`, `streamer1_srs-media`, ...).
+- **Env file** at `<repo-root>/.env.<profile>` — required when `--profile` is given (no silent fallback to `.env`).
+- **Bee data dir** (set `BEE_UPLOADER_DATA_DIR=./data/bee-uploader-<profile>` etc. in the profile env).
+- **Host ports** — see `--portPrefix` below for the easy way; or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
+- **Remote dir** when targets are SSH hosts: `~/swarm-hls-stream-<profile>`.
+
+#### --portPrefix
+
+`--portPrefix=<digit>` (single digit, 1-9) **prepends** that digit to the *default* value of every port var the deploy knows about. When the flag is given it is **authoritative** — any port values present in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portPrefix=0`) to fall back to env-file values.
+
+| Var                   | Default | `--portPrefix=1` | `--portPrefix=2` | `--portPrefix=3` |
+| --------------------- | ------: | ---------------: | ---------------: | ---------------: |
+| BEE_UPLOADER_API_PORT |    1633 |            11633 |            21633 |            31633 |
+| BEE_UPLOADER_P2P_PORT |    1634 |            11634 |            21634 |            31634 |
+| BEE_GATEWAY_API_PORT  |    1733 |            11733 |            21733 |            31733 |
+| BEE_GATEWAY_P2P_PORT  |    1734 |            11734 |            21734 |            31734 |
+| API_PORT              |    3000 |            13000 |            23000 |            33000 |
+| SRS_SRT_PORT          |   10080 |          110080* |          210080* |          310080* |
+| SRS_RTMP_PORT         |    1935 |            11935 |            21935 |            31935 |
+| SRS_HTTP_PORT         |    8080 |            18080 |            28080 |            38080 |
+
+*`SRS_SRT_PORT`'s default is already 5 digits, so prepending pushes it past 65535. Set `SRS_SRT_PORT` explicitly in `.env.<profile>` (e.g. `10080`, `20080`, ...) — the script will use that value instead of trying to prefix the default.
+
+`SRS_ADAPTER_PORT` is auto-mirrored to whatever `API_PORT` resolves to, so SRS webhooks always reach the right uploader.
+
+`--portPrefix=0` (the default) is a no-op — defaults flow through compose as before.
+
+Setup for a new profile:
+
+```bash
+cp .env .env.streamer1
+$EDITOR .env.streamer1   # set STAMP + STREAM_KEY + *_DATA_DIR (+ SRS_SRT_PORT if needed)
+deploy.sh --profile=streamer1 --portPrefix=1
+```
+
+Without `--profile` everything works exactly as before — implicit `default` profile, `.env`, unprefixed `~/swarm-hls-stream`, no port shift.
 
 ### clean.sh
 
 ```bash
-clean.sh [--volumes] [--all] [service...]
+clean.sh [--profile=<name>] [--volumes] [--all] [--yes] [service...]
 ```
 
 ```bash
-clean.sh                         # remove all containers
-clean.sh bee-uploader            # remove only bee-uploader
-clean.sh --volumes               # remove containers + Docker volumes (data loss!)
-clean.sh --all                   # remove everything including remote files
+clean.sh                                 # remove all containers (default profile)
+clean.sh bee-uploader                    # remove only bee-uploader
+clean.sh --volumes                       # remove containers + Docker volumes (data loss!)
+clean.sh --all                           # remove everything including remote files
+clean.sh --profile=streamer1 --volumes   # remove streamer1 containers + its volumes
+clean.sh --yes                           # skip the confirmation prompt (for scripted use)
 ```
 
 ### stop.sh / health.sh
 
 ```bash
-stop.sh                          # stop all containers across all targets
-health.sh                        # check service health across all targets
+stop.sh   [--profile=<name>]    # stop all containers across all targets
+health.sh [--profile=<name>]    # check service health across all targets
 ```
 
 ### Node & stamp CLI
@@ -179,9 +227,30 @@ OBS/FFmpeg ──SRT──> SRS (port 10080)
 
 ## Services
 
-| Service           | Image                            | Description                         |
-| ----------------- | -------------------------------- | ----------------------------------- |
-| `bee-uploader`    | `ethersphere/bee:2.7.1`          | Bee node for uploading to Swarm     |
-| `bee-gateway`     | `ethersphere/bee:2.7.1`          | Bee node for reading (optional)     |
-| `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm |
-| `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS transcoding         |
+| Service           | Image                            | Description                                          |
+| ----------------- | -------------------------------- | ---------------------------------------------------- |
+| `bee-uploader`    | `ethersphere/bee:2.7.1`          | Bee node for uploading to Swarm                      |
+| `bee-gateway`     | `ethersphere/bee:2.7.1`          | Bee node for reading (paired with `client`)          |
+| `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm                  |
+| `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS transcoding                          |
+| `client`          | Built from `Dockerfile.client`   | React viewer (nginx) — proxies `/bee/` → bee-gateway |
+
+### Viewer stack (`client` + `bee-gateway`)
+
+The React client is bundled into a multi-stage docker image: Node builds `packages/client/dist`, nginx serves it on port `80` and reverse-proxies `/bee/` to the `bee-gateway` service over the compose network. The bundle is built with **per-profile** `VITE_APP_OWNER` / `VITE_APP_RAW_TOPIC` baked in (build args wired through `docker-compose.yml`), so streamer1's image and streamer2's image are different and live under their own compose project namespaces.
+
+`client` and `bee-gateway` must be on the same target (nginx proxies via the docker service name).
+
+```bash
+# Spin up two viewer instances side-by-side. Each profile env file sets its own
+# VITE_APP_OWNER + STREAM_LIST_TOPIC pointing at a different streamer's feed.
+deploy.sh --profile=viewer1 --portPrefix=4 client bee-gateway
+deploy.sh --profile=viewer2 --portPrefix=5 client bee-gateway
+```
+
+Effective host ports for viewer1 (prefix `4`):
+
+- client → `http://localhost:45173`
+- bee-gateway API → `http://localhost:41733` (also reachable via `http://localhost:45173/bee/`)
+
+Health check (`./deploy/scripts/health.sh --profile=viewer1`) hits `/` on the client port and `/health` on the gateway port.
