@@ -10,19 +10,24 @@ require_config
 # --- Usage ---
 
 usage() {
-  echo "Usage: deploy.sh [--profile=<name>] [--portSlot=<N>] [service...]"
+  echo "Usage: deploy.sh [--profile=<name>] [--portSlot=<N>] [--host=<target>] [service...]"
   echo ""
   echo "  deploy.sh                                                             Deploy enabled services (default profile)"
   echo "  deploy.sh --profile=streamer1                                         Deploy under profile streamer1 (.env.streamer1)"
   echo "  deploy.sh --profile=streamer1 --portSlot=1                            Same; ports shifted by slot 1 (10000 -> 10010, ...)"
   echo "  deploy.sh --profile=streamer2 --portSlot=2                            Streamer2 with slot 2 (10000 -> 10020, ...)"
   echo "  deploy.sh --profile=streamer1 srs stream-uploader bee-uploader        Deploy only the streaming stack for profile streamer1"
+  echo "  deploy.sh --host=localhost                                            Override config.json: deploy all enabled services locally"
+  echo "  deploy.sh --host=user@server                                          Override config.json: deploy all enabled services to that ssh target"
   echo ""
   echo "Services: ${ALL_SERVICES[*]}"
   echo "Targets read from config.json."
   echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
   echo "--portSlot=<N> (1-999) shifts each default *_PORT by N*10 (10000 -> 10020 with =2)."
   echo "When set, the slot is authoritative — port lines in .env.<profile> are ignored."
+  echo "--host=<target> ignores per-service targets in config.json and sends every enabled"
+  echo "service to <target> (\"localhost\" or any host reachable via ~/.ssh/config)."
+  echo "Disabled services (\"false\" in config.json) remain disabled."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then

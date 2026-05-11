@@ -38,6 +38,11 @@ ENV_FILE="$ROOT_DIR/.env"
 REMOTE_BASE="~/swarm-hls-stream"
 PORT_SLOT=0
 
+# When set via --host, every enabled service in config.json is redirected to this
+# target (an ssh alias, user@host, or "localhost"). Disabled services (false) stay
+# disabled. Useful for one-shot deploys to an arbitrary host without editing config.json.
+HOST_OVERRIDE=""
+
 # Populated by parse_profile_args with the argv minus the --profile / --portSlot flags.
 REST_ARGS=()
 
@@ -88,6 +93,18 @@ parse_profile_args() {
           exit 1
         fi
         PORT_SLOT="$2"
+        shift 2
+        ;;
+      --host=*)
+        HOST_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --host)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --host requires a value${NC}" >&2
+          exit 1
+        fi
+        HOST_OVERRIDE="$2"
         shift 2
         ;;
       *)
@@ -222,6 +239,12 @@ get_target() {
   local value
   # Use `type` to distinguish false (boolean) from missing (null) from string
   value=$(jq -r ".services[\"$service\"] | if . == false then \"false\" elif . == null then \"localhost\" else tostring end" "$CONFIG_FILE")
+  # --host overrides the config target for every enabled service.
+  # Disabled services (false) remain disabled.
+  if [ -n "$HOST_OVERRIDE" ] && [ "$value" != "false" ]; then
+    echo "$HOST_OVERRIDE"
+    return
+  fi
   echo "$value"
 }
 
@@ -401,6 +424,9 @@ log_error() {
 print_services() {
   echo ""
   echo "Profile: $PROFILE  (env: $ENV_FILE)"
+  if [ -n "$HOST_OVERRIDE" ]; then
+    echo "Host override: $HOST_OVERRIDE  (config.json targets ignored for enabled services)"
+  fi
   if [ "$PORT_SLOT" != "0" ]; then
     echo "Port slot: $PORT_SLOT (defaults shifted by slot*10; authoritative — env values ignored)"
     echo "  bee-uploader  api=${BEE_UPLOADER_API_PORT:-?}  p2p=${BEE_UPLOADER_P2P_PORT:-?}"
