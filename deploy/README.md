@@ -74,7 +74,7 @@ Single `.env` in monorepo root, shared by dev and deploy. See [.env.sample](../.
 ### deploy.sh
 
 ```bash
-deploy.sh [--profile=<name>] [--portSlot=<N>] [service...]
+deploy.sh [--profile=<name>] [--portSlot=<N>] [--host=<target>] [service...]
 ```
 
 ```bash
@@ -84,6 +84,8 @@ deploy.sh                                           # everything enabled in conf
 deploy.sh --profile=streamer1                       # full stack as isolated streamer1 instance
 deploy.sh --profile=streamer1 --portSlot=1          # ...slot 1: every default port shifted by +10
 deploy.sh --profile=streamer2 --portSlot=2          # streamer2 with slot 2 (+20)
+deploy.sh --host=localhost                          # ignore config.json targets, deploy everything locally
+deploy.sh --host=user@server                        # ignore config.json targets, deploy everything to user@server
 ```
 
 > Always run with bash: `bash ./deploy/scripts/deploy.sh ...` or `./deploy/scripts/deploy.sh ...`. Invoking it via `sh` (POSIX) breaks bash-only features used in the script.
@@ -117,6 +119,22 @@ A profile is a deployment instance — same topology (from `config.json`), separ
 `SRS_ADAPTER_PORT` is auto-mirrored to whatever `API_PORT` resolves to, so SRS webhooks always reach the right uploader.
 
 `--portSlot=0` (the default) is a no-op — defaults flow through compose as before.
+
+#### --host
+
+`--host=<target>` ignores the per-service targets in `config.json` and sends every **enabled** service to `<target>`. `<target>` can be:
+
+- `localhost` — run everything in Docker on this machine.
+- `user@host` or an SSH alias from `~/.ssh/config` — deploy via SSH + rsync to that host.
+
+Services set to `false` in `config.json` stay disabled. The flag is handy for one-shot deploys to a host that isn't your committed topology (e.g. validating a remote server, or moving a profile to localhost without editing `config.json`):
+
+```bash
+deploy.sh --host=localhost --profile=streamer1 --portSlot=1
+deploy.sh --host=my-staging-box stream-uploader bee-uploader
+```
+
+Because every service resolves to the same target under `--host`, the usual co-location constraints (e.g. `srs` + `stream-uploader`) are satisfied automatically.
 
 Setup for a new profile:
 
