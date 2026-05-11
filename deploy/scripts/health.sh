@@ -11,7 +11,7 @@ parse_profile_args "$@"
 set -- "${REST_ARGS[@]}"
 
 load_env
-apply_port_prefix
+apply_port_slot
 
 check_service() {
   local name="$1"

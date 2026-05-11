@@ -10,19 +10,19 @@ require_config
 # --- Usage ---
 
 usage() {
-  echo "Usage: deploy.sh [--profile=<name>] [--portPrefix=<digit>] [service...]"
+  echo "Usage: deploy.sh [--profile=<name>] [--portSlot=<N>] [service...]"
   echo ""
   echo "  deploy.sh                                                             Deploy enabled services (default profile)"
   echo "  deploy.sh --profile=streamer1                                         Deploy under profile streamer1 (.env.streamer1)"
-  echo "  deploy.sh --profile=streamer1 --portPrefix=1                          Same; missing ports get default prefixed with '1'"
-  echo "  deploy.sh --profile=streamer2 --portPrefix=2                          Streamer2 with prefix '2'"
+  echo "  deploy.sh --profile=streamer1 --portSlot=1                            Same; ports shifted by slot 1 (10000 -> 10010, ...)"
+  echo "  deploy.sh --profile=streamer2 --portSlot=2                            Streamer2 with slot 2 (10000 -> 10020, ...)"
   echo "  deploy.sh --profile=streamer1 srs stream-uploader bee-uploader        Deploy only the streaming stack for profile streamer1"
   echo ""
   echo "Services: ${ALL_SERVICES[*]}"
   echo "Targets read from config.json."
   echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
-  echo "--portPrefix=<digit> (1-9) is prepended to default *_PORT values (1633 -> 21633 with =2)."
-  echo "When set, the prefix is authoritative — port lines in .env.<profile> are ignored."
+  echo "--portSlot=<N> (1-999) shifts each default *_PORT by N*10 (10000 -> 10020 with =2)."
+  echo "When set, the slot is authoritative — port lines in .env.<profile> are ignored."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -36,7 +36,7 @@ set -- "${REST_ARGS[@]}"
 
 require_env
 load_env
-apply_port_prefix
+apply_port_slot
 
 # --- Parse service filter ---
 
@@ -317,7 +317,7 @@ generate_env_overrides() {
   local target="$1"
   shift
   local services=("$@")
-  # Start with the prefix-resolved port lines (apply_port_prefix populates this).
+  # Start with the slot-resolved port lines (apply_port_slot populates this).
   # These need to land in the override file passed to docker compose so the values
   # actually reach interpolation — `--env-file=<.env.profile>` alone causes shell
   # exports to be ignored in some Compose versions for vars not present in that file.
@@ -379,7 +379,7 @@ deploy_target() {
     cd "$DEPLOY_DIR"
     local project_flag override_envfile_flag=""
     project_flag=$(compose_project_flag)
-    # Pass .env.deploy as a SECOND --env-file so its keys (port prefixes, BEE_URL,
+    # Pass .env.deploy as a SECOND --env-file so its keys (slot-resolved ports, BEE_URL,
     # SRS_ADAPTER_HOST) override the user's .env.<profile> values during interpolation.
     if [ -s "$override_file" ]; then
       override_envfile_flag="--env-file $override_file"
