@@ -128,7 +128,9 @@ parse_profile_args() {
   fi
 
   if [ "$PROFILE" != "default" ]; then
-    ENV_FILE="$ROOT_DIR/.env.$PROFILE"
+    if [ -f "$ROOT_DIR/.env.$PROFILE" ]; then
+      ENV_FILE="$ROOT_DIR/.env.$PROFILE"
+    fi
     REMOTE_BASE="~/swarm-hls-stream-$PROFILE"
   fi
 }
