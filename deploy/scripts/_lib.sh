@@ -38,10 +38,15 @@ ENV_FILE="$ROOT_DIR/.env"
 REMOTE_BASE="~/swarm-hls-stream"
 PORT_SLOT=0
 
-# When set via --host, every enabled service in config.json is redirected to this
-# target (an ssh alias, user@host, or "localhost"). Disabled services (false) stay
-# disabled. Useful for one-shot deploys to an arbitrary host without editing config.json.
-HOST_OVERRIDE=""
+# Per-deployment parameter overrides. Set by parse_profile_args from CLI flags
+# (--host / --feed-owner / --feed-topic / --private-key / --stamp-id). When non-empty,
+# they take precedence over the matching keys in .env.<profile> during deploy
+# (see generate_env_overrides in deploy.sh).
+HOST_OVERRIDE="" # target (an ssh alias, user@host, or "localhost").
+FEED_OWNER_OVERRIDE=""
+FEED_TOPIC_OVERRIDE=""
+PRIVATE_KEY_OVERRIDE=""
+STAMP_ID_OVERRIDE=""
 
 # Populated by parse_profile_args with the argv minus the --profile / --portSlot flags.
 REST_ARGS=()
@@ -105,6 +110,54 @@ parse_profile_args() {
           exit 1
         fi
         HOST_OVERRIDE="$2"
+        shift 2
+        ;;
+      --feed-owner=*)
+        FEED_OWNER_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --feed-owner)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --feed-owner requires a value${NC}" >&2
+          exit 1
+        fi
+        FEED_OWNER_OVERRIDE="$2"
+        shift 2
+        ;;
+      --feed-topic=*)
+        FEED_TOPIC_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --feed-topic)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --feed-topic requires a value${NC}" >&2
+          exit 1
+        fi
+        FEED_TOPIC_OVERRIDE="$2"
+        shift 2
+        ;;
+      --private-key=*)
+        PRIVATE_KEY_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --private-key)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --private-key requires a value${NC}" >&2
+          exit 1
+        fi
+        PRIVATE_KEY_OVERRIDE="$2"
+        shift 2
+        ;;
+      --stamp-id=*)
+        STAMP_ID_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --stamp-id)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --stamp-id requires a value${NC}" >&2
+          exit 1
+        fi
+        STAMP_ID_OVERRIDE="$2"
         shift 2
         ;;
       *)
@@ -185,6 +238,31 @@ apply_port_slot() {
     export SRS_ADAPTER_PORT="$API_PORT"
     PORT_OVERRIDES_TEXT+="SRS_ADAPTER_PORT=${API_PORT}\n"
   fi
+}
+
+# Emit KEY=VALUE\n lines for every per-deployment parameter override that was
+# supplied on the command line. Empty overrides are skipped so the .env value
+# wins. Mapping (CLI flag → docker .env key):
+#   --feed-owner   → VITE_APP_OWNER       (0x prefix stripped — viewer build expects raw hex)
+#   --feed-topic   → STREAM_LIST_TOPIC, VITE_APP_RAW_TOPIC
+#   --private-key  → STREAM_KEY
+#   --stamp-id     → STAMP                (0x prefix stripped — bee expects raw hex)
+parameter_overrides_text() {
+  local out=""
+  if [ -n "$FEED_OWNER_OVERRIDE" ]; then
+    out+="VITE_APP_OWNER=${FEED_OWNER_OVERRIDE#0x}\n"
+  fi
+  if [ -n "$FEED_TOPIC_OVERRIDE" ]; then
+    out+="STREAM_LIST_TOPIC=${FEED_TOPIC_OVERRIDE}\n"
+    out+="VITE_APP_RAW_TOPIC=${FEED_TOPIC_OVERRIDE}\n"
+  fi
+  if [ -n "$PRIVATE_KEY_OVERRIDE" ]; then
+    out+="STREAM_KEY=${PRIVATE_KEY_OVERRIDE}\n"
+  fi
+  if [ -n "$STAMP_ID_OVERRIDE" ]; then
+    out+="STAMP=${STAMP_ID_OVERRIDE#0x}\n"
+  fi
+  printf '%s' "$out"
 }
 
 # --- Default ports ---

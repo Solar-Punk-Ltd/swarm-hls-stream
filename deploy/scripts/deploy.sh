@@ -328,6 +328,10 @@ generate_env_overrides() {
   # exports to be ignored in some Compose versions for vars not present in that file.
   local overrides="$PORT_OVERRIDES_TEXT"
 
+  # Per-deployment parameter overrides supplied on the CLI (feed_owner, feed_topic,
+  # private_key, stamp_id). When set they take precedence over .env.<profile>.
+  overrides+="$(parameter_overrides_text)"
+
   for svc in "${services[@]}"; do
     if [ "$svc" = "$SVC_UPLOADER" ]; then
       local bee_url
