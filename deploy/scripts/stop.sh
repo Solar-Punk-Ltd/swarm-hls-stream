@@ -12,7 +12,7 @@ parse_profile_args "$@"
 set -- "${REST_ARGS[@]}"
 
 load_env
-apply_port_prefix
+apply_port_slot
 
 print_services
 

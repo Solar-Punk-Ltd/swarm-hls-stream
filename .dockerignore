@@ -7,6 +7,11 @@
 **/coverage
 **/.cache
 
+# Dockerfile.uploader copies the prebuilt JS in — un-ignore it.
+# (Dockerfile.client builds inside the container, so its dist stays excluded.)
+!packages/stream-uploader/dist
+!packages/stream-uploader/dist/**
+
 # Ignore everything bee/srs persists on the host
 deploy/data
 nodes/data

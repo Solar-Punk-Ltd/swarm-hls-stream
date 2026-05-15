@@ -29,36 +29,49 @@ readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
 #                   The non-default file is REQUIRED — require_env errors if it is missing
 #                   so a typo in --profile= doesn't silently deploy the wrong stack.
 # - REMOTE_BASE     ~/swarm-hls-stream for default, ~/swarm-hls-stream-<profile> otherwise
-# - PORT_PREFIX     integer offset added to every host-mapped port (0 = no shift).
-#                   Lets a profile reuse the base ports from .env without listing each one.
+# - PORT_SLOT       integer slot id (0-999). 0 = no slot, env values win.
+#                   For slot N>=1, every host-mapped port becomes default + N*10,
+#                   yielding non-overlapping bands of 10 ports per slot in the
+#                   10000-19999 range. See apply_port_slot.
 PROFILE="default"
 ENV_FILE="$ROOT_DIR/.env"
 REMOTE_BASE="~/swarm-hls-stream"
-PORT_PREFIX=0
+PORT_SLOT=0
 
-# Populated by parse_profile_args with the argv minus the --profile / --portPrefix flags.
+# Per-deployment parameter overrides. Set by parse_profile_args from CLI flags
+# (--host / --feed-owner / --feed-topic / --private-key / --stamp-id). When non-empty,
+# they take precedence over the matching keys in .env.<profile> during deploy
+# (see generate_env_overrides in deploy.sh).
+HOST_OVERRIDE="" # target (an ssh alias, user@host, or "localhost").
+FEED_OWNER_OVERRIDE=""
+FEED_TOPIC_OVERRIDE=""
+PRIVATE_KEY_OVERRIDE=""
+STAMP_ID_OVERRIDE=""
+
+# Populated by parse_profile_args with the argv minus the --profile / --portSlot flags.
 REST_ARGS=()
 
-# Ports that get shifted by PORT_PREFIX when apply_port_prefix runs.
+# Base ports (slot 0). Each service occupies a unique last digit (0-8) so
+# apply_port_slot can compute `base + slot*10` without collisions across services.
 # Defaults match docker-compose.yml `:-NNNN` fallbacks and .env.sample.
 readonly PORT_VARS=(
-  "BEE_UPLOADER_API_PORT:1633"
-  "BEE_UPLOADER_P2P_PORT:1634"
-  "BEE_GATEWAY_API_PORT:1733"
-  "BEE_GATEWAY_P2P_PORT:1734"
-  "API_PORT:1300"
-  "SRS_SRT_PORT:1188"
-  "SRS_RTMP_PORT:1935"
-  "SRS_HTTP_PORT:1180"
-  "CLIENT_PORT:1173"
+  "API_PORT:10000"
+  "SRS_SRT_PORT:10001"
+  "SRS_RTMP_PORT:10002"
+  "SRS_HTTP_PORT:10003"
+  "CLIENT_PORT:10004"
+  "BEE_UPLOADER_API_PORT:10005"
+  "BEE_UPLOADER_P2P_PORT:10006"
+  "BEE_GATEWAY_API_PORT:10007"
+  "BEE_GATEWAY_P2P_PORT:10008"
 )
 
-# Parse profile + portPrefix flags from argv.
-# Accepted: --profile=<n>, --profile <n>, --portPrefix=<N>, --portPrefix <N>
+# Parse profile + portSlot flags from argv.
+# Accepted: --profile=<n>, --profile <n>, --portSlot=<N>, --portSlot <N>
 # Caller pattern:
 #   parse_profile_args "$@"
 #   set -- "${REST_ARGS[@]}"
-# Side effects: sets PROFILE, ENV_FILE, REMOTE_BASE, PORT_PREFIX, REST_ARGS globals.
+# Side effects: sets PROFILE, ENV_FILE, REMOTE_BASE, PORT_SLOT, REST_ARGS globals.
 parse_profile_args() {
   REST_ARGS=()
   while [ $# -gt 0 ]; do
@@ -75,16 +88,76 @@ parse_profile_args() {
         PROFILE="$2"
         shift 2
         ;;
-      --portPrefix=*)
-        PORT_PREFIX="${1#*=}"
+      --portSlot=*)
+        PORT_SLOT="${1#*=}"
         shift
         ;;
-      --portPrefix)
+      --portSlot)
         if [ $# -lt 2 ]; then
-          echo -e "${RED}ERROR: --portPrefix requires a value${NC}" >&2
+          echo -e "${RED}ERROR: --portSlot requires a value${NC}" >&2
           exit 1
         fi
-        PORT_PREFIX="$2"
+        PORT_SLOT="$2"
+        shift 2
+        ;;
+      --host=*)
+        HOST_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --host)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --host requires a value${NC}" >&2
+          exit 1
+        fi
+        HOST_OVERRIDE="$2"
+        shift 2
+        ;;
+      --feed-owner=*)
+        FEED_OWNER_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --feed-owner)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --feed-owner requires a value${NC}" >&2
+          exit 1
+        fi
+        FEED_OWNER_OVERRIDE="$2"
+        shift 2
+        ;;
+      --feed-topic=*)
+        FEED_TOPIC_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --feed-topic)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --feed-topic requires a value${NC}" >&2
+          exit 1
+        fi
+        FEED_TOPIC_OVERRIDE="$2"
+        shift 2
+        ;;
+      --private-key=*)
+        PRIVATE_KEY_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --private-key)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --private-key requires a value${NC}" >&2
+          exit 1
+        fi
+        PRIVATE_KEY_OVERRIDE="$2"
+        shift 2
+        ;;
+      --stamp-id=*)
+        STAMP_ID_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      --stamp-id)
+        if [ $# -lt 2 ]; then
+          echo -e "${RED}ERROR: --stamp-id requires a value${NC}" >&2
+          exit 1
+        fi
+        STAMP_ID_OVERRIDE="$2"
         shift 2
         ;;
       *)
@@ -100,21 +173,22 @@ parse_profile_args() {
     exit 1
   fi
 
-  # PORT_PREFIX is prepended to default ports as a string ("2" + "1633" = "21633").
-  # 0 = no prefix. Restrict to 1-9 — multi-digit prefixes push 5-digit defaults
-  # (SRS_SRT_PORT=10080) past 65535.
-  if ! [[ "$PORT_PREFIX" =~ ^[0-9]$ ]]; then
-    echo -e "${RED}ERROR: --portPrefix must be a single digit 0-9 (got: $PORT_PREFIX)${NC}" >&2
+  # PORT_SLOT shifts each default by slot*10 (so slot 1 → 10010-10018,
+  # slot 999 → 19990-19998). Restrict to 0-999 to stay within TCP range.
+  if ! [[ "$PORT_SLOT" =~ ^[0-9]{1,3}$ ]]; then
+    echo -e "${RED}ERROR: --portSlot must be an integer 0-999 (got: $PORT_SLOT)${NC}" >&2
     exit 1
   fi
 
   if [ "$PROFILE" != "default" ]; then
-    ENV_FILE="$ROOT_DIR/.env.$PROFILE"
+    if [ -f "$ROOT_DIR/.env.$PROFILE" ]; then
+      ENV_FILE="$ROOT_DIR/.env.$PROFILE"
+    fi
     REMOTE_BASE="~/swarm-hls-stream-$PROFILE"
   fi
 }
 
-# Holds KEY=VALUE\n lines for ports that apply_port_prefix has resolved (either prefixed
+# Holds KEY=VALUE\n lines for ports that apply_port_slot has resolved (either slot-shifted
 # defaults, or just defaults). Written into the docker-compose override env file so the
 # values are guaranteed to reach compose's interpolation regardless of `--env-file` quirks.
 PORT_OVERRIDES_TEXT=""
@@ -123,14 +197,14 @@ PORT_OVERRIDES_TEXT=""
 # (which deploy.sh injects into .env.deploy as a 2nd --env-file for compose).
 #
 # Rule:
-#   - PORT_PREFIX=0 (no --portPrefix flag): keep env values; only fill the
+#   - PORT_SLOT=0 (no --portSlot flag): keep env values; only fill the
 #     unset ports with their built-in default.
-#   - PORT_PREFIX=1-9: AUTHORITATIVE — every port becomes "${PORT_PREFIX}${default}",
+#   - PORT_SLOT=1-999: AUTHORITATIVE — every port becomes default + slot*10,
 #     regardless of any value in .env.<profile>. This avoids surprises where a
-#     hand-edited port in the env file silently survives the prefix.
+#     hand-edited port in the env file silently survives the slot shift.
 #
 # Also keeps SRS_ADAPTER_PORT in lock-step with the resolved API_PORT.
-apply_port_prefix() {
+apply_port_slot() {
   local entry name default current shifted
   PORT_OVERRIDES_TEXT=""
   for entry in "${PORT_VARS[@]}"; do
@@ -138,16 +212,13 @@ apply_port_prefix() {
     default="${entry##*:}"
     current="${!name:-}"
 
-    if [ "$PORT_PREFIX" = "0" ]; then
-      # No prefix: env wins, default fills any gap. Skip if env already set,
-      # else fall through and emit the default into the override file.
+    if [ "$PORT_SLOT" = "0" ]; then
       if [ -n "$current" ]; then
         continue
       fi
       shifted="$default"
     else
-      # Replace the first digit of the default port with PORT_PREFIX.
-      shifted="${PORT_PREFIX}${default:1}"
+      shifted=$((default + PORT_SLOT * 10))
     fi
 
     if ! [[ "$shifted" =~ ^[1-9][0-9]*$ ]]; then
@@ -155,7 +226,7 @@ apply_port_prefix() {
       exit 1
     fi
     if [ "$shifted" -gt 65535 ]; then
-      echo -e "${RED}ERROR: ${name}=${shifted} exceeds 65535. Lower --portPrefix or set ${name} explicitly (omit --portPrefix to use env values).${NC}" >&2
+      echo -e "${RED}ERROR: ${name}=${shifted} exceeds 65535. Lower --portSlot or set ${name} explicitly (omit --portSlot to use env values).${NC}" >&2
       exit 1
     fi
     export "$name=$shifted"
@@ -167,6 +238,31 @@ apply_port_prefix() {
     export SRS_ADAPTER_PORT="$API_PORT"
     PORT_OVERRIDES_TEXT+="SRS_ADAPTER_PORT=${API_PORT}\n"
   fi
+}
+
+# Emit KEY=VALUE\n lines for every per-deployment parameter override that was
+# supplied on the command line. Empty overrides are skipped so the .env value
+# wins. Mapping (CLI flag → docker .env key):
+#   --feed-owner   → VITE_APP_OWNER       (0x prefix stripped — viewer build expects raw hex)
+#   --feed-topic   → STREAM_LIST_TOPIC, VITE_APP_RAW_TOPIC
+#   --private-key  → STREAM_KEY
+#   --stamp-id     → STAMP                (0x prefix stripped — bee expects raw hex)
+parameter_overrides_text() {
+  local out=""
+  if [ -n "$FEED_OWNER_OVERRIDE" ]; then
+    out+="VITE_APP_OWNER=${FEED_OWNER_OVERRIDE#0x}\n"
+  fi
+  if [ -n "$FEED_TOPIC_OVERRIDE" ]; then
+    out+="STREAM_LIST_TOPIC=${FEED_TOPIC_OVERRIDE}\n"
+    out+="VITE_APP_RAW_TOPIC=${FEED_TOPIC_OVERRIDE}\n"
+  fi
+  if [ -n "$PRIVATE_KEY_OVERRIDE" ]; then
+    out+="STREAM_KEY=${PRIVATE_KEY_OVERRIDE}\n"
+  fi
+  if [ -n "$STAMP_ID_OVERRIDE" ]; then
+    out+="STAMP=${STAMP_ID_OVERRIDE#0x}\n"
+  fi
+  printf '%s' "$out"
 }
 
 # --- Default ports ---
@@ -223,6 +319,12 @@ get_target() {
   local value
   # Use `type` to distinguish false (boolean) from missing (null) from string
   value=$(jq -r ".services[\"$service\"] | if . == false then \"false\" elif . == null then \"localhost\" else tostring end" "$CONFIG_FILE")
+  # --host overrides the config target for every enabled service.
+  # Disabled services (false) remain disabled.
+  if [ -n "$HOST_OVERRIDE" ] && [ "$value" != "false" ]; then
+    echo "$HOST_OVERRIDE"
+    return
+  fi
   echo "$value"
 }
 
@@ -402,8 +504,11 @@ log_error() {
 print_services() {
   echo ""
   echo "Profile: $PROFILE  (env: $ENV_FILE)"
-  if [ "$PORT_PREFIX" != "0" ]; then
-    echo "Port prefix: \"$PORT_PREFIX\" (prepended to defaults; explicit env values win)"
+  if [ -n "$HOST_OVERRIDE" ]; then
+    echo "Host override: $HOST_OVERRIDE  (config.json targets ignored for enabled services)"
+  fi
+  if [ "$PORT_SLOT" != "0" ]; then
+    echo "Port slot: $PORT_SLOT (defaults shifted by slot*10; authoritative — env values ignored)"
     echo "  bee-uploader  api=${BEE_UPLOADER_API_PORT:-?}  p2p=${BEE_UPLOADER_P2P_PORT:-?}"
     echo "  bee-gateway   api=${BEE_GATEWAY_API_PORT:-?}  p2p=${BEE_GATEWAY_P2P_PORT:-?}"
     echo "  stream-uplder api=${API_PORT:-?}"

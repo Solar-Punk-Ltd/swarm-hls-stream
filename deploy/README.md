@@ -74,7 +74,7 @@ Single `.env` in monorepo root, shared by dev and deploy. See [.env.sample](../.
 ### deploy.sh
 
 ```bash
-deploy.sh [--profile=<name>] [--portPrefix=<N>] [service...]
+deploy.sh [--profile=<name>] [--portSlot=<N>] [--host=<target>] [service...]
 ```
 
 ```bash
@@ -82,8 +82,10 @@ deploy.sh bee-uploader                              # just the bee node (default
 deploy.sh srs stream-uploader                       # just the streaming stack (default profile)
 deploy.sh                                           # everything enabled in config.json (default profile)
 deploy.sh --profile=streamer1                       # full stack as isolated streamer1 instance
-deploy.sh --profile=streamer1 --portPrefix=1        # ...prefix '1' on missing default ports
-deploy.sh --profile=streamer2 --portPrefix=2        # streamer2 with prefix '2'
+deploy.sh --profile=streamer1 --portSlot=1          # ...slot 1: every default port shifted by +10
+deploy.sh --profile=streamer2 --portSlot=2          # streamer2 with slot 2 (+20)
+deploy.sh --host=localhost                          # ignore config.json targets, deploy everything locally
+deploy.sh --host=user@server                        # ignore config.json targets, deploy everything to user@server
 ```
 
 > Always run with bash: `bash ./deploy/scripts/deploy.sh ...` or `./deploy/scripts/deploy.sh ...`. Invoking it via `sh` (POSIX) breaks bash-only features used in the script.
@@ -95,36 +97,51 @@ A profile is a deployment instance — same topology (from `config.json`), separ
 - **Docker compose project name** (`-p <profile>`) — namespaces containers and named volumes (`streamer1-bee-uploader-1`, `streamer1_srs-media`, ...).
 - **Env file** at `<repo-root>/.env.<profile>` — required when `--profile` is given (no silent fallback to `.env`).
 - **Bee data dir** (set `BEE_UPLOADER_DATA_DIR=./data/bee-uploader-<profile>` etc. in the profile env).
-- **Host ports** — see `--portPrefix` below for the easy way; or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
+- **Host ports** — see `--portSlot` below for the easy way; or set `BEE_UPLOADER_API_PORT`, `API_PORT`, `SRS_*_PORT`, ... explicitly in `.env.<profile>`.
 - **Remote dir** when targets are SSH hosts: `~/swarm-hls-stream-<profile>`.
 
-#### --portPrefix
+#### --portSlot
 
-`--portPrefix=<digit>` (single digit, 1-9) **prepends** that digit to the *default* value of every port var the deploy knows about. When the flag is given it is **authoritative** — any port values present in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portPrefix=0`) to fall back to env-file values.
+`--portSlot=<N>` (integer 1-999) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-8), so two profiles can never collide on a port. When the flag is given it is **authoritative** — any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
 
-| Var                   | Default | `--portPrefix=1` | `--portPrefix=2` | `--portPrefix=3` |
-| --------------------- | ------: | ---------------: | ---------------: | ---------------: |
-| BEE_UPLOADER_API_PORT |    1633 |            11633 |            21633 |            31633 |
-| BEE_UPLOADER_P2P_PORT |    1634 |            11634 |            21634 |            31634 |
-| BEE_GATEWAY_API_PORT  |    1733 |            11733 |            21733 |            31733 |
-| BEE_GATEWAY_P2P_PORT  |    1734 |            11734 |            21734 |            31734 |
-| API_PORT              |    3000 |            13000 |            23000 |            33000 |
-| SRS_SRT_PORT          |   10080 |          110080* |          210080* |          310080* |
-| SRS_RTMP_PORT         |    1935 |            11935 |            21935 |            31935 |
-| SRS_HTTP_PORT         |    8080 |            18080 |            28080 |            38080 |
-
-*`SRS_SRT_PORT`'s default is already 5 digits, so prepending pushes it past 65535. Set `SRS_SRT_PORT` explicitly in `.env.<profile>` (e.g. `10080`, `20080`, ...) — the script will use that value instead of trying to prefix the default.
+| Var                   | Default | `--portSlot=1` | `--portSlot=2` | `--portSlot=999` |
+| --------------------- | ------: | -------------: | -------------: | ---------------: |
+| API_PORT              |   10000 |          10010 |          10020 |            19990 |
+| SRS_SRT_PORT          |   10001 |          10011 |          10021 |            19991 |
+| SRS_RTMP_PORT         |   10002 |          10012 |          10022 |            19992 |
+| SRS_HTTP_PORT         |   10003 |          10013 |          10023 |            19993 |
+| CLIENT_PORT           |   10004 |          10014 |          10024 |            19994 |
+| BEE_UPLOADER_API_PORT |   10005 |          10015 |          10025 |            19995 |
+| BEE_UPLOADER_P2P_PORT |   10006 |          10016 |          10026 |            19996 |
+| BEE_GATEWAY_API_PORT  |   10007 |          10017 |          10027 |            19997 |
+| BEE_GATEWAY_P2P_PORT  |   10008 |          10018 |          10028 |            19998 |
 
 `SRS_ADAPTER_PORT` is auto-mirrored to whatever `API_PORT` resolves to, so SRS webhooks always reach the right uploader.
 
-`--portPrefix=0` (the default) is a no-op — defaults flow through compose as before.
+`--portSlot=0` (the default) is a no-op — defaults flow through compose as before.
+
+#### --host
+
+`--host=<target>` ignores the per-service targets in `config.json` and sends every **enabled** service to `<target>`. `<target>` can be:
+
+- `localhost` — run everything in Docker on this machine.
+- `user@host` or an SSH alias from `~/.ssh/config` — deploy via SSH + rsync to that host.
+
+Services set to `false` in `config.json` stay disabled. The flag is handy for one-shot deploys to a host that isn't your committed topology (e.g. validating a remote server, or moving a profile to localhost without editing `config.json`):
+
+```bash
+deploy.sh --host=localhost --profile=streamer1 --portSlot=1
+deploy.sh --host=my-staging-box stream-uploader bee-uploader
+```
+
+Because every service resolves to the same target under `--host`, the usual co-location constraints (e.g. `srs` + `stream-uploader`) are satisfied automatically.
 
 Setup for a new profile:
 
 ```bash
 cp .env .env.streamer1
-$EDITOR .env.streamer1   # set STAMP + STREAM_KEY + *_DATA_DIR (+ SRS_SRT_PORT if needed)
-deploy.sh --profile=streamer1 --portPrefix=1
+$EDITOR .env.streamer1   # set STAMP + STREAM_KEY + *_DATA_DIR
+deploy.sh --profile=streamer1 --portSlot=1
 ```
 
 Without `--profile` everything works exactly as before — implicit `default` profile, `.env`, unprefixed `~/swarm-hls-stream`, no port shift.
@@ -244,13 +261,13 @@ The React client is bundled into a multi-stage docker image: Node builds `packag
 ```bash
 # Spin up two viewer instances side-by-side. Each profile env file sets its own
 # VITE_APP_OWNER + STREAM_LIST_TOPIC pointing at a different streamer's feed.
-deploy.sh --profile=viewer1 --portPrefix=4 client bee-gateway
-deploy.sh --profile=viewer2 --portPrefix=5 client bee-gateway
+deploy.sh --profile=viewer1 --portSlot=4 client bee-gateway
+deploy.sh --profile=viewer2 --portSlot=5 client bee-gateway
 ```
 
-Effective host ports for viewer1 (prefix `4`):
+Effective host ports for viewer1 (slot `4`):
 
-- client → `http://localhost:45173`
-- bee-gateway API → `http://localhost:41733` (also reachable via `http://localhost:45173/bee/`)
+- client → `http://localhost:10044`
+- bee-gateway API → `http://localhost:10047` (also reachable via `http://localhost:10044/bee/`)
 
 Health check (`./deploy/scripts/health.sh --profile=viewer1`) hits `/` on the client port and `/health` on the gateway port.
