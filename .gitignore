@@ -10,5 +10,5 @@ nodes/data/
 nodes/backups/
 deploy/data/
 deploy/config.json
-deploy/.env.deploy
+deploy/.env.deploy*
 *.tsbuildinfo
