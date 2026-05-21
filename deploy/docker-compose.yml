@@ -9,7 +9,7 @@ services:
 
   bee-uploader:
     image: ethersphere/bee:2.7.1
-    profiles: [ "bee-uploader" ]
+    profiles: ["bee-uploader"]
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -30,7 +30,7 @@ services:
 
   bee-gateway:
     image: ethersphere/bee:2.7.1
-    profiles: [ "bee-gateway" ]
+    profiles: ["bee-gateway"]
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -56,7 +56,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.uploader
-    profiles: [ "stream-uploader" ]
+    profiles: ["stream-uploader"]
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -106,7 +106,7 @@ services:
 
   srs:
     image: ossrs/srs:6
-    profiles: [ "srs" ]
+    profiles: ["srs"]
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -119,7 +119,7 @@ services:
       - ../engines/srs/srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
       - ../engines/srs/entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro
       - srs-media:/usr/local/srs/objs/nginx/html
-    entrypoint: [ "/bin/bash", "/usr/local/srs/conf/entrypoint.sh" ]
+    entrypoint: ["/bin/bash", "/usr/local/srs/conf/entrypoint.sh"]
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
       SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}

@@ -345,6 +345,13 @@ generate_env_overrides() {
       adapter_host=$(resolve_adapter_host)
       overrides="${overrides}SRS_ADAPTER_HOST=${adapter_host}\n"
     fi
+    if [ "$svc" = "$SVC_CLIENT" ]; then
+      # Force the dockerized client bundle to call back to its own origin via
+      # nginx's /bee/ proxy. The root .env may set VITE_READER_BEE_URL to a
+      # local-dev value (e.g. http://localhost:1653), which would otherwise get
+      # baked into the Vite build and break the deployed viewer.
+      overrides="${overrides}VITE_READER_BEE_URL=/bee\n"
+    fi
   done
 
   # printf '%b' interprets backslash escapes in $overrides — and unlike `echo -e`
@@ -373,8 +380,9 @@ deploy_target() {
     # Init bee dirs
     init_bee_dirs "$target" "${services[@]}"
 
-    # Write overrides to temp file
-    local override_file="$DEPLOY_DIR/.env.deploy"
+    # Write overrides to per-profile temp file (concurrent group deploys would
+    # otherwise race on a single shared .env.deploy and clobber each other's ports).
+    local override_file="$DEPLOY_DIR/.env.deploy.$PROFILE"
     printf '%b' "$overrides" > "$override_file"
 
     # Export overrides into current env for compose
@@ -403,7 +411,7 @@ deploy_target() {
     sync_to_remote "$target" "${services[@]}"
     init_bee_dirs "$target" "${services[@]}"
 
-    # Write overrides into remote .env.deploy
+    # Write overrides into remote per-profile .env.deploy.<profile>
     local remote_compose_files project_flag
     remote_compose_files=$(build_compose_files "$REMOTE_BASE/deploy")
     project_flag=$(compose_project_flag)
@@ -412,21 +420,21 @@ deploy_target() {
       cd $REMOTE_BASE/deploy
 
       # Write env overrides
-      cat > .env.deploy <<'ENVEOF'
+      cat > .env.deploy.$PROFILE <<'ENVEOF'
 $(printf '%b' "$overrides")
 ENVEOF
 
       # Source overrides into env, then run compose with root .env
       set -a
-      [ -s .env.deploy ] && source .env.deploy
+      [ -s .env.deploy.$PROFILE ] && source .env.deploy.$PROFILE
       set +a
 
       chmod +x scripts/*.sh
       OVERRIDE_FLAG=""
-      if [ -s .env.deploy ]; then OVERRIDE_FLAG="--env-file .env.deploy"; fi
+      if [ -s .env.deploy.$PROFILE ]; then OVERRIDE_FLAG="--env-file .env.deploy.$PROFILE"; fi
       docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env \$OVERRIDE_FLAG $profiles up -d --build
 
-      rm -f .env.deploy
+      rm -f .env.deploy.$PROFILE
       echo "Stack started on \$(hostname)"
 REMOTE_SCRIPT
 

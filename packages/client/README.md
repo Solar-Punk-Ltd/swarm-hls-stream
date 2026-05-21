@@ -37,11 +37,11 @@ In production builds or when pointing to a remote gateway, requests go directly 
 
 ## Environment Variables (in root `.env`)
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `VITE_READER_BEE_URL` | Yes | Bee node URL for fetching streams |
-| `VITE_APP_OWNER` | Yes | Feed owner address (hex, no 0x prefix) |
-| `VITE_APP_RAW_TOPIC` | Yes | Feed topic for the stream catalog — must match `STREAM_LIST_TOPIC` |
+| Variable              | Required | Description                                                        |
+| --------------------- | -------- | ------------------------------------------------------------------ |
+| `VITE_READER_BEE_URL` | Yes      | Bee node URL for fetching streams                                  |
+| `VITE_APP_OWNER`      | Yes      | Feed owner address (hex, no 0x prefix)                             |
+| `VITE_APP_RAW_TOPIC`  | Yes      | Feed topic for the stream catalog — must match `STREAM_LIST_TOPIC` |
 
 ## Features
 
