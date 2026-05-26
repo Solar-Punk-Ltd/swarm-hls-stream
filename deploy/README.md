@@ -26,12 +26,12 @@ Creates `config.json`, `.env`, and builds packages. Then edit both files:
 
 Each service maps to a target:
 
-| Value | Meaning |
-| --- | --- |
-| `"localhost"` | Run in Docker on this machine |
-| `"user@host"` | Deploy via SSH + rsync to a remote server |
-| `"native"` | Service runs as a host process outside Docker — deploy skips it |
-| `false` | Disabled, not deployed |
+| Value         | Meaning                                                         |
+| ------------- | --------------------------------------------------------------- |
+| `"localhost"` | Run in Docker on this machine                                   |
+| `"user@host"` | Deploy via SSH + rsync to a remote server                       |
+| `"native"`    | Service runs as a host process outside Docker — deploy skips it |
+| `false`       | Disabled, not deployed                                          |
 
 ```json
 {
@@ -246,8 +246,8 @@ OBS/FFmpeg ──SRT──> SRS (port 10080)
 
 | Service           | Image                            | Description                                          |
 | ----------------- | -------------------------------- | ---------------------------------------------------- |
-| `bee-uploader`    | `ethersphere/bee:2.7.1`          | Bee node for uploading to Swarm                      |
-| `bee-gateway`     | `ethersphere/bee:2.7.1`          | Bee node for reading (paired with `client`)          |
+| `bee-uploader`    | `ethersphere/bee:2.8.0`          | Bee node for uploading to Swarm                      |
+| `bee-gateway`     | `ethersphere/bee:2.8.0`          | Bee node for reading (paired with `client`)          |
 | `stream-uploader` | Built from `Dockerfile.uploader` | Receives segments, uploads to Swarm                  |
 | `srs`             | `ossrs/srs:6`                    | SRT/RTMP to HLS transcoding                          |
 | `client`          | Built from `Dockerfile.client`   | React viewer (nginx) — proxies `/bee/` → bee-gateway |
