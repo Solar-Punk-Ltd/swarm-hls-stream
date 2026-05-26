@@ -8,7 +8,7 @@ services:
   # --- Bee Nodes ---
 
   bee-uploader:
-    image: ethersphere/bee:2.7.1
+    image: ethersphere/bee:2.8.0
     profiles: ["bee-uploader"]
     restart: unless-stopped
     logging: *default-logging
@@ -29,7 +29,7 @@ services:
     command: start
 
   bee-gateway:
-    image: ethersphere/bee:2.7.1
+    image: ethersphere/bee:2.8.0
     profiles: ["bee-gateway"]
     restart: unless-stopped
     logging: *default-logging
