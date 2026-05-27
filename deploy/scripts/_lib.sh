@@ -436,12 +436,26 @@ compose_project_flag() {
 
 # --- Env helpers ---
 
-# Load .env values into current shell.
+# Load .env values into current shell. Each KEY=VALUE in the file is treated
+# as a DEFAULT — anything already exported by the caller wins.
 load_env() {
   if [ -f "$ENV_FILE" ]; then
     set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
+    local line key
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        ''|\#*) continue ;;
+      esac
+      key="${line%%=*}"
+      case "$key" in
+        *' '*|*$'\t'*|'') continue ;;
+      esac
+      if [ -n "${!key+x}" ]; then
+        continue
+      fi
+      # shellcheck disable=SC2086
+      eval "$line"
+    done < "$ENV_FILE"
     set +a
   fi
 }

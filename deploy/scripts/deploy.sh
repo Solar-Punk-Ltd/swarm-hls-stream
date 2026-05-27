@@ -203,6 +203,13 @@ resolve_adapter_host() {
 
 # --- Init bee data dirs ---
 
+local_data_dir() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$DEPLOY_DIR" "$1" ;;
+  esac
+}
+
 init_bee_dirs() {
   local target="$1"
   shift
@@ -212,7 +219,7 @@ init_bee_dirs() {
     if [ "$svc" = "$SVC_BEE_UPLOADER" ]; then
       local data_dir="${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}"
       if is_local "$target"; then
-        "$ROOT_DIR/nodes/init-node.sh" "$DEPLOY_DIR/$data_dir"
+        "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
       else
         # Skip if already initialized (password file exists)
         ssh "$target" "if [ -f $REMOTE_BASE/deploy/$data_dir/password ]; then \
@@ -228,7 +235,7 @@ init_bee_dirs() {
     if [ "$svc" = "$SVC_BEE_GATEWAY" ]; then
       local data_dir="${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}"
       if is_local "$target"; then
-        "$ROOT_DIR/nodes/init-node.sh" "$DEPLOY_DIR/$data_dir"
+        "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
       else
         ssh "$target" "if [ -f $REMOTE_BASE/deploy/$data_dir/password ]; then \
           echo 'Node already initialized: $data_dir'; \
