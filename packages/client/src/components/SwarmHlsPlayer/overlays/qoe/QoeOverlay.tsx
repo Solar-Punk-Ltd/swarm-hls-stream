@@ -115,6 +115,8 @@ export const QoeOverlay: React.FC<QoeOverlayProps> = ({ metrics }) => {
         onMouseDown={onMouseDown}
         onClick={handleClick}
         title="Toggle metrics (Q) · Drag to reposition"
+        aria-label={visible ? 'Hide QoE metrics' : 'Show QoE metrics'}
+        aria-pressed={visible}
       >
         <span className="qoe-btn__chart">
           <BarChartIcon />
