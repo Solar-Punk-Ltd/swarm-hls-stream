@@ -110,6 +110,13 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
 
     let hls: Hls | null = null;
 
+    const onHlsPause = () => {
+      hls?.stopLoad();
+    };
+    const onHlsPlay = () => {
+      hls?.startLoad();
+    };
+
     if (Hls.isSupported()) {
       hls = new Hls({
         pLoader: CustomManifestLoader,
@@ -128,13 +135,8 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         setRestartTrigger((prev) => prev + 1);
       };
 
-      video.addEventListener('pause', () => {
-        hls?.stopLoad();
-      });
-
-      video.addEventListener('play', () => {
-        hls?.startLoad();
-      });
+      video.addEventListener('pause', onHlsPause);
+      video.addEventListener('play', onHlsPlay);
 
       hls.on(Events.LEVEL_SWITCHED, () => {
         metrics.qualitySwitchCount += 1;
@@ -256,6 +258,8 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       video.removeEventListener('waiting', onWaiting);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('ended', onEnded);
+      video.removeEventListener('pause', onHlsPause);
+      video.removeEventListener('play', onHlsPlay);
       clearInterval(interval);
 
       if (hls) {
