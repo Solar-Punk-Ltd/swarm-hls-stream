@@ -1,4 +1,4 @@
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Button, ButtonVariant } from '@/components/Button/Button';
 import { SwarmHlsPlayer } from '@/components/SwarmHlsPlayer/SwarmHlsPlayer';
@@ -19,6 +19,7 @@ export function StreamWatcher() {
     owner: string;
     topic: string;
   }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
   const handleBackButtonClick = () => {
@@ -29,9 +30,11 @@ export function StreamWatcher() {
     return <div>Invalid stream</div>;
   }
 
+  const enableQoeOverlay = searchParams.get('qoe') === '1';
+
   return (
     <div className="stream-item-page">
-      <SwarmHlsPlayer owner={owner} topic={topic} mediatype={mediatype} />
+      <SwarmHlsPlayer owner={owner} topicString={topic} mediaType={mediatype} enableQoeOverlay={enableQoeOverlay} />
       <Button variant={ButtonVariant.SECONDARY} onClick={() => handleBackButtonClick()}>
         Back
       </Button>

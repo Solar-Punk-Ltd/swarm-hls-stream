@@ -1,0 +1,184 @@
+.qoe-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 100;
+  width: 32px;
+  height: 32px;
+  pointer-events: none;
+  user-select: none;
+}
+
+.qoe-btn {
+  pointer-events: all;
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: grab;
+  transition: background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease,
+    color 0.15s ease;
+
+  &:focus {
+    outline: none;
+  }
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.78);
+    color: #fff;
+
+    .qoe-btn__chart {
+      opacity: 0.2;
+      transform: scale(0.8);
+    }
+    .qoe-btn__move {
+      opacity: 0.85;
+      transform: scale(1);
+    }
+  }
+
+  &--active {
+    background: rgba(30, 100, 230, 0.62);
+    border-color: rgba(120, 170, 255, 0.45);
+    color: #fff;
+  }
+
+  &--dragging {
+    cursor: grabbing;
+    background: rgba(0, 0, 0, 0.9);
+    border-color: rgba(255, 255, 255, 0.4);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.35);
+    transform: scale(1.1);
+
+    .qoe-btn__chart {
+      opacity: 0;
+      transform: scale(0.65);
+    }
+    .qoe-btn__move {
+      opacity: 1;
+      transform: scale(1.05);
+      color: #fff;
+    }
+  }
+
+  &__chart,
+  &__move {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+
+  &__chart {
+    opacity: 1;
+    transform: scale(1);
+  }
+  &__move {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+
+  &__live {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 5px #4ade80;
+    animation: qoe-pulse 2s ease-in-out infinite;
+    pointer-events: none;
+  }
+}
+
+.qoe-overlay__panel {
+  pointer-events: all;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 8px 10px;
+  min-width: 220px;
+  max-height: 70vh;
+  overflow-y: auto;
+  backdrop-filter: blur(4px);
+  color: #e8e8e8;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.qoe-overlay__header {
+  font-size: 12px;
+  font-weight: bold;
+  color: #fff;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.qoe-overlay__section {
+  margin-bottom: 6px;
+}
+
+.qoe-overlay__section-title {
+  color: #aaa;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+  margin-top: 4px;
+}
+
+.qoe-overlay__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1px 0;
+
+  &--bad .qoe-overlay__value {
+    color: #ff6b6b;
+  }
+}
+
+.qoe-overlay__label {
+  color: #bbb;
+  white-space: nowrap;
+}
+.qoe-overlay__value {
+  color: #fff;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.qoe-overlay__footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  padding-top: 4px;
+  margin-top: 4px;
+  color: #aaa;
+  font-size: 10px;
+  text-align: right;
+}
+
+@keyframes qoe-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}

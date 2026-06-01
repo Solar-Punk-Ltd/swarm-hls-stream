@@ -4,6 +4,8 @@ import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
 import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
 
+import { QoeOverlay } from './overlays/qoe/QoeOverlay';
+import { initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
 import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
 import { ManifestStateManager } from './ManifestManagement';
 
@@ -11,24 +13,94 @@ import './SwarmHlsPlayer.scss';
 
 interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   owner: string;
-  topic: string;
-  mediatype: MediaType;
+  topicString: string;
+  mediaType: MediaType;
+  enableQoeOverlay?: boolean;
 }
 
 export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   owner,
-  topic,
-  mediatype,
+  topicString,
+  mediaType,
   autoPlay = true,
   controls = true,
+  enableQoeOverlay = false,
   ...videoProps
 }) => {
   const [restartTrigger, setRestartTrigger] = useState(0);
+  const [metrics, setMetrics] = useState<QoeMetrics>(initialMetrics);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+
+    const sessionStart = performance.now();
+    const metrics: QoeMetrics = initialMetrics();
+
+    let playbackStartTime: number | null = null;
+    let accPlaybackMs = 0;
+    let rebufferStart: number | null = null;
+    let recoveryStart: number | null = null;
+    let firstPlaying = false;
+
+    const flush = () => setMetrics({ ...metrics });
+
+    const onLoadedData = () => {
+      if (metrics.firstFrameTimeMs === null) {
+        metrics.firstFrameTimeMs = performance.now() - sessionStart;
+        flush();
+      }
+    };
+
+    const onPlaying = () => {
+      if (!firstPlaying) {
+        firstPlaying = true;
+        metrics.startupTimeMs = performance.now() - sessionStart;
+      }
+      if (rebufferStart !== null) {
+        metrics.rebufferingDurationMs += performance.now() - rebufferStart;
+        rebufferStart = null;
+      }
+      if (recoveryStart !== null) {
+        metrics.lastRecoveryTimeMs = performance.now() - recoveryStart;
+        metrics.reconnectSuccesses += 1;
+        recoveryStart = null;
+      }
+      playbackStartTime = performance.now();
+      flush();
+    };
+
+    const onWaiting = () => {
+      if (firstPlaying && rebufferStart === null) {
+        rebufferStart = performance.now();
+        metrics.rebufferingCount += 1;
+        metrics.hadRebuffering = true;
+      }
+      if (playbackStartTime !== null) {
+        accPlaybackMs += performance.now() - playbackStartTime;
+        playbackStartTime = null;
+      }
+      flush();
+    };
+
+    const onPause = () => {
+      if (playbackStartTime !== null) {
+        accPlaybackMs += performance.now() - playbackStartTime;
+        playbackStartTime = null;
+      }
+    };
+
+    const onEnded = () => {
+      metrics.sessionCompleted = true;
+      flush();
+    };
+
+    video.addEventListener('loadeddata', onLoadedData);
+    video.addEventListener('playing', onPlaying);
+    video.addEventListener('waiting', onWaiting);
+    video.addEventListener('pause', onPause);
+    video.addEventListener('ended', onEnded);
 
     let hls: Hls | null = null;
 
@@ -58,10 +130,48 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         hls?.startLoad();
       });
 
+      hls.on(Events.LEVEL_SWITCHED, () => {
+        metrics.qualitySwitchCount += 1;
+        flush();
+      });
+
+      const fragBitrateSamples: number[] = [];
+      hls.on(Events.FRAG_LOADED, (_event, data) => {
+        const { frag } = data;
+        const loaded: number = frag.stats?.loaded ?? 0;
+        if (frag.duration > 0 && loaded > 0) {
+          const bps = (loaded * 8) / frag.duration;
+          fragBitrateSamples.push(bps);
+
+          if (fragBitrateSamples.length > 3) {
+            fragBitrateSamples.shift();
+          }
+
+          const avg = fragBitrateSamples.reduce((a, b) => a + b, 0) / fragBitrateSamples.length;
+          metrics.bitrateKbps = Math.round(avg / 1000);
+          flush();
+        }
+      });
+
       hls.on(Events.ERROR, (_event, data) => {
-        console.error('HLS.js error:', data);
+        if (data.fatal) {
+          console.error('HLS.js fatal error:', data.type, data.details);
+        } else {
+          console.warn('HLS.js non-fatal error:', data.details, data.error?.message ?? '');
+          return;
+        }
 
         if (data.fatal) {
+          metrics.fatalErrorCount += 1;
+          if (!firstPlaying) {
+            metrics.startupFailed = true;
+          }
+          if (data.type === ErrorTypes.NETWORK_ERROR) {
+            metrics.reconnectAttempts += 1;
+            recoveryStart = performance.now();
+          }
+          flush();
+
           if (data.details === ErrorDetails.LEVEL_PARSING_ERROR) {
             console.error('Media sequence mismatch detected, reloading stream.');
             restartStream();
@@ -86,7 +196,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       });
 
       hls.attachMedia(video);
-      hls.loadSource(`${owner}/${topic}`);
+      hls.loadSource(`${owner}/${topicString}`);
 
       if (autoPlay) {
         hls.on(Events.MANIFEST_PARSED, () => {
@@ -99,20 +209,71 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       console.error('HLS is not supported in this browser.');
     }
 
-    return () => {
-      if (hls) {
-        const t = Topic.fromString(topic);
-        ManifestStateManager.getInstance().clear(t.toString());
+    const interval = setInterval(() => {
+      let total = accPlaybackMs;
+      if (playbackStartTime !== null) {
+        total += performance.now() - playbackStartTime;
+      }
+      metrics.playbackTimeMs = total;
 
+      if (video.videoWidth && video.videoHeight) {
+        metrics.resolution = `${video.videoWidth}×${video.videoHeight}`;
+      }
+
+      metrics.rebufferingRatio = total > 0 ? metrics.rebufferingDurationMs / total : 0;
+      const elapsedMin = total / 60_000;
+      metrics.qualitySwitchPerMin = elapsedMin > 0 ? metrics.qualitySwitchCount / elapsedMin : 0;
+
+      const vq = video.getVideoPlaybackQuality?.();
+      if (vq) {
+        metrics.droppedFrames = vq.droppedVideoFrames;
+      }
+
+      metrics.reconnectSuccessRate =
+        metrics.reconnectAttempts > 0 ? metrics.reconnectSuccesses / metrics.reconnectAttempts : 0;
+
+      if (hls) {
+        const latency = hls.latency;
+        metrics.liveLatencySec =
+          typeof latency === 'number' && Number.isFinite(latency) && latency > 0 ? latency : null;
+      }
+
+      flush();
+    }, 500);
+
+    return () => {
+      video.removeEventListener('loadeddata', onLoadedData);
+      video.removeEventListener('playing', onPlaying);
+      video.removeEventListener('waiting', onWaiting);
+      video.removeEventListener('pause', onPause);
+      video.removeEventListener('ended', onEnded);
+      clearInterval(interval);
+
+      if (hls) {
+        const topic = Topic.fromString(topicString);
+        ManifestStateManager.getInstance().clear(topic.toString());
         hls.destroy();
         hls = null;
       }
     };
   }, [autoPlay, restartTrigger]);
 
-  return mediatype === MEDIA_TYPE_VIDEO ? (
-    <video ref={videoRef} controls={controls} autoPlay={autoPlay} muted playsInline {...videoProps} />
-  ) : (
-    <audio className="swarm-hls-player-audio" ref={videoRef} controls={controls} autoPlay={autoPlay} />
+  const videoEl =
+    mediaType === MEDIA_TYPE_VIDEO ? (
+      <video ref={videoRef} controls={controls} autoPlay={autoPlay} muted playsInline {...videoProps} />
+    ) : (
+      <audio
+        className="swarm-hls-player-audio"
+        ref={videoRef as React.RefObject<HTMLAudioElement>}
+        controls={controls}
+        autoPlay={autoPlay}
+      />
+    );
+
+  return (
+    <div className="swarm-hls-player-wrapper">
+      {videoEl}
+      {enableQoeOverlay && <QoeOverlay metrics={metrics} />}
+    </div>
   );
 };
