@@ -4,33 +4,48 @@ import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
 import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
 
+import { QoeOverlay } from './overlays/qoe/QoeOverlay';
+import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
 import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
 import { ManifestStateManager } from './ManifestManagement';
 
 import './SwarmHlsPlayer.scss';
 
+// TODO Consider switching to React.MediaHTMLAttributes<HTMLMediaElement> to support <audio> as well
 interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   owner: string;
-  topic: string;
-  mediatype: MediaType;
+  topicString: string;
+  mediaType: MediaType;
+  enableQoeOverlay?: boolean;
 }
 
 export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   owner,
-  topic,
-  mediatype,
+  topicString,
+  mediaType,
   autoPlay = true,
   controls = true,
+  enableQoeOverlay = false,
   ...videoProps
 }) => {
   const [restartTrigger, setRestartTrigger] = useState(0);
+  const [metrics, setMetrics] = useState<QoeMetrics>(initialMetrics);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video) {
+      return;
+    }
 
     let hls: Hls | null = null;
+
+    const onHlsPause = () => {
+      hls?.stopLoad();
+    };
+    const onHlsPlay = () => {
+      hls?.startLoad();
+    };
 
     if (Hls.isSupported()) {
       hls = new Hls({
@@ -50,43 +65,41 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         setRestartTrigger((prev) => prev + 1);
       };
 
-      video.addEventListener('pause', () => {
-        hls?.stopLoad();
-      });
-
-      video.addEventListener('play', () => {
-        hls?.startLoad();
-      });
+      video.addEventListener('pause', onHlsPause);
+      video.addEventListener('play', onHlsPlay);
 
       hls.on(Events.ERROR, (_event, data) => {
-        console.error('HLS.js error:', data);
-
         if (data.fatal) {
-          if (data.details === ErrorDetails.LEVEL_PARSING_ERROR) {
-            console.error('Media sequence mismatch detected, reloading stream.');
-            restartStream();
-            return;
-          }
+          console.error('HLS.js fatal error:', data.type, data.details);
+        } else {
+          console.warn('HLS.js non-fatal error:', data.details, data.error?.message ?? '');
+          return;
+        }
 
-          switch (data.type) {
-            case ErrorTypes.NETWORK_ERROR:
-              console.warn('Fatal network error');
-              restartStream();
-              break;
-            case ErrorTypes.MEDIA_ERROR:
-              console.warn('Fatal media error');
-              hls?.recoverMediaError();
-              break;
-            default:
-              console.error('Unrecoverable fatal error. Destroying and restarting.');
-              restartStream();
-              break;
-          }
+        if (data.details === ErrorDetails.LEVEL_PARSING_ERROR) {
+          console.error('Media sequence mismatch detected, reloading stream.');
+          restartStream();
+          return;
+        }
+
+        switch (data.type) {
+          case ErrorTypes.NETWORK_ERROR:
+            console.warn('Fatal network error');
+            restartStream();
+            break;
+          case ErrorTypes.MEDIA_ERROR:
+            console.warn('Fatal media error');
+            hls?.recoverMediaError();
+            break;
+          default:
+            console.error('Unrecoverable fatal error. Destroying and restarting.');
+            restartStream();
+            break;
         }
       });
 
       hls.attachMedia(video);
-      hls.loadSource(`${owner}/${topic}`);
+      hls.loadSource(`${owner}/${topicString}`);
 
       if (autoPlay) {
         hls.on(Events.MANIFEST_PARSED, () => {
@@ -99,20 +112,43 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       console.error('HLS is not supported in this browser.');
     }
 
-    return () => {
-      if (hls) {
-        const t = Topic.fromString(topic);
-        ManifestStateManager.getInstance().clear(t.toString());
+    const detachQoe = enableQoeOverlay ? attachQoeTracking(video, hls, setMetrics) : null;
 
-        hls.destroy();
-        hls = null;
+    return () => {
+      video.removeEventListener('pause', onHlsPause);
+      video.removeEventListener('play', onHlsPlay);
+      detachQoe?.();
+
+      if (hls) {
+        try {
+          const topic = Topic.fromString(topicString);
+          ManifestStateManager.getInstance().clear(topic.toString());
+        } catch (error) {
+          console.warn('Failed to clear manifest state for topic:', topicString, error);
+        } finally {
+          hls.destroy();
+          hls = null;
+        }
       }
     };
-  }, [autoPlay, restartTrigger]);
+  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString]);
 
-  return mediatype === MEDIA_TYPE_VIDEO ? (
-    <video ref={videoRef} controls={controls} autoPlay={autoPlay} muted playsInline {...videoProps} />
-  ) : (
-    <audio className="swarm-hls-player-audio" ref={videoRef} controls={controls} autoPlay={autoPlay} />
+  const videoEl =
+    mediaType === MEDIA_TYPE_VIDEO ? (
+      <video ref={videoRef} controls={controls} autoPlay={autoPlay} muted playsInline {...videoProps} />
+    ) : (
+      <audio
+        className="swarm-hls-player-audio"
+        ref={videoRef as React.RefObject<HTMLAudioElement>}
+        controls={controls}
+        autoPlay={autoPlay}
+      />
+    );
+
+  return (
+    <div className="swarm-hls-player-wrapper">
+      {videoEl}
+      {enableQoeOverlay && <QoeOverlay metrics={metrics} />}
+    </div>
   );
 };

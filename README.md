@@ -54,6 +54,10 @@ pnpm node:wallets                  # BZZ + xDAI balances
 
 All commands auto-detect the bee URL from `deploy/config.json`. Override with `--url <url>`.
 
+## QoE Overlay
+
+The player supports an in-browser quality-of-experience overlay — see [client/README.md#qoe-overlay](packages/client/README.md#qoe-overlay).
+
 ## Configuration
 
 A single `.env` file in the monorepo root configures everything. See [.env.sample](.env.sample).

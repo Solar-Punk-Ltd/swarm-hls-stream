@@ -50,6 +50,10 @@ In production builds or when pointing to a remote gateway, requests go directly 
 - **HLS Playback** — Video and audio stream playback via custom hls.js loaders
 - **Gateway Selector** — Runtime Bee node URL switching via UI modal, persisted to localStorage
 
+## QoE Overlay
+
+Append `?qoe=1` to a stream watcher URL to enable a draggable overlay with playback quality metrics (startup time, rebuffering, bitrate, dropped frames, live latency, etc.). Press `Q` to toggle visibility.
+
 ## Custom hls.js Loaders
 
 Standard hls.js expects static manifest URLs. On Swarm, every manifest update produces a new content hash. The client solves this with custom loaders:
