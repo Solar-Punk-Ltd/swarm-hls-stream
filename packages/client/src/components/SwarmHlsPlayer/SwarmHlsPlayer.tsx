@@ -11,6 +11,7 @@ import { ManifestStateManager } from './ManifestManagement';
 
 import './SwarmHlsPlayer.scss';
 
+// TODO Consider switching to React.MediaHTMLAttributes<HTMLMediaElement> to support <audio> as well
 interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   owner: string;
   topicString: string;
