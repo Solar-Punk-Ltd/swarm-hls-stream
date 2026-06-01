@@ -80,7 +80,7 @@ export const AppContextProvider = ({ children }: Props) => {
     }
   };
 
-  const initAppState = async () => {
+  const initAppState = useCallback(async () => {
     try {
       const data = await fetchAppState();
       if (Array.isArray(data)) {
@@ -89,12 +89,11 @@ export const AppContextProvider = ({ children }: Props) => {
     } catch (error) {
       console.error('Failed to fetch app state:', error);
     }
-  };
+  }, [fetchAppState]);
 
   useEffect(() => {
     initAppState();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initAppState]);
 
   return (
     <AppContext.Provider value={{ streamList, setNewStreamList, fetchAppState, gatewayUrl, setGatewayUrl }}>

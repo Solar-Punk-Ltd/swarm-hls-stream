@@ -30,8 +30,8 @@ export const QoeOverlay: React.FC<QoeOverlayProps> = ({ metrics }) => {
       return;
     }
     setPos({
-      x: window.innerWidth - DEFAULT_OVERLAY_X_OFFSET - parentBoundingRect.left,
-      y: DEFAULT_OVERLAY_Y_OFFSET - parentBoundingRect.top,
+      x: parentBoundingRect.width - DEFAULT_OVERLAY_X_OFFSET,
+      y: DEFAULT_OVERLAY_Y_OFFSET,
     });
   }, []);
 
@@ -108,6 +108,7 @@ export const QoeOverlay: React.FC<QoeOverlayProps> = ({ metrics }) => {
   return (
     <div ref={overlayRef} className="qoe-overlay" style={floatStyle}>
       <button
+        type="button"
         className={['qoe-btn', visible ? 'qoe-btn--active' : '', isDragging ? 'qoe-btn--dragging' : '']
           .filter(Boolean)
           .join(' ')}

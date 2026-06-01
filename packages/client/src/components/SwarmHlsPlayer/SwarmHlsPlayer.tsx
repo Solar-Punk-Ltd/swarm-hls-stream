@@ -44,7 +44,13 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     let recoveryStart: number | null = null;
     let firstPlaying = false;
 
-    const flush = () => setMetrics({ ...metrics });
+    const flush = () => {
+      if (!enableQoeOverlay) {
+        return;
+      }
+
+      setMetrics({ ...metrics });
+    };
 
     const onLoadedData = () => {
       if (metrics.firstFrameTimeMs === null) {
@@ -210,6 +216,9 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     }
 
     const interval = setInterval(() => {
+      if (!enableQoeOverlay) {
+        return;
+      }
       let total = accPlaybackMs;
       if (playbackStartTime !== null) {
         total += performance.now() - playbackStartTime;
@@ -256,7 +265,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         hls = null;
       }
     };
-  }, [autoPlay, restartTrigger]);
+  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString]);
 
   const videoEl =
     mediaType === MEDIA_TYPE_VIDEO ? (
