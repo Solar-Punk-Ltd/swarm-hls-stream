@@ -259,10 +259,15 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       clearInterval(interval);
 
       if (hls) {
-        const topic = Topic.fromString(topicString);
-        ManifestStateManager.getInstance().clear(topic.toString());
-        hls.destroy();
-        hls = null;
+        try {
+          const topic = Topic.fromString(topicString);
+          ManifestStateManager.getInstance().clear(topic.toString());
+        } catch (error) {
+          console.warn('Failed to clear manifest state for topic:', topicString, error);
+        } finally {
+          hls.destroy();
+          hls = null;
+        }
       }
     };
   }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString]);
