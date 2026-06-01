@@ -5,7 +5,7 @@ import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
 
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
-import { initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
+import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
 import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
 import { ManifestStateManager } from './ManifestManagement';
 
@@ -33,80 +33,9 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
-
-    const sessionStart = performance.now();
-    const metrics: QoeMetrics = initialMetrics();
-
-    let playbackStartTime: number | null = null;
-    let accPlaybackMs = 0;
-    let rebufferStart: number | null = null;
-    let recoveryStart: number | null = null;
-    let firstPlaying = false;
-
-    const flush = () => {
-      if (!enableQoeOverlay) {
-        return;
-      }
-
-      setMetrics({ ...metrics });
-    };
-
-    const onLoadedData = () => {
-      if (metrics.firstFrameTimeMs === null) {
-        metrics.firstFrameTimeMs = performance.now() - sessionStart;
-        flush();
-      }
-    };
-
-    const onPlaying = () => {
-      if (!firstPlaying) {
-        firstPlaying = true;
-        metrics.startupTimeMs = performance.now() - sessionStart;
-      }
-      if (rebufferStart !== null) {
-        metrics.rebufferingDurationMs += performance.now() - rebufferStart;
-        rebufferStart = null;
-      }
-      if (recoveryStart !== null) {
-        metrics.lastRecoveryTimeMs = performance.now() - recoveryStart;
-        metrics.reconnectSuccesses += 1;
-        recoveryStart = null;
-      }
-      playbackStartTime = performance.now();
-      flush();
-    };
-
-    const onWaiting = () => {
-      if (firstPlaying && rebufferStart === null) {
-        rebufferStart = performance.now();
-        metrics.rebufferingCount += 1;
-        metrics.hadRebuffering = true;
-      }
-      if (playbackStartTime !== null) {
-        accPlaybackMs += performance.now() - playbackStartTime;
-        playbackStartTime = null;
-      }
-      flush();
-    };
-
-    const onPause = () => {
-      if (playbackStartTime !== null) {
-        accPlaybackMs += performance.now() - playbackStartTime;
-        playbackStartTime = null;
-      }
-    };
-
-    const onEnded = () => {
-      metrics.sessionCompleted = true;
-      flush();
-    };
-
-    video.addEventListener('loadeddata', onLoadedData);
-    video.addEventListener('playing', onPlaying);
-    video.addEventListener('waiting', onWaiting);
-    video.addEventListener('pause', onPause);
-    video.addEventListener('ended', onEnded);
+    if (!video) {
+      return;
+    }
 
     let hls: Hls | null = null;
 
@@ -138,29 +67,6 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       video.addEventListener('pause', onHlsPause);
       video.addEventListener('play', onHlsPlay);
 
-      hls.on(Events.LEVEL_SWITCHED, () => {
-        metrics.qualitySwitchCount += 1;
-        flush();
-      });
-
-      const fragBitrateSamples: number[] = [];
-      hls.on(Events.FRAG_LOADED, (_event, data) => {
-        const { frag } = data;
-        const loaded: number = frag.stats?.loaded ?? 0;
-        if (frag.duration > 0 && loaded > 0) {
-          const bps = (loaded * 8) / frag.duration;
-          fragBitrateSamples.push(bps);
-
-          if (fragBitrateSamples.length > 3) {
-            fragBitrateSamples.shift();
-          }
-
-          const avg = fragBitrateSamples.reduce((a, b) => a + b, 0) / fragBitrateSamples.length;
-          metrics.bitrateKbps = Math.round(avg / 1000);
-          flush();
-        }
-      });
-
       hls.on(Events.ERROR, (_event, data) => {
         if (data.fatal) {
           console.error('HLS.js fatal error:', data.type, data.details);
@@ -169,37 +75,25 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
           return;
         }
 
-        if (data.fatal) {
-          metrics.fatalErrorCount += 1;
-          if (!firstPlaying) {
-            metrics.startupFailed = true;
-          }
-          if (data.type === ErrorTypes.NETWORK_ERROR) {
-            metrics.reconnectAttempts += 1;
-            recoveryStart = performance.now();
-          }
-          flush();
+        if (data.details === ErrorDetails.LEVEL_PARSING_ERROR) {
+          console.error('Media sequence mismatch detected, reloading stream.');
+          restartStream();
+          return;
+        }
 
-          if (data.details === ErrorDetails.LEVEL_PARSING_ERROR) {
-            console.error('Media sequence mismatch detected, reloading stream.');
+        switch (data.type) {
+          case ErrorTypes.NETWORK_ERROR:
+            console.warn('Fatal network error');
             restartStream();
-            return;
-          }
-
-          switch (data.type) {
-            case ErrorTypes.NETWORK_ERROR:
-              console.warn('Fatal network error');
-              restartStream();
-              break;
-            case ErrorTypes.MEDIA_ERROR:
-              console.warn('Fatal media error');
-              hls?.recoverMediaError();
-              break;
-            default:
-              console.error('Unrecoverable fatal error. Destroying and restarting.');
-              restartStream();
-              break;
-          }
+            break;
+          case ErrorTypes.MEDIA_ERROR:
+            console.warn('Fatal media error');
+            hls?.recoverMediaError();
+            break;
+          default:
+            console.error('Unrecoverable fatal error. Destroying and restarting.');
+            restartStream();
+            break;
         }
       });
 
@@ -217,50 +111,12 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       console.error('HLS is not supported in this browser.');
     }
 
-    const interval = setInterval(() => {
-      if (!enableQoeOverlay) {
-        return;
-      }
-      let total = accPlaybackMs;
-      if (playbackStartTime !== null) {
-        total += performance.now() - playbackStartTime;
-      }
-      metrics.playbackTimeMs = total;
-
-      if (video.videoWidth && video.videoHeight) {
-        metrics.resolution = `${video.videoWidth}×${video.videoHeight}`;
-      }
-
-      metrics.rebufferingRatio = total > 0 ? metrics.rebufferingDurationMs / total : 0;
-      const elapsedMin = total / 60_000;
-      metrics.qualitySwitchPerMin = elapsedMin > 0 ? metrics.qualitySwitchCount / elapsedMin : 0;
-
-      const vq = video.getVideoPlaybackQuality?.();
-      if (vq) {
-        metrics.droppedFrames = vq.droppedVideoFrames;
-      }
-
-      metrics.reconnectSuccessRate =
-        metrics.reconnectAttempts > 0 ? metrics.reconnectSuccesses / metrics.reconnectAttempts : 0;
-
-      if (hls) {
-        const latency = hls.latency;
-        metrics.liveLatencySec =
-          typeof latency === 'number' && Number.isFinite(latency) && latency > 0 ? latency : null;
-      }
-
-      flush();
-    }, 500);
+    const detachQoe = enableQoeOverlay ? attachQoeTracking(video, hls, setMetrics) : null;
 
     return () => {
-      video.removeEventListener('loadeddata', onLoadedData);
-      video.removeEventListener('playing', onPlaying);
-      video.removeEventListener('waiting', onWaiting);
-      video.removeEventListener('pause', onPause);
-      video.removeEventListener('ended', onEnded);
       video.removeEventListener('pause', onHlsPause);
       video.removeEventListener('play', onHlsPlay);
-      clearInterval(interval);
+      detachQoe?.();
 
       if (hls) {
         try {
