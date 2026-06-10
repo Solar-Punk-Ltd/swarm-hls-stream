@@ -13,7 +13,7 @@ import { StreamCatalog } from './StreamCatalog.js';
 
 interface RestoreState {
   streamRawTopic: string;
-  socIndex: number;
+  socIndex: number | null;
   segments: SegmentEntry[];
   hlsHeaders: string[];
   isFirstSegmentReady: boolean;
@@ -87,7 +87,7 @@ export class StreamUploader {
 
       this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
 
-      await this.uploadLiveManifest();
+      this.uploadLiveManifest();
       this.persistState();
     });
   }
@@ -116,17 +116,19 @@ export class StreamUploader {
       return;
     }
 
-    // Upload final VOD manifest
     const vodManifest = this.manifestManager.buildVODManifest();
-    await this.uploadManifestData(vodManifest);
-    await this.manifestQueue.onIdle();
+    const vodIndex = await this.uploadManifestData(vodManifest);
+    if (vodIndex === null) {
+      // Keep recovery state so finalization is retried on the next start.
+      throw new Error(`Failed to upload VOD manifest for stream ${this.streamId}`);
+    }
 
     const entry = {
       title: this.getFormattedDate(),
       owner: this.streamSigner.publicKey().address().toHex(),
       topic: this.streamRawTopic,
       state: STREAM_STATUS_VOD,
-      index: this.socIndex!,
+      index: vodIndex,
       duration: this.manifestManager.getTotalDuration(),
       mediatype: this.mediatype,
       timestamp: Date.now(),
@@ -144,7 +146,7 @@ export class StreamUploader {
       streamId: this.streamId,
       streamRawTopic: this.streamRawTopic,
       mediatype: this.mediatype,
-      socIndex: this.socIndex ?? 0,
+      socIndex: this.socIndex,
       segments: manifestState.segments,
       hlsHeaders: manifestState.hlsHeaders,
       isFirstSegmentReady: this.isFirstSegmentReady,
@@ -153,33 +155,49 @@ export class StreamUploader {
     };
   }
 
-  private async uploadLiveManifest(): Promise<void> {
+  private uploadLiveManifest(): void {
     const liveManifest = this.manifestManager.buildLiveManifest();
     if (!liveManifest) {
       return;
     }
 
-    await this.uploadManifestData(liveManifest);
+    void this.uploadManifestData(liveManifest);
   }
 
-  private async uploadManifestData(manifestContent: string): Promise<void> {
-    this.socIndex = this.socIndex === null ? 0 : this.socIndex + 1;
-    const currentIndex = this.socIndex;
-
-    this.manifestQueue.add(async () => {
+  /**
+   * Queues a manifest upload and resolves with the committed SOC index, or null on failure.
+   * The index only advances after a confirmed write — viewers walk the feed sequentially,
+   * so a skipped index would stall every player forever. A failed write is retried at the
+   * same index by the next manifest upload.
+   */
+  private async uploadManifestData(manifestContent: string): Promise<number | null> {
+    const committedIndex = await this.manifestQueue.add(async () => {
+      const nextIndex = this.socIndex === null ? 0 : this.socIndex + 1;
       const data = Buffer.from(manifestContent, 'utf-8');
-      const result = await this.uploadDataAsSoc(currentIndex, data);
+      const result = await this.uploadDataAsSoc(nextIndex, data);
 
-      if (result) {
-        if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
-          this.isFirstManifestReady = true;
-          await this.notifyStart();
-        }
-        this.logger.log(`Manifest uploaded at SOC index ${currentIndex}`);
-      } else {
-        this.logger.error(`Failed to upload manifest at SOC index ${currentIndex}`);
+      if (!result) {
+        this.logger.error(`Failed to upload manifest at SOC index ${nextIndex}, will retry at the same index`);
+        return null;
       }
+
+      this.socIndex = nextIndex;
+
+      if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
+        try {
+          await this.notifyStart();
+          this.isFirstManifestReady = true;
+        } catch (error) {
+          this.errorHandler.handleError(error, 'StreamUploader.notifyStart');
+        }
+      }
+
+      this.logger.log(`Manifest uploaded at SOC index ${nextIndex}`);
+      this.persistState();
+      return nextIndex;
     });
+
+    return committedIndex ?? null;
   }
 
   private persistState(): void {
@@ -193,7 +211,7 @@ export class StreamUploader {
   private async uploadDataAsSoc(index: number, data: Uint8Array) {
     try {
       const { uploadPayload } = this.bee.makeFeedWriter(Topic.fromString(this.streamRawTopic), this.streamSigner);
-      return retryAwaitableAsync(() => uploadPayload(this.stamp, data, { index }));
+      return await retryAwaitableAsync(() => uploadPayload(this.stamp, data, { index }));
     } catch (error) {
       this.errorHandler.handleError(error, 'StreamUploader.uploadDataAsSoc');
       return null;
@@ -202,7 +220,7 @@ export class StreamUploader {
 
   private async uploadDataToBee(data: Uint8Array) {
     try {
-      return retryAwaitableAsync(() => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1 }));
+      return await retryAwaitableAsync(() => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1 }));
     } catch (error) {
       this.errorHandler.handleError(error, 'StreamUploader.uploadDataToBee');
       return null;
