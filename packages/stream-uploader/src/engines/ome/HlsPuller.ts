@@ -59,6 +59,9 @@ export class HlsPuller {
     if (this.stopped) {
       return;
     }
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
     this.timer = setTimeout(() => {
       this.tick().catch((error) => {
         const msg = error instanceof Error ? error.message : 'Unknown error';
@@ -75,8 +78,8 @@ export class HlsPuller {
 
     // 1. Resolve the variant (media) playlist URL if we don't have it yet.
     if (!this.mediaPlaylistUrl) {
-      const resolved = await this.resolveMediaPlaylistUrl();
-      if (!resolved) {
+      const playlistUrl = await this.resolveMediaPlaylistUrl();
+      if (!playlistUrl) {
         // Either master not ready yet (404) or it's actually a media
         // playlist already (handled inside resolveMediaPlaylistUrl).
         return;
@@ -158,7 +161,6 @@ export class HlsPuller {
       this.mediaPlaylistUrl = this.masterUrl;
       logger.info(`[OME] Using master URL as media playlist for ${this.streamId}`);
     }
-    this.scheduleNext(0); // re-tick immediately to fetch segments
     return true;
   }
 
