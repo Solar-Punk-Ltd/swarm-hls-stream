@@ -33,13 +33,16 @@ describe('parseAppStream', () => {
     });
   });
 
-  it('throws when the URL has no app/stream and no streamid', () => {
-    assert.throws(() => parseAppStream('srt://127.0.0.1:10080'), /Could not parse app\/stream/);
-    assert.throws(() => parseAppStream('srt://127.0.0.1:10080/video'), /Could not parse app\/stream/);
+  it('returns undefined fields when the URL has no app/stream and no streamid', () => {
+    assert.deepEqual(parseAppStream('srt://127.0.0.1:10080'), { app: undefined, stream: undefined });
+    assert.deepEqual(parseAppStream('srt://127.0.0.1:10080/video'), { app: 'video', stream: undefined });
   });
 
-  it('throws when the streamid has no app/stream', () => {
-    assert.throws(() => parseAppStream('srt://host:10080?streamid=srt://host:10080/video'), /Could not parse app\/stream/);
+  it('returns undefined fields when the streamid has no app/stream', () => {
+    assert.deepEqual(parseAppStream('srt://host:10080?streamid=srt://host:10080/video'), {
+      app: 'video',
+      stream: undefined,
+    });
   });
 
   it('throws when the URL is not parseable', () => {
