@@ -12,7 +12,7 @@ export class HlsPuller {
   private running = false;
   private stopped = false;
   private lastSeq = -1;
-  private consecutiveNotFound = 0;
+  private notFoundSince: number | null = null;
   private readonly masterUrl: string;
   // Resolved on demand from the master playlist; OME's variant URL contains
   // a per-session id, so we discover it after the stream is ready.
@@ -20,8 +20,8 @@ export class HlsPuller {
 
   // Allow plenty of time for OME's HLS publisher to warm up. With 2s
   // SegmentDuration and a slow keyframe interval (e.g. OBS default 6s),
-  // the master playlist can take 10-15s to appear. 120 ticks * 500ms = 60s.
-  private static readonly MAX_NOT_FOUND = 120;
+  // the master playlist can take 10-15s to appear.
+  private static readonly MAX_NOT_FOUND_MS = 60_000;
 
   constructor(
     private streamId: string,
@@ -100,7 +100,7 @@ export class HlsPuller {
     if (!res.ok) {
       throw new Error(`Media playlist HTTP ${res.status}`);
     }
-    this.consecutiveNotFound = 0;
+    this.notFoundSince = null;
 
     const playlist = await res.text();
     const entries = parsePlaylist(playlist);
@@ -150,7 +150,7 @@ export class HlsPuller {
     if (!res.ok) {
       throw new Error(`Master playlist HTTP ${res.status}`);
     }
-    this.consecutiveNotFound = 0;
+    this.notFoundSince = null;
 
     const body = await res.text();
     const variantUri = parseMasterPlaylist(body);
@@ -166,8 +166,11 @@ export class HlsPuller {
   }
 
   private handleNotFound(what: string): void {
-    this.consecutiveNotFound++;
-    if (this.consecutiveNotFound > HlsPuller.MAX_NOT_FOUND) {
+    const now = Date.now();
+    if (this.notFoundSince === null) {
+      this.notFoundSince = now;
+    }
+    if (now - this.notFoundSince > HlsPuller.MAX_NOT_FOUND_MS) {
       logger.info(`[OME] ${what} gone for ${this.streamId}, halting puller`);
       this.stop();
       this.onHalt?.();
