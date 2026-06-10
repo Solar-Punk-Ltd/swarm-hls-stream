@@ -3,7 +3,12 @@ import { loadEnv, resolveBeeUploaderTarget, SVC_BEE_UPLOADER } from '../lib/conf
 import { error, header, info, table } from '../lib/output.js';
 import { buyStamp, resolveStampOptions } from '../lib/stamp.js';
 
-export async function stampBuy(urlOverride?: string, amount?: string, depth?: number, immutable?: boolean): Promise<string | null> {
+export async function stampBuy(
+  urlOverride?: string,
+  amount?: string,
+  depth?: number,
+  immutable?: boolean,
+): Promise<string | null> {
   loadEnv();
 
   const target = resolveBeeUploaderTarget();

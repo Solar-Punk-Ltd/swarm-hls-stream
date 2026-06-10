@@ -18,7 +18,7 @@ export function resolveStampOptions(amount?: string, depth?: number, immutable?:
   return {
     amount: amount ?? process.env.STAMP_AMOUNT ?? DEFAULT_AMOUNT,
     depth: depth ?? (process.env.STAMP_DEPTH ? parseInt(process.env.STAMP_DEPTH, 10) : DEFAULT_DEPTH),
-    immutable: immutable ?? (process.env.STAMP_IMMUTABLE === 'true'),
+    immutable: immutable ?? process.env.STAMP_IMMUTABLE === 'true',
   };
 }
 

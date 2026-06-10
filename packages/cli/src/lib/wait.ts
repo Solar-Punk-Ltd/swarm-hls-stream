@@ -32,11 +32,7 @@ export async function waitForNode(bee: Bee, timeoutMs = DEFAULT_TIMEOUT_MS): Pro
  * Poll until a specific stamp becomes usable.
  * Returns the usable batch.
  */
-export async function waitForStamp(
-  bee: Bee,
-  batchId: string,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<PostageBatch> {
+export async function waitForStamp(bee: Bee, batchId: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<PostageBatch> {
   const s = spinner('Waiting for stamp to become usable (this can take a few minutes)...');
   const deadline = Date.now() + timeoutMs;
 

@@ -1,8 +1,8 @@
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { config as loadDotenv } from 'dotenv';
+import { readFileSync } from 'fs';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -55,13 +55,17 @@ function hostFromTarget(target: string): string {
   const host = target.includes('@') ? target.split('@')[1] : target;
 
   // IP or FQDN — use directly
-  if (IP_OR_FQDN.test(host)) return host;
+  if (IP_OR_FQDN.test(host)) {
+    return host;
+  }
 
   // SSH alias — resolve via `ssh -G`
   try {
     const output = execSync(`ssh -G ${host}`, { encoding: 'utf-8', timeout: 3000 });
     const match = output.match(/^hostname\s+(.+)$/m);
-    if (match) return match[1];
+    if (match) {
+      return match[1];
+    }
   } catch {
     // ssh -G failed — fall through
   }

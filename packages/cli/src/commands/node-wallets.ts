@@ -1,5 +1,11 @@
 import { createBee } from '../lib/bee-client.js';
-import { loadEnv, resolveBeeGatewayTarget, resolveBeeUploaderTarget, SVC_BEE_GATEWAY, SVC_BEE_UPLOADER } from '../lib/config-reader.js';
+import {
+  loadEnv,
+  resolveBeeGatewayTarget,
+  resolveBeeUploaderTarget,
+  SVC_BEE_GATEWAY,
+  SVC_BEE_UPLOADER,
+} from '../lib/config-reader.js';
 import { error, header, table } from '../lib/output.js';
 
 export async function nodeWallets(urlOverride?: string): Promise<void> {
@@ -29,6 +35,8 @@ export async function nodeWallets(urlOverride?: string): Promise<void> {
       error(`Unreachable: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
 
-    if (urlOverride) break;
+    if (urlOverride) {
+      break;
+    }
   }
 }
