@@ -6,6 +6,7 @@ import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 
 import { HlsPuller } from './ome/HlsPuller.js';
+import { AppStream } from './ome/interfaces.js';
 import { EnginePlugin, RawBodyRequest } from './types.js';
 
 const logger = Logger.getInstance();
@@ -40,19 +41,26 @@ function buildStreamId(app: string, stream: string): string {
   return `${app}/${stream}`;
 }
 
-// OME admission URLs look like `srt://host:port/app/stream` (or
-// `srt://host:port/app/stream?streamid=...`). Extract (app, stream).
-function parseAppStream(url: string): { app: string; stream: string } | null {
+export function parseAppStream(url: string): AppStream {
+  let parts: string[] = [];
+
   try {
     const u = new URL(url);
-    const parts = u.pathname.split('/').filter(Boolean);
+    parts = u.pathname.split('/').filter(Boolean);
+
     if (parts.length < 2) {
-      return null;
+      const streamid = u.searchParams.get('streamid');
+      if (streamid) {
+        parts = new URL(streamid).pathname.split('/').filter(Boolean);
+      }
     }
-    return { app: parts[0], stream: parts[1] };
-  } catch {
-    return null;
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : 'Unknown error';
+    logger.error(`[OME] Could not parse app/stream from URL: ${url} (${errorMsg})`);
+    throw new Error(`Could not parse app/stream from URL: ${url} (${errorMsg})`);
   }
+
+  return { app: parts[0], stream: parts[1] };
 }
 
 export interface OmeEngineOptions {
@@ -134,9 +142,10 @@ function handleAdmission(
       return;
     }
 
-    const parsed = parseAppStream(request.url);
-    if (!parsed) {
-      logger.warn(`[OME] Could not parse app/stream from URL: ${request.url}`);
+    let parsed: AppStream;
+    try {
+      parsed = parseAppStream(request.url);
+    } catch {
       reply(res, { allowed: false, reason: 'invalid url' });
       return;
     }
