@@ -179,6 +179,8 @@ parse_profile_args() {
     echo -e "${RED}ERROR: --portSlot must be an integer 0-999 (got: $PORT_SLOT)${NC}" >&2
     exit 1
   fi
+  # Force base-10 — bash arithmetic reads leading-zero values (e.g. "010") as octal.
+  PORT_SLOT=$((10#$PORT_SLOT))
 
   if [ "$PROFILE" != "default" ]; then
     if [ -f "$ROOT_DIR/.env.$PROFILE" ]; then

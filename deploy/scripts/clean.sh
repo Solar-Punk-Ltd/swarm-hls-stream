@@ -166,6 +166,12 @@ clean_target() {
 REMOTE_SCRIPT
 
     if [ "$REMOVE_ALL" = "true" ]; then
+      # REMOTE_BASE feeds an unquoted remote `rm -rf` (the ~ must expand on the
+      # remote) — refuse anything that doesn't match the expected layout.
+      if [[ ! "$REMOTE_BASE" =~ ^~/swarm-hls-stream(-[a-z0-9][a-z0-9-]{0,30})?$ ]]; then
+        log_error "Refusing to remove unexpected remote base: '$REMOTE_BASE'"
+        exit 1
+      fi
       log_info "Removing remote files on $target (may require sudo password)"
       ssh -t "$target" "sudo rm -rf $REMOTE_BASE"
       log_ok "Removed $REMOTE_BASE on $target"

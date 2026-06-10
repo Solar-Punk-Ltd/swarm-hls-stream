@@ -210,42 +210,41 @@ local_data_dir() {
   esac
 }
 
+init_bee_dir() {
+  local target="$1"
+  local data_dir="$2"
+
+  # data_dir comes from .env and is spliced unquoted into remote shell commands.
+  if [[ ! "$data_dir" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    log_error "Unsafe characters in bee data dir: '$data_dir'"
+    exit 1
+  fi
+
+  if is_local "$target"; then
+    "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
+  else
+    # Skip if already initialized (password file exists)
+    ssh "$target" "if [ -f $REMOTE_BASE/deploy/$data_dir/password ]; then \
+      echo 'Node already initialized: $data_dir'; \
+    else \
+      mkdir -p $REMOTE_BASE/deploy/$data_dir && \
+      head -c 32 /dev/urandom | base64 | head -c 32 > $REMOTE_BASE/deploy/$data_dir/password && \
+      chmod -R 777 $REMOTE_BASE/deploy/$data_dir && \
+      echo 'Node data dir ready: $data_dir'; \
+    fi"
+  fi
+}
+
 init_bee_dirs() {
   local target="$1"
   shift
-  local services=("$@")
 
-  for svc in "${services[@]}"; do
+  for svc in "$@"; do
     if [ "$svc" = "$SVC_BEE_UPLOADER" ]; then
-      local data_dir="${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}"
-      if is_local "$target"; then
-        "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
-      else
-        # Skip if already initialized (password file exists)
-        ssh "$target" "if [ -f $REMOTE_BASE/deploy/$data_dir/password ]; then \
-          echo 'Node already initialized: $data_dir'; \
-        else \
-          mkdir -p $REMOTE_BASE/deploy/$data_dir && \
-          head -c 32 /dev/urandom | base64 | head -c 32 > $REMOTE_BASE/deploy/$data_dir/password && \
-          chmod -R 777 $REMOTE_BASE/deploy/$data_dir && \
-          echo 'Node data dir ready: $data_dir'; \
-        fi"
-      fi
+      init_bee_dir "$target" "${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}"
     fi
     if [ "$svc" = "$SVC_BEE_GATEWAY" ]; then
-      local data_dir="${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}"
-      if is_local "$target"; then
-        "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
-      else
-        ssh "$target" "if [ -f $REMOTE_BASE/deploy/$data_dir/password ]; then \
-          echo 'Node already initialized: $data_dir'; \
-        else \
-          mkdir -p $REMOTE_BASE/deploy/$data_dir && \
-          head -c 32 /dev/urandom | base64 | head -c 32 > $REMOTE_BASE/deploy/$data_dir/password && \
-          chmod -R 777 $REMOTE_BASE/deploy/$data_dir && \
-          echo 'Node data dir ready: $data_dir'; \
-        fi"
-      fi
+      init_bee_dir "$target" "${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}"
     fi
   done
 }
