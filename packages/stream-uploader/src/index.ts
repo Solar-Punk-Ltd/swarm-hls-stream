@@ -1,6 +1,7 @@
 import { Bee } from '@ethersphere/bee-js';
 
 import { ApiServerHandle, startApiServer } from './api/server.js';
+import { createOmeEngine } from './engines/ome.js';
 import { createSrsEngine } from './engines/srs.js';
 import { EnginePlugin } from './engines/types.js';
 import { Logger } from './libs/Logger.js';
@@ -64,6 +65,9 @@ function loadEngines(): EnginePlugin[] {
   if (config.engine === 'srs') {
     engines.push(createSrsEngine(config.mediaPath));
     logger.info(`[Engine] SRS engine loaded, media path: ${config.mediaPath}`);
+  } else if (config.engine === 'ome') {
+    engines.push(createOmeEngine(config.omeHlsUrl, config.omeHlsPollMs));
+    logger.info(`[Engine] OME engine loaded, HLS base: ${config.omeHlsUrl}, poll: ${config.omeHlsPollMs}ms`);
   } else if (config.engine && config.engine !== 'none') {
     logger.warn(`[Engine] Unknown engine: ${config.engine}, running with generic API only`);
   }

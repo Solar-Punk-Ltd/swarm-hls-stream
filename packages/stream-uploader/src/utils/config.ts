@@ -37,4 +37,6 @@ export const config = {
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000),
   engine: optional('ENGINE', ''),
   mediaPath: optional('MEDIA_PATH', './media'),
+  omeHlsUrl: optional('OME_HLS_URL', 'http://ome:8081'),
+  omeHlsPollMs: optionalInt('OME_HLS_POLL_INTERVAL_MS', 500),
 };

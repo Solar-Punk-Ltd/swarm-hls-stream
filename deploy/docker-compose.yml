@@ -76,6 +76,8 @@ services:
       RECOVERY_TIMEOUT: ${RECOVERY_TIMEOUT:-60000}
       ENGINE: ${ENGINE:-srs}
       MEDIA_PATH: /media
+      OME_HLS_URL: ${OME_HLS_URL:-http://ome:8081}
+      OME_HLS_POLL_INTERVAL_MS: ${OME_HLS_POLL_INTERVAL_MS:-500}
 
   # --- React Client (viewer) ---
 
@@ -124,6 +126,26 @@ services:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
       SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}
       SRS_ADAPTER_PORT: ${API_PORT:-3000}
+
+  # --- OvenMediaEngine ---
+
+  ome:
+    image: airensoft/ovenmediaengine:latest
+    profiles: ["ome"]
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${OME_SRT_PORT:-10080}:10080/udp"
+      - "${OME_HLS_PORT:-8081}:8081"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ../engines/ome/Server.xml.template:/opt/ovenmediaengine/conf-template/Server.xml.template:ro
+      - ../engines/ome/entrypoint.sh:/opt/ovenmediaengine/conf-template/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/opt/ovenmediaengine/conf-template/entrypoint.sh"]
+    environment:
+      OME_ADAPTER_HOST: ${OME_ADAPTER_HOST:-stream-uploader}
+      OME_ADAPTER_PORT: ${API_PORT:-3000}
 
 volumes:
   srs-media:

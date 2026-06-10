@@ -23,7 +23,9 @@
     "srs:host": "cd engines/srs && docker compose -f docker-compose.yml -f docker-compose.host.yml up -d ",
     "srs:local": "cd engines/srs && docker compose -f docker-compose.yml -f docker-compose.local.yml up -d",
     "srs:down": "cd engines/srs && docker compose down",
-    "srs:logs": "cd engines/srs && docker compose logs -f"
+    "srs:logs": "cd engines/srs && docker compose logs -f",
+    "ome:start": "cd engines/ome && docker compose -f docker-compose.yml up -d",
+    "ome:down": "cd engines/ome && docker compose down"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.0",
