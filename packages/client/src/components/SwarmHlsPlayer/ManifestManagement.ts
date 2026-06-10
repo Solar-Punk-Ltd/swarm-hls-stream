@@ -28,6 +28,14 @@ const HLS_MEDIA_SEQUENCE_ZERO = '#EXT-X-MEDIA-SEQUENCE:0';
 
 const manifestQueue = new Pqueue({ concurrency: 1 });
 
+const FOLLOWUP_FETCH_TIMEOUT_MS = 10_000;
+
+class FetchError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 export function parseManifest(text: string): { headers: string[]; segments: Segment[]; isFinalized: boolean } {
   const lines = text.trim().split('\n');
   const headers: string[] = [];
@@ -189,6 +197,7 @@ export class ManifestStateManager {
 
 export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
+  private inFlight = new Set<string>();
 
   constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {}
 
@@ -230,42 +239,50 @@ export class ManifestFetcher {
   }
 
   private async handleFollowupFetch(owner: string, topic: Topic): Promise<string> {
-    const nextId = this.generateNextId(topic);
     const hexTopic = topic.toString();
 
-    this.fetchResource(`soc/${owner}/${nextId}`)
-      .then((res) => {
-        manifestQueue.add(async () => {
-          const text = await res.text();
-          const parsed = parseManifest(text);
-          const shouldContinue = this.stateManager.updateManifest(
-            hexTopic,
-            parsed.headers,
-            parsed.segments,
-            parsed.isFinalized,
-          );
-          if (shouldContinue) {
-            const index = this.stateManager.getIndex(hexTopic)!;
-            this.stateManager.setIndex(hexTopic, index.next());
+    if (!this.inFlight.has(hexTopic)) {
+      // Pin the slot being fetched — advancing via getIndex().next() in the callback
+      // would double-advance (and skip a slot) when two responses for the same slot land.
+      const targetIndex = this.stateManager.getIndex(hexTopic)!.next();
+      const nextId = makeFeedIdentifier(topic, targetIndex).toString();
+
+      this.inFlight.add(hexTopic);
+      this.fetchResource(`soc/${owner}/${nextId}`, FOLLOWUP_FETCH_TIMEOUT_MS)
+        .then((res) =>
+          manifestQueue.add(async () => {
+            const text = await res.text();
+            const parsed = parseManifest(text);
+            const shouldContinue = this.stateManager.updateManifest(
+              hexTopic,
+              parsed.headers,
+              parsed.segments,
+              parsed.isFinalized,
+            );
+            if (shouldContinue) {
+              this.stateManager.setIndex(hexTopic, targetIndex);
+            }
+          }),
+        )
+        .catch((error) => {
+          // 404 just means the publisher has not written this slot yet — the next poll retries it.
+          if (!(error instanceof FetchError && error.status === 404)) {
+            console.error('Error fetching follow-up manifest:', error);
           }
+        })
+        .finally(() => {
+          this.inFlight.delete(hexTopic);
         });
-      })
-      .catch((error) => {
-        console.error('Error fetching follow-up:', error);
-      });
+    }
 
     return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
   }
 
-  private generateNextId(topic: Topic): string {
-    const currentIndex = this.stateManager.getIndex(topic.toString())!;
-    return makeFeedIdentifier(topic, currentIndex.next()).toString();
-  }
-
-  private async fetchResource(path: string): Promise<Response> {
-    const response = await fetch(`${this._beeUrl}/${path}`);
+  private async fetchResource(path: string, timeoutMs?: number): Promise<Response> {
+    const signal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+    const response = await fetch(`${this._beeUrl}/${path}`, { signal });
     if (!response.ok) {
-      throw new Error(`Failed to fetch: ${path}`);
+      throw new FetchError(`Failed to fetch: ${path}`, response.status);
     }
     return response;
   }
