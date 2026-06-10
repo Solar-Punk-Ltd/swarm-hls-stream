@@ -3,7 +3,13 @@ import { loadEnv, resolveBeeUploaderTarget, SVC_BEE_UPLOADER } from '../lib/conf
 import { error, header, info, table } from '../lib/output.js';
 import { buyStamp, resolveStampOptions } from '../lib/stamp.js';
 
-export async function stampBuy(urlOverride?: string, amount?: string, depth?: number, immutable?: boolean): Promise<string | null> {
+export async function stampBuy(
+  urlOverride?: string,
+  amount?: string,
+  depth?: number,
+  immutable?: boolean,
+  yes?: boolean,
+): Promise<string | null> {
   loadEnv();
 
   const target = resolveBeeUploaderTarget();
@@ -16,7 +22,7 @@ export async function stampBuy(urlOverride?: string, amount?: string, depth?: nu
 
   try {
     const bee = createBee(url);
-    const batchIdHex = await buyStamp(bee, options);
+    const batchIdHex = await buyStamp(bee, options, yes);
 
     table('Batch ID', batchIdHex);
     console.log('');

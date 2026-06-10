@@ -10,6 +10,7 @@ interface ParsedArgs {
   command: string;
   url?: string;
   immutable?: boolean;
+  yes?: boolean;
   positional: string[];
 }
 
@@ -24,6 +25,7 @@ const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
       a.positional[0],
       a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
       a.immutable,
+      a.yes,
     );
   },
   'stamp-setup': (a) =>
@@ -32,6 +34,7 @@ const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
       a.positional[0],
       a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
       a.immutable,
+      a.yes,
     ),
 };
 
@@ -40,6 +43,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const command = args[0];
   let url: string | undefined;
   let immutable: boolean | undefined;
+  let yes: boolean | undefined;
   const positional: string[] = [];
 
   for (let i = 1; i < args.length; i++) {
@@ -48,12 +52,14 @@ function parseArgs(argv: string[]): ParsedArgs {
       i++;
     } else if (args[i] === '--immutable') {
       immutable = true;
+    } else if (args[i] === '--yes' || args[i] === '-y') {
+      yes = true;
     } else {
       positional.push(args[i]);
     }
   }
 
-  return { command, url, immutable, positional };
+  return { command, url, immutable, yes, positional };
 }
 
 function printUsage(): void {
@@ -70,6 +76,7 @@ function printUsage(): void {
   console.log('Options:');
   console.log('  --url <url>       Override bee node URL (auto-detected from config.json)');
   console.log('  --immutable       Create immutable stamp (default: mutable)');
+  console.log('  --yes, -y         Skip the purchase confirmation prompt');
 }
 
 async function main(): Promise<void> {

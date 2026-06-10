@@ -5,7 +5,13 @@ import { error, header, info, ok, table, warn } from '../lib/output.js';
 import { buyStamp, resolveStampOptions } from '../lib/stamp.js';
 import { waitForNode, waitForStamp } from '../lib/wait.js';
 
-export async function stampSetup(urlOverride?: string, amount?: string, depth?: number, immutable?: boolean): Promise<void> {
+export async function stampSetup(
+  urlOverride?: string,
+  amount?: string,
+  depth?: number,
+  immutable?: boolean,
+  yes?: boolean,
+): Promise<void> {
   loadEnv();
 
   const target = resolveBeeUploaderTarget();
@@ -85,7 +91,7 @@ export async function stampSetup(urlOverride?: string, amount?: string, depth?: 
   // Step 4: Buy a new stamp
   let batchIdHex: string;
   try {
-    batchIdHex = await buyStamp(bee, options);
+    batchIdHex = await buyStamp(bee, options, yes);
   } catch (err) {
     error(`Failed to buy stamp: ${err instanceof Error ? err.message : 'unknown'}`);
     process.exit(1);
