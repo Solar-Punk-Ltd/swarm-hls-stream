@@ -48,9 +48,11 @@ export class StreamCatalog {
         // 404 = feed topic never used, 503 = feed exists but has no entries yet
         this.feedIndex = null;
         this.logger.info('[StreamCatalog] No existing feed found, starting fresh');
-      } else {
-        this.errorHandler.handleError(error, 'StreamCatalog.init');
+        return;
       }
+      // Starting with an unknown feed index would overwrite the existing catalog.
+      this.errorHandler.handleError(error, 'StreamCatalog.init');
+      throw error;
     }
   }
 
@@ -62,10 +64,9 @@ export class StreamCatalog {
     let state: StreamEntry[] = [];
 
     if (this.feedIndex !== null) {
-      const previous = await this.fetchCurrentState();
-      if (previous) {
-        state = previous;
-      }
+      // A failed read must abort the update — treating it as "no prior state"
+      // would replace the whole catalog with this single entry.
+      state = await this.fetchCurrentState();
     }
 
     // Deduplicate by (owner, topic)
@@ -81,15 +82,10 @@ export class StreamCatalog {
     this.logger.info(`[StreamCatalog] Feed updated at index ${nextIndex.toString()}, entries: ${state.length}`);
   }
 
-  private async fetchCurrentState(): Promise<StreamEntry[] | null> {
-    try {
-      const owner = this.signer.publicKey().address();
-      const feedReader = this.bee.makeFeedReader(this.feedTopic, owner);
-      const data = await feedReader.downloadPayload({ index: this.feedIndex! });
-      return data.payload.toJSON() as StreamEntry[];
-    } catch (error) {
-      this.errorHandler.handleError(error, 'StreamCatalog.fetchCurrentState');
-      return null;
-    }
+  private async fetchCurrentState(): Promise<StreamEntry[]> {
+    const owner = this.signer.publicKey().address();
+    const feedReader = this.bee.makeFeedReader(this.feedTopic, owner);
+    const data = await retryAwaitableAsync(() => feedReader.downloadPayload({ index: this.feedIndex! }));
+    return data.payload.toJSON() as StreamEntry[];
   }
 }
