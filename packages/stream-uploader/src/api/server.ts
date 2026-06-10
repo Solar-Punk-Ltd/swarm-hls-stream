@@ -1,7 +1,7 @@
 import express from 'express';
 import http from 'http';
 
-import { EnginePlugin } from '../engines/types.js';
+import { EnginePlugin, RawBodyRequest } from '../engines/types.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 
@@ -27,7 +27,13 @@ export function startApiServer(
   // Global middleware
   app.use(requestLogger);
   app.use('/stream/segment', express.raw({ type: '*/*', limit: '50mb' }));
-  app.use(express.json());
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as RawBodyRequest).rawBody = buf;
+      },
+    }),
+  );
 
   // Engine plugin routers
   for (const engine of engines) {

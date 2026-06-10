@@ -25,6 +25,11 @@ function optionalInt(name: string, fallback: number): number {
   return value ? parseInt(value, 10) : fallback;
 }
 
+function optionalBool(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  return value ? value === 'true' || value === '1' : fallback;
+}
+
 export const config = {
   beeUrl: required('BEE_URL'),
   stamp: required('STAMP'),
@@ -39,4 +44,6 @@ export const config = {
   mediaPath: optional('MEDIA_PATH', './media'),
   omeHlsUrl: optional('OME_HLS_URL', 'http://ome:8081'),
   omeHlsPollMs: optionalInt('OME_HLS_POLL_INTERVAL_MS', 500),
+  omeAdmissionSecret: optional('OME_ADMISSION_SECRET', ''),
+  omeAdmissionFailOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
 };

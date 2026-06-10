@@ -1,11 +1,12 @@
 import { Request, Response, Router } from 'express';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 
 import { HlsPuller } from './ome/HlsPuller.js';
-import { EnginePlugin } from './types.js';
+import { EnginePlugin, RawBodyRequest } from './types.js';
 
 const logger = Logger.getInstance();
 
@@ -54,9 +55,19 @@ function parseAppStream(url: string): { app: string; stream: string } | null {
   }
 }
 
-// OvenMediaEngine
-export function createOmeEngine(hlsBaseUrl: string, pollIntervalMs: number): EnginePlugin {
+export interface OmeEngineOptions {
+  admissionSecret?: string;
+  failOpen?: boolean;
+}
+
+export function createOmeEngine(
+  hlsBaseUrl: string,
+  pollIntervalMs: number,
+  options: OmeEngineOptions = {},
+): EnginePlugin {
   const pullers = new Map<string, HlsPuller>();
+  const admissionSecret = options.admissionSecret ?? '';
+  const failOpen = options.failOpen ?? false;
 
   return {
     name: 'ome',
@@ -65,13 +76,40 @@ export function createOmeEngine(hlsBaseUrl: string, pollIntervalMs: number): Eng
     createRouter(orchestrator: StreamOrchestrator): Router {
       const router = Router();
 
+      if (!admissionSecret) {
+        logger.warn('[OME] OME_ADMISSION_SECRET is not set — admission webhook accepts unauthenticated requests');
+      }
+
       router.post('/admission', (req: Request, res: Response) => {
-        handleAdmission(req, res, orchestrator, hlsBaseUrl, pollIntervalMs, pullers);
+        if (!verifyAdmissionSignature(req, admissionSecret)) {
+          logger.warn(`[OME] Rejected admission request with missing/invalid signature from ${req.ip}`);
+          res.status(401);
+          reply(res, { allowed: false, reason: 'invalid signature' });
+          return;
+        }
+        handleAdmission(req, res, orchestrator, hlsBaseUrl, pollIntervalMs, pullers, failOpen);
       });
 
       return router;
     },
   };
+}
+
+function verifyAdmissionSignature(req: Request, secret: string): boolean {
+  if (!secret) {
+    return true;
+  }
+
+  const signature = req.get('x-ome-signature');
+  const rawBody = (req as RawBodyRequest).rawBody;
+  if (!signature || !rawBody) {
+    return false;
+  }
+
+  const expected = createHmac('sha1', secret).update(rawBody).digest('base64url');
+  const received = Buffer.from(signature);
+  const computed = Buffer.from(expected);
+  return received.length === computed.length && timingSafeEqual(received, computed);
 }
 
 function reply(res: Response, body: OmeAdmissionReply): void {
@@ -85,6 +123,7 @@ function handleAdmission(
   hlsBaseUrl: string,
   pollIntervalMs: number,
   pullers: Map<string, HlsPuller>,
+  failOpen: boolean,
 ): void {
   try {
     const payload = req.body as OmeAdmissionPayload;
@@ -142,6 +181,10 @@ function handleAdmission(
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
     logger.error(`[OME] Admission handler error: ${msg}`);
-    reply(res, { allowed: true, reason: 'handler error (fail-open)' });
+    if (failOpen) {
+      reply(res, { allowed: true, reason: 'handler error (fail-open)' });
+    } else {
+      reply(res, { allowed: false, reason: 'handler error' });
+    }
   }
 }

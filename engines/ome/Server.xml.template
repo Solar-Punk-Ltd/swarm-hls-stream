@@ -33,7 +33,7 @@
 
             <AdmissionWebhooks>
                 <ControlServerUrl>http://OME_ADAPTER_HOST_PLACEHOLDER:OME_ADAPTER_PORT_PLACEHOLDER/engines/ome/admission</ControlServerUrl>
-                <SecretKey></SecretKey>
+                <SecretKey>OME_ADMISSION_SECRET_PLACEHOLDER</SecretKey>
                 <Timeout>3000</Timeout>
                 <Enables>
                     <Providers>srt</Providers>

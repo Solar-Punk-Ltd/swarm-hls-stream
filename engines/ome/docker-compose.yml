@@ -14,5 +14,6 @@ services:
     environment:
       OME_ADAPTER_HOST: ${OME_ADAPTER_HOST:-host.docker.internal}
       OME_ADAPTER_PORT: ${OME_ADAPTER_PORT:-3000}
+      OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
