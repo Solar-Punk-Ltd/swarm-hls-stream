@@ -2,7 +2,7 @@ import { Request, Response, Router } from 'express';
 
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
-import { REJECT_QUEUE_FULL, REJECT_UNKNOWN_STREAM } from '../../types.js';
+import { REJECT_QUEUE_FULL, REJECT_STREAM_DRAINING, REJECT_UNKNOWN_STREAM } from '../../types.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { ApiError } from '../middleware/errorHandler.js';
 
@@ -48,6 +48,10 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
 
       if (result.reason === REJECT_QUEUE_FULL) {
         throw new ApiError(429, 'Queue full', RETRY_AFTER_SECONDS);
+      }
+
+      if (result.reason === REJECT_STREAM_DRAINING) {
+        throw new ApiError(409, `Stream is stopping: ${streamId}`, RETRY_AFTER_SECONDS);
       }
 
       if (result.reason === REJECT_UNKNOWN_STREAM) {

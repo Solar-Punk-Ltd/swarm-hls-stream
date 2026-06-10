@@ -8,6 +8,7 @@ import {
   PRESSURE_MEDIUM,
   QueuePressure,
   REJECT_QUEUE_FULL,
+  REJECT_STREAM_DRAINING,
   REJECT_UNKNOWN_STREAM,
   SegmentResult,
 } from '../types.js';
@@ -55,10 +56,34 @@ export class StreamOrchestrator {
     }
 
     if (this.activeStreams.has(streamId)) {
-      this.logger.warn(`[StreamOrchestrator] Stream ${streamId} already active, rejecting start`);
-      return false;
+      const drain = this.drainPromises.get(streamId);
+      if (!drain) {
+        this.logger.warn(`[StreamOrchestrator] Stream ${streamId} already active, rejecting start`);
+        return false;
+      }
+
+      // Engines can republish while the previous session is still draining
+      // (e.g. an encoder reconnecting right after unpublish) — restart afterwards.
+      this.logger.info(`[StreamOrchestrator] Stream ${streamId} is draining, restarting once drain completes`);
+      drain
+        .catch(() => undefined)
+        .then(() => {
+          if (this.activeStreams.has(streamId)) {
+            this.logger.warn(`[StreamOrchestrator] Stream ${streamId} already active again, skipping restart`);
+            return;
+          }
+          this.createStream(streamId, mediatype);
+        })
+        .catch(error => this.errorHandler.handleError(error, `StreamOrchestrator.startStream - ${streamId}`));
+
+      return true;
     }
 
+    this.createStream(streamId, mediatype);
+    return true;
+  }
+
+  private createStream(streamId: string, mediatype: MediaType): void {
     this.queue.add(() => {
       const uploader = new StreamUploader(
         this.bee,
@@ -71,18 +96,28 @@ export class StreamOrchestrator {
         mediatype,
       );
 
-      this.activeStreams.set(streamId, uploader);
-      this.processedSegments.set(streamId, new Set());
+      this.trackUploader(streamId, uploader, new Set());
       this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
     });
+  }
 
-    return true;
+  private trackUploader(streamId: string, uploader: StreamUploader, processed: Set<number>): void {
+    uploader.onSegmentUploadFailed = segmentIndex => {
+      this.processedSegments.get(streamId)?.delete(segmentIndex);
+    };
+    this.activeStreams.set(streamId, uploader);
+    this.processedSegments.set(streamId, processed);
   }
 
   public handleSegment(streamId: string, segmentIndex: number, duration: number, data: Buffer): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
+    }
+
+    // The session is finalizing — a republished stream restarts after the drain.
+    if (this.drainPromises.has(streamId)) {
+      return { accepted: false, reason: REJECT_STREAM_DRAINING };
     }
 
     // Deduplication
@@ -102,6 +137,11 @@ export class StreamOrchestrator {
   }
 
   public async stopStream(streamId: string): Promise<void> {
+    const existingDrain = this.drainPromises.get(streamId);
+    if (existingDrain) {
+      return existingDrain;
+    }
+
     // Cancel recovery timer if stopping a recovering stream
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
@@ -155,11 +195,7 @@ export class StreamOrchestrator {
         },
       );
 
-      this.activeStreams.set(streamId, uploader);
-
-      // Rebuild processed segments set from state
-      const processed = new Set(state.segments.map(s => s.index));
-      this.processedSegments.set(streamId, processed);
+      this.trackUploader(streamId, uploader, new Set(state.segments.map(s => s.index)));
 
       // Set recovery timeout — if engine doesn't reconnect, finalize as VOD
       const timer = setTimeout(async () => {

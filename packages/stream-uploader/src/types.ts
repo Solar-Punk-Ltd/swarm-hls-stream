@@ -24,8 +24,13 @@ export interface SegmentEntry {
 export const REJECT_QUEUE_FULL = 'queue_full' as const;
 export const REJECT_UNKNOWN_STREAM = 'unknown_stream' as const;
 export const REJECT_DUPLICATE = 'duplicate' as const;
+export const REJECT_STREAM_DRAINING = 'stream_draining' as const;
 
-export type RejectReason = typeof REJECT_QUEUE_FULL | typeof REJECT_UNKNOWN_STREAM | typeof REJECT_DUPLICATE;
+export type RejectReason =
+  | typeof REJECT_QUEUE_FULL
+  | typeof REJECT_UNKNOWN_STREAM
+  | typeof REJECT_DUPLICATE
+  | typeof REJECT_STREAM_DRAINING;
 
 export type SegmentResult = { accepted: true } | { accepted: false; reason: RejectReason };
 
