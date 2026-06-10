@@ -75,7 +75,7 @@ export function createOmeEngine(hlsBaseUrl: string, pollIntervalMs: number): Eng
 }
 
 function reply(res: Response, body: OmeAdmissionReply): void {
-  res.type('json').send(JSON.stringify(body));
+  res.json(body);
 }
 
 function handleAdmission(
