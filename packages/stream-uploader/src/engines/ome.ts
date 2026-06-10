@@ -172,7 +172,23 @@ function handleAdmission(
 
     // Spin up the HLS poller. Don't block the admission reply on it.
     if (!pullers.has(streamId)) {
-      const puller = new HlsPuller(streamId, parsed.app, parsed.stream, hlsBaseUrl, pollIntervalMs, orchestrator);
+      const onHalt = (): void => {
+        pullers.delete(streamId);
+        orchestrator.stopStream(streamId).catch((error) => {
+          const msg = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[OME] Error stopping stream ${streamId} after puller halt: ${msg}`);
+        });
+      };
+
+      const puller = new HlsPuller(
+        streamId,
+        parsed.app,
+        parsed.stream,
+        hlsBaseUrl,
+        pollIntervalMs,
+        orchestrator,
+        onHalt,
+      );
       pullers.set(streamId, puller);
       puller.start();
     }

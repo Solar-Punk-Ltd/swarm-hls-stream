@@ -30,6 +30,7 @@ export class HlsPuller {
     hlsBaseUrl: string,
     private intervalMs: number,
     private orchestrator: StreamOrchestrator,
+    private onHalt?: () => void,
   ) {
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
@@ -169,6 +170,7 @@ export class HlsPuller {
     if (this.consecutiveNotFound > HlsPuller.MAX_NOT_FOUND) {
       logger.info(`[OME] ${what} gone for ${this.streamId}, halting puller`);
       this.stop();
+      this.onHalt?.();
       return;
     }
     this.scheduleNext(this.intervalMs);
