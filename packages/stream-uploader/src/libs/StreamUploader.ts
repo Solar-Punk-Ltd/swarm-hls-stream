@@ -22,6 +22,8 @@ interface RestoreState {
 
 export class StreamUploader {
   public readonly segmentQueue = new PQueue({ concurrency: 1 });
+  /** Lets the orchestrator un-mark a failed segment so a resend is accepted again. */
+  public onSegmentUploadFailed?: (segmentIndex: number) => void;
   private manifestQueue = new PQueue({ concurrency: 1 });
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
@@ -77,7 +79,11 @@ export class StreamUploader {
     this.segmentQueue.add(async () => {
       const result = await this.uploadDataToBee(data);
       if (!result) {
-        this.logger.error(`Failed to upload segment ${segmentIndex} for stream ${this.streamId}`);
+        this.errorHandler.handleError(
+          new Error(`Failed to upload segment ${segmentIndex} for stream ${this.streamId}`),
+          'StreamUploader.handleSegment',
+        );
+        this.onSegmentUploadFailed?.(segmentIndex);
         return;
       }
 
