@@ -43,7 +43,7 @@ export const config = {
   engine: optional('ENGINE', ''),
   mediaPath: optional('MEDIA_PATH', './media'),
   omeHlsUrl: optional('OME_HLS_URL', 'http://ome:8081'),
-  omeHlsPollMs: optionalInt('OME_HLS_POLL_INTERVAL_MS', 500),
+  omeHlsPollIntervalMs: optionalInt('OME_HLS_POLL_INTERVAL_MS', 500),
   omeAdmissionSecret: optional('OME_ADMISSION_SECRET', ''),
   omeAdmissionFailOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
 };

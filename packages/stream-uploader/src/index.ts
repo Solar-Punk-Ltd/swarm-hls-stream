@@ -67,12 +67,14 @@ function loadEngines(): EnginePlugin[] {
     logger.info(`[Engine] SRS engine loaded, media path: ${config.mediaPath}`);
   } else if (config.engine === 'ome') {
     engines.push(
-      createOmeEngine(config.omeHlsUrl, config.omeHlsPollMs, {
+      createOmeEngine(config.omeHlsUrl, config.omeHlsPollIntervalMs, {
         admissionSecret: config.omeAdmissionSecret,
         failOpen: config.omeAdmissionFailOpen,
       }),
     );
-    logger.info(`[Engine] OME engine loaded, HLS base: ${config.omeHlsUrl}, poll: ${config.omeHlsPollMs}ms`);
+    logger.info(
+      `[Engine] OME engine loaded, HLS base: ${config.omeHlsUrl}, poll interval: ${config.omeHlsPollIntervalMs}ms`,
+    );
   } else if (config.engine && config.engine !== 'none') {
     logger.warn(`[Engine] Unknown engine: ${config.engine}, running with generic API only`);
   }
