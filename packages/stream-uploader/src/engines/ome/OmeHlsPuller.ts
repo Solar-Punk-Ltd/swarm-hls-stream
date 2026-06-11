@@ -113,43 +113,40 @@ export class OmeHlsPuller {
   }
 
   private async processPlaylist(playlist: string, url: string): Promise<void> {
-    const entries = parseMediaPlaylist(playlist);
+    const segments = parseMediaPlaylist(playlist);
 
-    for (const entry of entries) {
+    for (const segment of segments) {
       if (this.stopped) {
         return;
       }
-      if (entry.seq <= this.lastSeq) {
+      if (segment.seq <= this.lastSeq) {
         continue;
       }
 
-      const segUrl = new URL(entry.uri, url).toString();
+      const segmentUrl = new URL(segment.uri, url).toString();
       try {
-        const segRes = await fetch(segUrl);
+        const segmentResponse = await fetch(segmentUrl);
 
-        if (!segRes.ok) {
-          logger.warn(`[OME] Segment ${entry.seq} fetch failed for ${this.streamId}: HTTP ${segRes.status}`);
+        if (!segmentResponse.ok) {
+          logger.warn(`[OME] Segment ${segment.seq} fetch failed for ${this.streamId}: HTTP ${segmentResponse.status}`);
           continue;
         }
 
-        const buf = Buffer.from(await segRes.arrayBuffer());
-        const result = this.orchestrator.handleSegment(this.streamId, entry.seq, entry.duration, buf);
+        const segmentBuffer = Buffer.from(await segmentResponse.arrayBuffer());
+        const result = this.orchestrator.handleSegment(this.streamId, segment.seq, segment.duration, segmentBuffer);
 
         if (!result.accepted) {
-          logger.warn(`[OME] Segment ${entry.seq} not accepted for ${this.streamId}: ${result.reason}`);
+          logger.warn(`[OME] Segment ${segment.seq} not accepted for ${this.streamId}: ${result.reason}`);
         }
 
-        this.lastSeq = entry.seq;
+        this.lastSeq = segment.seq;
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Unknown error';
-        logger.warn(`[OME] Segment ${entry.seq} fetch error for ${this.streamId}: ${msg}`);
+        logger.warn(`[OME] Segment ${segment.seq} fetch error for ${this.streamId}: ${msg}`);
       }
     }
   }
 
-  // Fetches the master playlist and resolves the first variant to an absolute
-  // URL. If the body turns out to be a media playlist (no #EXT-X-STREAM-INF),
-  // we use the master URL itself. Returns true if mediaPlaylistUrl is set.
   private async fetchMediaPlaylistUrl(): Promise<boolean> {
     const res = await fetch(this.masterUrl);
 
@@ -165,7 +162,12 @@ export class OmeHlsPuller {
     this.resetRetryCounter();
 
     const playlist = await res.text();
+    this.setMediaPlaylistUrl(playlist);
 
+    return true;
+  }
+
+  private setMediaPlaylistUrl(playlist: string): void {
     if (isMasterPlaylist(playlist)) {
       const variantUri = parseMasterPlaylist(playlist);
       this.mediaPlaylistUrl = new URL(variantUri, this.masterUrl).toString();
@@ -174,7 +176,6 @@ export class OmeHlsPuller {
       this.mediaPlaylistUrl = this.masterUrl;
       logger.info(`[OME] Using master URL as media playlist for ${this.streamId}`);
     }
-    return true;
   }
 
   private handleNotFound(target: string): void {
