@@ -3,9 +3,11 @@ import { Logger } from '../../libs/Logger.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
 
-// Detects whether a playlist is a master (has #EXT-X-STREAM-INF) and returns
-// the first variant URI if so. Returns null if it's a media playlist.
-export function parseMasterPlaylist(text: string): string | null {
+export function isMasterPlaylist(text: string): boolean {
+  return text.split(/\r?\n/).some((line) => line.trim().startsWith('#EXT-X-STREAM-INF:'));
+}
+
+export function parseMasterPlaylist(text: string): string {
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -20,10 +22,10 @@ export function parseMasterPlaylist(text: string): string | null {
       }
     }
   }
-  return null;
+  throw new Error('Master playlist has no variant URI');
 }
 
-export function parsePlaylist(text: string): PlaylistEntry[] {
+export function parseMediaPlaylist(text: string): PlaylistEntry[] {
   const lines = text.split(/\r?\n/);
   let mediaSeq = 0;
   let pendingDuration: number | null = null;

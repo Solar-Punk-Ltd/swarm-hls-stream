@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { parseAppStream, parseMasterPlaylist, parsePlaylist } from '../src/engines/ome/utils.js';
+import { isMasterPlaylist, parseAppStream, parseMasterPlaylist, parseMediaPlaylist } from '../src/engines/ome/utils.js';
 
 describe('parseAppStream', () => {
   it('parses app and stream from the URL path', () => {
@@ -50,6 +50,32 @@ describe('parseAppStream', () => {
   });
 });
 
+describe('isMasterPlaylist', () => {
+  it('detects a master playlist by its #EXT-X-STREAM-INF tag', () => {
+    const text = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360', 'chunklist_360p.m3u8'].join(
+      '\n',
+    );
+
+    assert.equal(isMasterPlaylist(text), true);
+  });
+
+  it('detects a master playlist with CRLF line endings and indented tags', () => {
+    const text = '#EXTM3U\r\n  #EXT-X-STREAM-INF:BANDWIDTH=800000\r\nvariant.m3u8\r\n';
+
+    assert.equal(isMasterPlaylist(text), true);
+  });
+
+  it('returns false for a media playlist', () => {
+    const text = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
+
+    assert.equal(isMasterPlaylist(text), false);
+  });
+
+  it('returns false for an empty playlist', () => {
+    assert.equal(isMasterPlaylist(''), false);
+  });
+});
+
 describe('parseMasterPlaylist', () => {
   it('returns the URI of the first variant in a master playlist', () => {
     const text = [
@@ -83,24 +109,20 @@ describe('parseMasterPlaylist', () => {
     assert.equal(parseMasterPlaylist(text), 'variant.m3u8');
   });
 
-  it('returns null for a media playlist without a master section', () => {
-    const text = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
-
-    assert.equal(parseMasterPlaylist(text), null);
-  });
-
-  it('returns null for an empty playlist', () => {
-    assert.equal(parseMasterPlaylist(''), null);
-  });
-
-  it('returns null when a stream-inf tag has no following URI', () => {
+  it('throws when a stream-inf tag has no following URI', () => {
     const text = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=800000', '', '# trailing comment'].join('\n');
 
-    assert.equal(parseMasterPlaylist(text), null);
+    assert.throws(() => parseMasterPlaylist(text), /no variant URI/);
+  });
+
+  it('throws for a media playlist (callers must check isMasterPlaylist first)', () => {
+    const text = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
+
+    assert.throws(() => parseMasterPlaylist(text), /no variant URI/);
   });
 });
 
-describe('parsePlaylist', () => {
+describe('parseMediaPlaylist', () => {
   it('parses segments with sequence numbers based on the media sequence', () => {
     const text = [
       '#EXTM3U',
@@ -115,7 +137,7 @@ describe('parsePlaylist', () => {
       'segment_102.ts',
     ].join('\n');
 
-    assert.deepEqual(parsePlaylist(text), [
+    assert.deepEqual(parseMediaPlaylist(text), [
       { seq: 100, duration: 2.0, uri: 'segment_100.ts' },
       { seq: 101, duration: 1.96, uri: 'segment_101.ts' },
       { seq: 102, duration: 2.04, uri: 'segment_102.ts' },
@@ -126,7 +148,7 @@ describe('parsePlaylist', () => {
     const text = ['#EXTM3U', '#EXTINF:2.0,', 'a.ts', '#EXTINF:2.0,', 'b.ts'].join('\n');
 
     assert.deepEqual(
-      parsePlaylist(text).map((e) => e.seq),
+      parseMediaPlaylist(text).map((e) => e.seq),
       [0, 1],
     );
   });
@@ -134,14 +156,14 @@ describe('parsePlaylist', () => {
   it('parses a playlist whose media sequence reset to 0 (e.g. after an encoder restart)', () => {
     const text = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
 
-    assert.deepEqual(parsePlaylist(text), [{ seq: 0, duration: 2.0, uri: 'segment_0.ts' }]);
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 2.0, uri: 'segment_0.ts' }]);
   });
 
   it('falls back to media sequence 0 when the tag value is not a number', () => {
     const text = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:garbage', '#EXTINF:2.0,', 'a.ts'].join('\n');
 
     assert.deepEqual(
-      parsePlaylist(text).map((e) => e.seq),
+      parseMediaPlaylist(text).map((e) => e.seq),
       [0],
     );
   });
@@ -161,7 +183,7 @@ describe('parsePlaylist', () => {
       'b.ts',
     ].join('\n');
 
-    assert.deepEqual(parsePlaylist(text), [
+    assert.deepEqual(parseMediaPlaylist(text), [
       { seq: 5, duration: 2.0, uri: 'a.ts' },
       { seq: 6, duration: 2.0, uri: 'b.ts' },
     ]);
@@ -170,25 +192,25 @@ describe('parsePlaylist', () => {
   it('parses the duration from an #EXTINF tag with a title after the comma', () => {
     const text = ['#EXTM3U', '#EXTINF:3.337,some title', 'a.ts'].join('\n');
 
-    assert.deepEqual(parsePlaylist(text), [{ seq: 0, duration: 3.337, uri: 'a.ts' }]);
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 3.337, uri: 'a.ts' }]);
   });
 
   it('skips a URI line that has no preceding #EXTINF, without consuming a sequence number', () => {
     const text = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:10', 'orphan.ts', '#EXTINF:2.0,', 'a.ts'].join('\n');
 
-    assert.deepEqual(parsePlaylist(text), [{ seq: 10, duration: 2.0, uri: 'a.ts' }]);
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 10, duration: 2.0, uri: 'a.ts' }]);
   });
 
   it('does not reuse an #EXTINF duration for more than one URI', () => {
     const text = ['#EXTM3U', '#EXTINF:2.0,', 'a.ts', 'b.ts'].join('\n');
 
-    assert.deepEqual(parsePlaylist(text), [{ seq: 0, duration: 2.0, uri: 'a.ts' }]);
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 2.0, uri: 'a.ts' }]);
   });
 
   it('emits a NaN duration for an #EXTINF with a non-numeric value (current behavior)', () => {
     const text = ['#EXTM3U', '#EXTINF:not-a-number,', 'a.ts'].join('\n');
 
-    const entries = parsePlaylist(text);
+    const entries = parseMediaPlaylist(text);
     assert.equal(entries.length, 1);
     assert.equal(entries[0].seq, 0);
     assert.equal(entries[0].uri, 'a.ts');
@@ -198,11 +220,11 @@ describe('parsePlaylist', () => {
   it('handles CRLF line endings and surrounding whitespace', () => {
     const text = '#EXTM3U\r\n#EXT-X-MEDIA-SEQUENCE:1\r\n#EXTINF:2.5,\r\n  a.ts  \r\n';
 
-    assert.deepEqual(parsePlaylist(text), [{ seq: 1, duration: 2.5, uri: 'a.ts' }]);
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 1, duration: 2.5, uri: 'a.ts' }]);
   });
 
   it('returns an empty array for an empty or tag-only playlist', () => {
-    assert.deepEqual(parsePlaylist(''), []);
-    assert.deepEqual(parsePlaylist('#EXTM3U\n#EXT-X-ENDLIST'), []);
+    assert.deepEqual(parseMediaPlaylist(''), []);
+    assert.deepEqual(parseMediaPlaylist('#EXTM3U\n#EXT-X-ENDLIST'), []);
   });
 });

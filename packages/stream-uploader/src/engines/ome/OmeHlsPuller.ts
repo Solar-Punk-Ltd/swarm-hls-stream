@@ -1,7 +1,7 @@
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
 
-import { parseMasterPlaylist, parsePlaylist } from './utils.js';
+import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './utils.js';
 
 const logger = Logger.getInstance();
 
@@ -113,7 +113,7 @@ export class OmeHlsPuller {
   }
 
   private async processPlaylist(playlist: string, url: string): Promise<void> {
-    const entries = parsePlaylist(playlist);
+    const entries = parseMediaPlaylist(playlist);
 
     for (const entry of entries) {
       if (this.stopped) {
@@ -164,14 +164,13 @@ export class OmeHlsPuller {
 
     this.resetRetryCounter();
 
-    const masterPlaylist = await res.text();
-    const variantUri = parseMasterPlaylist(masterPlaylist);
+    const playlist = await res.text();
 
-    if (variantUri) {
+    if (isMasterPlaylist(playlist)) {
+      const variantUri = parseMasterPlaylist(playlist);
       this.mediaPlaylistUrl = new URL(variantUri, this.masterUrl).toString();
       logger.info(`[OME] Resolved variant playlist for ${this.streamId}: ${this.mediaPlaylistUrl}`);
     } else {
-      // Already a media playlist — use master URL directly.
       this.mediaPlaylistUrl = this.masterUrl;
       logger.info(`[OME] Using master URL as media playlist for ${this.streamId}`);
     }
