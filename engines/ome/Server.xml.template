@@ -5,6 +5,7 @@
     <IP>*</IP>
     <PrivacyProtection>false</PrivacyProtection>
 
+    <!-- TODO check default settings for OME -->
     <StunServer>stun.l.google.com:19302</StunServer>
 
     <Bind>
