@@ -5,23 +5,16 @@ import { parseMasterPlaylist, parsePlaylist } from './utils.js';
 
 const logger = Logger.getInstance();
 
-// Pulls the HLS playlist from OME at a fixed interval and forwards new
-// segments to the StreamOrchestrator. One instance per active stream.
-export class HlsPuller {
+export class OmeHlsPuller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private stopped = false;
   private lastSeq = -1;
   private notFoundSince: number | null = null;
   private readonly masterUrl: string;
-  // Resolved on demand from the master playlist; OME's variant URL contains
-  // a per-session id, so we discover it after the stream is ready.
   private mediaPlaylistUrl: string | null = null;
 
-  // Allow plenty of time for OME's HLS publisher to warm up. With 2s
-  // SegmentDuration and a slow keyframe interval (e.g. OBS default 6s),
-  // the master playlist can take 10-15s to appear.
-  private static readonly MAX_NOT_FOUND_MS = 60_000;
+  private static readonly RETRY_THRESHOLD_IN_MS = 60_000;
 
   constructor(
     private streamId: string,
@@ -72,37 +65,54 @@ export class HlsPuller {
     }, delayMs);
   }
 
+  private resetRetryCounter(): void {
+    this.notFoundSince = null;
+  }
+
   private async tick(): Promise<void> {
     if (this.stopped) {
       return;
     }
 
-    // 1. Resolve the variant (media) playlist URL if we don't have it yet.
+    const playlistData = await this.fetchPlaylistData();
+
+    if (!playlistData) {
+      return;
+    }
+
+    this.resetRetryCounter();
+    await this.processPlaylist(playlistData, this.mediaPlaylistUrl as string);
+
+    this.scheduleNext(this.intervalMs);
+  }
+
+  private async fetchPlaylistData(): Promise<string | null> {
     if (!this.mediaPlaylistUrl) {
-      const playlistUrl = await this.resolveMediaPlaylistUrl();
+      const playlistUrl = await this.fetchMediaPlaylistUrl();
       if (!playlistUrl) {
-        // Either master not ready yet (404) or it's actually a media
-        // playlist already (handled inside resolveMediaPlaylistUrl).
-        return;
+        // If not ready yet (404)
+        return null;
       }
     }
 
-    // 2. Fetch the media playlist and process new segments.
     const url = this.mediaPlaylistUrl as string;
-    const res = await fetch(url);
-    if (res.status === 404) {
-      this.handleNotFound('media playlist');
-      // OME may rotate the variant id if the stream restarts; clear it so
-      // we re-resolve on the next tick.
-      this.mediaPlaylistUrl = null;
-      return;
-    }
-    if (!res.ok) {
-      throw new Error(`Media playlist HTTP ${res.status}`);
-    }
-    this.notFoundSince = null;
+    const rawPlaylistResponse = await fetch(url);
 
-    const playlist = await res.text();
+    if (rawPlaylistResponse.status === 404) {
+      this.handleNotFound('media playlist');
+      // re-resolve on the next tick.
+      this.mediaPlaylistUrl = null;
+      return null;
+    }
+
+    if (!rawPlaylistResponse.ok) {
+      throw new Error(`Media playlist HTTP ${rawPlaylistResponse.status}`);
+    }
+
+    return await rawPlaylistResponse.text();
+  }
+
+  private async processPlaylist(playlist: string, url: string): Promise<void> {
     const entries = parsePlaylist(playlist);
 
     for (const entry of entries) {
@@ -128,32 +138,35 @@ export class HlsPuller {
         if (!result.accepted) {
           logger.warn(`[OME] Segment ${entry.seq} not accepted for ${this.streamId}: ${result.reason}`);
         }
+
         this.lastSeq = entry.seq;
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Unknown error';
         logger.warn(`[OME] Segment ${entry.seq} fetch error for ${this.streamId}: ${msg}`);
       }
     }
-
-    this.scheduleNext(this.intervalMs);
   }
 
   // Fetches the master playlist and resolves the first variant to an absolute
   // URL. If the body turns out to be a media playlist (no #EXT-X-STREAM-INF),
   // we use the master URL itself. Returns true if mediaPlaylistUrl is set.
-  private async resolveMediaPlaylistUrl(): Promise<boolean> {
+  private async fetchMediaPlaylistUrl(): Promise<boolean> {
     const res = await fetch(this.masterUrl);
+
     if (res.status === 404) {
       this.handleNotFound('master playlist');
       return false;
     }
+
     if (!res.ok) {
       throw new Error(`Master playlist HTTP ${res.status}`);
     }
-    this.notFoundSince = null;
 
-    const body = await res.text();
-    const variantUri = parseMasterPlaylist(body);
+    this.resetRetryCounter();
+
+    const masterPlaylist = await res.text();
+    const variantUri = parseMasterPlaylist(masterPlaylist);
+
     if (variantUri) {
       this.mediaPlaylistUrl = new URL(variantUri, this.masterUrl).toString();
       logger.info(`[OME] Resolved variant playlist for ${this.streamId}: ${this.mediaPlaylistUrl}`);
@@ -165,17 +178,19 @@ export class HlsPuller {
     return true;
   }
 
-  private handleNotFound(what: string): void {
+  private handleNotFound(target: string): void {
     const now = Date.now();
     if (this.notFoundSince === null) {
       this.notFoundSince = now;
     }
-    if (now - this.notFoundSince > HlsPuller.MAX_NOT_FOUND_MS) {
-      logger.info(`[OME] ${what} gone for ${this.streamId}, halting puller`);
+
+    if (now - this.notFoundSince > OmeHlsPuller.RETRY_THRESHOLD_IN_MS) {
+      logger.info(`[OME] ${target} gone for ${this.streamId}, halting puller`);
       this.stop();
       this.onHalt?.();
       return;
     }
+
     this.scheduleNext(this.intervalMs);
   }
 }

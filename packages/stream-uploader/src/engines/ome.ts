@@ -1,79 +1,22 @@
 import { Request, Response, Router } from 'express';
-import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 
-import { HlsPuller } from './ome/HlsPuller.js';
-import { AppStream } from './ome/interfaces.js';
-import { EnginePlugin, RawBodyRequest } from './types.js';
+import { reply, verifyAdmissionSignature } from './ome/http.js';
+import { AppStream, OmeAdmissionPayload, OmeEngineOptions } from './ome/interfaces.js';
+import { OmeHlsPuller } from './ome/OmeHlsPuller.js';
+import { buildStreamId, parseAppStream, resolveMediaType } from './ome/utils.js';
+import { EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
-
-// See https://airensoft.gitbook.io/ovenmediaengine/access-control/admission-webhooks
-interface OmeAdmissionRequest {
-  direction: 'incoming' | 'outgoing';
-  protocol: string;
-  url: string;
-  time?: string;
-  new_url?: string;
-  status?: 'opening' | 'closing';
-}
-
-interface OmeAdmissionPayload {
-  client?: { address?: string; port?: number };
-  request: OmeAdmissionRequest;
-}
-
-interface OmeAdmissionReply {
-  allowed: boolean;
-  new_url?: string | null;
-  lifetime?: number;
-  reason?: string;
-}
-
-function resolveMediaType(app: string): MediaType {
-  return app === MEDIA_TYPE_AUDIO ? MEDIA_TYPE_AUDIO : MEDIA_TYPE_VIDEO;
-}
-
-function buildStreamId(app: string, stream: string): string {
-  return `${app}/${stream}`;
-}
-
-export function parseAppStream(url: string): AppStream {
-  let parts: string[] = [];
-
-  try {
-    const u = new URL(url);
-    parts = u.pathname.split('/').filter(Boolean);
-
-    if (parts.length < 2) {
-      const streamid = u.searchParams.get('streamid');
-      if (streamid) {
-        parts = new URL(streamid).pathname.split('/').filter(Boolean);
-      }
-    }
-  } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : 'Unknown error';
-    logger.error(`[OME] Could not parse app/stream from URL: ${url} (${errorMsg})`);
-    throw new Error(`Could not parse app/stream from URL: ${url} (${errorMsg})`);
-  }
-
-  return { app: parts[0], stream: parts[1] };
-}
-
-export interface OmeEngineOptions {
-  admissionSecret?: string;
-  failOpen?: boolean;
-}
 
 export function createOmeEngine(
   hlsBaseUrl: string,
   pollIntervalMs: number,
   options: OmeEngineOptions = {},
 ): EnginePlugin {
-  const pullers = new Map<string, HlsPuller>();
+  const pullers = new Map<string, OmeHlsPuller>();
   const admissionSecret = options.admissionSecret ?? '';
   const failOpen = options.failOpen ?? false;
 
@@ -103,34 +46,14 @@ export function createOmeEngine(
   };
 }
 
-function verifyAdmissionSignature(req: Request, secret: string): boolean {
-  if (!secret) {
-    return true;
-  }
-
-  const signature = req.get('x-ome-signature');
-  const rawBody = (req as RawBodyRequest).rawBody;
-  if (!signature || !rawBody) {
-    return false;
-  }
-
-  const expected = createHmac('sha1', secret).update(rawBody).digest('base64url');
-  const received = Buffer.from(signature);
-  const computed = Buffer.from(expected);
-  return received.length === computed.length && timingSafeEqual(received, computed);
-}
-
-function reply(res: Response, body: OmeAdmissionReply): void {
-  res.json(body);
-}
-
+// See https://airensoft.gitbook.io/ovenmediaengine/access-control/admission-webhooks
 function handleAdmission(
   req: Request,
   res: Response,
   orchestrator: StreamOrchestrator,
   hlsBaseUrl: string,
   pollIntervalMs: number,
-  pullers: Map<string, HlsPuller>,
+  pullers: Map<string, OmeHlsPuller>,
   failOpen: boolean,
 ): void {
   try {
@@ -189,7 +112,7 @@ function handleAdmission(
         });
       };
 
-      const puller = new HlsPuller(
+      const puller = new OmeHlsPuller(
         streamId,
         parsed.app,
         parsed.stream,
