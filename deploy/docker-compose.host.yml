@@ -13,3 +13,6 @@ services:
 
   srs:
     network_mode: host
+
+  ome:
+    network_mode: host
