@@ -23,6 +23,8 @@ usage() {
   echo "Services: ${ALL_SERVICES[*]}"
   echo "Targets read from config.json."
   echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
+  echo "Engine env files are per-profile too: engines/<engine>/.env.<profile> — created"
+  echo "automatically from the engine's .env (or .env.sample) on first deploy."
   echo "--portSlot=<N> (1-999) shifts each default *_PORT by N*10 (10000 -> 10020 with =2)."
   echo "When set, the slot is authoritative — port lines in .env.<profile> are ignored."
   echo "--host=<target> ignores per-service targets in config.json and sends every enabled"
@@ -41,6 +43,17 @@ set -- "${REST_ARGS[@]}"
 
 require_env
 load_env
+
+# Engine env files are per-profile too (engines/<engine>/.env.<profile>) —
+# created from the base engine .env / .env.sample when missing, then loaded
+# as defaults below the root env (so .env.<profile> wins on duplicate keys).
+for engine in "${ENGINE_SERVICES[@]}"; do
+  if is_enabled "$(get_target "$engine")"; then
+    ensure_engine_env "$engine"
+  fi
+done
+load_engine_envs
+
 apply_port_slot
 
 # --- Parse service filter ---
@@ -401,11 +414,16 @@ generate_env_overrides() {
   local target="$1"
   shift
   local services=("$@")
-  # Start with the slot-resolved port lines (apply_port_slot populates this).
-  # These need to land in the override file passed to docker compose so the values
+  # Start with the resolved engine env values (engines/<engine>/.env.<profile>),
+  # then the slot-resolved port lines (apply_port_slot populates this). All of it
+  # needs to land in the override file passed to docker compose so the values
   # actually reach interpolation — `--env-file=<.env.profile>` alone causes shell
   # exports to be ignored in some Compose versions for vars not present in that file.
-  local overrides="$PORT_OVERRIDES_TEXT"
+  # Engine lines go FIRST: on duplicate keys the later lines win, so slot ports and
+  # the auto-resolved keys below (BEE_URL, OME_HLS_URL, *_ADAPTER_HOST) take over.
+  local overrides
+  overrides="$(engine_env_overrides_text)"
+  overrides+="$PORT_OVERRIDES_TEXT"
 
   # Per-deployment parameter overrides supplied on the CLI (feed_owner, feed_topic,
   # private_key, stamp_id). When set they take precedence over .env.<profile>.

@@ -445,28 +445,121 @@ compose_project_flag() {
 
 # --- Env helpers ---
 
-# Load .env values into current shell. Each KEY=VALUE in the file is treated
-# as a DEFAULT — anything already exported by the caller wins.
-load_env() {
-  if [ -f "$ENV_FILE" ]; then
+# Load KEY=VALUE lines from a file into the current shell. Each value is
+# treated as a DEFAULT — anything already exported by the caller wins.
+load_env_file() {
+  local file="$1"
+  if [ -f "$file" ]; then
     set -a
-    local line key
+    local line key value
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
         ''|\#*) continue ;;
       esac
       key="${line%%=*}"
-      case "$key" in
-        *' '*|*$'\t'*|'') continue ;;
-      esac
+      if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        continue
+      fi
       if [ -n "${!key+x}" ]; then
         continue
       fi
-      # shellcheck disable=SC2086
-      eval "$line"
-    done < "$ENV_FILE"
+      # Take the value literally (no eval — secrets may contain $, !, #, ...).
+      # Quoted values run to the closing quote; unquoted values end at an
+      # inline comment (whitespace + #, dotenv-style) with whitespace trimmed.
+      value="${line#*=}"
+      case "$value" in
+        \"*) value="${value#\"}"; value="${value%%\"*}" ;;
+        \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+        *)
+          value="${value%%[[:space:]]\#*}"
+          value="${value%"${value##*[![:space:]]}"}"
+          ;;
+      esac
+      export "$key=$value"
+    done < "$file"
     set +a
   fi
+}
+
+load_env() {
+  load_env_file "$ENV_FILE"
+}
+
+# --- Engine env (per-profile) ---
+# Engine-specific options live in engines/<engine>/.env. Like the root env,
+# a named profile gets its own copy: engines/<engine>/.env.<profile>.
+
+readonly ENGINE_SERVICES=("$SVC_SRS" "$SVC_OME")
+
+engine_env_file() {
+  local engine="$1"
+  if [ "$PROFILE" = "default" ]; then
+    echo "$ROOT_DIR/engines/$engine/.env"
+  else
+    echo "$ROOT_DIR/engines/$engine/.env.$PROFILE"
+  fi
+}
+
+# Create the current profile's engine env when missing — copied from the base
+# engines/<engine>/.env (falling back to .env.sample). Engine ports are NOT
+# shifted by --portSlot, so the new copy needs a manual review.
+ensure_engine_env() {
+  local engine="$1"
+  local file base sample
+  file=$(engine_env_file "$engine")
+  [ -f "$file" ] && return 0
+  base="$ROOT_DIR/engines/$engine/.env"
+  sample="$ROOT_DIR/engines/$engine/.env.sample"
+  if [ "$PROFILE" != "default" ] && [ -f "$base" ]; then
+    cp "$base" "$file"
+  elif [ -f "$sample" ]; then
+    cp "$sample" "$file"
+  else
+    return 0
+  fi
+  log_warn "Created ${file#"$ROOT_DIR"/} for profile '$PROFILE' — review its ports/secrets (engine ports are not shifted by --portSlot)."
+}
+
+# Load the env file of every enabled engine as defaults. Runs after load_env so
+# the root env wins on duplicate keys — the same order the natively-run uploader
+# uses (dotenv loads <root>/.env first, then engines/<engine>/.env).
+load_engine_envs() {
+  local engine
+  for engine in "${ENGINE_SERVICES[@]}"; do
+    if is_enabled "$(get_target "$engine")"; then
+      load_env_file "$(engine_env_file "$engine")"
+    fi
+  done
+}
+
+# Emit resolved KEY=VALUE\n lines for every key in the enabled engines' env
+# files. Values are read from the current shell — i.e. after the
+# load_env / load_engine_envs / apply_port_slot precedence has been applied —
+# and land in the .env.deploy.<profile> override file so per-profile engine
+# settings reliably reach compose interpolation (same reason PORT_OVERRIDES_TEXT
+# exists), locally and on remote targets.
+engine_env_overrides_text() {
+  local engine file line key value out=""
+  for engine in "${ENGINE_SERVICES[@]}"; do
+    is_enabled "$(get_target "$engine")" || continue
+    file=$(engine_env_file "$engine")
+    [ -f "$file" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        ''|\#*) continue ;;
+      esac
+      key="${line%%=*}"
+      if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        continue
+      fi
+      # Single-quote the value (escaping embedded quotes) — the override file is
+      # both `source`d and parsed by compose, and secrets may contain $, !, #, ...
+      value="${!key:-}"
+      value="${value//\'/\'\\\'\'}"
+      out+="${key}='${value}'\n"
+    done < "$file"
+  done
+  printf '%s' "$out"
 }
 
 # --- Validation ---
