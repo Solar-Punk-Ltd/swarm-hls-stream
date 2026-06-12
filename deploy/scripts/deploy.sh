@@ -124,6 +124,38 @@ check_stamp() {
 
 check_stamp
 
+# --- Engine guard ---
+
+# ENGINE selects the uploader's engine plugin. Warn when the matching engine
+# service is disabled in config.json — the uploader would wait on webhooks /
+# poll an HLS URL that nothing serves.
+check_engine() {
+  local deploys_uploader=false
+  for target in $(get_targets); do
+    for svc in $(get_filtered_services_for_target "$target"); do
+      [ "$svc" = "$SVC_UPLOADER" ] && deploys_uploader=true
+    done
+  done
+  [ "$deploys_uploader" = "true" ] || return 0
+
+  local engine="${ENGINE:-srs}"
+  local engine_svc
+  case "$engine" in
+    "$SVC_SRS") engine_svc="$SVC_SRS" ;;
+    "$SVC_OME") engine_svc="$SVC_OME" ;;
+    *) return 0 ;;
+  esac
+
+  local engine_target
+  engine_target=$(get_target "$engine_svc")
+  if ! is_enabled "$engine_target"; then
+    log_warn "ENGINE=$engine but service '$engine_svc' is disabled in config.json."
+    log_warn "Enable it (e.g. \"$engine_svc\": \"localhost\") or the uploader will receive no streams."
+  fi
+}
+
+check_engine
+
 # --- Build ---
 
 build_if_needed() {
@@ -175,22 +207,24 @@ resolve_bee_url() {
   echo "http://${bee_host}:${bee_port}"
 }
 
-# When stream-uploader is on a different host than SRS,
-# SRS webhooks need the real IP. (Currently blocked by validation,
-# but this handles future flexibility.)
+# When stream-uploader is on a different host than the media engine,
+# engine webhooks need the real IP. (Currently blocked by validation for SRS,
+# but this handles future flexibility.) Takes the engine service name
+# (defaults to srs for backward compatibility).
 resolve_adapter_host() {
-  local srs_target uploader_target
-  srs_target=$(get_target "$SVC_SRS")
+  local engine_svc="${1:-$SVC_SRS}"
+  local engine_target uploader_target
+  engine_target=$(get_target "$engine_svc")
   uploader_target=$(get_target "$SVC_UPLOADER")
 
   if is_native "$uploader_target"; then
     # stream-uploader runs on the host machine outside Docker.
-    # SRS reaches it via the host-gateway alias added in docker-compose.yml.
+    # The engine reaches it via the host-gateway alias added in docker-compose.yml.
     echo "host.docker.internal"
     return
   fi
 
-  if [ "$srs_target" = "$uploader_target" ]; then
+  if [ "$engine_target" = "$uploader_target" ]; then
     if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
       echo "localhost"
     else
@@ -199,6 +233,35 @@ resolve_adapter_host() {
   else
     host_from_target "$uploader_target"
   fi
+}
+
+# The dockerized uploader can't use the OME_HLS_URL from .env — that value is
+# written for native dev (http://localhost:8081) and would point at the
+# uploader container itself. Resolve the URL the same way as resolve_bee_url.
+# Prints nothing when OME is disabled (keep whatever the env says).
+resolve_ome_hls_url() {
+  local ome_target uploader_target
+  ome_target=$(get_target "$SVC_OME")
+  uploader_target=$(get_target "$SVC_UPLOADER")
+
+  if ! is_enabled "$ome_target" || is_native "$uploader_target"; then
+    return
+  fi
+
+  if [ "$ome_target" = "$uploader_target" ]; then
+    if [ "${COMPOSE_NETWORK:-}" = "host" ]; then
+      echo "http://localhost:${OME_HLS_PORT:-8081}"
+    else
+      # Bridge network — docker DNS, container-internal port.
+      echo "http://ome:8081"
+    fi
+    return
+  fi
+
+  # Different targets — use OME's published port on its host.
+  local ome_host
+  ome_host=$(host_from_target "$ome_target")
+  echo "http://${ome_host}:${OME_HLS_PORT:-8081}"
 }
 
 # --- Init bee data dirs ---
@@ -259,7 +322,7 @@ sync_to_remote() {
   log_info "Syncing files to $target"
 
   # Ensure remote directory structure exists
-  ssh "$target" "mkdir -p $REMOTE_BASE/deploy/scripts $REMOTE_BASE/engines/srs $REMOTE_BASE/packages/stream-uploader $REMOTE_BASE/nodes"
+  ssh "$target" "mkdir -p $REMOTE_BASE/deploy/scripts $REMOTE_BASE/engines/srs $REMOTE_BASE/engines/ome $REMOTE_BASE/packages/stream-uploader $REMOTE_BASE/nodes"
 
   # Always sync compose, Dockerfiles, nginx template, scripts
   rsync -az --delete \
@@ -277,11 +340,13 @@ sync_to_remote() {
   rsync -az "$DEPLOY_DIR/scripts/" "$target:$REMOTE_BASE/deploy/scripts/"
 
   local need_srs=false
+  local need_ome=false
   local need_uploader=false
   local need_client=false
 
   for svc in "${services[@]}"; do
     [ "$svc" = "$SVC_SRS" ] && need_srs=true
+    [ "$svc" = "$SVC_OME" ] && need_ome=true
     [ "$svc" = "$SVC_UPLOADER" ] && need_uploader=true
     [ "$svc" = "$SVC_CLIENT" ] && need_client=true
   done
@@ -291,6 +356,13 @@ sync_to_remote() {
       "$ROOT_DIR/engines/srs/srs.conf.template" \
       "$ROOT_DIR/engines/srs/entrypoint.sh" \
       "$target:$REMOTE_BASE/engines/srs/"
+  fi
+
+  if [ "$need_ome" = "true" ]; then
+    rsync -az --delete \
+      "$ROOT_DIR/engines/ome/Server.xml.template" \
+      "$ROOT_DIR/engines/ome/entrypoint.sh" \
+      "$target:$REMOTE_BASE/engines/ome/"
   fi
 
   if [ "$need_uploader" = "true" ]; then
@@ -340,16 +412,25 @@ generate_env_overrides() {
 
   for svc in "${services[@]}"; do
     if [ "$svc" = "$SVC_UPLOADER" ]; then
-      local bee_url
+      local bee_url ome_hls_url
       bee_url=$(resolve_bee_url)
       if [ -n "$bee_url" ]; then
         overrides="${overrides}BEE_URL=${bee_url}\n"
       fi
+      ome_hls_url=$(resolve_ome_hls_url)
+      if [ -n "$ome_hls_url" ]; then
+        overrides="${overrides}OME_HLS_URL=${ome_hls_url}\n"
+      fi
     fi
     if [ "$svc" = "$SVC_SRS" ]; then
       local adapter_host
-      adapter_host=$(resolve_adapter_host)
+      adapter_host=$(resolve_adapter_host "$SVC_SRS")
       overrides="${overrides}SRS_ADAPTER_HOST=${adapter_host}\n"
+    fi
+    if [ "$svc" = "$SVC_OME" ]; then
+      local ome_adapter_host
+      ome_adapter_host=$(resolve_adapter_host "$SVC_OME")
+      overrides="${overrides}OME_ADAPTER_HOST=${ome_adapter_host}\n"
     fi
     if [ "$svc" = "$SVC_CLIENT" ]; then
       # Force the dockerized client bundle to call back to its own origin via

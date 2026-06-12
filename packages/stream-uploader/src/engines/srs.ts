@@ -11,8 +11,8 @@ import { EnginePlugin } from './types.js';
 const logger = Logger.getInstance();
 
 // SRS webhook response codes
-const SRS_ACCEPT = '0';
-const SRS_REJECT = '1';
+const SRS_ACCEPT = 0;
+const SRS_REJECT = 1;
 
 // SRS webhook actions
 const SRS_ACTION_PUBLISH = 'on_publish';
@@ -37,8 +37,8 @@ interface SrsHlsPayload {
   duration: number;
 }
 
-function srsResponse(res: Response, code: string): void {
-  res.type('json').send(code);
+function srsResponse(res: Response, code: number): void {
+  res.json(code);
 }
 
 function buildStreamId(app: string, stream: string): string {
