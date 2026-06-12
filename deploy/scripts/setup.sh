@@ -36,7 +36,17 @@ else
   log_ok ".env already exists"
 fi
 
-# 4. Init bee data dirs for local services
+# 4. Create engine .env files for engines enabled in config.json
+for engine in "$SVC_SRS" "$SVC_OME"; do
+  engine_env="$ROOT_DIR/engines/$engine/.env"
+  engine_sample="$ROOT_DIR/engines/$engine/.env.sample"
+  if is_enabled "$(get_target "$engine")" && [ ! -f "$engine_env" ] && [ -f "$engine_sample" ]; then
+    cp "$engine_sample" "$engine_env"
+    log_ok "Created engines/$engine/.env from its .env.sample"
+  fi
+done
+
+# 5. Init bee data dirs for local services
 require_config
 load_env
 
@@ -54,7 +64,7 @@ if is_enabled "$bee_gateway_target" && is_local "$bee_gateway_target"; then
   "$ROOT_DIR/nodes/init-node.sh" "$DEPLOY_DIR/${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}"
 fi
 
-# 5. Build packages
+# 6. Build packages
 echo ""
 log_info "Building packages"
 cd "$ROOT_DIR"

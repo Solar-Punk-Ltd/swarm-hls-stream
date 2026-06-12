@@ -60,7 +60,7 @@ The player supports an in-browser quality-of-experience overlay — see [client/
 
 ## Configuration
 
-A single `.env` file in the monorepo root configures everything. See [.env.sample](.env.sample).
+The root `.env` holds the core variables — see [.env.sample](.env.sample). **Engine-specific variables live next to each engine** in `engines/<name>/.env` (copy from [engines/srs/.env.sample](engines/srs/.env.sample) / [engines/ome/.env.sample](engines/ome/.env.sample)); the uploader automatically loads the file for the engine selected via `ENGINE`. `setup.sh` creates these files for engines enabled in `deploy/config.json`. Values in the root `.env` (or injected container env) take precedence over the engine file.
 
 ## Project Structure
 

@@ -1,6 +1,7 @@
 node_modules
 dist
 .env*
+!.env.sample
 .DS_Store
 *.log
 coverage
@@ -12,3 +13,5 @@ deploy/data/
 deploy/config.json
 deploy/.env.deploy*
 *.tsbuildinfo
+
+/engines/srs/media

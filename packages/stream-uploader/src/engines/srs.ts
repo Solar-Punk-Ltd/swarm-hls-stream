@@ -5,6 +5,7 @@ import path from 'path';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
+import { optional } from '../utils/env.js';
 
 import { EnginePlugin } from './types.js';
 
@@ -43,6 +44,12 @@ function srsResponse(res: Response, code: number): void {
 
 function buildStreamId(app: string, stream: string): string {
   return `${app}/${stream}`;
+}
+
+export function createSrsEngineFromEnv(): EnginePlugin {
+  const mediaPath = optional('SRS_MEDIA_PATH', './media');
+  logger.info(`[Engine] SRS engine loaded, media path: ${mediaPath}`);
+  return createSrsEngine(mediaPath);
 }
 
 export function createSrsEngine(mediaRootPath: string): EnginePlugin {

@@ -67,7 +67,7 @@ The deploy script will skip stream-uploader and configure SRS to reach it via `h
 
 ### .env
 
-Single `.env` in monorepo root, shared by dev and deploy. See [.env.sample](../.env.sample) for all options.
+Single `.env` in monorepo root for core options, shared by dev and deploy — see [.env.sample](../.env.sample). **Engine-specific options live in `engines/<name>/.env`** (samples: [engines/srs/.env.sample](../engines/srs/.env.sample), [engines/ome/.env.sample](../engines/ome/.env.sample)), loaded at runtime for the engine selected via `ENGINE`. `setup.sh` creates them from the samples for engines enabled in `config.json`.
 
 ## Scripts
 
