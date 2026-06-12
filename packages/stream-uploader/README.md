@@ -49,12 +49,12 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                         |
-| ------------------- | ----------------------------------- |
-| `BEE_URL`           | Bee node API URL                    |
+| Variable            | Description                           |
+| ------------------- | ------------------------------------- |
+| `BEE_URL`           | Bee node API URL                      |
 | `STAMP`             | Postage stamp ID (`pnpm stamp:setup`) |
-| `STREAM_KEY`        | Private key (hex) for signing feeds |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog   |
+| `STREAM_KEY`        | Private key (hex) for signing feeds   |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog     |
 
 **Optional:**
 
@@ -93,17 +93,6 @@ Engine-independent HTTP interface for pushing segments directly.
 - `404` — Unknown stream
 - `400` — Missing required fields
 
-### SRS Engine
-
-When `ENGINE=srs`, SRS webhook endpoints are mounted:
-
-| Endpoint                    | Description                                    |
-| --------------------------- | ---------------------------------------------- |
-| `POST /engines/srs/streams` | Handles `on_publish` / `on_unpublish` webhooks |
-| `POST /engines/srs/hls`     | Handles `on_hls` webhook (new segment ready)   |
-
-SRS writes segments to the shared media volume. The uploader reads segments from disk, uploads to Swarm, and deletes the file after upload.
-
 ## Engine Plugin Architecture
 
 The uploader supports pluggable media server engines. Each engine implements the `EnginePlugin` interface:
@@ -119,6 +108,32 @@ interface EnginePlugin {
 Engines are thin adapters that translate media server events into `StreamOrchestrator` calls. The generic API and engine routes coexist — both feed into the same orchestrator.
 
 Currently supported: **SRS** (SRT/RTMP to HLS).
+
+## Supported Transcoding Engines
+
+### OME Engine - OvenMediaEngine :
+
+When `ENGINE=ome`, webhook endpoints are mounted:
+
+| Endpoint             | Description                  |
+| -------------------- | ---------------------------- |
+| `POST /engines/ome/` | Handles `admission` webhooks |
+
+1. **Ingest** — broadcaster pushes SRT into OvenMediaEngine, which transcodes and publishes LLHLS.
+2. **Admission** — OME calls the `/engines/ome/admission` webhook on publish start/stop; the uploader verifies the HMAC signature and starts/stops the stream.
+3. **Pull** — an `HlsPuller` polls OME's HLS playlist and fetches new segments over HTTP (one puller per stream).
+4. **Upload** — the orchestrator uploads segments to Swarm, updates the live manifest feed (SOC), and finalizes a VOD manifest + catalog entry on stop.
+
+### SRS Engine
+
+When `ENGINE=srs`, SRS webhook endpoints are mounted:
+
+| Endpoint                    | Description                                    |
+| --------------------------- | ---------------------------------------------- |
+| `POST /engines/srs/streams` | Handles `on_publish` / `on_unpublish` webhooks |
+| `POST /engines/srs/hls`     | Handles `on_hls` webhook (new segment ready)   |
+
+SRS writes segments to the shared media volume. The uploader reads segments from disk, uploads to Swarm, and deletes the file after upload.
 
 ## Testing with FFmpeg
 
@@ -168,38 +183,6 @@ curl -X POST http://localhost:3000/stream/stop \
 | `StreamCatalog`      | Maintains the stream directory as a Swarm feed                                  |
 | `RecoveryStore`      | Persists stream state to disk for crash recovery                                |
 | `ManifestManager`    | Builds and updates HLS manifests                                                |
-
-## Project Structure
-
-```
-src/
-  api/
-    server.ts              # Express app setup, middleware, engine + route mounting
-    routes/
-      health.ts            # GET /health
-      stream.ts            # POST /stream/{start,segment,stop}
-    middleware/
-      asyncHandler.ts      # Async error wrapper for Express
-      errorHandler.ts      # Structured error responses (ApiError)
-      requestLogger.ts     # HTTP request logging
-      notFound.ts          # 404 handler
-  engines/
-    types.ts               # EnginePlugin interface
-    srs.ts                 # SRS webhook handlers
-  libs/
-    StreamOrchestrator.ts  # Stream lifecycle + queue + recovery
-    StreamUploader.ts      # Per-stream Swarm upload session
-    StreamCatalog.ts       # Stream directory feed
-    RecoveryStore.ts       # State persistence
-    ManifestManager.ts     # HLS manifest builder
-    Logger.ts              # Logging
-    ErrorHandler.ts        # Error handling
-  types.ts                 # Shared types and constants
-  utils/
-    config.ts              # Environment config
-    common.ts              # Utility functions
-  index.ts                 # Entry point
-```
 
 ## Scripts
 
