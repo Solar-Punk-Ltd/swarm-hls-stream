@@ -7,8 +7,7 @@ const logger = Logger.getInstance();
 
 export class OmeHlsPuller {
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private running = false;
-  private stopped = false;
+  private state: 'idle' | 'running' | 'stopped' = 'idle';
   private lastSeq = -1;
   private notFoundSince: number | null = null;
   private readonly masterUrl: string;
@@ -30,18 +29,17 @@ export class OmeHlsPuller {
   }
 
   start(): void {
-    if (this.running || this.stopped) {
+    if (this.state !== 'idle') {
       return;
     }
 
-    this.running = true;
+    this.state = 'running';
     logger.info(`[OME] HLS puller started for ${this.streamId} -> ${this.masterUrl}`);
     this.scheduleNext(0);
   }
 
   stop(): void {
-    this.stopped = true;
-    this.running = false;
+    this.state = 'stopped';
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -50,7 +48,7 @@ export class OmeHlsPuller {
   }
 
   private scheduleNext(delayMs: number): void {
-    if (this.stopped) {
+    if (this.state === 'stopped') {
       return;
     }
     if (this.timer) {
@@ -70,7 +68,7 @@ export class OmeHlsPuller {
   }
 
   private async tick(): Promise<void> {
-    if (this.stopped) {
+    if (this.state === 'stopped') {
       return;
     }
 
@@ -116,7 +114,7 @@ export class OmeHlsPuller {
     const segments = parseMediaPlaylist(playlist);
 
     for (const segment of segments) {
-      if (this.stopped) {
+      if (this.state === 'stopped') {
         return;
       }
       if (segment.seq <= this.lastSeq) {
