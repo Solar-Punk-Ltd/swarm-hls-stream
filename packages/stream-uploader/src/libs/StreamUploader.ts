@@ -119,7 +119,6 @@ export class StreamUploader {
     const vodManifest = this.manifestManager.buildVODManifest();
     const vodIndex = await this.uploadManifestData(vodManifest);
     if (vodIndex === null) {
-      // Keep recovery state so finalization is retried on the next start.
       throw new Error(`Failed to upload VOD manifest for stream ${this.streamId}`);
     }
 
@@ -164,12 +163,6 @@ export class StreamUploader {
     void this.uploadManifestData(liveManifest);
   }
 
-  /**
-   * Queues a manifest upload and resolves with the committed SOC index, or null on failure.
-   * The index only advances after a confirmed write — viewers walk the feed sequentially,
-   * so a skipped index would stall every player forever. A failed write is retried at the
-   * same index by the next manifest upload.
-   */
   private async uploadManifestData(manifestContent: string): Promise<number | null> {
     const committedIndex = await this.manifestQueue.add(async () => {
       const nextIndex = this.socIndex === null ? 0 : this.socIndex + 1;

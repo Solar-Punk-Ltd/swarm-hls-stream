@@ -56,7 +56,6 @@ export class StreamCatalog {
         this.logger.info('[StreamCatalog] No existing feed found, starting fresh');
         return;
       }
-      // Starting with an unknown feed index would overwrite the existing catalog.
       this.errorHandler.handleError(error, 'StreamCatalog.init');
       throw error;
     }
@@ -70,8 +69,6 @@ export class StreamCatalog {
     let state: StreamEntry[] = [];
 
     if (this.feedIndex !== null) {
-      // A failed read must abort the update — treating it as "no prior state"
-      // would replace the whole catalog with this single entry.
       state = await this.fetchCurrentState();
     }
 
