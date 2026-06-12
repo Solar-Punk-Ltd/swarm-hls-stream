@@ -4,11 +4,14 @@
 
 # --- Service names ---
 readonly SVC_SRS="srs"
+readonly SVC_OME="ome"
 readonly SVC_UPLOADER="stream-uploader"
 readonly SVC_BEE_UPLOADER="bee-uploader"
 readonly SVC_BEE_GATEWAY="bee-gateway"
 readonly SVC_CLIENT="client"
-readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "$SVC_UPLOADER" "$SVC_SRS" "$SVC_CLIENT")
+readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "$SVC_UPLOADER" "$SVC_SRS" "$SVC_OME" "$SVC_CLIENT")
+
+readonly DEFAULT_DISABLED_SERVICES=("$SVC_OME")
 
 # --- Targets ---
 readonly TARGET_LOCAL="localhost"
@@ -316,9 +319,15 @@ require_env() {
 # Returns "localhost", "user@host", or "false" (disabled).
 get_target() {
   local service="$1"
-  local value
+  local value svc
   # Use `type` to distinguish false (boolean) from missing (null) from string
-  value=$(jq -r ".services[\"$service\"] | if . == false then \"false\" elif . == null then \"localhost\" else tostring end" "$CONFIG_FILE")
+  value=$(jq -r ".services[\"$service\"] | if . == false then \"false\" elif . == null then \"missing\" else tostring end" "$CONFIG_FILE")
+  if [ "$value" = "missing" ]; then
+    value="localhost"
+    for svc in "${DEFAULT_DISABLED_SERVICES[@]}"; do
+      [ "$svc" = "$service" ] && value="false" && break
+    done
+  fi
   # --host overrides the config target for every enabled service.
   # Disabled services (false) remain disabled.
   if [ -n "$HOST_OVERRIDE" ] && [ "$value" != "false" ]; then

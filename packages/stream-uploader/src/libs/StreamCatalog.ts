@@ -33,6 +33,12 @@ export class StreamCatalog {
     this.signer = new PrivateKey(streamKey);
     this.feedTopic = Topic.fromString(feedTopic);
     this.stamp = stamp;
+    this.logger.debug(
+      `[StreamCatalog] bee=${(bee as unknown as { url?: string }).url ?? '?'} owner=${this.signer
+        .publicKey()
+        .address()
+        .toString()} topic="${feedTopic}" topicHex=${this.feedTopic.toString()} stamp=${stamp.slice(0, 12)}…`,
+    );
   }
 
   public async init(): Promise<void> {
@@ -70,16 +76,22 @@ export class StreamCatalog {
     }
 
     // Deduplicate by (owner, topic)
-    state = state.filter(e => e.owner !== entry.owner || e.topic !== entry.topic);
+    state = state.filter((e) => e.owner !== entry.owner || e.topic !== entry.topic);
     state.push(entry);
 
     const nextIndex = this.feedIndex ? this.feedIndex.next() : FeedIndex.fromBigInt(BigInt(0));
     const feedWriter = this.bee.makeFeedWriter(this.feedTopic, this.signer);
 
-    await retryAwaitableAsync(() => feedWriter.uploadPayload(this.stamp, JSON.stringify(state), { index: nextIndex }));
+    const payload = JSON.stringify(state);
+    const result = await retryAwaitableAsync(() => feedWriter.uploadPayload(this.stamp, payload, { index: nextIndex }));
 
     this.feedIndex = nextIndex;
-    this.logger.info(`[StreamCatalog] Feed updated at index ${nextIndex.toString()}, entries: ${state.length}`);
+    const ownerAddr = this.signer.publicKey().address().toString();
+    this.logger.debug(
+      `[StreamCatalog] Feed updated index=${nextIndex.toString()} entries=${state.length} bytes=${payload.length} ref=${
+        result?.reference?.toHex?.() ?? '?'
+      } owner=${ownerAddr} topicHex=${this.feedTopic.toString()}`,
+    );
   }
 
   private async fetchCurrentState(): Promise<StreamEntry[]> {

@@ -32,6 +32,19 @@ check_service() {
   fi
 }
 
+check_service_reachable() {
+  local name="$1"
+  local url="$2"
+
+  if curl -s -o /dev/null --max-time 5 "$url" 2>/dev/null; then
+    log_ok "$name ($url)"
+    return 0
+  else
+    log_error "$name ($url) — unreachable"
+    return 1
+  fi
+}
+
 check_target() {
   local target="$1"
   shift
@@ -60,6 +73,9 @@ check_target() {
         ;;
       "$SVC_SRS")
         check_service "$SVC_SRS" "http://$host:${SRS_HTTP_PORT:-8080}"
+        ;;
+      "$SVC_OME")
+        check_service_reachable "$SVC_OME" "http://$host:${OME_HLS_PORT:-8081}"
         ;;
       "$SVC_CLIENT")
         check_service "$SVC_CLIENT" "http://$host:${CLIENT_PORT:-5173}/"

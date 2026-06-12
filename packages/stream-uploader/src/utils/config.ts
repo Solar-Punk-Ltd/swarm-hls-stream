@@ -22,7 +22,30 @@ function optional(name: string, fallback: string): string {
 
 function optionalInt(name: string, fallback: number): number {
   const value = process.env[name];
-  return value ? parseInt(value, 10) : fallback;
+  if (!value) {
+    return fallback;
+  }
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    console.warn(`Invalid integer for env var ${name}: "${value}", using fallback ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+function optionalBool(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (!value) {
+    return fallback;
+  }
+  if (value === 'true' || value === '1') {
+    return true;
+  }
+  if (value === 'false' || value === '0') {
+    return false;
+  }
+  console.warn(`Invalid boolean for env var ${name}: "${value}", using fallback ${fallback}`);
+  return fallback;
 }
 
 export const config = {
@@ -37,4 +60,8 @@ export const config = {
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000),
   engine: optional('ENGINE', ''),
   mediaPath: optional('MEDIA_PATH', './media'),
+  omeHlsUrl: optional('OME_HLS_URL', 'http://ome:8081'),
+  omeHlsPollIntervalMs: optionalInt('OME_HLS_POLL_INTERVAL_MS', 500),
+  omeAdmissionSecret: optional('OME_ADMISSION_SECRET', ''),
+  omeAdmissionFailOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
 };
