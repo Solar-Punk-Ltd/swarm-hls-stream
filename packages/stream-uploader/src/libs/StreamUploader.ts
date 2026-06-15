@@ -183,6 +183,7 @@ export class StreamUploader {
     this.socIndex = nextIndex;
 
     if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
+      this.persistState();
       try {
         await this.notifyStart();
         this.isFirstManifestReady = true;
