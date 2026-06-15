@@ -37,6 +37,7 @@ export class StreamUploader {
   private mediatype: MediaType;
   private isFirstSegmentReady = false;
   private isFirstManifestReady = false;
+  private liveManifestQueued = false;
 
   private manifestManager: ManifestManager;
 
@@ -117,7 +118,7 @@ export class StreamUploader {
     }
 
     const vodManifest = this.manifestManager.buildVODManifest();
-    const vodIndex = await this.uploadManifestData(vodManifest);
+    const vodIndex = (await this.manifestQueue.add(() => this.commitManifest(vodManifest))) ?? null;
     if (vodIndex === null) {
       throw new Error(`Failed to upload VOD manifest for stream ${this.streamId}`);
     }
@@ -155,42 +156,44 @@ export class StreamUploader {
   }
 
   private uploadLiveManifest(): void {
-    const liveManifest = this.manifestManager.buildLiveManifest();
-    if (!liveManifest) {
+    if (this.liveManifestQueued) {
       return;
     }
 
-    void this.uploadManifestData(liveManifest);
+    this.liveManifestQueued = true;
+    void this.manifestQueue.add(async () => {
+      this.liveManifestQueued = false;
+      const manifest = this.manifestManager.buildLiveManifest();
+      if (manifest) {
+        await this.commitManifest(manifest);
+      }
+    });
   }
 
-  private async uploadManifestData(manifestContent: string): Promise<number | null> {
-    const committedIndex = await this.manifestQueue.add(async () => {
-      const nextIndex = this.socIndex === null ? 0 : this.socIndex + 1;
-      const data = Buffer.from(manifestContent, 'utf-8');
-      const result = await this.uploadDataAsSoc(nextIndex, data);
+  private async commitManifest(manifestContent: string): Promise<number | null> {
+    const nextIndex = this.socIndex === null ? 0 : this.socIndex + 1;
+    const data = Buffer.from(manifestContent, 'utf-8');
+    const result = await this.uploadDataAsSoc(nextIndex, data);
 
-      if (!result) {
-        this.logger.error(`Failed to upload manifest at SOC index ${nextIndex}, will retry at the same index`);
-        return null;
+    if (!result) {
+      this.logger.error(`Failed to upload manifest at SOC index ${nextIndex}, will retry at the same index`);
+      return null;
+    }
+
+    this.socIndex = nextIndex;
+
+    if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
+      try {
+        await this.notifyStart();
+        this.isFirstManifestReady = true;
+      } catch (error) {
+        this.errorHandler.handleError(error, 'StreamUploader.notifyStart');
       }
+    }
 
-      this.socIndex = nextIndex;
-
-      if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
-        try {
-          await this.notifyStart();
-          this.isFirstManifestReady = true;
-        } catch (error) {
-          this.errorHandler.handleError(error, 'StreamUploader.notifyStart');
-        }
-      }
-
-      this.logger.log(`Manifest uploaded at SOC index ${nextIndex}`);
-      this.persistState();
-      return nextIndex;
-    });
-
-    return committedIndex ?? null;
+    this.logger.log(`Manifest uploaded at SOC index ${nextIndex}`);
+    this.persistState();
+    return nextIndex;
   }
 
   private persistState(): void {
