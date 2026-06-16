@@ -1,14 +1,14 @@
 import { Bee } from '@ethersphere/bee-js';
 
 import { ApiServerHandle, startApiServer } from './api/server.js';
-import { createOmeEngine } from './engines/ome.js';
-import { createSrsEngine } from './engines/srs.js';
+import { engineRegistry } from './engines/registry.js';
 import { EnginePlugin } from './engines/types.js';
 import { Logger } from './libs/Logger.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
+import { loadEngineEnv } from './utils/env.js';
 
 const logger = Logger.getInstance();
 
@@ -60,26 +60,18 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 function loadEngines(): EnginePlugin[] {
-  const engines: EnginePlugin[] = [];
+  const createEngine = engineRegistry[config.engine];
 
-  if (config.engine === 'srs') {
-    engines.push(createSrsEngine(config.mediaPath));
-    logger.info(`[Engine] SRS engine loaded, media path: ${config.mediaPath}`);
-  } else if (config.engine === 'ome') {
-    engines.push(
-      createOmeEngine(config.omeHlsUrl, config.omeHlsPollIntervalMs, {
-        admissionSecret: config.omeAdmissionSecret,
-        failOpen: config.omeAdmissionFailOpen,
-      }),
-    );
-    logger.info(
-      `[Engine] OME engine loaded, HLS base: ${config.omeHlsUrl}, poll interval: ${config.omeHlsPollIntervalMs}ms`,
-    );
-  } else if (config.engine && config.engine !== 'none') {
+  if (createEngine) {
+    loadEngineEnv(config.engine);
+    return [createEngine()];
+  }
+
+  if (config.engine && config.engine !== 'none') {
     logger.warn(`[Engine] Unknown engine: ${config.engine}, running with generic API only`);
   }
 
-  return engines;
+  return [];
 }
 
 async function start() {

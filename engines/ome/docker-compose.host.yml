@@ -1,0 +1,5 @@
+services:
+  ome:
+    network_mode: host
+    environment:
+      OME_ADAPTER_HOST: ${OME_ADAPTER_HOST:-localhost}
