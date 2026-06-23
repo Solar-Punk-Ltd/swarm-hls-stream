@@ -1,8 +1,9 @@
 {
   "compilerOptions": {
-    "rootDir": "./src",
+    "rootDir": ".",
     "outDir": "./dist/",
     "target": "ES2020",
+    "lib": ["ES2020"],
     "allowJs": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -15,8 +16,9 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": false,
+    "types": ["node"],
     "typeRoots": ["./node_modules/@types"]
   },
-  "include": ["src/**/*"],
-  "exclude": ["**/*.js"]
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["**/*.js", "node_modules", "dist"]
 }

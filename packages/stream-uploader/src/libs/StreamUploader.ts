@@ -4,6 +4,7 @@ import PQueue from 'p-queue';
 
 import { MediaType, SegmentEntry, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamState } from '../types.js';
 import { retryAwaitableAsync } from '../utils/common.js';
+import { padTsSegmentToPac } from '../utils/segmentPadding.js';
 
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
@@ -35,6 +36,7 @@ export class StreamUploader {
   private stamp: string;
   private socIndex: number | null = null;
   private mediatype: MediaType;
+  private padSegmentsToPac: boolean;
   private isFirstSegmentReady = false;
   private isFirstManifestReady = false;
 
@@ -49,6 +51,7 @@ export class StreamUploader {
     stamp: string,
     streamId: string,
     mediatype: MediaType,
+    padSegmentsToPac: boolean,
     restoreState?: RestoreState,
   ) {
     this.bee = bee;
@@ -58,6 +61,7 @@ export class StreamUploader {
     this.streamId = streamId;
     this.stamp = stamp;
     this.mediatype = mediatype;
+    this.padSegmentsToPac = padSegmentsToPac;
 
     this.manifestManager = new ManifestManager(manifestBeeUrl);
 
@@ -75,7 +79,11 @@ export class StreamUploader {
 
   public handleSegment(segmentIndex: number, duration: number, data: Buffer): void {
     this.segmentQueue.add(async () => {
-      const result = await this.uploadDataToBee(data);
+      const payload = this.padSegmentsToPac ? padTsSegmentToPac(data, segmentIndex) : data;
+      const sizeKb = (payload.length / 1024).toFixed(2);
+      this.logger.log(`Uploading segment ${segmentIndex} (${sizeKb} KB)`);
+
+      const result = await this.uploadDataToBee(payload);
       if (!result) {
         this.logger.error(`Failed to upload segment ${segmentIndex} for stream ${this.streamId}`);
         return;

@@ -26,6 +26,7 @@ interface StreamOrchestratorConfig {
   manifestBeeUrl: string;
   maxQueueSize: number;
   recoveryTimeout: number;
+  padSegmentsToPac: boolean;
 }
 
 export class StreamOrchestrator {
@@ -69,6 +70,7 @@ export class StreamOrchestrator {
         this.config.stamp,
         streamId,
         mediatype,
+        this.config.padSegmentsToPac,
       );
 
       this.activeStreams.set(streamId, uploader);
@@ -145,6 +147,7 @@ export class StreamOrchestrator {
         this.config.stamp,
         state.streamId,
         state.mediatype,
+        this.config.padSegmentsToPac,
         {
           streamRawTopic: state.streamRawTopic,
           socIndex: state.socIndex,

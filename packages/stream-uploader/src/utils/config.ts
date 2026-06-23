@@ -1,4 +1,4 @@
-import { optional, optionalInt, required } from './env.js';
+import { optional, optionalBool, optionalInt, required } from './env.js';
 
 export const config = {
   beeUrl: required('BEE_URL'),
@@ -11,4 +11,5 @@ export const config = {
   maxQueueSize: optionalInt('MAX_QUEUE_SIZE', 100),
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000),
   engine: optional('ENGINE', ''),
+  padSegmentsToPac: optionalBool('PAD_SEGMENTS_TO_PAC', true),
 };
