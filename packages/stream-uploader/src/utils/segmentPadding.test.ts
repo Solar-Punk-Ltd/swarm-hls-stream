@@ -7,7 +7,7 @@ import {
   padTsSegmentToPac,
   SWARM_CHUNK_SIZE,
   TS_PACKET_SIZE,
-} from '../src/utils/segmentPadding.js';
+} from './segmentPadding.js';
 
 /** Build a buffer of `count` valid-looking TS packets (sync byte + filler). */
 function tsPackets(count: number): Buffer {

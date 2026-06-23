@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { isMasterPlaylist, parseAppStream, parseMasterPlaylist, parseMediaPlaylist } from '../src/engines/ome/utils.js';
+import { isMasterPlaylist, parseAppStream, parseMasterPlaylist, parseMediaPlaylist } from '../engines/ome/utils.js';
 
 describe('parseAppStream', () => {
   it('parses app and stream from the URL path', () => {
@@ -52,9 +52,7 @@ describe('parseAppStream', () => {
 
 describe('isMasterPlaylist', () => {
   it('detects a master playlist by its #EXT-X-STREAM-INF tag', () => {
-    const text = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360', 'chunklist_360p.m3u8'].join(
-      '\n',
-    );
+    const text = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360', 'chunklist_360p.m3u8'].join('\n');
 
     assert.equal(isMasterPlaylist(text), true);
   });
