@@ -11,6 +11,10 @@ import { ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { StreamCatalog } from './StreamCatalog.js';
 
+const UPLOAD_RETRY_DELAY_MS = 350;
+const SEGMENT_UPLOAD_RETRY_WINDOW_MS = 15_000;
+const SEGMENT_UPLOAD_RETRIES = Math.ceil(SEGMENT_UPLOAD_RETRY_WINDOW_MS / UPLOAD_RETRY_DELAY_MS);
+
 interface RestoreState {
   streamRawTopic: string;
   socIndex: number | null;
@@ -38,6 +42,7 @@ export class StreamUploader {
   private isFirstSegmentReady = false;
   private isFirstManifestReady = false;
   private liveManifestQueued = false;
+  private pendingDiscontinuity = false;
 
   private manifestManager: ManifestManager;
 
@@ -78,12 +83,18 @@ export class StreamUploader {
     this.segmentQueue.add(async () => {
       const result = await this.uploadDataToBee(data);
       if (!result) {
-        this.logger.error(`Failed to upload segment ${segmentIndex} for stream ${this.streamId}`);
+        // Nothing landed within the retry window; flag the next segment as a discontinuity
+        // so players skip the gap instead of stalling on a silent hole.
+        this.pendingDiscontinuity = true;
+        this.logger.error(
+          `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
+        );
         return;
       }
 
       const ref = result.reference.toHex();
-      this.manifestManager.addSegment(segmentIndex, duration, ref);
+      this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
+      this.pendingDiscontinuity = false;
       this.isFirstSegmentReady = true;
 
       this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
@@ -217,7 +228,11 @@ export class StreamUploader {
 
   private async uploadDataToBee(data: Uint8Array) {
     try {
-      return await retryAwaitableAsync(() => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1 }));
+      return await retryAwaitableAsync(
+        () => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1 }),
+        SEGMENT_UPLOAD_RETRIES,
+        UPLOAD_RETRY_DELAY_MS,
+      );
     } catch (error) {
       this.errorHandler.handleError(error, 'StreamUploader.uploadDataToBee');
       return null;

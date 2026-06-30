@@ -19,6 +19,7 @@ export interface SegmentEntry {
   index: number;
   duration: number;
   ref: string;
+  discontinuity?: boolean;
 }
 
 export const REJECT_QUEUE_FULL = 'queue_full' as const;

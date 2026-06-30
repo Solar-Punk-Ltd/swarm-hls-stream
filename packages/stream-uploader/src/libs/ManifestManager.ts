@@ -12,8 +12,8 @@ export class ManifestManager {
 
   constructor(private manifestBeeUrl: string) {}
 
-  public addSegment(index: number, duration: number, ref: string): void {
-    this.segments.push({ index, duration, ref });
+  public addSegment(index: number, duration: number, ref: string, discontinuity = false): void {
+    this.segments.push({ index, duration, ref, discontinuity });
     this.segments.sort((a, b) => a.index - b.index);
 
     const newTarget = Math.ceil(duration);
@@ -45,6 +45,9 @@ export class ManifestManager {
     ];
 
     for (const seg of windowSegments) {
+      if (seg.discontinuity) {
+        lines.push('#EXT-X-DISCONTINUITY');
+      }
       lines.push(`#EXTINF:${seg.duration},`);
       lines.push(this.buildSegmentUri(seg.ref));
     }
@@ -66,6 +69,9 @@ export class ManifestManager {
     ];
 
     for (const seg of this.segments) {
+      if (seg.discontinuity) {
+        lines.push('#EXT-X-DISCONTINUITY');
+      }
       lines.push(`#EXTINF:${seg.duration},`);
       lines.push(this.buildSegmentUri(seg.ref));
     }
