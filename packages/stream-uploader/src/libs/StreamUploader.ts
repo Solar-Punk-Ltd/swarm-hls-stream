@@ -93,6 +93,7 @@ export class StreamUploader {
         this.logger.error(
           `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
         );
+        this.persistState();
         return;
       }
 

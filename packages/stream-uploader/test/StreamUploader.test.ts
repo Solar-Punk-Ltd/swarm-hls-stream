@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
-import { MEDIA_TYPE_VIDEO } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
 
 // A valid 32-byte secp256k1 private key (value 1) — enough for bee-js to derive a signer in tests.
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
@@ -133,6 +133,36 @@ describe('StreamUploader discontinuity lifecycle', () => {
     const seg7 = state.segments.find((s) => s.index === 7);
     assert.equal(seg7?.discontinuity, true);
     assert.equal(state.pendingDiscontinuity, false);
+  });
+
+  it('persists pendingDiscontinuity when a segment upload fails, so it survives a crash', async () => {
+    const saved: StreamState[] = [];
+    const recovery = {
+      save: (_id: string, state: StreamState) => {
+        saved.push(state);
+      },
+      load: () => null,
+      remove: () => {},
+      listActive: () => [],
+    } as unknown as RecoveryStore;
+    const uploader = new StreamUploader(
+      makeBee({ fail: permanentError }),
+      '',
+      makeCatalog(),
+      recovery,
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    assert.ok(
+      saved.some((s) => s.pendingDiscontinuity === true),
+      'a failed segment upload must persist pendingDiscontinuity=true',
+    );
   });
 });
 
