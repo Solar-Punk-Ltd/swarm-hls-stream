@@ -168,9 +168,13 @@ export class StreamUploader {
       isFirstSegmentReady: this.isFirstSegmentReady,
       isFirstManifestReady: this.isFirstManifestReady,
       pendingDiscontinuity: this.pendingDiscontinuity,
-      liveManifestStale: this.consecutiveManifestFailures > 0,
+      liveManifestStale: this.hasStaleLiveManifest(),
       updatedAt: Date.now(),
     };
+  }
+
+  public hasStaleLiveManifest(): boolean {
+    return this.consecutiveManifestFailures > 0;
   }
 
   private uploadLiveManifest(): void {

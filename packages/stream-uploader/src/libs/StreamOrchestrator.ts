@@ -215,7 +215,7 @@ export class StreamOrchestrator {
   public getStaleManifestStreamCount(): number {
     let count = 0;
     for (const uploader of this.activeStreams.values()) {
-      if (uploader.getStreamState().liveManifestStale) {
+      if (uploader.hasStaleLiveManifest()) {
         count += 1;
       }
     }
