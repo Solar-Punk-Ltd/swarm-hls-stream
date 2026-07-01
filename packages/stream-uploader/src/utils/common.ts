@@ -53,10 +53,10 @@ export async function retryUntilDeadlineAsync<T>(
       if (!isRetryableError(error) || Date.now() >= deadline) {
         throw error;
       }
-      const delay = jitteredDelayMs(backoffDelayMs(attempt, baseDelayMs, capDelayMs));
+      const sleepMs = Math.min(jitteredDelayMs(backoffDelayMs(attempt, baseDelayMs, capDelayMs)), deadline - Date.now());
       const message = error instanceof Error ? error.message : String(error);
-      logger.info(`Retrying in ~${Math.round(delay)}ms (attempt ${attempt + 1}). Error: ${message}`);
-      await sleep(delay);
+      logger.info(`Retrying in ~${Math.round(sleepMs)}ms (attempt ${attempt + 1}). Error: ${message}`);
+      await sleep(sleepMs);
     }
   }
 }
