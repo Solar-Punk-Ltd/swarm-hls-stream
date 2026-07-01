@@ -1,13 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import {
-  backoffDelayMs,
-  isRetryableError,
-  jitteredDelayMs,
-  retryAwaitableAsync,
-  retryUntilDeadlineAsync,
-} from '../src/utils/common.js';
+import { backoffDelayMs, isRetryableError, jitteredDelayMs, retryUntilDeadlineAsync } from '../src/utils/common.js';
 
 describe('isRetryableError', () => {
   it('retries transient HTTP statuses', () => {
@@ -54,44 +48,6 @@ describe('jitteredDelayMs', () => {
       const d = jitteredDelayMs(1000, () => r);
       assert.ok(d >= 500 && d < 1000, `jitter ${d} out of range for r=${r}`);
     }
-  });
-});
-
-describe('retryAwaitableAsync', () => {
-  it('retries transient failures then resolves', async () => {
-    let calls = 0;
-    const result = await retryAwaitableAsync(
-      async () => {
-        calls++;
-        if (calls < 3) {
-          throw new Error('transient');
-        }
-        return 'ok';
-      },
-      5,
-      1,
-    );
-
-    assert.equal(result, 'ok');
-    assert.equal(calls, 3);
-  });
-
-  it('fails fast on a permanent error without retrying', async () => {
-    let calls = 0;
-    await assert.rejects(
-      () =>
-        retryAwaitableAsync(
-          async () => {
-            calls++;
-            throw Object.assign(new Error('payment required'), { status: 402 });
-          },
-          5,
-          1,
-        ),
-      /payment required/,
-    );
-
-    assert.equal(calls, 1);
   });
 });
 

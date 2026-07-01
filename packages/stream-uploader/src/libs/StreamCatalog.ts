@@ -2,10 +2,12 @@ import { Bee, BeeResponseError, FeedIndex, PrivateKey, Topic } from '@etherspher
 import PQueue from 'p-queue';
 
 import { MediaType, StreamStatus } from '../types.js';
-import { retryAwaitableAsync } from '../utils/common.js';
+import { retryUntilDeadlineAsync } from '../utils/common.js';
 
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
+
+const CATALOG_RETRY_WINDOW_MS = 10_000;
 
 interface StreamEntry {
   title: string;
@@ -80,7 +82,10 @@ export class StreamCatalog {
     const feedWriter = this.bee.makeFeedWriter(this.feedTopic, this.signer);
 
     const payload = JSON.stringify(state);
-    const result = await retryAwaitableAsync(() => feedWriter.uploadPayload(this.stamp, payload, { index: nextIndex }));
+    const result = await retryUntilDeadlineAsync(
+      () => feedWriter.uploadPayload(this.stamp, payload, { index: nextIndex }),
+      CATALOG_RETRY_WINDOW_MS,
+    );
 
     this.feedIndex = nextIndex;
     const ownerAddr = this.signer.publicKey().address().toString();
@@ -94,7 +99,10 @@ export class StreamCatalog {
   private async fetchCurrentState(): Promise<StreamEntry[]> {
     const owner = this.signer.publicKey().address();
     const feedReader = this.bee.makeFeedReader(this.feedTopic, owner);
-    const data = await retryAwaitableAsync(() => feedReader.downloadPayload({ index: this.feedIndex! }));
+    const data = await retryUntilDeadlineAsync(
+      () => feedReader.downloadPayload({ index: this.feedIndex! }),
+      CATALOG_RETRY_WINDOW_MS,
+    );
     return data.payload.toJSON() as StreamEntry[];
   }
 }
