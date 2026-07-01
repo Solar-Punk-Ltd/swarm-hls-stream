@@ -152,6 +152,7 @@ export class StreamOrchestrator {
           hlsHeaders: state.hlsHeaders,
           isFirstSegmentReady: state.isFirstSegmentReady,
           isFirstManifestReady: state.isFirstManifestReady,
+          pendingDiscontinuity: state.pendingDiscontinuity,
         },
       );
 

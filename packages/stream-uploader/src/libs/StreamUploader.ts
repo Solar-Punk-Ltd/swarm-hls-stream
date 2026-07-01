@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import PQueue from 'p-queue';
 
 import { MediaType, SegmentEntry, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamState } from '../types.js';
-import { retryAwaitableAsync } from '../utils/common.js';
+import { retryUntilDeadlineAsync } from '../utils/common.js';
 
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
@@ -11,9 +11,10 @@ import { ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { StreamCatalog } from './StreamCatalog.js';
 
-const UPLOAD_RETRY_DELAY_MS = 350;
 const SEGMENT_UPLOAD_RETRY_WINDOW_MS = 15_000;
-const SEGMENT_UPLOAD_RETRIES = Math.ceil(SEGMENT_UPLOAD_RETRY_WINDOW_MS / UPLOAD_RETRY_DELAY_MS);
+const MANIFEST_UPLOAD_RETRY_WINDOW_MS = 15_000;
+const UPLOAD_RETRY_BASE_MS = 350;
+const UPLOAD_RETRY_CAP_MS = 2_000;
 
 interface RestoreState {
   streamRawTopic: string;
@@ -22,6 +23,7 @@ interface RestoreState {
   hlsHeaders: string[];
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
+  pendingDiscontinuity?: boolean;
 }
 
 export class StreamUploader {
@@ -43,6 +45,7 @@ export class StreamUploader {
   private isFirstManifestReady = false;
   private liveManifestQueued = false;
   private pendingDiscontinuity = false;
+  private consecutiveManifestFailures = 0;
 
   private manifestManager: ManifestManager;
 
@@ -72,6 +75,7 @@ export class StreamUploader {
       this.socIndex = restoreState.socIndex;
       this.isFirstSegmentReady = restoreState.isFirstSegmentReady;
       this.isFirstManifestReady = restoreState.isFirstManifestReady;
+      this.pendingDiscontinuity = restoreState.pendingDiscontinuity ?? false;
       this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
       this.logger.info(`[StreamUploader] Restored stream ${streamId} at SOC index ${this.socIndex}`);
     } else {
@@ -162,6 +166,8 @@ export class StreamUploader {
       hlsHeaders: manifestState.hlsHeaders,
       isFirstSegmentReady: this.isFirstSegmentReady,
       isFirstManifestReady: this.isFirstManifestReady,
+      pendingDiscontinuity: this.pendingDiscontinuity,
+      liveManifestStale: this.consecutiveManifestFailures > 0,
       updatedAt: Date.now(),
     };
   }
@@ -175,8 +181,17 @@ export class StreamUploader {
     void this.manifestQueue.add(async () => {
       this.liveManifestQueued = false;
       const manifest = this.manifestManager.buildLiveManifest();
-      if (manifest) {
-        await this.commitManifest(manifest);
+      if (!manifest) {
+        return;
+      }
+      const index = await this.commitManifest(manifest);
+      if (index === null) {
+        this.consecutiveManifestFailures += 1;
+        this.logger.warn(
+          `Live manifest for stream ${this.streamId} is stale: ${this.consecutiveManifestFailures} consecutive publish failure(s)`,
+        );
+      } else {
+        this.consecutiveManifestFailures = 0;
       }
     });
   }
@@ -187,7 +202,9 @@ export class StreamUploader {
     const result = await this.uploadDataAsSoc(nextIndex, data);
 
     if (!result) {
-      this.logger.error(`Failed to upload manifest at SOC index ${nextIndex}, will retry at the same index`);
+      this.logger.error(
+        `Failed to upload manifest at SOC index ${nextIndex}; will retry at the same index when the next segment triggers a publish`,
+      );
       return null;
     }
 
@@ -219,7 +236,12 @@ export class StreamUploader {
   private async uploadDataAsSoc(index: number, data: Uint8Array) {
     try {
       const { uploadPayload } = this.bee.makeFeedWriter(Topic.fromString(this.streamRawTopic), this.streamSigner);
-      return await retryAwaitableAsync(() => uploadPayload(this.stamp, data, { index }));
+      return await retryUntilDeadlineAsync(
+        () => uploadPayload(this.stamp, data, { index }),
+        MANIFEST_UPLOAD_RETRY_WINDOW_MS,
+        UPLOAD_RETRY_BASE_MS,
+        UPLOAD_RETRY_CAP_MS,
+      );
     } catch (error) {
       this.errorHandler.handleError(error, 'StreamUploader.uploadDataAsSoc');
       return null;
@@ -228,10 +250,11 @@ export class StreamUploader {
 
   private async uploadDataToBee(data: Uint8Array) {
     try {
-      return await retryAwaitableAsync(
+      return await retryUntilDeadlineAsync(
         () => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1 }),
-        SEGMENT_UPLOAD_RETRIES,
-        UPLOAD_RETRY_DELAY_MS,
+        SEGMENT_UPLOAD_RETRY_WINDOW_MS,
+        UPLOAD_RETRY_BASE_MS,
+        UPLOAD_RETRY_CAP_MS,
       );
     } catch (error) {
       this.errorHandler.handleError(error, 'StreamUploader.uploadDataToBee');

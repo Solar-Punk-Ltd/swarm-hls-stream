@@ -12,6 +12,8 @@ export interface StreamState {
   hlsHeaders: string[];
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
+  pendingDiscontinuity?: boolean;
+  liveManifestStale?: boolean;
   updatedAt: number;
 }
 
