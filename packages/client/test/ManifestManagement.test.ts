@@ -80,4 +80,36 @@ describe('ManifestStateManager serialize', () => {
     );
     assert.ok(!out.includes(`${DISCONTINUITY}\n#EXTINF:2,\nseg0.ts`), 'seg0 must not carry a discontinuity');
   });
+
+  it('preserves discontinuity flag when the same segment is reparsed without the tag (dedup across polls)', () => {
+    // Poll 1: manifest with discontinuity on seg1
+    const manifest1 = ['#EXTM3U', '#EXTINF:2,', 'seg0.ts', DISCONTINUITY, '#EXTINF:2,', 'seg1.ts'].join('\n');
+    const parsed1 = parseManifest(manifest1);
+    manager.updateManifest(TOPIC, parsed1.headers, parsed1.segments, parsed1.isFinalized);
+
+    const out1 = manager.serialize(TOPIC, '');
+    assert.ok(
+      out1.includes(`${DISCONTINUITY}\n#EXTINF:2,\nseg1.ts`),
+      'Poll 1: expected discontinuity before seg1',
+    );
+
+    // Poll 2: same segments but NO discontinuity tag in the manifest
+    // (simulating the manifest being reparsed without the tag)
+    const manifest2 = ['#EXTM3U', '#EXTINF:2,', 'seg0.ts', '#EXTINF:2,', 'seg1.ts', '#EXTINF:2,', 'seg2.ts'].join('\n');
+    const parsed2 = parseManifest(manifest2);
+    // Parsed2 should have seg0/seg1/seg2, all without discontinuity flag (because the tag is not in the manifest)
+    assert.equal(parsed2.segments[1].uri, 'seg1.ts');
+    assert.equal(parsed2.segments[1].discontinuity, false, 'newly parsed seg1 should not have discontinuity flag');
+
+    manager.updateManifest(TOPIC, parsed2.headers, parsed2.segments, parsed2.isFinalized);
+
+    const out2 = manager.serialize(TOPIC, '');
+    // CRITICAL: Does seg1 still have the discontinuity flag?
+    // The dedup logic should have ignored seg0 and seg1 (already in state), and only added seg2.
+    // This means state.segments[1] (the original seg1 with discontinuity=true) is UNCHANGED.
+    assert.ok(
+      out2.includes(`${DISCONTINUITY}\n#EXTINF:2,\nseg1.ts`),
+      'Poll 2: seg1 should STILL have discontinuity (dedup preserved the old flag)',
+    );
+  });
 });
