@@ -212,6 +212,16 @@ export class StreamOrchestrator {
     return this.activeStreams.size;
   }
 
+  public getStaleManifestStreamCount(): number {
+    let count = 0;
+    for (const uploader of this.activeStreams.values()) {
+      if (uploader.getStreamState().liveManifestStale) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   public async cleanup(): Promise<void> {
     // Clear all recovery timers
     for (const timer of this.recoveryTimers.values()) {
