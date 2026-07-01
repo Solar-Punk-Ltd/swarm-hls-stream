@@ -7,6 +7,7 @@ import { config } from '@/utils/config';
 export interface Segment {
   extinf: string;
   uri: string;
+  discontinuity?: boolean;
 }
 
 interface TopicState {
@@ -20,6 +21,7 @@ interface TopicState {
 }
 
 const HLS_ENDLIST = '#EXT-X-ENDLIST';
+const HLS_DISCONTINUITY = '#EXT-X-DISCONTINUITY';
 const HLS_EXTINF = '#EXTINF';
 const HLS_PLAYLIST_TYPE = '#EXT-X-PLAYLIST-TYPE';
 const HLS_PLAYLIST_TYPE_EVENT = '#EXT-X-PLAYLIST-TYPE:EVENT';
@@ -34,6 +36,7 @@ export function parseManifest(text: string): { headers: string[]; segments: Segm
   const segments: Segment[] = [];
   let isFinalized = false;
   let headersDone = false;
+  let pendingDiscontinuity = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -43,13 +46,20 @@ export function parseManifest(text: string): { headers: string[]; segments: Segm
       continue;
     }
 
+    if (line === HLS_DISCONTINUITY) {
+      headersDone = true;
+      pendingDiscontinuity = true;
+      continue;
+    }
+
     if (line.startsWith(HLS_EXTINF)) {
       headersDone = true;
       const uri = lines[i + 1]?.trim();
       if (uri && !uri.startsWith('#')) {
-        segments.push({ extinf: line, uri });
+        segments.push({ extinf: line, uri, discontinuity: pendingDiscontinuity });
         i++;
       }
+      pendingDiscontinuity = false;
       continue;
     }
 
@@ -133,6 +143,9 @@ export class ManifestStateManager {
     }
 
     for (const seg of state.segments) {
+      if (seg.discontinuity) {
+        lines.push(HLS_DISCONTINUITY);
+      }
       lines.push(seg.extinf);
       lines.push(this.buildUri(seg.uri, bytesUrl));
     }
