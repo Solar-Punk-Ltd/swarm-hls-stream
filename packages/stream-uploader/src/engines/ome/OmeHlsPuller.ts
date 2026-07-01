@@ -135,6 +135,8 @@ export class OmeHlsPuller {
 
         if (!result.accepted) {
           logger.warn(`[OME] Segment ${segment.seq} not accepted for ${this.streamId}: ${result.reason}`);
+          // Backpressure/rejection: leave lastSeq unchanged so the next tick re-pulls this segment in order.
+          return;
         }
 
         this.lastSeq = segment.seq;
