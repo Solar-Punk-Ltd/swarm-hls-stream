@@ -76,7 +76,10 @@ async function waitFor(pred: () => boolean, timeoutMs = 1_000): Promise<void> {
 describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash recovery)', () => {
   it('finalizes a recovered stream if no segments arrive before the recovery timeout', async () => {
     const id = 'live/stream';
-    const orch = makeOrchestrator(makeRecovery({ listActive: () => [id], load: () => restoreState(id) }));
+    // RecoveryStore.listActive() returns the slash-sanitized filename, not the real streamId.
+    const orch = makeOrchestrator(
+      makeRecovery({ listActive: () => [id.replace(/[/\\]/g, '_')], load: () => restoreState(id) }),
+    );
 
     await orch.recoverStreams();
     assert.equal(orch.getActiveStreamCount(), 1, 'recovered stream should be active with a pending timer');
@@ -87,7 +90,10 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
 
   it('keeps a recovered stream alive when segments resume before on_publish (cancels the finalize timer)', async () => {
     const id = 'live/stream';
-    const orch = makeOrchestrator(makeRecovery({ listActive: () => [id], load: () => restoreState(id) }));
+    // RecoveryStore.listActive() returns the slash-sanitized filename, not the real streamId.
+    const orch = makeOrchestrator(
+      makeRecovery({ listActive: () => [id.replace(/[/\\]/g, '_')], load: () => restoreState(id) }),
+    );
 
     await orch.recoverStreams();
     const result = orch.handleSegment(id, 7, 2, Buffer.from('seg7'));

@@ -148,12 +148,18 @@ export class StreamOrchestrator {
 
     this.logger.info(`[StreamOrchestrator] Recovering ${activeIds.length} stream(s)...`);
 
-    for (const streamId of activeIds) {
-      const state = this.recoveryStore.load(streamId);
+    for (const fileId of activeIds) {
+      const state = this.recoveryStore.load(fileId);
       if (!state) {
-        this.recoveryStore.remove(streamId);
+        this.recoveryStore.remove(fileId);
         continue;
       }
+
+      // RecoveryStore names files by a slash-sanitized id (live/stream → live_stream); the real
+      // streamId lives inside the state. Key the live maps by the real id so incoming segments
+      // (handleSegment looks up the real id) actually match this recovered stream — otherwise the
+      // recovery timer can never be cancelled and the stream is always VOD-ed at the timeout.
+      const streamId = state.streamId;
 
       const uploader = new StreamUploader(
         this.bee,
