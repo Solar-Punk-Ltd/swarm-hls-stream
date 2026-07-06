@@ -55,10 +55,21 @@ export class StreamOrchestrator {
     }
 
     if (this.activeStreams.has(streamId)) {
-      this.logger.warn(`[StreamOrchestrator] Stream ${streamId} already active, rejecting start`);
-      return false;
+      // The engine re-announced a stream we still track — it restarted without sending on_unpublish
+      // (e.g. the media engine was restarted). Finalize the stale session as a VOD, then start the
+      // new one, so the broadcaster resumes instead of being rejected as "already active".
+      this.logger.info(`[StreamOrchestrator] Stream ${streamId} re-announced; finalizing stale session and restarting`);
+      void this.stopStream(streamId)
+        .catch((error) => this.errorHandler.handleError(error, `StreamOrchestrator.restart - ${streamId}`))
+        .then(() => this.spawnUploader(streamId, mediatype));
+      return true;
     }
 
+    this.spawnUploader(streamId, mediatype);
+    return true;
+  }
+
+  private spawnUploader(streamId: string, mediatype: MediaType): void {
     this.queue.add(() => {
       const uploader = new StreamUploader(
         this.bee,
@@ -75,14 +86,22 @@ export class StreamOrchestrator {
       this.processedSegments.set(streamId, new Set());
       this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
     });
-
-    return true;
   }
 
   public handleSegment(streamId: string, segmentIndex: number, duration: number, data: Buffer): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
+    }
+
+    // Segments arriving mean the engine is feeding this stream again. If it was just recovered after
+    // a crash, cancel the pending finalize timer: SRS never re-sends on_publish, so startStream
+    // won't fire to clear it, and the stream would otherwise be VOD'd mid-broadcast at the timeout.
+    const recoveryTimer = this.recoveryTimers.get(streamId);
+    if (recoveryTimer) {
+      clearTimeout(recoveryTimer);
+      this.recoveryTimers.delete(streamId);
+      this.logger.info(`[StreamOrchestrator] Segments resumed for ${streamId}; cancelled recovery finalize timer`);
     }
 
     // Deduplication
