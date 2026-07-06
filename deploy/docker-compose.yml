@@ -45,6 +45,7 @@ services:
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=false
       - --swap-enable=false
+      - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
       - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
