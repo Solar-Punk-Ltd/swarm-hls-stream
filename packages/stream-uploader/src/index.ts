@@ -1,9 +1,11 @@
 import { Bee } from '@ethersphere/bee-js';
+import path from 'path';
 
 import { ApiServerHandle, startApiServer } from './api/server.js';
 import { createOmeEngine } from './engines/ome.js';
 import { createSrsEngine } from './engines/srs.js';
 import { EnginePlugin } from './engines/types.js';
+import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { Logger } from './libs/Logger.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
@@ -87,7 +89,8 @@ async function start() {
     const bee = new Bee(config.beeUrl);
     const recoveryStore = new RecoveryStore(config.stateDir);
 
-    const streamCatalog = new StreamCatalog(bee, config.streamKey, config.streamListTopic, config.stamp);
+    const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog-feed-index.json'));
+    const streamCatalog = new StreamCatalog(bee, config.streamKey, config.streamListTopic, config.stamp, catalogIndexStore);
     await streamCatalog.init();
 
     streamOrchestrator = new StreamOrchestrator(bee, streamCatalog, recoveryStore, {
