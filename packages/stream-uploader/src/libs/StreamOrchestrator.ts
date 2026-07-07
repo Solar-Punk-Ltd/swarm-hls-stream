@@ -155,6 +155,13 @@ export class StreamOrchestrator {
         continue;
       }
 
+      if (!state.streamId) {
+        // Parseable JSON but not a stream state — the state dir can hold other files
+        // (e.g. the catalog feed index). Skip it; never delete what recovery does not own.
+        this.logger.warn(`[StreamOrchestrator] Skipping non-stream state file: ${fileId}`);
+        continue;
+      }
+
       // RecoveryStore names files by a slash-sanitized id (live/stream → live_stream); the real
       // streamId lives inside the state. Key the live maps by the real id so incoming segments
       // (handleSegment looks up the real id) actually match this recovered stream — otherwise the

@@ -109,6 +109,26 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
   });
 });
 
+describe('StreamOrchestrator recovery hygiene', () => {
+  it('skips a state-dir file that is not a stream state instead of crashing boot', async () => {
+    // The state dir also holds non-stream JSON (e.g. the catalog feed-index file);
+    // a foreign file must never crash recovery into a boot loop.
+    const removed: string[] = [];
+    const orch = makeOrchestrator(
+      makeRecovery({
+        listActive: () => ['catalog-feed-index'],
+        load: () => ({ owner: 'aa'.repeat(20), topicHex: 'bb'.repeat(32), index: '000000000000007d' }) as never,
+        remove: (id: string) => removed.push(id),
+      }),
+    );
+
+    await orch.recoverStreams();
+
+    assert.equal(orch.getActiveStreamCount(), 0, 'non-stream json in the state dir must be ignored');
+    assert.deepEqual(removed, [], 'files we do not own must not be deleted');
+  });
+});
+
 describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('accepts a re-announced already-active stream and restarts it instead of rejecting', async () => {
     const id = 'live/stream';
