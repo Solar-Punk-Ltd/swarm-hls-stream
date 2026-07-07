@@ -241,8 +241,11 @@ export class StreamUploader {
   private async uploadDataAsSoc(index: number, data: Uint8Array) {
     try {
       const { uploadPayload } = this.bee.makeFeedWriter(Topic.fromString(this.streamRawTopic), this.streamSigner);
+      // deferred: bee acks the SOC from its local store and push-syncs in the background (honored
+      // since bee 2.8.1). A direct /soc write blocks until push-sync completes, which held manifest
+      // publishes for ~80s behind the segment backlog after a node restart.
       return await retryUntilDeadlineAsync(
-        () => uploadPayload(this.stamp, data, { index }),
+        () => uploadPayload(this.stamp, data, { index, deferred: true }),
         MANIFEST_UPLOAD_RETRY_WINDOW_MS,
         UPLOAD_RETRY_BASE_MS,
         UPLOAD_RETRY_CAP_MS,
@@ -256,7 +259,7 @@ export class StreamUploader {
   private async uploadDataToBee(data: Uint8Array) {
     try {
       return await retryUntilDeadlineAsync(
-        () => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1 }),
+        () => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1, deferred: true }),
         SEGMENT_UPLOAD_RETRY_WINDOW_MS,
         UPLOAD_RETRY_BASE_MS,
         UPLOAD_RETRY_CAP_MS,

@@ -83,7 +83,8 @@ export class StreamCatalog {
 
     const payload = JSON.stringify(state);
     const result = await retryUntilDeadlineAsync(
-      () => feedWriter.uploadPayload(this.stamp, payload, { index: nextIndex }),
+      // deferred for the same reason as the manifest feed: a direct SOC write blocks on push-sync.
+      () => feedWriter.uploadPayload(this.stamp, payload, { index: nextIndex, deferred: true }),
       CATALOG_RETRY_WINDOW_MS,
     );
 

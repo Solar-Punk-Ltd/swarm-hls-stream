@@ -166,6 +166,43 @@ describe('StreamUploader discontinuity lifecycle', () => {
   });
 });
 
+describe('StreamUploader Swarm write options', () => {
+  it('requests deferred uploads for segment and manifest feed writes', async () => {
+    const dataOptions: unknown[] = [];
+    const payloadOptions: unknown[] = [];
+    let refCounter = 0;
+    const bee = {
+      uploadData: async (_stamp: string, _data: unknown, opts: unknown) => {
+        dataOptions.push(opts);
+        return { reference: { toHex: () => `ref${refCounter++}` } };
+      },
+      makeFeedWriter: () => ({
+        uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => {
+          payloadOptions.push(opts);
+          return { reference: { toHex: () => `soc${opts.index}` } };
+        },
+      }),
+    } as unknown as Bee;
+
+    const uploader = new StreamUploader(
+      bee,
+      '',
+      makeCatalog(),
+      makeRecovery(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    assert.deepEqual(dataOptions, [{ redundancyLevel: 1, deferred: true }]);
+    assert.deepEqual(payloadOptions, [{ index: 0, deferred: true }]);
+  });
+});
+
 describe('StreamUploader live manifest failure surfacing', () => {
   it('flags liveManifestStale when manifest publishes fail while segments still upload', async () => {
     const uploader = newUploader({}, { feedWriteFails: true });
