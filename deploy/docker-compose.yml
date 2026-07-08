@@ -42,7 +42,6 @@ services:
       - start
       - --api-addr=:${BEE_GATEWAY_API_PORT:-1733}
       - --p2p-addr=:${BEE_GATEWAY_P2P_PORT:-1734}
-      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=false
       - --swap-enable=false
       - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
