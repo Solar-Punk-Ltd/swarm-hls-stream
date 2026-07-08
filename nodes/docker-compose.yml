@@ -35,7 +35,6 @@ services:
       - start
       - --api-addr=:1633
       - --p2p-addr=:1634
-      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=false
       - --swap-enable=false
       - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
