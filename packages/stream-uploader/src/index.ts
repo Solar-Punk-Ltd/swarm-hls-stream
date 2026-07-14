@@ -102,10 +102,19 @@ async function start() {
       recoveryTimeout: config.recoveryTimeout,
     });
 
-    await streamOrchestrator.recoverStreams();
+    const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
     const engines = loadEngines();
     apiServer = startApiServer(streamOrchestrator, config.apiPort, engines);
+
+    // Pull-based engines (OME) must re-attach their fetch loop to recovered streams; otherwise the
+    // recovered stream produces no segments and is finalized as VOD at the recovery timeout.
+    for (const streamId of recoveredStreamIds) {
+      for (const engine of engines) {
+        engine.resumeRecoveredStream?.(streamOrchestrator, streamId);
+      }
+    }
+
     logger.info('Stream uploader started — waiting for engine connections');
   } catch (error) {
     logger.error('Failed to start:', error);

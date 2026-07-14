@@ -71,6 +71,12 @@ export function buildStreamId(app: string, stream: string): string {
   return `${app}/${stream}`;
 }
 
+/** Inverse of {@link buildStreamId}: split an OME stream id back into its app + stream parts. */
+export function parseStreamId(streamId: string): AppStream {
+  const [app, ...rest] = streamId.split('/');
+  return { app, stream: rest.join('/') };
+}
+
 export function parseAppStream(url: string): AppStream {
   let parts: string[] = [];
 

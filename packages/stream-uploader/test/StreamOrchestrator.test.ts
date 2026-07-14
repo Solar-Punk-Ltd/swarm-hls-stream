@@ -107,6 +107,18 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
     );
     await orch.cleanup();
   });
+
+  it('returns the ids of the streams it recovered so pull-based engines can resume them', async () => {
+    const id = 'video/stream';
+    const orch = makeOrchestrator(
+      makeRecovery({ listActive: () => [id.replace(/[/\\]/g, '_')], load: () => restoreState(id) }),
+    );
+
+    const recovered = await orch.recoverStreams();
+
+    assert.deepEqual(recovered, [id], 'recoverStreams must return the real stream ids it restored');
+    await orch.cleanup();
+  });
 });
 
 describe('StreamOrchestrator recovery hygiene', () => {

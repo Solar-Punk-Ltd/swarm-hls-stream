@@ -138,15 +138,17 @@ export class StreamOrchestrator {
     }
   }
 
-  public async recoverStreams(): Promise<void> {
+  public async recoverStreams(): Promise<string[]> {
     const activeIds = this.recoveryStore.listActive();
 
     if (activeIds.length === 0) {
       this.logger.info('[StreamOrchestrator] No streams to recover');
-      return;
+      return [];
     }
 
     this.logger.info(`[StreamOrchestrator] Recovering ${activeIds.length} stream(s)...`);
+
+    const recovered: string[] = [];
 
     for (const fileId of activeIds) {
       const state = this.recoveryStore.load(fileId);
@@ -207,7 +209,11 @@ export class StreamOrchestrator {
         `[StreamOrchestrator] Recovered stream ${streamId} with ${state.segments.length} segments, ` +
           `waiting ${this.config.recoveryTimeout}ms for engine reconnect`,
       );
+
+      recovered.push(streamId);
     }
+
+    return recovered;
   }
 
   public getQueuePressure(streamId: string): QueuePressure {
