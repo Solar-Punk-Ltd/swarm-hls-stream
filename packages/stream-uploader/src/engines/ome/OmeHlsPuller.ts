@@ -1,5 +1,6 @@
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
+import { getErrorMessage } from '../../utils/common.js';
 
 import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './utils.js';
 
@@ -56,7 +57,7 @@ export class OmeHlsPuller {
     }
     this.timer = setTimeout(() => {
       this.tick().catch((error) => {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.warn(`[OME] Puller tick error for ${this.streamId}: ${msg}`);
         this.scheduleNext(this.intervalMs);
       });
@@ -153,7 +154,7 @@ export class OmeHlsPuller {
 
         this.lastSeq = segment.seq;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.warn(`[OME] Segment ${segment.seq} fetch error for ${this.streamId}: ${msg}`);
       }
     }

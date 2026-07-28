@@ -1,4 +1,5 @@
 import { Logger } from '../../libs/Logger.js';
+import { getErrorMessage } from '../../utils/common.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
@@ -91,7 +92,7 @@ export function parseAppStream(url: string): AppStream {
       }
     }
   } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : 'Unknown error';
+    const errorMsg = getErrorMessage(e);
     logger.error(`[OME] Could not parse app/stream from URL: ${url} (${errorMsg})`);
     throw new Error(`Could not parse app/stream from URL: ${url} (${errorMsg})`);
   }

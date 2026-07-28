@@ -10,6 +10,14 @@ export function sleep(delay: number) {
   });
 }
 
+/**
+ * Log-safe message for any thrown value. Non-Error throws (a raw string, a rejected plain object)
+ * keep their content instead of collapsing to a placeholder that hides what actually failed.
+ */
+export function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function extractHttpStatus(error: unknown): number | undefined {
@@ -54,7 +62,7 @@ export async function retryUntilDeadlineAsync<T>(
         throw error;
       }
       const sleepMs = Math.min(jitteredDelayMs(backoffDelayMs(attempt, baseDelayMs, capDelayMs)), deadline - Date.now());
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       logger.info(`Retrying in ~${Math.round(sleepMs)}ms (attempt ${attempt + 1}). Error: ${message}`);
       await sleep(sleepMs);
     }

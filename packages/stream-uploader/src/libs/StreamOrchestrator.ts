@@ -11,6 +11,7 @@ import {
   REJECT_UNKNOWN_STREAM,
   SegmentResult,
 } from '../types.js';
+import { getErrorMessage } from '../utils/common.js';
 
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
@@ -302,7 +303,7 @@ export class StreamOrchestrator {
     try {
       await Promise.race([uploader.notifyStop(), drainTimeout]);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
+      const msg = getErrorMessage(error);
       this.logger.error(`[StreamOrchestrator] Force-stopping stream ${streamId}: ${msg}`);
     }
 
