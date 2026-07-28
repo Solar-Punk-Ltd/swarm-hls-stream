@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
+import { getErrorMessage } from '../utils/common.js';
 import { optional, optionalBool, optionalInt } from '../utils/env.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
@@ -45,7 +46,7 @@ export function createOmeEngine(
     const onHalt = (): void => {
       pullers.delete(streamId);
       orchestrator.stopStream(streamId).catch((error) => {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.error(`[OME] Error stopping stream ${streamId} after puller halt: ${msg}`);
       });
     };
@@ -136,7 +137,7 @@ function handleAdmission(
       reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
 
       orchestrator.stopStream(streamId).catch((error) => {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.error(`[OME] Error stopping stream ${streamId}: ${msg}`);
       });
       return;
@@ -158,7 +159,7 @@ function handleAdmission(
 
     reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
+    const msg = getErrorMessage(error);
     logger.error(`[OME] Admission handler error: ${msg}`);
     if (failOpen) {
       reply(res, { allowed: true, reason: 'handler error (fail-open)' });

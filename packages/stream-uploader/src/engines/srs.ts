@@ -5,6 +5,7 @@ import path from 'path';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
+import { getErrorMessage } from '../utils/common.js';
 import { optional } from '../utils/env.js';
 
 import { EnginePlugin } from './types.js';
@@ -87,7 +88,7 @@ function handleStreams(req: Request, res: Response, streamOrchestrator: StreamOr
       srsResponse(res, SRS_ACCEPT);
 
       streamOrchestrator.stopStream(streamId).catch((error) => {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.error(`[SRS] Error during stream stop ${streamId}: ${msg}`);
       });
       return;
@@ -104,7 +105,7 @@ function handleStreams(req: Request, res: Response, streamOrchestrator: StreamOr
     const accepted = streamOrchestrator.startStream(streamId, mediatype);
     srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
+    const msg = getErrorMessage(error);
     logger.error(`[SRS] Stream handler error: ${msg}`);
     srsResponse(res, SRS_ACCEPT);
   }
@@ -135,7 +136,7 @@ function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrches
 
     srsResponse(res, SRS_ACCEPT);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
+    const msg = getErrorMessage(error);
     logger.error(`[SRS] HLS handler error: ${msg}`);
     srsResponse(res, SRS_ACCEPT);
   }

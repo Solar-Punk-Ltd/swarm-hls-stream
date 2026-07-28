@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { backoffDelayMs, isRetryableError, jitteredDelayMs, retryUntilDeadlineAsync } from '../src/utils/common.js';
+import {
+  backoffDelayMs,
+  getErrorMessage,
+  isRetryableError,
+  jitteredDelayMs,
+  retryUntilDeadlineAsync,
+} from '../src/utils/common.js';
+
+describe('getErrorMessage', () => {
+  it('returns the message of a real Error', () => {
+    assert.equal(getErrorMessage(new Error('bee unreachable')), 'bee unreachable');
+  });
+
+  it('keeps the content of a thrown raw string instead of dropping it', () => {
+    assert.equal(getErrorMessage('stamp exhausted'), 'stamp exhausted');
+  });
+
+  it('does not lose non-Error throws of other shapes', () => {
+    assert.equal(getErrorMessage(404), '404');
+    assert.equal(getErrorMessage(undefined), 'undefined');
+  });
+
+  it('prefers an own message field over [object Object]', () => {
+    assert.equal(getErrorMessage({ message: 'batch not usable', status: 402 }), 'batch not usable');
+    assert.equal(getErrorMessage({ code: 1 }), '[object Object]');
+  });
+
+  it('does not throw on a value String() cannot convert', () => {
+    const noPrototype = Object.create(null);
+    assert.throws(() => String(noPrototype), TypeError, 'precondition: String() rejects this value');
+    assert.equal(getErrorMessage(noPrototype), '[object Object]');
+  });
+});
 
 describe('isRetryableError', () => {
   it('retries transient HTTP statuses', () => {

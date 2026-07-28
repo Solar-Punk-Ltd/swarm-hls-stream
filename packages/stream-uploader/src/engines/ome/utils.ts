@@ -1,17 +1,23 @@
 import { Logger } from '../../libs/Logger.js';
+import { getErrorMessage } from '../../utils/common.js';
+import { HLS_EXTINF, HLS_MEDIA_SEQUENCE, HLS_STREAM_INF } from '../../utils/hlsTags.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
 
+const STREAM_INF_PREFIX = `${HLS_STREAM_INF}:`;
+const MEDIA_SEQUENCE_PREFIX = `${HLS_MEDIA_SEQUENCE}:`;
+const EXTINF_PREFIX = `${HLS_EXTINF}:`;
+
 export function isMasterPlaylist(text: string): boolean {
-  return text.split(/\r?\n/).some((line) => line.trim().startsWith('#EXT-X-STREAM-INF:'));
+  return text.split(/\r?\n/).some((line) => line.trim().startsWith(STREAM_INF_PREFIX));
 }
 
 export function parseMasterPlaylist(text: string): string {
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    if (line.startsWith('#EXT-X-STREAM-INF:')) {
+    if (line.startsWith(STREAM_INF_PREFIX)) {
       // Next non-empty, non-comment line is the variant URI
       for (let j = i + 1; j < lines.length; j++) {
         const next = lines[j].trim();
@@ -38,12 +44,12 @@ export function parseMediaPlaylist(text: string): PlaylistEntry[] {
       continue;
     }
 
-    if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
-      mediaSeq = parseInt(line.slice('#EXT-X-MEDIA-SEQUENCE:'.length), 10) || 0;
+    if (line.startsWith(MEDIA_SEQUENCE_PREFIX)) {
+      mediaSeq = parseInt(line.slice(MEDIA_SEQUENCE_PREFIX.length), 10) || 0;
       continue;
     }
-    if (line.startsWith('#EXTINF:')) {
-      const value = line.slice('#EXTINF:'.length).split(',')[0];
+    if (line.startsWith(EXTINF_PREFIX)) {
+      const value = line.slice(EXTINF_PREFIX.length).split(',')[0];
       pendingDuration = parseFloat(value);
       continue;
     }
@@ -91,7 +97,7 @@ export function parseAppStream(url: string): AppStream {
       }
     }
   } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : 'Unknown error';
+    const errorMsg = getErrorMessage(e);
     logger.error(`[OME] Could not parse app/stream from URL: ${url} (${errorMsg})`);
     throw new Error(`Could not parse app/stream from URL: ${url} (${errorMsg})`);
   }
