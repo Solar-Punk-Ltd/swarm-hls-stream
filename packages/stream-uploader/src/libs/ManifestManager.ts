@@ -1,4 +1,14 @@
 import { SegmentEntry } from '../types.js';
+import {
+  HLS_DISCONTINUITY,
+  HLS_ENDLIST,
+  HLS_EXTINF,
+  HLS_M3U,
+  HLS_MEDIA_SEQUENCE,
+  HLS_PLAYLIST_TYPE_VOD,
+  HLS_TARGET_DURATION,
+  HLS_VERSION,
+} from '../utils/hlsTags.js';
 
 import { Logger } from './Logger.js';
 
@@ -6,7 +16,7 @@ const LIVE_WINDOW_SIZE = 10;
 
 export class ManifestManager {
   private segments: SegmentEntry[] = [];
-  private hlsHeaders: string[] = ['#EXTM3U', '#EXT-X-VERSION:3'];
+  private hlsHeaders: string[] = [HLS_M3U, `${HLS_VERSION}:3`];
   private targetDuration = 0;
   private logger = Logger.getInstance();
 
@@ -39,16 +49,16 @@ export class ManifestManager {
 
     const lines = [
       ...this.hlsHeaders,
-      `#EXT-X-TARGETDURATION:${this.targetDuration}`,
-      `#EXT-X-MEDIA-SEQUENCE:${mediaSequence}`,
+      `${HLS_TARGET_DURATION}:${this.targetDuration}`,
+      `${HLS_MEDIA_SEQUENCE}:${mediaSequence}`,
       '',
     ];
 
     for (const seg of windowSegments) {
       if (seg.discontinuity) {
-        lines.push('#EXT-X-DISCONTINUITY');
+        lines.push(HLS_DISCONTINUITY);
       }
-      lines.push(`#EXTINF:${seg.duration},`);
+      lines.push(`${HLS_EXTINF}:${seg.duration},`);
       lines.push(this.buildSegmentUri(seg.ref));
     }
 
@@ -62,21 +72,21 @@ export class ManifestManager {
 
     const lines = [
       ...this.hlsHeaders,
-      `#EXT-X-TARGETDURATION:${this.targetDuration}`,
-      '#EXT-X-PLAYLIST-TYPE:VOD',
-      '#EXT-X-MEDIA-SEQUENCE:0',
+      `${HLS_TARGET_DURATION}:${this.targetDuration}`,
+      HLS_PLAYLIST_TYPE_VOD,
+      `${HLS_MEDIA_SEQUENCE}:0`,
       '',
     ];
 
     for (const seg of this.segments) {
       if (seg.discontinuity) {
-        lines.push('#EXT-X-DISCONTINUITY');
+        lines.push(HLS_DISCONTINUITY);
       }
-      lines.push(`#EXTINF:${seg.duration},`);
+      lines.push(`${HLS_EXTINF}:${seg.duration},`);
       lines.push(this.buildSegmentUri(seg.ref));
     }
 
-    lines.push('#EXT-X-ENDLIST');
+    lines.push(HLS_ENDLIST);
     return lines.join('\n') + '\n';
   }
 
