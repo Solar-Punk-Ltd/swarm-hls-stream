@@ -5,7 +5,7 @@ import {
   HLS_EXTINF,
   HLS_M3U,
   HLS_MEDIA_SEQUENCE,
-  HLS_PLAYLIST_TYPE_VOD,
+  HLS_PLAYLIST_TYPE,
   HLS_TARGET_DURATION,
   HLS_VERSION,
 } from '../utils/hlsTags.js';
@@ -73,7 +73,7 @@ export class ManifestManager {
     const lines = [
       ...this.hlsHeaders,
       `${HLS_TARGET_DURATION}:${this.targetDuration}`,
-      HLS_PLAYLIST_TYPE_VOD,
+      `${HLS_PLAYLIST_TYPE}:VOD`,
       `${HLS_MEDIA_SEQUENCE}:0`,
       '',
     ];

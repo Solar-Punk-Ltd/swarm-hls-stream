@@ -13,5 +13,3 @@ export const HLS_EXTINF = '#EXTINF';
 export const HLS_STREAM_INF = '#EXT-X-STREAM-INF';
 export const HLS_DISCONTINUITY = '#EXT-X-DISCONTINUITY';
 export const HLS_ENDLIST = '#EXT-X-ENDLIST';
-
-export const HLS_PLAYLIST_TYPE_VOD = `${HLS_PLAYLIST_TYPE}:VOD`;
