@@ -22,6 +22,17 @@ describe('getErrorMessage', () => {
     assert.equal(getErrorMessage(404), '404');
     assert.equal(getErrorMessage(undefined), 'undefined');
   });
+
+  it('prefers an own message field over [object Object]', () => {
+    assert.equal(getErrorMessage({ message: 'batch not usable', status: 402 }), 'batch not usable');
+    assert.equal(getErrorMessage({ code: 1 }), '[object Object]');
+  });
+
+  it('does not throw on a value String() cannot convert', () => {
+    const noPrototype = Object.create(null);
+    assert.throws(() => String(noPrototype), TypeError, 'precondition: String() rejects this value');
+    assert.equal(getErrorMessage(noPrototype), '[object Object]');
+  });
 });
 
 describe('isRetryableError', () => {

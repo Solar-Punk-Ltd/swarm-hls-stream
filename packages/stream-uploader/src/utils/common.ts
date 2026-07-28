@@ -11,11 +11,30 @@ export function sleep(delay: number) {
 }
 
 /**
- * Log-safe message for any thrown value. Non-Error throws (a raw string, a rejected plain object)
- * keep their content instead of collapsing to a placeholder that hides what actually failed.
+ * Log-safe message for any thrown value. A non-Error throw keeps what it carries, a raw string or
+ * an object's own `message`, instead of collapsing to a placeholder that hides what failed.
+ *
+ * Never throws. `String()` rejects a value with no prototype (`Object.create(null)`), and every
+ * caller is a catch block or a rejection handler, where a second throw would replace the error
+ * being reported with a confusing one from the logging itself.
  */
 export function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const { message } = error as { message?: unknown };
+    if (typeof message === 'string' && message !== '') {
+      return message;
+    }
+  }
+
+  try {
+    return String(error);
+  } catch {
+    return Object.prototype.toString.call(error);
+  }
 }
 
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
