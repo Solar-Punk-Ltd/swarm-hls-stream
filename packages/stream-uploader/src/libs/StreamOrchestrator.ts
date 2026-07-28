@@ -96,8 +96,9 @@ export class StreamOrchestrator {
     }
 
     // Segments arriving mean the engine is feeding this stream again. If it was just recovered after
-    // a crash, cancel the pending finalize timer: SRS never re-sends on_publish, so startStream
-    // won't fire to clear it, and the stream would otherwise be VOD'd mid-broadcast at the timeout.
+    // a crash, cancel the pending finalize timer: an engine does not re-announce a session that
+    // stayed open across the crash, so startStream never fires to clear the timer, and the stream
+    // would otherwise be finalized as VOD mid-broadcast when it expires.
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
       clearTimeout(recoveryTimer);

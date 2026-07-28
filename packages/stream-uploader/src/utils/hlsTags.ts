@@ -2,7 +2,7 @@
  * HLS playlist tags (RFC 8216), as bare tag names without a trailing colon.
  *
  * Tags that carry a value are composed at the call site (`${HLS_EXTINF}:${duration},`) so the
- * builders in ManifestManager and the parsers in the OME engine share one spelling of each tag.
+ * builders in ManifestManager and the engine-side playlist parsers share one spelling of each tag.
  */
 export const HLS_M3U = '#EXTM3U';
 export const HLS_VERSION = '#EXT-X-VERSION';
