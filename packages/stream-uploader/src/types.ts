@@ -7,11 +7,13 @@ export interface StreamState {
   streamId: string;
   streamRawTopic: string;
   mediatype: MediaType;
-  socIndex: number;
+  socIndex: number | null;
   segments: SegmentEntry[];
   hlsHeaders: string[];
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
+  pendingDiscontinuity?: boolean;
+  liveManifestStale?: boolean;
   updatedAt: number;
 }
 
@@ -19,6 +21,7 @@ export interface SegmentEntry {
   index: number;
   duration: number;
   ref: string;
+  discontinuity?: boolean;
 }
 
 export const REJECT_QUEUE_FULL = 'queue_full' as const;

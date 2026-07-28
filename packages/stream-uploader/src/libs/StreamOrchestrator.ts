@@ -55,10 +55,21 @@ export class StreamOrchestrator {
     }
 
     if (this.activeStreams.has(streamId)) {
-      this.logger.warn(`[StreamOrchestrator] Stream ${streamId} already active, rejecting start`);
-      return false;
+      // The engine re-announced a stream we still track — it restarted without sending on_unpublish
+      // (e.g. the media engine was restarted). Finalize the stale session as a VOD, then start the
+      // new one, so the broadcaster resumes instead of being rejected as "already active".
+      this.logger.info(`[StreamOrchestrator] Stream ${streamId} re-announced; finalizing stale session and restarting`);
+      void this.stopStream(streamId)
+        .catch((error) => this.errorHandler.handleError(error, `StreamOrchestrator.restart - ${streamId}`))
+        .then(() => this.spawnUploader(streamId, mediatype));
+      return true;
     }
 
+    this.spawnUploader(streamId, mediatype);
+    return true;
+  }
+
+  private spawnUploader(streamId: string, mediatype: MediaType): void {
     this.queue.add(() => {
       const uploader = new StreamUploader(
         this.bee,
@@ -75,14 +86,22 @@ export class StreamOrchestrator {
       this.processedSegments.set(streamId, new Set());
       this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
     });
-
-    return true;
   }
 
   public handleSegment(streamId: string, segmentIndex: number, duration: number, data: Buffer): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
+    }
+
+    // Segments arriving mean the engine is feeding this stream again. If it was just recovered after
+    // a crash, cancel the pending finalize timer: SRS never re-sends on_publish, so startStream
+    // won't fire to clear it, and the stream would otherwise be VOD'd mid-broadcast at the timeout.
+    const recoveryTimer = this.recoveryTimers.get(streamId);
+    if (recoveryTimer) {
+      clearTimeout(recoveryTimer);
+      this.recoveryTimers.delete(streamId);
+      this.logger.info(`[StreamOrchestrator] Segments resumed for ${streamId}; cancelled recovery finalize timer`);
     }
 
     // Deduplication
@@ -119,22 +138,37 @@ export class StreamOrchestrator {
     }
   }
 
-  public async recoverStreams(): Promise<void> {
+  public async recoverStreams(): Promise<string[]> {
     const activeIds = this.recoveryStore.listActive();
 
     if (activeIds.length === 0) {
       this.logger.info('[StreamOrchestrator] No streams to recover');
-      return;
+      return [];
     }
 
     this.logger.info(`[StreamOrchestrator] Recovering ${activeIds.length} stream(s)...`);
 
-    for (const streamId of activeIds) {
-      const state = this.recoveryStore.load(streamId);
+    const recovered: string[] = [];
+
+    for (const fileId of activeIds) {
+      const state = this.recoveryStore.load(fileId);
       if (!state) {
-        this.recoveryStore.remove(streamId);
+        this.recoveryStore.remove(fileId);
         continue;
       }
+
+      if (!state.streamId) {
+        // Parseable JSON but not a stream state — the state dir can hold other files
+        // (e.g. the catalog feed index). Skip it; never delete what recovery does not own.
+        this.logger.warn(`[StreamOrchestrator] Skipping non-stream state file: ${fileId}`);
+        continue;
+      }
+
+      // RecoveryStore names files by a slash-sanitized id (live/stream → live_stream); the real
+      // streamId lives inside the state. Key the live maps by the real id so incoming segments
+      // (handleSegment looks up the real id) actually match this recovered stream — otherwise the
+      // recovery timer can never be cancelled and the stream is always VOD-ed at the timeout.
+      const streamId = state.streamId;
 
       const uploader = new StreamUploader(
         this.bee,
@@ -152,6 +186,7 @@ export class StreamOrchestrator {
           hlsHeaders: state.hlsHeaders,
           isFirstSegmentReady: state.isFirstSegmentReady,
           isFirstManifestReady: state.isFirstManifestReady,
+          pendingDiscontinuity: state.pendingDiscontinuity,
         },
       );
 
@@ -174,7 +209,11 @@ export class StreamOrchestrator {
         `[StreamOrchestrator] Recovered stream ${streamId} with ${state.segments.length} segments, ` +
           `waiting ${this.config.recoveryTimeout}ms for engine reconnect`,
       );
+
+      recovered.push(streamId);
     }
+
+    return recovered;
   }
 
   public getQueuePressure(streamId: string): QueuePressure {
@@ -209,6 +248,16 @@ export class StreamOrchestrator {
 
   public getActiveStreamCount(): number {
     return this.activeStreams.size;
+  }
+
+  public getStaleManifestStreamCount(): number {
+    let count = 0;
+    for (const uploader of this.activeStreams.values()) {
+      if (uploader.hasStaleLiveManifest()) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   public async cleanup(): Promise<void> {

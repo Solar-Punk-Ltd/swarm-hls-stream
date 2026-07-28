@@ -107,7 +107,19 @@ export class OmeHlsPuller {
       throw new Error(`Media playlist HTTP ${rawPlaylistResponse.status}`);
     }
 
-    return await rawPlaylistResponse.text();
+    const body = await rawPlaylistResponse.text();
+
+    // The URL we latched onto can turn out to be a master (variant) playlist — e.g. our first poll
+    // landed on an early stub before OME published the master, so we fell back to the master URL.
+    // Parsing a master as a media playlist yields zero segments forever, so re-resolve and follow the
+    // variant instead of polling a dead URL.
+    if (isMasterPlaylist(body)) {
+      this.setMediaPlaylistUrl(body);
+      this.scheduleNext(this.intervalMs);
+      return null;
+    }
+
+    return body;
   }
 
   private async processPlaylist(playlist: string, url: string): Promise<void> {
@@ -135,6 +147,8 @@ export class OmeHlsPuller {
 
         if (!result.accepted) {
           logger.warn(`[OME] Segment ${segment.seq} not accepted for ${this.streamId}: ${result.reason}`);
+          // Backpressure/rejection: leave lastSeq unchanged so the next tick re-pulls this segment in order.
+          return;
         }
 
         this.lastSeq = segment.seq;

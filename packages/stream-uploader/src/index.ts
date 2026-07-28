@@ -1,8 +1,10 @@
 import { Bee } from '@ethersphere/bee-js';
+import path from 'path';
 
 import { ApiServerHandle, startApiServer } from './api/server.js';
 import { engineRegistry } from './engines/registry.js';
 import { EnginePlugin } from './engines/types.js';
+import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { Logger } from './libs/Logger.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
@@ -79,7 +81,9 @@ async function start() {
     const bee = new Bee(config.beeUrl);
     const recoveryStore = new RecoveryStore(config.stateDir);
 
-    const streamCatalog = new StreamCatalog(bee, config.streamKey, config.streamListTopic, config.stamp);
+    // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
+    const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog', 'feed-index.json'));
+    const streamCatalog = new StreamCatalog(bee, config.streamKey, config.streamListTopic, config.stamp, catalogIndexStore);
     await streamCatalog.init();
 
     streamOrchestrator = new StreamOrchestrator(bee, streamCatalog, recoveryStore, {
@@ -90,10 +94,19 @@ async function start() {
       recoveryTimeout: config.recoveryTimeout,
     });
 
-    await streamOrchestrator.recoverStreams();
+    const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
     const engines = loadEngines();
     apiServer = startApiServer(streamOrchestrator, config.apiPort, engines);
+
+    // Pull-based engines (OME) must re-attach their fetch loop to recovered streams; otherwise the
+    // recovered stream produces no segments and is finalized as VOD at the recovery timeout.
+    for (const streamId of recoveredStreamIds) {
+      for (const engine of engines) {
+        engine.resumeRecoveredStream?.(streamOrchestrator, streamId);
+      }
+    }
+
     logger.info('Stream uploader started — waiting for engine connections');
   } catch (error) {
     logger.error('Failed to start:', error);
