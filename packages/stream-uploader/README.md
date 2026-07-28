@@ -58,15 +58,16 @@ The API server starts on port 3000 (default).
 
 **Optional:**
 
-| Variable              | Default   | Description                               |
-| --------------------- | --------- | ----------------------------------------- |
-| `MANIFEST_ACCESS_URL` | _(empty)_ | Base URL for segment refs in manifests    |
-| `API_PORT`            | `3000`    | HTTP API port                             |
-| `STATE_DIR`           | `./state` | Directory for crash recovery state        |
-| `MAX_QUEUE_SIZE`      | `100`     | Max queued segments per stream            |
-| `RECOVERY_TIMEOUT`    | `60000`   | Crash recovery timeout (ms)               |
-| `ENGINE`              | _(empty)_ | Engine plugin to load (`srs` or empty)    |
-| `MEDIA_PATH`          | `./media` | Path where the engine writes HLS segments |
+| Variable              | Default   | Description                                   |
+| --------------------- | --------- | --------------------------------------------- |
+| `MANIFEST_ACCESS_URL` | _(empty)_ | Base URL for segment refs in manifests        |
+| `API_PORT`            | `3000`    | HTTP API port                                 |
+| `STATE_DIR`           | `./state` | Directory for crash recovery state            |
+| `MAX_QUEUE_SIZE`      | `100`     | Max queued segments per stream                |
+| `RECOVERY_TIMEOUT`    | `60000`   | Crash recovery timeout (ms)                   |
+| `ENGINE`              | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty) |
+
+Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
 ## API
 
@@ -107,7 +108,9 @@ interface EnginePlugin {
 
 Engines are thin adapters that translate media server events into `StreamOrchestrator` calls. The generic API and engine routes coexist — both feed into the same orchestrator.
 
-Currently supported: **SRS** (SRT/RTMP to HLS).
+Each engine owns its configuration: a `create<Name>EngineFromEnv()` factory reads the engine's env vars, and `src/engines/registry.ts` maps the `ENGINE` value to that factory. To add an engine, create its module under `src/engines/`, register it in the registry, and add an `engines/<name>/.env.sample` with its variables — the uploader loads `engines/<name>/.env` automatically when the engine is selected.
+
+Currently supported: **SRS** (SRT/RTMP to HLS) and **OME** (OvenMediaEngine, LLHLS).
 
 ## Supported Transcoding Engines
 

@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
+import { optional, optionalBool, optionalInt } from '../utils/env.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
 import { AppStream, OmeAdmissionPayload, OmeEngineOptions } from './ome/interfaces.js';
@@ -13,6 +14,16 @@ const logger = Logger.getInstance();
 
 type StartPuller = (orchestrator: StreamOrchestrator, streamId: string, app: string, stream: string) => void;
 type StopPuller = (streamId: string) => void;
+
+export function createOmeEngineFromEnv(): EnginePlugin {
+  const hlsBaseUrl = optional('OME_HLS_URL', 'http://ome:8081');
+  const pollIntervalMs = optionalInt('OME_HLS_POLL_INTERVAL_MS', 500);
+  logger.info(`[Engine] OME engine loaded, HLS base: ${hlsBaseUrl}, poll interval: ${pollIntervalMs}ms`);
+  return createOmeEngine(hlsBaseUrl, pollIntervalMs, {
+    admissionSecret: optional('OME_ADMISSION_SECRET', ''),
+    failOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
+  });
+}
 
 export function createOmeEngine(
   hlsBaseUrl: string,

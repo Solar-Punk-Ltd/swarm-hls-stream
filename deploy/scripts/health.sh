@@ -11,6 +11,7 @@ parse_profile_args "$@"
 set -- "${REST_ARGS[@]}"
 
 load_env
+load_engine_envs
 apply_port_slot
 
 check_service() {

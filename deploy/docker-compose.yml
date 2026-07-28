@@ -42,9 +42,9 @@ services:
       - start
       - --api-addr=:${BEE_GATEWAY_API_PORT:-1733}
       - --p2p-addr=:${BEE_GATEWAY_P2P_PORT:-1734}
-      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=false
       - --swap-enable=false
+      - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
       - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
@@ -75,7 +75,7 @@ services:
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-100}
       RECOVERY_TIMEOUT: ${RECOVERY_TIMEOUT:-60000}
       ENGINE: ${ENGINE:-srs}
-      MEDIA_PATH: /media
+      SRS_MEDIA_PATH: /media
       OME_HLS_URL: ${OME_HLS_URL:-http://ome:8081}
       OME_HLS_POLL_INTERVAL_MS: ${OME_HLS_POLL_INTERVAL_MS:-500}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
