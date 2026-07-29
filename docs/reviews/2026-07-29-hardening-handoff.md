@@ -275,16 +275,26 @@ From the repo owner's standing configuration. These are not suggestions.
 - Immutability, return new objects rather than mutating.
 - Repeated string literals become named constants.
 
-## Open decision, not yet made
+## Decided: QA runs last
 
-The repo owner has not chosen how to sequence against the QA stress test. The options put to them:
+**The repo owner decided on 2026-07-29 that the QA stress test happens at the very end, after all the
+hardening work is finished.** Do not run it earlier and do not treat any earlier measurement as the
+QA number.
 
-1. Land S0.1, S2.1, and S2.2 first, then run QA, so the test can actually fail when the system is
-   broken. This was the recommendation.
-2. Run QA now on `f146588` and treat the result as a rough baseline only.
-3. Land all of Sprint 0, 1, and 2 before any stress testing.
+This is the safest option on the measurement question. `/health` cannot currently report a problem and
+four `fetch` calls have no timeout, so a number taken today cannot distinguish a healthy uploader from
+a silently dead one. Running QA after S2.1 and S2.2 was the minimum for the figures to mean anything,
+and running it after everything is strictly better than that.
 
-Ask before assuming. The answer changes what you do first.
+Two consequences to carry, neither of them blockers:
+
+- **PR #10 and the `streaming-infra-manager` branch stay held for the duration**, since nandibaa's
+  review gated them on QA numbers. That is a long hold now. Say so when it comes up rather than
+  letting people assume the hold is short.
+- **Nothing establishes a latency baseline until then either.** S5.1 exists to instrument
+  glass-to-glass latency and the rest of Sprint 5 is unprovable without it, so S5.1 still runs inside
+  Sprint 5 rather than waiting for the QA pass. The two are separate measurements and only the stress
+  test is deferred.
 
 ## What not to do
 
@@ -329,7 +339,12 @@ Count tracked files only, with `git ls-files -z | xargs -0 npx prettier --check`
 reports a number that depends on whose machine it ran on. That is where the 35 in earlier drafts came
 from, and it is not reproducible in CI.
 
-**Node version story.** `engines.node` says `>=20` and the production image is `node:20-alpine`, yet
-the test tooling had never run on 20. The matrix now covers both. If the team decides development is
-22-only, say so explicitly in `engines` and drop 20 from the matrix, because the two should not
-disagree silently.
+**Node version story. Decided: 22.** `engines.node` said `>=20` and the production images were
+`node:20-alpine`, while the test tooling had never actually run on 20. Nine declarations now agree on
+22: `engines.node`, `.nvmrc`, both deploy images, four READMEs, and the CI matrix, which drops to a
+single entry because nothing claims to support a second version any more.
+
+22 rather than 24 because 22 is what the team runs locally and what the tests have always passed on.
+Note that **Node 22 is in maintenance as of mid-2026 and 24 is the current active LTS**, so moving to
+24 is a real follow-up. The image change only takes effect on the next deploy, which needs a build and
+an operator-run `scp`.
