@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is engines.node and the node:20-alpine production image, 22 is what
+        # the team runs locally. Both, so a version-specific break cannot hide.
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+  format:
+    name: format (changed files)
+    # Pull requests only, where a merge base exists to diff against.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Scoped to files the pull request touches rather than the whole tree. 35
+      # files predate any formatting gate, and reformatting them here would bury
+      # real diffs and conflict with the branches currently in review. Whoever
+      # clears that backlog can widen this to `prettier --check .` in one commit.
+      - name: Check formatting of changed files
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          files=$(git diff --name-only --diff-filter=ACMR \
+            "origin/${{ github.base_ref }}...HEAD" \
+            -- '*.ts' '*.tsx' '*.js' '*.cjs' '*.mjs' '*.json' '*.yml' '*.yaml' '*.md' '*.css' '*.scss')
+          if [ -z "$files" ]; then
+            echo "No formattable files changed."
+            exit 0
+          fi
+          echo "Checking:"
+          echo "$files"
+          echo "$files" | xargs npx prettier --check
