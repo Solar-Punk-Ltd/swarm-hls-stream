@@ -20,7 +20,7 @@ Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swar
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - pnpm
 - A running Swarm Bee node with a valid postage stamp (see `pnpm stamp:setup`)
 

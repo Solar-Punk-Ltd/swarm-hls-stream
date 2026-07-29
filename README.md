@@ -22,7 +22,7 @@ OBS/FFmpeg ──SRT──> SRS ──HLS segments──> Stream Uploader ──
 
 ## Prerequisites
 
-- Node.js 20+ and pnpm
+- Node.js 22+ and pnpm
 - Docker and Docker Compose
 - [jq](https://jqlang.github.io/jq/download/) (for deploy scripts)
 - A funded Bee node on Gnosis Chain (xDAI + BZZ)

@@ -21,9 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 is engines.node and the node:20-alpine production image, 22 is what
-        # the team runs locally. Both, so a version-specific break cannot hide.
-        node: [20, 22]
+        # 22 is engines.node, the node:22-alpine production image, and what the
+        # team runs locally. One entry because those three now agree. Add a
+        # version here only when something is actually supposed to run on it.
+        node: [22]
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +64,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile

@@ -6,7 +6,7 @@
 # own image, so streamer1 and streamer2 ship their own pre-built JS.
 
 # --- Build stage --------------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 
 # Build args (declare → ENV so Vite picks them up via process.env.VITE_*).
