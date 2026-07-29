@@ -5,6 +5,11 @@ on:
     branches: ['**']
   pull_request:
 
+# Every job here only reads the checked out tree. Declared explicitly so the
+# grant does not silently widen if the repository default is ever changed.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
