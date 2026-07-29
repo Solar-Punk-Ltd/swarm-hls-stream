@@ -30,15 +30,43 @@ Before your first commit, confirm you are on feat/ai-hardening and that HEAD mat
 progress log says. Ask me before pushing anything to a shared branch.
 ```
 
-## State at the branch point
+## Branch model
 
-- Branch `feat/ai-hardening`, branched from `feature/uploader-hardening` at `f146588`.
-- Parent `feature/uploader-hardening` at `f146588`, in sync with origin. Holds merged PRs #10 and #23.
+Three levels, and the middle one is the point. Do not commit code straight to the integration
+branch, which is the mistake that produced this section.
+
+| Branch                                   | Role                                                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `feature/uploader-hardening` @ `f146588` | **Frozen reference.** The version the owner wants preserved as-is. Never commit here.       |
+| `feat/ai-hardening`                      | **Integration branch.** Carries the plan documents. All hardening PRs target this.          |
+| `feat/<task>` off `feat/ai-hardening`    | **One task branch per unit of work.** PR back into `feat/ai-hardening`, Copilot on that PR. |
+
+So the loop per unit of work is: branch off `feat/ai-hardening`, commit there one fix per commit, PR
+into `feat/ai-hardening`, run the Copilot gate on that PR, merge. Never straight onto the integration
+branch, because that skips the PR and therefore skips Copilot entirely.
+
+**Consequence worth knowing:** the plan documents live on `feat/ai-hardening`, but progress-log
+entries arrive with the task PR that produced them. If you read the handoff on `feat/ai-hardening`
+and the progress log looks empty, check for open PRs into it before concluding nothing has been done.
+
+### Surrounding state
+
+- `feature/uploader-hardening` @ `f146588` holds merged PRs #10 and #23.
 - Sibling infra repo `streaming-infra-manager` on `feature/e2e-suite` at `356bc9e`, submodule pinned
   to `f146588`.
-- Both feature branches are **held pending QA stress-test numbers** per nandibaa's review of PR #10.
+- Both of those are **held pending QA stress-test numbers** per nandibaa's review of PR #10.
 - Test baseline at `f146588`: 67/67 uploader, 5/5 client, typecheck clean, eslint clean on uploader
   and client. Do not let these regress.
+
+### Copilot could not be attached via the API
+
+On PR #24 the REST call returned HTTP 200 with `requested_reviewers: []`, meaning GitHub accepted the
+request and silently discarded it. `gh pr edit --add-reviewer` failed with "Could not resolve user
+with login" under both `copilot-pull-request-reviewer[bot]` and `Copilot`. The bot demonstrably works
+in this repo, PR #23's timeline shows `review_requested -> Copilot` and a posted review. So this is an
+entitlement or transient problem, not a wrong command. **Fallback: request it by hand in the PR UI
+under Reviewers, which is one click.** Try the API first, and fall back rather than assuming the gate
+was satisfied.
 
 ## Read this before you plan anything
 
