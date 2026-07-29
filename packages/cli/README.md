@@ -8,19 +8,19 @@ Uses [@ethersphere/bee-js](https://github.com/ethersphere/bee-js) for all Bee AP
 
 ### Stamp management
 
-| Command              | Description                                           |
-| -------------------- | ----------------------------------------------------- |
-| `pnpm stamp:setup`   | Full workflow: wait for node → buy stamp → write .env |
-| `pnpm stamp:buy`     | Buy a stamp (amount/depth args)                       |
-| `pnpm stamp:check`   | List all stamps with status                           |
+| Command            | Description                                           |
+| ------------------ | ----------------------------------------------------- |
+| `pnpm stamp:setup` | Full workflow: wait for node → buy stamp → write .env |
+| `pnpm stamp:buy`   | Buy a stamp (amount/depth args)                       |
+| `pnpm stamp:check` | List all stamps with status                           |
 
 ### Node info
 
-| Command              | Description                    |
-| -------------------- | ------------------------------ |
-| `pnpm node:status`   | Node health + connected peers  |
-| `pnpm node:addresses`| Ethereum + overlay addresses   |
-| `pnpm node:wallets`  | Wallet balances (BZZ + xDAI)   |
+| Command               | Description                   |
+| --------------------- | ----------------------------- |
+| `pnpm node:status`    | Node health + connected peers |
+| `pnpm node:addresses` | Ethereum + overlay addresses  |
+| `pnpm node:wallets`   | Wallet balances (BZZ + xDAI)  |
 
 All commands run from the **monorepo root**.
 
@@ -31,11 +31,11 @@ Commands auto-detect the bee-uploader URL by reading:
 1. `deploy/config.json` — deployment target for `bee-uploader`
 2. `.env` — `BEE_UPLOADER_API_PORT` (default: 1633)
 
-| Config target        | Resolved URL                      |
-| -------------------- | --------------------------------- |
-| `"localhost"`        | `http://localhost:1633`            |
-| `"root@1.2.3.4"`    | `http://1.2.3.4:1633`             |
-| `false`              | Falls back to `BEE_URL` from .env |
+| Config target    | Resolved URL                      |
+| ---------------- | --------------------------------- |
+| `"localhost"`    | `http://localhost:1633`           |
+| `"root@1.2.3.4"` | `http://1.2.3.4:1633`             |
+| `false`          | Falls back to `BEE_URL` from .env |
 
 Override with `--url`:
 

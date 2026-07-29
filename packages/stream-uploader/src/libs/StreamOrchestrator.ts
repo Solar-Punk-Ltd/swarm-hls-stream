@@ -195,7 +195,7 @@ export class StreamOrchestrator {
       this.activeStreams.set(streamId, uploader);
 
       // Rebuild processed segments set from state
-      const processed = new Set(state.segments.map(s => s.index));
+      const processed = new Set(state.segments.map((s) => s.index));
       this.processedSegments.set(streamId, processed);
 
       // Set recovery timeout — if engine doesn't reconnect, finalize as VOD
@@ -272,7 +272,7 @@ export class StreamOrchestrator {
     // Stop all active streams
     const streamIds = Array.from(this.activeStreams.keys());
     await Promise.all(
-      streamIds.map(async streamId => {
+      streamIds.map(async (streamId) => {
         try {
           await this.stopStream(streamId);
         } catch (error) {

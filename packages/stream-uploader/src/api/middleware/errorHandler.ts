@@ -11,11 +11,7 @@ export interface ApiErrorResponse {
 }
 
 export class ApiError extends Error {
-  constructor(
-    public readonly statusCode: number,
-    message: string,
-    public readonly retryAfter?: string,
-  ) {
+  constructor(public readonly statusCode: number, message: string, public readonly retryAfter?: string) {
     super(message);
   }
 }

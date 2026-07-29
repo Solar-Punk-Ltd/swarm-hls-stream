@@ -5,7 +5,7 @@ import { Logger } from '../libs/Logger.js';
 const logger = Logger.getInstance();
 
 export function sleep(delay: number) {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     setTimeout(resolve, delay);
   });
 }
@@ -80,7 +80,10 @@ export async function retryUntilDeadlineAsync<T>(
       if (!isRetryableError(error) || Date.now() >= deadline) {
         throw error;
       }
-      const sleepMs = Math.min(jitteredDelayMs(backoffDelayMs(attempt, baseDelayMs, capDelayMs)), deadline - Date.now());
+      const sleepMs = Math.min(
+        jitteredDelayMs(backoffDelayMs(attempt, baseDelayMs, capDelayMs)),
+        deadline - Date.now(),
+      );
       const message = getErrorMessage(error);
       logger.info(`Retrying in ~${Math.round(sleepMs)}ms (attempt ${attempt + 1}). Error: ${message}`);
       await sleep(sleepMs);

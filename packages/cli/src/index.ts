@@ -19,20 +19,10 @@ const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
   'node-wallets': (a) => nodeWallets(a.url),
   'stamp-check': (a) => stampCheck(a.url),
   'stamp-buy': async (a) => {
-    await stampBuy(
-      a.url,
-      a.positional[0],
-      a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
-      a.immutable,
-    );
+    await stampBuy(a.url, a.positional[0], a.positional[1] ? parseInt(a.positional[1], 10) : undefined, a.immutable);
   },
   'stamp-setup': (a) =>
-    stampSetup(
-      a.url,
-      a.positional[0],
-      a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
-      a.immutable,
-    ),
+    stampSetup(a.url, a.positional[0], a.positional[1] ? parseInt(a.positional[1], 10) : undefined, a.immutable),
 };
 
 function parseArgs(argv: string[]): ParsedArgs {

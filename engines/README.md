@@ -11,9 +11,9 @@ The plugin registers engine-specific HTTP routes on the uploader's server. No se
 
 ## Available Engines
 
-| Engine | Plugin | Description |
-|--------|--------|-------------|
-| [srs](./srs/) | `ENGINE=srs` | SRT/RTMP ingest via [SRS](https://github.com/ossrs/srs) |
+| Engine        | Plugin       | Description                                                                                                  |
+| ------------- | ------------ | ------------------------------------------------------------------------------------------------------------ |
+| [srs](./srs/) | `ENGINE=srs` | SRT/RTMP ingest via [SRS](https://github.com/ossrs/srs)                                                      |
 | [ome](./ome/) | `ENGINE=ome` | SRT ingest via [OvenMediaEngine](https://github.com/AirenSoft/OvenMediaEngine); uploader pulls HLS over HTTP |
 
 ## How It Works

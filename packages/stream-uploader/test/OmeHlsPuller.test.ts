@@ -118,7 +118,14 @@ describe('OmeHlsPuller playlist resolution', () => {
     } as unknown as ConstructorParameters<typeof OmeHlsPuller>[5];
 
     // Huge interval so the puller's own scheduled ticks never fire — the test drives tick() by hand.
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator) as unknown as OmeHlsPuller & {
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      1_000_000,
+      orchestrator,
+    ) as unknown as OmeHlsPuller & {
       tick(): Promise<void>;
     };
 
@@ -127,6 +134,10 @@ describe('OmeHlsPuller playlist resolution', () => {
     await puller.tick(); // variant media playlist -> pull segment 0
     puller.stop();
 
-    assert.deepEqual(pulled, [0], 'the puller must follow the variant once OME serves the master, not latch a dead URL');
+    assert.deepEqual(
+      pulled,
+      [0],
+      'the puller must follow the variant once OME serves the master, not latch a dead URL',
+    );
   });
 });

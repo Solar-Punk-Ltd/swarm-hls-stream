@@ -83,7 +83,13 @@ async function start() {
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
     const catalogIndexStore = new CatalogIndexStore(path.join(config.stateDir, 'catalog', 'feed-index.json'));
-    const streamCatalog = new StreamCatalog(bee, config.streamKey, config.streamListTopic, config.stamp, catalogIndexStore);
+    const streamCatalog = new StreamCatalog(
+      bee,
+      config.streamKey,
+      config.streamListTopic,
+      config.stamp,
+      catalogIndexStore,
+    );
     await streamCatalog.init();
 
     streamOrchestrator = new StreamOrchestrator(bee, streamCatalog, recoveryStore, {

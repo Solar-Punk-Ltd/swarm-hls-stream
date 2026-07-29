@@ -13,7 +13,7 @@ export class Logger {
   private formatMessage(level: string, ...args: any[]): string {
     const timestamp = new Date().toISOString();
     return `[${timestamp}] [${level.toUpperCase()}] - ${args
-      .map(arg => (typeof arg === 'object' ? JSON.stringify(arg) : arg))
+      .map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : arg))
       .join(' ')}`;
   }
 

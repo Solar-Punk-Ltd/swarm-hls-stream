@@ -1,9 +1,9 @@
 services:
   ome:
     ports:
-      - "${OME_HLS_PORT:-8081}:8081"
-      - "${OME_SRT_PORT:-10080}:10080/udp"
+      - '${OME_HLS_PORT:-8081}:8081'
+      - '${OME_SRT_PORT:-10080}:10080/udp'
     environment:
       OME_ADAPTER_HOST: host.docker.internal
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'

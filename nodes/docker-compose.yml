@@ -5,8 +5,8 @@ services:
     env_file: ../.env
     restart: unless-stopped
     ports:
-      - "${BEE_UPLOADER_API_PORT:-1633}:1633"
-      - "${BEE_UPLOADER_P2P_PORT:-1634}:1634"
+      - '${BEE_UPLOADER_API_PORT:-1633}:1633'
+      - '${BEE_UPLOADER_P2P_PORT:-1634}:1634'
     volumes:
       - ${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}:/home/bee/.bee
     command:
@@ -27,8 +27,8 @@ services:
     env_file: ../.env
     restart: unless-stopped
     ports:
-      - "${BEE_GATEWAY_API_PORT:-1733}:1633"
-      - "${BEE_GATEWAY_P2P_PORT:-1734}:1634"
+      - '${BEE_GATEWAY_API_PORT:-1733}:1633'
+      - '${BEE_GATEWAY_P2P_PORT:-1734}:1634'
     volumes:
       - ${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}:/home/bee/.bee
     command:

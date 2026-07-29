@@ -129,7 +129,7 @@ describe('StreamOrchestrator recovery hygiene', () => {
     const orch = makeOrchestrator(
       makeRecovery({
         listActive: () => ['catalog-feed-index'],
-        load: () => ({ owner: 'aa'.repeat(20), topicHex: 'bb'.repeat(32), index: '000000000000007d' }) as never,
+        load: () => ({ owner: 'aa'.repeat(20), topicHex: 'bb'.repeat(32), index: '000000000000007d' } as never),
         remove: (id: string) => removed.push(id),
       }),
     );

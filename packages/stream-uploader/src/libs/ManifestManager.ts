@@ -44,8 +44,7 @@ export class ManifestManager {
         ? this.segments
         : this.segments.slice(this.segments.length - LIVE_WINDOW_SIZE);
 
-    const mediaSequence =
-      this.segments.length <= LIVE_WINDOW_SIZE ? 0 : this.segments.length - LIVE_WINDOW_SIZE;
+    const mediaSequence = this.segments.length <= LIVE_WINDOW_SIZE ? 0 : this.segments.length - LIVE_WINDOW_SIZE;
 
     const lines = [
       ...this.hlsHeaders,
@@ -110,7 +109,7 @@ export class ManifestManager {
     this.hlsHeaders = [...hlsHeaders];
 
     if (this.segments.length > 0) {
-      this.targetDuration = Math.ceil(Math.max(...this.segments.map(s => s.duration)));
+      this.targetDuration = Math.ceil(Math.max(...this.segments.map((s) => s.duration)));
     }
 
     this.logger.info(`[ManifestManager] Restored state with ${this.segments.length} segments`);

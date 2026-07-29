@@ -54,8 +54,8 @@ export class RecoveryStore {
 
     return fs
       .readdirSync(this.stateDir)
-      .filter(f => f.endsWith('.json') && !f.endsWith('.tmp'))
-      .map(f => f.replace(/\.json$/, ''));
+      .filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'))
+      .map((f) => f.replace(/\.json$/, ''));
   }
 
   private getFilePath(streamId: string): string {

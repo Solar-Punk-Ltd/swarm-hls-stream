@@ -72,7 +72,10 @@ describe('backoffDelayMs', () => {
 
 describe('jitteredDelayMs', () => {
   it('returns half the delay when random() is 0', () => {
-    assert.equal(jitteredDelayMs(1000, () => 0), 500);
+    assert.equal(
+      jitteredDelayMs(1000, () => 0),
+      500,
+    );
   });
 
   it('stays within [delay/2, delay) for any random() in [0, 1)', () => {

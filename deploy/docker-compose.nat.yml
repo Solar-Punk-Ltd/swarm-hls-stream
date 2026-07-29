@@ -5,8 +5,8 @@
 services:
   bee-uploader:
     environment:
-      BEE_NAT_ADDR: "${BEE_UPLOADER_NAT_ADDR}:${BEE_UPLOADER_P2P_PORT:-1634}"
+      BEE_NAT_ADDR: '${BEE_UPLOADER_NAT_ADDR}:${BEE_UPLOADER_P2P_PORT:-1634}'
 
   bee-gateway:
     environment:
-      BEE_NAT_ADDR: "${BEE_GATEWAY_NAT_ADDR}:${BEE_GATEWAY_P2P_PORT:-1734}"
+      BEE_NAT_ADDR: '${BEE_GATEWAY_NAT_ADDR}:${BEE_GATEWAY_P2P_PORT:-1734}'
