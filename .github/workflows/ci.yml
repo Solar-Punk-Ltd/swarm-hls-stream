@@ -49,14 +49,10 @@ jobs:
         run: pnpm test
 
   format:
-    name: format (changed files)
-    # Pull requests only, where a merge base exists to diff against.
-    if: github.event_name == 'pull_request'
+    name: format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -69,25 +65,14 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Scoped to files the pull request touches rather than the whole tree. 28
-      # tracked files predate any formatting gate, and reformatting them here
-      # would bury real diffs and conflict with the branches currently in
-      # review. Whoever clears that backlog can widen this to
-      # `prettier --check .` in one commit.
+      # Whole tree. The 28 files that predated any formatting gate are clean as
+      # of the sweep, so there is no backlog left to work around and no reason
+      # to scope this to what a pull request happens to touch.
       #
-      # No extension allowlist. Prettier decides what it can parse, so a file
-      # type nobody thought to list cannot slip through ungated, and
-      # --ignore-unknown skips the rest instead of failing on them.
-      - name: Check formatting of changed files
-        run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          list="$RUNNER_TEMP/changed-files"
-          git diff --name-only --diff-filter=ACMR -z \
-            "origin/${{ github.base_ref }}...HEAD" > "$list"
-          if [ ! -s "$list" ]; then
-            echo "No files changed."
-            exit 0
-          fi
-          echo "Checking:"
-          tr '\0' '\n' < "$list"
-          xargs -0 -r -a "$list" npx prettier --check --ignore-unknown
+      # Tracked files rather than `prettier --check .`, because a bare walk also
+      # picks up untracked and gitignored paths like .vscode/settings.json and
+      # so reports a number that depends on whose machine it ran on.
+      # --ignore-unknown lets prettier skip what it cannot parse, which keeps
+      # Dockerfiles and images from failing the job.
+      - name: Check formatting
+        run: git ls-files -z | xargs -0 npx prettier --check --ignore-unknown
