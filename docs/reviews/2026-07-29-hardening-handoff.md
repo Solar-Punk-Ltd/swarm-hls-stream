@@ -320,21 +320,34 @@ it accurate and keep it in the same commit as the work it describes.
 | **S0.1 done**         | `db06455`, `6f84776`                       | 2026-07-29 | CI workflow added, **verified green on a real run** (node 20 and 22). Runs typecheck, lint, test. Formatting is gated on changed files only, see the note below. Its first run immediately caught a latent bug: the uploader test glob never worked on node 20, fixed in `6f84776`.                                                                                                                                           |
 | **Review gate**       | `7341363`, `1bc5cb3`                       | 2026-07-29 | Copilot quota ran out for the month, so the gate it filled was rebuilt in-house as [`review-gate.md`](./review-gate.md). Five independent lenses ran against PR #24, then a verification pass in which every finding defaulted to refuted. Five claims refuted with disproofs recorded, three confirmed and fixed, four real out-of-scope findings added to the register as SEC-8, SEC-9, TEST-7, TEST-8.                     |
 | **Gate fixes on #24** | `0c151c1`, `c7e6014`, `81d0a7d`, `e094fe1` | 2026-07-29 | What the gate confirmed. Explicit read-only `permissions` on the workflow. NUL-delimited changed-file list, since bare `xargs` split paths on whitespace. Prettier's own `--ignore-unknown` in place of a hand-written extension allowlist that omitted `html` and so never gated `packages/client/index.html`. `packages/cli` now declares the eslint toolchain it lints with, instead of relying on siblings to declare it. |
+| **Node baseline 22**  | `af390bc`, `55b35eb`                       | 2026-07-29 | Owner decision. Nine declarations moved from 20 to 22 and the CI matrix dropped to a single entry, since `engines.node`, the deploy images and the tooling now agree. Images take effect on the next deploy only. Node 22 is in maintenance and 24 is the current active LTS, so 24 is a real follow-up.                                                                                                                      |
+| **Prettier sweep**    | `7f41d02`, `80c8fb8`, `da26850`            | 2026-07-29 | Owner decision. All 28 files formatted, CI widened from changed-files to the whole tree on push and PR. Semantic equivalence proven by diffing `tsc` emit before and after: 12 differing lines, all `arrowParens`, byte-identical once normalized. Widening also deleted both `${{ github.base_ref }}` interpolations, **closing SEC-9**. `.git-blame-ignore-revs` added.                                                     |
 
 ### Sprint 0 remaining
 
 `S0.3`, `S0.4`, `S0.5`, `S0.6`, `S0.7` are not started. S0.6 is the smallest and unblocks puller
 tests, so it is the natural next one.
 
-### Two decisions left open by Sprint 0
+### Both decisions from Sprint 0 are now made
 
-**Full-tree prettier sweep.** **28 tracked files** fail prettier, spanning source, tests and compose
-files. That predates any formatting gate. The CI `format` job therefore checks only files a pull
-request touches, which stops new violations without forcing a 28-file reformat that would bury real
-diffs and conflict with the two branches in review. Clearing the backlog and widening the job to
-`prettier --check .` is a deliberate call for the repo owner, not a side effect of this work.
+**Full-tree prettier sweep. Decided: swept.** All 28 files that predated the formatting gate are
+formatted, and the CI `format` job now checks the whole tree on push and on pull requests instead of
+only the files a pull request touched.
 
-Count tracked files only, with `git ls-files -z | xargs -0 npx prettier --check`. A bare
+The conflict worry that argued for deferring this was mostly wrong. `feature/uploader-hardening` is
+frozen at zero commits past `f146588`, so it cannot conflict with anything. Five of the 28 files are
+touched by open PRs #11, #12 and #13 into `main`, which is the real overlap, but those branches sit on
+a line behind `f146588` and already need reconciling with this one, so formatting adds a mechanical
+resolution rather than a new problem. Take their change, re-run prettier.
+
+Sweep hygiene worth keeping. Semantic equivalence was established rather than assumed, by compiling
+the uploader before and after and diffing the emitted JavaScript: 12 differing lines across 5 files,
+every one of them `x =>` becoming `(x) =>` from prettier's arrowParens default, and byte-identical once
+that single construct is normalized in both. `.git-blame-ignore-revs` lists the sweep revision, so
+enable it once per clone with
+`git config blame.ignoreRevsFile .git-blame-ignore-revs`.
+
+Count tracked files, with `git ls-files -z | xargs -0 npx prettier --check`. A bare
 `prettier --check .` also walks untracked and gitignored paths such as `.vscode/settings.json`, so it
 reports a number that depends on whose machine it ran on. That is where the 35 in earlier drafts came
 from, and it is not reproducible in CI.
