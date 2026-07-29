@@ -1,0 +1,6 @@
+# Revisions to skip in `git blame`, for example whole-tree formatting passes.
+# Configure once per clone with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: format the 28 files that predate the formatting gate
+7f41d02533b999ff86f4680a845d0c47bc18049b
