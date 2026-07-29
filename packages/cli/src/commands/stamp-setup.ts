@@ -5,7 +5,12 @@ import { error, header, info, ok, table, warn } from '../lib/output.js';
 import { buyStamp, resolveStampOptions } from '../lib/stamp.js';
 import { waitForNode, waitForStamp } from '../lib/wait.js';
 
-export async function stampSetup(urlOverride?: string, amount?: string, depth?: number, immutable?: boolean): Promise<void> {
+export async function stampSetup(
+  urlOverride?: string,
+  amount?: string,
+  depth?: number,
+  immutable?: boolean,
+): Promise<void> {
   loadEnv();
 
   const target = resolveBeeUploaderTarget();
@@ -41,8 +46,12 @@ export async function stampSetup(urlOverride?: string, amount?: string, depth?: 
 
     if (!hasBzz || !hasGas) {
       error('Node wallet is not funded');
-      if (!hasGas) {warn('Send xDAI (Gnosis Chain) for gas fees');}
-      if (!hasBzz) {warn('Send BZZ tokens to buy postage stamps');}
+      if (!hasGas) {
+        warn('Send xDAI (Gnosis Chain) for gas fees');
+      }
+      if (!hasBzz) {
+        warn('Send BZZ tokens to buy postage stamps');
+      }
       console.log('');
       info(`Fund this address: ${addresses.ethereum.toHex()}`);
       info('Then run pnpm stamp:setup again');

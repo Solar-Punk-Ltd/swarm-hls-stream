@@ -1,5 +1,11 @@
 import { createBee } from '../lib/bee-client.js';
-import { loadEnv, resolveBeeGatewayTarget, resolveBeeUploaderTarget, SVC_BEE_GATEWAY, SVC_BEE_UPLOADER } from '../lib/config-reader.js';
+import {
+  loadEnv,
+  resolveBeeGatewayTarget,
+  resolveBeeUploaderTarget,
+  SVC_BEE_GATEWAY,
+  SVC_BEE_UPLOADER,
+} from '../lib/config-reader.js';
 import { error, header, ok, table } from '../lib/output.js';
 
 export async function nodeStatus(urlOverride?: string): Promise<void> {
@@ -36,6 +42,8 @@ export async function nodeStatus(urlOverride?: string): Promise<void> {
     }
 
     // Only check the first target if url override is set
-    if (urlOverride) {break;}
+    if (urlOverride) {
+      break;
+    }
   }
 }
