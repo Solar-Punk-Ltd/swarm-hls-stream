@@ -36,9 +36,10 @@ See [deploy/README.md](deploy/README.md) for setup, configuration, and deploymen
 ```bash
 pnpm install
 pnpm build                         # build all packages
-pnpm dev                           # start client dev server (localhost:5173)
-pnpm start:uploader                # start stream-uploader locally
-pnpm srs:up                        # start SRS standalone (host network)
+pnpm client:start                  # start client dev server (localhost:5173)
+pnpm uploader:start                # start stream-uploader locally
+pnpm srs:host                      # start SRS on the host network
+pnpm ome:host                      # or start OME instead, the stack runs one engine
 ```
 
 ## CLI
