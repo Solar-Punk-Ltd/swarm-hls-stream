@@ -68,21 +68,25 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Scoped to files the pull request touches rather than the whole tree. 35
-      # files predate any formatting gate, and reformatting them here would bury
-      # real diffs and conflict with the branches currently in review. Whoever
-      # clears that backlog can widen this to `prettier --check .` in one commit.
+      # Scoped to files the pull request touches rather than the whole tree. 28
+      # tracked files predate any formatting gate, and reformatting them here
+      # would bury real diffs and conflict with the branches currently in
+      # review. Whoever clears that backlog can widen this to
+      # `prettier --check .` in one commit.
+      #
+      # No extension allowlist. Prettier decides what it can parse, so a file
+      # type nobody thought to list cannot slip through ungated, and
+      # --ignore-unknown skips the rest instead of failing on them.
       - name: Check formatting of changed files
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
           list="$RUNNER_TEMP/changed-files"
           git diff --name-only --diff-filter=ACMR -z \
-            "origin/${{ github.base_ref }}...HEAD" \
-            -- '*.ts' '*.tsx' '*.js' '*.cjs' '*.mjs' '*.json' '*.yml' '*.yaml' '*.md' '*.css' '*.scss' > "$list"
+            "origin/${{ github.base_ref }}...HEAD" > "$list"
           if [ ! -s "$list" ]; then
-            echo "No formattable files changed."
+            echo "No files changed."
             exit 0
           fi
           echo "Checking:"
           tr '\0' '\n' < "$list"
-          xargs -0 -r -a "$list" npx prettier --check
+          xargs -0 -r -a "$list" npx prettier --check --ignore-unknown
