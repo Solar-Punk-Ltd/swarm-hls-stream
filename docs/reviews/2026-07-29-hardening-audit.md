@@ -1,0 +1,325 @@
+# Hardening audit and sprint plan
+
+Branch `feature/uploader-hardening` @ `f146588`. Audit date 2026-07-29.
+
+Ten parallel read-only audits covering: core write-path concurrency, the two engine plugins, API and
+security surface, the React client, CLI and deploy shell, test quality, docs correctness,
+Swarm and hls.js library capability, architecture and patterns, and silent failures.
+
+Scope audited: ~5,900 lines of TypeScript, ~1,780 lines of shell, plus compose files and templates.
+
+## How to read this
+
+Every finding carries a status:
+
+- **VERIFIED** was re-checked against the code by hand after the audit reported it. Trust these.
+- **REPORTED** was found with a file:line citation but not independently re-checked. Likely, confirm
+  while implementing.
+- **REJECTED** items have their own section. Do not action them.
+
+Severity ladder: CRITICAL is funds, data loss, or destruction of operator infrastructure. HIGH is
+silent wrong behavior in the live path. MEDIUM is degraded behavior or real friction. LOW is polish.
+
+## Rejected findings
+
+Reported by an audit and did not hold up. Recorded so nobody re-opens them.
+
+| Claim                                                          | Why it is wrong                                                                                                                                                                                                  |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bee node passwords are committed to the repo                   | `.gitignore:12` covers `deploy/data/`, `git ls-files deploy/data` is empty, and neither file has an add-commit. Local untracked files. No leak.                                                                  |
+| `StreamCatalog` can advance its feed index past a failed write | `retryUntilDeadlineAsync` (`utils/common.ts:69-89`) throws on exhaustion and never returns null, so `this.feedIndex = nextIndex` at `StreamCatalog.ts:115` is unreachable on failure.                            |
+| Two concurrent `addStream` calls race on `nextIndex`           | `addStream` funnels through `PQueue({ concurrency: 1 })` at `StreamCatalog.ts:31`. Single-process ordering is guaranteed. Cross-process would be real, but nothing deploys two uploaders against one stream key. |
+| `RecoveryStore` allows path traversal via `streamId`           | `getFilePath` (`RecoveryStore.ts:62`) replaces `/` and `\` with `_`, so no separator survives to traverse with.                                                                                                  |
+| Crash recovery resurrects streams under a mangled id           | `recoverStreams` keys the live maps off `state.streamId`, not the filename (`StreamOrchestrator.ts:173`), with a comment naming exactly this trap.                                                               |
+| `persistState` is an unawaited async call                      | It is synchronous inside a try/catch (`StreamUploader.ts:233-239`). The consequence, a swallowed persist failure leaving stale recovery state, is real and tracked as OBS-4. The mechanism is not.               |
+| hls.js needs `lowLatencyMode` enabled                          | That flag already defaults to true and only governs LL-HLS partial segments, which this stream does not produce. The real lever is `liveSyncDuration`, tracked as LAT-2.                                         |
+| Batch manifest writes through GSOC                             | GSOC is an addressing scheme for receiving messages at a known address, not a batcher for owned-feed writes. Not applicable.                                                                                     |
+| Redundancy costs "~40 BZZ per segment"                         | Not a real figure. Any redundancy decision needs a measured cost, tracked under S6.3.                                                                                                                            |
+
+## Finding register
+
+### Security surface (SEC)
+
+| ID    | Sev      | Status   | Where                        | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----- | -------- | -------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SEC-1 | CRITICAL | VERIFIED | `api/server.ts:25-56`        | No authentication middleware exists anywhere. `/stream/start`, `/stream/segment` (50MB raw body), `/stream/stop`, and every `/engines/*` route are open. Each accepted segment is uploaded to Swarm and paid for with the configured postage stamp, so an open write endpoint is a direct funds drain.                                                                                                                                                     |
+| SEC-2 | CRITICAL | VERIFIED | `engines/srs.ts:119-132`     | `payload.file` is attacker-controlled and the regex strips only a fixed `./objs/nginx/html/` prefix. An absolute path bypasses `mediaRootPath` entirely, since `path.resolve(root, '/etc/shadow')` is `/etc/shadow`, and `../` also works. Line 128 reads the file, line 132 `fs.rmSync` deletes it once the segment is accepted. Two primitives: arbitrary file delete, and exfiltration of arbitrary file content into a public content-addressed store. |
+| SEC-3 | CRITICAL | VERIFIED | `engines/ome/http.ts:12-14`  | `verifyAdmissionSignature` returns `true` when the secret is empty, and the default is empty via `optional('OME_ADMISSION_SECRET', '')`. OME admission is unauthenticated out of the box. See DOC-5, the sample env implies otherwise.                                                                                                                                                                                                                     |
+| SEC-4 | HIGH     | VERIFIED | `api/routes/stream.ts:20-40` | No schema validation at the boundary. `streamId` and `mediatype` are used unchecked, and `mediatype` flows unvalidated into the catalog feed payload.                                                                                                                                                                                                                                                                                                      |
+| SEC-5 | HIGH     | REPORTED | `api/server.ts:29`           | No rate limiting and no per-stream quota on a 50MB raw endpoint. The cheapest abusive request costs the operator the most.                                                                                                                                                                                                                                                                                                                                 |
+| SEC-6 | MEDIUM   | REPORTED | `api/routes/stream.ts:55`    | Error responses echo `streamId` back, and unhandled errors log raw messages, leaking internal structure.                                                                                                                                                                                                                                                                                                                                                   |
+
+### Correctness and concurrency (CON)
+
+| ID     | Sev    | Status   | Where                                                    | Finding                                                                                                                                                                                                                                                                                                                                         |
+| ------ | ------ | -------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CON-1  | HIGH   | VERIFIED | `StreamOrchestrator.ts:58` vs `:86`                      | `spawnUploader` defers `activeStreams.set` into the queue, so two `startStream` calls arriving before the queue drains both pass the `has()` check and the second uploader overwrites the first. A segment accepted in that window is acknowledged to SRS, which then deletes the source `.ts`, and is then dropped with the orphaned uploader. |
+| CON-2  | HIGH   | VERIFIED | `StreamOrchestrator.ts:63-66`                            | The re-announce path is `.catch(...).then(() => spawnUploader(...))`, so the new uploader spawns even when the stop failed. During the window `activeStreams` still holds the draining uploader, so segments land in a queue being finalized.                                                                                                   |
+| CON-3  | HIGH   | VERIFIED | `StreamUploader.ts:218-226`                              | When `notifyStart` throws, `isFirstManifestReady` stays false and the error is swallowed by `errorHandler`. Every subsequent manifest publish therefore re-attempts the catalog write, each one a feed read plus a feed write plus stamp spend, with nothing surfaced.                                                                          |
+| CON-4  | HIGH   | REPORTED | `engines/ome.ts:46-52`, `OmeHlsPuller.ts:202-207`        | `onHalt` does not await `orchestrator.stopStream`, and the puller is deleted from the map immediately, so an in-flight segment can be accepted into a stream that is mid-finalization.                                                                                                                                                          |
+| CON-5  | MEDIUM | REPORTED | `engines/ome.ts:41-44`                                   | `startPuller` early-returns when a puller is already mapped. A puller that died without calling `onHalt` blocks `resumeRecoveredStream` from starting a fresh one, so the recovered stream produces nothing and is VOD-ed at the timeout.                                                                                                       |
+| CON-6  | MEDIUM | REPORTED | `StreamOrchestrator.ts:116-121`                          | A segment can be enqueued after `notifyStop` has already awaited `segmentQueue.onIdle()`, so it is accepted and never published.                                                                                                                                                                                                                |
+| CON-7  | MEDIUM | REPORTED | `engines/ome/utils.ts:53`                                | `parseFloat` on a malformed `#EXTINF` yields `NaN`, which propagates into segment duration and manifest arithmetic.                                                                                                                                                                                                                             |
+| CON-8  | MEDIUM | REPORTED | `StreamOrchestrator.ts:35,87,120`                        | `processedSegments` grows without bound for the life of a stream. At 100 segments per second a multi-day stream accumulates tens of millions of entries.                                                                                                                                                                                        |
+| CON-9  | MEDIUM | REPORTED | `engines/ome/utils.ts:12-14`                             | No `#EXT-X-DISCONTINUITY` handling in the parser, so an upstream sequence reset reads as a continuous sequence.                                                                                                                                                                                                                                 |
+| CON-10 | MEDIUM | REPORTED | `StreamOrchestrator.ts:202-206`, `engines/ome.ts:94-102` | A transient OME outage longer than the recovery timeout finalizes a still-live stream as VOD. The puller has no way to signal "still trying".                                                                                                                                                                                                   |
+
+### Observability and silent failure (OBS)
+
+| ID    | Sev      | Status   | Where                                                            | Finding                                                                                                                                                                                                                                                                                                                                                                               |
+| ----- | -------- | -------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OBS-1 | CRITICAL | VERIFIED | `api/routes/health.ts:10`                                        | `status` is the string literal `'ok'`. The handler computes `staleManifestStreams` and `queuePressure` and lets neither affect it. A stream whose manifest publishing has failed continuously still reports healthy. **This undermines the QA numbers we are waiting on**, because the e2e suite and smoke test both gate on `/health`, and scenario F gates on `activeStreams >= 1`. |
+| OBS-2 | CRITICAL | VERIFIED | `OmeHlsPuller.ts:98,139,164`, client `ManifestManagement.ts:279` | Four bare `fetch()` calls with no timeout or abort. Node's fetch has no default timeout, so a black-holed connection stalls the puller indefinitely while health reports ok.                                                                                                                                                                                                          |
+| OBS-3 | HIGH     | REPORTED | `api/routes/stream.ts:74`                                        | `/stream/stop` responds `ok` before the drain runs, and drain failures are logged and discarded, so a failed stop is indistinguishable from a successful one.                                                                                                                                                                                                                         |
+| OBS-4 | MEDIUM   | VERIFIED | `StreamUploader.ts:233-239`                                      | A `persistState` failure is logged and swallowed. Recovery then loads state older than reality, re-uploading or losing everything written since.                                                                                                                                                                                                                                      |
+| OBS-5 | MEDIUM   | REPORTED | `CatalogIndexStore.ts:42-52`                                     | Save failure is logged only, so a restart resumes from a stale catalog index.                                                                                                                                                                                                                                                                                                         |
+| OBS-6 | MEDIUM   | REPORTED | `OmeHlsPuller.ts:59-63`                                          | Tick errors are caught and logged at warn with no backoff and no escalation threshold.                                                                                                                                                                                                                                                                                                |
+| OBS-7 | MEDIUM   | REPORTED | whole service                                                    | No metrics export. Diagnosing a stall means tailing logs.                                                                                                                                                                                                                                                                                                                             |
+
+### Operator tooling (OPS)
+
+| ID    | Sev      | Status   | Where                                                         | Finding                                                                                                                                                                                                 |
+| ----- | -------- | -------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OPS-1 | CRITICAL | REPORTED | `cli/commands/stamp-setup.ts:86-110`, `lib/env-writer.ts:7-8` | The batch id is written to `.env` **after** the on-chain spend, and `writeEnvKey` throws ENOENT when `.env` is missing. A fresh clone spends BZZ and then crashes with the batch id only in scrollback. |
+| OPS-2 | CRITICAL | REPORTED | `deploy/scripts/clean.sh:138-144`                             | The straggler sweep runs `docker rm -f` by compose-project label and ignores the service filter, so cleaning one service destroys the whole live stack.                                                 |
+| OPS-3 | HIGH     | REPORTED | `deploy/scripts/stop.sh:48-51`                                | Service arguments are parsed and then discarded, so `stop.sh bee-uploader` stops everything.                                                                                                            |
+| OPS-4 | HIGH     | REPORTED | `deploy/scripts/_lib.sh:186-191`                              | A typo'd `--profile` silently falls back to the default `.env`, deploying a duplicate stack on the wrong port range. `require_env`'s profile error is unreachable.                                      |
+| OPS-5 | HIGH     | REPORTED | `cli/commands/stamp-setup.ts:39-42`                           | The funding check asserts only non-zero, so 1 PLUR of dust passes and the transaction fails after the spend.                                                                                            |
+| OPS-6 | HIGH     | REPORTED | `deploy/scripts/_lib.sh:441`                                  | `load_env` evaluates raw `.env` lines, so a value containing `$(...)` executes.                                                                                                                         |
+| OPS-7 | MEDIUM   | REPORTED | `cli/commands/stamp-buy.ts:6-30`                              | No cost or TTL preview and no confirmation before an on-chain spend.                                                                                                                                    |
+| OPS-8 | MEDIUM   | REPORTED | `cli/lib/config-reader.ts:39-46`                              | A corrupt `config.json` is swallowed and returns empty services, silently redirecting to localhost defaults.                                                                                            |
+
+### Latency and quality (LAT)
+
+| ID    | Sev    | Status   | Where                                           | Finding                                                                                                                                                                                                                                                                                                 |
+| ----- | ------ | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LAT-1 | HIGH   | REPORTED | whole pipeline                                  | No glass-to-glass latency instrumentation exists, so no latency change can currently be proven. This blocks every other LAT item from being measurable.                                                                                                                                                 |
+| LAT-2 | HIGH   | VERIFIED | `SwarmHlsPlayer.tsx:54-59`                      | `liveSyncDuration: 10` and `liveMaxLatencyDuration: 30` are set explicitly, with `maxBufferLength: 60`. The viewer deliberately sits about 10 seconds behind the live edge. `maxLiveSyncPlaybackRate` is unset, so there is no catch-up after a stall. Largest client-side lever and it is config-only. |
+| LAT-3 | HIGH   | REPORTED | client `ManifestManagement.ts:249-268`          | A failed manifest poll returns the stale manifest with no backoff and no UI signal, so a network flake can wedge playback until the user reloads.                                                                                                                                                       |
+| LAT-4 | MEDIUM | REPORTED | client `ManifestManagement.ts:216-242`          | `response.ok` is checked but Content-Type is not, so a 200 error page parses as HLS and yields zero segments.                                                                                                                                                                                           |
+| LAT-5 | MEDIUM | REPORTED | `useHlsQoeMetrics.ts:172-203`, `QoeOverlay.tsx` | A 500ms flush recreates the metrics object and re-renders the player subtree twice a second.                                                                                                                                                                                                            |
+| LAT-6 | MEDIUM | REPORTED | `StreamPreview.tsx:41-132`                      | The blob URL is revoked on unmount while a queued thumbnail task may still be pending, so the task loads a revoked URL and the spinner never clears.                                                                                                                                                    |
+
+### Structure (ARCH)
+
+| ID     | Sev    | Status   | Where                                                                                                                      | Finding                                                                                                                                                                                      |
+| ------ | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ARCH-1 | HIGH   | REPORTED | `client/src/types/stream.ts` vs `stream-uploader/src/types.ts`, client `ManifestManagement.ts:23-29` vs `utils/hlsTags.ts` | `MediaType`, the stream status constants, and the HLS tag literals exist twice. The m3u8 build side and parse side sit in different packages with no shared contract and no round-trip test. |
+| ARCH-2 | MEDIUM | REPORTED | `OmeHlsPuller.ts`, `StreamUploader.ts:64,71,82`                                                                            | Global `fetch`, `crypto.randomUUID`, `ManifestManager`, and the signer are all constructed inline, so the risky paths cannot be tested.                                                      |
+| ARCH-3 | MEDIUM | REPORTED | `StreamUploader.ts:44-48`                                                                                                  | The stream lifecycle is encoded in six loose booleans and counters with no documented legal transitions.                                                                                     |
+| ARCH-4 | LOW    | REPORTED | `libs/Logger.ts`                                                                                                           | Logger writes straight to console with no level control and no structured output.                                                                                                            |
+
+Layering itself is clean. The audit found no dependency-direction violations, and the engine plugin
+boundary holds. The problems are at the package seams and in testability, not in the shape.
+
+### Documentation (DOC)
+
+| ID    | Sev    | Status   | Where                           | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----- | ------ | -------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DOC-1 | HIGH   | VERIFIED | `README.md:39-41`               | All three quickstart commands are wrong. `pnpm dev`, `pnpm start:uploader`, and `pnpm srs:up` do not exist. The real names are `client:start`, `uploader:start`, and `srs:host` or `srs:local`. This is the first thing a new contributor types and every line of it fails.                                                                                                                                                                                                                                                                                                                                                                                             |
+| DOC-2 | MEDIUM | REPORTED | `stream-uploader/README.md:123` | The endpoint table lists `POST /engines/ome/` where the route is `/engines/ome/admission`. The prose at :126 is correct, so the table contradicts the paragraph below it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| DOC-3 | MEDIUM | REPORTED | `deploy/README.md:108-118`      | The SRS port table's "Default" column shows port-slot base values (10001, 10002, 10003), but with no `--portSlot` the engine `.env` values apply (10080, 1935, 8080). The column label is wrong for the documented setup flow.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| DOC-4 | MEDIUM | REPORTED | `engines/README.md:22`          | States that webhooks go to `/engines/<name>/`, which is true for no engine.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| DOC-5 | MEDIUM | VERIFIED | env matrix                      | Three mismatches, each re-checked directly. `SRS_MEDIA_PATH` code default `./media` (`engines/srs.ts:51`) versus sample `../../engines/srs/media` (`engines/srs/.env.sample:16`). `OME_HLS_URL` code `http://ome:8081` (`engines/ome.ts:20`) versus sample `http://localhost:8081` (`engines/ome/.env.sample:12`). `OME_ADMISSION_SECRET` code default empty (`engines/ome.ts:24`) versus sample `change-me` (`engines/ome/.env.sample:23`). The last is the documentation face of SEC-3: the sample implies a secret is set, while the code default disables verification entirely, so anyone deploying without copying the sample gets open admission and no warning. |
+| DOC-6 | LOW    | REPORTED | `.env.sample:17-19`             | `STAMP_AMOUNT`, `STAMP_DEPTH`, and `STAMP_IMMUTABLE` appear in the sample but are read by no code.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+
+### Test quality (TEST)
+
+The tally is real: 67/67 uploader via `tsx --test` and 5/5 client via `vitest run`. The number is
+weaker than it looks.
+
+| ID     | Sev    | Status   | Finding                                                                                                                                                                                                 |
+| ------ | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| TEST-1 | HIGH   | REPORTED | The Bee mock always succeeds and never produces a `BeeResponseError`, a 402, or a 503, so `isRetryableError` and `retryUntilDeadlineAsync` are never exercised through the code that depends on them.   |
+| TEST-2 | HIGH   | REPORTED | No API-level tests at all. Every route, middleware, and error response is untested.                                                                                                                     |
+| TEST-3 | HIGH   | REPORTED | Client `ManifestManagement.test.ts:74-86` round-trips parse into serialize, so it proves the two agree rather than that either is correct. Discontinuity could be dropped on both sides and stay green. |
+| TEST-4 | MEDIUM | REPORTED | Recovery finalization asserts only that the active count reaches zero, never that `recoveryStore.remove` ran or that the VOD landed.                                                                    |
+| TEST-5 | MEDIUM | REPORTED | No coverage tooling is wired up, so the project's own 80% bar is unmeasured.                                                                                                                            |
+| TEST-6 | MEDIUM | REPORTED | The 5-minute drain timeout, segment fetch failure, catalog write failure, stop-during-upload, and double-stop are all untested.                                                                         |
+
+## Why Sprint 0 exists
+
+Two structural facts gate everything else.
+
+**The repo has no CI.** There is no `.github/workflows`. That is why a prettier violation shipped
+inside PR #10 and sat there unnoticed. A plan whose acceptance criteria are tests is worthless if
+nothing runs the tests on push.
+
+**Roughly half the acceptance criteria below are currently unwritable.** There is no way to make Bee
+return a 402, no way to advance the clock deterministically for the 60-second recovery timer or the
+5-minute drain timeout, no way to substitute `fetch` in `OmeHlsPuller`, and no HTTP-level test layer.
+Sprint 0 buys the ability to prove the rest, and without it the re-check loop degrades into re-reading
+the diff.
+
+## Sprint plan
+
+One fix per commit. One PR per task. Conventional commit subjects. Every PR goes through the Copilot
+gate described below.
+
+### Sprint 0 — Make verification possible
+
+| Task                                                                                                 | Acceptance criteria                                                                                                             |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| S0.1 CI workflow: typecheck, lint, prettier check, test, on push and PR                              | A PR with a prettier violation fails CI. A PR with a failing test fails CI. Both proven by deliberately pushing each once.      |
+| S0.2 eslint config for `packages/cli` (OPS follow-up)                                                | Root `pnpm lint` exits 0. Today it always fails with "No files matching the pattern".                                           |
+| S0.3 Coverage via c8, reported in CI, baseline recorded and not yet enforced                         | `pnpm test:coverage` prints per-file coverage and CI publishes it. The real baseline number is written back into this document. |
+| S0.4 `FakeBee` double: configurable success, `BeeResponseError` with status, network throw, call log | A test asserts that a 503 retries within the deadline and that a 402 does not retry at all.                                     |
+| S0.5 Injectable clock and timers                                                                     | A test advances 60s and asserts the recovery timer fired, with no real waiting. Suite wall time does not increase.              |
+| S0.6 Injectable `Fetcher` in `OmeHlsPuller`, defaulting to global fetch (ARCH-2)                     | A test drives the puller through master-to-variant resolution, a 404, and a hang, with no network.                              |
+| S0.7 API test layer over the express app (TEST-2 enabler)                                            | A test issues a real request to `/stream/segment` and asserts status and body.                                                  |
+| S0.8 Fix the README quickstart (DOC-1)                                                               | Every command in the quickstart block runs. Cheap, unblocks contributors, no risk.                                              |
+
+Exit: CI green on the branch, and S0.4 through S0.7 each carry one demonstrating test.
+
+### Sprint 1 — Close the funds-drain and destruction surface
+
+Covers SEC-1 through SEC-6.
+
+| Task                                                                                           | Acceptance criteria                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1.1 Auth middleware on all control and ingest routes                                          | Unauthenticated `POST /stream/start`, `/stream/segment`, and `/stream/stop` each return 401, and a spy proves the orchestrator method was never invoked. A correct token returns 200.                                                                                           |
+| S1.2 SRS webhook signature verification                                                        | An unsigned `POST /engines/srs/streams` returns 401. A correctly signed one returns 200.                                                                                                                                                                                        |
+| S1.3 Make `OME_ADMISSION_SECRET` required, and make an empty secret reject rather than accept  | Startup with the var unset fails loudly with a named error. `verifyAdmissionSignature(req, '')` returns false.                                                                                                                                                                  |
+| S1.4 Contain the SRS media path                                                                | `payload.file` of `/etc/shadow`, `../../etc/passwd`, and `./objs/nginx/html/../../../etc/passwd` are each rejected before any `fs` call, asserted by spying on `fs.readFileSync` and `fs.rmSync` for zero calls. A legitimate relative segment path still resolves and uploads. |
+| S1.5 Zod schemas for bodies and headers, `mediatype` as an enum, `streamId` charset-restricted | `mediatype: "admin"` returns 400. A `streamId` outside the allowed charset returns 400. Valid input is unaffected, proven by the existing suite staying green.                                                                                                                  |
+| S1.6 Rate limits: global, per-stream on `/segment`, plus a body-size ceiling                   | Exceeding the per-stream rate returns 429 with `Retry-After`.                                                                                                                                                                                                                   |
+| S1.7 Stop leaking internals in error responses                                                 | A 404 for an unknown stream contains no `streamId` and no path.                                                                                                                                                                                                                 |
+
+Exit: all seven acceptance tests pass, and an unauthenticated caller can no longer cause a single
+stamp-spending upload or a single `fs` write or delete.
+
+### Sprint 2 — Make failure loud
+
+Covers OBS-1 through OBS-7. **S2.1 and S2.2 should be pulled ahead of the QA stress test**, see the
+sequencing note.
+
+| Task                                                                                                          | Acceptance criteria                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S2.1 Derive `/health` status from real signals: stale manifests, queue pressure, age of last accepted segment | With one stream at three consecutive manifest failures, `/health` returns `degraded` and a non-200 readiness. With a healthy stream it returns `ok`. Asserted through the S0.7 API layer. |
+| S2.2 Timeouts on all four `fetch` call sites via `AbortSignal.timeout`                                        | A hanging fetch aborts within the configured window, is logged as an error, and the next tick still runs. Proven with the S0.6 fetcher, no network.                                       |
+| S2.3 Escalate repeated puller failures with backoff and a halt threshold                                      | After N consecutive tick failures the puller halts and `onHalt` fires exactly once.                                                                                                       |
+| S2.4 Surface the `notifyStart` failure, and stop re-attempting the catalog write on every publish (CON-3)     | With the catalog failing, `addStream` is attempted at most once per backoff interval rather than once per segment, asserted by call count. The stream shows as degraded in `/health`.     |
+| S2.5 `/stream/stop` reports the real outcome                                                                  | A failing drain is observable to the caller, either by awaiting it or by a documented 202 plus a status the caller can poll.                                                              |
+| S2.6 Propagate persist and catalog-index save failures into degraded state                                    | A failing `RecoveryStore.save` marks the stream degraded rather than only logging.                                                                                                        |
+| S2.7 Metrics: segments uploaded and dropped, manifest failures, last segment timestamp, queue depth           | `/metrics` exposes each counter, and a test asserts the dropped counter increments on a failed upload.                                                                                    |
+
+Exit: every previously silent failure in the register now surfaces in `/health` or `/metrics`, each
+proven by a test that induces the failure.
+
+### Sprint 3 — Concurrency and lifecycle
+
+Covers CON-1 through CON-10.
+
+| Task                                                                                                               | Acceptance criteria                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S3.1 Make stream registration atomic: the existence check and the map insert become one uninterrupted step         | Two `startStream` calls for one id in the same tick produce exactly one uploader. A segment accepted between them is published, not dropped.            |
+| S3.2 Sequence the re-announce path: await the stop, do not spawn when it failed                                    | With `stopStream` rejecting, no new uploader is spawned and the failure surfaces. Exactly one uploader per id exists at all times.                      |
+| S3.3 Reject segments for a draining stream with a distinct reason                                                  | A segment arriving after `stopStream` returns a `draining` rejection, so SRS does not delete the source file.                                           |
+| S3.4 OME: await `stopStream` before removing the puller, and clear a stale puller in `resumeRecoveredStream`       | A puller that died without `onHalt` is replaced on resume and the recovered stream produces segments. No segment is accepted after finalization begins. |
+| S3.5 Keepalive so a transient OME outage does not VOD a live stream                                                | With the puller retrying through an outage longer than the recovery timeout, the stream stays live and resumes when the outage ends.                    |
+| S3.6 Bound `processedSegments` to a rolling window                                                                 | Under a sustained synthetic run the set stays at or below the configured bound, and duplicate suppression still works at the window edge.               |
+| S3.7 Playlist parse hardening: finite-duration guard, `#EXT-X-DISCONTINUITY`, CRLF, absolute and query-string URIs | A table-driven test covers each malformed input and asserts the segment is skipped or the discontinuity recorded, never `NaN`.                          |
+
+Exit: each interleaving named in CON-1 through CON-6 has a test that fails before the fix and passes
+after.
+
+### Sprint 4 — Operator safety
+
+Covers OPS-1 through OPS-8. Shell is hard to unit test, so `shellcheck` in CI plus a small bats
+harness carries most of the weight.
+
+| Task                                                                                         | Acceptance criteria                                                                                                                                         |
+| -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S4.1 Persist the batch id before anything that can throw, and print it on every failure path | With `.env` absent, and again with `.env` read-only, the batch id is durably recorded and echoed. No path loses it after a spend.                           |
+| S4.2 Confine the `clean.sh` straggler sweep to the service filter                            | Cleaning one service leaves every sibling container running, asserted against a disposable local compose project.                                           |
+| S4.3 Honor service arguments in `stop.sh`                                                    | `stop.sh <service>` stops that service only.                                                                                                                |
+| S4.4 Fail loudly on an unknown profile                                                       | `--profile=typo` with no matching env file exits non-zero naming the missing file, and never deploys.                                                       |
+| S4.5 Replace `eval` in `load_env` with a non-evaluating parser                               | A `.env` value containing `$(touch /tmp/pwned)` is loaded literally and the file is not created.                                                            |
+| S4.6 Sufficiency check on wallet balance, plus cost and TTL confirmation before spending     | A dust balance is refused before the spend. `stamp-buy` shows amount, depth, cost, and TTL and requires confirmation, with a `--yes` escape for automation. |
+| S4.7 Surface `config.json` parse failure instead of returning empty services                 | A corrupt config exits non-zero naming the parse error rather than silently using localhost.                                                                |
+| S4.8 `shellcheck` in CI                                                                      | CI fails on a new shellcheck error. Existing findings are either fixed or explicitly baselined.                                                             |
+
+### Sprint 5 — Latency and quality
+
+Covers LAT-1 through LAT-6. LAT-1 comes first because nothing else here is provable without it.
+
+| Task                                                                                    | Acceptance criteria                                                                                                                                                         |
+| --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S5.1 Glass-to-glass instrumentation: stamp segment production time, compare at playback | One run reports the measured latency split across segment duration, upload, feed propagation, poll, and player buffer. This becomes the baseline recorded in this document. |
+| S5.2 Retune the hls.js live parameters and add catch-up                                 | Measured live latency drops by at least 3 seconds against the S5.1 baseline, with no increase in rebuffer events over a 30-minute run.                                      |
+| S5.3 Client manifest poll backoff plus a visible degraded state                         | An induced fetch failure backs off rather than hot-looping, the UI shows a retrying state, and playback resumes when the network returns without a manual reload.           |
+| S5.4 Validate manifest responses before parsing                                         | A 200 response that is not a playlist is rejected with a named error rather than parsed into zero segments.                                                                 |
+| S5.5 Cut QoE overlay render cost                                                        | Player subtree re-renders become metric-driven only, measured with the profiler.                                                                                            |
+| S5.6 Abort pending thumbnail work before revoking the blob URL                          | Rapid stream switching leaves no orphaned hls instance and no spinner stuck on a revoked URL.                                                                               |
+
+### Sprint 6 — Structure, docs, and the library spike
+
+| Task                                                                                             | Acceptance criteria                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S6.1 Shared package for `MediaType`, stream status, HLS tags, and the manifest contract (ARCH-1) | Client and uploader import one definition. A round-trip test builds a manifest server-side, parses it client-side, and asserts every segment, duration, and discontinuity survives. Deleting a tag on one side fails the test.        |
+| S6.2 Explicit stream lifecycle state replacing the loose booleans (ARCH-3)                       | Illegal transitions throw. The existing suite stays green.                                                                                                                                                                            |
+| S6.3 bee-js upgrade spike, timeboxed                                                             | A written recommendation with a verified per-call-site break list, plus a measured redundancy cost. The library audit came back largely UNVERIFIED, so this produces evidence, not an upgrade. Ships no production change on its own. |
+| S6.4 Docs corrections DOC-2 through DOC-6                                                        | Every endpoint path, port default, and env var in the docs matches the code. The env matrix in this document is re-run and comes back clean.                                                                                          |
+| S6.5 Logger levels and structured output (ARCH-4)                                                | `LOG_LEVEL=warn` suppresses info and debug. Tests can capture output.                                                                                                                                                                 |
+
+## On the transactional question
+
+The write path is segment upload, then manifest SOC write, then catalog feed update, then index
+advance. It is partially irreversible, since SOC indexes are single-write and every write costs stamp
+money.
+
+It does **not** need an outbox, a saga, or a write-ahead log. Three targeted changes cover the real
+failure modes:
+
+1. One atomic registry operation for stream creation, so the check and the insert cannot be split
+   (S3.1). This is where the actual race lives.
+2. An explicit per-stream lifecycle state, so drain, segment arrival, and recovery cannot interleave
+   illegally (S3.3, S6.2).
+3. Keeping the SOC index discipline the code already has, which is advance only on success, and
+   documenting it as the invariant it is rather than leaving it implicit.
+
+The existing per-stream `PQueue` already serializes within a stream. What was missing is that two of
+the entry points into that queue were not themselves serialized. Anything heavier than the above
+fails YAGNI here.
+
+## The re-check loop
+
+Reworks feed back into a re-audit with real acceptance criteria. Per sprint:
+
+1. **Implement.** One fix per commit, conventional subject, no co-author and no generated-by footers.
+2. **PR to the feature branch.** One task per PR, so a Copilot finding maps to one change.
+3. **Copilot gate.** Request review explicitly, since it does not fire on open in these repos:
+   `gh api -X POST repos/Solar-Punk-Ltd/swarm-hls-stream/pulls/<n>/requested_reviewers -f "reviewers[]=copilot-pull-request-reviewer[bot]"`
+   Expect roughly two minutes. Then **evaluate every finding instead of accepting it**: reproduce or
+   refute each against the code, fix the valid ones as separate commits, and reply in-thread with
+   evidence on the invalid ones. Prior rounds produced both real bugs and confidently wrong claims,
+   so neither blanket acceptance nor blanket dismissal is correct.
+4. **CI green**, and coverage not below the recorded baseline.
+5. **Re-audit the touched domain.** Re-run that domain's audit against the new HEAD with this register
+   attached, asking two specific questions: is each claimed-closed finding actually closed, and did
+   the fix introduce anything new. A fix that closes its own finding but adds a HIGH does not pass.
+6. **Close on evidence.** A finding closes when its acceptance test exists and passes, not when the
+   code looks right.
+
+Sprint exit gate, all four required: every acceptance test in the sprint passes, the re-audit reports
+no new CRITICAL or HIGH in the touched files, no Copilot finding is left unaddressed or unrebutted,
+and CI is green.
+
+## Sequencing note, and the one decision needed
+
+Both feature branches are held pending QA stress-test numbers. That interacts badly with OBS-1.
+
+`/health` currently cannot report anything other than `ok`, and both the e2e suite and the smoke test
+gate on it. Scenario F gates on `activeStreams >= 1`. A stalled puller with a dead write path passes
+all of those today. Combined with OBS-2, where a hung fetch has no timeout at all, part of the existing
+11/11 is unearned.
+
+Recommendation: land S0.1, S2.1, and S2.2 before the stress test runs, so the test can actually fail
+when the system is broken. Everything else can follow sprint order. The alternative, running QA on the
+current HEAD, produces numbers that cannot distinguish a healthy system from a silently dead one.
+
+## Open items
+
+- Coverage baseline unknown until S0.3.
+- Latency baseline unknown until S5.1.
+- bee-js resolved version and per-call-site break list unverified, see S6.3.
