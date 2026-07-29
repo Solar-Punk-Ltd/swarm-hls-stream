@@ -45,7 +45,7 @@ export function spinner(msg: string): { stop: (finalMsg?: string) => void } {
     stop(finalMsg?: string) {
       clearInterval(interval);
       process.stdout.write('\r\x1b[K');
-      if (finalMsg) ok(finalMsg);
+      if (finalMsg) {ok(finalMsg);}
     },
   };
 }

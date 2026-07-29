@@ -29,6 +29,6 @@ export async function nodeWallets(urlOverride?: string): Promise<void> {
       error(`Unreachable: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
 
-    if (urlOverride) break;
+    if (urlOverride) {break;}
   }
 }

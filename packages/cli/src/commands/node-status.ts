@@ -36,6 +36,6 @@ export async function nodeStatus(urlOverride?: string): Promise<void> {
     }
 
     // Only check the first target if url override is set
-    if (urlOverride) break;
+    if (urlOverride) {break;}
   }
 }
