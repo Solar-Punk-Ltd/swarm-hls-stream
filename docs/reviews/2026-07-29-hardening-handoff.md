@@ -74,9 +74,9 @@ checks things Copilot never did.
 ## Read this before you plan anything
 
 **The repo had no CI, and now it does.** S0.1 added `.github/workflows/ci.yml`, running typecheck,
-lint and test on a Node 20 and 22 matrix, plus a formatting check on the files a pull request touches.
-Before that a prettier violation shipped inside PR #10 and nobody noticed. Treat CI as the floor now
-rather than a manual step, and note that it caught a real latent break on its very first run.
+lint and test on Node 22, plus a prettier check across the whole tree. Before that a prettier violation
+shipped inside PR #10 and nobody noticed. Treat CI as the floor now rather than a manual step, and note
+that it caught a real latent break on its very first run.
 
 **About half the acceptance criteria are currently unwritable.** There is no way to make Bee return a
 402, no way to advance the clock for the 60-second recovery timer or the 5-minute drain timeout, no way
