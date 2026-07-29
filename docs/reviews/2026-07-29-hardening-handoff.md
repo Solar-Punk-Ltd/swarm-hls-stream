@@ -269,6 +269,29 @@ Ask before assuming. The answer changes what you do first.
 Append one line per completed task, newest last. This is the resume point for a fresh session, so keep
 it accurate and keep it in the same commit as the work it describes.
 
-| Task | Commit    | Date       | Notes                                                         |
-| ---- | --------- | ---------- | ------------------------------------------------------------- |
-| —    | `f146588` | 2026-07-29 | Branch point. Audit and handoff docs only, zero code changes. |
+| Task          | Commit               | Date       | Notes                                                                                                                                                                                                                                                                                                        |
+| ------------- | -------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| —             | `f146588`            | 2026-07-29 | Branch point. Audit and handoff docs only, zero code changes.                                                                                                                                                                                                                                                |
+| SEC-7 added   | `f0d19f3`            | 2026-07-29 | New register row. GitHub reports 60 open Dependabot alerts, axios 21 of them at runtime scope through bee-js. The audit had inferred "no known vulnerabilities" from package.json without checking advisories. Promotes the bee-js work in S6.3 from optional spike to remediation path.                     |
+| **S0.2 done** | `b1d37e9`, `64f7ffa` | 2026-07-29 | eslint config added to `packages/cli`, mirroring stream-uploader minus the jest env. Root `pnpm lint` now exits 0, previously always 1. The config surfaced 9 pre-existing violations across 6 files (curly, one import-sort), all autofixed in the second commit. `tsc --noEmit` clean.                     |
+| **S0.8 done** | `96b3e57`            | 2026-07-29 | README quickstart fixed. `pnpm dev`, `pnpm start:uploader`, `pnpm srs:up` did not exist. Now `client:start`, `uploader:start`, `srs:host`, plus `ome:host` since the block only ever named SRS. Verified by asserting every `pnpm X` in the block resolves to a real script or a pnpm builtin. Closes DOC-1. |
+| **S0.1 done** | `db06455`, `6f84776` | 2026-07-29 | CI workflow added, **verified green on a real run** (node 20 and 22). Runs typecheck, lint, test. Formatting is gated on changed files only, see the note below. Its first run immediately caught a latent bug: the uploader test glob never worked on node 20, fixed in `6f84776`.                          |
+
+### Sprint 0 remaining
+
+`S0.3`, `S0.4`, `S0.5`, `S0.6`, `S0.7` are not started. S0.6 is the smallest and unblocks puller
+tests, so it is the natural next one.
+
+### Two decisions left open by Sprint 0
+
+**Full-tree prettier sweep.** `npx prettier --check .` currently fails on **35 files** spanning source,
+tests, compose files, and `.vscode`. That predates any formatting gate. The CI `format` job therefore
+checks only files a pull request touches, which stops new violations without forcing a 35-file
+reformat that would bury real diffs and conflict with the two branches in review. Clearing the backlog
+and widening the job to `prettier --check .` is a deliberate call for the repo owner, not a side effect
+of this work.
+
+**Node version story.** `engines.node` says `>=20` and the production image is `node:20-alpine`, yet
+the test tooling had never run on 20. The matrix now covers both. If the team decides development is
+22-only, say so explicitly in `engines` and drop 20 from the matrix, because the two should not
+disagree silently.
