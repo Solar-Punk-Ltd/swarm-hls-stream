@@ -7,7 +7,7 @@
     "start": "node dist/index.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-force-exit \"test/**/*.test.ts\""
+    "test": "tsx --test --test-force-exit test/*.test.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
