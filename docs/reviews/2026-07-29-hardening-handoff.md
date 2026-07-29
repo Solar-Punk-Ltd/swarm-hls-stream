@@ -14,16 +14,17 @@ Paste this to start a session:
 ```
 You are picking up the hardening work on the swarm-hls-stream repo, branch feat/ai-hardening.
 
-Read these two files IN FULL before doing anything else:
+Read these three files IN FULL before doing anything else:
   docs/reviews/2026-07-29-hardening-audit.md      (findings register + acceptance criteria)
   docs/reviews/2026-07-29-hardening-handoff.md    (priorities, protocol, environment traps)
+  docs/reviews/review-gate.md                     (the review every PR must pass)
 
 The audit is already done. Do NOT re-audit the codebase and do NOT re-derive findings. The
 register is your input. Its "Rejected findings" section lists nine claims that were investigated
 and disproved, so do not re-raise them.
 
 Pick up from the progress log at the bottom of the handoff. Follow the working protocol exactly,
-including the Copilot gate on every PR and the re-audit step at the end of each sprint. A task is
+including the review gate on every PR and the re-audit step at the end of each sprint. A task is
 done when its acceptance criterion passes as a test, not when the code looks right.
 
 Before your first commit, confirm you are on feat/ai-hardening and that HEAD matches what the
@@ -35,15 +36,15 @@ progress log says. Ask me before pushing anything to a shared branch.
 Three levels, and the middle one is the point. Do not commit code straight to the integration
 branch, which is the mistake that produced this section.
 
-| Branch                                   | Role                                                                                        |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `feature/uploader-hardening` @ `f146588` | **Frozen reference.** The version the owner wants preserved as-is. Never commit here.       |
-| `feat/ai-hardening`                      | **Integration branch.** Carries the plan documents. All hardening PRs target this.          |
-| `feat/<task>` off `feat/ai-hardening`    | **One task branch per unit of work.** PR back into `feat/ai-hardening`, Copilot on that PR. |
+| Branch                                   | Role                                                                                            |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `feature/uploader-hardening` @ `f146588` | **Frozen reference.** The version the owner wants preserved as-is. Never commit here.           |
+| `feat/ai-hardening`                      | **Integration branch.** Carries the plan documents. All hardening PRs target this.              |
+| `feat/<task>` off `feat/ai-hardening`    | **One task branch per unit of work.** PR back into `feat/ai-hardening`, review gate on that PR. |
 
 So the loop per unit of work is: branch off `feat/ai-hardening`, commit there one fix per commit, PR
-into `feat/ai-hardening`, run the Copilot gate on that PR, merge. Never straight onto the integration
-branch, because that skips the PR and therefore skips Copilot entirely.
+into `feat/ai-hardening`, run the review gate on that PR, merge. Never straight onto the integration
+branch, because that skips the PR and therefore skips the review entirely.
 
 **Consequence worth knowing:** the plan documents live on `feat/ai-hardening`, but progress-log
 entries arrive with the task PR that produced them. If you read the handoff on `feat/ai-hardening`
@@ -58,20 +59,24 @@ and the progress log looks empty, check for open PRs into it before concluding n
 - Test baseline at `f146588`: 67/67 uploader, 5/5 client, typecheck clean, eslint clean on uploader
   and client. Do not let these regress.
 
-### Copilot could not be attached via the API
+### Copilot is unavailable, the gate it filled is not
 
-On PR #24 the REST call returned HTTP 200 with `requested_reviewers: []`, meaning GitHub accepted the
-request and silently discarded it. `gh pr edit --add-reviewer` failed with "Could not resolve user
-with login" under both `copilot-pull-request-reviewer[bot]` and `Copilot`. The bot demonstrably works
-in this repo, PR #23's timeline shows `review_requested -> Copilot` and a posted review. So this is an
-entitlement or transient problem, not a wrong command. **Fallback: request it by hand in the PR UI
-under Reviewers, which is one click.** Try the API first, and fall back rather than assuming the gate
-was satisfied.
+The organization's Copilot review quota is exhausted for the month, so there is no automated outside
+reviewer. That also explains the earlier symptom on PR #24, where the REST call returned HTTP 200 with
+`requested_reviewers: []`, GitHub having accepted the request and silently discarded it, and
+`gh pr edit --add-reviewer` failed to resolve the login under either
+`copilot-pull-request-reviewer[bot]` or `Copilot`. It was not a wrong command.
+
+**The replacement is [`review-gate.md`](./review-gate.md), and it is required on every PR.** If quota
+returns, run Copilot as an additional lens rather than a substitute for the gate, because the gate now
+checks things Copilot never did.
 
 ## Read this before you plan anything
 
-**The repo has no CI.** There is no `.github/workflows`. A prettier violation shipped inside PR #10
-and nobody noticed. Sprint 0 creates CI, and until it exists every check is manual.
+**The repo had no CI, and now it does.** S0.1 added `.github/workflows/ci.yml`, running typecheck,
+lint and test on a Node 20 and 22 matrix, plus a formatting check on the files a pull request touches.
+Before that a prettier violation shipped inside PR #10 and nobody noticed. Treat CI as the floor now
+rather than a manual step, and note that it caught a real latent break on its very first run.
 
 **About half the acceptance criteria are currently unwritable.** There is no way to make Bee return a
 402, no way to advance the clock for the 60-second recovery timer or the 5-minute drain timeout, no way
@@ -203,17 +208,16 @@ Per task:
 1. **Implement.** One fix per commit, conventional subject (`feat:`, `fix:`, `refactor:`, `test:`,
    `docs:`, `chore:`, `ci:`, `perf:`).
 2. **PR.** Group related tasks into one PR with several commits rather than opening 48 PRs. Sprint 1's
-   S1.1 through S1.3 are one auth PR. Keep the grouping tight enough that a Copilot finding maps to
+   S1.1 through S1.3 are one auth PR. Keep the grouping tight enough that a review finding maps to
    one change. Expect roughly 18 to 22 PRs total.
-3. **Copilot gate, required on every PR.** It does not fire on open in these repos, request it:
-   ```
-   gh api -X POST repos/Solar-Punk-Ltd/swarm-hls-stream/pulls/<n>/requested_reviewers \
-     -f "reviewers[]=copilot-pull-request-reviewer[bot]"
-   ```
-   Roughly two minutes. Then **evaluate every finding, do not accept it on sight**. Reproduce or
-   refute each against the code. Fix the valid ones as separate commits. Reply in-thread with evidence
-   on the invalid ones. Prior rounds produced both genuine bugs and confidently wrong claims, so
-   neither blanket acceptance nor blanket dismissal is correct.
+3. **Review gate, required on every PR.** The full protocol is
+   [`review-gate.md`](./review-gate.md), which replaces the Copilot gate now that quota is gone. In
+   short: at least three independent lenses plus the claims auditor, none of them given the PR
+   description or the author's reasoning, then a verification pass in which every finding defaults to
+   refuted until it reduces to a specific input and a specific wrong outcome. Fix the confirmed ones
+   as separate commits, rebut the rest with evidence, post the result on the PR, and append the
+   refutations to the register. Prior rounds produced both genuine bugs and confidently wrong claims,
+   so neither blanket acceptance nor blanket dismissal is correct.
 4. **CI green**, coverage not below the recorded baseline.
 5. **Re-audit the touched domain** at the end of each sprint. Re-run that domain's audit against the
    new HEAD with the register attached, asking two questions: is each claimed-closed finding actually
@@ -222,8 +226,8 @@ Per task:
 6. **Close on evidence.** A finding closes when its acceptance test exists and passes.
 
 Sprint exit gate, all four required: every acceptance test in the sprint passes, the re-audit reports
-no new CRITICAL or HIGH in the touched files, no Copilot finding is left unaddressed or unrebutted,
-and CI is green.
+no new CRITICAL or HIGH in the touched files, no review-gate finding is left unaddressed or
+unrebutted, and CI is green.
 
 ## Environment traps that will waste your time
 
@@ -312,12 +316,16 @@ tests, so it is the natural next one.
 
 ### Two decisions left open by Sprint 0
 
-**Full-tree prettier sweep.** `npx prettier --check .` currently fails on **35 files** spanning source,
-tests, compose files, and `.vscode`. That predates any formatting gate. The CI `format` job therefore
-checks only files a pull request touches, which stops new violations without forcing a 35-file
-reformat that would bury real diffs and conflict with the two branches in review. Clearing the backlog
-and widening the job to `prettier --check .` is a deliberate call for the repo owner, not a side effect
-of this work.
+**Full-tree prettier sweep.** **28 tracked files** fail prettier, spanning source, tests and compose
+files. That predates any formatting gate. The CI `format` job therefore checks only files a pull
+request touches, which stops new violations without forcing a 28-file reformat that would bury real
+diffs and conflict with the two branches in review. Clearing the backlog and widening the job to
+`prettier --check .` is a deliberate call for the repo owner, not a side effect of this work.
+
+Count tracked files only, with `git ls-files -z | xargs -0 npx prettier --check`. A bare
+`prettier --check .` also walks untracked and gitignored paths such as `.vscode/settings.json`, so it
+reports a number that depends on whose machine it ran on. That is where the 35 in earlier drafts came
+from, and it is not reproducible in CI.
 
 **Node version story.** `engines.node` says `>=20` and the production image is `node:20-alpine`, yet
 the test tooling had never run on 20. The matrix now covers both. If the team decides development is
