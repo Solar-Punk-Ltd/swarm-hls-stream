@@ -75,13 +75,14 @@ jobs:
       - name: Check formatting of changed files
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          files=$(git diff --name-only --diff-filter=ACMR \
+          list="$RUNNER_TEMP/changed-files"
+          git diff --name-only --diff-filter=ACMR -z \
             "origin/${{ github.base_ref }}...HEAD" \
-            -- '*.ts' '*.tsx' '*.js' '*.cjs' '*.mjs' '*.json' '*.yml' '*.yaml' '*.md' '*.css' '*.scss')
-          if [ -z "$files" ]; then
+            -- '*.ts' '*.tsx' '*.js' '*.cjs' '*.mjs' '*.json' '*.yml' '*.yaml' '*.md' '*.css' '*.scss' > "$list"
+          if [ ! -s "$list" ]; then
             echo "No formattable files changed."
             exit 0
           fi
           echo "Checking:"
-          echo "$files"
-          echo "$files" | xargs npx prettier --check
+          tr '\0' '\n' < "$list"
+          xargs -0 -r -a "$list" npx prettier --check
