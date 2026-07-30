@@ -10,11 +10,12 @@ import {
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
   MEDIA_TYPE_VIDEO,
+  StreamState,
 } from '../src/types.js';
 import { MANIFEST_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
-import { makeTestOrchestrator, neverSettles, rejectImmediately } from './helpers/fakes.js';
+import { makeFakeRecoveryStore, makeTestOrchestrator, neverSettles, rejectImmediately } from './helpers/fakes.js';
 
 const STREAM_ID = 'live/one';
 
@@ -39,6 +40,22 @@ function startStream(api: ApiTestServer, streamId = STREAM_ID): Promise<unknown>
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ streamId, mediatype: MEDIA_TYPE_VIDEO }),
   });
+}
+
+function recoveredState(streamId: string): StreamState {
+  return {
+    streamId,
+    streamRawTopic: 'topic-xyz',
+    mediatype: MEDIA_TYPE_VIDEO,
+    socIndex: 3,
+    segments: [{ index: 0, duration: 2, ref: 'ref0', discontinuity: false }],
+    hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+    isFirstSegmentReady: true,
+    isFirstManifestReady: true,
+    pendingDiscontinuity: false,
+    liveManifestStale: false,
+    updatedAt: Date.now(),
+  };
 }
 
 function postSegment(api: ApiTestServer, index: number, streamId = STREAM_ID) {
@@ -283,6 +300,51 @@ describe('GET /health status (S2.1)', () => {
 
     assert.equal(status, 200, 'a healthy drain must not read as a stall');
     assert.deepEqual((body as HealthBody).reasons, []);
+  });
+
+  it('stays ok across the stall window while segments keep arriving', async () => {
+    // The positive half of the stall signal. Without this, dropping the timestamp refresh on the
+    // accept path leaves every stall test still passing, because a never-refreshed clock degrades
+    // just as readily as a stalled one.
+    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    for (let index = 0; index < 6; index++) {
+      await postSegment(api, index);
+      await sleep(25);
+      const { status, body } = await api.request('/health');
+      assert.equal(status, 200, `a feeding stream must stay healthy, failed after segment ${index}`);
+      assert.deepEqual((body as HealthBody).reasons, []);
+    }
+  });
+
+  it('does not report a stall for a recovered stream, before or right after the engine resumes', async () => {
+    const orchestrator = makeTestOrchestrator(
+      { segmentStallMs: 60, recoveryTimeout: 5_000 },
+      {},
+      makeFakeRecoveryStore({
+        // listActive returns the slash-sanitized file name, the real id lives inside the state.
+        listActive: () => [STREAM_ID.replace(/[/\\]/g, '_')],
+        load: () => recoveredState(STREAM_ID),
+      }),
+    );
+    const api = await start(orchestrator);
+
+    await orchestrator.recoverStreams();
+    await sleep(120);
+
+    const waiting = await api.request('/health');
+    assert.equal(waiting.status, 200, 'a stream awaiting reconnect is not stalled, its recovery timer owns that');
+
+    // The engine resumes by replaying an index recovery already knows, which cancels the timer and
+    // makes the stream eligible for the stall signal again. It must rejoin with a fresh reading.
+    await postSegment(api, 0);
+    const resumed = await api.request('/health');
+
+    assert.equal(resumed.status, 200, 'a resumed stream must not inherit the age it accrued while waiting');
+    assert.deepEqual((resumed.body as HealthBody).reasons, []);
   });
 
   it('reports degraded and 503 when a registered stream sends no segments', async () => {

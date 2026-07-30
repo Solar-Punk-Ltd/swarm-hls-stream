@@ -13,7 +13,7 @@ import {
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
 } from '../src/types.js';
-import { deriveHealthStatus, MANIFEST_FAILURE_THRESHOLD } from '../src/utils/health.js';
+import { deriveHealthStatus, MANIFEST_FAILURE_THRESHOLD, SEGMENT_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
 const STALL_MS = 30_000;
 
@@ -134,6 +134,35 @@ describe('deriveHealthStatus segment stall', () => {
     const report = deriveHealthStatus(signals({ activeStreams: 0, msSinceStreamActivity: 10 * STALL_MS }), STALL_MS);
 
     assert.equal(report.status, HEALTH_OK);
+  });
+});
+
+describe('health wire contract', () => {
+  // Pinned as literals on purpose. Every other test compares constants against themselves, so
+  // renaming one would rename both sides and pass. These strings are read by the e2e suite in
+  // streaming-infra-manager and by anything an operator has scripted, so they cannot move silently.
+  it('publishes the documented status strings', () => {
+    assert.equal(HEALTH_OK, 'ok');
+    assert.equal(HEALTH_DEGRADED, 'degraded');
+  });
+
+  it('publishes the documented reason strings', () => {
+    assert.deepEqual(
+      [
+        HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
+        HEALTH_REASON_STALE_MANIFEST,
+        HEALTH_REASON_QUEUE_PRESSURE,
+        HEALTH_REASON_SEGMENT_STALL,
+      ],
+      ['segment_upload_failure', 'stale_manifest', 'queue_pressure', 'segment_stall'],
+    );
+  });
+
+  it('publishes the documented thresholds', () => {
+    // The README states three consecutive manifest failures and one segment failure. Asserting the
+    // relation either side of a constant cannot catch the constant itself changing.
+    assert.equal(MANIFEST_FAILURE_THRESHOLD, 3);
+    assert.equal(SEGMENT_FAILURE_THRESHOLD, 1);
   });
 });
 
