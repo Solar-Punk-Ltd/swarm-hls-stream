@@ -244,35 +244,43 @@ export class OmeHlsPuller {
       return true;
     }
 
-    this.reportSegmentLoss(seq, `${this.failedAttempts} consecutive download failures`);
+    this.reportSegmentLoss(seq, seq, `${this.failedAttempts} consecutive download failures`);
     return false;
   }
 
   /**
    * Indexes between the last delivered segment and `nextSeq` are gone from the origin's playlist, so
    * no later tick can fetch them. Reporting them is what keeps a rolled-out gap off the silent path.
+   *
+   * Announced as one range rather than one report per index, because the origin picks the size of that
+   * gap: a restarted OME serving a high `#EXT-X-MEDIA-SEQUENCE` would otherwise cost a log line and a
+   * queued job per missing index, millions of each. The uploader needs a discontinuity and a count,
+   * and neither is any truer for being delivered a million times.
+   *
    * Nothing is reported before the first delivery, because a playlist legitimately starts at whatever
    * media sequence the origin is serving when the puller joins.
    */
   private reportSegmentsRolledOutBefore(nextSeq: number): void {
-    if (this.lastSeq < 0) {
+    if (this.lastSeq < 0 || nextSeq <= this.lastSeq + 1) {
       return;
     }
 
-    for (let seq = this.lastSeq + 1; seq < nextSeq; seq++) {
-      this.reportSegmentLoss(seq, 'the origin rolled it out of its playlist window');
-    }
+    this.reportSegmentLoss(this.lastSeq + 1, nextSeq - 1, 'the origin rolled it out of its playlist window');
   }
 
   /**
-   * A segment that will never be delivered. `lastSeq` advances past it only here, so the gap reaches
-   * the uploader instead of appearing as a silent hole: `handleSegmentLoss` marks the next segment as
-   * a discontinuity and moves the counter `/health` reads.
+   * Segments that will never be delivered, `firstSeq` through `lastSeq` inclusive. `lastSeq` advances
+   * past an undelivered segment only here, so the gap reaches the uploader instead of appearing as a
+   * silent hole: `handleSegmentLoss` marks the next segment as a discontinuity and moves the counter
+   * `/health` reads.
    */
-  private reportSegmentLoss(seq: number, cause: string): void {
-    logger.error(`[OME] Segment ${seq} lost for ${this.streamId} after ${cause}, marking a discontinuity`);
-    this.orchestrator.handleSegmentLoss(this.streamId, seq);
-    this.lastSeq = seq;
+  private reportSegmentLoss(firstSeq: number, lastSeq: number, cause: string): void {
+    const count = lastSeq - firstSeq + 1;
+    const subject = count === 1 ? `Segment ${firstSeq}` : `Segments ${firstSeq} to ${lastSeq}`;
+
+    logger.error(`[OME] ${subject} lost for ${this.streamId} after ${cause}, marking a discontinuity`);
+    this.orchestrator.handleSegmentLoss(this.streamId, firstSeq, count);
+    this.lastSeq = lastSeq;
     this.failingSeq = null;
     this.failedAttempts = 0;
   }

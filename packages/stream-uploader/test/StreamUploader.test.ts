@@ -103,13 +103,22 @@ describe('StreamUploader discontinuity lifecycle', () => {
     const uploader = newUploader();
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
-    uploader.handleSegmentLoss(1);
+    uploader.handleSegmentLoss(1, 1);
     await drain(uploader);
 
     assert.equal(
       uploader.getConsecutiveSegmentFailures(),
       1,
       'a segment the engine never delivered moves the counter /health reads, exactly like a failed upload',
+    );
+
+    uploader.handleSegmentLoss(2, 40);
+    await drain(uploader);
+
+    assert.equal(
+      uploader.getConsecutiveSegmentFailures(),
+      2,
+      'one contiguous gap counts once however wide it is, so the counter measures how often delivery broke',
     );
 
     uploader.handleSegment(2, 2, Buffer.from('seg2'));

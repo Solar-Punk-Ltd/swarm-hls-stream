@@ -370,7 +370,7 @@ describe('GET /health status (S2.1)', () => {
     await startStream(api);
     await api.requestUntil('/health', hasActiveStreams(1));
 
-    orchestrator.handleSegmentLoss(STREAM_ID, 1);
+    orchestrator.handleSegmentLoss(STREAM_ID, 1, 1);
 
     const { status, body } = await api.requestUntil(
       '/health',

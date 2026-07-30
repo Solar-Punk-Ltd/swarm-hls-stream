@@ -472,9 +472,14 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
     });
   }
 
+  interface ReportedLoss {
+    firstIndex: number;
+    count: number;
+  }
+
   interface LossRecorder {
     delivered: number[];
-    lost: number[];
+    lost: ReportedLoss[];
   }
 
   function makeRecordingOrchestrator(record: LossRecorder): OrchestratorArg {
@@ -483,7 +488,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
         record.delivered.push(seq);
         return { accepted: true };
       },
-      handleSegmentLoss: (_id: string, seq: number) => record.lost.push(seq),
+      handleSegmentLoss: (_id: string, firstIndex: number, count: number) => record.lost.push({ firstIndex, count }),
     } as unknown as OrchestratorArg;
   }
 
@@ -507,7 +512,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
     }
 
-    assert.deepEqual(record.lost, [1], 'the write-off is reported once, not once per pass');
+    assert.deepEqual(record.lost, [{ firstIndex: 1, count: 1 }], 'the write-off is reported once, not once per pass');
     assert.deepEqual(record.delivered, [0, 2], 'the live edge resumes rather than parking behind one bad segment');
     assert.equal(puller.lastSeq, 2);
   });
@@ -540,8 +545,37 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
     await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
     await withSilencedLogs(() => puller.processPlaylist(WINDOW_MOVED_ON, MEDIA_URL));
 
-    assert.deepEqual(record.lost, [1], 'a segment the origin no longer serves is announced, not skipped');
+    assert.deepEqual(
+      record.lost,
+      [{ firstIndex: 1, count: 1 }],
+      'a segment the origin no longer serves is announced, not skipped',
+    );
     assert.deepEqual(record.delivered, [0, 2]);
+  });
+
+  it('announces a large gap once rather than once per missing index', async () => {
+    // The origin controls this number. A restarted OME serving a high #EXT-X-MEDIA-SEQUENCE would
+    // otherwise put one log line and one queued job per missing index between the last delivered
+    // segment and the new one, which at a realistic restart is millions of both.
+    const HUGE_JUMP = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:1000000', '#EXTINF:2.0,', 'segment_1000000.ts'].join('\n');
+
+    const record: LossRecorder = { delivered: [], lost: [] };
+    const fetcher = (() => Promise.resolve(okSegment())) as unknown as Fetcher;
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      1_000_000,
+      makeRecordingOrchestrator(record),
+      { fetcher },
+    ) as unknown as PullerInternals;
+
+    await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+    await withSilencedLogs(() => puller.processPlaylist(HUGE_JUMP, MEDIA_URL));
+
+    assert.deepEqual(record.lost, [{ firstIndex: 3, count: 999_997 }], 'the whole gap is one report carrying its size');
+    assert.deepEqual(record.delivered, [0, 1, 2, 1_000_000]);
   });
 
   it('does not report a loss for the indexes before the first segment it ever sees', async () => {
