@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
+import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { OmeHlsPuller } from '../src/engines/ome/OmeHlsPuller.js';
 import { REJECT_QUEUE_FULL, SegmentResult } from '../src/types.js';
 
@@ -139,6 +141,100 @@ describe('OmeHlsPuller playlist resolution', () => {
       pulled,
       [0],
       'the puller must follow the variant once OME serves the master, not latch a dead URL',
+    );
+  });
+});
+
+describe('OmeHlsPuller injected fetcher (S0.6)', () => {
+  const MASTER_URL = 'http://ome/hls/app/stream/ts:playlist.m3u8';
+  const VARIANT_URL = 'http://ome/hls/app/stream/variant.m3u8';
+  const MASTER_PLAYLIST = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=1000', 'variant.m3u8'].join('\n');
+
+  interface Route {
+    status?: number;
+    body?: string;
+  }
+
+  function routedFetcher(routes: Record<string, Route>, calls: string[] = []): Fetcher {
+    return (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      // Segment payloads are always served: these tests are about playlist resolution, and an
+      // unrouted segment would 404 and be skipped, which reads as a resolution failure instead.
+      const route = routes[url] ?? (url.endsWith('.ts') ? {} : undefined);
+      const status = route ? route.status ?? 200 : 404;
+      return {
+        status,
+        ok: status >= 200 && status < 300,
+        text: async () => route?.body ?? '',
+        arrayBuffer: async () => new ArrayBuffer(4),
+      };
+    }) as unknown as Fetcher;
+  }
+
+  interface PullerDriver {
+    tick(): Promise<void>;
+    stop(): void;
+  }
+
+  function makeDrivablePuller(fetcher: Fetcher, pulled: number[] = []): PullerDriver {
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        pulled.push(seq);
+        return { accepted: true };
+      },
+    } as unknown as OrchestratorArg;
+
+    // A huge interval so the puller's own scheduled ticks never fire and the test drives tick() itself.
+    return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as PullerDriver;
+  }
+
+  it('resolves the master playlist and then follows the variant, with no network', async () => {
+    const pulled: number[] = [];
+    const puller = makeDrivablePuller(
+      routedFetcher({
+        [MASTER_URL]: { body: MASTER_PLAYLIST },
+        [VARIANT_URL]: { body: MEDIA_PLAYLIST },
+      }),
+      pulled,
+    );
+
+    await puller.tick();
+    await puller.tick();
+    puller.stop();
+
+    assert.deepEqual(pulled, [0, 1], 'both segments of the variant playlist reach the orchestrator');
+  });
+
+  it('survives a 404 on the master playlist without halting or throwing', async () => {
+    const calls: string[] = [];
+    const pulled: number[] = [];
+    const puller = makeDrivablePuller(routedFetcher({ [MASTER_URL]: { status: 404 } }, calls), pulled);
+
+    await puller.tick();
+    await puller.tick();
+    puller.stop();
+
+    assert.deepEqual(pulled, [], 'nothing is published while the playlist is missing');
+    assert.deepEqual(
+      calls,
+      [MASTER_URL, MASTER_URL],
+      'a 404 leaves the puller retrying the master rather than latching a dead variant',
+    );
+  });
+
+  it('blocks the tick while a fetch hangs, which is the gap S2.2 closes', async () => {
+    const puller = makeDrivablePuller((() => new Promise(() => {})) as unknown as Fetcher);
+
+    const settled = await Promise.race([puller.tick().then(() => 'settled'), sleep(80).then(() => 'still-pending')]);
+    puller.stop();
+
+    assert.equal(
+      settled,
+      'still-pending',
+      'no fetch here has a timeout, so one black-holed connection stalls the poll loop indefinitely',
     );
   });
 });

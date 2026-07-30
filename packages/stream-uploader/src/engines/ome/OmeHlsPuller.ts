@@ -2,6 +2,7 @@ import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../../utils/common.js';
 
+import { Fetcher, PullerOptions } from './interfaces.js';
 import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './utils.js';
 
 const logger = Logger.getInstance();
@@ -16,6 +17,9 @@ export class OmeHlsPuller {
 
   private static readonly RETRY_THRESHOLD_IN_MS = 60_000;
 
+  private readonly onHalt?: () => void;
+  private readonly fetcher: Fetcher;
+
   constructor(
     private streamId: string,
     app: string,
@@ -23,8 +27,10 @@ export class OmeHlsPuller {
     hlsBaseUrl: string,
     private intervalMs: number,
     private orchestrator: StreamOrchestrator,
-    private onHalt?: () => void,
+    options: PullerOptions = {},
   ) {
+    this.onHalt = options.onHalt;
+    this.fetcher = options.fetcher ?? fetch;
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
   }
@@ -95,7 +101,7 @@ export class OmeHlsPuller {
     }
 
     const url = this.mediaPlaylistUrl as string;
-    const rawPlaylistResponse = await fetch(url);
+    const rawPlaylistResponse = await this.fetcher(url);
 
     if (rawPlaylistResponse.status === 404) {
       this.handleNotFound('media playlist');
@@ -136,7 +142,7 @@ export class OmeHlsPuller {
 
       const segmentUrl = new URL(segment.uri, url).toString();
       try {
-        const segmentResponse = await fetch(segmentUrl);
+        const segmentResponse = await this.fetcher(segmentUrl);
 
         if (!segmentResponse.ok) {
           logger.warn(`[OME] Segment ${segment.seq} fetch failed for ${this.streamId}: HTTP ${segmentResponse.status}`);
@@ -161,7 +167,7 @@ export class OmeHlsPuller {
   }
 
   private async fetchMediaPlaylistUrl(): Promise<boolean> {
-    const res = await fetch(this.masterUrl);
+    const res = await this.fetcher(this.masterUrl);
 
     if (res.status === 404) {
       this.handleNotFound('master playlist');

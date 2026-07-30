@@ -51,7 +51,9 @@ export function createOmeEngine(
       });
     };
 
-    const puller = new OmeHlsPuller(streamId, app, stream, hlsBaseUrl, pollIntervalMs, orchestrator, onHalt);
+    const puller = new OmeHlsPuller(streamId, app, stream, hlsBaseUrl, pollIntervalMs, orchestrator, {
+      onHalt,
+    });
     pullers.set(streamId, puller);
     puller.start();
   };
