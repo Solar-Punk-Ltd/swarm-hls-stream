@@ -40,7 +40,21 @@ pnpm client:start                  # start client dev server (localhost:5173)
 pnpm uploader:start                # start stream-uploader locally
 pnpm srs:host                      # start SRS on the host network
 pnpm ome:host                      # or start OME instead, the stack runs one engine
+pnpm verify                        # lint, typecheck, test and format check in one go
 ```
+
+`pnpm verify` stops at the first failing stage, so a lint error hides later test
+results. CI runs the same four checks as separate jobs and reports all of them.
+
+### Agent hook settings
+
+`.claude/settings.json` is committed, so it applies to everyone working in this
+repository, not just one machine. It disables a single Claude Code hook,
+`pre:edit-write:gateguard-fact-force`, which required a fact recital before the
+first edit to each file. Measured over one day it cost a round trip per file and
+never changed what was written. The first-Bash-per-session gate and the
+destructive-command gate are both still active. Delete the file locally if you
+want the hook back.
 
 ## CLI
 
