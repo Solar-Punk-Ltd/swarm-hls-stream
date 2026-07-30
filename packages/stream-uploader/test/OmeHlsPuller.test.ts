@@ -24,10 +24,10 @@ interface PullerInternals {
 
 type OrchestratorArg = ConstructorParameters<typeof OmeHlsPuller>[5];
 
-function makePuller(handleSegment: () => SegmentResult): OmeHlsPuller & PullerInternals {
+function makePuller(handleSegment: () => SegmentResult): PullerInternals {
   const orchestrator = { handleSegment } as unknown as OrchestratorArg;
   const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1000, orchestrator);
-  return puller as unknown as OmeHlsPuller & PullerInternals;
+  return puller as unknown as PullerInternals;
 }
 
 describe('OmeHlsPuller backpressure', () => {
@@ -125,8 +125,9 @@ describe('OmeHlsPuller playlist resolution', () => {
       'http://ome/hls',
       1_000_000,
       orchestrator,
-    ) as unknown as OmeHlsPuller & {
+    ) as unknown as {
       tick(): Promise<void>;
+      stop(): void;
     };
 
     await puller.tick(); // stub -> latch the master URL as the media playlist, no segments
