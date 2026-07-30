@@ -12,6 +12,8 @@ import {
 } from '../src/engines/srs/webhookToken.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
+import { startTestApi } from './helpers/apiTestServer.js';
+
 const TOKEN = 'srs-webhook-token-0123456789abcdef';
 
 interface Attempt {
@@ -109,6 +111,60 @@ describe('SRS webhook auth (S1.2)', () => {
   it('sets the floor at the documented length', () => {
     assert.equal(MIN_SRS_WEBHOOK_TOKEN_LENGTH, 32);
   });
+});
+
+describe('SRS webhook gate on the production app', () => {
+  // The engine tests above hand-build a bare express app. This block drives createApiApp with the
+  // engine mounted, which is the only thing that exercises middleware ordering against the parsers.
+  function startedStreamsSpy(): { calls: string[]; orchestrator: StreamOrchestrator } {
+    const calls: string[] = [];
+    return {
+      calls,
+      orchestrator: {
+        startStream: (streamId: string) => {
+          calls.push(streamId);
+          return true;
+        },
+        stopStream: async () => {},
+        handleSegment: () => ({ accepted: true }),
+        handleSegmentLoss: () => true,
+        getHealthSignals: () => ({
+          activeStreams: 0,
+          queuePressure: 'low',
+          maxConsecutiveManifestFailures: 0,
+          maxConsecutiveSegmentFailures: 0,
+          msSinceSegmentLoss: null,
+          msSinceStreamActivity: null,
+        }),
+      } as unknown as StreamOrchestrator,
+    };
+  }
+
+  function rawPost(path: string, body: string): string {
+    return (
+      `POST ${path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n` +
+      `Content-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`
+    );
+  }
+
+  const UNPARSEABLE_BODY = '{"action":';
+  const OVERSIZED_BODY = JSON.stringify({ pad: 'x'.repeat(200_000) });
+
+  for (const route of ['/engines/srs/streams', '/engines/srs/hls']) {
+    it(`refuses an anonymous oversized body on ${route} before parsing it`, async () => {
+      // A 500 here would mean the parser ran first: the gate must be ahead of it, or an anonymous
+      // caller costs the process a full parse and gets an unhandled-error line into the log.
+      const { orchestrator } = startedStreamsSpy();
+      const api = await startTestApi(orchestrator, [createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN })]);
+
+      try {
+        assert.equal(await api.rawRequest(rawPost(route, OVERSIZED_BODY)), 401);
+        assert.equal(await api.rawRequest(rawPost(route, UNPARSEABLE_BODY)), 401);
+      } finally {
+        await api.close();
+      }
+    });
+  }
 });
 
 describe('SRS webhook token redaction', () => {

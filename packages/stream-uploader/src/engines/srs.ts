@@ -1,4 +1,4 @@
-import { NextFunction, Request, Response, Router } from 'express';
+import { NextFunction, Request, RequestHandler, Response, Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 
@@ -66,6 +66,25 @@ export function createSrsEngineFromEnv(): EnginePlugin {
   return createSrsEngine(mediaPath, { webhookToken });
 }
 
+/**
+ * SRS cannot sign its callbacks and cannot send a header, so the credential travels in the hook URL
+ * that entrypoint.sh writes into srs.conf.
+ *
+ * One factory, mounted twice on purpose. On the router it is the authorization guard, so a webhook
+ * added later is covered without whoever adds it remembering, and mounting the router by itself is
+ * safe. At app level, ahead of the body parsers, it is the resource guard. See `EnginePlugin`.
+ */
+function createWebhookGate(webhookToken: string): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!hasValidWebhookToken(req, webhookToken)) {
+      logger.warn(`[SRS] Rejected webhook with missing or invalid token from ${req.ip}`);
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  };
+}
+
 export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions = {}): EnginePlugin {
   const webhookToken = options.webhookToken ?? '';
   if (webhookToken) {
@@ -76,20 +95,14 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
     name: 'srs',
     prefix: '/engines/srs',
 
+    createAuthMiddleware(): RequestHandler {
+      return createWebhookGate(webhookToken);
+    },
+
     createRouter(streamOrchestrator: StreamOrchestrator): Router {
       const router = Router();
 
-      // SRS cannot sign its callbacks and cannot send a header, so the credential travels in the hook
-      // URL that entrypoint.sh writes into srs.conf. Mounted on the router rather than in each
-      // handler, so a webhook added later is covered without whoever adds it remembering.
-      router.use((req: Request, res: Response, next: NextFunction) => {
-        if (!hasValidWebhookToken(req, webhookToken)) {
-          logger.warn(`[SRS] Rejected webhook with missing or invalid token from ${req.ip}`);
-          res.status(401).json({ error: 'Unauthorized' });
-          return;
-        }
-        next();
-      });
+      router.use(createWebhookGate(webhookToken));
 
       router.post('/streams', (req: Request, res: Response) => {
         handleStreams(req, res, streamOrchestrator);
