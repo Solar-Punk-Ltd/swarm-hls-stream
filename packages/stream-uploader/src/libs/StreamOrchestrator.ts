@@ -14,6 +14,7 @@ import {
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 
+import { Clock, systemClock, Timer } from './Clock.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -29,13 +30,15 @@ export interface StreamOrchestratorConfig {
   maxQueueSize: number;
   recoveryTimeout: number;
   segmentStallMs: number;
+  /** Defaults to the real clock. Injected so tests can step time rather than wait for it. */
+  clock?: Clock;
 }
 
 export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
   private drainPromises = new Map<string, Promise<void>>();
   private processedSegments = new Map<string, Set<number>>();
-  private recoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private recoveryTimers = new Map<string, Timer>();
   private queue = new PQueue({ concurrency: 1 });
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
@@ -51,18 +54,22 @@ export class StreamOrchestrator {
     private streamCatalog: StreamCatalog,
     private recoveryStore: RecoveryStore,
     private config: StreamOrchestratorConfig,
-  ) {}
+  ) {
+    this.clock = config.clock ?? systemClock;
+  }
+
+  private readonly clock: Clock;
 
   public startStream(streamId: string, mediatype: MediaType): boolean {
     // If recovering, cancel the recovery timeout and resume
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
-      clearTimeout(recoveryTimer);
+      recoveryTimer.cancel();
       this.recoveryTimers.delete(streamId);
       // The re-announce is itself progress. Without this the stream rejoins the stall signal carrying
       // the age it accumulated while waiting, and a successful resume reports degraded until the first
       // segment lands.
-      this.streamActivityAt.set(streamId, performance.now());
+      this.streamActivityAt.set(streamId, this.clock.now());
       this.logger.info(`[StreamOrchestrator] Resumed recovering stream: ${streamId}`);
       return true;
     }
@@ -97,7 +104,7 @@ export class StreamOrchestrator {
 
       this.activeStreams.set(streamId, uploader);
       this.processedSegments.set(streamId, new Set());
-      this.streamActivityAt.set(streamId, performance.now());
+      this.streamActivityAt.set(streamId, this.clock.now());
       this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
     });
   }
@@ -114,13 +121,13 @@ export class StreamOrchestrator {
     // would otherwise be finalized as VOD mid-broadcast when it expires.
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
-      clearTimeout(recoveryTimer);
+      recoveryTimer.cancel();
       this.recoveryTimers.delete(streamId);
       // Cancelling the timer makes this stream eligible for the stall signal again, so it needs a
       // fresh reading here and not only on the accept path below. A post-recovery puller re-pulls
       // from the start, so its first segments are duplicates, and the stream would otherwise rejoin
       // the signal carrying the reading it was given when recovery registered it.
-      this.streamActivityAt.set(streamId, performance.now());
+      this.streamActivityAt.set(streamId, this.clock.now());
       this.logger.info(`[StreamOrchestrator] Segments resumed for ${streamId}; cancelled recovery finalize timer`);
     }
 
@@ -138,7 +145,7 @@ export class StreamOrchestrator {
     }
 
     processed?.add(segmentIndex);
-    this.streamActivityAt.set(streamId, performance.now());
+    this.streamActivityAt.set(streamId, this.clock.now());
     uploader.handleSegment(segmentIndex, duration, data);
     return { accepted: true };
   }
@@ -147,7 +154,7 @@ export class StreamOrchestrator {
     // Cancel recovery timer if stopping a recovering stream
     const recoveryTimer = this.recoveryTimers.get(streamId);
     if (recoveryTimer) {
-      clearTimeout(recoveryTimer);
+      recoveryTimer.cancel();
       this.recoveryTimers.delete(streamId);
     }
 
@@ -214,17 +221,19 @@ export class StreamOrchestrator {
       );
 
       this.activeStreams.set(streamId, uploader);
-      this.streamActivityAt.set(streamId, performance.now());
+      this.streamActivityAt.set(streamId, this.clock.now());
 
       // Rebuild processed segments set from state
       const processed = new Set(state.segments.map((s) => s.index));
       this.processedSegments.set(streamId, processed);
 
       // Set recovery timeout — if engine doesn't reconnect, finalize as VOD
-      const timer = setTimeout(async () => {
+      const timer = this.clock.setTimer(() => {
         this.recoveryTimers.delete(streamId);
         this.logger.info(`[StreamOrchestrator] Recovery timeout for ${streamId}, finalizing as VOD`);
-        await this.stopStream(streamId);
+        void this.stopStream(streamId).catch((error) =>
+          this.errorHandler.handleError(error, `StreamOrchestrator.recoveryTimeout - ${streamId}`),
+        );
       }, this.config.recoveryTimeout);
 
       this.recoveryTimers.set(streamId, timer);
@@ -309,7 +318,7 @@ export class StreamOrchestrator {
    * recovery timer is already the control for never coming back.
    */
   public getMsSinceStreamActivity(): number | null {
-    const now = performance.now();
+    const now = this.clock.now();
     let oldest: number | null = null;
 
     for (const streamId of this.activeStreams.keys()) {
@@ -347,7 +356,7 @@ export class StreamOrchestrator {
   public async cleanup(): Promise<void> {
     // Clear all recovery timers
     for (const timer of this.recoveryTimers.values()) {
-      clearTimeout(timer);
+      timer.cancel();
     }
     this.recoveryTimers.clear();
 
@@ -379,13 +388,14 @@ export class StreamOrchestrator {
       return;
     }
 
-    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    let drainTimer: Timer | undefined;
     const drainTimeout = new Promise<void>((_, reject) => {
-      drainTimer = setTimeout(() => reject(new Error(`Drain timeout after ${DRAIN_TIMEOUT_MS}ms`)), DRAIN_TIMEOUT_MS);
-      // Unreferenced so a drain that never settles cannot hold the process open for five minutes.
-      // While the service runs its listening socket keeps the loop alive and this still fires, and
-      // once nothing else is pending there is no drain left to abandon.
-      drainTimer.unref();
+      drainTimer = this.clock.setTimer(
+        () => reject(new Error(`Drain timeout after ${DRAIN_TIMEOUT_MS}ms`)),
+        DRAIN_TIMEOUT_MS,
+        // A pending drain deadline is not a reason to keep the process alive.
+        { unref: true },
+      );
     });
 
     try {
@@ -396,7 +406,7 @@ export class StreamOrchestrator {
     } finally {
       // Losing the race does not cancel the timer, so without this every stop leaves a five minute
       // timer holding the event loop open, one per stopped stream.
-      clearTimeout(drainTimer);
+      drainTimer?.cancel();
     }
 
     this.activeStreams.delete(streamId);

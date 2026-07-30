@@ -6,7 +6,14 @@ import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_VIDEO } from '../src/types.js';
 
-import { makeFakeRecoveryStore, makeRecoveredState, makeTestOrchestrator, toRecoveryFileId } from './helpers/fakes.js';
+import { FakeClock } from './helpers/fakeClock.js';
+import {
+  makeFakeRecoveryStore,
+  makeRecordingCatalog,
+  makeRecoveredState,
+  makeTestOrchestrator,
+  toRecoveryFileId,
+} from './helpers/fakes.js';
 
 const RECOVERY_TIMEOUT_MS = 80;
 
@@ -122,6 +129,84 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     await waitFor(() => removed.includes(id) && orch.getActiveStreamCount() === 1);
     assert.ok(removed.includes(id), 'the stale session must be finalized on re-announce');
     assert.equal(orch.getActiveStreamCount(), 1, 'a fresh stream is active after the re-announce restart');
+    await orch.cleanup();
+  });
+});
+
+describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)', () => {
+  const RECOVERY_TIMEOUT_60S = 60_000;
+
+  interface CatalogEntry {
+    state: string;
+    topic: string;
+  }
+
+  function makeRecoveringOrchestrator(clock: FakeClock, catalogEntries: CatalogEntry[], removed: string[]) {
+    const id = 'live/stream';
+    const recovery = makeFakeRecoveryStore({
+      listActive: () => [toRecoveryFileId(id)],
+      load: () => makeRecoveredState(id),
+      remove: (streamId: string) => removed.push(streamId),
+    });
+
+    return makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_60S, clock },
+      {},
+      recovery,
+      makeRecordingCatalog(catalogEntries),
+    );
+  }
+
+  it('finalizes an unfed recovered stream when 60s is advanced, with no real waiting', async () => {
+    const clock = new FakeClock();
+    const catalogEntries: CatalogEntry[] = [];
+    const removed: string[] = [];
+    const orch = makeRecoveringOrchestrator(clock, catalogEntries, removed);
+
+    await orch.recoverStreams();
+    assert.equal(orch.getActiveStreamCount(), 1, 'the recovered stream waits with a pending timer');
+    assert.equal(clock.pendingCount(), 1, 'exactly one recovery timer is scheduled');
+
+    // One step past a minute. Real time does not move, so this costs no wall clock.
+    clock.advance(RECOVERY_TIMEOUT_60S + 1);
+    await waitFor(() => orch.getActiveStreamCount() === 0);
+
+    assert.equal(orch.getActiveStreamCount(), 0, 'the timer fired and the stream was finalized');
+    // TEST-4: the old assertion stopped at the count above, which passes even if nothing was published.
+    assert.deepEqual(
+      catalogEntries.map((entry) => entry.state),
+      ['vod'],
+      'finalizing must publish the VOD entry, not merely forget the stream',
+    );
+    assert.deepEqual(removed, ['live/stream'], 'and must clear the recovery state it owns');
+  });
+
+  it('does not fire the recovery timer one millisecond early', async () => {
+    const clock = new FakeClock();
+    const orch = makeRecoveringOrchestrator(clock, [], []);
+
+    await orch.recoverStreams();
+    clock.advance(RECOVERY_TIMEOUT_60S - 1);
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'the stream is still waiting just short of the timeout');
+    assert.equal(clock.pendingCount(), 1, 'and its timer is still pending');
+    await orch.cleanup();
+  });
+
+  it('cancels the recovery timer when the engine re-announces, so advancing time does nothing', async () => {
+    const clock = new FakeClock();
+    const catalogEntries: CatalogEntry[] = [];
+    const orch = makeRecoveringOrchestrator(clock, catalogEntries, []);
+
+    await orch.recoverStreams();
+    assert.equal(clock.pendingCount(), 1, 'the finalize timer was scheduled on the injected clock');
+    assert.equal(orch.startStream('live/stream', MEDIA_TYPE_VIDEO), true, 'the re-announce resumes the stream');
+    assert.equal(clock.pendingCount(), 0, 'resuming cancels the pending finalize timer');
+
+    clock.advance(RECOVERY_TIMEOUT_60S * 10);
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'a resumed stream is never VOD-ed by the timer it cancelled');
+    assert.deepEqual(catalogEntries, [], 'and nothing is published as VOD');
     await orch.cleanup();
   });
 });

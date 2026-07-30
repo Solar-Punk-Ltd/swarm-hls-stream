@@ -46,6 +46,15 @@ export function makeFakeCatalog(): StreamCatalog {
   return { addStream: async () => {} } as unknown as StreamCatalog;
 }
 
+/** A catalog that appends every published entry, for asserting that a VOD actually landed. */
+export function makeRecordingCatalog(published: unknown[]): StreamCatalog {
+  return {
+    addStream: async (entry: unknown) => {
+      published.push(entry);
+    },
+  } as unknown as StreamCatalog;
+}
+
 export function makeFakeRecoveryStore(overrides: Partial<Record<keyof RecoveryStore, unknown>> = {}): RecoveryStore {
   return {
     save: () => {},
@@ -82,8 +91,9 @@ export function makeTestOrchestrator(
   config: Partial<StreamOrchestratorConfig> = {},
   uploads: FakeUploads = {},
   recoveryStore: RecoveryStore = makeFakeRecoveryStore(),
+  catalog: StreamCatalog = makeFakeCatalog(),
 ): StreamOrchestrator {
-  return new StreamOrchestrator(makeFakeBee(uploads), makeFakeCatalog(), recoveryStore, {
+  return new StreamOrchestrator(makeFakeBee(uploads), catalog, recoveryStore, {
     streamKey: TEST_STREAM_KEY,
     stamp: 'stamp',
     manifestBeeUrl: '',
