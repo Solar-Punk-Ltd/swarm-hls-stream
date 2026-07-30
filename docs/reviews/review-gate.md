@@ -221,9 +221,14 @@ If a lens you selected did not run, the gate is **not satisfied**, exactly as if
 had never posted. Do not merge, and do not record the sprint exit gate as met.
 
 Per-PR selection weakens this clause unless the selection itself is on the record, because a list that
-shrinks can always be made to look complete afterwards. So state the selection and its reasoning
-**before** launching anything, and post both lists in the result. "The gate ran" has to name which
-lenses, or it asserts nothing.
+shrinks can always be made to look complete afterwards. "The gate ran" has to name which lenses, or it
+asserts nothing.
+
+So the selection gets its own artifact. **Post the selection and its reasoning as a pull request comment
+before launching a single lens.** Not in the description: R3 requires the description to be corrected
+before merge, so every correction destroys the timestamp evidence that the selection predated the run.
+A comment is immune to that, because R3's corrections land on the description. The comment's timestamp
+against the posted result's is then something a later reader can check, which is the whole point.
 
 ## What this gate does not give you
 
