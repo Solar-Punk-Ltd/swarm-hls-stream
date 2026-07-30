@@ -96,59 +96,26 @@ result and the pull request body both cite by sha. Every earlier task branch fas
 fast-forward again unless the same thing happens, and prefer preserving a reviewed sha over a linear
 history when the two conflict.
 
-**Owner rule, 2026-07-30: select lenses per pull request.** Decide which lenses are necessary for the
-diff in front of you and run only those, naming the ones you dropped. The full catalogue runs as a deep
-run at the end of a sprint, where it pairs with the sprint-exit re-audit. R1's current floor of "at least
-three reviewers plus the claims auditor" contradicts this and has to change with it, so the amendment is a
-protocol edit rather than an addition. The claims auditor is never dropped.
+**Lens selection is in the protocol now, not just in these notes.** The owner's rule of 2026-07-30 is to
+select the lenses the diff in front of you needs, run those, name the ones you dropped, and save the full
+catalogue for a sprint-exit deep run. [`review-gate.md`](./review-gate.md) carries it as of PR #33: R1's
+floor of three reviewers plus the claims auditor is **withdrawn**, R4 requires both lists in the posted
+result, and fail-closed keys on a selected lens that did not run rather than on a count. The ten measured
+prompt rules that used to sit in this section moved there too, under "Lens prompt rules". Read the gate
+document for the procedure rather than this paragraph.
 
-**What the #30 gate proved about lens selection.** That pull request bundled four tasks across four
-surfaces, so six lenses were all justified and the wide run paid for itself: the CRITICAL was found by the
-one lens whose question was specifically "what can break while this still reports healthy". The way to
-need fewer lenses is a tighter pull request, not a shorter list. SEC-11 alone would have wanted three.
-
-**Gate amendments that are measured but still not written into `review-gate.md`.** This is the open
-follow-up. Amending the gate protocol is itself a change worth reviewing, so put it through a PR and
-a gate rather than editing the protocol quietly. Everything below was measured across the #27, #28 and
-#29 rounds, not guessed:
-
-- Give each lens a neutral orientation brief (repo layout, test commands, known traps). It reveals
-  nothing about the expected answer, so R1 holds. It cut the test lens 20% on tokens and 38% on time
-  and cost the security lens 19% more, so it is not a uniform win, and it needs more samples.
-- Run the **claims auditor first and alone**, before the code lenses. Twice this session a test count
-  went stale mid-review and invalidated the description after the code lenses had finished.
-- Four lenses, not five, on small diffs. The floor is three plus claims, and both rounds ran five.
-- The mechanical lenses (test integrity, claims audit) mostly run commands and count. They do not
-  need the top model tier. Security and correctness do. Tried on #29: three lenses a tier down cost
-  49k, 34k, 29k and 65k tokens against roughly 50-70k each when all ran full-tier, and the cheap ones
-  still produced a byte-level `.gitignore` check and a per-package `outDir` comparison. That was a
-  13-line config diff, so do not assume it holds on a logic-heavy one without checking.
-- **Tell the claims auditor that "the file exists" is not evidence, and that UNVERIFIABLE is the
-  correct verdict when the available evidence falls short.** On #27 and #28 it returned TRUE twice on
-  evidence that established nothing. On #29, with that sentence added, it correctly refused to verify
-  a transcript measurement it could not reproduce. This is the single highest-value prompt change
-  found so far, and it costs one sentence.
-- **Forbid lenses from reading `docs/reviews/` and branch commit messages, and tell them to exclude
-  `docs/` from repo-wide greps.** On #30 two lenses disclosed that an early `grep -i health` printed
-  register lines into their transcripts. Both re-derived their findings from source and said so, which is
-  the behaviour you want, but the exposure is avoidable with one sentence in the prompt.
-- **Give the test-integrity lens mutation as its method, not reading.** On #30 it ran 36 mutations and
-  reported which tests each one killed. Nine survivors each named a specific assertion that did not assert
-  what its title claimed, and chasing one of them surfaced a further defect in a fix from the same round.
-  No other lens produces that.
-- **Verify the reviewer's proposed fix, not just its finding.** On #29 the auditor correctly spotted
-  an imprecise sentence and then proposed a rewording that was wrong in the other direction, turning a
-  real event into a hypothetical one. Accepting it would have swapped one inaccuracy for another.
+What is worth keeping here is why the rule exists. The same fleet was running on a 13-line config diff as
+on a four-task logic change, and #30 showed that the way to need fewer lenses is a tighter pull request
+rather than a shorter list on a broad one. The claims auditor is never dropped.
 
 **Traps found the hard way this session.**
 
-- Lens agents created git worktrees **inside the repo** (`base-revision/`, `test-base/`) despite being
-  told to use the scratchpad, and one of them held `feat/ai-hardening` checked out, which blocked a
-  merge until it was detached. Both have since been removed. Give lenses the scratchpad path
-  explicitly, and run `git worktree list` before a merge rather than after it fails.
-- A lens ran `tsc` with file names on the command line, which silently ignores `tsconfig.json` and
-  emits 15 `.js` files beside the sources, turning `pnpm lint` red while every tracked file was clean.
-  Always instruct lenses to pass `--noEmit` and never name files.
+- Both lens-agent traps found this session are now prompt rules in `review-gate.md`: worktrees created
+  inside the repo, one of them holding `feat/ai-hardening` checked out and blocking a merge, and a `tsc`
+  run that named files on the command line, silently ignoring `tsconfig.json` and emitting 15 `.js` files
+  beside the sources. Two author-side habits survive them. Run `git worktree list` before a merge rather
+  than after it fails, and stage explicit paths while lenses are running, because a `git add -A` swept one
+  lens's leftover probe directory into a commit.
 - `engines/ome/.env` **cannot** fix a failing OME container. `Dockerfile.uploader` copies only
   `package.json` and `dist/`, so the file is not in the image, and dotenv does not override an
   already-present empty value. The deploy `.env` is the only lever.
@@ -345,9 +312,10 @@ Per task:
    one change. Expect roughly 18 to 22 PRs total.
 3. **Review gate, required on every PR.** The full protocol is
    [`review-gate.md`](./review-gate.md), which replaces the Copilot gate now that quota is gone. In
-   short: at least three independent lenses plus the claims auditor, none of them given the PR
-   description or the author's reasoning, then a verification pass in which every finding defaults to
-   refuted until it reduces to a specific input and a specific wrong outcome. Fix the confirmed ones
+   short: the claims auditor plus the lenses that this diff's surfaces call for, selected and stated
+   before anything is launched, none of them given the PR description or the author's reasoning, then a
+   verification pass in which every finding defaults to refuted until it reduces to a specific input and
+   a specific wrong outcome. Fix the confirmed ones
    as separate commits, rebut the rest with evidence, post the result on the PR, and append the
    refutations to the register. Prior rounds produced both genuine bugs and confidently wrong claims,
    so neither blanket acceptance nor blanket dismissal is correct.
@@ -358,9 +326,13 @@ Per task:
    does not pass.
 6. **Close on evidence.** A finding closes when its acceptance test exists and passes.
 
-Sprint exit gate, all four required: every acceptance test in the sprint passes, the re-audit reports
-no new CRITICAL or HIGH in the touched files, no review-gate finding is left unaddressed or
-unrebutted, and CI is green.
+Sprint exit gate, all five required: every acceptance test in the sprint passes, the re-audit reports no
+new CRITICAL or HIGH in the touched files, **the full lens catalogue has had its deep run**, no
+review-gate finding is left unaddressed or unrebutted, and CI is green.
+
+The deep run is the other half of per-PR lens selection. Selecting narrowly during a sprint is only safe
+if breadth arrives somewhere, and sprint exit is where it arrives, because that is when a fix in one
+domain is most likely to have quietly broken another.
 
 ## Environment traps that will waste your time
 
