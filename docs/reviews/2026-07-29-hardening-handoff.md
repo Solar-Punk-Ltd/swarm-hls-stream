@@ -36,17 +36,14 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-30 at the end of the S2.1 session. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` @ `746bc0d`. Four PRs merged, each through the review gate:
-S1.4 as #27, S1.3 as #28, the working-loop changes as #29, and S0.7 + S2.1 + SEC-11 + TEST-9 as #30.
+**Where the code is.** `feat/ai-hardening` @ `d1ef036`. Six PRs merged, each through the review gate:
+S1.4 as #27, S1.3 as #28, the working-loop changes as #29, S0.7 + S2.1 + SEC-11 + TEST-9 as #30, the dead-code sweep as #31, and S0.5 + S0.6 as #32.
 `feature/uploader-hardening` @ `f146588` and `main` @ `6b82baa` are untouched and must stay that way.
 
-**One PR is open and must not merge yet: #31**, `chore/cleanup-dead-code`. It removes two
-never-referenced client icons, a stale `jest` eslint env, and the test-double duplication #30 introduced.
-Verified green, but **its review gate has not run**, and `review-gate.md` fails closed. Under the owner's
-lens-selection rule it needs three lenses and not the full catalogue: claims audit, behaviour preservation
-and test integrity. Do not merge it before those run, and do not run the other five.
+**Nothing is open.** #31 (cleanup) and #32 (the S0.5 and S0.6 seams) both merged after their own gates,
+three lenses and four respectively, selected by surface.
 
-Test baseline is **128 uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean.
+Test baseline is **142 uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean.
 Check all four with one command: **`pnpm verify`**. It short-circuits at the first failing stage, so a
 lint error hides later test results, where CI runs the four as independent jobs and reports all of
 them. Do not let any of it regress. Typecheck now covers `test/` as well, see TEST-9.
