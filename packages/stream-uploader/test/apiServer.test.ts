@@ -1,13 +1,55 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
-import { MEDIA_TYPE_VIDEO } from '../src/types.js';
+import {
+  HEALTH_DEGRADED,
+  HEALTH_OK,
+  HEALTH_REASON_QUEUE_PRESSURE,
+  HEALTH_REASON_SEGMENT_STALL,
+  HEALTH_REASON_STALE_MANIFEST,
+  MEDIA_TYPE_VIDEO,
+} from '../src/types.js';
+import { MANIFEST_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { makeTestOrchestrator, neverSettles, rejectImmediately } from './helpers/fakes.js';
+
+const STREAM_ID = 'live/one';
+
+interface HealthBody {
+  status?: string;
+  reasons?: string[];
+  activeStreams?: number;
+  maxConsecutiveManifestFailures?: number;
+}
 
 function hasActiveStreams(count: number): (body: unknown) => boolean {
-  return (body) => (body as { activeStreams?: number }).activeStreams === count;
+  return (body) => (body as HealthBody).activeStreams === count;
+}
+
+function hasManifestFailures(count: number): (body: unknown) => boolean {
+  return (body) => (body as HealthBody).maxConsecutiveManifestFailures === count;
+}
+
+function startStream(api: ApiTestServer, streamId = STREAM_ID): Promise<unknown> {
+  return api.request('/stream/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ streamId, mediatype: MEDIA_TYPE_VIDEO }),
+  });
+}
+
+function postSegment(api: ApiTestServer, index: number, streamId = STREAM_ID) {
+  return api.request('/stream/segment', {
+    method: 'POST',
+    headers: {
+      'content-type': 'video/mp2t',
+      'x-stream-id': streamId,
+      'x-segment-index': String(index),
+      'x-duration': '2',
+    },
+    body: Buffer.from(`segment-${index}`),
+  });
 }
 
 describe('api server over http (S0.7 test layer)', () => {
@@ -31,7 +73,16 @@ describe('api server over http (S0.7 test layer)', () => {
     assert.equal(status, 200, 'an idle uploader is healthy');
     assert.deepEqual(
       Object.keys(body as object).sort(),
-      ['activeStreams', 'engines', 'queuePressure', 'staleManifestStreams', 'status'].sort(),
+      [
+        'activeStreams',
+        'engines',
+        'maxConsecutiveManifestFailures',
+        'msSinceStreamActivity',
+        'queuePressure',
+        'reasons',
+        'staleManifestStreams',
+        'status',
+      ].sort(),
       'the health body is a published contract, health.sh and the e2e suite both read it',
     );
   });
@@ -59,27 +110,13 @@ describe('api server over http (S0.7 test layer)', () => {
   });
 
   it('accepts a segment for a started stream', async () => {
-    const orchestrator = makeTestOrchestrator();
-    const api = await start(orchestrator);
+    const api = await start(makeTestOrchestrator());
 
-    await api.request('/stream/start', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ streamId: 'live/one', mediatype: MEDIA_TYPE_VIDEO }),
-    });
+    await startStream(api);
     // startStream queues uploader construction, so the stream is not addressable on return.
     await api.requestUntil('/health', hasActiveStreams(1));
 
-    const { status, body } = await api.request('/stream/segment', {
-      method: 'POST',
-      headers: {
-        'content-type': 'video/mp2t',
-        'x-stream-id': 'live/one',
-        'x-segment-index': '0',
-        'x-duration': '2',
-      },
-      body: Buffer.from('segment-payload'),
-    });
+    const { status, body } = await postSegment(api, 0);
 
     assert.equal(status, 200);
     assert.deepEqual(body, { ok: true, queued: true });
@@ -88,18 +125,96 @@ describe('api server over http (S0.7 test layer)', () => {
   it('answers a segment for an unknown stream with 404', async () => {
     const api = await start(makeTestOrchestrator());
 
-    const { status, body } = await api.request('/stream/segment', {
-      method: 'POST',
-      headers: {
-        'content-type': 'video/mp2t',
-        'x-stream-id': 'live/ghost',
-        'x-segment-index': '0',
-        'x-duration': '2',
-      },
-      body: Buffer.from('segment-payload'),
-    });
+    const { status, body } = await postSegment(api, 0, 'live/ghost');
 
     assert.equal(status, 404);
     assert.deepEqual(body, { ok: false, error: 'Unknown stream: live/ghost', statusCode: 404 });
+  });
+});
+
+describe('GET /health status (S2.1)', () => {
+  const servers: ApiTestServer[] = [];
+
+  async function start(...args: Parameters<typeof startTestApi>): Promise<ApiTestServer> {
+    const server = await startTestApi(...args);
+    servers.push(server);
+    return server;
+  }
+
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  it('reports ok while a stream is uploading normally', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 200);
+    assert.equal((body as HealthBody).status, HEALTH_OK);
+    assert.deepEqual((body as HealthBody).reasons, []);
+  });
+
+  it('reports degraded and 503 once the segment queue backs up', async () => {
+    // A Bee that accepts the connection and never answers: the first segment occupies the queue's
+    // single slot and the second one waits, which is a full queue at maxQueueSize 1.
+    const api = await start(makeTestOrchestrator({ maxQueueSize: 1 }, { uploadData: neverSettles }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+    await postSegment(api, 1);
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 503, 'a non-200 is what health.sh reports as a warning');
+    assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_QUEUE_PRESSURE]);
+  });
+
+  it('reports degraded and 503 after three consecutive live-manifest publish failures', async () => {
+    // Segment uploads succeed and only the manifest SOC write is refused, which is the state that
+    // used to report ok: segments land in Swarm while the live playlist stops advancing.
+    const api = await start(makeTestOrchestrator({}, { uploadPayload: rejectImmediately }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    for (let failures = 1; failures <= MANIFEST_FAILURE_THRESHOLD; failures++) {
+      await postSegment(api, failures - 1);
+      // One segment at a time: a manifest publish already queued is not queued twice, so feeding
+      // segments in a batch would not produce one failure each.
+      const { status, body } = await api.requestUntil('/health', hasManifestFailures(failures));
+
+      if (failures < MANIFEST_FAILURE_THRESHOLD) {
+        assert.equal(status, 200, `${failures} failure(s) self-heal on the next segment, so health holds at ok`);
+        assert.equal((body as HealthBody).status, HEALTH_OK);
+      }
+    }
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 503);
+    assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_STALE_MANIFEST]);
+  });
+
+  it('reports degraded and 503 when a registered stream sends no segments', async () => {
+    const api = await start(makeTestOrchestrator({ segmentStallMs: 50 }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).status === HEALTH_DEGRADED,
+    );
+
+    assert.equal(status, 503, 'a stream that announces and then goes silent must not report healthy');
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_STALL]);
   });
 });

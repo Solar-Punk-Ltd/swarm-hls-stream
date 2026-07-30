@@ -98,6 +98,7 @@ async function start() {
       manifestBeeUrl: config.manifestAccessUrl,
       maxQueueSize: config.maxQueueSize,
       recoveryTimeout: config.recoveryTimeout,
+      segmentStallMs: config.segmentStallMs,
     });
 
     const recoveredStreamIds = await streamOrchestrator.recoverStreams();

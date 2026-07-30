@@ -177,6 +177,10 @@ export class StreamUploader {
     return this.consecutiveManifestFailures > 0;
   }
 
+  public getConsecutiveManifestFailures(): number {
+    return this.consecutiveManifestFailures;
+  }
+
   private uploadLiveManifest(): void {
     if (this.liveManifestQueued) {
       return;

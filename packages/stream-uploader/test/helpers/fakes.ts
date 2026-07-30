@@ -36,9 +36,7 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
     uploadData: uploads.uploadData ?? (async () => ({ reference: { toHex: () => `ref${refCounter++}` } })),
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) =>
-        uploads.uploadPayload
-          ? uploads.uploadPayload(opts.index)
-          : { reference: { toHex: () => `soc${opts.index}` } },
+        uploads.uploadPayload ? uploads.uploadPayload(opts.index) : { reference: { toHex: () => `soc${opts.index}` } },
     }),
   } as unknown as Bee;
 }
@@ -68,6 +66,7 @@ export function makeTestOrchestrator(
     manifestBeeUrl: '',
     maxQueueSize: 100,
     recoveryTimeout: 60_000,
+    segmentStallMs: 30_000,
     ...config,
   });
 }

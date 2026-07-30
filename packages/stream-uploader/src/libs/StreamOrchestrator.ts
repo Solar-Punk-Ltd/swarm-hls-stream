@@ -2,6 +2,7 @@ import { Bee } from '@ethersphere/bee-js';
 import PQueue from 'p-queue';
 
 import {
+  HealthSignals,
   MediaType,
   PRESSURE_HIGH,
   PRESSURE_LOW,
@@ -27,6 +28,7 @@ export interface StreamOrchestratorConfig {
   manifestBeeUrl: string;
   maxQueueSize: number;
   recoveryTimeout: number;
+  segmentStallMs: number;
 }
 
 export class StreamOrchestrator {
@@ -35,6 +37,7 @@ export class StreamOrchestrator {
   private processedSegments = new Map<string, Set<number>>();
   private recoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private queue = new PQueue({ concurrency: 1 });
+  private lastStreamActivityAt: number | null = null;
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
@@ -85,6 +88,7 @@ export class StreamOrchestrator {
 
       this.activeStreams.set(streamId, uploader);
       this.processedSegments.set(streamId, new Set());
+      this.lastStreamActivityAt = Date.now();
       this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
     });
   }
@@ -109,6 +113,7 @@ export class StreamOrchestrator {
     // Deduplication
     const processed = this.processedSegments.get(streamId);
     if (processed?.has(segmentIndex)) {
+      this.lastStreamActivityAt = Date.now();
       return { accepted: true }; // silently accept duplicate
     }
 
@@ -118,6 +123,7 @@ export class StreamOrchestrator {
     }
 
     processed?.add(segmentIndex);
+    this.lastStreamActivityAt = Date.now();
     uploader.handleSegment(segmentIndex, duration, data);
     return { accepted: true };
   }
@@ -193,6 +199,7 @@ export class StreamOrchestrator {
       );
 
       this.activeStreams.set(streamId, uploader);
+      this.lastStreamActivityAt = Date.now();
 
       // Rebuild processed segments set from state
       const processed = new Set(state.segments.map((s) => s.index));
@@ -262,6 +269,40 @@ export class StreamOrchestrator {
     return count;
   }
 
+  public getMaxConsecutiveManifestFailures(): number {
+    let worst = 0;
+    for (const uploader of this.activeStreams.values()) {
+      worst = Math.max(worst, uploader.getConsecutiveManifestFailures());
+    }
+    return worst;
+  }
+
+  /**
+   * Milliseconds since a stream last registered or a segment was last accepted, or `null` while no
+   * stream is registered. Registration counts, so a stream that announces and then sends nothing is
+   * measured from its announcement rather than looking healthy forever.
+   */
+  public getMsSinceStreamActivity(): number | null {
+    if (this.activeStreams.size === 0 || this.lastStreamActivityAt === null) {
+      return null;
+    }
+    return Date.now() - this.lastStreamActivityAt;
+  }
+
+  public getSegmentStallMs(): number {
+    return this.config.segmentStallMs;
+  }
+
+  public getHealthSignals(): HealthSignals {
+    return {
+      activeStreams: this.activeStreams.size,
+      staleManifestStreams: this.getStaleManifestStreamCount(),
+      maxConsecutiveManifestFailures: this.getMaxConsecutiveManifestFailures(),
+      queuePressure: this.getOverallQueuePressure(),
+      msSinceStreamActivity: this.getMsSinceStreamActivity(),
+    };
+  }
+
   public async cleanup(): Promise<void> {
     // Clear all recovery timers
     for (const timer of this.recoveryTimers.values()) {
@@ -310,6 +351,10 @@ export class StreamOrchestrator {
 
     this.activeStreams.delete(streamId);
     this.processedSegments.delete(streamId);
+
+    if (this.activeStreams.size === 0) {
+      this.lastStreamActivityAt = null;
+    }
 
     this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
   }

@@ -65,6 +65,7 @@ The API server starts on port 3000 (default).
 | `STATE_DIR`           | `./state` | Directory for crash recovery state            |
 | `MAX_QUEUE_SIZE`      | `100`     | Max queued segments per stream                |
 | `RECOVERY_TIMEOUT`    | `60000`   | Crash recovery timeout (ms)                   |
+| `SEGMENT_STALL_MS`    | `30000`   | Silence after which `/health` reads degraded  |
 | `ENGINE`              | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty) |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
@@ -75,12 +76,18 @@ Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live 
 
 Engine-independent HTTP interface for pushing segments directly.
 
-| Endpoint               | Method                               | Description                                    |
-| ---------------------- | ------------------------------------ | ---------------------------------------------- |
-| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                          |
-| `POST /stream/segment` | Raw body + headers                   | Push a segment                                 |
-| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream                                   |
-| `GET /health`          | —                                    | Service health, active streams, queue pressure |
+| Endpoint               | Method                               | Description                                |
+| ---------------------- | ------------------------------------ | ------------------------------------------ |
+| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                      |
+| `POST /stream/segment` | Raw body + headers                   | Push a segment                             |
+| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream                               |
+| `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
+
+**Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
+`reasons` array. The reasons are `stale_manifest` (three consecutive live-manifest publish failures),
+`queue_pressure` (a segment queue above 80% of `MAX_QUEUE_SIZE`) and `segment_stall` (a registered stream that
+has sent nothing for `SEGMENT_STALL_MS`). The body also carries `activeStreams`, `staleManifestStreams`,
+`maxConsecutiveManifestFailures`, `queuePressure`, `msSinceStreamActivity` and `engines`.
 
 **Segment headers:**
 

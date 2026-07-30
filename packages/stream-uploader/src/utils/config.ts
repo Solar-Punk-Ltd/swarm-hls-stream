@@ -10,5 +10,6 @@ export const config = {
   stateDir: optional('STATE_DIR', './state'),
   maxQueueSize: optionalInt('MAX_QUEUE_SIZE', 100),
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000),
+  segmentStallMs: optionalInt('SEGMENT_STALL_MS', 30000),
   engine: optional('ENGINE', ''),
 };

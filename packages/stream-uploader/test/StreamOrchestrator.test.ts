@@ -44,6 +44,7 @@ function makeOrchestrator(recovery: RecoveryStore = makeRecovery()): StreamOrche
     manifestBeeUrl: '',
     maxQueueSize: 100,
     recoveryTimeout: RECOVERY_TIMEOUT_MS,
+    segmentStallMs: 30_000,
   });
 }
 

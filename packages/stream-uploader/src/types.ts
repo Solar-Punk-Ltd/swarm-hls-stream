@@ -42,3 +42,31 @@ export const PRESSURE_MEDIUM = 'medium' as const;
 export const PRESSURE_HIGH = 'high' as const;
 
 export type QueuePressure = typeof PRESSURE_LOW | typeof PRESSURE_MEDIUM | typeof PRESSURE_HIGH;
+
+export const HEALTH_OK = 'ok' as const;
+export const HEALTH_DEGRADED = 'degraded' as const;
+
+export type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED;
+
+export const HEALTH_REASON_STALE_MANIFEST = 'stale_manifest' as const;
+export const HEALTH_REASON_QUEUE_PRESSURE = 'queue_pressure' as const;
+export const HEALTH_REASON_SEGMENT_STALL = 'segment_stall' as const;
+
+export type HealthReason =
+  | typeof HEALTH_REASON_STALE_MANIFEST
+  | typeof HEALTH_REASON_QUEUE_PRESSURE
+  | typeof HEALTH_REASON_SEGMENT_STALL;
+
+export interface HealthSignals {
+  activeStreams: number;
+  staleManifestStreams: number;
+  maxConsecutiveManifestFailures: number;
+  queuePressure: QueuePressure;
+  /** `null` while no stream is registered, which is how an idle uploader avoids looking stalled. */
+  msSinceStreamActivity: number | null;
+}
+
+export interface HealthReport {
+  status: HealthStatus;
+  reasons: HealthReason[];
+}
