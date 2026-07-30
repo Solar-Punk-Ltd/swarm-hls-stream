@@ -195,7 +195,11 @@ checkable, rather than on the size of the number attached to it.
 - **Forbid lenses from reading `docs/reviews/` and the branch's commit messages, and tell them to exclude
   `docs/` from repo-wide greps.** On #30 two lenses disclosed that an early `grep -i health` had printed
   register lines into their transcripts. Both re-derived their findings from source and said so, which is
-  the behaviour you want, and the exposure is still avoidable with one sentence.
+  the behaviour you want, and the exposure is still avoidable with one sentence. **The files under review
+  are excepted.** When the diff is inside `docs/reviews/`, those files are the artifact and R1's grant of
+  the diff wins, so the ban narrows to whatever in that directory the diff does not touch, plus the
+  commit message bodies. Without that sentence this rule and R1 contradict each other on exactly the pull
+  requests that amend this document, which is how it was found.
 - **Give every lens the head sha explicitly**, and say that the working directory may have the base
   branch checked out. On #32 one lens spent a pass measuring base content.
 - **Give every lens the scratchpad path and forbid worktrees inside the repository.** Lenses have created
