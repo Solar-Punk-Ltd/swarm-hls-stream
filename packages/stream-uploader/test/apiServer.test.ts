@@ -86,7 +86,9 @@ describe('api server over http (S0.7 test layer)', () => {
         'staleManifestStreams',
         'status',
       ].sort(),
-      'the health body is a published contract, health.sh and the e2e suite both read it',
+      // health.sh reads only the status code (curl -o /dev/null), so the body's consumer is the e2e
+      // suite in streaming-infra-manager, which asserts on status and activeStreams.
+      'the health body is a published contract',
     );
   });
 
