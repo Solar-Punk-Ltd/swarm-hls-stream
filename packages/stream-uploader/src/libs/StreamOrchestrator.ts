@@ -379,8 +379,13 @@ export class StreamOrchestrator {
       return;
     }
 
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
     const drainTimeout = new Promise<void>((_, reject) => {
-      setTimeout(() => reject(new Error(`Drain timeout after ${DRAIN_TIMEOUT_MS}ms`)), DRAIN_TIMEOUT_MS);
+      drainTimer = setTimeout(() => reject(new Error(`Drain timeout after ${DRAIN_TIMEOUT_MS}ms`)), DRAIN_TIMEOUT_MS);
+      // Unreferenced so a drain that never settles cannot hold the process open for five minutes.
+      // While the service runs its listening socket keeps the loop alive and this still fires, and
+      // once nothing else is pending there is no drain left to abandon.
+      drainTimer.unref();
     });
 
     try {
@@ -388,6 +393,10 @@ export class StreamOrchestrator {
     } catch (error) {
       const msg = getErrorMessage(error);
       this.logger.error(`[StreamOrchestrator] Force-stopping stream ${streamId}: ${msg}`);
+    } finally {
+      // Losing the race does not cancel the timer, so without this every stop leaves a five minute
+      // timer holding the event loop open, one per stopped stream.
+      clearTimeout(drainTimer);
     }
 
     this.activeStreams.delete(streamId);
