@@ -17,6 +17,7 @@ services:
       - '${SRS_SRT_PORT:-10080}:10080/udp'
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
+      SRS_WEBHOOK_TOKEN: ${SRS_WEBHOOK_TOKEN:-}
       SRS_ADAPTER_PORT: ${SRS_ADAPTER_PORT:-3000}
     extra_hosts:
       - 'host.docker.internal:host-gateway'
