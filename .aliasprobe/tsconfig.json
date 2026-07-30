@@ -1,0 +1,4 @@
+{ "compilerOptions": { "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022",
+  "allowImportingTsExtensions": true, "noEmit": true, "strict": false,
+  "baseUrl": "..",
+  "paths": { "@/utils/config": ["./.aliasprobe/config.ts"], "@/utils/bee": ["./packages/client/src/utils/bee.ts"] } } }
