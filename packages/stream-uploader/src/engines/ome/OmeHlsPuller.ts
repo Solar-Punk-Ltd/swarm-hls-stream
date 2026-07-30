@@ -10,6 +10,13 @@ const logger = Logger.getInstance();
 export const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
 
 /**
+ * How many consecutive passes may fail on the same segment before it is written off. Retrying forever
+ * parks the live edge behind one bad segment, and by this many attempts the origin has usually rolled
+ * it out of its window anyway, so the honest answer is to announce the gap and move on.
+ */
+export const SEGMENT_RETRY_LIMIT = 3;
+
+/**
  * `AbortSignal.timeout` aborts with a `TimeoutError` DOMException, and an explicit `controller.abort()`
  * with an `AbortError`. Both mean the request was cut off rather than answered, which is the case an
  * operator needs to see at error level: it is indistinguishable from a healthy stream in every other log.
@@ -23,6 +30,8 @@ export class OmeHlsPuller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private state: 'idle' | 'running' | 'stopped' = 'idle';
   private lastSeq = -1;
+  private failingSeq: number | null = null;
+  private failedAttempts = 0;
   private notFoundSince: number | null = null;
   private readonly masterUrl: string;
   private mediaPlaylistUrl: string | null = null;
@@ -164,6 +173,9 @@ export class OmeHlsPuller {
    * the failed segment on the next success, and its own `seq <= lastSeq` guard would then drop that
    * index forever: a hole in the manifest that no health signal can see, since a segment that never
    * arrives is a segment that never failed to upload.
+   *
+   * The two ways out of a hold both go through `reportSegmentLoss`, so an index is either delivered
+   * or announced, never merely stepped over.
    */
   private async processPlaylist(playlist: string, url: string): Promise<void> {
     const segments = parseMediaPlaylist(playlist);
@@ -176,13 +188,18 @@ export class OmeHlsPuller {
         continue;
       }
 
+      this.reportSegmentsRolledOutBefore(segment.seq);
+
       const segmentUrl = new URL(segment.uri, url).toString();
       try {
         const segmentResponse = await this.fetchWithTimeout(segmentUrl);
 
         if (!segmentResponse.ok) {
           logger.warn(`[OME] Segment ${segment.seq} fetch failed for ${this.streamId}: HTTP ${segmentResponse.status}`);
-          return;
+          if (this.holdsForRetry(segment.seq)) {
+            return;
+          }
+          continue;
         }
 
         const segmentBuffer = Buffer.from(await segmentResponse.arrayBuffer());
@@ -191,10 +208,13 @@ export class OmeHlsPuller {
         if (!result.accepted) {
           logger.warn(`[OME] Segment ${segment.seq} not accepted for ${this.streamId}: ${result.reason}`);
           // Backpressure/rejection: leave lastSeq unchanged so the next tick re-pulls this segment in order.
+          // Not a download failure, so it does not count against the retry limit.
           return;
         }
 
         this.lastSeq = segment.seq;
+        this.failingSeq = null;
+        this.failedAttempts = 0;
       } catch (error) {
         const msg = getErrorMessage(error);
         if (isAbortedRequest(error)) {
@@ -204,9 +224,57 @@ export class OmeHlsPuller {
         } else {
           logger.warn(`[OME] Segment ${segment.seq} fetch error for ${this.streamId}: ${msg}`);
         }
-        return;
+        if (this.holdsForRetry(segment.seq)) {
+          return;
+        }
       }
     }
+  }
+
+  /**
+   * Records a failed download of `seq` and answers whether to end the pass here, so the next tick
+   * re-pulls that same index. A `false` answer means the segment has just been written off and
+   * reported, and the loop is free to carry on to the ones behind it.
+   */
+  private holdsForRetry(seq: number): boolean {
+    this.failedAttempts = seq === this.failingSeq ? this.failedAttempts + 1 : 1;
+    this.failingSeq = seq;
+
+    if (this.failedAttempts < SEGMENT_RETRY_LIMIT) {
+      return true;
+    }
+
+    this.reportSegmentLoss(seq, `${this.failedAttempts} consecutive download failures`);
+    return false;
+  }
+
+  /**
+   * Indexes between the last delivered segment and `nextSeq` are gone from the origin's playlist, so
+   * no later tick can fetch them. Reporting them is what keeps a rolled-out gap off the silent path.
+   * Nothing is reported before the first delivery, because a playlist legitimately starts at whatever
+   * media sequence the origin is serving when the puller joins.
+   */
+  private reportSegmentsRolledOutBefore(nextSeq: number): void {
+    if (this.lastSeq < 0) {
+      return;
+    }
+
+    for (let seq = this.lastSeq + 1; seq < nextSeq; seq++) {
+      this.reportSegmentLoss(seq, 'the origin rolled it out of its playlist window');
+    }
+  }
+
+  /**
+   * A segment that will never be delivered. `lastSeq` advances past it only here, so the gap reaches
+   * the uploader instead of appearing as a silent hole: `handleSegmentLoss` marks the next segment as
+   * a discontinuity and moves the counter `/health` reads.
+   */
+  private reportSegmentLoss(seq: number, cause: string): void {
+    logger.error(`[OME] Segment ${seq} lost for ${this.streamId} after ${cause}, marking a discontinuity`);
+    this.orchestrator.handleSegmentLoss(this.streamId, seq);
+    this.lastSeq = seq;
+    this.failingSeq = null;
+    this.failedAttempts = 0;
   }
 
   private async fetchMediaPlaylistUrl(): Promise<boolean> {

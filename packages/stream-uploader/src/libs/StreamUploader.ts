@@ -112,6 +112,26 @@ export class StreamUploader {
     });
   }
 
+  /**
+   * A segment that never reached this uploader, because the engine could not download it from the
+   * origin. Indistinguishable downstream from an upload that exhausted its retry window, so it lands
+   * on the same two signals: the next segment carries a discontinuity, and the consecutive-failure
+   * count `/health` reads goes up.
+   *
+   * Queued rather than applied inline so it takes its place behind segments already awaiting upload.
+   * Applied inline, the discontinuity would attach to a segment that arrived before the gap.
+   */
+  public handleSegmentLoss(segmentIndex: number): void {
+    this.segmentQueue.add(() => {
+      this.pendingDiscontinuity = true;
+      this.consecutiveSegmentFailures += 1;
+      this.logger.error(
+        `Segment ${segmentIndex} for stream ${this.streamId} was never delivered by the engine, marking a discontinuity`,
+      );
+      this.persistState();
+    });
+  }
+
   public async notifyStart(): Promise<void> {
     const entry = {
       title: this.getFormattedDate(),

@@ -99,6 +99,36 @@ describe('StreamUploader discontinuity lifecycle', () => {
     assert.equal(state.pendingDiscontinuity, false);
   });
 
+  it('flags the next segment as a discontinuity when the engine never delivered one', async () => {
+    const uploader = newUploader();
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    uploader.handleSegmentLoss(1);
+    await drain(uploader);
+
+    assert.equal(
+      uploader.getConsecutiveSegmentFailures(),
+      1,
+      'a segment the engine never delivered moves the counter /health reads, exactly like a failed upload',
+    );
+
+    uploader.handleSegment(2, 2, Buffer.from('seg2'));
+    await drain(uploader);
+
+    const byIndex = new Map(uploader.getStreamState().segments.map((s) => [s.index, s]));
+
+    assert.deepEqual(
+      [...byIndex.keys()].sort((a, b) => a - b),
+      [0, 2],
+    );
+    assert.equal(
+      byIndex.get(0)?.discontinuity,
+      false,
+      'a segment already queued when the loss arrives is not flagged retroactively',
+    );
+    assert.equal(byIndex.get(2)?.discontinuity, true, 'the first segment after the gap carries the discontinuity');
+  });
+
   it('restores pendingDiscontinuity across a restart so the next segment is flagged', async () => {
     const uploader = newUploader(
       {},

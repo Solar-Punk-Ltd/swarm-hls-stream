@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Fetcher } from '../src/engines/ome/interfaces.js';
-import { DEFAULT_FETCH_TIMEOUT_MS, OmeHlsPuller } from '../src/engines/ome/OmeHlsPuller.js';
+import { DEFAULT_FETCH_TIMEOUT_MS, OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
 import { REJECT_QUEUE_FULL, SegmentResult } from '../src/types.js';
 
 const MEDIA_PLAYLIST = [
@@ -452,6 +452,100 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       assert.equal(puller.lastSeq, 0, 'lastSeq must not advance past a segment that was never delivered');
     });
   }
+
+  interface LossRecorder {
+    delivered: number[];
+    lost: number[];
+  }
+
+  function makeRecordingOrchestrator(record: LossRecorder): OrchestratorArg {
+    return {
+      handleSegment: (_id: string, seq: number) => {
+        record.delivered.push(seq);
+        return { accepted: true };
+      },
+      handleSegmentLoss: (_id: string, seq: number) => record.lost.push(seq),
+    } as unknown as OrchestratorArg;
+  }
+
+  it('writes off a segment that keeps failing, reports the loss, and resumes the live edge', async () => {
+    const record: LossRecorder = { delivered: [], lost: [] };
+    const fetcher = ((input: RequestInfo | URL) =>
+      String(input).endsWith('segment_1.ts')
+        ? Promise.reject(new TypeError('fetch failed'))
+        : Promise.resolve(okSegment())) as unknown as Fetcher;
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      1_000_000,
+      makeRecordingOrchestrator(record),
+      { fetcher },
+    ) as unknown as PullerInternals;
+
+    for (let pass = 0; pass < SEGMENT_RETRY_LIMIT; pass++) {
+      await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+    }
+
+    assert.deepEqual(record.lost, [1], 'the write-off is reported once, not once per pass');
+    assert.deepEqual(record.delivered, [0, 2], 'the live edge resumes rather than parking behind one bad segment');
+    assert.equal(puller.lastSeq, 2);
+  });
+
+  it('reports the loss when the origin rolls the held segment out of its playlist window', async () => {
+    const WINDOW_MOVED_ON = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      '#EXT-X-MEDIA-SEQUENCE:2',
+      '#EXTINF:2.0,',
+      'segment_2.ts',
+    ].join('\n');
+
+    const record: LossRecorder = { delivered: [], lost: [] };
+    const fetcher = ((input: RequestInfo | URL) =>
+      String(input).endsWith('segment_1.ts')
+        ? Promise.reject(new TypeError('fetch failed'))
+        : Promise.resolve(okSegment())) as unknown as Fetcher;
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      1_000_000,
+      makeRecordingOrchestrator(record),
+      { fetcher },
+    ) as unknown as PullerInternals;
+
+    await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+    await withSilencedLogs(() => puller.processPlaylist(WINDOW_MOVED_ON, MEDIA_URL));
+
+    assert.deepEqual(record.lost, [1], 'a segment the origin no longer serves is announced, not skipped');
+    assert.deepEqual(record.delivered, [0, 2]);
+  });
+
+  it('does not report a loss for the indexes before the first segment it ever sees', async () => {
+    // A puller joining a stream already in progress starts at whatever media sequence the origin is
+    // serving. Those earlier indexes were never this puller's to deliver.
+    const record: LossRecorder = { delivered: [], lost: [] };
+    const LATE_JOIN = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:400', '#EXTINF:2.0,', 'segment_400.ts'].join('\n');
+    const fetcher = (() => Promise.resolve(okSegment())) as unknown as Fetcher;
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      1_000_000,
+      makeRecordingOrchestrator(record),
+      { fetcher },
+    ) as unknown as PullerInternals;
+
+    await withSilencedLogs(() => puller.processPlaylist(LATE_JOIN, MEDIA_URL));
+
+    assert.deepEqual(record.lost, []);
+    assert.deepEqual(record.delivered, [400]);
+  });
 
   it('re-pulls the held segment on the next pass once the origin recovers', async () => {
     const delivered: number[] = [];

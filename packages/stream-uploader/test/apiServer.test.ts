@@ -360,6 +360,27 @@ describe('GET /health status (S2.1)', () => {
     assert.deepEqual((body as HealthBody).reasons, []);
   });
 
+  it('reports degraded and 503 when the engine loses a segment it could never download', async () => {
+    // The OBS-11 shape: the segment never reaches the uploader at all, so no upload is attempted and
+    // no manifest publish fails. Every signal stayed clean and health answered 200 while the manifest
+    // grew a hole players are told is contiguous.
+    const orchestrator = makeTestOrchestrator();
+    const api = await start(orchestrator);
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    orchestrator.handleSegmentLoss(STREAM_ID, 1);
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).status === HEALTH_DEGRADED,
+    );
+
+    assert.equal(status, 503);
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
+  });
+
   it('clears the segment failure count once a segment lands again', async () => {
     // The counter is documented as consecutive rather than latching. Without this the threshold of
     // one would pin a stream at 503 for its whole life after a single transient drop.

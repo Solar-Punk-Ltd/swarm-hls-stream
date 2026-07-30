@@ -150,6 +150,22 @@ export class StreamOrchestrator {
     return { accepted: true };
   }
 
+  /**
+   * A segment the engine could not fetch from its origin, so it never reached `handleSegment` and no
+   * upload was ever attempted.
+   *
+   * Deliberately not recorded as stream activity. A stream that only loses segments is not making
+   * progress, and refreshing the clock here would hide a stall behind the very losses causing it.
+   */
+  public handleSegmentLoss(streamId: string, segmentIndex: number): void {
+    const uploader = this.activeStreams.get(streamId);
+    if (!uploader) {
+      return;
+    }
+
+    uploader.handleSegmentLoss(segmentIndex);
+  }
+
   public async stopStream(streamId: string): Promise<void> {
     // Cancel recovery timer if stopping a recovering stream
     const recoveryTimer = this.recoveryTimers.get(streamId);
