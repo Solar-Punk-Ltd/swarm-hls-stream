@@ -204,6 +204,13 @@ checkable, rather than on the size of the number attached to it.
   requests that amend this document, which is how it was found.
 - **Give every lens the head sha explicitly**, and say that the working directory may have the base
   branch checked out. On #32 one lens spent a pass measuring base content.
+- **Lenses that mutate source cannot share a working tree.** Isolate or serialize them, and **do not
+  commit while they run**. On #34 five lenses ran concurrently in one checkout, two of them mutating
+  `OmeHlsPuller.ts`: the test-integrity lens's mutate-and-restore cycle discarded the correctness lens's
+  uncommitted draft fix, and only that lens noticing and re-running every surviving mutation on a
+  verified-clean tree kept its numbers honest. Meanwhile the author's docs commits moved HEAD under all
+  five mid-run. Each detected it and confirmed the source was untouched, which was luck rather than
+  design.
 - **Give every lens the scratchpad path and forbid worktrees inside the repository.** Lenses have created
   them anyway, one holding the integration branch checked out, which blocked a merge until it was
   detached. Run `git worktree list` before merging rather than after it fails. The author-side half of
