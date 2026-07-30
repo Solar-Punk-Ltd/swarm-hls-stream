@@ -161,7 +161,7 @@ describe('api auth (S1.1, closes SEC-1)', () => {
     assert.equal(calls.startStream.length, 1);
   });
 
-  it('leaves /health reachable without a token, since compose healthchecks read it', async () => {
+  it('leaves /health reachable without a token, since health.sh reads it', async () => {
     const api = await start(noCalls());
 
     const { status } = await api.request('/health', { headers: NO_AUTH });

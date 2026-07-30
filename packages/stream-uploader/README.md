@@ -82,7 +82,7 @@ Engine-independent HTTP interface for pushing segments directly.
 | `POST /stream/segment` | Raw body + headers                   | Push a segment        |
 | `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream          |
 
-All three `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the handler runs, so an unauthenticated request never reaches the orchestrator. `GET /health` is deliberately outside the gate: it is a liveness endpoint that compose healthchecks and `health.sh` read, and it accepts no input and spends nothing.
+All three `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the handler runs, so an unauthenticated request never reaches the orchestrator. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, and it accepts no input and spends nothing. No compose healthcheck consumes it today.
 | `GET /health` | — | Service health, `200` ok or `503` degraded |
 
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a

@@ -40,7 +40,8 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
   );
 
   // Ingest and control, gated. `/health` is deliberately outside this: it is a liveness endpoint that
-  // compose healthchecks and `health.sh` read, and it neither accepts input nor spends anything.
+  // `deploy/scripts/health.sh` reads, and it neither accepts input nor spends anything. No compose
+  // healthcheck consumes it today, so gating it would break the one consumer there is.
   const requireAuth = createAuthMiddleware(authToken);
   app.use('/stream', requireAuth);
 
