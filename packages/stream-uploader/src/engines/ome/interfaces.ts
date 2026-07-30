@@ -31,6 +31,17 @@ export interface OmeEngineOptions {
   failOpen?: boolean;
   /** Passed straight to every puller this engine starts. See `PullerOptions.fetchTimeoutMs`. */
   fetchTimeoutMs?: number;
+  /** Passed straight to every puller this engine starts. See `PullerOptions.fetcher`. */
+  fetcher?: Fetcher;
+}
+
+/**
+ * Seams the environment cannot supply, for tests that need to observe what the engine hands its
+ * pullers. Deliberately holds no configuration: every operator-facing value still comes from the
+ * environment, so a test cannot prove a plumbing path a deployment does not have.
+ */
+export interface OmeEngineSeams {
+  fetcher?: Fetcher;
 }
 
 export interface OmeAdmissionRequest {

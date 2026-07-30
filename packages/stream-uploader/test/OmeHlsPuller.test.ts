@@ -26,6 +26,25 @@ interface PullerInternals {
 
 type OrchestratorArg = ConstructorParameters<typeof OmeHlsPuller>[5];
 
+interface CapturedLogs {
+  errors: string[];
+  warns: string[];
+}
+
+async function withCapturedLogs(run: () => Promise<unknown>): Promise<CapturedLogs> {
+  const { error, warn } = console;
+  const captured: CapturedLogs = { errors: [], warns: [] };
+  console.error = (...args: unknown[]) => captured.errors.push(args.map(String).join(' '));
+  console.warn = (...args: unknown[]) => captured.warns.push(args.map(String).join(' '));
+  try {
+    await run();
+    return captured;
+  } finally {
+    console.error = error;
+    console.warn = warn;
+  }
+}
+
 async function withSilencedLogs<T>(run: () => Promise<T>): Promise<T> {
   const { error, warn } = console;
   console.error = () => {};
@@ -572,4 +591,149 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
     assert.deepEqual(delivered, [0, 1, 2], 'the recovered segment is delivered in order, with no hole');
     assert.equal(puller.lastSeq, 2);
   });
+});
+
+describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
+  const MASTER_URL = 'http://ome/hls/app/stream/ts:playlist.m3u8';
+  const VARIANT_URL = 'http://ome/hls/app/stream/variant.m3u8';
+  const MASTER = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=1000', 'variant.m3u8'].join('\n');
+  const MEDIA = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
+
+  interface SeenCall {
+    url: string;
+    signal: AbortSignal | undefined;
+  }
+
+  function recordingFetcher(calls: SeenCall[], segment: () => Promise<Response>): Fetcher {
+    return ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, signal: init?.signal ?? undefined });
+      if (url === MASTER_URL) {
+        return Promise.resolve({ ok: true, status: 200, text: async () => MASTER } as unknown as Response);
+      }
+      if (url === VARIANT_URL) {
+        return Promise.resolve({ ok: true, status: 200, text: async () => MEDIA } as unknown as Response);
+      }
+      return segment();
+    }) as unknown as Fetcher;
+  }
+
+  function makePuller(fetcher: Fetcher): { tick(): Promise<void>; stop(): void } {
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => {},
+    } as unknown as OrchestratorArg;
+    return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as { tick(): Promise<void>; stop(): void };
+  }
+
+  const okSegmentResponse = () =>
+    Promise.resolve({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response);
+
+  it('carries an abort signal on every call site, including the media playlist polled each tick', async () => {
+    const calls: SeenCall[] = [];
+    const puller = makePuller(recordingFetcher(calls, okSegmentResponse));
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      await puller.tick();
+    });
+    puller.stop();
+
+    const byUrl = new Map(calls.map((call) => [call.url, call.signal]));
+    assert.ok(byUrl.has(VARIANT_URL), `the media playlist was never polled, saw ${[...byUrl.keys()].join(', ')}`);
+    for (const [url, signal] of byUrl) {
+      assert.ok(signal instanceof AbortSignal, `${url} was fetched without an abort signal`);
+    }
+  });
+
+  // A memoized signal would abort every later request the instant the first window elapsed, which is
+  // why the choke point builds one per call. Nothing failed when that was collapsed to a shared one.
+  it('builds a fresh signal per call rather than sharing one', async () => {
+    const calls: SeenCall[] = [];
+    const puller = makePuller(recordingFetcher(calls, okSegmentResponse));
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      await puller.tick();
+    });
+    puller.stop();
+
+    assert.ok(calls.length >= 2, 'more than one call is needed to tell a shared signal from a fresh one');
+    assert.equal(new Set(calls.map((call) => call.signal)).size, calls.length, 'every call gets its own signal');
+  });
+
+  // The tick catch is the puller's other log site, and it has its own abort branch. Only the abort
+  // half was driven, so upgrading its ordinary-failure arm to error level changed nothing observable.
+  it('logs an ordinary playlist failure at warn from the tick catch, not at error', async () => {
+    const failing = (() =>
+      Promise.resolve({ ok: false, status: 500, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => {},
+    } as unknown as OrchestratorArg;
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, orchestrator, {
+      fetcher: failing,
+    }) as unknown as { start(): void; stop(): void };
+
+    const logs = await withCapturedLogs(async () => {
+      puller.start();
+      await sleep(60);
+      puller.stop();
+    });
+
+    assert.ok(
+      logs.warns.some((line) => /Puller tick error/.test(line)),
+      `expected the tick failure on warn, got ${JSON.stringify(logs)}`,
+    );
+    assert.ok(
+      !logs.errors.some((line) => /Puller tick error/.test(line)),
+      `an ordinary HTTP failure must not use the level reserved for a cut-off request, got ${JSON.stringify(
+        logs.errors,
+      )}`,
+    );
+  });
+
+  interface LogLevelCase {
+    name: string;
+    error: unknown;
+    level: keyof CapturedLogs;
+  }
+
+  // The whole point of the abort branch is that a cut-off request reads differently from an ordinary
+  // failure. Only the abort half was tested, so an isAbortedRequest stuck at true, and either non-abort
+  // branch upgraded to error, all left the suite green.
+  const LOG_LEVEL_CASES: LogLevelCase[] = [
+    {
+      name: 'a timeout abort',
+      error: new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+      level: 'errors',
+    },
+    { name: 'an explicit abort', error: new DOMException('This operation was aborted', 'AbortError'), level: 'errors' },
+    { name: 'an ordinary network failure', error: new TypeError('fetch failed'), level: 'warns' },
+  ];
+
+  for (const { name, error, level } of LOG_LEVEL_CASES) {
+    it(`logs ${name} on the segment fetch at ${level === 'errors' ? 'error' : 'warn'} level`, async () => {
+      const calls: SeenCall[] = [];
+      const puller = makePuller(recordingFetcher(calls, () => Promise.reject(error)));
+
+      const logs = await withCapturedLogs(async () => {
+        await puller.tick();
+        await puller.tick();
+      });
+      puller.stop();
+
+      const other: keyof CapturedLogs = level === 'errors' ? 'warns' : 'errors';
+      assert.ok(
+        logs[level].some((line) => /Segment 0/.test(line)),
+        `expected the segment failure on ${level}, got ${JSON.stringify(logs)}`,
+      );
+      assert.ok(
+        !logs[other].some((line) => /Segment 0/.test(line)),
+        `the segment failure must not also appear on ${other}, got ${JSON.stringify(logs[other])}`,
+      );
+    });
+  }
 });

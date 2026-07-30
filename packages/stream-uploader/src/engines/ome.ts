@@ -6,7 +6,7 @@ import { getErrorMessage } from '../utils/common.js';
 import { optional, optionalBool, optionalInt, required } from '../utils/env.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
-import { AppStream, OmeAdmissionPayload, OmeEngineOptions } from './ome/interfaces.js';
+import { AppStream, OmeAdmissionPayload, OmeEngineOptions, OmeEngineSeams } from './ome/interfaces.js';
 import { DEFAULT_FETCH_TIMEOUT_MS, OmeHlsPuller } from './ome/OmeHlsPuller.js';
 import { buildStreamId, parseAppStream, parseStreamId, resolveMediaType } from './ome/utils.js';
 import { EnginePlugin } from './types.js';
@@ -16,7 +16,7 @@ const logger = Logger.getInstance();
 type StartPuller = (orchestrator: StreamOrchestrator, streamId: string, app: string, stream: string) => void;
 type StopPuller = (streamId: string) => void;
 
-export function createOmeEngineFromEnv(): EnginePlugin {
+export function createOmeEngineFromEnv(seams: OmeEngineSeams = {}): EnginePlugin {
   const hlsBaseUrl = optional('OME_HLS_URL', 'http://ome:8081');
   // A zero poll interval is legitimate, meaning poll as fast as each tick completes. A zero abort
   // window is not: it cancels every request before it can answer, which is how an operator writing
@@ -30,6 +30,7 @@ export function createOmeEngineFromEnv(): EnginePlugin {
     admissionSecret: required('OME_ADMISSION_SECRET'),
     failOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
     fetchTimeoutMs,
+    fetcher: seams.fetcher,
   });
 }
 
@@ -42,6 +43,7 @@ export function createOmeEngine(
   const admissionSecret = options.admissionSecret ?? '';
   const failOpen = options.failOpen ?? false;
   const fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const fetcher = options.fetcher;
 
   // The puller lifecycle lives here (not inline in the admission handler) so crash-recovery can
   // restart it without a fresh admission call — OME never re-announces a session that stayed open
@@ -62,6 +64,7 @@ export function createOmeEngine(
     const puller = new OmeHlsPuller(streamId, app, stream, hlsBaseUrl, pollIntervalMs, orchestrator, {
       onHalt,
       fetchTimeoutMs,
+      fetcher,
     });
     pullers.set(streamId, puller);
     puller.start();
