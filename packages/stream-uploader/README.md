@@ -38,7 +38,7 @@ cp .env.sample .env
 # Edit .env — fill in STREAM_KEY, run `pnpm stamp:setup` for STAMP
 
 # Start the uploader
-pnpm start:uploader
+pnpm uploader:start
 ```
 
 The API server starts on port 3000 (default).
@@ -49,12 +49,13 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                           |
-| ------------------- | ------------------------------------- |
-| `BEE_URL`           | Bee node API URL                      |
-| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`) |
-| `STREAM_KEY`        | Private key (hex) for signing feeds   |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog     |
+| Variable            | Description                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| `BEE_URL`           | Bee node API URL                                                                       |
+| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                  |
+| `STREAM_KEY`        | Private key (hex) for signing feeds                                                    |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                      |
+| `API_AUTH_TOKEN`    | Bearer token for the `/stream/*` routes, minimum 32 characters. `openssl rand -hex 32` |
 
 **Optional:**
 
@@ -76,14 +77,16 @@ Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live 
 
 Engine-independent HTTP interface for pushing segments directly.
 
-| Endpoint               | Method                               | Description           |
-| ---------------------- | ------------------------------------ | --------------------- |
-| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream |
-| `POST /stream/segment` | Raw body + headers                   | Push a segment        |
-| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream          |
+| Endpoint               | Method                               | Description                                |
+| ---------------------- | ------------------------------------ | ------------------------------------------ |
+| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                      |
+| `POST /stream/segment` | Raw body + headers                   | Push a segment                             |
+| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream                               |
+| `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
 
-All three `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the handler runs, so an unauthenticated request never reaches the orchestrator. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, and it accepts no input and spends nothing. No compose healthcheck consumes it today.
-| `GET /health` | — | Service health, `200` ok or `503` degraded |
+All three `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, it accepts no input and it spends nothing. No compose healthcheck consumes it today.
+
+The `/engines/*` webhook routes are **not** behind this gate. OME admission carries its own HMAC signature. The two SRS routes carry no credential at all, and `POST /engines/srs/hls` reaches the same stamp-spending path `/stream/segment` does, so on a default `ENGINE=srs` deployment an anonymous caller can still cause an upload. That is the open half of SEC-1, tracked as S1.2.
 
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
 `reasons` array:
@@ -181,11 +184,13 @@ Or push segments directly via the generic API (no engine needed):
 ```bash
 # Start a stream
 curl -X POST http://localhost:3000/stream/start \
+  -H "Authorization: Bearer $API_AUTH_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"streamId": "test/mystream", "mediatype": "video"}'
 
 # Push a segment
 curl -X POST http://localhost:3000/stream/segment \
+  -H "Authorization: Bearer $API_AUTH_TOKEN" \
   -H 'x-stream-id: test/mystream' \
   -H 'x-segment-index: 0' \
   -H 'x-duration: 1.5' \
@@ -193,6 +198,7 @@ curl -X POST http://localhost:3000/stream/segment \
 
 # Stop the stream
 curl -X POST http://localhost:3000/stream/stop \
+  -H "Authorization: Bearer $API_AUTH_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"streamId": "test/mystream"}'
 ```
