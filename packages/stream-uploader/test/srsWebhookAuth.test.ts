@@ -1,11 +1,13 @@
 import express from 'express';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
 
 import { createSrsEngine, createSrsEngineFromEnv, SrsEngineOptions } from '../src/engines/srs.js';
 import {
+  hasValidWebhookToken,
   MIN_SRS_WEBHOOK_TOKEN_LENGTH,
   redactWebhookToken,
   SRS_WEBHOOK_TOKEN_PARAM,
@@ -92,6 +94,43 @@ describe('SRS webhook auth (S1.2)', () => {
       assert.deepEqual(startedStreams, []);
     });
   }
+
+  it('gates every route on the router itself, not only through the app', async () => {
+    // The router carries its own gate so mounting it alone is safe. Driving it without the
+    // app-level gate is the only thing that proves the mount covers routes beyond /streams:
+    // moving the check into the /streams handler leaves /hls open and every other test green.
+    const reached: string[] = [];
+    const orchestrator = {
+      startStream: () => (reached.push('startStream'), true),
+      stopStream: async () => {},
+      handleSegment: () => (reached.push('handleSegment'), { accepted: true }),
+      handleSegmentLoss: () => true,
+    } as unknown as StreamOrchestrator;
+
+    const engine = createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN });
+    const app = express();
+    app.use(express.json());
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const server = app.listen(0);
+
+    try {
+      await once(server, 'listening');
+      const { port } = server.address() as AddressInfo;
+
+      for (const route of ['/streams', '/hls']) {
+        const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}${route}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo', file: 'x.ts', seq_no: 1 }),
+        });
+        assert.equal(response.status, 401, `${route} must be gated by the router itself`);
+      }
+
+      assert.deepEqual(reached, [], 'no handler may run for an unauthenticated caller');
+    } finally {
+      server.close();
+    }
+  });
 
   it('refuses to build an engine with a token that cannot survive a URL', () => {
     assert.throws(() => createSrsEngine('/tmp/media-unused', { webhookToken: 'a token with spaces and padding!!' }), {
@@ -259,6 +298,59 @@ describe('SRS webhook gate on the production app', () => {
   const UNPARSEABLE_BODY = '{"action":';
   const OVERSIZED_BODY = JSON.stringify({ pad: 'x'.repeat(200_000) });
 
+  // Both routes, not just /streams. Mutation showed that moving the gate out of the shared mount
+  // and into the /streams handler left /hls answering anonymous callers 200 with the suite green.
+  // /hls reaches the segment read-and-delete path and the stamp-spending upload, so an untested
+  // route sharing a mount is not a covered route.
+  for (const route of ['/engines/srs/streams', '/engines/srs/hls']) {
+    it(`rejects an unauthenticated ${route} and never reaches the orchestrator`, async () => {
+      const { calls, orchestrator } = startedStreamsSpy();
+      const api = await startTestApi(orchestrator, [createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN })]);
+
+      try {
+        const response = await api.request(route, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo', file: 'x.ts', seq_no: 1 }),
+        });
+
+        assert.equal(response.status, 401);
+        assert.deepEqual(calls, [], 'no handler on this router may run for an unauthenticated caller');
+      } finally {
+        await api.close();
+      }
+    });
+  }
+
+  it('redacts the credential in the request log, end to end', async () => {
+    // The redaction tests call the helper directly with hand-written strings. Deleting the call at
+    // its only production site left every one of them green, so this drives the real app instead.
+    const infos: string[] = [];
+    const originalInfo = console.info;
+    console.info = (...args: unknown[]) => void infos.push(args.join(' '));
+
+    const { orchestrator } = startedStreamsSpy();
+    const api = await startTestApi(orchestrator, [createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN })]);
+
+    try {
+      await api.request(`/engines/srs/streams?${SRS_WEBHOOK_TOKEN_PARAM}=${TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo' }),
+      });
+    } finally {
+      console.info = originalInfo;
+      await api.close();
+    }
+
+    const httpLine = infos.find((line) => line.includes('[HTTP]') && line.includes('/engines/srs/streams'));
+    assert.ok(httpLine, `expected a request log line, got: ${JSON.stringify(infos)}`);
+    assert.ok(!httpLine.includes(TOKEN), `the credential must not reach the log, got: ${httpLine}`);
+    assert.ok(httpLine.includes('token=REDACTED'), `expected the redacted marker, got: ${httpLine}`);
+    // The tail has to survive too: a redactor that swallows the status and duration is not a fix.
+    assert.match(httpLine, /\b200\b/, `the status must survive redaction, got: ${httpLine}`);
+  });
+
   for (const route of ['/engines/srs/streams', '/engines/srs/hls']) {
     it(`names ${route} in the rejection log, with the credential redacted`, async () => {
       // One line covered five causes and both routes, so an operator could not tell an on_publish
@@ -368,6 +460,28 @@ describe('SRS webhook token redaction', () => {
     // Over-redaction is cheap but not free: a parameter the gate would never read as the
     // credential should survive, or the log stops being useful for diagnosing anything else.
     assert.equal(redactWebhookToken('/x?mytoken=abc&refresh_token=def'), '/x?mytoken=abc&refresh_token=def');
+  });
+
+  it('rejects a single-element array without relying on the length check', () => {
+    // Express gives req.query.token an array for a repeated parameter. The suite passed that case
+    // through the length check by accident rather than through the type guard, so a single-element
+    // array, whose coerced bytes would otherwise line up, pins the guard itself.
+    const asArray = { query: { [SRS_WEBHOOK_TOKEN_PARAM]: [TOKEN] } } as never;
+
+    assert.equal(hasValidWebhookToken(asArray, TOKEN), false);
+  });
+
+  it('uses the parameter name that srs.conf.template actually sends', () => {
+    // The contract is with the template, not with the tests: the auth tests build their query from
+    // the exported constant, so renaming it would rename both sides and stay green while every real
+    // SRS webhook started failing.
+    const template = readFileSync(new URL('../../../engines/srs/srs.conf.template', import.meta.url), 'utf8');
+
+    assert.match(
+      template,
+      new RegExp(`\\?${SRS_WEBHOOK_TOKEN_PARAM}=SRS_WEBHOOK_TOKEN_PLACEHOLDER`),
+      'the code and the SRS config template must agree on the parameter name',
+    );
   });
 
   it('does not throw on a malformed query string', () => {
