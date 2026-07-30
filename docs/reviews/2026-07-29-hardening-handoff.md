@@ -37,33 +37,46 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` at `9be9348`. Eight pull requests merged, each through the
+**Where the code is.** `feat/ai-hardening` at `9be9348`. Nine pull requests merged, each through the
 review gate: #27, #28, #29, #30, #31, #32, #33, #34 and #35. `feature/uploader-hardening` @ `f146588`
 and `main` @ `6b82baa` are untouched and must stay that way.
 
-**Test baseline is 237 uploader, 5 client**, with lint, typecheck and whole-tree prettier clean. One
+**Test baseline is 262 uploader, 5 client**, with lint, typecheck and whole-tree prettier clean. One
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
-### Start here: `feat/srs-webhook-auth` is implemented and ungated
+### Start here: PR #36 is gated and answered, waiting on one owner decision
 
-S1.2 is written, tested and committed on `feat/srs-webhook-auth`, but **no pull request is open and the
-review gate has not run**. That is the immediate next task, and the gate is not optional. Open the PR
-into `feat/ai-hardening`, post the lens selection before launching anything, and run it.
+S1.2 is on `feat/srs-webhook-auth`, and [PR #36](https://github.com/Solar-Punk-Ltd/swarm-hls-stream/pull/36)
+into `feat/ai-hardening` **has been through the review gate**. Six lenses ran, the selection was posted
+before any of them launched, every finding was confirmed and answered, and the fixes are committed on
+the branch. The gate result is on the pull request.
 
-Suggested lenses for that diff, using the owner's selection rule: claims audit always, **security**
-(it is an auth change on the route that spends money), **config consistency** (a new required variable
-that touches `srs.conf.template`, `entrypoint.sh`, two compose services and an env sample), and **test
-integrity**. Correctness is a reasonable fifth. Concurrency and behaviour preservation are droppable.
+**It is not merged**, and the thing holding it is not code. See SEC-13: SRS writes the webhook
+credential into its own container log on every hook, roughly 40 times a minute per stream, because the
+credential travels in the hook URL and SRS trace-logs that URL. That is the standing cost of the design
+S1.2 chose, it was not visible when the approach was picked, and it needs the owner to choose between
+accepting it, lowering the SRS log level, or moving to a header-injecting reverse proxy. Do not merge
+and do not write SEC-1 up as unqualified until that call is made.
 
-Two things about that branch a reviewer should be told to check hard, because they are where it is
-most likely to be wrong:
+**What the round produced.** Every lens found something and the three largest were each found
+independently by two or three lenses, which is not a good sign about the diff. The comparison accepted
+tokens that were not the token, because `latin1` keeps only the low byte of each code point while a
+query parameter is UTF-8. The redactor was narrower than the gate, so `?%74oken=` authenticated and
+then landed in the log in cleartext. The gate sat behind the body parser, so anonymous callers got a
+500 and free unhandled-error lines. Two more: `engines/srs/docker-compose.yml` never passed the token,
+so the documented standalone path crash-looped forever with the value set exactly where the error
+message says to put it, and `setup.sh` never named the variable on the default engine path.
 
-- The secret is in a **URL**, by necessity. `requestLogger` redacts it, but any other place a URL gets
-  written down is a leak: error messages, metrics labels, access logs from a reverse proxy, the SRS
-  container's own logs. The redaction is tested against four shapes, and that list is a guess.
-- `entrypoint.sh` now exits non-zero on an empty token. That is a **live deployment file**. If it is
-  wrong, SRS does not start.
+**Read the four new register rows before touching this area**: SEC-13, SEC-14, SEC-15, OBS-15, OPS-10,
+OPS-11, TEST-17. OBS-15 is the recurring one, `/health` stays green while every webhook is rejected.
+
+**One thing worth copying.** The obvious structural fix for SEC-15, redacting inside
+`Logger.formatMessage` so no call site can forget, was written and then reverted inside the same round.
+The redactor is URL-shaped: applied to a whole log line it treats everything after the token as query
+string and eats the tail, turning `POST /x?token=SECRET 200 1ms` into `POST /x?token=REDACTED`. It was
+caught by probing the change rather than by reasoning about it. A plausible wrong fix is the most
+expensive thing a review round can produce, and this one would have shipped as an improvement.
 
 ### What SEC-1's closure does and does not mean
 
@@ -81,7 +94,7 @@ responses) are also still open.
 2. **CON-16, HIGH.** An origin that restarts its media sequence silences the puller permanently:
    `lastSeq` only moves forward and `seq <= lastSeq` has no escape. Measured through the real engine.
    Largest thing open in the OME path.
-3. **SEC-7, HIGH.** 60 Dependabot alerts, axios 21 of them at runtime scope through bee-js. Reconcile
+3. **SEC-7, HIGH.** 60 Dependabot alerts, axios 22 of them at runtime scope through bee-js. Reconcile
    against PR #13 into `main`, which already claims 32 of 33 resolved, before duplicating work.
 4. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
    largest single gap is that **nothing loads `config.ts`**, so every `required()` call in it can be
@@ -130,7 +143,7 @@ $API_AUTH_TOKEN` on every `/stream/*` call. Nothing in this repo calls those rou
 
 The bee-uploader node has zero postage stamps and buying one is the owner's action. The deployed
 uploader is stale and updating it needs a local `pnpm build` then an operator `scp`. The QA stress test
-is deferred to the very end by owner decision, which keeps PR #10 and the `streaming-infra-manager`
+is deferred to the very end by owner decision, which keeps the `streaming-infra-manager`
 branch held for the duration.
 
 ## Branch model
@@ -400,7 +413,7 @@ and running it after everything is strictly better than that.
 
 Two consequences to carry, neither of them blockers:
 
-- **PR #10 and the `streaming-infra-manager` branch stay held for the duration**, since nandibaa's
+- **The `streaming-infra-manager` branch stays held for the duration**, since nandibaa's
   review gated them on QA numbers. That is a long hold now. Say so when it comes up rather than
   letting people assume the hold is short.
 - **Nothing establishes a latency baseline until then either.** S5.1 exists to instrument
@@ -426,7 +439,7 @@ it accurate and keep it in the same commit as the work it describes.
 | Task                     | Commit                                                                                 | Date       | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------ | -------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | —                        | `f146588`                                                                              | 2026-07-29 | Branch point. Audit and handoff docs only, zero code changes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| SEC-7 added              | `f0d19f3`                                                                              | 2026-07-29 | New register row. GitHub reports 60 open Dependabot alerts, axios 21 of them at runtime scope through bee-js. The audit had inferred "no known vulnerabilities" from package.json without checking advisories. Promotes the bee-js work in S6.3 from optional spike to remediation path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| SEC-7 added              | `f0d19f3`                                                                              | 2026-07-29 | New register row. GitHub reports 60 open Dependabot alerts, axios 22 of them at runtime scope through bee-js. The audit had inferred "no known vulnerabilities" from package.json without checking advisories. Promotes the bee-js work in S6.3 from optional spike to remediation path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **S0.2 done**            | `b1d37e9`, `64f7ffa`                                                                   | 2026-07-29 | eslint config added to `packages/cli`, mirroring stream-uploader minus the jest env. Root `pnpm lint` now exits 0, previously always 1. The config surfaced 9 pre-existing violations across 6 files (curly, one import-sort), all autofixed in the second commit. `tsc --noEmit` clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **S0.8 done**            | `96b3e57`                                                                              | 2026-07-29 | README quickstart fixed. `pnpm dev`, `pnpm start:uploader`, `pnpm srs:up` did not exist. Now `client:start`, `uploader:start`, `srs:host`, plus `ome:host` since the block only ever named SRS. Verified by asserting every `pnpm X` in the block resolves to a real script or a pnpm builtin. Closes DOC-1.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **S0.1 done**            | `db06455`, `6f84776`                                                                   | 2026-07-29 | CI workflow added, **verified green on a real run** (node 20 and 22). Runs typecheck, lint, test. Formatting is gated on changed files only, see the note below. Its first run immediately caught a latent bug: the uploader test glob never worked on node 20, fixed in `6f84776`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
