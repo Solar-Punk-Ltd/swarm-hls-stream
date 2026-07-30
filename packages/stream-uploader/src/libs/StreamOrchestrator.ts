@@ -116,6 +116,11 @@ export class StreamOrchestrator {
     if (recoveryTimer) {
       clearTimeout(recoveryTimer);
       this.recoveryTimers.delete(streamId);
+      // Cancelling the timer makes this stream eligible for the stall signal again, so it needs a
+      // fresh reading here and not only on the accept path below. A post-recovery puller re-pulls
+      // from the start, so its first segments are duplicates, and the stream would otherwise rejoin
+      // the signal carrying the reading it was given when recovery registered it.
+      this.streamActivityAt.set(streamId, performance.now());
       this.logger.info(`[StreamOrchestrator] Segments resumed for ${streamId}; cancelled recovery finalize timer`);
     }
 
