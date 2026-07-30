@@ -37,7 +37,7 @@ Written 2026-07-30. That session ran S0.7, S2.1, SEC-11, TEST-9, a dead-code swe
 landing three pull requests each through its own review gate. Read this before the sprint plan below,
 because it supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` @ `8d50e1b`. Six PRs merged, each through the review gate:
+**Where the code is.** `feat/ai-hardening`, at `8d50e1b` plus the handover commits that carry this paragraph, so the tip is a docs commit or two ahead of that sha by construction. The progress-log rows below are the shas to trust. Six PRs merged, each through the review gate:
 S1.4 as #27, S1.3 as #28, the working-loop changes as #29, S0.7 + S2.1 + SEC-11 + TEST-9 as #30, the dead-code sweep as #31, and S0.5 + S0.6 as #32.
 `feature/uploader-hardening` @ `f146588` and `main` @ `6b82baa` are untouched and must stay that way.
 
