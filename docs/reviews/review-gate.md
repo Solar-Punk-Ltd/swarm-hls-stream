@@ -165,6 +165,47 @@ on a broad one.
 PR #31, a dead-code sweep, took three. PR #32, two dependency-injection seams, took four. Both rounds
 found real defects, so a reduced set is not a rubber stamp.
 
+## Lens prompt rules
+
+Measured across rounds #27 to #32 rather than guessed. They live here because they are part of the
+protocol, and each one is a sentence in a prompt that changed what a lens found.
+
+- **Run the claims auditor first and alone**, before the code lenses. Twice in one session a test count
+  went stale mid-review and invalidated the description after the code lenses had already finished.
+- **Tell the claims auditor that "the file exists" is not evidence, and that UNVERIFIABLE is the correct
+  verdict when the available evidence falls short.** On #27 and #28 it returned TRUE twice on evidence
+  that established nothing. With that sentence added, on #29 it correctly refused to verify a
+  measurement it could not reproduce. This is the highest value per word of anything found so far.
+- **Give the test-integrity lens mutation as its method, not reading.** On #30 it ran 36 mutations and
+  named, for each survivor, an assertion that did not assert what its title claimed. On #32 it ran 51
+  and found that a test written to document a missing timeout would have stayed green once the timeout
+  landed. Reading the files produces neither result.
+- **Verify the reviewer's proposed fix, not only its finding.** Already required by R2, and worth
+  repeating in the prompt. On #29 the auditor correctly spotted an imprecise sentence, then proposed a
+  rewording wrong in the other direction, turning a real event into a hypothetical one.
+- **Forbid lenses from reading `docs/reviews/` and the branch's commit messages, and tell them to exclude
+  `docs/` from repo-wide greps.** On #30 two lenses disclosed that an early `grep -i health` had printed
+  register lines into their transcripts. Both re-derived their findings from source and said so, which is
+  the behaviour you want, and the exposure is still avoidable with one sentence.
+- **Give every lens the head sha explicitly**, and say that the working directory may have the base
+  branch checked out. On #32 one lens spent a pass measuring base content.
+- **Give every lens the scratchpad path and forbid worktrees inside the repository.** Lenses have created
+  them anyway, one holding the integration branch checked out, which blocked a merge until it was
+  detached. Run `git worktree list` before merging rather than after it fails. The author-side half of
+  this: stage explicit paths while lenses are running, because a `git add -A` swept one lens's leftover
+  probe directory into a commit.
+- **Instruct lenses to run `tsc` with `--noEmit` and never to name files on the command line.** Naming
+  files silently ignores `tsconfig.json`. One lens emitted 15 `.js` files beside the sources and turned
+  `pnpm lint` red while every tracked file was clean.
+- **A neutral orientation brief** covering repo layout, test commands and known traps reveals nothing
+  about the expected answer, so R1 still holds with it. Not a uniform win: it cut the test lens 20% on
+  tokens and 38% on time and cost the security lens 19% more. Keep using it and keep watching.
+- **The mechanical lenses do not need the top model tier.** Test integrity and claims audit mostly run
+  commands and count, where security and correctness genuinely reason. On #29's 13-line config diff,
+  three lenses a tier down cost 49k, 34k and 29k tokens against roughly 50k to 70k each at full tier,
+  and the cheap ones still produced a byte-level `.gitignore` check and a per-package `outDir`
+  comparison. That was a config diff, so do not assume it holds on a logic-heavy one without checking.
+
 ## Fail closed
 
 If a lens you selected did not run, the gate is **not satisfied**, exactly as if the outside reviewer
