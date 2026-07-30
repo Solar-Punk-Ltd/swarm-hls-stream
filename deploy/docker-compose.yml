@@ -130,7 +130,7 @@ services:
     entrypoint: ['/bin/bash', '/usr/local/srs/conf/entrypoint.sh']
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
-      SRS_WEBHOOK_TOKEN: ${SRS_WEBHOOK_TOKEN}
+      SRS_WEBHOOK_TOKEN: ${SRS_WEBHOOK_TOKEN:-}
       SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}
       SRS_ADAPTER_PORT: ${API_PORT:-3000}
 
