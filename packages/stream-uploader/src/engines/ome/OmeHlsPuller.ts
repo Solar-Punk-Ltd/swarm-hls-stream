@@ -30,7 +30,9 @@ export class OmeHlsPuller {
     options: PullerOptions = {},
   ) {
     this.onHalt = options.onHalt;
-    this.fetcher = options.fetcher ?? fetch;
+    // Resolved per call rather than captured, so instrumentation that replaces globalThis.fetch after
+    // construction is still seen. Capturing it here would silently opt this class out of an APM agent.
+    this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
   }
