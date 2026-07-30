@@ -581,6 +581,39 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
     assert.deepEqual(record.delivered, [0, 1, 2, 1_000_000]);
   });
 
+  it('does not report a loss once the puller has stopped, so it cannot land on the next session', async () => {
+    // A fetch started before the stop can answer after it, and by then the id may belong to a fresh
+    // session whose first segment would carry a discontinuity that never happened.
+    const record: LossRecorder = { delivered: [], lost: [] };
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      1_000_000,
+      makeRecordingOrchestrator(record),
+      {
+        fetcher: ((input: RequestInfo | URL) => {
+          if (!String(input).endsWith('segment_1.ts')) {
+            return Promise.resolve(okSegment());
+          }
+          if (attempt++ === SEGMENT_RETRY_LIMIT - 1) {
+            (puller as unknown as { stop(): void }).stop();
+          }
+          return Promise.reject(new TypeError('fetch failed'));
+        }) as unknown as Fetcher,
+      },
+    ) as unknown as PullerInternals;
+    let attempt = 0;
+
+    for (let pass = 0; pass < SEGMENT_RETRY_LIMIT; pass++) {
+      await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+    }
+
+    assert.deepEqual(record.lost, [], 'a stopped puller reports nothing');
+    assert.equal(puller.lastSeq, 0, 'and it does not step over the segment it could not report');
+  });
+
   it('does not report a loss for the indexes before the first segment it ever sees', async () => {
     // A puller joining a stream already in progress starts at whatever media sequence the origin is
     // serving. Those earlier indexes were never this puller's to deliver.

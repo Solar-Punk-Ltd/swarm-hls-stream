@@ -288,6 +288,14 @@ export class OmeHlsPuller {
     const count = lastSeq - firstSeq + 1;
     const subject = count === 1 ? `Segment ${firstSeq}` : `Segments ${firstSeq} to ${lastSeq}`;
 
+    if (this.state === 'stopped') {
+      // A fetch started before the stop can answer after it, and by then the id may belong to a new
+      // session. Reporting there degrades a healthy stream and marks its first segment with a
+      // discontinuity that never happened.
+      logger.warn(`[OME] ${subject} lost for ${this.streamId} after the puller stopped, not reporting`);
+      return false;
+    }
+
     if (!this.orchestrator.handleSegmentLoss(this.streamId, firstSeq, count)) {
       // Nothing recorded the gap, so stepping over it would lose these indexes with no trace at all,
       // which is the failure this whole path exists to prevent. Hold and let the next tick retry.
