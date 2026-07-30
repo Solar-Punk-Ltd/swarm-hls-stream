@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
 
-import { createSrsEngine, SrsEngineOptions } from '../src/engines/srs.js';
+import { createSrsEngine, createSrsEngineFromEnv, SrsEngineOptions } from '../src/engines/srs.js';
 import {
   MIN_SRS_WEBHOOK_TOKEN_LENGTH,
   redactWebhookToken,
@@ -54,8 +54,6 @@ async function postStreams(query: string, options: SrsEngineOptions = { webhookT
 }
 
 describe('SRS webhook auth (S1.2)', () => {
-  after(() => {});
-
   it('rejects an unauthenticated webhook and never reaches the orchestrator', async () => {
     // The acceptance criterion, and the reason it matters: this route reaches the same
     // stamp-spending path /stream/segment reaches, so an open webhook is the same funds drain.
@@ -125,6 +123,86 @@ describe('SRS webhook auth (S1.2)', () => {
       assert.deepEqual(startedStreams, [], 'an unconfigured engine must reject rather than open up');
     });
   }
+
+  describe('createSrsEngineFromEnv', () => {
+    // The factory that reads the environment had no tests at all: mutation showed that swapping
+    // required() for an optional default, or dropping the token on the way to createSrsEngine
+    // entirely, both left the suite green. That is the helper-is-right, wiring-is-broken shape.
+    const original = process.env.SRS_WEBHOOK_TOKEN;
+
+    after(() => {
+      if (original === undefined) {
+        delete process.env.SRS_WEBHOOK_TOKEN;
+      } else {
+        process.env.SRS_WEBHOOK_TOKEN = original;
+      }
+    });
+
+    it('refuses to build without SRS_WEBHOOK_TOKEN in the environment', () => {
+      delete process.env.SRS_WEBHOOK_TOKEN;
+
+      assert.throws(() => createSrsEngineFromEnv(), /SRS_WEBHOOK_TOKEN/);
+    });
+
+    it('refuses to build when the environment supplies an unusable token', () => {
+      process.env.SRS_WEBHOOK_TOKEN = 'too-short';
+
+      assert.throws(() => createSrsEngineFromEnv(), /at least/);
+    });
+
+    it('says nothing about a loaded engine when the token is unusable', () => {
+      // The log line used to sit ahead of validation, so a too-short token announced a successfully
+      // loaded engine and then threw.
+      process.env.SRS_WEBHOOK_TOKEN = 'too-short';
+      const infos: string[] = [];
+      const originalInfo = console.info;
+      console.info = (...args: unknown[]) => void infos.push(args.join(' '));
+
+      try {
+        assert.throws(() => createSrsEngineFromEnv());
+      } finally {
+        console.info = originalInfo;
+      }
+
+      assert.ok(
+        !infos.some((line) => line.includes('SRS engine loaded')),
+        `a failed load must not report success, got: ${JSON.stringify(infos)}`,
+      );
+    });
+
+    it('wires the environment token through to the gate', async () => {
+      // Pins the call site rather than the helper: the token has to reach createSrsEngine.
+      process.env.SRS_WEBHOOK_TOKEN = TOKEN;
+      const engine = createSrsEngineFromEnv();
+      const orchestrator = {
+        startStream: () => true,
+        stopStream: async () => {},
+        handleSegment: () => ({ accepted: true }),
+        handleSegmentLoss: () => true,
+      } as unknown as StreamOrchestrator;
+
+      const app = express();
+      app.use(express.json());
+      app.use(engine.prefix, engine.createRouter(orchestrator));
+      const server = app.listen(0);
+
+      try {
+        await once(server, 'listening');
+        const { port } = server.address() as AddressInfo;
+        const url = `http://127.0.0.1:${port}${engine.prefix}/streams`;
+        const body = {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo' }),
+        };
+
+        assert.equal((await fetch(`${url}?${SRS_WEBHOOK_TOKEN_PARAM}=${TOKEN}`, body)).status, 200);
+        assert.equal((await fetch(`${url}?${SRS_WEBHOOK_TOKEN_PARAM}=wrong`, body)).status, 401);
+      } finally {
+        server.close();
+      }
+    });
+  });
 
   it('warns at construction that an unconfigured engine will reject everything', () => {
     const warnings: string[] = [];

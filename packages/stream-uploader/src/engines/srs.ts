@@ -60,10 +60,13 @@ function buildStreamId(app: string, stream: string): string {
 
 export function createSrsEngineFromEnv(): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
-  // Read before the log line, so a deployment missing it stops rather than reporting success first.
   const webhookToken = required('SRS_WEBHOOK_TOKEN');
+  const engine = createSrsEngine(mediaPath, { webhookToken });
+  // After construction, not before. `required` covers a missing or empty value, but the charset and
+  // length checks live inside createSrsEngine, so logging first announced a successfully loaded
+  // engine and then threw for a token that was merely too short.
   logger.info(`[Engine] SRS engine loaded, media path: ${mediaPath}`);
-  return createSrsEngine(mediaPath, { webhookToken });
+  return engine;
 }
 
 /**
