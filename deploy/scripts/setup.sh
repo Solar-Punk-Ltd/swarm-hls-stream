@@ -43,6 +43,10 @@ for engine in "$SVC_SRS" "$SVC_OME"; do
   if is_enabled "$(get_target "$engine")" && [ ! -f "$engine_env" ] && [ -f "$engine_sample" ]; then
     cp "$engine_sample" "$engine_env"
     log_ok "Created engines/$engine/.env from its .env.sample"
+    if [ "$engine" = "$SVC_OME" ]; then
+      log_warn "  Set OME_ADMISSION_SECRET in engines/$engine/.env before deploying: openssl rand -hex 32"
+      log_warn "  The uploader refuses to start while it is empty, which is deliberate."
+    fi
   fi
 done
 
