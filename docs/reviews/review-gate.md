@@ -26,8 +26,10 @@ Five requirements. All five, or the gate is not satisfied.
 
 ### R1. Independent lenses, starved of the author's reasoning
 
-At least three reviewers, plus the claims auditor from R3. Each one is a separate agent with a single
-assigned lens, spawned fresh.
+Every pull request gets the claims auditor from R3, plus the code lenses the diff in front of you
+actually needs. There is no minimum count. [Selecting lenses](#selecting-lenses) is the procedure and it
+binds, because a gate that ran the wrong lenses is not rescued by having run several. Each lens is a
+separate agent with a single assigned question, spawned fresh.
 
 Each reviewer receives the diff and read access to the repository. Each reviewer is **not** given:
 
@@ -98,9 +100,10 @@ documentation and it outlives the review.
 
 ### R4. The result is posted, not just discussed
 
-The outcome lands on the pull request as a review through `gh`, listing what was confirmed, what was
-refuted and why, and what changed as a result. A review that exists only in a session transcript
-provides no auditability, and once the transcript is gone nobody can tell whether the gate ran.
+The outcome lands on the pull request as a review through `gh`, listing the lenses that ran, the lenses
+that were selected against, what was confirmed, what was refuted and why, and what changed as a result.
+A review that exists only in a session transcript provides no auditability, and once the transcript is
+gone nobody can tell whether the gate ran or which lenses it used.
 
 Findings are answered the same way an outside reviewer's would be. Confirmed ones become fixes, one
 fix per commit. Refuted ones get a reply carrying the disproof. Neither blanket acceptance nor
@@ -116,9 +119,30 @@ That table already holds nine entries and has already prevented rework. It is th
 stops a future round from re-raising a claim that has been investigated and killed, and it
 appreciates with every round.
 
-## Lens catalogue
+## Selecting lenses
 
-Pick by what the diff touches. Three minimum, plus the claims auditor, which is never optional.
+Owner rule, 2026-07-30. Decide per pull request, run what you selected, and name what you dropped.
+
+1. **The claims auditor runs on every pull request.** It has no substitute and it is never traded away
+   for a slot. Two real defects in this work were claim failures rather than code failures, and a diff
+   reviewer catches neither, because neither is in the diff.
+2. **Pick the code lenses by the surfaces the diff touches.** Read the "Select when" column below as
+   binding rather than advisory.
+3. **Do not pad to a number.** A one-surface diff takes the auditor plus one or two lenses.
+4. **Give each selected lens a genuinely different question.** Three lenses asked the same thing produce
+   one finding three times and a false sense of coverage.
+5. **Name the lenses you did not run**, in the posted result required by R4. That list is the next
+   round's work.
+
+**The full catalogue runs as a deep run at the end of each sprint**, paired with the sprint-exit
+re-audit in the handoff's working protocol. Sprint exit is when a fix in one domain is most likely to
+have quietly broken another, so that is where breadth belongs rather than on every pull request.
+
+The earlier floor of three lenses plus the auditor is **withdrawn**, not merely relaxed. It spent the
+same fleet on a 13-line config diff as on a four-task logic change, and a floor invites padding to
+reach it, which is the failure rule 4 exists to prevent.
+
+### Lens catalogue
 
 | Lens                   | Select when                                              | Hunts                                                                      |
 | ---------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------- |
@@ -131,15 +155,25 @@ Pick by what the diff touches. Three minimum, plus the claims auditor, which is 
 | Silent failure         | Error paths, health and status reporting, retries        | Swallowed errors, fallbacks that mask a fault, a green that means nothing  |
 | Test integrity         | New or changed tests                                     | Tests that pass without exercising the behaviour, and coverage that lies   |
 
-Two rules on top of selection. Give each lens a genuinely different question, since three reviewers
-asked the same thing produce one finding three times and a false sense of coverage. And after the
-verification pass, ask which lens was not run, because the gap is the next round's work.
+### What selection has measured
+
+PR #30 bundled four tasks across four surfaces, so six lenses were all justified and the wide run paid
+for itself: the CRITICAL came from the one lens whose question was specifically "what can break while
+this still reports healthy". The way to need fewer lenses is a tighter pull request, not a shorter list
+on a broad one.
+
+PR #31, a dead-code sweep, took three. PR #32, two dependency-injection seams, took four. Both rounds
+found real defects, so a reduced set is not a rubber stamp.
 
 ## Fail closed
 
-If the required lenses did not run, the gate is **not satisfied**, exactly as if the outside reviewer
-had never posted. Do not merge, and do not record the sprint exit gate as met. Name the lenses that
-ran.
+If a lens you selected did not run, the gate is **not satisfied**, exactly as if the outside reviewer
+had never posted. Do not merge, and do not record the sprint exit gate as met.
+
+Per-PR selection weakens this clause unless the selection itself is on the record, because a list that
+shrinks can always be made to look complete afterwards. So state the selection and its reasoning
+**before** launching anything, and post both lists in the result. "The gate ran" has to name which
+lenses, or it asserts nothing.
 
 ## What this gate does not give you
 
