@@ -36,11 +36,14 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-30 at the end of the S1.3 session. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` @ `dee6905`. Both P0 one-file fixes are merged: S1.4 as
-PR #27 and S1.3 as PR #28, each through the full review gate. `feature/uploader-hardening` @
-`f146588` and `main` @ `6b82baa` are untouched and must stay that way. Test baseline is now **94
-uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean. Do not let those
-regress.
+**Where the code is.** `feat/ai-hardening` @ `cb3cab5`. Three PRs merged, each through the review
+gate: S1.4 as #27, S1.3 as #28, and the working-loop changes as #29.
+`feature/uploader-hardening` @ `f146588` and `main` @ `6b82baa` are untouched and must stay that way.
+
+Test baseline is **94 uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean.
+Check all four with one command now: **`pnpm verify`**. It short-circuits at the first failing stage,
+so a lint error hides later test results, where CI runs the four as independent jobs and reports all
+of them. Do not let any of it regress.
 
 **Next task: S2.1**, deriving `/health` status from the signals it already computes. It is next in
 the P0 order now that S1.4, S1.3 and S0.1 are done, and it unblocks every QA number, because the
@@ -54,14 +57,21 @@ secret_, which is an improvement and not a closure. Every fix changes operator w
 an implementation decision: an empty sample value makes a first deploy refuse to start, and
 generating a random secret in `setup.sh` is an OPS change. Ask before picking one.
 
-**There is an unmerged branch: `chore/agent-harness`** (3 commits, pushed, no PR yet). It carries
-`.claude/settings.json` disabling the GateGuard edit-write fact hook, the `.gitignore` rule for
-TEST-10, and a composite `pnpm verify` script. **It has not been through the review gate**, so open a
-PR and run the gate before merging it. Note that `.claude/settings.json` exists only on that branch,
-so the hook stays active on `feat/ai-hardening` until it lands.
+**Three working-loop changes landed in PR #29.** A committed `.claude/settings.json` that disables the
+GateGuard edit-write fact hook **for everyone who clones this repo**, the `.gitignore` rule that
+closes TEST-10, and the `pnpm verify` script. The hook scope and the script are documented in
+README's Development section, which is where a contributor will look.
 
-**Gate amendments to fold into `review-gate.md` when that branch merges.** Measured this session, not
-guessed:
+That merge is the first **merge commit** in this branch's history, because the handover commit had
+already landed on `feat/ai-hardening` and rebasing would have rewritten `a19edd6`, which the gate
+result and the pull request body both cite by sha. Every earlier task branch fast-forwarded. Expect a
+fast-forward again unless the same thing happens, and prefer preserving a reviewed sha over a linear
+history when the two conflict.
+
+**Gate amendments that are measured but still not written into `review-gate.md`.** This is the open
+follow-up. Amending the gate protocol is itself a change worth reviewing, so put it through a PR and
+a gate rather than editing the protocol quietly. Everything below was measured across the #27, #28 and
+#29 rounds, not guessed:
 
 - Give each lens a neutral orientation brief (repo layout, test commands, known traps). It reveals
   nothing about the expected answer, so R1 holds. It cut the test lens 20% on tokens and 38% on time
@@ -70,13 +80,25 @@ guessed:
   went stale mid-review and invalidated the description after the code lenses had finished.
 - Four lenses, not five, on small diffs. The floor is three plus claims, and both rounds ran five.
 - The mechanical lenses (test integrity, claims audit) mostly run commands and count. They do not
-  need the top model tier. Security and correctness do.
+  need the top model tier. Security and correctness do. Tried on #29: three lenses a tier down cost
+  49k, 34k, 29k and 65k tokens against roughly 50-70k each when all ran full-tier, and the cheap ones
+  still produced a byte-level `.gitignore` check and a per-package `outDir` comparison. That was a
+  13-line config diff, so do not assume it holds on a logic-heavy one without checking.
+- **Tell the claims auditor that "the file exists" is not evidence, and that UNVERIFIABLE is the
+  correct verdict when the available evidence falls short.** On #27 and #28 it returned TRUE twice on
+  evidence that established nothing. On #29, with that sentence added, it correctly refused to verify
+  a transcript measurement it could not reproduce. This is the single highest-value prompt change
+  found so far, and it costs one sentence.
+- **Verify the reviewer's proposed fix, not just its finding.** On #29 the auditor correctly spotted
+  an imprecise sentence and then proposed a rewording that was wrong in the other direction, turning a
+  real event into a hypothetical one. Accepting it would have swapped one inaccuracy for another.
 
 **Traps found the hard way this session.**
 
 - Lens agents created git worktrees **inside the repo** (`base-revision/`, `test-base/`) despite being
-  told to use the scratchpad, and one of them held `feat/ai-hardening` checked out, which blocked the
-  merge until it was detached. Tell lenses the scratchpad path explicitly, and remove both directories.
+  told to use the scratchpad, and one of them held `feat/ai-hardening` checked out, which blocked a
+  merge until it was detached. Both have since been removed. Give lenses the scratchpad path
+  explicitly, and run `git worktree list` before a merge rather than after it fails.
 - A lens ran `tsc` with file names on the command line, which silently ignores `tsconfig.json` and
   emits 15 `.js` files beside the sources, turning `pnpm lint` red while every tracked file was clean.
   Always instruct lenses to pass `--noEmit` and never name files.
