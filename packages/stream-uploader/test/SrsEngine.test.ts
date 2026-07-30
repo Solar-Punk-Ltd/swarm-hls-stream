@@ -8,6 +8,7 @@ import path from 'node:path';
 import { after, afterEach, before, beforeEach, describe, it, mock } from 'node:test';
 
 import { createSrsEngine, resolveSegmentPath } from '../src/engines/srs.js';
+import { SRS_WEBHOOK_TOKEN_PARAM } from '../src/engines/srs/webhookToken.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
 const MEDIA_ROOT = '/srv/media';
@@ -20,6 +21,8 @@ const ESCAPING_PATHS = [
   { name: 'a bare traversal', file: '../../etc/passwd' },
   { name: 'a traversal hidden behind the expected prefix', file: `${SRS_PREFIX}../../../etc/passwd` },
 ];
+
+const TEST_WEBHOOK_TOKEN = 'srs-webhook-token-0123456789abcdef';
 
 describe('resolveSegmentPath containment (SEC-2)', () => {
   for (const { name, file } of ESCAPING_PATHS) {
@@ -67,7 +70,7 @@ function fakeOrchestrator(calls: SegmentCall[]): StreamOrchestrator {
 }
 
 async function postHls(mediaRoot: string, orchestrator: StreamOrchestrator, file?: string): Promise<number> {
-  const engine = createSrsEngine(mediaRoot);
+  const engine = createSrsEngine(mediaRoot, { webhookToken: TEST_WEBHOOK_TOKEN });
   const app = express();
   app.use(express.json());
   app.use(engine.prefix, engine.createRouter(orchestrator));
@@ -76,11 +79,14 @@ async function postHls(mediaRoot: string, orchestrator: StreamOrchestrator, file
   try {
     await once(server, 'listening');
     const { port } = server.address() as AddressInfo;
-    const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}/hls`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'on_hls', app: 'video', stream: 'demo', file, seq_no: 1, duration: 4 }),
-    });
+    const response = await fetch(
+      `http://127.0.0.1:${port}${engine.prefix}/hls?${SRS_WEBHOOK_TOKEN_PARAM}=${TEST_WEBHOOK_TOKEN}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'on_hls', app: 'video', stream: 'demo', file, seq_no: 1, duration: 4 }),
+      },
+    );
     return response.status;
   } finally {
     server.close();

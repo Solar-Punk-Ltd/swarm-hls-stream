@@ -1,4 +1,4 @@
-import { Request, Response, Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 
@@ -6,11 +6,17 @@ import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
-import { optional } from '../utils/env.js';
+import { optional, required } from '../utils/env.js';
 
+import { assertUsableWebhookToken, hasValidWebhookToken } from './srs/webhookToken.js';
 import { EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
+
+export interface SrsEngineOptions {
+  /** Shared secret SRS carries in its hook URL. Empty rejects every webhook, it does not disable the check. */
+  webhookToken?: string;
+}
 
 // SRS webhook response codes
 const SRS_ACCEPT = 0;
@@ -54,17 +60,36 @@ function buildStreamId(app: string, stream: string): string {
 
 export function createSrsEngineFromEnv(): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
+  // Read before the log line, so a deployment missing it stops rather than reporting success first.
+  const webhookToken = required('SRS_WEBHOOK_TOKEN');
   logger.info(`[Engine] SRS engine loaded, media path: ${mediaPath}`);
-  return createSrsEngine(mediaPath);
+  return createSrsEngine(mediaPath, { webhookToken });
 }
 
-export function createSrsEngine(mediaRootPath: string): EnginePlugin {
+export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions = {}): EnginePlugin {
+  const webhookToken = options.webhookToken ?? '';
+  if (webhookToken) {
+    assertUsableWebhookToken(webhookToken);
+  }
+
   return {
     name: 'srs',
     prefix: '/engines/srs',
 
     createRouter(streamOrchestrator: StreamOrchestrator): Router {
       const router = Router();
+
+      // SRS cannot sign its callbacks and cannot send a header, so the credential travels in the hook
+      // URL that entrypoint.sh writes into srs.conf. Mounted on the router rather than in each
+      // handler, so a webhook added later is covered without whoever adds it remembering.
+      router.use((req: Request, res: Response, next: NextFunction) => {
+        if (!hasValidWebhookToken(req, webhookToken)) {
+          logger.warn(`[SRS] Rejected webhook with missing or invalid token from ${req.ip}`);
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+        next();
+      });
 
       router.post('/streams', (req: Request, res: Response) => {
         handleStreams(req, res, streamOrchestrator);
