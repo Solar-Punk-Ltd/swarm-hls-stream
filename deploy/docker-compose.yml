@@ -74,6 +74,7 @@ services:
       STATE_DIR: /app/state
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-100}
       RECOVERY_TIMEOUT: ${RECOVERY_TIMEOUT:-60000}
+      SEGMENT_STALL_MS: ${SEGMENT_STALL_MS:-30000}
       ENGINE: ${ENGINE:-srs}
       SRS_MEDIA_PATH: /media
       OME_HLS_URL: ${OME_HLS_URL:-http://ome:8081}
