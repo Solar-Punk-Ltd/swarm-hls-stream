@@ -344,8 +344,8 @@ describe('GET /health status (S2.1)', () => {
       { segmentStallMs: 60, recoveryTimeout: 5_000 },
       {},
       makeFakeRecoveryStore({
-        listActive: () => [STREAM_ID.replace(/[/\\]/g, '_')],
-        load: () => recoveredState(STREAM_ID),
+        listActive: () => [toRecoveryFileId(STREAM_ID)],
+        load: () => makeRecoveredState(STREAM_ID),
       }),
     );
     const api = await start(orchestrator);
