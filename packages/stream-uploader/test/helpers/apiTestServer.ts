@@ -9,12 +9,16 @@ import { StreamOrchestrator } from '../../src/libs/StreamOrchestrator.js';
 
 const POLL_INTERVAL_MS = 10;
 
+/** Long enough to satisfy the production minimum, so tests exercise the real gate rather than a relaxed one. */
+export const TEST_AUTH_TOKEN = 'test-token-0123456789abcdef0123456789abcdef';
+
 export interface ApiResponse {
   status: number;
   body: unknown;
 }
 
 export interface ApiTestServer {
+  /** Authenticated by default. Pass an `authorization` header, or `null` for it, to drive the gate itself. */
   request(path: string, init?: RequestInit): Promise<ApiResponse>;
   /** Polls `path` until `pred` accepts the parsed body, then returns that response. Throws on timeout. */
   requestUntil(path: string, pred: (body: unknown) => boolean, timeoutMs?: number): Promise<ApiResponse>;
@@ -30,7 +34,7 @@ export async function startTestApi(
   streamOrchestrator: StreamOrchestrator,
   engines: EnginePlugin[] = [],
 ): Promise<ApiTestServer> {
-  const server = http.createServer(createApiApp(streamOrchestrator, engines));
+  const server = http.createServer(createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines }));
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -41,7 +45,16 @@ export async function startTestApi(
   const origin = `http://127.0.0.1:${port}`;
 
   async function request(path: string, init?: RequestInit): Promise<ApiResponse> {
-    const response = await fetch(`${origin}${path}`, init);
+    // Authenticated unless the caller says otherwise, so every pre-auth test keeps working unchanged
+    // and the tests that drive the gate opt out explicitly rather than by forgetting a header.
+    const supplied = new Headers(init?.headers);
+    if (!supplied.has('authorization')) {
+      supplied.set('authorization', `Bearer ${TEST_AUTH_TOKEN}`);
+    }
+    if (supplied.get('authorization') === 'none') {
+      supplied.delete('authorization');
+    }
+    const response = await fetch(`${origin}${path}`, { ...init, headers: supplied });
     const text = await response.text();
     return { status: response.status, body: text === '' ? undefined : JSON.parse(text) };
   }

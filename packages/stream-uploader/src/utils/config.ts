@@ -5,6 +5,7 @@ export const config = {
   stamp: required('STAMP'),
   streamKey: required('STREAM_KEY'),
   streamListTopic: required('STREAM_LIST_TOPIC'),
+  apiAuthToken: required('API_AUTH_TOKEN'),
   manifestAccessUrl: optional('MANIFEST_ACCESS_URL', ''),
   // Zero is a real port here: it asks the OS for an ephemeral one. Every other floor is 1, because
   // zero would disable the thing the variable configures rather than tune it.

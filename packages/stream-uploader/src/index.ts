@@ -104,7 +104,7 @@ async function start() {
     const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
     const engines = loadEngines();
-    apiServer = startApiServer(streamOrchestrator, config.apiPort, engines);
+    apiServer = startApiServer(streamOrchestrator, config.apiPort, { authToken: config.apiAuthToken, engines });
 
     // An engine that pulls segments itself must re-attach its fetch loop to recovered streams.
     // Otherwise the recovered stream produces no segments and is finalized as VOD at the timeout.

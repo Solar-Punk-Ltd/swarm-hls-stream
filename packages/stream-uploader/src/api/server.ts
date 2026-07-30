@@ -8,6 +8,7 @@ import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFound } from './middleware/notFound.js';
 import { requestLogger } from './middleware/requestLogger.js';
+import { createAuthMiddleware } from './middleware/requireAuth.js';
 import { createHealthRouter } from './routes/health.js';
 import { createStreamRouter } from './routes/stream.js';
 
@@ -17,7 +18,14 @@ export interface ApiServerHandle {
   close(): Promise<void>;
 }
 
-export function createApiApp(streamOrchestrator: StreamOrchestrator, engines: EnginePlugin[] = []): express.Express {
+export interface ApiAppOptions {
+  /** Shared bearer token for the control and ingest routes. Not optional: there is no unauthenticated mode. */
+  authToken: string;
+  engines?: EnginePlugin[];
+}
+
+export function createApiApp(streamOrchestrator: StreamOrchestrator, options: ApiAppOptions): express.Express {
+  const { authToken, engines = [] } = options;
   const app = express();
 
   // Global middleware
@@ -30,6 +38,11 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, engines: En
       },
     }),
   );
+
+  // Ingest and control, gated. `/health` is deliberately outside this: it is a liveness endpoint that
+  // compose healthchecks and `health.sh` read, and it neither accepts input nor spends anything.
+  const requireAuth = createAuthMiddleware(authToken);
+  app.use('/stream', requireAuth);
 
   // Engine plugin routers
   for (const engine of engines) {
@@ -57,9 +70,9 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, engines: En
 export function startApiServer(
   streamOrchestrator: StreamOrchestrator,
   port: number,
-  engines: EnginePlugin[] = [],
+  options: ApiAppOptions,
 ): ApiServerHandle {
-  const server = http.createServer(createApiApp(streamOrchestrator, engines));
+  const server = http.createServer(createApiApp(streamOrchestrator, options));
 
   server.listen(port, () => {
     logger.info(`[ApiServer] Listening on port ${port}`);

@@ -76,12 +76,14 @@ Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live 
 
 Engine-independent HTTP interface for pushing segments directly.
 
-| Endpoint               | Method                               | Description                                |
-| ---------------------- | ------------------------------------ | ------------------------------------------ |
-| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                      |
-| `POST /stream/segment` | Raw body + headers                   | Push a segment                             |
-| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream                               |
-| `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
+| Endpoint               | Method                               | Description           |
+| ---------------------- | ------------------------------------ | --------------------- |
+| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream |
+| `POST /stream/segment` | Raw body + headers                   | Push a segment        |
+| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream          |
+
+All three `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the handler runs, so an unauthenticated request never reaches the orchestrator. `GET /health` is deliberately outside the gate: it is a liveness endpoint that compose healthchecks and `health.sh` read, and it accepts no input and spends nothing.
+| `GET /health` | — | Service health, `200` ok or `503` degraded |
 
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
 `reasons` array:
