@@ -100,9 +100,11 @@ history when the two conflict.
 select the lenses the diff in front of you needs, run those, name the ones you dropped, and save the full
 catalogue for a sprint-exit deep run. [`review-gate.md`](./review-gate.md) carries it as of PR #33: R1's
 floor of three reviewers plus the claims auditor is **withdrawn**, R4 requires both lists in the posted
-result, and fail-closed keys on a selected lens that did not run rather than on a count. The ten measured
-prompt rules that used to sit in this section moved there too, under "Lens prompt rules". Read the gate
-document for the procedure rather than this paragraph.
+result, and fail-closed keys on a selected lens that did not run rather than on a count. The gate's "Lens
+prompt rules" section now holds ten rules: seven moved out of this section, two were promoted from the
+traps list below it, and one is new. An eighth rule from this section, "four lenses not five on small
+diffs", was deleted rather than moved, because the selection rule supersedes it. Read the gate document
+for the procedure rather than this paragraph.
 
 What is worth keeping here is why the rule exists. The same fleet was running on a 13-line config diff as
 on a four-task logic change, and #30 showed that the way to need fewer lenses is a tighter pull request
