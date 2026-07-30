@@ -75,4 +75,4 @@ jobs:
       # --ignore-unknown lets prettier skip what it cannot parse, which keeps
       # Dockerfiles and images from failing the job.
       - name: Check formatting
-        run: git ls-files -z | xargs -0 npx prettier --check --ignore-unknown
+        run: git ls-files -z | xargs -0 -r npx prettier --check --ignore-unknown

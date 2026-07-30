@@ -353,9 +353,10 @@ reports a number that depends on whose machine it ran on. That is where the 35 i
 from, and it is not reproducible in CI.
 
 **Node version story. Decided: 22.** `engines.node` said `>=20` and the production images were
-`node:20-alpine`, while the test tooling had never actually run on 20. Nine declarations now agree on
-22: `engines.node`, `.nvmrc`, both deploy images, four READMEs, and the CI matrix, which drops to a
-single entry because nothing claims to support a second version any more.
+`node:20-alpine`, while the test tooling had never actually run on 20. Ten declarations now agree on
+22: `engines.node`, `.nvmrc`, both deploy images, four READMEs, and the two in the CI workflow, which
+are the matrix and the format job's own `node-version`. The matrix drops to a single entry because
+nothing claims to support a second version any more.
 
 22 rather than 24 because 22 is what the team runs locally and what the tests have always passed on.
 Note that **Node 22 is in maintenance as of mid-2026 and 24 is the current active LTS**, so moving to
