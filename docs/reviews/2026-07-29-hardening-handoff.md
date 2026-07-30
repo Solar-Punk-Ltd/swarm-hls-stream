@@ -36,12 +36,17 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-30 at the end of the S2.1 session. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** Branch `feat/health-status` off `feat/ai-hardening` @ `9c4cacc`, carrying S0.7,
-S2.1, SEC-11 and TEST-9, plus ten fixes from its own review gate. Three earlier PRs are merged, each through the review gate: S1.4 as #27,
-S1.3 as #28, and the working-loop changes as #29. `feature/uploader-hardening` @ `f146588` and `main`
-@ `6b82baa` are untouched and must stay that way.
+**Where the code is.** `feat/ai-hardening` @ `746bc0d`. Four PRs merged, each through the review gate:
+S1.4 as #27, S1.3 as #28, the working-loop changes as #29, and S0.7 + S2.1 + SEC-11 + TEST-9 as #30.
+`feature/uploader-hardening` @ `f146588` and `main` @ `6b82baa` are untouched and must stay that way.
 
-Test baseline is **126 uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean.
+**One PR is open and must not merge yet: #31**, `chore/cleanup-dead-code`. It removes two
+never-referenced client icons, a stale `jest` eslint env, and the test-double duplication #30 introduced.
+Verified green, but **its review gate has not run**, and `review-gate.md` fails closed. Under the owner's
+lens-selection rule it needs three lenses and not the full catalogue: claims audit, behaviour preservation
+and test integrity. Do not merge it before those run, and do not run the other five.
+
+Test baseline is **128 uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean.
 Check all four with one command: **`pnpm verify`**. It short-circuits at the first failing stage, so a
 lint error hides later test results, where CI runs the four as independent jobs and reports all of
 them. Do not let any of it regress. Typecheck now covers `test/` as well, see TEST-9.
@@ -50,6 +55,14 @@ them. Do not let any of it regress. Typecheck now covers `test/` as well, see TE
 S1.4, S1.3, S0.1, S0.7 and S2.1 are done. S2.2 pairs with **S0.6**, an injectable `Fetcher` in
 `OmeHlsPuller`, because that is what makes a hanging fetch provable without a network. Then S1.1 and
 S4.1. Sprint 0 still has S0.3, S0.4, S0.5 and S0.6 open.
+
+**The one thing to take from the #30 gate before writing any more of Sprint 2.** The change that closed
+OBS-1 was substantially wrong when it was first pushed, and every fix came from the gate rather than from
+the author. The CRITICAL is the lesson: three signals were added, and the most likely real failure, a
+refused segment upload on a spent postage batch, was invisible to all three at once. When you add a
+signal, enumerate the failure modes it is supposed to catch and check each one reaches it, because
+"`/health` degrades" is not the same claim as "`/health` degrades when this breaks". Two of the ten fixes
+were against commits written an hour earlier in the same session.
 
 **S0.5 is now the binding constraint on Sprint 2.** Nothing can advance a clock or a timer, which is
 why S2.1's manifest-failure threshold is proven by feeding one segment at a time and waiting for the
