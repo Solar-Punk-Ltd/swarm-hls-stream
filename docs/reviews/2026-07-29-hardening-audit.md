@@ -391,26 +391,15 @@ fails YAGNI here.
 
 ## The re-check loop
 
-Reworks feed back into a re-audit with real acceptance criteria. Per sprint:
+Reworks feed back into a re-audit with real acceptance criteria. **The procedure lives in exactly one
+place:** the working protocol and the sprint exit gate in
+[`2026-07-29-hardening-handoff.md`](./2026-07-29-hardening-handoff.md). Follow it there.
 
-1. **Implement.** One fix per commit, conventional subject, no co-author and no generated-by footers.
-2. **PR to the feature branch.** One task per PR, so a Copilot finding maps to one change.
-3. **Copilot gate.** Request review explicitly, since it does not fire on open in these repos:
-   `gh api -X POST repos/Solar-Punk-Ltd/swarm-hls-stream/pulls/<n>/requested_reviewers -f "reviewers[]=copilot-pull-request-reviewer[bot]"`
-   Expect roughly two minutes. Then **evaluate every finding instead of accepting it**: reproduce or
-   refute each against the code, fix the valid ones as separate commits, and reply in-thread with
-   evidence on the invalid ones. Prior rounds produced both real bugs and confidently wrong claims,
-   so neither blanket acceptance nor blanket dismissal is correct.
-4. **CI green**, and coverage not below the recorded baseline.
-5. **Re-audit the touched domain.** Re-run that domain's audit against the new HEAD with this register
-   attached, asking two specific questions: is each claimed-closed finding actually closed, and did
-   the fix introduce anything new. A fix that closes its own finding but adds a HIGH does not pass.
-6. **Close on evidence.** A finding closes when its acceptance test exists and passes, not when the
-   code looks right.
-
-Sprint exit gate, all four required: every acceptance test in the sprint passes, the re-audit reports
-no new CRITICAL or HIGH in the touched files, no Copilot finding is left unaddressed or unrebutted,
-and CI is green.
+This section used to carry its own copy of both, which is how they drifted. The sprint exit gate gained
+the full-catalogue deep run as a fifth condition and this copy stayed at four, while still naming Copilot
+as the outside reviewer and still quoting the `requested_reviewers` command that the handoff records as
+returning 200 and silently discarding the request. The fix for a rule in two places is one place, not two
+copies kept in step.
 
 ## Sequencing note, and the one decision needed
 
