@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
 
-import { createSrsEngine } from '../src/engines/srs.js';
+import { createSrsEngine, SrsEngineOptions } from '../src/engines/srs.js';
 import {
   MIN_SRS_WEBHOOK_TOKEN_LENGTH,
   redactWebhookToken,
@@ -21,7 +21,7 @@ interface Attempt {
   startedStreams: string[];
 }
 
-async function postStreams(query: string): Promise<Attempt> {
+async function postStreams(query: string, options: SrsEngineOptions = { webhookToken: TOKEN }): Promise<Attempt> {
   const startedStreams: string[] = [];
   const orchestrator = {
     startStream: (streamId: string) => {
@@ -33,7 +33,7 @@ async function postStreams(query: string): Promise<Attempt> {
     handleSegmentLoss: () => true,
   } as unknown as StreamOrchestrator;
 
-  const engine = createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN });
+  const engine = createSrsEngine('/tmp/media-unused', options);
   const app = express();
   app.use(express.json());
   app.use(engine.prefix, engine.createRouter(orchestrator));
@@ -110,6 +110,37 @@ describe('SRS webhook auth (S1.2)', () => {
 
   it('sets the floor at the documented length', () => {
     assert.equal(MIN_SRS_WEBHOOK_TOKEN_LENGTH, 32);
+  });
+
+  for (const attempt of [
+    { name: 'no token at all', query: '' },
+    // Two empty strings encode to two zero-length buffers, which timingSafeEqual calls equal. The
+    // empty-token guard is the only thing between an unconfigured engine and an open webhook.
+    { name: 'an empty token, matching the empty configured one', query: `?${SRS_WEBHOOK_TOKEN_PARAM}=` },
+  ]) {
+    it(`rejects ${attempt.name} when the engine was built without a token`, async () => {
+      const { status, startedStreams } = await postStreams(attempt.query, { webhookToken: '' });
+
+      assert.equal(status, 401);
+      assert.deepEqual(startedStreams, [], 'an unconfigured engine must reject rather than open up');
+    });
+  }
+
+  it('warns at construction that an unconfigured engine will reject everything', () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.join(' '));
+
+    try {
+      createSrsEngine('/tmp/media-unused', {});
+    } finally {
+      console.warn = original;
+    }
+
+    assert.ok(
+      warnings.some((line) => line.includes('No webhook token configured')),
+      `construction must say so, got: ${JSON.stringify(warnings)}`,
+    );
   });
 });
 

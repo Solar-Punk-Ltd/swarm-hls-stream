@@ -89,6 +89,11 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
   const webhookToken = options.webhookToken ?? '';
   if (webhookToken) {
     assertUsableWebhookToken(webhookToken);
+  } else {
+    // Loud for the same reason `ome.ts` is loud about a missing admission secret: an engine that
+    // rejects every webhook looks like a broadcaster problem from the outside, not a configuration
+    // one, and nothing else in the process ever says otherwise.
+    logger.warn('[SRS] No webhook token configured, every webhook will be rejected');
   }
 
   return {
