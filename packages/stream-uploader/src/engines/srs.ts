@@ -21,6 +21,11 @@ const SRS_ACTION_PUBLISH = 'on_publish';
 const SRS_ACTION_UNPUBLISH = 'on_unpublish';
 const SRS_ACTION_HLS = 'on_hls';
 
+// `on_hls` reports `file` as SRS sees it, relative to its own working directory and under the
+// default `hls_path`. The uploader reaches the same segment through its own mount of that volume,
+// so only the part below the prefix is meaningful here.
+const SRS_HLS_PATH_PREFIX = /^\.\/objs\/nginx\/html\//;
+
 type SrsStreamAction = typeof SRS_ACTION_PUBLISH | typeof SRS_ACTION_UNPUBLISH;
 type SrsHlsAction = typeof SRS_ACTION_HLS;
 
@@ -111,13 +116,35 @@ function handleStreams(req: Request, res: Response, streamOrchestrator: StreamOr
   }
 }
 
+/**
+ * Absolute path of the segment SRS reported, or `undefined` when the reported path resolves outside
+ * the media root.
+ *
+ * `file` arrives on an unauthenticated webhook and the caller both reads and deletes whatever it
+ * names, so this is a containment boundary rather than a formatting step. Stripping the prefix is
+ * not itself a defence: `path.resolve` drops the root entirely for an absolute input and walks out
+ * of it for `../`, so the result is compared against the root instead of the input being screened
+ * for suspicious-looking segments.
+ */
+export function resolveSegmentPath(mediaRootPath: string, file: string): string | undefined {
+  const mediaRoot = path.resolve(mediaRootPath);
+  const segmentPath = path.resolve(mediaRoot, file.replace(SRS_HLS_PATH_PREFIX, ''));
+
+  return segmentPath.startsWith(mediaRoot + path.sep) ? segmentPath : undefined;
+}
+
 function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrchestrator, mediaRootPath: string): void {
   try {
     const payload = req.body as SrsHlsPayload;
     const streamId = buildStreamId(payload.app, payload.stream);
 
-    const relativePath = payload.file.replace(/^\.\/objs\/nginx\/html\//, '');
-    const segmentPath = path.resolve(mediaRootPath, relativePath);
+    const segmentPath = resolveSegmentPath(mediaRootPath, payload.file);
+
+    if (!segmentPath) {
+      logger.warn(`[SRS] Rejected segment path outside the media root for ${streamId}: ${payload.file}`);
+      srsResponse(res, SRS_ACCEPT);
+      return;
+    }
 
     if (!fs.existsSync(segmentPath)) {
       logger.warn(`[SRS] Segment file not found: ${segmentPath}`);
