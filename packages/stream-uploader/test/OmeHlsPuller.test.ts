@@ -303,13 +303,30 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
       return playlists(input, init);
     }) as unknown as Fetcher;
 
+    const errors: string[] = [];
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
+    console.warn = () => {};
+
     const puller = makeDrivablePuller(fetcher, [], [], { fetchTimeoutMs: FETCH_TIMEOUT_MS });
-    await Promise.race([puller.tick().catch(() => undefined), sleep(FETCH_TIMEOUT_MS * 20)]);
-    puller.stop();
+    try {
+      await Promise.race([puller.tick().catch(() => undefined), sleep(FETCH_TIMEOUT_MS * 20)]);
+      puller.stop();
+    } finally {
+      console.error = originalError;
+      console.warn = originalWarn;
+    }
 
     assert.ok(urls.length > 0, 'a segment fetch was attempted');
     assert.ok(seenSignals[0] instanceof AbortSignal, 'the segment fetch is handed an abort signal');
     assert.equal(seenSignals[0]?.aborted, true, 'and it aborts rather than hanging the playlist loop');
+    // The segment catch is a second, separate log site from the tick catch, and it is the one that runs
+    // per segment in steady state. Pinned here because downgrading it alone left the whole suite green.
+    assert.ok(
+      errors.some((line) => /Segment .*abort/i.test(line)),
+      `the segment abort is logged at error level, got ${JSON.stringify(errors.slice(0, 3))}`,
+    );
   });
 
   it('logs the abort as an error and still runs the next tick', async () => {
