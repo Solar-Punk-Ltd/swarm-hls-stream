@@ -21,7 +21,7 @@ import { StreamUploader } from './StreamUploader.js';
 
 const DRAIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
-interface StreamOrchestratorConfig {
+export interface StreamOrchestratorConfig {
   streamKey: string;
   stamp: string;
   manifestBeeUrl: string;
