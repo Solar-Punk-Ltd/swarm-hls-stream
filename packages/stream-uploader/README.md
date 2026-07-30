@@ -84,10 +84,20 @@ Engine-independent HTTP interface for pushing segments directly.
 | `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
 
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
-`reasons` array. The reasons are `stale_manifest` (three consecutive live-manifest publish failures),
-`queue_pressure` (a segment queue above 80% of `MAX_QUEUE_SIZE`) and `segment_stall` (a registered stream that
-has sent nothing for `SEGMENT_STALL_MS`). The body also carries `activeStreams`, `staleManifestStreams`,
-`maxConsecutiveManifestFailures`, `queuePressure`, `msSinceStreamActivity` and `engines`.
+`reasons` array:
+
+| Reason                   | Meaning                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| `segment_upload_failure` | A segment was dropped after its retry window was spent, so that data is gone         |
+| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving |
+| `queue_pressure`         | A segment queue above 80% of `MAX_QUEUE_SIZE`                                        |
+| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`            |
+
+`segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
+one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
+expected to be sending. The body also carries `activeStreams`, `staleManifestStreams`,
+`maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`
+and `engines`.
 
 **Segment headers:**
 
