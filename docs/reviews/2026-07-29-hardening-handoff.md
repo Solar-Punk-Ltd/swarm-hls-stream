@@ -312,10 +312,11 @@ Per task:
    one change. Expect roughly 18 to 22 PRs total.
 3. **Review gate, required on every PR.** The full protocol is
    [`review-gate.md`](./review-gate.md), which replaces the Copilot gate now that quota is gone. In
-   short: the claims auditor plus the lenses that this diff's surfaces call for, selected and stated
-   before anything is launched, none of them given the PR description or the author's reasoning, then a
-   verification pass in which every finding defaults to refuted until it reduces to a specific input and
-   a specific wrong outcome. Fix the confirmed ones
+   short: the claims auditor plus the lenses that this diff's surfaces call for, selected and posted as
+   a PR comment before anything is launched. None of the code lenses gets the PR description or the
+   author's reasoning. The claims auditor gets the description and only the description, because that is
+   what it is auditing. Then a verification pass in which every finding defaults to refuted until it
+   reduces to a specific input and a specific wrong outcome. Fix the confirmed ones
    as separate commits, rebut the rest with evidence, post the result on the PR, and append the
    refutations to the register. Prior rounds produced both genuine bugs and confidently wrong claims,
    so neither blanket acceptance nor blanket dismissal is correct.
