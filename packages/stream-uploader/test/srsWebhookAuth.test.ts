@@ -76,6 +76,12 @@ describe('SRS webhook auth (S1.2)', () => {
     { name: 'an empty token parameter', query: `?${SRS_WEBHOOK_TOKEN_PARAM}=` },
     { name: 'the token under a different parameter name', query: `?secret=${TOKEN}` },
     { name: 'a repeated token parameter, which express parses as an array', query: `?token=${TOKEN}&token=${TOKEN}` },
+    {
+      // U+0173 keeps 0x73 as its low byte, so a latin1 comparison would read this as the real
+      // token. A query parameter is percent-decoded as UTF-8, so latin1 is the wrong encoding here.
+      name: 'a token whose code points alias onto the real bytes under latin1',
+      query: `?${SRS_WEBHOOK_TOKEN_PARAM}=${encodeURIComponent(`ų${TOKEN.slice(1)}`)}`,
+    },
   ];
 
   for (const bad of BAD_QUERIES) {
