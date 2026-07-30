@@ -10,12 +10,18 @@ import {
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
   MEDIA_TYPE_VIDEO,
-  StreamState,
 } from '../src/types.js';
 import { MANIFEST_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
-import { makeFakeRecoveryStore, makeTestOrchestrator, neverSettles, rejectImmediately } from './helpers/fakes.js';
+import {
+  makeFakeRecoveryStore,
+  makeRecoveredState,
+  makeTestOrchestrator,
+  neverSettles,
+  rejectImmediately,
+  toRecoveryFileId,
+} from './helpers/fakes.js';
 
 const STREAM_ID = 'live/one';
 
@@ -40,22 +46,6 @@ function startStream(api: ApiTestServer, streamId = STREAM_ID): Promise<unknown>
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ streamId, mediatype: MEDIA_TYPE_VIDEO }),
   });
-}
-
-function recoveredState(streamId: string): StreamState {
-  return {
-    streamId,
-    streamRawTopic: 'topic-xyz',
-    mediatype: MEDIA_TYPE_VIDEO,
-    socIndex: 3,
-    segments: [{ index: 0, duration: 2, ref: 'ref0', discontinuity: false }],
-    hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
-    isFirstSegmentReady: true,
-    isFirstManifestReady: true,
-    pendingDiscontinuity: false,
-    liveManifestStale: false,
-    updatedAt: Date.now(),
-  };
 }
 
 function postSegment(api: ApiTestServer, index: number, streamId = STREAM_ID) {
@@ -325,9 +315,8 @@ describe('GET /health status (S2.1)', () => {
       { segmentStallMs: 60, recoveryTimeout: 5_000 },
       {},
       makeFakeRecoveryStore({
-        // listActive returns the slash-sanitized file name, the real id lives inside the state.
-        listActive: () => [STREAM_ID.replace(/[/\\]/g, '_')],
-        load: () => recoveredState(STREAM_ID),
+        listActive: () => [toRecoveryFileId(STREAM_ID)],
+        load: () => makeRecoveredState(STREAM_ID),
       }),
     );
     const api = await start(orchestrator);
@@ -355,8 +344,8 @@ describe('GET /health status (S2.1)', () => {
       { segmentStallMs: 60, recoveryTimeout: 5_000 },
       {},
       makeFakeRecoveryStore({
-        listActive: () => [STREAM_ID.replace(/[/\\]/g, '_')],
-        load: () => recoveredState(STREAM_ID),
+        listActive: () => [toRecoveryFileId(STREAM_ID)],
+        load: () => makeRecoveredState(STREAM_ID),
       }),
     );
     const api = await start(orchestrator);

@@ -1,67 +1,17 @@
-import { Bee } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
-import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO } from '../src/types.js';
 
-const TEST_STREAM_KEY = '0'.repeat(63) + '1';
+import { makeFakeRecoveryStore, makeRecoveredState, makeTestOrchestrator, toRecoveryFileId } from './helpers/fakes.js';
+
 const RECOVERY_TIMEOUT_MS = 80;
 
-function makeBee(): Bee {
-  let refCounter = 0;
-  return {
-    uploadData: async () => ({ reference: { toHex: () => `ref${refCounter++}` } }),
-    makeFeedWriter: () => ({
-      uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => ({
-        reference: { toHex: () => `soc${opts.index}` },
-      }),
-    }),
-  } as unknown as Bee;
-}
-
-function makeCatalog(): StreamCatalog {
-  return { addStream: async () => {} } as unknown as StreamCatalog;
-}
-
-function makeRecovery(overrides: Partial<Record<keyof RecoveryStore, unknown>> = {}): RecoveryStore {
-  return {
-    save: () => {},
-    load: () => null,
-    remove: () => {},
-    listActive: () => [],
-    ...overrides,
-  } as unknown as RecoveryStore;
-}
-
-function makeOrchestrator(recovery: RecoveryStore = makeRecovery()): StreamOrchestrator {
-  return new StreamOrchestrator(makeBee(), makeCatalog(), recovery, {
-    streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
-    manifestBeeUrl: '',
-    maxQueueSize: 100,
-    recoveryTimeout: RECOVERY_TIMEOUT_MS,
-    segmentStallMs: 30_000,
-  });
-}
-
-function restoreState(streamId: string): StreamState {
-  return {
-    streamId,
-    streamRawTopic: 'topic-xyz',
-    mediatype: MEDIA_TYPE_VIDEO,
-    socIndex: 3,
-    segments: [{ index: 0, duration: 2, ref: 'ref0', discontinuity: false }],
-    hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
-    isFirstSegmentReady: true,
-    isFirstManifestReady: true,
-    pendingDiscontinuity: false,
-    liveManifestStale: false,
-    updatedAt: Date.now(),
-  };
+function makeOrchestrator(recovery: RecoveryStore = makeFakeRecoveryStore()): StreamOrchestrator {
+  return makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, recovery);
 }
 
 async function waitFor(pred: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -74,12 +24,26 @@ async function waitFor(pred: () => boolean, timeoutMs = 1_000): Promise<void> {
   }
 }
 
+describe('recovery file id sanitizing', () => {
+  // RecoveryStore names files by a slash-sanitized id, and recoverStreams relies on that to find the
+  // real stream id inside the state. Nothing pinned it: the helper could return its input unchanged and
+  // every other test still passed, because they all sanitize on both sides of the comparison.
+  it('replaces both path separators so a stream id becomes one file name', () => {
+    assert.equal(toRecoveryFileId('live/stream'), 'live_stream');
+    assert.equal(toRecoveryFileId('live\\stream'), 'live_stream');
+    assert.equal(toRecoveryFileId('a/b\\c/d'), 'a_b_c_d');
+  });
+
+  it('leaves an id with no separator alone', () => {
+    assert.equal(toRecoveryFileId('catalog-feed-index'), 'catalog-feed-index');
+  });
+});
+
 describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash recovery)', () => {
   it('finalizes a recovered stream if no segments arrive before the recovery timeout', async () => {
     const id = 'live/stream';
-    // RecoveryStore.listActive() returns the slash-sanitized filename, not the real streamId.
     const orch = makeOrchestrator(
-      makeRecovery({ listActive: () => [id.replace(/[/\\]/g, '_')], load: () => restoreState(id) }),
+      makeFakeRecoveryStore({ listActive: () => [toRecoveryFileId(id)], load: () => makeRecoveredState(id) }),
     );
 
     await orch.recoverStreams();
@@ -91,9 +55,8 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
 
   it('keeps a recovered stream alive when segments resume before on_publish (cancels the finalize timer)', async () => {
     const id = 'live/stream';
-    // RecoveryStore.listActive() returns the slash-sanitized filename, not the real streamId.
     const orch = makeOrchestrator(
-      makeRecovery({ listActive: () => [id.replace(/[/\\]/g, '_')], load: () => restoreState(id) }),
+      makeFakeRecoveryStore({ listActive: () => [toRecoveryFileId(id)], load: () => makeRecoveredState(id) }),
     );
 
     await orch.recoverStreams();
@@ -112,7 +75,7 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
   it('returns the ids of the streams it recovered so pull-based engines can resume them', async () => {
     const id = 'video/stream';
     const orch = makeOrchestrator(
-      makeRecovery({ listActive: () => [id.replace(/[/\\]/g, '_')], load: () => restoreState(id) }),
+      makeFakeRecoveryStore({ listActive: () => [toRecoveryFileId(id)], load: () => makeRecoveredState(id) }),
     );
 
     const recovered = await orch.recoverStreams();
@@ -128,7 +91,7 @@ describe('StreamOrchestrator recovery hygiene', () => {
     // a foreign file must never crash recovery into a boot loop.
     const removed: string[] = [];
     const orch = makeOrchestrator(
-      makeRecovery({
+      makeFakeRecoveryStore({
         listActive: () => ['catalog-feed-index'],
         load: () => ({ owner: 'aa'.repeat(20), topicHex: 'bb'.repeat(32), index: '000000000000007d' } as never),
         remove: (id: string) => removed.push(id),
@@ -146,7 +109,7 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('accepts a re-announced already-active stream and restarts it instead of rejecting', async () => {
     const id = 'live/stream';
     const removed: string[] = [];
-    const orch = makeOrchestrator(makeRecovery({ remove: (streamId: string) => removed.push(streamId) }));
+    const orch = makeOrchestrator(makeFakeRecoveryStore({ remove: (streamId: string) => removed.push(streamId) }));
 
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true);
     await waitFor(() => orch.getActiveStreamCount() === 1);

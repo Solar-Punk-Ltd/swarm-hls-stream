@@ -3,6 +3,7 @@ import { Bee } from '@ethersphere/bee-js';
 import { RecoveryStore } from '../../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../../src/libs/StreamCatalog.js';
 import { StreamOrchestrator, StreamOrchestratorConfig } from '../../src/libs/StreamOrchestrator.js';
+import { MEDIA_TYPE_VIDEO, StreamState } from '../../src/types.js';
 
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 
@@ -53,6 +54,28 @@ export function makeFakeRecoveryStore(overrides: Partial<Record<keyof RecoverySt
     listActive: () => [],
     ...overrides,
   } as unknown as RecoveryStore;
+}
+
+/** A stream state as RecoveryStore.load would return it, for exercising the recovery path. */
+export function makeRecoveredState(streamId: string): StreamState {
+  return {
+    streamId,
+    streamRawTopic: 'topic-xyz',
+    mediatype: MEDIA_TYPE_VIDEO,
+    socIndex: 3,
+    segments: [{ index: 0, duration: 2, ref: 'ref0', discontinuity: false }],
+    hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+    isFirstSegmentReady: true,
+    isFirstManifestReady: true,
+    pendingDiscontinuity: false,
+    liveManifestStale: false,
+    updatedAt: Date.now(),
+  };
+}
+
+/** RecoveryStore.listActive returns the slash-sanitized file name, not the real stream id. */
+export function toRecoveryFileId(streamId: string): string {
+  return streamId.replace(/[/\\]/g, '_');
 }
 
 export function makeTestOrchestrator(

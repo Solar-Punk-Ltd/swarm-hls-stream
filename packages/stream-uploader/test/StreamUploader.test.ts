@@ -7,6 +7,8 @@ import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
 
+import { makeFakeCatalog, makeFakeRecoveryStore } from './helpers/fakes.js';
+
 // A valid 32-byte secp256k1 private key (value 1) — enough for bee-js to derive a signer in tests.
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 
@@ -39,19 +41,6 @@ function makeBee(segmentControl: SegmentUploadControl, feedWriteFails = false): 
   return bee as unknown as Bee;
 }
 
-function makeCatalog(): StreamCatalog {
-  return { addStream: async () => {} } as unknown as StreamCatalog;
-}
-
-function makeRecovery(): RecoveryStore {
-  return {
-    save: () => {},
-    load: () => null,
-    remove: () => {},
-    listActive: () => [],
-  } as unknown as RecoveryStore;
-}
-
 function newUploader(
   segmentControl: SegmentUploadControl = {},
   opts: { restoreState?: unknown; feedWriteFails?: boolean } = {},
@@ -59,8 +48,8 @@ function newUploader(
   return new StreamUploader(
     makeBee(segmentControl, opts.feedWriteFails),
     '',
-    makeCatalog(),
-    makeRecovery(),
+    makeFakeCatalog(),
+    makeFakeRecoveryStore(),
     TEST_STREAM_KEY,
     'stamp',
     'stream-test',
@@ -148,7 +137,7 @@ describe('StreamUploader discontinuity lifecycle', () => {
     const uploader = new StreamUploader(
       makeBee({ fail: permanentError }),
       '',
-      makeCatalog(),
+      makeFakeCatalog(),
       recovery,
       TEST_STREAM_KEY,
       'stamp',
@@ -187,8 +176,8 @@ describe('StreamUploader Swarm write options', () => {
     const uploader = new StreamUploader(
       bee,
       '',
-      makeCatalog(),
-      makeRecovery(),
+      makeFakeCatalog(),
+      makeFakeRecoveryStore(),
       TEST_STREAM_KEY,
       'stamp',
       'stream-test',
