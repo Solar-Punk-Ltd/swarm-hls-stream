@@ -144,16 +144,17 @@ reach it, which is the failure rule 4 exists to prevent.
 
 ### Lens catalogue
 
-| Lens                   | Select when                                              | Hunts                                                                      |
-| ---------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Claims audit           | **Always**                                               | Assertions in the description that were never checked, or are stale        |
-| Correctness            | Any logic change                                         | Wrong output for specific inputs, false green, false red                   |
-| Security               | Input handling, auth, filesystem paths, CI, dependencies | A concrete attack path with a named attacker and what they control         |
-| Concurrency            | The orchestrator, queues, timers, recovery               | Interleavings that corrupt state, lost updates, races between entry points |
-| Behaviour preservation | Refactors, autofixes, anything claimed to be mechanical  | Hunks where behaviour actually differs from the version they replaced      |
-| Config consistency     | Config, scripts, CI, packaging, docs describing commands | Two things in the repo that disagree, and what breaks because they do      |
-| Silent failure         | Error paths, health and status reporting, retries        | Swallowed errors, fallbacks that mask a fault, a green that means nothing  |
-| Test integrity         | New or changed tests                                     | Tests that pass without exercising the behaviour, and coverage that lies   |
+| Lens                   | Select when                                                                     | Hunts                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Claims audit           | **Always**                                                                      | Assertions in the description that were never checked, or are stale                                               |
+| Correctness            | Any logic change                                                                | Wrong output for specific inputs, false green, false red                                                          |
+| Security               | Input handling, auth, filesystem paths, CI, dependencies                        | A concrete attack path with a named attacker and what they control                                                |
+| Concurrency            | The orchestrator, queues, timers, recovery                                      | Interleavings that corrupt state, lost updates, races between entry points                                        |
+| Behaviour preservation | Refactors, autofixes, anything claimed to be mechanical                         | Hunks where behaviour actually differs from the version they replaced                                             |
+| Config consistency     | Config, scripts, CI, packaging, docs describing commands                        | Two things in the repo that disagree, and what breaks because they do                                             |
+| Silent failure         | Error paths, health and status reporting, retries                               | Swallowed errors, fallbacks that mask a fault, a green that means nothing                                         |
+| Test integrity         | New or changed tests                                                            | Tests that pass without exercising the behaviour, and coverage that lies                                          |
+| Protocol correctness   | This gate, the handoff's working protocol, any rule a later session must follow | Obligations removed or weakened, requirements no artifact can prove, and the cheapest review the new text permits |
 
 ### What selection has measured
 
