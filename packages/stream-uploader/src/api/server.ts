@@ -30,6 +30,14 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
 
   // Global middleware
   app.use(requestLogger);
+
+  // Ahead of the body parsers on purpose. Behind them, an anonymous caller gets 50MB of process
+  // memory allocated per connection before the gate can refuse: measured at 117MB to 583MB of RSS
+  // for eight concurrent unauthenticated bodies, with the 401 arriving only once each was fully
+  // read. `/health` is outside the gate deliberately, as a liveness endpoint that
+  // `deploy/scripts/health.sh` reads, which accepts no input and spends nothing.
+  app.use('/stream', createAuthMiddleware(authToken));
+
   app.use('/stream/segment', express.raw({ type: '*/*', limit: '50mb' }));
   app.use(
     express.json({
@@ -38,12 +46,6 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
       },
     }),
   );
-
-  // Ingest and control, gated. `/health` is deliberately outside this: it is a liveness endpoint that
-  // `deploy/scripts/health.sh` reads, and it neither accepts input nor spends anything. No compose
-  // healthcheck consumes it today, so gating it would break the one consumer there is.
-  const requireAuth = createAuthMiddleware(authToken);
-  app.use('/stream', requireAuth);
 
   // Engine plugin routers
   for (const engine of engines) {

@@ -12,13 +12,20 @@ const POLL_INTERVAL_MS = 10;
 /** Long enough to satisfy the production minimum, so tests exercise the real gate rather than a relaxed one. */
 export const TEST_AUTH_TOKEN = 'test-token-0123456789abcdef0123456789abcdef';
 
+/**
+ * Sends no `Authorization` header at all. A sentinel rather than `null`, because `new Headers({ a: null })`
+ * stringifies to the four characters `null` and the request goes out with a garbage credential, which
+ * still returns 401 and so still passes a test written to assert one.
+ */
+export const NO_AUTH_HEADER = { authorization: 'none' };
+
 export interface ApiResponse {
   status: number;
   body: unknown;
 }
 
 export interface ApiTestServer {
-  /** Authenticated by default. Pass an `authorization` header, or `null` for it, to drive the gate itself. */
+  /** Authenticated by default. Pass your own `authorization` header, or `NO_AUTH_HEADER`, to drive the gate. */
   request(path: string, init?: RequestInit): Promise<ApiResponse>;
   /** Polls `path` until `pred` accepts the parsed body, then returns that response. Throws on timeout. */
   requestUntil(path: string, pred: (body: unknown) => boolean, timeoutMs?: number): Promise<ApiResponse>;
@@ -51,7 +58,7 @@ export async function startTestApi(
     if (!supplied.has('authorization')) {
       supplied.set('authorization', `Bearer ${TEST_AUTH_TOKEN}`);
     }
-    if (supplied.get('authorization') === 'none') {
+    if (supplied.get('authorization') === NO_AUTH_HEADER.authorization) {
       supplied.delete('authorization');
     }
     const response = await fetch(`${origin}${path}`, { ...init, headers: supplied });
