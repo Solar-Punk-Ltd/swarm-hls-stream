@@ -177,7 +177,7 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
     stop(): void;
   }
 
-  function makeDrivablePuller(fetcher: Fetcher, pulled: number[] = []): PullerDriver {
+  function makeDrivablePuller(fetcher: Fetcher, pulled: number[] = [], halts: number[] = []): PullerDriver {
     const orchestrator = {
       handleSegment: (_id: string, seq: number) => {
         pulled.push(seq);
@@ -188,6 +188,7 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
     // A huge interval so the puller's own scheduled ticks never fire and the test drives tick() itself.
     return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
+      onHalt: () => halts.push(1),
     }) as unknown as PullerDriver;
   }
 
@@ -211,13 +212,15 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
   it('survives a 404 on the master playlist without halting or throwing', async () => {
     const calls: string[] = [];
     const pulled: number[] = [];
-    const puller = makeDrivablePuller(routedFetcher({ [MASTER_URL]: { status: 404 } }, calls), pulled);
+    const halts: number[] = [];
+    const puller = makeDrivablePuller(routedFetcher({ [MASTER_URL]: { status: 404 } }, calls), pulled, halts);
 
     await puller.tick();
     await puller.tick();
     puller.stop();
 
     assert.deepEqual(pulled, [], 'nothing is published while the playlist is missing');
+    assert.deepEqual(halts, [], 'a 404 inside the retry window must not halt the puller');
     assert.deepEqual(
       calls,
       [MASTER_URL, MASTER_URL],

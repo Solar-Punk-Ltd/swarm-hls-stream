@@ -168,7 +168,7 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     assert.equal(clock.pendingCount(), 1, 'exactly one recovery timer is scheduled');
 
     // One step past a minute. Real time does not move, so this costs no wall clock.
-    clock.advance(RECOVERY_TIMEOUT_60S + 1);
+    await clock.advance(RECOVERY_TIMEOUT_60S);
     await waitFor(() => orch.getActiveStreamCount() === 0);
 
     assert.equal(orch.getActiveStreamCount(), 0, 'the timer fired and the stream was finalized');
@@ -181,12 +181,30 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     assert.deepEqual(removed, ['live/stream'], 'and must clear the recovery state it owns');
   });
 
+  it('measures stream activity age from the injected clock', async () => {
+    const clock = new FakeClock();
+    const orch = makeRecoveringOrchestrator(clock, [], []);
+
+    await orch.recoverStreams();
+    assert.equal(orch.getMsSinceStreamActivity(), null, 'a stream awaiting reconnect is excluded from the signal');
+
+    orch.startStream('live/stream', MEDIA_TYPE_VIDEO);
+    await clock.advance(5_000);
+
+    assert.equal(
+      orch.getMsSinceStreamActivity(),
+      5_000,
+      'the age comes from the clock, so stepping it must move the /health stall signal',
+    );
+    await orch.cleanup();
+  });
+
   it('does not fire the recovery timer one millisecond early', async () => {
     const clock = new FakeClock();
     const orch = makeRecoveringOrchestrator(clock, [], []);
 
     await orch.recoverStreams();
-    clock.advance(RECOVERY_TIMEOUT_60S - 1);
+    await clock.advance(RECOVERY_TIMEOUT_60S - 1);
 
     assert.equal(orch.getActiveStreamCount(), 1, 'the stream is still waiting just short of the timeout');
     assert.equal(clock.pendingCount(), 1, 'and its timer is still pending');
@@ -203,7 +221,10 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     assert.equal(orch.startStream('live/stream', MEDIA_TYPE_VIDEO), true, 'the re-announce resumes the stream');
     assert.equal(clock.pendingCount(), 0, 'resuming cancels the pending finalize timer');
 
-    clock.advance(RECOVERY_TIMEOUT_60S * 10);
+    await clock.advance(RECOVERY_TIMEOUT_60S * 10);
+    // advance yields a macrotask per fired timer, so a finalize that wrongly started has had room to
+    // land by now. Asserting immediately after a synchronous advance could not see it at all.
+    await waitFor(() => catalogEntries.length > 0, 200);
 
     assert.equal(orch.getActiveStreamCount(), 1, 'a resumed stream is never VOD-ed by the timer it cancelled');
     assert.deepEqual(catalogEntries, [], 'and nothing is published as VOD');
