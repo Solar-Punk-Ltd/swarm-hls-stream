@@ -42,17 +42,49 @@ because it supersedes anything in this document that contradicts it.
 S1.4 as #27, S1.3 as #28, the working-loop changes as #29, S0.7 + S2.1 + SEC-11 + TEST-9 as #30, the dead-code sweep as #31, and S0.5 + S0.6 as #32.
 `feature/uploader-hardening` @ `f146588` and `main` @ `6b82baa` are untouched and must stay that way.
 
-**Nothing is open.** #31 (cleanup) and #32 (the S0.5 and S0.6 seams) both merged after their own gates,
-three lenses and four respectively, selected by surface.
+**PR #33 also merged**, the review-gate amendment: lens selection per pull request, the full catalogue
+only as a sprint-exit deep run, and ten measured prompt rules. Read `review-gate.md`, not the summary
+here.
+
+**PR #34 IS OPEN AND BLOCKED. Start there.** Branch `feat/fetch-timeouts`, S2.2's uploader half. Its gate
+ran six lenses and found a HIGH regression the change itself introduces, so **do not merge it as it
+stands**. The full result is posted on the pull request and the finding is **OBS-11** in the register.
+
+In short: the abort window works, but a segment the puller fails to download is now skipped permanently
+while `lastSeq` advances past it, so the manifest gets a hole players are told is contiguous and `/health`
+stays 200. At base that scenario hung the loop instead and the stall signal caught it at 503, so the
+branch as it stands trades a detected outage for undetected data loss. Three lenses found it
+independently, and it was measured against the real orchestrator and real `/health`: one hang loses about
+6s of video, sustained it drops half the stream permanently green.
+
+**The fix, and the trap in it.** Return from the **whole** segment `catch`, not just the abort branch,
+because four doors reach this and three are pre-existing (network drop, mid-body failure, and the `!ok`
+`continue`). Guarding only `isAbortedRequest` closes one door and looks like a fix. Then make the loss
+loud, because holding position alone starves the live edge and still leaves an unmarked gap once the
+segment rolls out of OME's window. `StreamUploader.handleSegment` already sets `pendingDiscontinuity` and
+increments `consecutiveSegmentFailures` on an upload failure, and `SEGMENT_FAILURE_THRESHOLD` is 1 so that
+counter alone degrades `/health`. The missing seam is a `handleSegmentLoss` on `StreamUploader` with a
+`StreamOrchestrator` passthrough.
+
+**Also open on that branch:** TEST-15's twelve surviving mutations, chiefly that the whole
+environment-to-puller plumbing can be severed with tests, typecheck and lint green, and OBS-12's
+unvalidated abort window. And S2.2's client half is untouched: three sites, not the one OBS-2 named, and
+it needs a client fetch seam first.
 
 Test baseline is **142 uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean.
 Check all four with one command: **`pnpm verify`**. It short-circuits at the first failing stage, so a
 lint error hides later test results, where CI runs the four as independent jobs and reports all of
 them. Do not let any of it regress. Typecheck now covers `test/` as well, see TEST-9.
 
-**Next task: S2.2**, timeouts on all four `fetch` call sites. Both prerequisites are done, so it is
-unblocked. S0.6 gives the puller an injectable fetcher and S0.5 gives the orchestrator an injectable clock,
-which is what makes an abort window steppable rather than waited out.
+**The lesson from the #34 gate, which is the #30 lesson word for word.** The handoff already said it:
+when you add a signal, enumerate the failure modes it is supposed to catch and check each one reaches it.
+S2.2 added an abort and verified that it aborts. Nobody checked what the system reported _afterwards_,
+and the answer was "healthy". A change that makes one failure loud can make a neighbouring one silent.
+
+**One more trap, this time in how the gate was run.** Five lenses shared a single working tree and two of
+them mutated source concurrently. One lens's mutate-and-restore cycle discarded another's uncommitted
+draft fix, and a probe file was left inside `src/` where `tsc` and `git add -A` would both pick it up.
+Run source-mutating lenses isolated or serialized, and do not commit while they are running.
 
 **Start S2.2 by reading one test.** `OmeHlsPuller.test.ts` has "passes no abort signal and so blocks the
 tick while a fetch hangs, the gap S2.2 closes". Its load-bearing line is
