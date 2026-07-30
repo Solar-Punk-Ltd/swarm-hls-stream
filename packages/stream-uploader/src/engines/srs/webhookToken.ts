@@ -63,14 +63,57 @@ export function hasValidWebhookToken(req: Request, expectedToken: string): boole
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+const REDACTED_VALUE = 'REDACTED';
+
+/**
+ * The parameter name as `req.query` sees it, so the redactor and the gate agree on which parameter
+ * carries the credential. Express percent-decodes names before they reach `req.query`, and a `+` in
+ * a query component means a space, so `%74oken` and `token` are one parameter to the gate. Matching
+ * the raw text instead let a caller authenticate with a spelling the redactor did not recognise.
+ */
+function decodedParamName(rawName: string): string {
+  try {
+    return decodeURIComponent(rawName.replace(/\+/g, ' '));
+  } catch {
+    return rawName;
+  }
+}
+
 /**
  * The same URL with the token replaced, for anything that writes a URL somewhere it outlives the
  * request. The secret is in the URL by necessity, so every log line, error message and metric label
  * carrying a URL is a place it leaks.
+ *
+ * The invariant: this must redact at least every URL the gate accepts. It is deliberately wider,
+ * matching the name case-insensitively where `req.query` is case-sensitive, because over-redacting a
+ * parameter that could never carry the credential costs nothing.
+ *
+ * It does not redact a token placed outside the query string, in a path segment for example. Such a
+ * request is rejected, so reaching that state means presenting a credential you already hold.
  */
 export function redactWebhookToken(url: string): string {
-  return url.replace(
-    new RegExp(`([?&]${SRS_WEBHOOK_TOKEN_PARAM}=)[^&]*`, 'gi'),
-    (_match, prefix: string) => `${prefix}REDACTED`,
-  );
+  const queryStart = url.indexOf('?');
+  if (queryStart === -1) {
+    return url;
+  }
+
+  const afterQuery = url.slice(queryStart + 1);
+  const hashStart = afterQuery.indexOf('#');
+  const query = hashStart === -1 ? afterQuery : afterQuery.slice(0, hashStart);
+  const fragment = hashStart === -1 ? '' : afterQuery.slice(hashStart);
+
+  const redacted = query
+    .split('&')
+    .map((pair) => {
+      const equals = pair.indexOf('=');
+      if (equals === -1) {
+        return pair;
+      }
+      const rawName = pair.slice(0, equals);
+      const isTokenParam = decodedParamName(rawName).toLowerCase() === SRS_WEBHOOK_TOKEN_PARAM;
+      return isTokenParam ? `${rawName}=${REDACTED_VALUE}` : pair;
+    })
+    .join('&');
+
+  return `${url.slice(0, queryStart)}?${redacted}${fragment}`;
 }

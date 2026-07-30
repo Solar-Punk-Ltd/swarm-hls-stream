@@ -135,6 +135,28 @@ describe('SRS webhook token redaction', () => {
       url: `/engines/srs/hls?TOKEN=${TOKEN}`,
       expected: '/engines/srs/hls?TOKEN=REDACTED',
     },
+    // The spellings below all authenticate, because express decodes the parameter name before it
+    // reaches req.query. A redactor narrower than the gate writes a live credential to the log.
+    {
+      name: 'a percent-encoded first character in the parameter name',
+      url: `/engines/srs/hls?%74oken=${TOKEN}`,
+      expected: '/engines/srs/hls?%74oken=REDACTED',
+    },
+    {
+      name: 'a fully percent-encoded parameter name',
+      url: `/engines/srs/hls?%74%6F%6B%65%6E=${TOKEN}`,
+      expected: '/engines/srs/hls?%74%6F%6B%65%6E=REDACTED',
+    },
+    {
+      name: 'a repeated token parameter, both occurrences',
+      url: `/engines/srs/hls?token=${TOKEN}&token=${TOKEN}`,
+      expected: '/engines/srs/hls?token=REDACTED&token=REDACTED',
+    },
+    {
+      name: 'a token followed by a fragment',
+      url: `/engines/srs/hls?token=${TOKEN}#done`,
+      expected: '/engines/srs/hls?token=REDACTED#done',
+    },
   ];
 
   for (const testCase of CASES) {
@@ -148,5 +170,16 @@ describe('SRS webhook token redaction', () => {
 
   it('leaves a url with no token untouched', () => {
     assert.equal(redactWebhookToken('/stream/start'), '/stream/start');
+  });
+
+  it('leaves a different parameter that merely contains the name untouched', () => {
+    // Over-redaction is cheap but not free: a parameter the gate would never read as the
+    // credential should survive, or the log stops being useful for diagnosing anything else.
+    assert.equal(redactWebhookToken('/x?mytoken=abc&refresh_token=def'), '/x?mytoken=abc&refresh_token=def');
+  });
+
+  it('does not throw on a malformed query string', () => {
+    assert.equal(redactWebhookToken('/x?%'), '/x?%');
+    assert.equal(redactWebhookToken(`/x?${SRS_WEBHOOK_TOKEN_PARAM}=%E0%A4`), '/x?token=REDACTED');
   });
 });
