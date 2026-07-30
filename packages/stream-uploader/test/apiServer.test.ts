@@ -347,6 +347,57 @@ describe('GET /health status (S2.1)', () => {
     assert.deepEqual((resumed.body as HealthBody).reasons, []);
   });
 
+  it('does not report a stall after a recovered stream is re-announced', async () => {
+    // The second route out of the recovery wait, and a different one from the test above: an engine
+    // that sends on_publish rather than segments takes the recovery branch of startStream. Both
+    // routes make the stream eligible for the stall signal again, so both need a fresh reading.
+    const orchestrator = makeTestOrchestrator(
+      { segmentStallMs: 60, recoveryTimeout: 5_000 },
+      {},
+      makeFakeRecoveryStore({
+        listActive: () => [STREAM_ID.replace(/[/\\]/g, '_')],
+        load: () => recoveredState(STREAM_ID),
+      }),
+    );
+    const api = await start(orchestrator);
+
+    await orchestrator.recoverStreams();
+    await sleep(120);
+    await startStream(api);
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 200, 'a re-announce is progress, so the stream must not inherit its waiting age');
+    assert.deepEqual((body as HealthBody).reasons, []);
+  });
+
+  it('clears the segment failure count once a segment lands again', async () => {
+    // The counter is documented as consecutive rather than latching. Without this the threshold of
+    // one would pin a stream at 503 for its whole life after a single transient drop.
+    let attempts = 0;
+    const failOnlyTheFirst = () => {
+      attempts += 1;
+      return attempts === 1 ? rejectImmediately() : Promise.resolve({ reference: { toHex: () => `ref${attempts}` } });
+    };
+    const api = await start(makeTestOrchestrator({}, { uploadData: failOnlyTheFirst }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    await postSegment(api, 0);
+    const degraded = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).status === HEALTH_DEGRADED,
+    );
+    assert.deepEqual((degraded.body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
+
+    await postSegment(api, 1);
+    const recovered = await api.requestUntil('/health', (received) => (received as HealthBody).status === HEALTH_OK);
+
+    assert.equal(recovered.status, 200, 'a successful segment must clear the count, not leave it latched');
+    assert.deepEqual((recovered.body as HealthBody).reasons, []);
+  });
+
   it('reports degraded and 503 when a registered stream sends no segments', async () => {
     const api = await start(makeTestOrchestrator({ segmentStallMs: 50 }));
 
