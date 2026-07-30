@@ -54,12 +54,21 @@ them. Do not let any of it regress. Typecheck now covers `test/` as well, see TE
 unblocked. S0.6 gives the puller an injectable fetcher and S0.5 gives the orchestrator an injectable clock,
 which is what makes an abort window steppable rather than waited out.
 
-**Start S2.2 by reading one test.** `OmeHlsPuller.test.ts` has "passes no abort signal and so blocks the
-tick while a fetch hangs, the gap S2.2 closes". Its load-bearing line is
-`assert.deepEqual(inits, [undefined])`, asserting that today's fetch carries no `AbortSignal`. That is
-designed to fail the moment S2.2 lands, so flipping it is S2.2's first move. It is shaped that way because
-the review gate proved the obvious version, "the tick did not settle within 80ms", stays green after a
-timeout is added and would therefore have documented nothing.
+**Start S2.2 by strengthening one test, and do not trust the previous version of this paragraph.** It
+claimed `OmeHlsPuller.test.ts` already held a tripwire whose load-bearing line was
+`assert.deepEqual(inits, [undefined])`, and that flipping it was S2.2's first move. **That test was never
+written.** `git log --all -S'inits'` on the file returns nothing, so the strengthening was described as
+done when it had only been decided on.
+
+What is actually there is `"blocks the tick while a fetch hangs, which is the gap S2.2 closes"`, asserting
+that `puller.tick()` has not settled after 80ms. That is the weak form, and it is worse than weak here:
+its fake fetcher is `() => new Promise(() => {})`, which ignores any `AbortSignal` it is handed, so the
+tick will never settle no matter what timeout S2.2 adds and the test stays green forever.
+
+S2.2's acceptance criterion is behavioural rather than shape-based, so satisfy that instead: a hanging
+fetch aborts within the configured window, the abort is logged as an error, and the next tick still runs.
+That needs a fake fetcher that **honours** the signal, rejecting when it aborts, which is the seam S0.6
+provides.
 
 Then S1.1 and S4.1. Sprint 0 still has S0.3 and S0.4 open, and S0.4's FakeBee is largely built already in
 `test/helpers/fakes.ts`, which offers per-call upload control, immediate rejection with a non-retryable
