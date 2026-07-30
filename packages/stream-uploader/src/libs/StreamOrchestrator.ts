@@ -277,6 +277,14 @@ export class StreamOrchestrator {
     return worst;
   }
 
+  public getMaxConsecutiveSegmentFailures(): number {
+    let worst = 0;
+    for (const uploader of this.activeStreams.values()) {
+      worst = Math.max(worst, uploader.getConsecutiveSegmentFailures());
+    }
+    return worst;
+  }
+
   /**
    * Milliseconds since a stream last registered or a segment was last accepted, or `null` while no
    * stream is registered. Registration counts, so a stream that announces and then sends nothing is
@@ -298,6 +306,7 @@ export class StreamOrchestrator {
       activeStreams: this.activeStreams.size,
       staleManifestStreams: this.getStaleManifestStreamCount(),
       maxConsecutiveManifestFailures: this.getMaxConsecutiveManifestFailures(),
+      maxConsecutiveSegmentFailures: this.getMaxConsecutiveSegmentFailures(),
       queuePressure: this.getOverallQueuePressure(),
       msSinceStreamActivity: this.getMsSinceStreamActivity(),
     };

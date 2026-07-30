@@ -3,6 +3,7 @@ import {
   HEALTH_OK,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_STALL,
+  HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
   HealthReason,
   HealthReport,
@@ -18,6 +19,13 @@ import {
 export const MANIFEST_FAILURE_THRESHOLD = 3;
 
 /**
+ * One is the threshold because a segment failure is already permanent when it is counted: the retry
+ * window is spent, the data is gone and a discontinuity is marked. The count is consecutive, so it
+ * clears on the next successful segment rather than latching.
+ */
+export const SEGMENT_FAILURE_THRESHOLD = 1;
+
+/**
  * The whole degradation policy, kept in one pure function so every threshold is assertable without
  * a running server or a clock.
  */
@@ -26,6 +34,10 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
 
   if (signals.maxConsecutiveManifestFailures >= MANIFEST_FAILURE_THRESHOLD) {
     reasons.push(HEALTH_REASON_STALE_MANIFEST);
+  }
+
+  if (signals.maxConsecutiveSegmentFailures >= SEGMENT_FAILURE_THRESHOLD) {
+    reasons.push(HEALTH_REASON_SEGMENT_UPLOAD_FAILURE);
   }
 
   if (signals.queuePressure === PRESSURE_HIGH) {

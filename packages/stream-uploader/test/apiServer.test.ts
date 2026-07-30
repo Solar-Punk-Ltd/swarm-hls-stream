@@ -6,6 +6,7 @@ import {
   HEALTH_OK,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_STALL,
+  HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
   MEDIA_TYPE_VIDEO,
 } from '../src/types.js';
@@ -77,6 +78,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'activeStreams',
         'engines',
         'maxConsecutiveManifestFailures',
+        'maxConsecutiveSegmentFailures',
         'msSinceStreamActivity',
         'queuePressure',
         'reasons',
@@ -201,6 +203,27 @@ describe('GET /health status (S2.1)', () => {
     assert.equal(status, 503);
     assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
     assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_STALE_MANIFEST]);
+  });
+
+  it('reports degraded and 503 when accepted segments are not reaching swarm', async () => {
+    // The stamp-exhausted shape: the API accepts every segment and bee refuses every payload write.
+    // No segment reaches addSegment, so no manifest publish is attempted and the manifest counter
+    // never moves; the queue empties instantly because the failure is immediate. This reported ok.
+    const api = await start(makeTestOrchestrator({}, { uploadData: rejectImmediately }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    const accepted = await postSegment(api, 0);
+
+    assert.equal(accepted.status, 200, 'the API accepts the segment, which is what makes the loss silent');
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).status === HEALTH_DEGRADED,
+    );
+
+    assert.equal(status, 503);
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
   });
 
   it('reports degraded and 503 when a registered stream sends no segments', async () => {

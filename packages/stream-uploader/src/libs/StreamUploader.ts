@@ -46,6 +46,7 @@ export class StreamUploader {
   private liveManifestQueued = false;
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
+  private consecutiveSegmentFailures = 0;
 
   private manifestManager: ManifestManager;
 
@@ -90,6 +91,7 @@ export class StreamUploader {
         // Nothing landed within the retry window; flag the next segment as a discontinuity
         // so players skip the gap instead of stalling on a silent hole.
         this.pendingDiscontinuity = true;
+        this.consecutiveSegmentFailures += 1;
         this.logger.error(
           `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
         );
@@ -97,6 +99,7 @@ export class StreamUploader {
         return;
       }
 
+      this.consecutiveSegmentFailures = 0;
       const ref = result.reference.toHex();
       this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
       this.pendingDiscontinuity = false;
@@ -179,6 +182,15 @@ export class StreamUploader {
 
   public getConsecutiveManifestFailures(): number {
     return this.consecutiveManifestFailures;
+  }
+
+  /**
+   * Segments dropped back to back, each after its retry window was already spent. Unlike a manifest
+   * publish, a dropped segment is not retried later: the data is gone and the next one is marked as a
+   * discontinuity, so this counter is the only trace an upload failure leaves.
+   */
+  public getConsecutiveSegmentFailures(): number {
+    return this.consecutiveSegmentFailures;
   }
 
   private uploadLiveManifest(): void {

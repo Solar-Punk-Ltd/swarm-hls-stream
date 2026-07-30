@@ -49,11 +49,13 @@ export const HEALTH_DEGRADED = 'degraded' as const;
 export type HealthStatus = typeof HEALTH_OK | typeof HEALTH_DEGRADED;
 
 export const HEALTH_REASON_STALE_MANIFEST = 'stale_manifest' as const;
+export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure' as const;
 export const HEALTH_REASON_QUEUE_PRESSURE = 'queue_pressure' as const;
 export const HEALTH_REASON_SEGMENT_STALL = 'segment_stall' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
+  | typeof HEALTH_REASON_SEGMENT_UPLOAD_FAILURE
   | typeof HEALTH_REASON_QUEUE_PRESSURE
   | typeof HEALTH_REASON_SEGMENT_STALL;
 
@@ -61,6 +63,7 @@ export interface HealthSignals {
   activeStreams: number;
   staleManifestStreams: number;
   maxConsecutiveManifestFailures: number;
+  maxConsecutiveSegmentFailures: number;
   queuePressure: QueuePressure;
   /** `null` while no stream is registered, which is how an idle uploader avoids looking stalled. */
   msSinceStreamActivity: number | null;

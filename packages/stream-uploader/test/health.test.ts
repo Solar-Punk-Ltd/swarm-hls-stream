@@ -6,6 +6,7 @@ import {
   HEALTH_OK,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_STALL,
+  HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
   HealthSignals,
   PRESSURE_HIGH,
@@ -21,6 +22,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     activeStreams: 1,
     staleManifestStreams: 0,
     maxConsecutiveManifestFailures: 0,
+    maxConsecutiveSegmentFailures: 0,
     queuePressure: PRESSURE_LOW,
     msSinceStreamActivity: 1_000,
     ...overrides,
@@ -58,6 +60,36 @@ describe('deriveHealthStatus manifest failures', () => {
     );
 
     assert.equal(report.status, HEALTH_DEGRADED);
+  });
+});
+
+describe('deriveHealthStatus segment upload failures', () => {
+  it('is degraded on a single dropped segment', () => {
+    const report = deriveHealthStatus(signals({ maxConsecutiveSegmentFailures: 1 }), STALL_MS);
+
+    assert.equal(
+      report.status,
+      HEALTH_DEGRADED,
+      'a counted segment failure is already permanent: the retry window is spent and the data is gone',
+    );
+    assert.deepEqual(report.reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
+  });
+
+  it('is ok while segments are landing', () => {
+    const report = deriveHealthStatus(signals({ maxConsecutiveSegmentFailures: 0 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+  });
+
+  it('reports segment failures independently of manifest failures', () => {
+    // The two are separate write paths. A refused segment never reaches addSegment, so it never
+    // triggers a manifest publish and cannot show up in the manifest counter.
+    const report = deriveHealthStatus(
+      signals({ maxConsecutiveSegmentFailures: 4, maxConsecutiveManifestFailures: 0 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
   });
 });
 
