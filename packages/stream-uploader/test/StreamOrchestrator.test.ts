@@ -24,6 +24,21 @@ async function waitFor(pred: () => boolean, timeoutMs = 1_000): Promise<void> {
   }
 }
 
+describe('recovery file id sanitizing', () => {
+  // RecoveryStore names files by a slash-sanitized id, and recoverStreams relies on that to find the
+  // real stream id inside the state. Nothing pinned it: the helper could return its input unchanged and
+  // every other test still passed, because they all sanitize on both sides of the comparison.
+  it('replaces both path separators so a stream id becomes one file name', () => {
+    assert.equal(toRecoveryFileId('live/stream'), 'live_stream');
+    assert.equal(toRecoveryFileId('live\\stream'), 'live_stream');
+    assert.equal(toRecoveryFileId('a/b\\c/d'), 'a_b_c_d');
+  });
+
+  it('leaves an id with no separator alone', () => {
+    assert.equal(toRecoveryFileId('catalog-feed-index'), 'catalog-feed-index');
+  });
+});
+
 describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash recovery)', () => {
   it('finalizes a recovered stream if no segments arrive before the recovery timeout', async () => {
     const id = 'live/stream';
