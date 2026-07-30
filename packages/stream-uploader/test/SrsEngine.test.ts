@@ -66,7 +66,7 @@ function fakeOrchestrator(calls: SegmentCall[]): StreamOrchestrator {
   } as unknown as StreamOrchestrator;
 }
 
-async function postHls(mediaRoot: string, orchestrator: StreamOrchestrator, file: string): Promise<number> {
+async function postHls(mediaRoot: string, orchestrator: StreamOrchestrator, file?: string): Promise<number> {
   const engine = createSrsEngine(mediaRoot);
   const app = express();
   app.use(express.json());
@@ -159,6 +159,23 @@ describe('SRS /hls route reaches the filesystem only inside the media root (SEC-
       assert.equal(fs.readFileSync(decoyPath, 'utf8'), DECOY_BYTES, 'the file outside the media root survives intact');
     });
   }
+
+  // The request body is an unchecked cast at the handler boundary, so `file` can be absent at
+  // runtime whatever the type says. Validating it belongs with the request schemas in S1.5. What
+  // belongs here is that the boundary fails closed instead of reaching the media volume on its way
+  // to failing, which is the property a future refactor could quietly lose.
+  it('fails closed when the body carries no file field', async () => {
+    const readFileSync = mock.method(fs, 'readFileSync');
+    const rmSync = mock.method(fs, 'rmSync');
+    const calls: SegmentCall[] = [];
+
+    const status = await postHls(mediaRoot, fakeOrchestrator(calls));
+
+    assert.equal(status, 200);
+    const touched = [...pathsPassedTo(readFileSync), ...pathsPassedTo(rmSync)].filter((p) => p.startsWith(sandbox));
+    assert.deepEqual(touched, [], 'a malformed body must not reach the media volume at all');
+    assert.equal(calls.length, 0);
+  });
 
   it('reads, uploads and then deletes a legitimate segment', async () => {
     const readFileSync = mock.method(fs, 'readFileSync');
