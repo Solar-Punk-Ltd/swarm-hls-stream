@@ -37,7 +37,12 @@ export class StreamOrchestrator {
   private processedSegments = new Map<string, Set<number>>();
   private recoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private queue = new PQueue({ concurrency: 1 });
-  private lastStreamActivityAt: number | null = null;
+  /**
+   * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
+   * clock so a backwards NTP step cannot make an age negative and hide a stall. Registration counts
+   * as progress, so a stream that announces and then sends nothing is measured from its announcement.
+   */
+  private streamActivityAt = new Map<string, number>();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
@@ -54,6 +59,10 @@ export class StreamOrchestrator {
     if (recoveryTimer) {
       clearTimeout(recoveryTimer);
       this.recoveryTimers.delete(streamId);
+      // The re-announce is itself progress. Without this the stream rejoins the stall signal carrying
+      // the age it accumulated while waiting, and a successful resume reports degraded until the first
+      // segment lands.
+      this.streamActivityAt.set(streamId, performance.now());
       this.logger.info(`[StreamOrchestrator] Resumed recovering stream: ${streamId}`);
       return true;
     }
@@ -88,7 +97,7 @@ export class StreamOrchestrator {
 
       this.activeStreams.set(streamId, uploader);
       this.processedSegments.set(streamId, new Set());
-      this.lastStreamActivityAt = Date.now();
+      this.streamActivityAt.set(streamId, performance.now());
       this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
     });
   }
@@ -113,7 +122,8 @@ export class StreamOrchestrator {
     // Deduplication
     const processed = this.processedSegments.get(streamId);
     if (processed?.has(segmentIndex)) {
-      this.lastStreamActivityAt = Date.now();
+      // Deliberately not counted as activity. A replayed index does no upload work and advances no
+      // manifest, so a sender stuck on one index would otherwise look alive to the stall signal.
       return { accepted: true }; // silently accept duplicate
     }
 
@@ -123,7 +133,7 @@ export class StreamOrchestrator {
     }
 
     processed?.add(segmentIndex);
-    this.lastStreamActivityAt = Date.now();
+    this.streamActivityAt.set(streamId, performance.now());
     uploader.handleSegment(segmentIndex, duration, data);
     return { accepted: true };
   }
@@ -199,7 +209,7 @@ export class StreamOrchestrator {
       );
 
       this.activeStreams.set(streamId, uploader);
-      this.lastStreamActivityAt = Date.now();
+      this.streamActivityAt.set(streamId, performance.now());
 
       // Rebuild processed segments set from state
       const processed = new Set(state.segments.map((s) => s.index));
@@ -286,15 +296,32 @@ export class StreamOrchestrator {
   }
 
   /**
-   * Milliseconds since a stream last registered or a segment was last accepted, or `null` while no
-   * stream is registered. Registration counts, so a stream that announces and then sends nothing is
-   * measured from its announcement rather than looking healthy forever.
+   * Age of the least recently active stream that is expected to be producing segments right now, so
+   * one busy stream cannot mask a dead sibling. `null` when no stream qualifies.
+   *
+   * A draining stream is excluded because a drain legitimately accepts no segments for up to
+   * `DRAIN_TIMEOUT_MS`, and a stream awaiting a post-crash reconnect is excluded because its
+   * recovery timer is already the control for never coming back.
    */
   public getMsSinceStreamActivity(): number | null {
-    if (this.activeStreams.size === 0 || this.lastStreamActivityAt === null) {
-      return null;
+    const now = performance.now();
+    let oldest: number | null = null;
+
+    for (const streamId of this.activeStreams.keys()) {
+      if (this.drainPromises.has(streamId) || this.recoveryTimers.has(streamId)) {
+        continue;
+      }
+      const activityAt = this.streamActivityAt.get(streamId);
+      if (activityAt === undefined) {
+        continue;
+      }
+      const age = now - activityAt;
+      if (oldest === null || age > oldest) {
+        oldest = age;
+      }
     }
-    return Date.now() - this.lastStreamActivityAt;
+
+    return oldest;
   }
 
   public getSegmentStallMs(): number {
@@ -360,10 +387,7 @@ export class StreamOrchestrator {
 
     this.activeStreams.delete(streamId);
     this.processedSegments.delete(streamId);
-
-    if (this.activeStreams.size === 0) {
-      this.lastStreamActivityAt = null;
-    }
+    this.streamActivityAt.delete(streamId);
 
     this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
   }

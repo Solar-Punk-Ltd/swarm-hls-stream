@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   HEALTH_DEGRADED,
@@ -224,6 +225,62 @@ describe('GET /health status (S2.1)', () => {
 
     assert.equal(status, 503);
     assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
+  });
+
+  it('reports a stalled stream even while a sibling stream is feeding', async () => {
+    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }));
+
+    await startStream(api, 'live/a');
+    await startStream(api, 'live/b');
+    await api.requestUntil('/health', hasActiveStreams(2));
+
+    // Let both age past the window, then feed only live/a. A process-wide clock would read live/a's
+    // fresh timestamp and call the whole service healthy while live/b is dead.
+    await sleep(120);
+    await postSegment(api, 0, 'live/a');
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 503, 'the worst stream sets the signal, not the busiest one');
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_STALL]);
+  });
+
+  it('does not treat a replayed segment index as progress', async () => {
+    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+    await sleep(120);
+
+    const replay = await postSegment(api, 0);
+    assert.equal(replay.status, 200, 'a duplicate is still accepted, it just is not progress');
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 503, 'a sender stuck replaying one index does no upload work and advances no manifest');
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_STALL]);
+  });
+
+  it('does not report a stall against a stream that is draining', async () => {
+    // notifyStop hangs on the VOD manifest write, so the stream stays registered for the whole drain.
+    // A drain accepts no segments by design, and DRAIN_TIMEOUT_MS is 5 minutes against this window.
+    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }, { uploadPayload: neverSettles }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+    await api.request('/stream/stop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ streamId: STREAM_ID }),
+    });
+    await sleep(150);
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 200, 'a healthy drain must not read as a stall');
+    assert.deepEqual((body as HealthBody).reasons, []);
   });
 
   it('reports degraded and 503 when a registered stream sends no segments', async () => {

@@ -65,7 +65,12 @@ export interface HealthSignals {
   maxConsecutiveManifestFailures: number;
   maxConsecutiveSegmentFailures: number;
   queuePressure: QueuePressure;
-  /** `null` while no stream is registered, which is how an idle uploader avoids looking stalled. */
+  /**
+   * Age of the least recently active stream that is expected to be producing segments, so the worst
+   * stream sets the number rather than the busiest one. `null` when no such stream is registered,
+   * which is how an idle uploader, a draining stream and a stream awaiting recovery all avoid
+   * looking stalled.
+   */
   msSinceStreamActivity: number | null;
 }
 
