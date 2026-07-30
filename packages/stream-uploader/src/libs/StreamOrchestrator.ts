@@ -46,6 +46,8 @@ export class StreamOrchestrator {
    * as progress, so a stream that announces and then sends nothing is measured from its announcement.
    */
   private streamActivityAt = new Map<string, number>();
+  /** Per stream, the monotonic reading of the most recent segment the engine could not deliver. */
+  private segmentLossAt = new Map<string, number>();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
@@ -157,13 +159,18 @@ export class StreamOrchestrator {
    * Deliberately not recorded as stream activity. A stream that only loses segments is not making
    * progress, and refreshing the clock here would hide a stall behind the very losses causing it.
    */
-  public handleSegmentLoss(streamId: string, firstIndex: number, count: number): void {
+  public handleSegmentLoss(streamId: string, firstIndex: number, count: number): boolean {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
-      return;
+      // Answered rather than swallowed, so the caller can hold its position instead of stepping over
+      // indexes nobody recorded. A stream can leave `activeStreams` between a puller's fetch and its
+      // report, through a drain, a recovery timeout or a re-announce.
+      return false;
     }
 
+    this.segmentLossAt.set(streamId, this.clock.now());
     uploader.handleSegmentLoss(firstIndex, count);
+    return true;
   }
 
   public async stopStream(streamId: string): Promise<void> {
@@ -358,6 +365,28 @@ export class StreamOrchestrator {
     return this.config.segmentStallMs;
   }
 
+  /**
+   * Age of the most recent reported loss across registered streams, so the freshest one sets the
+   * number. `null` when none has been reported.
+   */
+  public getMsSinceSegmentLoss(): number | null {
+    const now = this.clock.now();
+    let freshest: number | null = null;
+
+    for (const streamId of this.activeStreams.keys()) {
+      const lossAt = this.segmentLossAt.get(streamId);
+      if (lossAt === undefined) {
+        continue;
+      }
+      const age = now - lossAt;
+      if (freshest === null || age < freshest) {
+        freshest = age;
+      }
+    }
+
+    return freshest;
+  }
+
   public getHealthSignals(): HealthSignals {
     return {
       activeStreams: this.activeStreams.size,
@@ -366,6 +395,7 @@ export class StreamOrchestrator {
       maxConsecutiveSegmentFailures: this.getMaxConsecutiveSegmentFailures(),
       queuePressure: this.getOverallQueuePressure(),
       msSinceStreamActivity: this.getMsSinceStreamActivity(),
+      msSinceSegmentLoss: this.getMsSinceSegmentLoss(),
     };
   }
 

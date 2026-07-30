@@ -30,6 +30,12 @@ export class OmeHlsPuller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private state: 'idle' | 'running' | 'stopped' = 'idle';
   private lastSeq = -1;
+  /**
+   * First playlist index this puller ever saw. `lastSeq` cannot serve as the floor for a gap report
+   * until something is delivered, and a puller that fails from its very first segment never delivers
+   * anything, so without this the losses at a cold start are the ones that go unreported.
+   */
+  private baselineSeq: number | null = null;
   private failingSeq: number | null = null;
   private failedAttempts = 0;
   private notFoundSince: number | null = null;
@@ -188,6 +194,10 @@ export class OmeHlsPuller {
         continue;
       }
 
+      if (this.baselineSeq === null) {
+        this.baselineSeq = segment.seq;
+      }
+
       this.reportSegmentsRolledOutBefore(segment.seq);
 
       const segmentUrl = new URL(segment.uri, url).toString();
@@ -244,8 +254,7 @@ export class OmeHlsPuller {
       return true;
     }
 
-    this.reportSegmentLoss(seq, seq, `${this.failedAttempts} consecutive download failures`);
-    return false;
+    return !this.reportSegmentLoss(seq, seq, `${this.failedAttempts} consecutive download failures`);
   }
 
   /**
@@ -261,11 +270,12 @@ export class OmeHlsPuller {
    * media sequence the origin is serving when the puller joins.
    */
   private reportSegmentsRolledOutBefore(nextSeq: number): void {
-    if (this.lastSeq < 0 || nextSeq <= this.lastSeq + 1) {
+    const firstMissing = this.lastSeq >= 0 ? this.lastSeq + 1 : this.baselineSeq;
+    if (firstMissing === null || nextSeq <= firstMissing) {
       return;
     }
 
-    this.reportSegmentLoss(this.lastSeq + 1, nextSeq - 1, 'the origin rolled it out of its playlist window');
+    this.reportSegmentLoss(firstMissing, nextSeq - 1, 'the origin rolled it out of its playlist window');
   }
 
   /**
@@ -274,15 +284,22 @@ export class OmeHlsPuller {
    * silent hole: `handleSegmentLoss` marks the next segment as a discontinuity and moves the counter
    * `/health` reads.
    */
-  private reportSegmentLoss(firstSeq: number, lastSeq: number, cause: string): void {
+  private reportSegmentLoss(firstSeq: number, lastSeq: number, cause: string): boolean {
     const count = lastSeq - firstSeq + 1;
     const subject = count === 1 ? `Segment ${firstSeq}` : `Segments ${firstSeq} to ${lastSeq}`;
 
+    if (!this.orchestrator.handleSegmentLoss(this.streamId, firstSeq, count)) {
+      // Nothing recorded the gap, so stepping over it would lose these indexes with no trace at all,
+      // which is the failure this whole path exists to prevent. Hold and let the next tick retry.
+      logger.warn(`[OME] ${subject} lost for ${this.streamId} but no stream is registered to record it`);
+      return false;
+    }
+
     logger.error(`[OME] ${subject} lost for ${this.streamId} after ${cause}, marking a discontinuity`);
-    this.orchestrator.handleSegmentLoss(this.streamId, firstSeq, count);
     this.lastSeq = lastSeq;
     this.failingSeq = null;
     this.failedAttempts = 0;
+    return true;
   }
 
   private async fetchMediaPlaylistUrl(): Promise<boolean> {

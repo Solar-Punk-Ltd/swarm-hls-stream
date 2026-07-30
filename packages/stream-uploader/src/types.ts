@@ -52,12 +52,14 @@ export const HEALTH_REASON_STALE_MANIFEST = 'stale_manifest' as const;
 export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure' as const;
 export const HEALTH_REASON_QUEUE_PRESSURE = 'queue_pressure' as const;
 export const HEALTH_REASON_SEGMENT_STALL = 'segment_stall' as const;
+export const HEALTH_REASON_SEGMENT_LOSS = 'segment_loss' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
   | typeof HEALTH_REASON_SEGMENT_UPLOAD_FAILURE
   | typeof HEALTH_REASON_QUEUE_PRESSURE
-  | typeof HEALTH_REASON_SEGMENT_STALL;
+  | typeof HEALTH_REASON_SEGMENT_STALL
+  | typeof HEALTH_REASON_SEGMENT_LOSS;
 
 export interface HealthSignals {
   activeStreams: number;
@@ -72,6 +74,16 @@ export interface HealthSignals {
    * looking stalled.
    */
   msSinceStreamActivity: number | null;
+  /**
+   * Age of the most recent segment the engine could not deliver at all, across every registered
+   * stream. `null` when none has been reported.
+   *
+   * An age rather than a count because a loss is permanent and instantaneous: there is no later
+   * event that makes it untrue, so a counter that clears on the next success reports nothing. The
+   * next success is also the common case, since a puller writes a segment off and then downloads the
+   * one behind it in the same pass.
+   */
+  msSinceSegmentLoss: number | null;
 }
 
 export interface HealthReport {

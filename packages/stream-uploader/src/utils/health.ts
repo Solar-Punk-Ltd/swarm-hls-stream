@@ -2,6 +2,7 @@ import {
   HEALTH_DEGRADED,
   HEALTH_OK,
   HEALTH_REASON_QUEUE_PRESSURE,
+  HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
@@ -22,6 +23,11 @@ export const MANIFEST_FAILURE_THRESHOLD = 3;
  * One is the threshold because a segment failure is already permanent when it is counted: the retry
  * window is spent, the data is gone and a discontinuity is marked. The count is consecutive, so it
  * clears on the next successful segment rather than latching.
+ *
+ * This counts uploads that failed, not segments the engine never obtained. Those are reported as an
+ * age instead, see `HealthSignals.msSinceSegmentLoss`, because a consecutive counter cannot express
+ * them: the puller writes a segment off and downloads the next one in the same pass, so the success
+ * that clears the counter always lands before anything can read it.
  */
 export const SEGMENT_FAILURE_THRESHOLD = 1;
 
@@ -42,6 +48,13 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
 
   if (signals.queuePressure === PRESSURE_HIGH) {
     reasons.push(HEALTH_REASON_QUEUE_PRESSURE);
+  }
+
+  // A loss stays visible for as long as a silence would have to last before it counted as a stall.
+  // One knob rather than two, and long enough that any monitor sampling for a stall also sees a loss.
+  const hasRecentLoss = signals.msSinceSegmentLoss !== null && signals.msSinceSegmentLoss <= segmentStallMs;
+  if (hasRecentLoss) {
+    reasons.push(HEALTH_REASON_SEGMENT_LOSS);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

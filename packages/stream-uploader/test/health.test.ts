@@ -25,6 +25,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     maxConsecutiveSegmentFailures: 0,
     queuePressure: PRESSURE_LOW,
     msSinceStreamActivity: 1_000,
+    msSinceSegmentLoss: null,
     ...overrides,
   };
 }

@@ -114,12 +114,13 @@ export class StreamUploader {
 
   /**
    * Segments that never reached this uploader, because the engine could not download them from the
-   * origin. Indistinguishable downstream from an upload that exhausted its retry window, so a loss
-   * lands on the same two signals: the next segment carries a discontinuity, and the
-   * consecutive-failure count `/health` reads goes up.
+   * origin. The next segment carries a discontinuity so players skip the gap rather than stalling on
+   * a hole they were told is contiguous. One contiguous gap is one call, however many it spans.
    *
-   * One contiguous gap is one call, however many segments it spans, so the counter measures how many
-   * times delivery broke rather than how wide the origin's sequence jumped.
+   * Deliberately does **not** touch `consecutiveSegmentFailures`. That counter clears on the next
+   * successful segment, and the engine writes a segment off and then downloads the one behind it in
+   * the same pass, so the clearing success always lands before anything can read the count. The
+   * signal for a loss is an age recorded by the orchestrator, which no later event makes untrue.
    *
    * Queued rather than applied inline so it takes its place behind segments already awaiting upload.
    * Applied inline, the discontinuity would attach to a segment that arrived before the gap.
@@ -127,7 +128,6 @@ export class StreamUploader {
   public handleSegmentLoss(firstIndex: number, count: number): void {
     this.segmentQueue.add(() => {
       this.pendingDiscontinuity = true;
-      this.consecutiveSegmentFailures += 1;
       const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
       this.logger.error(`${subject} for stream ${this.streamId} never reached the uploader, marking a discontinuity`);
       this.persistState();

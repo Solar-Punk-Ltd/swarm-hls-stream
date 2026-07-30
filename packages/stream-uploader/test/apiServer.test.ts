@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { Fetcher } from '../src/engines/ome/interfaces.js';
+import { OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
   HEALTH_REASON_QUEUE_PRESSURE,
+  HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
@@ -87,6 +90,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'engines',
         'maxConsecutiveManifestFailures',
         'maxConsecutiveSegmentFailures',
+        'msSinceSegmentLoss',
         'msSinceStreamActivity',
         'queuePressure',
         'reasons',
@@ -378,7 +382,41 @@ describe('GET /health status (S2.1)', () => {
     );
 
     assert.equal(status, 503);
-    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_UPLOAD_FAILURE]);
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_LOSS]);
+  });
+
+  // Driven through the real puller rather than by calling the seam, because calling the seam is what
+  // hid the defect this test exists for: the puller writes a segment off and downloads the next one
+  // in the same pass, and that success used to clear the counter before any poll could read it.
+  it('still reports 503 when a real puller loses one segment and keeps delivering the rest', async () => {
+    const orchestrator = makeTestOrchestrator();
+    const api = await start(orchestrator);
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    const lines = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0'];
+    for (let index = 0; index < 12; index++) {
+      lines.push('#EXTINF:2.0,', `segment_${index}.ts`);
+    }
+    const fetcher = ((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input).endsWith('segment_3.ts')
+          ? ({ ok: false, status: 404 } as Response)
+          : ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response),
+      )) as unknown as Fetcher;
+    const puller = new OmeHlsPuller(STREAM_ID, 'live', 'one', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as { processPlaylist(playlist: string, url: string): Promise<void> };
+
+    for (let pass = 0; pass <= SEGMENT_RETRY_LIMIT; pass++) {
+      await puller.processPlaylist(lines.join('\n'), 'http://ome/hls/live/one/media.m3u8');
+    }
+
+    const { status, body } = await api.request('/health');
+
+    assert.equal(status, 503, 'one lost segment among many delivered ones still has to be visible');
+    assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_SEGMENT_LOSS]);
   });
 
   it('clears the segment failure count once a segment lands again', async () => {

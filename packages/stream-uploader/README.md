@@ -86,12 +86,13 @@ Engine-independent HTTP interface for pushing segments directly.
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
 `reasons` array:
 
-| Reason                   | Meaning                                                                              |
-| ------------------------ | ------------------------------------------------------------------------------------ |
-| `segment_upload_failure` | A segment was dropped after its retry window was spent, so that data is gone         |
-| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving |
-| `queue_pressure`         | A segment queue above 80% of `MAX_QUEUE_SIZE`                                        |
-| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`            |
+| Reason                   | Meaning                                                                                                                                                                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `segment_upload_failure` | A segment reached the uploader but its upload retry window was spent, so that data is gone                                                                                                                                       |
+| `segment_loss`           | The engine could not obtain a segment from its origin at all, so it never reached the uploader. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it |
+| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                             |
+| `queue_pressure`         | A segment queue above 80% of `MAX_QUEUE_SIZE`                                                                                                                                                                                    |
+| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                        |
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is

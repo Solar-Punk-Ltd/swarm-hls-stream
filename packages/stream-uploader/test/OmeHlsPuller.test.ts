@@ -452,7 +452,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
         delivered.push(seq);
         return { accepted: true };
       },
-      handleSegmentLoss: () => {},
+      handleSegmentLoss: () => true,
     } as unknown as OrchestratorArg;
 
     return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
@@ -488,7 +488,10 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
         record.delivered.push(seq);
         return { accepted: true };
       },
-      handleSegmentLoss: (_id: string, firstIndex: number, count: number) => record.lost.push({ firstIndex, count }),
+      handleSegmentLoss: (_id: string, firstIndex: number, count: number) => {
+        record.lost.push({ firstIndex, count });
+        return true;
+      },
     } as unknown as OrchestratorArg;
   }
 
@@ -608,7 +611,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
         delivered.push(seq);
         return { accepted: true };
       },
-      handleSegmentLoss: () => {},
+      handleSegmentLoss: () => true,
     } as unknown as OrchestratorArg;
     const fetcher = ((input: RequestInfo | URL) =>
       failing && String(input).endsWith('segment_1.ts')
@@ -655,7 +658,7 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
   function makePuller(fetcher: Fetcher): { tick(): Promise<void>; stop(): void } {
     const orchestrator = {
       handleSegment: () => ({ accepted: true }),
-      handleSegmentLoss: () => {},
+      handleSegmentLoss: () => true,
     } as unknown as OrchestratorArg;
     return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
@@ -705,7 +708,7 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
       Promise.resolve({ ok: false, status: 500, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
     const orchestrator = {
       handleSegment: () => ({ accepted: true }),
-      handleSegmentLoss: () => {},
+      handleSegmentLoss: () => true,
     } as unknown as OrchestratorArg;
     const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, orchestrator, {
       fetcher: failing,

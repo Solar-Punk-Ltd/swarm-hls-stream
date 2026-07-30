@@ -174,7 +174,7 @@ describe('createOmeEngineFromEnv fetch timeout plumbing (TEST-15)', () => {
       startStream: () => true,
       stopStream: async () => {},
       handleSegment: () => ({ accepted: true }),
-      handleSegmentLoss: () => {},
+      handleSegmentLoss: () => true,
     } as unknown as StreamOrchestrator;
 
     await postAdmission(engine, orchestrator, 'opening');
