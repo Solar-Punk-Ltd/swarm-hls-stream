@@ -457,8 +457,9 @@ it accurate and keep it in the same commit as the work it describes.
 
 ### Sprint 0 remaining
 
-`S0.3`, `S0.4`, `S0.5` and `S0.6` are not started. S0.7 is done. S0.6 is the smallest and unblocks
-puller tests plus S2.2's timeout proof, so it is the natural next one.
+`S0.3` and `S0.4` are not started. `S0.5`, `S0.6` and `S0.7` are done, in `1a0e47f`, `4f44e85` and
+`63b0cda`. S0.6's fetcher seam did what this section predicted: it is what made S2.2's timeout provable
+with no network. S0.4's FakeBee is largely built already in `test/helpers/fakes.ts`.
 
 ### Both decisions from Sprint 0 are now made
 
