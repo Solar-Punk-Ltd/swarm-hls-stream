@@ -10,10 +10,20 @@ export function loadEngineEnv(engineName: string): void {
   dotenv.config({ path: path.join(rootDir, 'engines', engineName, '.env') });
 }
 
+/**
+ * Value of a mandatory environment variable.
+ *
+ * Absent and present-but-empty are reported differently on purpose. Compose supplies several of
+ * these as `${VAR:-}`, so the variable is present and empty far more often than it is missing, and
+ * "missing" sends an operator looking for a key that is already in their `.env`.
+ */
 export function required(name: string): string {
   const value = process.env[name];
-  if (!value) {
+  if (value === undefined) {
     throw new Error(`Missing required env var: ${name}`);
+  }
+  if (value === '') {
+    throw new Error(`Required env var is set but empty: ${name}`);
   }
   return value;
 }

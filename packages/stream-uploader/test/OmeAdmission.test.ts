@@ -82,14 +82,15 @@ describe('createOmeEngineFromEnv requires an admission secret (SEC-3)', () => {
 
   it('throws naming the variable when it is unset', () => {
     delete process.env.OME_ADMISSION_SECRET;
-    assert.throws(() => createOmeEngineFromEnv(), /OME_ADMISSION_SECRET/);
+    assert.throws(() => createOmeEngineFromEnv(), /Missing required env var: OME_ADMISSION_SECRET/);
   });
 
   // The deploy compose passes `${OME_ADMISSION_SECRET:-}`, so an operator who never set it gets the
-  // empty string rather than an absent variable. Both have to fail the same way.
-  it('throws when it is set to the empty string', () => {
+  // empty string rather than an absent variable. Both have to fail, and the messages have to differ,
+  // or the log tells the operator to add a key that is already in their .env.
+  it('throws when it is set to the empty string, and says empty rather than missing', () => {
     process.env.OME_ADMISSION_SECRET = '';
-    assert.throws(() => createOmeEngineFromEnv(), /OME_ADMISSION_SECRET/);
+    assert.throws(() => createOmeEngineFromEnv(), /set but empty: OME_ADMISSION_SECRET/);
   });
 
   it('constructs the engine once the secret is set', () => {
