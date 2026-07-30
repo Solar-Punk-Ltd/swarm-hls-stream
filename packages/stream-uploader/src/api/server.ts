@@ -17,11 +17,7 @@ export interface ApiServerHandle {
   close(): Promise<void>;
 }
 
-export function startApiServer(
-  streamOrchestrator: StreamOrchestrator,
-  port: number,
-  engines: EnginePlugin[] = [],
-): ApiServerHandle {
+export function createApiApp(streamOrchestrator: StreamOrchestrator, engines: EnginePlugin[] = []): express.Express {
   const app = express();
 
   // Global middleware
@@ -55,7 +51,15 @@ export function startApiServer(
   app.use(notFound);
   app.use(errorHandler);
 
-  const server = http.createServer(app);
+  return app;
+}
+
+export function startApiServer(
+  streamOrchestrator: StreamOrchestrator,
+  port: number,
+  engines: EnginePlugin[] = [],
+): ApiServerHandle {
+  const server = http.createServer(createApiApp(streamOrchestrator, engines));
 
   server.listen(port, () => {
     logger.info(`[ApiServer] Listening on port ${port}`);
