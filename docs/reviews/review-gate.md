@@ -115,9 +115,11 @@ Every REFUTED finding is appended to the rejected-findings table in
 [`2026-07-29-hardening-audit.md`](./2026-07-29-hardening-audit.md) together with its disproof. Real
 findings that fall outside the pull request's scope become new register rows instead of scope creep.
 
-That table already holds nine entries and has already prevented rework. It is the only artifact that
-stops a future round from re-raising a claim that has been investigated and killed, and it
-appreciates with every round.
+That section holds seven tables now, the original audit's plus one per review-gate round, and it has
+already prevented rework. Do not restate its row count here: this sentence claimed nine for several
+rounds after the real total passed forty, which is what a hardcoded number next to a growing table does.
+It is the only artifact that stops a future round from re-raising a claim that has been investigated and
+killed, and it appreciates with every round.
 
 ## Selecting lenses
 

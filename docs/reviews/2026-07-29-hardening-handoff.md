@@ -20,8 +20,9 @@ Read these three files IN FULL before doing anything else:
   docs/reviews/review-gate.md                     (the review every PR must pass)
 
 The audit is already done. Do NOT re-audit the codebase and do NOT re-derive findings. The
-register is your input. Its "Rejected findings" section lists nine claims that were investigated
-and disproved, so do not re-raise them.
+register is your input. Its "Rejected findings" section lists every claim that was investigated and
+disproved, across the original audit and each review-gate round since, so do not re-raise any of them.
+Read all of its tables, not only the first.
 
 Pick up from the progress log at the bottom of the handoff. Follow the working protocol exactly,
 including the review gate on every PR and the re-audit step at the end of each sprint. A task is
