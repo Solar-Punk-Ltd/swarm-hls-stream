@@ -33,10 +33,11 @@ progress log says. Ask me before pushing anything to a shared branch.
 
 ## Next session starts here
 
-Written 2026-07-30 at the end of the S2.1 session. Read this before the sprint plan below, because it
-supersedes anything in this document that contradicts it.
+Written 2026-07-30. That session ran S0.7, S2.1, SEC-11, TEST-9, a dead-code sweep, and S0.5 plus S0.6,
+landing three pull requests each through its own review gate. Read this before the sprint plan below,
+because it supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` @ `d1ef036`. Six PRs merged, each through the review gate:
+**Where the code is.** `feat/ai-hardening` @ `8d50e1b`. Six PRs merged, each through the review gate:
 S1.4 as #27, S1.3 as #28, the working-loop changes as #29, S0.7 + S2.1 + SEC-11 + TEST-9 as #30, the dead-code sweep as #31, and S0.5 + S0.6 as #32.
 `feature/uploader-hardening` @ `f146588` and `main` @ `6b82baa` are untouched and must stay that way.
 
@@ -48,16 +49,24 @@ Check all four with one command: **`pnpm verify`**. It short-circuits at the fir
 lint error hides later test results, where CI runs the four as independent jobs and reports all of
 them. Do not let any of it regress. Typecheck now covers `test/` as well, see TEST-9.
 
-**Next task: S2.2**, timeouts on all four `fetch` call sites. Its two prerequisites are now done, so it
-is unblocked: **S0.6** gives the puller an injectable fetcher, and its hang test already asserts the
-current broken behaviour, so S2.2's job is to invert that assertion. **S0.5** gives the orchestrator an
-injectable clock, which is what makes an abort window steppable. Then S1.1 and S4.1. Sprint 0 still has
-S0.3 and S0.4 open, and S0.4's FakeBee is largely built already in `test/helpers/fakes.ts`, which offers
-per-call upload control, immediate rejection with a non-retryable status, and a never-settling response.
+**Next task: S2.2**, timeouts on all four `fetch` call sites. Both prerequisites are done, so it is
+unblocked. S0.6 gives the puller an injectable fetcher and S0.5 gives the orchestrator an injectable clock,
+which is what makes an abort window steppable rather than waited out.
+
+**Start S2.2 by reading one test.** `OmeHlsPuller.test.ts` has "passes no abort signal and so blocks the
+tick while a fetch hangs, the gap S2.2 closes". Its load-bearing line is
+`assert.deepEqual(inits, [undefined])`, asserting that today's fetch carries no `AbortSignal`. That is
+designed to fail the moment S2.2 lands, so flipping it is S2.2's first move. It is shaped that way because
+the review gate proved the obvious version, "the tick did not settle within 80ms", stays green after a
+timeout is added and would therefore have documented nothing.
+
+Then S1.1 and S4.1. Sprint 0 still has S0.3 and S0.4 open, and S0.4's FakeBee is largely built already in
+`test/helpers/fakes.ts`, which offers per-call upload control, immediate rejection with a non-retryable
+status, and a never-settling response.
 
 **The clock seam stops at the orchestrator.** `OmeHlsPuller` still schedules its own polls with a raw
-`setTimeout`, and `retryUntilDeadlineAsync` still sleeps for real. Both are reachable now that `Clock`
-exists, and S2.3's backoff will want the puller's.
+`setTimeout` and `retryUntilDeadlineAsync` still sleeps for real, so the suite is not free of real waiting.
+S2.3's backoff will want the puller's.
 
 **The one thing to take from the #30 gate before writing any more of Sprint 2.** The change that closed
 OBS-1 was substantially wrong when it was first pushed, and every fix came from the gate rather than from
