@@ -31,6 +31,66 @@ Before your first commit, confirm you are on feat/ai-hardening and that HEAD mat
 progress log says. Ask me before pushing anything to a shared branch.
 ```
 
+## Next session starts here
+
+Written 2026-07-30 at the end of the S1.3 session. Read this before the sprint plan below, because it
+supersedes anything in this document that contradicts it.
+
+**Where the code is.** `feat/ai-hardening` @ `dee6905`. Both P0 one-file fixes are merged: S1.4 as
+PR #27 and S1.3 as PR #28, each through the full review gate. `feature/uploader-hardening` @
+`f146588` and `main` @ `6b82baa` are untouched and must stay that way. Test baseline is now **94
+uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean. Do not let those
+regress.
+
+**Next task: S2.1**, deriving `/health` status from the signals it already computes. It is next in
+the P0 order now that S1.4, S1.3 and S0.1 are done, and it unblocks every QA number, because the
+endpoint currently cannot report a problem at all. Then S2.2, S1.1, S4.1. Sprint 0 still has S0.3
+through S0.7 open, and S0.6 is the smallest of those.
+
+**One decision is waiting on the owner: SEC-11.** `engines/ome/.env.sample` ships
+`OME_ADMISSION_SECRET=change-me`, and `setup.sh:44` copies that file, so a fresh OME deployment runs
+a secret published in this repository. S1.3 moved the shipped default from _no secret_ to _a known
+secret_, which is an improvement and not a closure. Every fix changes operator workflow, so it is not
+an implementation decision: an empty sample value makes a first deploy refuse to start, and
+generating a random secret in `setup.sh` is an OPS change. Ask before picking one.
+
+**There is an unmerged branch: `chore/agent-harness`** (3 commits, pushed, no PR yet). It carries
+`.claude/settings.json` disabling the GateGuard edit-write fact hook, the `.gitignore` rule for
+TEST-10, and a composite `pnpm verify` script. **It has not been through the review gate**, so open a
+PR and run the gate before merging it. Note that `.claude/settings.json` exists only on that branch,
+so the hook stays active on `feat/ai-hardening` until it lands.
+
+**Gate amendments to fold into `review-gate.md` when that branch merges.** Measured this session, not
+guessed:
+
+- Give each lens a neutral orientation brief (repo layout, test commands, known traps). It reveals
+  nothing about the expected answer, so R1 holds. It cut the test lens 20% on tokens and 38% on time
+  and cost the security lens 19% more, so it is not a uniform win, and it needs more samples.
+- Run the **claims auditor first and alone**, before the code lenses. Twice this session a test count
+  went stale mid-review and invalidated the description after the code lenses had finished.
+- Four lenses, not five, on small diffs. The floor is three plus claims, and both rounds ran five.
+- The mechanical lenses (test integrity, claims audit) mostly run commands and count. They do not
+  need the top model tier. Security and correctness do.
+
+**Traps found the hard way this session.**
+
+- Lens agents created git worktrees **inside the repo** (`base-revision/`, `test-base/`) despite being
+  told to use the scratchpad, and one of them held `feat/ai-hardening` checked out, which blocked the
+  merge until it was detached. Tell lenses the scratchpad path explicitly, and remove both directories.
+- A lens ran `tsc` with file names on the command line, which silently ignores `tsconfig.json` and
+  emits 15 `.js` files beside the sources, turning `pnpm lint` red while every tracked file was clean.
+  Always instruct lenses to pass `--noEmit` and never name files.
+- `engines/ome/.env` **cannot** fix a failing OME container. `Dockerfile.uploader` copies only
+  `package.json` and `dist/`, so the file is not in the image, and dotenv does not override an
+  already-present empty value. The deploy `.env` is the only lever.
+- Test files are outside `tsconfig.json`'s `include`, so `pnpm typecheck` never reads them (TEST-9).
+  Typecheck a new test file explicitly.
+
+**Still blocked, unchanged.** The bee-uploader node has zero postage stamps and buying one is an
+on-chain action only the owner can perform. The deployed uploader is stale and updating it needs
+`pnpm build` followed by an operator `scp`. The QA stress test is deferred to the very end by owner
+decision, which keeps PR #10 and the `streaming-infra-manager` branch held for the duration.
+
 ## Branch model
 
 Three levels, and the middle one is the point. Do not commit code straight to the integration
