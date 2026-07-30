@@ -7,6 +7,18 @@ import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './uti
 
 const logger = Logger.getInstance();
 
+export const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * `AbortSignal.timeout` aborts with a `TimeoutError` DOMException, and an explicit `controller.abort()`
+ * with an `AbortError`. Both mean the request was cut off rather than answered, which is the case an
+ * operator needs to see at error level: it is indistinguishable from a healthy stream in every other log.
+ */
+function isAbortedRequest(error: unknown): boolean {
+  const name = (error as { name?: string } | null | undefined)?.name;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
 export class OmeHlsPuller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private state: 'idle' | 'running' | 'stopped' = 'idle';
@@ -19,6 +31,7 @@ export class OmeHlsPuller {
 
   private readonly onHalt?: () => void;
   private readonly fetcher: Fetcher;
+  private readonly fetchTimeoutMs: number;
 
   constructor(
     private streamId: string,
@@ -33,6 +46,7 @@ export class OmeHlsPuller {
     // Resolved per call rather than captured, so instrumentation that replaces globalThis.fetch after
     // construction is still seen. Capturing it here would silently opt this class out of an APM agent.
     this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
+    this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
   }
@@ -66,7 +80,11 @@ export class OmeHlsPuller {
     this.timer = setTimeout(() => {
       this.tick().catch((error) => {
         const msg = getErrorMessage(error);
-        logger.warn(`[OME] Puller tick error for ${this.streamId}: ${msg}`);
+        if (isAbortedRequest(error)) {
+          logger.error(`[OME] Puller request aborted after ${this.fetchTimeoutMs}ms for ${this.streamId}: ${msg}`);
+        } else {
+          logger.warn(`[OME] Puller tick error for ${this.streamId}: ${msg}`);
+        }
         this.scheduleNext(this.intervalMs);
       });
     }, delayMs);
@@ -74,6 +92,15 @@ export class OmeHlsPuller {
 
   private resetRetryCounter(): void {
     this.notFoundSince = null;
+  }
+
+  /**
+   * Every HTTP call the puller makes goes through here, so the abort window cannot be forgotten at a
+   * new call site. A fresh signal per call, because a shared one would abort later requests the moment
+   * the first window elapsed.
+   */
+  private fetchWithTimeout(url: string): Promise<Response> {
+    return this.fetcher(url, { signal: AbortSignal.timeout(this.fetchTimeoutMs) });
   }
 
   private async tick(): Promise<void> {
@@ -103,7 +130,7 @@ export class OmeHlsPuller {
     }
 
     const url = this.mediaPlaylistUrl as string;
-    const rawPlaylistResponse = await this.fetcher(url);
+    const rawPlaylistResponse = await this.fetchWithTimeout(url);
 
     if (rawPlaylistResponse.status === 404) {
       this.handleNotFound('media playlist');
@@ -144,7 +171,7 @@ export class OmeHlsPuller {
 
       const segmentUrl = new URL(segment.uri, url).toString();
       try {
-        const segmentResponse = await this.fetcher(segmentUrl);
+        const segmentResponse = await this.fetchWithTimeout(segmentUrl);
 
         if (!segmentResponse.ok) {
           logger.warn(`[OME] Segment ${segment.seq} fetch failed for ${this.streamId}: HTTP ${segmentResponse.status}`);
@@ -163,13 +190,19 @@ export class OmeHlsPuller {
         this.lastSeq = segment.seq;
       } catch (error) {
         const msg = getErrorMessage(error);
-        logger.warn(`[OME] Segment ${segment.seq} fetch error for ${this.streamId}: ${msg}`);
+        if (isAbortedRequest(error)) {
+          logger.error(
+            `[OME] Segment ${segment.seq} aborted after ${this.fetchTimeoutMs}ms for ${this.streamId}: ${msg}`,
+          );
+        } else {
+          logger.warn(`[OME] Segment ${segment.seq} fetch error for ${this.streamId}: ${msg}`);
+        }
       }
     }
   }
 
   private async fetchMediaPlaylistUrl(): Promise<boolean> {
-    const res = await this.fetcher(this.masterUrl);
+    const res = await this.fetchWithTimeout(this.masterUrl);
 
     if (res.status === 404) {
       this.handleNotFound('master playlist');

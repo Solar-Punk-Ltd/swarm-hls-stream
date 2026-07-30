@@ -8,6 +8,11 @@ export interface PullerOptions {
   /** Called once when the puller gives up, so the engine can deregister the stream. */
   onHalt?: () => void;
   fetcher?: Fetcher;
+  /**
+   * Abort window applied to every HTTP call the puller makes. Node's fetch has no default timeout, so
+   * without this a black-holed connection stalls the poll loop for as long as the socket stays open.
+   */
+  fetchTimeoutMs?: number;
 }
 
 export interface AppStream {
@@ -24,6 +29,8 @@ export interface PlaylistEntry {
 export interface OmeEngineOptions {
   admissionSecret?: string;
   failOpen?: boolean;
+  /** Passed straight to every puller this engine starts. See `PullerOptions.fetchTimeoutMs`. */
+  fetchTimeoutMs?: number;
 }
 
 export interface OmeAdmissionRequest {

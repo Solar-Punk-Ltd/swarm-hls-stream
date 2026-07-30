@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Fetcher } from '../src/engines/ome/interfaces.js';
-import { OmeHlsPuller } from '../src/engines/ome/OmeHlsPuller.js';
+import { DEFAULT_FETCH_TIMEOUT_MS, OmeHlsPuller } from '../src/engines/ome/OmeHlsPuller.js';
 import { REJECT_QUEUE_FULL, SegmentResult } from '../src/types.js';
 
 const MEDIA_PLAYLIST = [
@@ -177,7 +177,12 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
     stop(): void;
   }
 
-  function makeDrivablePuller(fetcher: Fetcher, pulled: number[] = [], halts: number[] = []): PullerDriver {
+  function makeDrivablePuller(
+    fetcher: Fetcher,
+    pulled: number[] = [],
+    halts: number[] = [],
+    overrides: { intervalMs?: number; fetchTimeoutMs?: number } = {},
+  ): PullerDriver {
     const orchestrator = {
       handleSegment: (_id: string, seq: number) => {
         pulled.push(seq);
@@ -185,11 +190,21 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
       },
     } as unknown as OrchestratorArg;
 
-    // A huge interval so the puller's own scheduled ticks never fire and the test drives tick() itself.
-    return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
-      fetcher,
-      onHalt: () => halts.push(1),
-    }) as unknown as PullerDriver;
+    // A huge interval by default so the puller's own scheduled ticks never fire and the test drives
+    // tick() itself. The timeout tests override it, because rescheduling is what they assert.
+    return new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      overrides.intervalMs ?? 1_000_000,
+      orchestrator,
+      {
+        fetcher,
+        onHalt: () => halts.push(1),
+        fetchTimeoutMs: overrides.fetchTimeoutMs,
+      },
+    ) as unknown as PullerDriver;
   }
 
   it('resolves the master playlist and then follows the variant, with no network', async () => {
@@ -228,16 +243,101 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
     );
   });
 
-  it('blocks the tick while a fetch hangs, which is the gap S2.2 closes', async () => {
-    const puller = makeDrivablePuller((() => new Promise(() => {})) as unknown as Fetcher);
+  const FETCH_TIMEOUT_MS = 25;
 
-    const settled = await Promise.race([puller.tick().then(() => 'settled'), sleep(80).then(() => 'still-pending')]);
+  it('defaults the abort window to the documented value', () => {
+    // Pinned as a literal on purpose. Every test above passes its own short window, so none of them
+    // would notice the production default changing, and the default is what a real deploy runs with.
+    assert.equal(DEFAULT_FETCH_TIMEOUT_MS, 10_000);
+  });
+
+  /**
+   * Never resolves on its own, and **honours the abort signal** by rejecting when it fires. Honouring
+   * it is the whole point: a fake that ignores the signal never settles whatever timeout is
+   * configured, so a test built on one passes identically with and without a timeout.
+   */
+  function hangingFetcher(seenSignals: (AbortSignal | undefined)[] = [], urls: string[] = []): Fetcher {
+    return ((input: RequestInfo | URL, init?: RequestInit) => {
+      urls.push(String(input));
+      const signal = init?.signal ?? undefined;
+      seenSignals.push(signal);
+      return new Promise((_resolve, reject) => {
+        // Rejecting with signal.reason rather than a hand-rolled Error, because that is the exact
+        // TimeoutError DOMException AbortSignal.timeout produces, and the code under test branches on it.
+        signal?.addEventListener('abort', () => reject(signal.reason));
+      });
+    }) as unknown as Fetcher;
+  }
+
+  it('aborts a hanging fetch within the configured window instead of stalling the tick', async () => {
+    const seenSignals: (AbortSignal | undefined)[] = [];
+    const puller = makeDrivablePuller(hangingFetcher(seenSignals), [], [], { fetchTimeoutMs: FETCH_TIMEOUT_MS });
+
+    const outcome = await Promise.race([
+      puller.tick().then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      sleep(FETCH_TIMEOUT_MS * 20).then(() => 'still-pending'),
+    ]);
     puller.stop();
 
-    assert.equal(
-      settled,
-      'still-pending',
-      'no fetch here has a timeout, so one black-holed connection stalls the poll loop indefinitely',
+    assert.equal(outcome, 'rejected', 'a black-holed connection has to abort and surface, not stall the poll loop');
+    assert.ok(seenSignals[0] instanceof AbortSignal, 'the fetch is handed an abort signal');
+    assert.equal(seenSignals[0]?.aborted, true, 'and that signal is what ended the hang');
+  });
+
+  it('carries an abort signal on the segment fetch too, not only the playlist ones', async () => {
+    const seenSignals: (AbortSignal | undefined)[] = [];
+    const urls: string[] = [];
+    // Playlists resolve normally, so the hang lands on the segment fetch specifically.
+    const routes: Record<string, Route> = {
+      [MASTER_URL]: { body: MASTER_PLAYLIST },
+      [VARIANT_URL]: { body: MEDIA_PLAYLIST },
+    };
+    const playlists = routedFetcher(routes);
+    const fetcher = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('.ts')) {
+        return hangingFetcher(seenSignals, urls)(input, init);
+      }
+      return playlists(input, init);
+    }) as unknown as Fetcher;
+
+    const puller = makeDrivablePuller(fetcher, [], [], { fetchTimeoutMs: FETCH_TIMEOUT_MS });
+    await Promise.race([puller.tick().catch(() => undefined), sleep(FETCH_TIMEOUT_MS * 20)]);
+    puller.stop();
+
+    assert.ok(urls.length > 0, 'a segment fetch was attempted');
+    assert.ok(seenSignals[0] instanceof AbortSignal, 'the segment fetch is handed an abort signal');
+    assert.equal(seenSignals[0]?.aborted, true, 'and it aborts rather than hanging the playlist loop');
+  });
+
+  it('logs the abort as an error and still runs the next tick', async () => {
+    const errors: string[] = [];
+    const urls: string[] = [];
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
+    console.warn = () => {};
+
+    const puller = makeDrivablePuller(hangingFetcher([], urls), [], [], {
+      fetchTimeoutMs: FETCH_TIMEOUT_MS,
+      intervalMs: 5,
+    });
+
+    try {
+      (puller as unknown as { start(): void }).start();
+      await sleep(FETCH_TIMEOUT_MS * 8);
+      puller.stop();
+    } finally {
+      console.error = originalError;
+      console.warn = originalWarn;
+    }
+
+    assert.ok(urls.length >= 2, `the poll loop kept going after the abort, saw ${urls.length} attempts`);
+    assert.ok(
+      errors.some((line) => /abort|timed out|timeout/i.test(line)),
+      `the abort is logged at error level, got ${JSON.stringify(errors.slice(0, 3))}`,
     );
   });
 });

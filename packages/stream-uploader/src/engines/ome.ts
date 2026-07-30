@@ -7,7 +7,7 @@ import { optional, optionalBool, optionalInt, required } from '../utils/env.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
 import { AppStream, OmeAdmissionPayload, OmeEngineOptions } from './ome/interfaces.js';
-import { OmeHlsPuller } from './ome/OmeHlsPuller.js';
+import { DEFAULT_FETCH_TIMEOUT_MS, OmeHlsPuller } from './ome/OmeHlsPuller.js';
 import { buildStreamId, parseAppStream, parseStreamId, resolveMediaType } from './ome/utils.js';
 import { EnginePlugin } from './types.js';
 
@@ -19,10 +19,14 @@ type StopPuller = (streamId: string) => void;
 export function createOmeEngineFromEnv(): EnginePlugin {
   const hlsBaseUrl = optional('OME_HLS_URL', 'http://ome:8081');
   const pollIntervalMs = optionalInt('OME_HLS_POLL_INTERVAL_MS', 500);
-  logger.info(`[Engine] OME engine loaded, HLS base: ${hlsBaseUrl}, poll interval: ${pollIntervalMs}ms`);
+  const fetchTimeoutMs = optionalInt('OME_FETCH_TIMEOUT_MS', DEFAULT_FETCH_TIMEOUT_MS);
+  logger.info(
+    `[Engine] OME engine loaded, HLS base: ${hlsBaseUrl}, poll interval: ${pollIntervalMs}ms, fetch timeout: ${fetchTimeoutMs}ms`,
+  );
   return createOmeEngine(hlsBaseUrl, pollIntervalMs, {
     admissionSecret: required('OME_ADMISSION_SECRET'),
     failOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
+    fetchTimeoutMs,
   });
 }
 
@@ -34,6 +38,7 @@ export function createOmeEngine(
   const pullers = new Map<string, OmeHlsPuller>();
   const admissionSecret = options.admissionSecret ?? '';
   const failOpen = options.failOpen ?? false;
+  const fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
 
   // The puller lifecycle lives here (not inline in the admission handler) so crash-recovery can
   // restart it without a fresh admission call — OME never re-announces a session that stayed open
@@ -53,6 +58,7 @@ export function createOmeEngine(
 
     const puller = new OmeHlsPuller(streamId, app, stream, hlsBaseUrl, pollIntervalMs, orchestrator, {
       onHalt,
+      fetchTimeoutMs,
     });
     pullers.set(streamId, puller);
     puller.start();
