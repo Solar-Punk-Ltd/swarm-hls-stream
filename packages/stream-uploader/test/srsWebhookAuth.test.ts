@@ -182,6 +182,33 @@ describe('SRS webhook gate on the production app', () => {
   const OVERSIZED_BODY = JSON.stringify({ pad: 'x'.repeat(200_000) });
 
   for (const route of ['/engines/srs/streams', '/engines/srs/hls']) {
+    it(`names ${route} in the rejection log, with the credential redacted`, async () => {
+      // One line covered five causes and both routes, so an operator could not tell an on_publish
+      // rejection from an on_hls one, and the line carried originalUrl with the token still in it.
+      const warnings: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => void warnings.push(args.join(' '));
+
+      const { orchestrator } = startedStreamsSpy();
+      const api = await startTestApi(orchestrator, [createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN })]);
+
+      try {
+        await api.request(`${route}?${SRS_WEBHOOK_TOKEN_PARAM}=${'w'.repeat(TOKEN.length)}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo' }),
+        });
+      } finally {
+        console.warn = original;
+        await api.close();
+      }
+
+      const rejection = warnings.find((line) => line.includes('[SRS] Rejected webhook'));
+      assert.ok(rejection, `expected a rejection line, got: ${JSON.stringify(warnings)}`);
+      assert.ok(rejection.includes(route), `the line must name the route, got: ${rejection}`);
+      assert.ok(rejection.includes('REDACTED'), `the line must redact the credential, got: ${rejection}`);
+    });
+
     it(`refuses an anonymous oversized body on ${route} before parsing it`, async () => {
       // A 500 here would mean the parser ran first: the gate must be ahead of it, or an anonymous
       // caller costs the process a full parse and gets an unhandled-error line into the log.

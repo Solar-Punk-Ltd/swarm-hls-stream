@@ -8,7 +8,7 @@ import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, required } from '../utils/env.js';
 
-import { assertUsableWebhookToken, hasValidWebhookToken } from './srs/webhookToken.js';
+import { assertUsableWebhookToken, hasValidWebhookToken, redactWebhookToken } from './srs/webhookToken.js';
 import { EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
@@ -77,7 +77,13 @@ export function createSrsEngineFromEnv(): EnginePlugin {
 function createWebhookGate(webhookToken: string): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!hasValidWebhookToken(req, webhookToken)) {
-      logger.warn(`[SRS] Rejected webhook with missing or invalid token from ${req.ip}`);
+      // Named route, because the two webhooks fail in ways that need different responses: on_publish
+      // rejected means no stream ever starts, on_hls rejected means the stream runs and every
+      // segment is silently dropped. Redacted, because originalUrl is where the credential lives.
+      logger.warn(
+        `[SRS] Rejected webhook with missing or invalid token: ` +
+          `${req.method} ${redactWebhookToken(req.originalUrl)} from ${req.ip}`,
+      );
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
