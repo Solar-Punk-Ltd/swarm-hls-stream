@@ -3,7 +3,7 @@ import { Request, Response, Router } from 'express';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../utils/common.js';
-import { optional, optionalBool, optionalInt } from '../utils/env.js';
+import { optional, optionalBool, optionalInt, required } from '../utils/env.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
 import { AppStream, OmeAdmissionPayload, OmeEngineOptions } from './ome/interfaces.js';
@@ -21,7 +21,7 @@ export function createOmeEngineFromEnv(): EnginePlugin {
   const pollIntervalMs = optionalInt('OME_HLS_POLL_INTERVAL_MS', 500);
   logger.info(`[Engine] OME engine loaded, HLS base: ${hlsBaseUrl}, poll interval: ${pollIntervalMs}ms`);
   return createOmeEngine(hlsBaseUrl, pollIntervalMs, {
-    admissionSecret: optional('OME_ADMISSION_SECRET', ''),
+    admissionSecret: required('OME_ADMISSION_SECRET'),
     failOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
   });
 }
@@ -71,8 +71,11 @@ export function createOmeEngine(
     createRouter(orchestrator: StreamOrchestrator): Router {
       const router = Router();
 
+      // Only reachable when the engine is constructed directly, since the env path now requires the
+      // secret. Loud because the webhook is the ingest path: rejecting everything looks like a
+      // broadcaster problem from the outside.
       if (!admissionSecret) {
-        logger.warn('[OME] OME_ADMISSION_SECRET is not set — admission webhook accepts unauthenticated requests');
+        logger.warn('[OME] No admission secret configured, every admission request will be rejected');
       }
 
       router.post('/admission', (req: Request, res: Response) => {
