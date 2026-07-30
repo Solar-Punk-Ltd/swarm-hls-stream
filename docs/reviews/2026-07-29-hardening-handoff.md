@@ -210,7 +210,7 @@ the QA numbers mean something.
 | 2     | S1.3 | `OME_ADMISSION_SECRET` required, empty secret rejects instead of accepting |
 | 3     | S0.1 | CI workflow: typecheck, lint, prettier, test                               |
 | 4     | S2.1 | `/health` status derived from the signals it already computes              |
-| 5     | S2.2 | Timeouts on all four `fetch` call sites                                    |
+| 5     | S2.2 | Timeouts on all six `fetch` call sites, three puller and three client      |
 | 6     | S1.1 | Auth middleware on all control and ingest routes                           |
 | 7     | S4.1 | Persist the stamp batch id before the on-chain spend                       |
 
@@ -256,7 +256,7 @@ introduced, because root `pnpm lint` currently fails on `packages/cli`.
 | ID   | Task                                                          | Fixes        | Pri | Eff |
 | ---- | ------------------------------------------------------------- | ------------ | --- | --- |
 | S2.1 | `/health` status derived from real signals                    | OBS-1        | P0  | S   |
-| S2.2 | Timeouts on all four `fetch` call sites                       | OBS-2        | P0  | S   |
+| S2.2 | Timeouts on all six `fetch` call sites (3 puller, 3 client)   | OBS-2        | P0  | S   |
 | S2.3 | Puller backoff plus a halt threshold                          | OBS-6        | P1  | M   |
 | S2.4 | Surface `notifyStart` failure, stop per-segment catalog retry | CON-3        | P1  | M   |
 | S2.5 | `/stream/stop` reports the real drain outcome                 | OBS-3        | P1  | M   |
