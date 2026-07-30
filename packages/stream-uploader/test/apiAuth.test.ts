@@ -158,6 +158,54 @@ describe('api auth (S1.1, closes SEC-1)', () => {
     assert.equal(calls.startStream.length, 1);
   });
 
+  it('rejects a credential with no space after the scheme', async () => {
+    const calls = noCalls();
+    const api = await start(calls);
+
+    const { status } = await api.request('/stream/start', {
+      ...startBody(),
+      headers: { 'content-type': 'application/json', authorization: `Bearer${TEST_AUTH_TOKEN}` },
+    });
+
+    assert.equal(status, 401, 'RFC 7235 requires at least one space, so no separator is not a credential');
+    assert.deepEqual(calls.startStream, []);
+  });
+
+  it('gates the whole /stream prefix, not only the routes that exist today', async () => {
+    // The middleware claims a route added to this router later is covered without anyone remembering.
+    // A 401 rather than a 404 on an unrouted path is what makes that true.
+    const api = await start(noCalls());
+
+    const { status } = await api.request('/stream/not-a-route-yet', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...NO_AUTH_HEADER },
+      body: '{}',
+    });
+
+    assert.equal(status, 401);
+  });
+
+  it('accepts a base64 token, which is what the documented generator can produce', () => {
+    // token68 admits + / and =, and openssl rand -base64 uses all three. Rejecting one would lock an
+    // operator out at startup for following the README.
+    assert.doesNotThrow(() =>
+      createApiApp(makeTestOrchestrator(), { authToken: 'aB3+cD4/eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX4yZ5a=' }),
+    );
+  });
+
+  it('sets the floor at the documented length', () => {
+    // Pinned as a literal, because every other assertion here is written against the constant and so
+    // moves with it. The same reason the abort window's default is pinned this way.
+    assert.equal(MIN_AUTH_TOKEN_LENGTH, 32);
+  });
+
+  it('rejects a token one character below the floor', () => {
+    assert.throws(() => createApiApp(makeTestOrchestrator(), { authToken: 'a'.repeat(MIN_AUTH_TOKEN_LENGTH - 1) }), {
+      message: /at least/,
+    });
+    assert.doesNotThrow(() => createApiApp(makeTestOrchestrator(), { authToken: 'a'.repeat(MIN_AUTH_TOKEN_LENGTH) }));
+  });
+
   it('leaves /health reachable without a token, since health.sh reads it', async () => {
     const api = await start(noCalls());
 
@@ -211,6 +259,29 @@ describe('api auth (S1.1, closes SEC-1)', () => {
 
     assert.equal(status, 401, 'a malformed anonymous body must be refused, not parsed and then 500');
     assert.deepEqual(body, { error: 'Unauthorized' });
+  });
+
+  it('refuses an oversized anonymous segment before the raw parser sees its length', async () => {
+    // The malformed-JSON case above pins the gate ahead of express.json only, and it is express.raw
+    // that allocates 50MB per connection. Driven over a raw socket because fetch computes
+    // Content-Length from the body, and the point is a declared length the parser would reject with
+    // 413 before a single byte of the body arrives.
+    const api = await start(noCalls());
+    const status = await api.rawRequest(
+      [
+        'POST /stream/segment HTTP/1.1',
+        `Host: 127.0.0.1`,
+        'Content-Type: video/mp2t',
+        'x-stream-id: live/one',
+        'x-segment-index: 0',
+        'x-duration: 2',
+        'Content-Length: 52428801',
+        '',
+        '',
+      ].join('\r\n'),
+    );
+
+    assert.equal(status, 401, 'the gate has to answer before the body parser weighs the request');
   });
 
   it('names the full path in the rejection log, not the mount-relative one', async () => {

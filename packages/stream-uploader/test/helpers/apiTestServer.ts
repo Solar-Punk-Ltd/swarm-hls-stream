@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import http from 'node:http';
-import { AddressInfo } from 'node:net';
+import net, { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { createApiApp } from '../../src/api/server.js';
@@ -8,6 +9,7 @@ import { EnginePlugin } from '../../src/engines/types.js';
 import { StreamOrchestrator } from '../../src/libs/StreamOrchestrator.js';
 
 const POLL_INTERVAL_MS = 10;
+const RAW_RESPONSE_TIMEOUT_MS = 2_000;
 
 /** Long enough to satisfy the production minimum, so tests exercise the real gate rather than a relaxed one. */
 export const TEST_AUTH_TOKEN = 'test-token-0123456789abcdef0123456789abcdef';
@@ -25,6 +27,8 @@ export interface ApiResponse {
 }
 
 export interface ApiTestServer {
+  /** Sends a hand-written request and resolves the status line's code. For header forms fetch will not emit. */
+  rawRequest(request: string): Promise<number>;
   /** Authenticated by default. Pass your own `authorization` header, or `NO_AUTH_HEADER`, to drive the gate. */
   request(path: string, init?: RequestInit): Promise<ApiResponse>;
   /** Polls `path` until `pred` accepts the parsed body, then returns that response. Throws on timeout. */
@@ -66,8 +70,24 @@ export async function startTestApi(
     return { status: response.status, body: text === '' ? undefined : JSON.parse(text) };
   }
 
+  async function rawRequest(request: string): Promise<number> {
+    const socket = net.connect(port, '127.0.0.1');
+    try {
+      await once(socket, 'connect');
+      socket.write(request);
+      // A bounded wait, so a body parser that sits in front of the gate and waits for a body that
+      // never comes fails this test rather than hanging the run with no tally to read.
+      socket.setTimeout(RAW_RESPONSE_TIMEOUT_MS, () => socket.destroy(new Error('no response')));
+      const [chunk] = (await once(socket, 'data')) as [Buffer];
+      return Number(/^HTTP\/1\.\d (\d{3})/.exec(chunk.toString())?.[1]);
+    } finally {
+      socket.destroy();
+    }
+  }
+
   return {
     request,
+    rawRequest,
 
     async requestUntil(path, pred, timeoutMs = 2_000) {
       const deadline = Date.now() + timeoutMs;
