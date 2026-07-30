@@ -5,6 +5,7 @@ import {
   HEALTH_DEGRADED,
   HEALTH_OK,
   HEALTH_REASON_QUEUE_PRESSURE,
+  HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
@@ -154,8 +155,9 @@ describe('health wire contract', () => {
         HEALTH_REASON_STALE_MANIFEST,
         HEALTH_REASON_QUEUE_PRESSURE,
         HEALTH_REASON_SEGMENT_STALL,
+        HEALTH_REASON_SEGMENT_LOSS,
       ],
-      ['segment_upload_failure', 'stale_manifest', 'queue_pressure', 'segment_stall'],
+      ['segment_upload_failure', 'stale_manifest', 'queue_pressure', 'segment_stall', 'segment_loss'],
     );
   });
 
@@ -191,5 +193,45 @@ describe('deriveHealthStatus reason reporting', () => {
 
     assert.equal(report.status, HEALTH_OK);
     assert.deepEqual(report.reasons, []);
+  });
+});
+
+describe('deriveHealthStatus segment loss', () => {
+  // The only other coverage of this reason drives it at an age of about zero, which cannot tell a
+  // window from an unconditional raise, nor a `<=` from a `<`, nor the age being computed backwards.
+  it('is degraded while a loss is inside the visibility window', () => {
+    const report = deriveHealthStatus(signals({ msSinceSegmentLoss: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_SEGMENT_LOSS]);
+  });
+
+  it('is still degraded exactly at the window edge', () => {
+    const report = deriveHealthStatus(signals({ msSinceSegmentLoss: STALL_MS }), STALL_MS);
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_SEGMENT_LOSS]);
+  });
+
+  it('is ok one millisecond past the window, so a loss clears rather than latching', () => {
+    const report = deriveHealthStatus(signals({ msSinceSegmentLoss: STALL_MS + 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  it('is ok when no loss has been reported', () => {
+    const report = deriveHealthStatus(signals({ msSinceSegmentLoss: null }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+  });
+
+  it('reports a loss independently of the upload-failure counter', () => {
+    // The two are different facts: one segment never arrived, the other arrived and failed to upload.
+    const report = deriveHealthStatus(
+      signals({ msSinceSegmentLoss: 1, maxConsecutiveSegmentFailures: SEGMENT_FAILURE_THRESHOLD }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_SEGMENT_LOSS, HEALTH_REASON_SEGMENT_UPLOAD_FAILURE].sort());
   });
 });

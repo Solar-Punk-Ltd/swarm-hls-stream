@@ -276,6 +276,12 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
 
   const FETCH_TIMEOUT_MS = 25;
 
+  it('writes a segment off after the documented number of attempts', () => {
+    // Every loop above uses the constant, so its value cannot be caught by them: 3 to 5 and 3 to 100
+    // both leave the suite green. Pinned as a literal for the same reason the abort default is.
+    assert.equal(SEGMENT_RETRY_LIMIT, 3);
+  });
+
   it('defaults the abort window to the documented value', () => {
     // Pinned as a literal on purpose. Every test above passes its own short window, so none of them
     // would notice the production default changing, and the default is what a real deploy runs with.
@@ -612,6 +618,67 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
 
     assert.deepEqual(record.lost, [], 'a stopped puller reports nothing');
     assert.equal(puller.lastSeq, 0, 'and it does not step over the segment it could not report');
+  });
+
+  it('holds its position when nothing is registered to record the loss', async () => {
+    // Every other fake here accepts, so the whole rejection path was unexercised. A stream can leave
+    // the orchestrator between a puller's fetch and its report, through a drain, a recovery timeout
+    // or a re-announce, and stepping over the gap there loses those indexes with no trace at all.
+    const attempts: number[] = [];
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: (_id: string, firstIndex: number) => {
+        attempts.push(firstIndex);
+        return false;
+      },
+    } as unknown as OrchestratorArg;
+    const fetcher = ((input: RequestInfo | URL) =>
+      String(input).endsWith('segment_1.ts')
+        ? Promise.reject(new TypeError('fetch failed'))
+        : Promise.resolve(okSegment())) as unknown as Fetcher;
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as PullerInternals;
+
+    for (let pass = 0; pass < SEGMENT_RETRY_LIMIT + 2; pass++) {
+      await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+    }
+
+    assert.ok(attempts.length >= 2, 'the puller keeps trying to report rather than giving up quietly');
+    assert.equal(puller.lastSeq, 0, 'and it never steps over a gap nothing recorded');
+  });
+
+  it('reports the segments it failed to obtain before ever delivering one', async () => {
+    // The negative case, that a late join reports nothing, passes just as well when the baseline is
+    // never recorded at all. This is the case the baseline exists for: a puller whose very first
+    // segments fail, which is every cold start against an origin still warming up.
+    const record: LossRecorder = { delivered: [], lost: [] };
+    let warmingUp = true;
+    const fetcher = ((input: RequestInfo | URL) =>
+      Promise.resolve(
+        warmingUp && String(input).endsWith('.ts') ? { ok: false, status: 404 } : okSegment(),
+      )) as unknown as Fetcher;
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      1_000_000,
+      makeRecordingOrchestrator(record),
+      { fetcher },
+    ) as unknown as PullerInternals;
+
+    await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+    warmingUp = false;
+    const WINDOW_MOVED_PAST = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:9', '#EXTINF:2.0,', 'segment_9.ts'].join('\n');
+    await withSilencedLogs(() => puller.processPlaylist(WINDOW_MOVED_PAST, MEDIA_URL));
+
+    assert.deepEqual(record.delivered, [9]);
+    assert.deepEqual(
+      record.lost,
+      [{ firstIndex: 0, count: 9 }],
+      'everything between the first index this puller saw and the one it finally got is a reported gap',
+    );
   });
 
   it('does not report a loss for the indexes before the first segment it ever sees', async () => {

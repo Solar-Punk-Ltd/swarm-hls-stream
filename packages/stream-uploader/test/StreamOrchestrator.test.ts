@@ -4,7 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -229,5 +229,58 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     assert.equal(orch.getActiveStreamCount(), 1, 'a resumed stream is never VOD-ed by the timer it cancelled');
     assert.deepEqual(catalogEntries, [], 'and nothing is published as VOD');
     await orch.cleanup();
+  });
+});
+
+describe('StreamOrchestrator segment loss (OBS-11)', () => {
+  it('carries a loss through to the uploader, so the next segment is a discontinuity', async () => {
+    // Neither side of this link was crossed: the uploader tests call its method directly and the
+    // health tests read /health, so the orchestrator could stop forwarding entirely and stay green.
+    const saved: StreamState[] = [];
+    const orchestrator = makeTestOrchestrator(
+      {},
+      {},
+      makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orchestrator.startStream('live/one', MEDIA_TYPE_VIDEO);
+    await sleep(20);
+
+    assert.equal(orchestrator.handleSegmentLoss('live/one', 7, 1), true);
+    orchestrator.handleSegment('live/one', 8, 2, Buffer.from('seg8'));
+    await sleep(20);
+
+    const withSegment = saved.filter((state) => state.segments.length > 0);
+    assert.ok(withSegment.length > 0, 'a segment reached the manifest');
+    assert.equal(
+      withSegment[withSegment.length - 1].segments.find((s) => s.index === 8)?.discontinuity,
+      true,
+      'the segment after a lost one has to carry the marker, or players are told the gap is contiguous',
+    );
+  });
+
+  it('answers false for a stream it does not have, rather than dropping the loss silently', () => {
+    const orchestrator = makeTestOrchestrator();
+
+    assert.equal(
+      orchestrator.handleSegmentLoss('live/never-started', 0, 1),
+      false,
+      'the caller has to learn nothing recorded the gap, or it steps over indexes with no trace',
+    );
+  });
+
+  it('does not count a loss as stream activity, so a stream losing everything still stalls', () => {
+    const clock = new FakeClock();
+    const orchestrator = makeTestOrchestrator({ clock, segmentStallMs: 1_000 });
+
+    orchestrator.startStream('live/one', MEDIA_TYPE_VIDEO);
+    clock.advance(5_000);
+    orchestrator.handleSegmentLoss('live/one', 0, 1);
+
+    assert.equal(
+      orchestrator.getMsSinceStreamActivity(),
+      5_000,
+      'refreshing the activity clock on a loss would hide a dead stream behind its own losses',
+    );
   });
 });
