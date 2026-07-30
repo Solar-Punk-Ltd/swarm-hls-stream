@@ -18,8 +18,11 @@ type StopPuller = (streamId: string) => void;
 
 export function createOmeEngineFromEnv(): EnginePlugin {
   const hlsBaseUrl = optional('OME_HLS_URL', 'http://ome:8081');
-  const pollIntervalMs = optionalInt('OME_HLS_POLL_INTERVAL_MS', 500);
-  const fetchTimeoutMs = optionalInt('OME_FETCH_TIMEOUT_MS', DEFAULT_FETCH_TIMEOUT_MS);
+  // A zero poll interval is legitimate, meaning poll as fast as each tick completes. A zero abort
+  // window is not: it cancels every request before it can answer, which is how an operator writing
+  // the natural value for "disabled" silently turns the puller off.
+  const pollIntervalMs = optionalInt('OME_HLS_POLL_INTERVAL_MS', 500, { min: 0 });
+  const fetchTimeoutMs = optionalInt('OME_FETCH_TIMEOUT_MS', DEFAULT_FETCH_TIMEOUT_MS, { min: 1 });
   logger.info(
     `[Engine] OME engine loaded, HLS base: ${hlsBaseUrl}, poll interval: ${pollIntervalMs}ms, fetch timeout: ${fetchTimeoutMs}ms`,
   );

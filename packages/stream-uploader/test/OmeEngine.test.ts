@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { createOmeEngine } from '../src/engines/ome.js';
+import { createOmeEngine, createOmeEngineFromEnv } from '../src/engines/ome.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
 // A recovered OME stream gets no fresh admission (the broadcaster's SRT session stayed open across the
@@ -45,5 +45,42 @@ describe('createOmeEngine resumeRecoveredStream (F: OME crash recovery)', () => 
       fetchedUrls.includes('http://ome:8081/video/stream/ts:playlist.m3u8'),
       `resuming a recovered OME stream must restart its puller; fetched: ${fetchedUrls.join(', ') || '(none)'}`,
     );
+  });
+});
+
+describe('createOmeEngineFromEnv validation (OBS-12)', () => {
+  const OME_VARS = ['OME_ADMISSION_SECRET', 'OME_FETCH_TIMEOUT_MS', 'OME_HLS_POLL_INTERVAL_MS'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(OME_VARS.map((name) => [name, process.env[name]]));
+    process.env.OME_ADMISSION_SECRET = 'test-secret';
+  });
+
+  afterEach(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  });
+
+  // Each of these ran happily past startup and only showed up once a stream started pulling: zero
+  // aborted every request, the overflow was clamped to 1ms while the log reported the window the
+  // operator wrote, and the negative threw a RangeError per tick so no HTTP request was ever made.
+  for (const badWindow of ['0', '-1', '2147483648', '10s']) {
+    it(`refuses to build an engine with OME_FETCH_TIMEOUT_MS=${badWindow}`, () => {
+      process.env.OME_FETCH_TIMEOUT_MS = badWindow;
+
+      assert.throws(() => createOmeEngineFromEnv(), { message: /OME_FETCH_TIMEOUT_MS/ });
+    });
+  }
+
+  it('builds an engine when the window is a usable integer', () => {
+    process.env.OME_FETCH_TIMEOUT_MS = '2500';
+
+    assert.equal(createOmeEngineFromEnv().name, 'ome');
   });
 });
