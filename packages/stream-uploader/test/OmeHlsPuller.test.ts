@@ -26,6 +26,18 @@ interface PullerInternals {
 
 type OrchestratorArg = ConstructorParameters<typeof OmeHlsPuller>[5];
 
+async function withSilencedLogs<T>(run: () => Promise<T>): Promise<T> {
+  const { error, warn } = console;
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    return await run();
+  } finally {
+    console.error = error;
+    console.warn = warn;
+  }
+}
+
 function makePuller(handleSegment: () => SegmentResult): PullerInternals {
   const orchestrator = { handleSegment } as unknown as OrchestratorArg;
   const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1000, orchestrator);
@@ -356,5 +368,114 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
       errors.some((line) => /abort|timed out|timeout/i.test(line)),
       `the abort is logged at error level, got ${JSON.stringify(errors.slice(0, 3))}`,
     );
+  });
+});
+
+describe('OmeHlsPuller segment loss (OBS-11)', () => {
+  const THREE_SEGMENT_PLAYLIST = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:2',
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '#EXTINF:2.0,',
+    'segment_0.ts',
+    '#EXTINF:2.0,',
+    'segment_1.ts',
+    '#EXTINF:2.0,',
+    'segment_2.ts',
+  ].join('\n');
+
+  interface SegmentDoor {
+    name: string;
+    respond: () => Promise<Response>;
+  }
+
+  /**
+   * Every way a segment download can end without the bytes arriving. All four reach the same place, and
+   * all four used to let `lastSeq` advance past the segment, which is what makes the loss permanent.
+   */
+  const SEGMENT_FAILURE_DOORS: SegmentDoor[] = [
+    {
+      name: 'an aborted request',
+      respond: () => Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+    },
+    {
+      name: 'a network drop',
+      respond: () => Promise.reject(new TypeError('fetch failed')),
+    },
+    {
+      name: 'a body read that fails mid-download',
+      respond: async () =>
+        ({
+          ok: true,
+          status: 200,
+          arrayBuffer: () => Promise.reject(new Error('aborted: socket hang up')),
+        } as unknown as Response),
+    },
+    {
+      name: 'an origin error status',
+      respond: async () => ({ ok: false, status: 503 } as unknown as Response),
+    },
+  ];
+
+  function okSegment(): Response {
+    return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response;
+  }
+
+  function makePullerFailingOn(failingSeq: number | null, door: SegmentDoor, delivered: number[]): PullerInternals {
+    const fetcher = ((input: RequestInfo | URL) =>
+      String(input).endsWith(`segment_${failingSeq}.ts`)
+        ? door.respond()
+        : Promise.resolve(okSegment())) as unknown as Fetcher;
+
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true };
+      },
+      handleSegmentLoss: () => {},
+    } as unknown as OrchestratorArg;
+
+    return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as PullerInternals;
+  }
+
+  for (const door of SEGMENT_FAILURE_DOORS) {
+    it(`holds position when ${door.name} loses a segment, rather than skipping it forever`, async () => {
+      const delivered: number[] = [];
+      const puller = makePullerFailingOn(1, door, delivered);
+
+      await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+
+      assert.deepEqual(delivered, [0], 'the pass stops at the failed segment instead of running past it');
+      assert.equal(puller.lastSeq, 0, 'lastSeq must not advance past a segment that was never delivered');
+    });
+  }
+
+  it('re-pulls the held segment on the next pass once the origin recovers', async () => {
+    const delivered: number[] = [];
+    let failing = true;
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true };
+      },
+      handleSegmentLoss: () => {},
+    } as unknown as OrchestratorArg;
+    const fetcher = ((input: RequestInfo | URL) =>
+      failing && String(input).endsWith('segment_1.ts')
+        ? Promise.reject(new TypeError('fetch failed'))
+        : Promise.resolve(okSegment())) as unknown as Fetcher;
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as PullerInternals;
+
+    await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+    failing = false;
+    await withSilencedLogs(() => puller.processPlaylist(THREE_SEGMENT_PLAYLIST, MEDIA_URL));
+
+    assert.deepEqual(delivered, [0, 1, 2], 'the recovered segment is delivered in order, with no hole');
+    assert.equal(puller.lastSeq, 2);
   });
 });

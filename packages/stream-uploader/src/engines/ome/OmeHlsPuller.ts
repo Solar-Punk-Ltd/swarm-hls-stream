@@ -158,6 +158,13 @@ export class OmeHlsPuller {
     return body;
   }
 
+  /**
+   * `lastSeq` advances only past a segment that actually reached the orchestrator, so every failure
+   * ends this pass and the next tick re-pulls the same index. Continuing instead would advance past
+   * the failed segment on the next success, and its own `seq <= lastSeq` guard would then drop that
+   * index forever: a hole in the manifest that no health signal can see, since a segment that never
+   * arrives is a segment that never failed to upload.
+   */
   private async processPlaylist(playlist: string, url: string): Promise<void> {
     const segments = parseMediaPlaylist(playlist);
 
@@ -175,7 +182,7 @@ export class OmeHlsPuller {
 
         if (!segmentResponse.ok) {
           logger.warn(`[OME] Segment ${segment.seq} fetch failed for ${this.streamId}: HTTP ${segmentResponse.status}`);
-          continue;
+          return;
         }
 
         const segmentBuffer = Buffer.from(await segmentResponse.arrayBuffer());
@@ -197,6 +204,7 @@ export class OmeHlsPuller {
         } else {
           logger.warn(`[OME] Segment ${segment.seq} fetch error for ${this.streamId}: ${msg}`);
         }
+        return;
       }
     }
   }
