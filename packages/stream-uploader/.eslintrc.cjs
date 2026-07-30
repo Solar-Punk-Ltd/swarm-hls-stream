@@ -1,6 +1,6 @@
 module.exports = {
   root: true,
-  env: { es2020: true, jest: true, node: true },
+  env: { es2020: true, node: true },
   parser: '@typescript-eslint/parser',
   plugins: ['@typescript-eslint', 'simple-import-sort', 'import'],
   extends: [
