@@ -34,8 +34,8 @@ vhost __defaultVhost__ {
 
     http_hooks {
         enabled         on;
-        on_publish      http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/streams;
-        on_unpublish    http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/streams;
-        on_hls          http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/hls;
+        on_publish      http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/streams?token=SRS_WEBHOOK_TOKEN_PLACEHOLDER;
+        on_unpublish    http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/streams?token=SRS_WEBHOOK_TOKEN_PLACEHOLDER;
+        on_hls          http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/hls?token=SRS_WEBHOOK_TOKEN_PLACEHOLDER;
     }
 }
