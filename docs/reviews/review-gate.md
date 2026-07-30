@@ -167,8 +167,16 @@ found real defects, so a reduced set is not a rubber stamp.
 
 ## Lens prompt rules
 
-Measured across rounds #27 to #32 rather than guessed. They live here because they are part of the
-protocol, and each one is a sentence in a prompt that changed what a lens found.
+Each of these came out of a round of this gate rather than out of general principle. They live here
+because they are part of the protocol rather than part of any one round's notes.
+
+**Read the figures below with their provenance.** This repository holds no measurement artifact: no token
+log, no timing log, no recorded mutation set. The #30 mutation counts and the #29 token figures also
+appear in the gate results posted on those pull requests, so they can be checked against something other
+than this file. The #28 percentages and the #32 mutation count appear only in author-written documents,
+and a document asserting its own measurement is not evidence. Treat an unchecked figure as a reason to
+re-measure rather than as a settled number. Each rule stands on the finding its round produced, which is
+checkable, rather than on the size of the number attached to it.
 
 - **Run the claims auditor first and alone**, before the code lenses. Twice in one session a test count
   went stale mid-review and invalidated the description after the code lenses had already finished.
@@ -198,8 +206,9 @@ protocol, and each one is a sentence in a prompt that changed what a lens found.
   files silently ignores `tsconfig.json`. One lens emitted 15 `.js` files beside the sources and turned
   `pnpm lint` red while every tracked file was clean.
 - **A neutral orientation brief** covering repo layout, test commands and known traps reveals nothing
-  about the expected answer, so R1 still holds with it. Not a uniform win: it cut the test lens 20% on
-  tokens and 38% on time and cost the security lens 19% more. Keep using it and keep watching.
+  about the expected answer, so R1 still holds with it. Not a uniform win: on #28, the round that
+  introduced it, it cut the test lens 20% on tokens and 38% on time and cost the security lens 19% more.
+  Keep using it and keep watching.
 - **The mechanical lenses do not need the top model tier.** Test integrity and claims audit mostly run
   commands and count, where security and correctness genuinely reason. On #29's 13-line config diff,
   three lenses a tier down cost 49k, 34k and 29k tokens against roughly 50k to 70k each at full tier,
