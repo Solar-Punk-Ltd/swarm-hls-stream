@@ -78,14 +78,45 @@ export function parseMediaPlaylist(text: string): PlaylistEntry[] {
         ...(nextProgramDateTime !== null ? { programDateTime: nextProgramDateTime } : {}),
       });
       if (nextProgramDateTime !== null) {
-        nextProgramDateTime += pendingDuration * 1000;
+        // A duration that is not a finite number cannot advance a clock. Adding it anyway carries NaN
+        // onto every later entry, and NaN loses every comparison, including the ones a consumer uses
+        // to decide whether to keep a segment. Dropping the anchor says "unknown" instead, which is
+        // the answer that keeps media rather than discarding it.
+        nextProgramDateTime = Number.isFinite(pendingDuration) ? nextProgramDateTime + pendingDuration * 1000 : null;
       }
       pendingDuration = null;
       index++;
     }
   }
 
-  return entries;
+  return datePrecedingSegments(entries);
+}
+
+/**
+ * RFC 8216 section 6.3.3: when the first `#EXT-X-PROGRAM-DATE-TIME` appears after one or more segment
+ * URIs, a client extrapolates backward from it to date the segments in front of it.
+ *
+ * Without this the oldest part of a partly stamped playlist carries no date at all, and a consumer
+ * using the date to decide what to keep reads that as "cannot judge" rather than "old". Origins that
+ * stamp on an interval rather than per segment produce exactly this shape on every poll once the
+ * window has slid past the first tag.
+ */
+function datePrecedingSegments(entries: PlaylistEntry[]): PlaylistEntry[] {
+  const firstStamped = entries.findIndex((entry) => entry.programDateTime !== undefined);
+  if (firstStamped <= 0) {
+    return entries;
+  }
+
+  const dated = [...entries];
+  for (let i = firstStamped - 1; i >= 0; i--) {
+    const nextStart = dated[i + 1].programDateTime;
+    if (nextStart === undefined || !Number.isFinite(dated[i].duration)) {
+      break;
+    }
+    dated[i] = { ...dated[i], programDateTime: nextStart - dated[i].duration * 1000 };
+  }
+
+  return dated;
 }
 
 const logger = Logger.getInstance();
