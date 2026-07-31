@@ -4,6 +4,12 @@ on:
   push:
     branches: ['**']
   pull_request:
+  # An advisory gets published against a tree nobody has touched, so the audit
+  # job needs a trigger that is not a diff. Note the limit before relying on it:
+  # GitHub only runs scheduled workflows on the default branch, so this covers
+  # main and nothing else until a branch lands there.
+  schedule:
+    - cron: '17 6 * * 1'
 
 # Every job here only reads the checked out tree. Declared explicitly so the
 # grant does not silently widen if the repository default is ever changed.
@@ -47,6 +53,31 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Kept out of `pnpm verify` on purpose. This is the one check that needs
+      # the registry, and the local loop stays runnable on a train. The gate
+      # fails on an advisory nobody has written down and equally on an allowlist
+      # entry that has stopped matching, which is what stops the exception list
+      # from quietly outliving its reasons.
+      - name: Dependency advisories
+        run: pnpm audit:check
 
   format:
     name: format

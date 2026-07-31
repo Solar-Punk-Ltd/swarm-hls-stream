@@ -29,6 +29,7 @@
     "ome:local": "cd engines/ome && docker compose -f docker-compose.yml -f docker-compose.local.yml up -d",
     "ome:down": "cd engines/ome && docker compose down",
     "ome:logs": "cd engines/ome && docker compose logs -f",
+    "audit:check": "tsx packages/audit-gate/src/index.ts",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && git ls-files -z | xargs -0 -r npx prettier --check --ignore-unknown"
   },
   "devDependencies": {
