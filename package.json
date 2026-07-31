@@ -44,8 +44,8 @@
     "overrides": {
       "axios": "^0.33.0",
       "body-parser": "^2.3.0",
-      "brace-expansion@1": "^5.0.8",
-      "brace-expansion@2": "^5.0.8",
+      "brace-expansion@1": "^1.1.16",
+      "brace-expansion@2": "^2.1.2",
       "brace-expansion@5": "^5.0.8",
       "fast-uri@3": "^3.1.4",
       "follow-redirects": "^1.16.0",
