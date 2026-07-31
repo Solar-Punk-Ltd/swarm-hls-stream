@@ -5,9 +5,11 @@ on:
     branches: ['**']
   pull_request:
   # An advisory gets published against a tree nobody has touched, so the audit
-  # job needs a trigger that is not a diff. Note the limit before relying on it:
-  # GitHub only runs scheduled workflows on the default branch, so this covers
-  # main and nothing else until a branch lands there.
+  # job needs a trigger that is not a diff. Two limits to know before relying on
+  # it. GitHub only runs scheduled workflows on the default branch, so this
+  # covers main and nothing else until a branch lands there. And GitHub disables
+  # a schedule after 60 days of repository inactivity, silently, which is
+  # precisely the dormant case the trigger exists for.
   schedule:
     - cron: '17 6 * * 1'
 
@@ -17,7 +19,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The event name is in the key because `github.ref` is `refs/heads/main` for a
+  # scheduled run and for a push to main alike, so without it the weekly audit
+  # sweep and ordinary activity on main cancel each other. A cancelled run reports
+  # as cancelled rather than failed and notifies nobody, so the one trigger that
+  # exists to catch an advisory against an untouched tree was the one that could
+  # be killed in silence.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -57,6 +65,10 @@ jobs:
   audit:
     name: audit
     runs-on: ubuntu-latest
+    # A registry that accepts the connection and never answers would otherwise
+    # sit against GitHub's 6 hour default and then report as cancelled, which
+    # reads as benign. This makes a hung audit go red.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

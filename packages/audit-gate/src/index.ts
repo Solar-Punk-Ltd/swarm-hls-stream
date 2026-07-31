@@ -7,12 +7,23 @@ import { parseAuditReport } from './parseAuditReport.js';
 
 const execFileAsync = promisify(execFile);
 
-/** The report for this workspace is around 100 kB, so this is headroom rather than a limit anyone reaches. */
+/** The report for this workspace measures about 5 kB, so this is headroom rather than a limit anyone reaches. */
 const MAX_REPORT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * A registry can accept the connection and then never answer, which without this
+ * leaves the command running against the CI job's own ceiling and reporting as
+ * cancelled rather than failed. Generous, because it is a whole dependency
+ * resolution and not one request.
+ */
+const AUDIT_TIMEOUT_MS = 5 * 60 * 1000;
 
 async function readAuditReport(): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('pnpm', ['audit', '--json'], { maxBuffer: MAX_REPORT_BYTES });
+    const { stdout } = await execFileAsync('pnpm', ['audit', '--json'], {
+      maxBuffer: MAX_REPORT_BYTES,
+      timeout: AUDIT_TIMEOUT_MS,
+    });
     return stdout;
   } catch (error) {
     // pnpm audit exits non-zero whenever it finds anything at all, so a non-zero
@@ -35,7 +46,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error(`Audit gate failed on ${failures.length} of ${advisories.length} reported advisories.`);
+  // Two counts rather than a ratio: a failure can come from the allowlist side,
+  // and "failed on 2 of 0 reported advisories" is what a ratio said then.
+  console.error(
+    `Audit gate failed with ${failures.length} problems, across ${advisories.length} reported advisories and ${ALLOWED_ADVISORIES.length} allowlist entries.`,
+  );
   for (const failure of failures) {
     console.error(`  [${failure.kind}] ${failure.ghsa} (${failure.packageName})`);
     console.error(`    ${failure.detail}`);
