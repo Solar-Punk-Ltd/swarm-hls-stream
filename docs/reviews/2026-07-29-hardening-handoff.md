@@ -384,9 +384,13 @@ reviewer. That also explains the earlier symptom on PR #24, where the REST call 
 `gh pr edit --add-reviewer` failed to resolve the login under either
 `copilot-pull-request-reviewer[bot]` or `Copilot`. It was not a wrong command.
 
-**The replacement is [`review-gate.md`](./review-gate.md), and it is required on every PR.** If quota
-returns, run Copilot as an additional lens rather than a substitute for the gate, because the gate now
-checks things Copilot never did.
+**The replacement is [`review-gate.md`](./review-gate.md), and it is required on every PR.**
+
+**Do not check whether quota returned, and do not request a Copilot review.** Owner decision,
+2026-08-01, recorded at the top of `review-gate.md`. This paragraph used to say to run Copilot as an
+additional lens if quota came back, which sent a session that starts here to do the one thing the gate
+now forbids. If quota is ever brought back it is the owner who raises it, and Copilot would be an
+additional lens rather than a substitute, because the gate checks things Copilot never did.
 
 ## Read this before you plan anything
 
@@ -528,9 +532,14 @@ Per task:
 
 1. **Implement.** One fix per commit, conventional subject (`feat:`, `fix:`, `refactor:`, `test:`,
    `docs:`, `chore:`, `ci:`, `perf:`).
-2. **PR.** Group related tasks into one PR with several commits rather than opening 48 PRs. Sprint 1's
-   S1.1 through S1.3 are one auth PR. Keep the grouping tight enough that a review finding maps to
-   one change. Expect roughly 18 to 22 PRs total.
+2. **PR.** Group related tasks into one PR with several commits rather than opening 48 PRs, **but only
+   while they share one surface in the lens catalogue.** Sprint 1's S1.1 through S1.3 are one auth PR
+   and they do share a surface. Surface is the binding axis because lenses are selected by it, so a
+   second surface is what widens the gate while a second task on the same surface costs nothing. Keep
+   the grouping tight enough that a review finding maps to one change. Expect roughly 18 to 22 PRs
+   total. See [Keep the diff small](./review-gate.md#keep-the-diff-small-because-the-diff-sets-the-price),
+   which owns this rule and requires the selection comment to name the surfaces and carry an exception
+   when they exceed one.
 3. **Review gate, required on every PR.** The full protocol is
    [`review-gate.md`](./review-gate.md), which replaces the Copilot gate now that quota is gone. In
    short: the claims auditor plus the lenses that this diff's surfaces call for, selected and posted as

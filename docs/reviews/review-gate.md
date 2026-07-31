@@ -229,13 +229,31 @@ findings and almost every one was against the change itself. #29's 13-line confi
 nothing. A change that opens six new edges earns six lenses, and the six lenses are not the expense,
 the six new edges are.
 
-So **a pull request carries one task**. When a change grows past roughly 200 lines of `src/`, or
-starts touching a second surface in the lens table, split it before opening rather than widening the
-gate to cover it. #30 is the standing counter-example worth remembering: four tasks across four
-surfaces, six lenses all justified, and the CRITICAL came from the one lens whose question was
-specifically "what can break while this still reports healthy". That round paid for itself and is
-still the shape to avoid. The way to need fewer lenses is a tighter pull request, not a shorter list
-on a broad one.
+So **a pull request carries one surface**, and grouping several related tasks into it is fine when they
+share that surface. That wording is deliberate, because "one task per pull request" would contradict
+step 2 of the handoff's working protocol, which says to group related tasks rather than open 48 pull
+requests and expects 18 to 22 in total. Roughly 2.5 tasks per pull request and one task per pull
+request cannot both be followed, and a later session caught between two standing protocols will follow
+neither. Surface is the axis that matters here anyway: lenses are selected by surface, so a second
+surface is what actually widens the gate, while a second task on the same surface costs nothing.
+
+**It binds, and it has an artifact.** The selection comment states `git diff --stat` for `src/` and
+names the surfaces touched. Exceeding either needs a one-line exception in that same comment saying
+why the split was not possible. Without the artifact this is advice, and advice next to a
+[fail-closed](#fail-closed) clause is advice that loses.
+
+The line count is the softer half. Roughly 200 lines of `src/` is a prompt to reconsider, not a
+refusal. The surface count is the binding half.
+
+#30 is the standing counter-example: four tasks across four surfaces, six lenses all justified, and
+the CRITICAL came from the one lens whose question was specifically "what can break while this still
+reports healthy". That round paid for itself and is still the shape to avoid. The way to need fewer
+lenses is a tighter pull request, not a shorter list on a broad one.
+
+**The pull request that introduced this rule broke it**, and recording that here is cheaper than
+letting the precedent stand unremarked. It carried three subjects across at least two surfaces, config
+consistency and protocol correctness, with no exception recorded, because the rule did not exist when
+its diff was written. The next one does not get that excuse.
 
 **The full catalogue runs as a deep run at the end of each sprint**, paired with the sprint-exit
 re-audit in the handoff's working protocol. Sprint exit is when a fix in one domain is most likely to
