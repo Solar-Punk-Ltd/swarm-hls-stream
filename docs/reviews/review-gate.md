@@ -109,6 +109,15 @@ documentation and it outlives the review.
 
 The outcome lands on the pull request as a review through `gh`, listing the lenses that ran, the lenses
 that were selected against, what was confirmed, what was refuted and why, and what changed as a result.
+
+**When the mutation check ran, the result also carries its exact `stryker` invocation, the mutant
+total, the survivor total, the score, and the `concurrency` and host core count it ran at.** Four
+lines, and without them the check has no artifact at all: the JSON report is gitignored, so scoping
+the run to one file out of five is undetectable by the triage lens, which is forbidden from generating
+its own mutants and is never told the scope. The claim that two rounds are finally comparable is only
+true if the numbers are posted somewhere immutable. The concurrency and core count belong there
+because a flaky failure scores as a killed mutant, so a run on a smaller machine reports a better
+score for a worse suite.
 A review that exists only in a session transcript provides no auditability, and once the transcript is
 gone nobody can tell whether the gate ran or which lenses it used.
 
@@ -174,9 +183,26 @@ both run a model tier down. On #29's 13-line config diff, three lenses a tier do
 byte-level `.gitignore` check and a per-package `outDir` comparison.
 
 **The claims auditor is unconditional. The mutation check runs on every pull request that changes
-`src/`.** A diff with no source in it has nothing to mutate, so the selection comment records the
-mutation check as not applicable rather than letting a vacuous pass read as coverage. Only the auditor
-is unconditional, because only the auditor has an artifact on every pull request.
+`src/` or `test/` inside `packages/stream-uploader`.** Only the auditor is unconditional, because only
+the auditor has an artifact on every pull request.
+
+Three things about that trigger, each of which took getting it wrong first.
+
+**A test-only diff is not exempt, it is the most informative case.** Mutation testing measures the
+tests and merely uses source as the substrate, so changing the tests changes the thing being measured
+and unchanged mutants can flip from killed to survived. "Nothing to mutate" confuses the substrate
+with the subject. On a test-only diff, scope the run to the source those tests cover.
+
+**The harness covers `packages/stream-uploader` and nothing else.** `stryker.config.json` mutates that
+package's `src/` and runs that package's suite. `audit-gate`, `cli` and `client` all have `src/` and
+none of them has a runner here, so a change to `packages/cli/src/` gets recorded as **unavailable**,
+which is a different word from not applicable and must not read as coverage. Mutating unscoped would
+report on a package the diff never touched, and mutating `cli` with the uploader's suite would survive
+every mutant and produce pure noise.
+
+**Not applicable means genuinely neither**, as on a docs, deploy or CI diff. The selection comment
+states which of the three it is, and the claims auditor verifies that statement, because it is a
+binary fact one `git diff --name-only` settles and R3 otherwise never looks at the selection comment.
 
 **Reasoning tier, by surface.** Correctness, security, concurrency, behaviour preservation, config
 consistency, silent failure, protocol correctness. These genuinely reason, they cost accordingly, and
@@ -236,10 +262,9 @@ reach it, which is the failure rule 4 exists to prevent.
 
 ### What selection has measured
 
-PR #30 bundled four tasks across four surfaces, so six lenses were all justified and the wide run paid
-for itself: the CRITICAL came from the one lens whose question was specifically "what can break while
-this still reports healthy". The way to need fewer lenses is a tighter pull request, not a shorter list
-on a broad one.
+PR #30 is covered in [Keep the diff small](#keep-the-diff-small-because-the-diff-sets-the-price) and is
+not restated here. This document's own precedent is that a duplicated lesson drifts and one copy goes
+stale, so it gets one home.
 
 PR #31, a dead-code sweep, took three. PR #32, two dependency-injection seams, took four. Both rounds
 found real defects, so a reduced set is not a rubber stamp.
@@ -262,8 +287,13 @@ Scope it to what the diff touched, because the whole uploader is 1839 mutants ag
 suite and that is an overnight run, not a pull request gate:
 
 ```bash
-./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome/**/*.ts'
+./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome{,/**/*}.ts'
 ```
+
+**`engines/ome.ts` and `engines/ome/` are a sibling file and directory, and a `dir/**/_.ts`glob
+matches only the second.** The obvious`engines/ome/\*\*/_.ts`takes 4 files and 461 mutants while
+silently skipping`ome.ts`, which is the file that produced TEST-25. Check the "Found N of M files to
+be mutated" line against what you expected before letting a run stand.
 
 **The division of labour is the point.** Stryker generates, executes and reports. It cannot tell an
 equivalent mutant from a real coverage gap, and it only ever mutates syntax. The lens receives the
@@ -363,11 +393,15 @@ checkable, rather than on the size of the number attached to it.
   about the expected answer, so R1 still holds with it. Not a uniform win: on #28, the round that
   introduced it, it cut the test lens 20% on tokens and 38% on time and cost the security lens 19% more.
   Keep using it and keep watching.
-- **The mechanical lenses do not need the top model tier.** Test integrity and claims audit mostly run
-  commands and count, where security and correctness genuinely reason. On #29's 13-line config diff,
-  three lenses a tier down cost 49k, 34k and 29k tokens against roughly 50k to 70k each at full tier,
-  and the cheap ones still produced a byte-level `.gitignore` check and a per-package `outDir`
-  comparison. That was a config diff, so do not assume it holds on a logic-heavy one without checking.
+- **The mechanical lenses do not need the top model tier**, and the tier table above is what says which
+  those are: the claims auditor and mutation triage. This bullet used to name test integrity among
+  them, which now contradicts the table's classification of it as a reasoning lens, and nothing in R4
+  records which tier a lens actually ran at, so the divergence would be undetectable afterwards. The
+  measurement behind the rule stands: on #29's 13-line config diff, three lenses a tier down cost 49k,
+  34k and 29k tokens against roughly 50k to 70k each at full tier, and the cheap ones still produced a
+  byte-level `.gitignore` check and a per-package `outDir` comparison. **That was a config diff, so do
+  not assume it holds on a logic-heavy one without checking**, and that caveat travels with the numbers
+  wherever they are quoted, including the tier section above.
 
 ## Fail closed
 
