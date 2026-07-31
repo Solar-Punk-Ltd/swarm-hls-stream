@@ -21,10 +21,24 @@ export interface Advisory {
 export interface AllowedAdvisory {
   ghsa: string;
   packageName: string;
+  /**
+   * The advisory as it read when the exception was written. The reason below was
+   * argued against these two and nothing else rechecks it, so the gate treats a
+   * change in either as the exception needing a fresh look. Without this the
+   * elliptic entry's "upstream has shipped nothing to move to" stays green on
+   * the day upstream ships something.
+   */
+  reviewedSeverity: AdvisorySeverity;
+  reviewedPatchedVersions: string;
   reason: string;
 }
 
-export type GateFailureKind = 'unreviewed' | 'stale-exception' | 'package-mismatch' | 'duplicate-exception';
+export type GateFailureKind =
+  | 'unreviewed'
+  | 'stale-exception'
+  | 'package-mismatch'
+  | 'duplicate-exception'
+  | 'advisory-changed';
 
 export interface GateFailure {
   kind: GateFailureKind;

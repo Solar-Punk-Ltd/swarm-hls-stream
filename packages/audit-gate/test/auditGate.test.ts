@@ -55,8 +55,16 @@ function rawReport(...advisories: RawAdvisoryOverrides[]): string {
   });
 }
 
-function allow(ghsa: string, packageName: string): AllowedAdvisory {
-  return { ghsa, packageName, reason: 'Pinned by a test.' };
+/** Matches what `rawReport` emits by default, so a test opts in to drift rather than tripping over it. */
+function allow(ghsa: string, packageName: string, overrides: Partial<AllowedAdvisory> = {}): AllowedAdvisory {
+  return {
+    ghsa,
+    packageName,
+    reviewedSeverity: 'high',
+    reviewedPatchedVersions: '>=1.3.0',
+    reason: 'Pinned by a test.',
+    ...overrides,
+  };
 }
 
 describe('audit gate verdicts', () => {
@@ -134,6 +142,55 @@ describe('audit gate verdicts', () => {
     assert.equal(failures[0].kind, 'package-mismatch');
     assert.match(failures[0].detail, /elliptic/);
     assert.match(failures[0].detail, /react-router/);
+  });
+
+  it('fails when a fix has shipped for an advisory whose exception says none exists', () => {
+    const raw = rawReport({
+      github_advisory_id: 'GHSA-aaaa-aaaa-aaaa',
+      module_name: 'elliptic',
+      severity: 'low',
+      patched_versions: '>=6.6.2',
+    });
+
+    const failures = evaluateAudit(parseAuditReport(raw), [
+      allow('GHSA-aaaa-aaaa-aaaa', 'elliptic', { reviewedSeverity: 'low', reviewedPatchedVersions: '<0.0.0' }),
+    ]);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].kind, 'advisory-changed');
+    assert.match(failures[0].detail, /<0\.0\.0/);
+    assert.match(failures[0].detail, />=6\.6\.2/);
+  });
+
+  it('fails when an allowlisted advisory has been re-scored upward', () => {
+    const raw = rawReport({ github_advisory_id: 'GHSA-aaaa-aaaa-aaaa', severity: 'critical' });
+
+    const failures = evaluateAudit(parseAuditReport(raw), [allow('GHSA-aaaa-aaaa-aaaa', 'left-pad')]);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].kind, 'advisory-changed');
+    assert.match(failures[0].detail, /critical/);
+  });
+
+  it('passes an advisory that still reads exactly as it did when reviewed', () => {
+    const raw = rawReport({ github_advisory_id: 'GHSA-aaaa-aaaa-aaaa' });
+
+    assert.deepEqual(evaluateAudit(parseAuditReport(raw), [allow('GHSA-aaaa-aaaa-aaaa', 'left-pad')]), []);
+  });
+
+  it('fails a second vulnerable resolution of an already-excepted package', () => {
+    const raw = rawReport(
+      { github_advisory_id: 'GHSA-aaaa-aaaa-aaaa', module_name: 'semver', patched_versions: '>=7.5.2' },
+      { github_advisory_id: 'GHSA-aaaa-aaaa-aaaa', module_name: 'semver', patched_versions: '>=6.3.1' },
+    );
+
+    const failures = evaluateAudit(parseAuditReport(raw), [
+      allow('GHSA-aaaa-aaaa-aaaa', 'semver', { reviewedPatchedVersions: '>=7.5.2' }),
+    ]);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].kind, 'advisory-changed');
+    assert.match(failures[0].detail, />=6\.3\.1/);
   });
 
   it('fails on a second allowlist entry for the same advisory rather than dropping one', () => {

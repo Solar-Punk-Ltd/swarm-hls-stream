@@ -47,6 +47,17 @@ export function evaluateAudit(advisories: readonly Advisory[], allowlist: readon
         packageName: advisory.packageName,
         detail: `Allowed for ${allowed.packageName} but reported against ${advisory.packageName}, which is not the exposure that was reviewed.`,
       });
+      continue;
+    }
+
+    const drift = describeDrift(allowed, advisory);
+    if (drift) {
+      failures.push({
+        kind: 'advisory-changed',
+        ghsa: advisory.ghsa,
+        packageName: advisory.packageName,
+        detail: `${drift} The exception was argued against how the advisory read then, so re-read the reason before updating the entry.`,
+      });
     }
   }
 
@@ -62,4 +73,26 @@ export function evaluateAudit(advisories: readonly Advisory[], allowlist: readon
   }
 
   return failures;
+}
+
+/**
+ * Names what moved under an exception, or nothing when the advisory still reads
+ * the way it did when the exception was written. A widened patched range is the
+ * one that matters most: it is how "no release fixes this" turns into a fix
+ * being available, silently.
+ */
+function describeDrift(allowed: AllowedAdvisory, advisory: Advisory): string | undefined {
+  const changes: string[] = [];
+
+  if (allowed.reviewedSeverity !== advisory.severity) {
+    changes.push(`severity was ${allowed.reviewedSeverity} when reviewed and reads ${advisory.severity} now`);
+  }
+
+  if (allowed.reviewedPatchedVersions !== advisory.patchedVersions) {
+    changes.push(
+      `patched range was ${allowed.reviewedPatchedVersions} when reviewed and reads ${advisory.patchedVersions} now`,
+    );
+  }
+
+  return changes.length > 0 ? `Its ${changes.join(', and its ')}.` : undefined;
 }

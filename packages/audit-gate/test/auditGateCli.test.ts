@@ -64,16 +64,28 @@ async function runGateAgainstStub(stdout: string, exitCode: number): Promise<Stu
   return runGateWithPath(`${dir}:${process.env.PATH ?? ''}`);
 }
 
-function reportOf(advisories: readonly { ghsa: string; packageName: string }[]): string {
+interface StubbedAdvisory {
+  ghsa: string;
+  packageName: string;
+  reviewedSeverity?: string;
+  reviewedPatchedVersions?: string;
+}
+
+/**
+ * Echoes back whatever an allowlist entry says it was reviewed against, so the
+ * happy-path case stays in step with the shipped list instead of pinning a
+ * severity and a patched range the list does not actually claim.
+ */
+function reportOf(advisories: readonly StubbedAdvisory[]): string {
   const entries = advisories.map((advisory, index) => [
     String(1200000 + index),
     {
       id: 1200000 + index,
       module_name: advisory.packageName,
-      severity: 'high',
+      severity: advisory.reviewedSeverity ?? 'high',
       title: 'Stubbed advisory',
       vulnerable_versions: '<1.0.0',
-      patched_versions: '>=1.0.0',
+      patched_versions: advisory.reviewedPatchedVersions ?? '>=1.0.0',
       github_advisory_id: advisory.ghsa,
       findings: [{ version: '0.9.0', paths: [`. > ${advisory.packageName}`] }],
     },
