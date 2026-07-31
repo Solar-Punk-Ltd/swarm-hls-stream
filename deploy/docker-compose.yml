@@ -128,6 +128,8 @@ services:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
       SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}
       SRS_ADAPTER_PORT: ${API_PORT:-3000}
+      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.5}
+      HLS_WINDOW: ${HLS_WINDOW:-22.5}
 
   # --- OvenMediaEngine ---
 
@@ -149,6 +151,8 @@ services:
       OME_ADAPTER_HOST: ${OME_ADAPTER_HOST:-stream-uploader}
       OME_ADAPTER_PORT: ${API_PORT:-3000}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
+      HLS_SEGMENT_DURATION: ${HLS_SEGMENT_DURATION:-2}
+      HLS_SEGMENT_COUNT: ${HLS_SEGMENT_COUNT:-5}
 
 volumes:
   srs-media:

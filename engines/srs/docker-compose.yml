@@ -18,5 +18,7 @@ services:
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
       SRS_ADAPTER_PORT: ${SRS_ADAPTER_PORT:-3000}
+      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.5}
+      HLS_WINDOW: ${HLS_WINDOW:-22.5}
     extra_hosts:
       - "host.docker.internal:host-gateway"
