@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, REJECT_UNKNOWN_STREAM, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -229,6 +229,40 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
       removed,
       [],
       'finalizing the replaced session deleted the recovery entry of the session that replaced it',
+    );
+    await orch.cleanup();
+  });
+
+  // The core of the failure, at the layer it belongs to. A re-announced session must get its own
+  // duplicate filter: the outgoing one holds every index the previous broadcast delivered, and the
+  // restarted origin numbers from its own beginning, so sharing it means the new session's opening
+  // segments come back accepted and are never uploaded. Accepted-as-duplicate is indistinguishable
+  // from accepted-and-published to everything upstream, which is why this went unseen.
+  it('accepts the new session at an index the outgoing one had already delivered', async () => {
+    const id = 'live/stream';
+    const orch = makeOrchestrator();
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('one')),
+      { accepted: true },
+      'the outgoing session must deliver index 0 before a re-announce means anything',
+    );
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('one again')),
+      { accepted: true },
+      'a replay of a delivered index is accepted silently, which is what the next assertion has to out-rank',
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('restarted'));
+
+    assert.equal(
+      (orch as unknown as { processedSegments: Map<string, Set<number>> }).processedSegments.get(id)?.size,
+      1,
+      'the new session inherited the outgoing filter, so its own index 0 was swallowed as a duplicate',
     );
     await orch.cleanup();
   });
