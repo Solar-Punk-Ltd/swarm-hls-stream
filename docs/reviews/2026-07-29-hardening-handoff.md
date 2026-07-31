@@ -37,48 +37,64 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` at `9be9348`. Nine pull requests merged, each through the
-review gate: #27, #28, #29, #30, #31, #32, #33, #34 and #35. `feature/uploader-hardening` @ `f146588`
-and `main` @ `6b82baa` are untouched and must stay that way.
+**Where the code is.** `feat/ai-hardening` at `05eafda`. Eleven pull requests merged, each through the
+review gate: #27 through #37. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
+stay that way.
 
-**Test baseline is 262 uploader, 5 client**, with lint, typecheck and whole-tree prettier clean. One
+**Test baseline is 262 uploader, 40 cli, 5 client**, with lint, typecheck and whole-tree prettier clean. One
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
-### Where things stand: SEC-1 is closed, the queue starts at OPS-1
+### Where things stand: both money CRITICALs are closed, the queue starts at CON-16
 
-[PR #36](https://github.com/Solar-Punk-Ltd/swarm-hls-stream/pull/36) went through the review gate with
-six lenses and **merged into `feat/ai-hardening` on 2026-07-31**. With it, **SEC-1 is closed**: the
-endpoints that spend postage stamp money are no longer reachable without a credential, on either half.
+**SEC-1 and OPS-1 are both closed**, and they were the two that could actually cost the owner money.
+SEC-1 was an open funds drain: anyone on the internet could reach the endpoints that spend the
+postage stamp. OPS-1 lost the batch id after paying for it. Neither is reachable now, and both went
+through the gate.
 
-**SEC-13 is deferred to the backlog by owner decision, at MEDIUM.** SRS writes the webhook credential
-into its own container log on every hook. Reading that log needs container access, which already
-exposes the same secret two other ways, so it is untidy rather than dangerous. **Do not re-open this
-decision.** The two things that would change it are written into the SEC-13 row: shipping container
-logs off the host, and an operator pasting SRS logs into a ticket.
+**SEC-13 is deferred to the backlog by owner decision, at MEDIUM. Do not re-open it.** SRS writes the
+webhook credential into its own container log on every hook. Reading that log needs container access,
+which already exposes the same secret two other ways. The two conditions that would change that are
+in the SEC-13 row: shipping container logs off the host, and an operator pasting SRS logs into a
+ticket.
 
-**What the round produced.** Every lens found something and the three largest were each found
-independently by two or three lenses, which is not a good sign about the diff. The comparison accepted
-tokens that were not the token, because `latin1` keeps only the low byte of each code point while a
-query parameter is UTF-8. The redactor was narrower than the gate, so `?%74oken=` authenticated and
-then landed in the log in cleartext. The gate sat behind the body parser, so anonymous callers got a
-500 and free unhandled-error lines. Two more: `engines/srs/docker-compose.yml` never passed the token,
-so the documented standalone path crash-looped forever with the value set exactly where the error
-message says to put it, and `setup.sh` never named the variable on the default engine path.
+**Two CRITICALs remain**, neither about money: OBS-2's client half (`ManifestManagement.ts` still has
+a bare `fetch` with no timeout, the uploader half is closed) and OPS-2 (`clean.sh` destroys the whole
+stack when cleaning one service).
 
-**Read the four new register rows before touching this area**: SEC-13, SEC-14, SEC-15, OBS-15, OPS-10,
-OPS-11, TEST-17. OBS-15 is the recurring one, `/health` stays green while every webhook is rejected.
+**The cli package now has tests**, 40 of them, including `test/helpers/fakeBee.ts`, which models the
+four stages a real postage batch purchase goes through. It was verified against bee-js's own
+implementation and the Bee Go node's handlers during the PR #37 gate, so trust it as a starting
+point rather than rebuilding it. Before this session that package had no test script at all, so
+`pnpm -r test` skipped it silently and `pnpm verify` reported success while running nothing in the
+package that spends money.
 
-**One thing worth copying.** The obvious structural fix for SEC-15, redacting inside
-`Logger.formatMessage` so no call site can forget, was written and then reverted inside the same round.
-The redactor is URL-shaped: applied to a whole log line it treats everything after the token as query
-string and eats the tail, turning `POST /x?token=SECRET 200 1ms` into `POST /x?token=REDACTED`. It was
-caught by probing the change rather than by reasoning about it. A plausible wrong fix is the most
-expensive thing a review round can produce, and this one would have shipped as an improvement.
+### Traps this session produced, all of them expensive
+
+**`pnpm verify` gives a false green on any file you have not committed yet.** The format stage walks
+`git ls-files`, which lists tracked files only. A new file passes locally and fails CI. Commit, then
+verify.
+
+**A fix can break a working path.** The OPS-12 fix refused to buy when the wallet balance could not
+be read. That also blocked the path where an existing batch is reused, which spends nothing and
+needs no chain. Ask what a new refusal stops that was previously fine.
+
+**Probe your own fix before committing it.** The structural fix for redaction, moving it into
+`Logger.formatMessage`, reasons perfectly and silently truncates every request log line at the
+token, because the redactor is URL-shaped and a log line is not a URL. Three lines of probe caught
+what reasoning did not.
+
+**A fake's premise has to be pinned like any other behaviour.** `fakeBee.ts` argued for
+`waitForUsable: false` at length and could not detect its removal. Flipping it left the whole suite
+green while reintroducing OPS-1 in production.
+
+**`str.replace` does not throw on a miss.** Two register edits silently no-oped after prettier
+reformatted the column widths. If you edit a markdown table by string substitution, assert the
+result changed, and re-check the status column afterwards.
 
 ### What SEC-1's closure does and does not mean
 
-Both halves are closed, `/stream/*` in #35 and the SRS webhooks on this branch. What that means is that
+Both halves are closed, `/stream/*` in #35 and the SRS webhooks in #36. What that means is that
 an anonymous caller can no longer cause a stamp-spending upload. What it does not mean is that the
 ingest surface is finished: **SEC-5 is still open**, there is no rate limiting and no per-stream quota,
 so an authenticated caller with a leaked token is unbounded. S1.5 (schema validation) and S1.7 (error
@@ -86,22 +102,24 @@ responses) are also still open.
 
 ### The queue after that, in severity order
 
-1. **S4.1 / OPS-1, CRITICAL.** The stamp batch id is written to `.env` _after_ the on-chain spend, and
-   `writeEnvKey` throws ENOENT when `.env` is missing, so a fresh clone spends BZZ and then crashes
-   with the id only in scrollback. This is the last unclosed CRITICAL in the register.
-2. **CON-16, HIGH.** An origin that restarts its media sequence silences the puller permanently:
+1. **CON-16, HIGH.** An origin that restarts its media sequence silences the puller permanently:
    `lastSeq` only moves forward and `seq <= lastSeq` has no escape. Measured through the real engine.
    Largest thing open in the OME path.
-3. **SEC-7, HIGH.** 60 Dependabot alerts, axios 22 of them at runtime scope through bee-js. Reconcile
+2. **SEC-7, HIGH.** 60 Dependabot alerts, axios 22 of them at runtime scope through bee-js. Reconcile
    against PR #13 into `main`, which already claims 32 of 33 resolved, before duplicating work.
+3. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
+   by compose-project label and ignores the service filter, so cleaning one service destroys the live
+   stack. The client's `ManifestManagement.ts` still has a bare `fetch` with no timeout, the uploader
+   half being closed in #34.
 4. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
    largest single gap is that **nothing loads `config.ts`**, so every `required()` call in it can be
-   deleted with the suite green. Same module-scope obstacle as TEST-11. Plus S0.3 (coverage baseline)
-   and S0.4 (FakeBee), the last two open Sprint 0 items.
+   deleted with the suite green. Same module-scope obstacle as TEST-11. Plus S0.3 (coverage baseline). **S0.4's
+   FakeBee now exists** for the stamp path, at `packages/cli/test/helpers/fakeBee.ts`, verified
+   against the vendor's own implementation.
 
-### The lesson these two rounds keep producing
+### The lesson every gate keeps producing
 
-Three gates running, the same shape: **a signal was added and the failure it was meant to catch did not
+Six rounds running, the same shape: **a signal was added and the failure it was meant to catch did not
 reach it.** On #30 three signals were added and the likeliest failure reached none. On #34 a lost
 segment was counted on a consecutive counter that the very next success cleared, so 3623 polls answered
 200 while a segment was genuinely lost. On #35 a token that passed validation could lock every caller
@@ -112,8 +130,25 @@ The generalisable move, and the one that would have caught all three: **drive th
 the seam.** Every one of those defects was hidden by a test that called the thing directly and then
 asserted on it. The test that caught the #34 defect drives the actual puller into the actual `/health`.
 
+Rounds four, five and six added variants worth naming, because the move above does not catch them.
+
+**#36: the test pinned the one case that was safe by construction.** A redaction test asserted the
+uppercase `?TOKEN=` spelling, which the gate rejects, while every percent-encoded spelling that
+authenticates went untested and leaked. When a control and its check read the same input through
+different parsers, test the shapes the _permissive_ side accepts.
+
+**#37: the test passed on litter from the previous run.** It scanned the shared temp directory for a
+file the suite itself wrote and never cleaned up. Deleting the entire mechanism under test kept it
+green on any machine that had run it once. Derive the location from the run, never discover it by
+scanning shared state, and clean up what you write.
+
+**#37 again: a fake's premise needs pinning like any other behaviour.** `fakeBee.ts` argued at length
+for `waitForUsable: false` and could not detect its removal.
+
 Second, cheaper move: **ask which numbers in the new code an outside party controls.** That is what
 found the unbounded gap scan in `5be1a72`, which no review caught.
+
+Third: **probe your own fix before committing it.** See the traps section above.
 
 ### Traps still live
 
