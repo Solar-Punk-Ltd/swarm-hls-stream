@@ -369,6 +369,14 @@ move it to the command, and leave the lens the judgement. That is what happened 
 was an agent inventing and running its own mutants and is now `pnpm mutate`. It is what happened to
 the claims auditor below.
 
+**If nothing in a lens can be moved to a command, the cost is paid and the lens runs.** Seven of the
+ten in the catalogue are the reasoning tier, which exists precisely because they cannot be
+mechanised, so "nothing to move" is the ordinary case rather than the exception. **Cost is never a
+reason recorded in the selection comment. Selection is by surface.** Without that sentence this rule
+reads as a licence: a session finds a lens expensive, finds nothing mechanisable, drops it, and
+records the drop, which satisfies fail-closed and satisfies the ban on stopping quietly. Surface-driven
+selection would become cost-driven one defensible drop at a time.
+
 **The claims auditor's inputs come from `pnpm gate:facts`.**
 
 ```bash
@@ -377,17 +385,61 @@ pnpm gate:facts
 
 It collects the suite counts, the check exit codes, the advisory counts, the diff's surfaces and
 mutation applicability, and the publish age, signature and SLSA provenance of every version the
-change introduces. The author pastes the block into the description. **The auditor regenerates it and
-compares two artifacts**, rather than re-deriving each number from scratch.
+change introduces. The author pastes the block into the description.
 
-Two rules follow from that, and they belong in the prompt:
+**Three rules follow, and they belong in the prompt in this order.** The order is the point: the first
+version of this section put regeneration in prose and made both prompt-ready bullets prohibitions, so
+a session lifting the bullets would have written an auditor that reads a table and never compares
+anything.
 
-- **Do not reproduce anything `gate:facts` emits.** Spot-check a sample, because a number is not true
-  because a script printed it, and every row carries the command that produced it for exactly that
-  purpose. Do not re-derive the set.
-- **Author-measured rows are verdicted, not repeated.** A twelve-minute mutation run and a
-  sixty-four-run flake sweep are declared by the author and marked as such. **UNVERIFIABLE is the
-  correct verdict on those**, and reproducing one is a deliberate choice rather than the default.
+1. **Regenerate the block and diff it against the pasted one.** That is the verification. Investigate
+   only the rows that disagree.
+2. **Then spot-check at most a few rows against their own listed commands**, chosen because they look
+   most likely to be wrong. A number is not true because a script printed it, and every row carries
+   its command for exactly this. Do not re-derive the set.
+3. **Author-measured rows are verdicted, not repeated.** A twelve-minute mutation run and a
+   sixty-four-run flake sweep are declared by the author and marked as such. **UNVERIFIABLE is the
+   correct verdict on those**, and reproducing one is a deliberate choice rather than the default.
+
+**This narrows R3's method for the block, not its scope.** Every claim outside the block is still
+extracted and verified normally, and the block is verified by regeneration rather than by
+re-derivation. R2 is not amended either: regenerating is running a command, which is what R2 asks for.
+
+**Fetch the description with `gh`. Never retype it into the prompt.** On the round that introduced
+this section I handed the auditor a hand-abbreviated copy, so it audited a document that does not
+exist and correctly reported a section missing that was present. A claims auditor reading the author's
+summary of the author's own claims is not auditing anything.
+
+**Four bounds, each of which the first version of this section was missing.**
+
+**Some rows drift between the author's run and the auditor's, by design.** `published under 30 days
+ago` is computed against the clock, so membership changes daily. The advisory count moves with
+registry state. The suite counts move with contention, which TEST-24 and TEST-27 both document. **A
+differing row is FALSE unless it is one of those three and the direction is explained**, and a row
+marked failed in the regenerated block and not in the pasted one is always FALSE. Without that rule a
+real regression gets absorbed as known flakiness, because a ready-made explanation is sitting in the
+register.
+
+**The block covers two of the owner's four dependency checks.** Publish age and signature-plus-SLSA
+are collected. `npm audit signatures` is deliberately not, because it reads the installed tree rather
+than the diff, and malware advisories are not collected at all. Both are **still owed by hand on any
+lockfile change**, and the block says so in its own last row. A section that lists some checks reads
+as listing all of them, and "do not re-derive the set" would otherwise turn the omission into a skip.
+The register records why this matters: during SEC-7 the base branch sat on axios 0.30.3 with a
+malicious 0.30.4 inside the range bee-js declares.
+
+**The author-measured category is bounded.** A row belongs there only if the collector cannot take it
+**and** it costs more than a few minutes, with the author naming the cost and the exact invocation
+rather than prose. For a mutation run that means the numbers R4 already requires. **UNVERIFIABLE gets a
+consequence it did not have:** a figure carrying that verdict may not be cited as evidence in the
+register or in a later round without being re-measured. R3 requires correction for FALSE, MISLEADING
+and STALE and says nothing about UNVERIFIABLE, so without this the category is a way to enter an
+unchecked number into a merged description and cite it forever.
+
+**The posted result carries the auditor's regenerated block verbatim.** R3 requires the description to
+be corrected before merge, and a correction can change a fact row, so an auditor's "the block matched"
+would otherwise sit against a block that has since moved. This is the same reasoning that already
+keeps the lens selection out of the description.
 
 The measurement that forced this: the PR #44 claims audit spent roughly 285k tokens, 115 tool calls
 and 38 minutes, and almost all of it was recomputing numbers already measured. The cost was in the
