@@ -49,7 +49,8 @@ test results. Do not let any of it regress. Typecheck covers `test/` as well, se
 ### Where things stand: no CRITICAL is open, and the highest severity left is HIGH
 
 **CON-20 is closed, and closing it needed a real OvenMediaEngine rather than the suite.** The row
-asked whether the defect was reachable in production and said to downgrade it if not. It is
+left reachability as the open acceptance criterion, and the downgrade-if-unreachable instruction was
+here in the queue rather than in the row itself. It is
 reachable, and the measurement is in the register row: a reconnect 4.2s to 4.8s after an abrupt
 publisher drop read the outgoing broadcast's playlist 4 times out of 4, and at 5.0s and beyond read
 404 0 times out of 4. **The row's stated consequence was also wrong, in the direction that
