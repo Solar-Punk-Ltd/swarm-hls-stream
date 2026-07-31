@@ -113,6 +113,33 @@ describe('StreamOrchestrator recovery hygiene', () => {
   });
 });
 
+describe('StreamOrchestrator per-stream bookkeeping', () => {
+  /** Reaches the maps directly, because a retained entry has no behavioural signal to observe. */
+  interface OrchestratorMaps {
+    processedSegments: Map<string, Set<number>>;
+    streamActivityAt: Map<string, number>;
+  }
+
+  // A stopped stream leaves nothing behind. The per-stream duplicate filter holds one index per
+  // segment the broadcast ever delivered, so a long-running uploader that has served many streams
+  // keeps every one of those sets alive for the life of the process.
+  it('drops its per-stream entries when a stream stops', async () => {
+    const id = 'live/stream';
+    const orch = makeOrchestrator();
+    const maps = orch as unknown as OrchestratorMaps;
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+    assert.equal(maps.processedSegments.has(id), true, 'the stream must be tracked before the stop means anything');
+
+    await orch.stopStream(id);
+
+    assert.equal(maps.processedSegments.has(id), false, 'the duplicate filter outlived the stream it belonged to');
+    assert.equal(maps.streamActivityAt.has(id), false, 'the activity reading outlived the stream it belonged to');
+  });
+});
+
 describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   interface PublishedEntry {
     state: string;
@@ -183,6 +210,12 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD));
+    // Without this the rest holds vacuously: a build that never finalizes the replaced session at all
+    // also never touches the entry, and both assertions below would pass on that.
+    assert.ok(
+      published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      'the replaced session was never finalized, so nothing here has been exercised',
+    );
     await waitFor(() => orch.getActiveStreamCount() === 1);
     orch.handleSegment(id, 0, 2, Buffer.from('two'));
     await waitFor(() => saved.length > writesBeforeRetirement);
@@ -196,6 +229,68 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
       removed,
       [],
       'finalizing the replaced session deleted the recovery entry of the session that replaced it',
+    );
+    await orch.cleanup();
+  });
+
+  // The replacement has to be registered before the finalize rather than after it. Deferring it
+  // looks like it only costs latency and does not: a close arriving inside that window finds no
+  // uploader to drain, and the deferred spawn then registers one after the close, live for the rest
+  // of the process with nothing left to stop it and a catalog entry that never becomes a VOD.
+  it('leaves nothing running when a close arrives while the replaced session is finalizing', async () => {
+    const id = 'live/stream';
+    const finalizing: string[] = [];
+    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
+      addStream: async () => {
+        finalizing.push('vod');
+        await sleep(60);
+      },
+    } as unknown as StreamCatalog);
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => finalizing.length > 0);
+    await orch.stopStream(id);
+    // Long enough that a spawn deferred behind the finalize would have landed by now.
+    await sleep(150);
+
+    assert.equal(
+      orch.getActiveStreamCount(),
+      0,
+      'a stream survived its own close, so nothing will ever finalize it or move it off live',
+    );
+    await orch.cleanup();
+  });
+
+  // Finalizing the outgoing session must not borrow the machinery that hides a stopping stream from
+  // the stall signal, because the id it would hide belongs to the live one by then. A whole finalize
+  // window, up to the five minute drain timeout, in which a broadcaster that goes quiet reports
+  // nothing at all. This is the shape every round of review here keeps finding: a fix whose safety
+  // rests on a signal staying live, with nothing holding it there.
+  it('leaves the replacement visible to the stall signal while the outgoing session finalizes', async () => {
+    const id = 'live/stream';
+    const finalizing: string[] = [];
+    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
+      addStream: async () => {
+        finalizing.push('vod');
+        await sleep(60);
+      },
+    } as unknown as StreamCatalog);
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => finalizing.length > 0 && orch.getActiveStreamCount() === 1);
+
+    assert.notEqual(
+      orch.getMsSinceStreamActivity(),
+      null,
+      'the live stream is unreadable to the stall signal for as long as the replaced one takes to finalize',
     );
     await orch.cleanup();
   });

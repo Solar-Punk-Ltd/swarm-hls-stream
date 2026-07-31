@@ -12,8 +12,15 @@ import { DEFAULT_FETCH_TIMEOUT_MS } from '../src/engines/ome/OmeHlsPuller.js';
 import { EnginePlugin, RawBodyRequest } from '../src/engines/types.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
+import { STREAM_STATUS_VOD } from '../src/types.js';
 
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
+
+/** The catalog entry shape these tests read back, narrowed from what StreamCatalog accepts. */
+interface VodEntry {
+  state: string;
+  duration: number;
+}
 
 /**
  * Posts a signed admission webhook to the engine's real route over HTTP, the way OME does. Every hop
@@ -224,12 +231,12 @@ describe('createOmeEngine origin restart (CON-16)', () => {
   const POLL_INTERVAL_MS = 20;
   const DELIVERY_TIMEOUT_MS = 5_000;
 
-  function mediaPlaylist(uris: string[]): string {
+  function mediaPlaylist(uris: string[], mediaSeq = 0): string {
     return [
       '#EXTM3U',
       '#EXT-X-VERSION:3',
       '#EXT-X-TARGETDURATION:2',
-      '#EXT-X-MEDIA-SEQUENCE:0',
+      `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}`,
       ...uris.flatMap((uri) => ['#EXTINF:2.0,', uri]),
     ].join('\n');
   }
@@ -246,14 +253,15 @@ describe('createOmeEngine origin restart (CON-16)', () => {
    * session produced it. Both sessions number from `#EXT-X-MEDIA-SEQUENCE:0`, which is what a
    * restarted OME serves and what puts the new indexes at or below the ones already delivered.
    */
-  function makeOrigin(): { fetcher: Fetcher; restart(): void; playlistPolls(): number } {
+  function makeOrigin(): { fetcher: Fetcher; restart(next?: string): void; playlistPolls(): number } {
     let session = 's1';
+    let playlist = SESSION_PLAYLIST;
     let playlistPolls = 0;
     const fetcher = (async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url === PLAYLIST_URL) {
         playlistPolls++;
-        return { ok: true, status: 200, text: async () => SESSION_PLAYLIST } as Response;
+        return { ok: true, status: 200, text: async () => playlist } as Response;
       }
       const body = `${session}-${url.slice(url.lastIndexOf('/') + 1)}`;
       return {
@@ -265,20 +273,24 @@ describe('createOmeEngine origin restart (CON-16)', () => {
 
     return {
       fetcher,
-      restart: () => {
+      restart: (next?: string) => {
         session = 's2';
+        if (next) {
+          playlist = next;
+        }
       },
       playlistPolls: () => playlistPolls,
     };
   }
 
   /**
-   * Finalizing the outgoing session has to take real time, or this test proves nothing.
+   * Finalizing the outgoing session has to yield to the event loop, or this test proves nothing.
    *
-   * The whole defect lives in the window between a re-announce and the old session leaving the live
-   * maps. A fake Bee that resolves immediately closes that window inside one microtask cascade, ahead
-   * of the new puller's first tick, and the test passes against code that fails in production on
-   * every restart. One millisecond is enough to reopen it, and one Bee round trip is never less.
+   * The defect lives in the window between a re-announce and the old session leaving the live maps.
+   * A fake whose writes resolve without ever yielding closes that window inside one microtask
+   * cascade, ahead of the new puller's first tick, so the test passes against code that fails in
+   * production on every restart. What reopens it is crossing a macrotask boundary at all, which any
+   * real Bee call does and `sleep(0)` already does. The duration below is margin, not the mechanism.
    */
   const FINALIZE_LATENCY_MS = 25;
 
@@ -331,6 +343,52 @@ describe('createOmeEngine origin restart (CON-16)', () => {
       `nothing from the restarted origin was ever uploaded, so the stream is silent for good; uploaded: ${
         uploaded.join(', ') || '(nothing)'
       }`,
+    );
+  });
+
+  // The other half of the same window, and the more damaging one. When the restarted origin numbers
+  // above where the old session got to, its segments are not absorbed by the duplicate filter, they
+  // are accepted: uploaded, added to the outgoing session's manifest, and shipped inside the VOD that
+  // finalizes it. One broadcast's media published as part of another's recording. The duration of
+  // that VOD is what gives it away, since it can only cover what the first session actually sent.
+  it('keeps the restarted origin out of the VOD that finalizes the session it replaced', async () => {
+    const SEGMENT_SECONDS = 2;
+    const FIRST_SESSION_SEGMENTS = 4;
+    const RESTARTED_HIGH = mediaPlaylist(['seg_9.ts', 'seg_10.ts', 'seg_11.ts', 'seg_12.ts'], 9);
+    const published: VodEntry[] = [];
+    const origin = makeOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: RESTART_SECRET,
+      fetcher: origin.fetcher,
+    });
+    const orchestrator = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async (index: number) => {
+          await sleep(FINALIZE_LATENCY_MS);
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      undefined,
+      makeRecordingCatalog(published),
+    );
+
+    await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
+    await waitFor(() => published.length > 0, DELIVERY_TIMEOUT_MS);
+
+    origin.restart(RESTARTED_HIGH);
+    await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), DELIVERY_TIMEOUT_MS);
+    await postAdmission(engine, orchestrator, 'closing', RESTART_SECRET, STREAM_URL);
+
+    const vods = published.filter((entry) => entry.state === STREAM_STATUS_VOD);
+    assert.ok(vods.length > 0, 'the replaced session never published a VOD, so nothing here was exercised');
+    assert.equal(
+      vods[0].duration,
+      SEGMENT_SECONDS * FIRST_SESSION_SEGMENTS,
+      `the finalized session's recording runs longer than what it was sent, so the restarted origin's media was published inside it; durations: ${vods
+        .map((entry) => entry.duration)
+        .join(', ')}`,
     );
   });
 
