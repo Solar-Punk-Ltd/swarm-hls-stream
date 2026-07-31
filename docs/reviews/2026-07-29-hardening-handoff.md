@@ -145,6 +145,11 @@ responses) are also still open.
 
 ### The queue after that, in severity order
 
+0. **CON-19, HIGH, and CI is red on this branch right now.** CON-16's own acceptance test fails
+   intermittently on CI with `expected 8, actual 16`, which is both sessions inside one recording,
+   the defect it exists to catch. Same tree passed eight times on the topic branch and failed twice
+   on `feat/ai-hardening`. Does not reproduce locally. Read the register row before touching it: two
+   hypotheses are already refuted there.
 1. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
    by compose-project label and ignores the service filter, so cleaning one service destroys the live
    stack. The client's `ManifestManagement.ts` still has a bare `fetch` with no timeout, the uploader
