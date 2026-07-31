@@ -37,15 +37,15 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` at `05eafda`. Eleven pull requests merged, each through the
-review gate: #27 through #37. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
+**Where the code is.** `feat/ai-hardening` at `c6f3599`. Twelve pull requests merged, each through the
+review gate: #27 through #38. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
 stay that way.
 
-**Test baseline is 262 uploader, 40 cli, 5 client**, with lint, typecheck and whole-tree prettier clean. One
+**Test baseline is 274 uploader, 40 cli, 5 client**, with lint, typecheck and whole-tree prettier clean. One
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
-### Where things stand: both money CRITICALs are closed, the queue starts at CON-16
+### Where things stand: both money CRITICALs are closed, and so is CON-16
 
 **SEC-1 and OPS-1 are both closed**, and they were the two that could actually cost the owner money.
 SEC-1 was an open funds drain: anyone on the internet could reach the endpoints that spend the
@@ -68,6 +68,49 @@ implementation and the Bee Go node's handlers during the PR #37 gate, so trust i
 point rather than rebuilding it. Before this session that package had no test script at all, so
 `pnpm -r test` skipped it silently and `pnpm verify` reported success while running nothing in the
 package that spends money.
+
+### What PR #38 changed about how to read this document
+
+**CON-16 is closed, and the register row describing it was wrong.** It asserted that the stall signal
+eventually finalizes a hung stream, so the failure halts rather than hangs. Nothing finalizes an idle
+live stream. That row is corrected now, but treat it as the standing warning: **the register is
+evidence, not scripture.** It was written by the same kind of pass that writes everything else here,
+and a claim in it can be checked with a command in about a minute.
+
+**The fix was not where the finding said it was.** CON-16 names the puller and the engine. The engine
+half was real and small. The larger half was in `StreamOrchestrator.startStream`, which retired a
+re-announced session in the background, so a fresh puller fed the outgoing uploader for the whole
+drain. Indexes it had seen came back accepted through the duplicate filter, indexes above its
+high-water were published into the outgoing session's VOD, and none of it reached `handleSegmentLoss`.
+When a finding names a component, check the component on the other side of the handoff too.
+
+**A puller-local fix for a session-level event was tried and reverted.** CON-17 holds the three
+measurements. Do not rebuild it.
+
+### Traps this session produced, and the first one is the important one
+
+**A fake that resolves without yielding hides every ordering defect behind it.** This is TEST-19 and
+it is the most transferable thing here. The CON-16 acceptance test finalized the outgoing session
+through a fake whose writes resolved with no `await` that reached the macrotask queue, so the entire
+drain completed inside one microtask cascade ahead of the puller's first tick. It passed against code
+that failed in production on every restart, and one millisecond took it from 4 of 4 delivered to 0 of 4. Anything standing in for a network call needs a real yield, or the window you are testing is
+closed before your test looks at it. `sleep(0)` is enough.
+
+**A fix that moves work earlier can break a path that relied on it being later.** Making the
+replacement spawn synchronous was correct and introduced a CRITICAL: a drain that started before a
+re-announce still detached by stream id when it finished, and that id belonged to the replacement by
+then, so a broadcaster that reconnected inside its own disconnect drain was unregistered by it.
+Silent and permanent. Ask what ordering the old code was accidentally providing.
+
+**Verify a lens finding before acting on it, including a persuasive one with probe output.** The
+claims auditor reported a surviving mutation as a real coverage gap and showed readings for it. It
+did not reproduce: p-queue runs a synchronous job inline, so the window it described is zero, and the
+probe came back byte-identical. R2's default of refuted earns itself against lenses as often as
+against the author.
+
+**Two of my own "harmless equivalent" survivors were not equivalent.** If you dismiss a surviving
+mutation, write down the mechanism that makes it equivalent and have someone else check it. One of
+the two here was refuted by the test-integrity lens in the next round.
 
 ### Traps this session produced, all of them expensive
 
@@ -102,16 +145,13 @@ responses) are also still open.
 
 ### The queue after that, in severity order
 
-1. **CON-16, HIGH.** An origin that restarts its media sequence silences the puller permanently:
-   `lastSeq` only moves forward and `seq <= lastSeq` has no escape. Measured through the real engine.
-   Largest thing open in the OME path.
-2. **SEC-7, HIGH.** 60 Dependabot alerts, axios 22 of them at runtime scope through bee-js. Reconcile
+1. **SEC-7, HIGH.** 60 Dependabot alerts, axios 22 of them at runtime scope through bee-js. Reconcile
    against PR #13 into `main`, which already claims 32 of 33 resolved, before duplicating work.
-3. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
+2. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
    by compose-project label and ignores the service filter, so cleaning one service destroys the live
    stack. The client's `ManifestManagement.ts` still has a bare `fetch` with no timeout, the uploader
    half being closed in #34.
-4. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
+3. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
    largest single gap is that **nothing loads `config.ts`**, so every `required()` call in it can be
    deleted with the suite green. Same module-scope obstacle as TEST-11. Plus S0.3 (coverage baseline). **S0.4's
    FakeBee now exists** for the stamp path, at `packages/cli/test/helpers/fakeBee.ts`, verified
@@ -119,7 +159,7 @@ responses) are also still open.
 
 ### The lesson every gate keeps producing
 
-Six rounds running, the same shape: **a signal was added and the failure it was meant to catch did not
+Seven rounds running, the same shape: **a signal was added and the failure it was meant to catch did not
 reach it.** On #30 three signals were added and the likeliest failure reached none. On #34 a lost
 segment was counted on a consecutive counter that the very next success cleared, so 3623 polls answered
 200 while a segment was genuinely lost. On #35 a token that passed validation could lock every caller
@@ -144,6 +184,12 @@ scanning shared state, and clean up what you write.
 
 **#37 again: a fake's premise needs pinning like any other behaviour.** `fakeBee.ts` argued at length
 for `waitForUsable: false` and could not detect its removal.
+
+**#38: the test could not fail, because its fake closed the window it was testing.** The seventh round
+produced the same shape from a new direction: the control was added, the failure was real, and the
+test that was meant to catch it ran in a world where the failure could not occur. Round one of that
+gate then found the fix itself incomplete in three ways and the round two lens found the rework's own
+regression, so the count of rounds where the gate changed the outcome is now every round it has run.
 
 Second, cheaper move: **ask which numbers in the new code an outside party controls.** That is what
 found the unbounded gap scan in `5be1a72`, which no review caught.
