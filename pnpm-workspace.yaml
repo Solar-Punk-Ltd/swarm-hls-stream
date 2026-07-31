@@ -1,5 +1,6 @@
 packages:
   - 'packages/*'
+  - 'deploy'
 allowBuilds:
   '@parcel/watcher': false
   '@swc/core': false

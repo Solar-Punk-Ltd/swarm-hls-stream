@@ -1,0 +1,10 @@
+{
+  "name": "@swarm-hls-stream/deploy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deploy and operations scripts, and the tests that drive them against a stubbed docker.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
