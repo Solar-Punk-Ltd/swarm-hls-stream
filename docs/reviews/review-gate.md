@@ -7,6 +7,11 @@ This replaces the Copilot gate described in
 the organization is exhausted for the month, so the automated outside reviewer is unavailable. The
 gate it occupied is not optional, so it needs a replacement rather than a gap.
 
+**Owner decision, 2026-08-01: do not re-check whether the quota reset.** July ended and a monthly
+quota would plausibly be back, which is the cheapest way to restore a genuinely independent reviewer.
+The owner has held that check. Do not request a Copilot review on a pull request, and do not treat
+its absence as a gap in the gate. Raise it again only if the owner does.
+
 ## What the outside reviewer was actually providing
 
 Worth being precise about, because a replacement that misses any of the three is not a replacement.
@@ -37,7 +42,9 @@ Each reviewer receives the diff and read access to the repository. Each reviewer
 - the reasoning behind the commits,
 - the author's own account of what the change does or why it is correct,
 - the finding in the register that the change is meant to close, or any statement of the expected
-  answer.
+  answer,
+- the rejected-findings list, for the reason and with the one exception given in
+  [R5](#r5-refutations-go-into-the-register).
 
 Withholding the description is the single most important rule here and the easiest one to break by
 accident. A PR body in this project is a persuasive document that argues the change is correct. A
@@ -102,6 +109,15 @@ documentation and it outlives the review.
 
 The outcome lands on the pull request as a review through `gh`, listing the lenses that ran, the lenses
 that were selected against, what was confirmed, what was refuted and why, and what changed as a result.
+
+**When the mutation check ran, the result also carries its exact `stryker` invocation, the mutant
+total, the survivor total, the score, and the `concurrency` and host core count it ran at.** Four
+lines, and without them the check has no artifact at all: the JSON report is gitignored, so scoping
+the run to one file out of five is undetectable by the triage lens, which is forbidden from generating
+its own mutants and is never told the scope. The claim that two rounds are finally comparable is only
+true if the numbers are posted somewhere immutable. The concurrency and core count belong there
+because a flaky failure scores as a killed mutant, so a run on a smaller machine reports a better
+score for a worse suite.
 A review that exists only in a session transcript provides no auditability, and once the transcript is
 gone nobody can tell whether the gate ran or which lenses it used.
 
@@ -112,8 +128,42 @@ blanket dismissal is a valid outcome.
 ### R5. Refutations go into the register
 
 Every REFUTED finding is appended to the rejected-findings table in
-[`2026-07-29-hardening-audit.md`](./2026-07-29-hardening-audit.md) together with its disproof. Real
-findings that fall outside the pull request's scope become new register rows instead of scope creep.
+[`2026-07-29-hardening-audit.md`](./2026-07-29-hardening-audit.md) together with its disproof, and
+carries a stable `R<n>` id in its first cell. Real findings that fall outside the pull request's
+scope become new register rows instead of scope creep.
+
+**Cite the id to shorten the write-up, never to skip the check.** Before verifying a finding, grep the
+rejected section for its subject. A hit saves you re-deriving the argument in prose. It does not save
+you the verification, and R2 is not amended: the posted result cites R23 **and names the command
+re-run to confirm the disproof still holds at this head**. Where the diff touches any file the cited
+row's evidence names, the disproof is re-derived in full.
+
+That is not caution for its own sake. Register rows go stale, and this project has the case on record:
+CON-20's row predicted a consequence the live measurement then refuted. Several rejected rows are
+openly state-dependent, and **R12** even cites a `package.json` line number that this very change
+moved. A row saying `retryUntilDeadlineAsync` "throws on exhaustion and never returns null" is a
+disproof of one shape of finding against one shape of code, and the day that function learns to return
+null the citation closes a real defect while the gate reports pass.
+
+The ids exist for the author's side of the gate. **Do not hand the list to a lens**, because telling a
+reviewer what the author considers settled is the anchoring R1 exists to prevent. **One exception, and
+it is not optional:** when the diff itself contains register rows, R1's grant of the diff wins and the
+lens gets them. That happened on the very pull request that wrote this rule, whose diff rewrote every
+rejected row. Accept the anchoring for that round and name it in the posted result rather than
+pretending the ban held.
+
+**Ids are permanent and never renumbered.** The next id is one past the highest ever issued, wherever
+that row sits in the document, and no id is reused. A row that is later overturned keeps its id and
+gains a line naming what superseded it. "Assigned in document order" would have been true only until
+the first correction, and the first correction has already happened: the PR #43 table was misfiled
+after `## Finding register` and moving it back reordered the section. Under a position-keyed scheme
+the next round either issues a duplicate id or renumbers, and renumbering silently repoints every
+"refuted before as R23" already published in an immutable pull request comment.
+
+Two things this section has already caught about itself. The PR #43 round appended its table under
+the wrong heading, so four refutations sat outside the section that exists to hold them. And the
+count in prose has been wrong twice, most recently as "47" against a real 62, which is why nothing
+here states a total.
 
 That section holds seven tables now, the original audit's plus one per review-gate round, and it has
 already prevented rework. Do not restate its row count here: this sentence claimed nine for several
@@ -125,16 +175,85 @@ killed, and it appreciates with every round.
 
 Owner rule, 2026-07-30. Decide per pull request, run what you selected, and name what you dropped.
 
+Lenses fall into two tiers, and the tier decides how the slot is filled.
+
+**Mechanical tier.** The claims auditor and the mutation check. Both mostly run commands and count, so
+both run a model tier down. On #29's 13-line config diff, three lenses a tier down cost 49k, 34k and
+29k tokens against roughly 50k to 70k each at full tier, and the cheap ones still produced a
+byte-level `.gitignore` check and a per-package `outDir` comparison.
+
+**The claims auditor is unconditional. The mutation check runs on every pull request that changes
+`src/` or `test/` inside `packages/stream-uploader`.** Only the auditor is unconditional, because only
+the auditor has an artifact on every pull request.
+
+Three things about that trigger, each of which took getting it wrong first.
+
+**A test-only diff is not exempt, it is the most informative case.** Mutation testing measures the
+tests and merely uses source as the substrate, so changing the tests changes the thing being measured
+and unchanged mutants can flip from killed to survived. "Nothing to mutate" confuses the substrate
+with the subject. On a test-only diff, scope the run to the source those tests cover.
+
+**The harness covers `packages/stream-uploader` and nothing else.** `stryker.config.json` mutates that
+package's `src/` and runs that package's suite. `audit-gate`, `cli` and `client` all have `src/` and
+none of them has a runner here, so a change to `packages/cli/src/` gets recorded as **unavailable**,
+which is a different word from not applicable and must not read as coverage. Mutating unscoped would
+report on a package the diff never touched, and mutating `cli` with the uploader's suite would survive
+every mutant and produce pure noise.
+
+**Not applicable means genuinely neither**, as on a docs, deploy or CI diff. The selection comment
+states which of the three it is, and the claims auditor verifies that statement, because it is a
+binary fact one `git diff --name-only` settles and R3 otherwise never looks at the selection comment.
+
+**Reasoning tier, by surface.** Correctness, security, concurrency, behaviour preservation, config
+consistency, silent failure, protocol correctness. These genuinely reason, they cost accordingly, and
+they are the source of nearly every refuted finding the register holds. Select them from the "Select
+when" column and no other way.
+
 1. **The claims auditor runs on every pull request.** It has no substitute and it is never traded away
    for a slot. Two real defects in this work were claim failures rather than code failures, and a diff
    reviewer catches neither, because neither is in the diff.
-2. **Pick the code lenses by the surfaces the diff touches.** Read the "Select when" column below as
-   binding rather than advisory.
+2. **Pick the reasoning lenses by the surfaces the diff touches.** Read the "Select when" column below
+   as binding rather than advisory.
 3. **Do not pad to a number.** A one-surface diff takes the auditor plus one or two lenses.
 4. **Give each selected lens a genuinely different question.** Three lenses asked the same thing produce
    one finding three times and a false sense of coverage.
 5. **Name the lenses you did not run**, in the posted result required by R4. That list is the next
    round's work.
+
+### Keep the diff small, because the diff sets the price
+
+Owner decision, 2026-08-01, and it is the real cost lever rather than the lens count.
+
+The gate is mostly a reviewer of the fix, not of the code the fix touches. On #43, eleven confirmed
+findings and almost every one was against the change itself. #29's 13-line config diff drew close to
+nothing. A change that opens six new edges earns six lenses, and the six lenses are not the expense,
+the six new edges are.
+
+So **a pull request carries one surface**, and grouping several related tasks into it is fine when they
+share that surface. That wording is deliberate, because "one task per pull request" would contradict
+step 2 of the handoff's working protocol, which says to group related tasks rather than open 48 pull
+requests and expects 18 to 22 in total. Roughly 2.5 tasks per pull request and one task per pull
+request cannot both be followed, and a later session caught between two standing protocols will follow
+neither. Surface is the axis that matters here anyway: lenses are selected by surface, so a second
+surface is what actually widens the gate, while a second task on the same surface costs nothing.
+
+**It binds, and it has an artifact.** The selection comment states `git diff --stat` for `src/` and
+names the surfaces touched. Exceeding either needs a one-line exception in that same comment saying
+why the split was not possible. Without the artifact this is advice, and advice next to a
+[fail-closed](#fail-closed) clause is advice that loses.
+
+The line count is the softer half. Roughly 200 lines of `src/` is a prompt to reconsider, not a
+refusal. The surface count is the binding half.
+
+#30 is the standing counter-example: four tasks across four surfaces, six lenses all justified, and
+the CRITICAL came from the one lens whose question was specifically "what can break while this still
+reports healthy". That round paid for itself and is still the shape to avoid. The way to need fewer
+lenses is a tighter pull request, not a shorter list on a broad one.
+
+**The pull request that introduced this rule broke it**, and recording that here is cheaper than
+letting the precedent stand unremarked. It carried three subjects across at least two surfaces, config
+consistency and protocol correctness, with no exception recorded, because the rule did not exist when
+its diff was written. The next one does not get that excuse.
 
 **The full catalogue runs as a deep run at the end of each sprint**, paired with the sprint-exit
 re-audit in the handoff's working protocol. Sprint exit is when a fix in one domain is most likely to
@@ -146,27 +265,95 @@ reach it, which is the failure rule 4 exists to prevent.
 
 ### Lens catalogue
 
-| Lens                   | Select when                                                                     | Hunts                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Claims audit           | **Always**                                                                      | Assertions in the description that were never checked, or are stale                                               |
-| Correctness            | Any logic change                                                                | Wrong output for specific inputs, false green, false red                                                          |
-| Security               | Input handling, auth, filesystem paths, CI, dependencies                        | A concrete attack path with a named attacker and what they control                                                |
-| Concurrency            | The orchestrator, queues, timers, recovery                                      | Interleavings that corrupt state, lost updates, races between entry points                                        |
-| Behaviour preservation | Refactors, autofixes, anything claimed to be mechanical                         | Hunks where behaviour actually differs from the version they replaced                                             |
-| Config consistency     | Config, scripts, CI, packaging, docs describing commands                        | Two things in the repo that disagree, and what breaks because they do                                             |
-| Silent failure         | Error paths, health and status reporting, retries                               | Swallowed errors, fallbacks that mask a fault, a green that means nothing                                         |
-| Test integrity         | New or changed tests                                                            | Tests that pass without exercising the behaviour, and coverage that lies                                          |
-| Protocol correctness   | This gate, the handoff's working protocol, any rule a later session must follow | Obligations removed or weakened, requirements no artifact can prove, and the cheapest review the new text permits |
+| Lens                   | Tier       | Select when                                                                     | Hunts                                                                                                                     |
+| ---------------------- | ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Claims audit           | Mechanical | **Always**                                                                      | Assertions in the description that were never checked, or are stale                                                       |
+| Mutation triage        | Mechanical | **Any `src/` change.** Stryker generates and runs, the lens only triages        | Survivors that are real coverage gaps rather than equivalent mutants, and the semantic mutations no AST operator produces |
+| Correctness            | Reasoning  | Any logic change                                                                | Wrong output for specific inputs, false green, false red                                                                  |
+| Security               | Reasoning  | Input handling, auth, filesystem paths, CI, dependencies                        | A concrete attack path with a named attacker and what they control                                                        |
+| Concurrency            | Reasoning  | The orchestrator, queues, timers, recovery                                      | Interleavings that corrupt state, lost updates, races between entry points                                                |
+| Behaviour preservation | Reasoning  | Refactors, autofixes, anything claimed to be mechanical                         | Hunks where behaviour actually differs from the version they replaced                                                     |
+| Config consistency     | Reasoning  | Config, scripts, CI, packaging, docs describing commands                        | Two things in the repo that disagree, and what breaks because they do                                                     |
+| Silent failure         | Reasoning  | Error paths, health and status reporting, retries                               | Swallowed errors, fallbacks that mask a fault, a green that means nothing                                                 |
+| Test integrity         | Reasoning  | New or changed tests                                                            | Tests that pass without exercising the behaviour, and coverage that lies                                                  |
+| Protocol correctness   | Reasoning  | This gate, the handoff's working protocol, any rule a later session must follow | Obligations removed or weakened, requirements no artifact can prove, and the cheapest review the new text permits         |
 
 ### What selection has measured
 
-PR #30 bundled four tasks across four surfaces, so six lenses were all justified and the wide run paid
-for itself: the CRITICAL came from the one lens whose question was specifically "what can break while
-this still reports healthy". The way to need fewer lenses is a tighter pull request, not a shorter list
-on a broad one.
+PR #30 is covered in [Keep the diff small](#keep-the-diff-small-because-the-diff-sets-the-price) and is
+not restated here. This document's own precedent is that a duplicated lesson drifts and one copy goes
+stale, so it gets one home.
 
 PR #31, a dead-code sweep, took three. PR #32, two dependency-injection seams, took four. Both rounds
 found real defects, so a reduced set is not a rubber stamp.
+
+## Mutation is a command now
+
+Owner decision, 2026-08-01. Every round up to #43 had the test-integrity lens invent its own mutation
+set and run it by hand: 36 on #30, 51 on #32, 59 on #43. That is the most productive thing this gate
+does and the worst possible use of an agent, because generating and executing mutants is mechanical,
+non-reproducible between rounds, and self-reported. My own "10 of 10" on #43 did not survive contact
+with the lens's 59, and neither number can be checked against anything today.
+
+`pnpm mutate` runs [Stryker](https://stryker-mutator.io) from the repository root.
+
+```bash
+pnpm mutate
+```
+
+Scope it to what the diff touched, because the whole uploader is 1839 mutants against a 14-second
+suite and that is an overnight run, not a pull request gate:
+
+```bash
+./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome{,/**/*}.ts'
+```
+
+**`engines/ome.ts` and `engines/ome/` are a sibling file and directory, and a `dir/**/_.ts`glob
+matches only the second.** The obvious`engines/ome/\*\*/_.ts`takes 4 files and 461 mutants while
+silently skipping`ome.ts`, which is the file that produced TEST-25. Check the "Found N of M files to
+be mutated" line against what you expected before letting a run stand.
+
+**The division of labour is the point.** Stryker generates, executes and reports. It cannot tell an
+equivalent mutant from a real coverage gap, and it only ever mutates syntax. The lens receives the
+survivor list and does the two things it alone can do: classify each survivor with a proof rather
+than an assertion, which is the standard #43's lens met and earlier rounds did not, and add semantic
+mutations no AST operator produces. The highest-value mutation of the whole #43 round was "shrink the
+fix's floor to one segment", which is a change of meaning rather than of an operator, and it is what
+exposed an acceptance test whose duration assertion could be satisfied by the wrong media entirely.
+
+Four things about the setup that are load-bearing:
+
+- **Stryker runs from the repository root, not from the package.** `srsWebhookAuth.test.ts` reads
+  `engines/srs/srs.conf.template` three directories up, so a sandbox rooted at the package puts the
+  test one level too deep and the initial run fails. Rooting at the repository keeps that deliberate
+  cross-check against the real SRS template working.
+- **`concurrency` is 4 and it is not a performance setting.** Eight concurrent copies of the suite
+  failed 3 of 8 runs, in `GET /health status`, `OmeHlsPuller injected fetcher` and
+  `StreamOrchestrator recovery-timer cancellation`. Four concurrent copies were clean across 8 runs on
+  a 12-core machine. A flaky failure is scored as a killed mutant, so contention inflates the score
+  and hides exactly the gaps the run exists to find. **This is why the score is not trustworthy in CI
+  yet**, where the core count is lower and the same setting means more contention. TEST-24 has to
+  close first, and it undercounts: it names two timing tests and there are three.
+- **The command runner has no per-test coverage analysis**, so every mutant pays for the whole
+  14-second suite. That is the price of `node:test` having no Stryker plugin, and it is why scope
+  discipline matters more here than in a jest or vitest project.
+- **A repeated `--mutate` on the command line replaces rather than appends.** Pass one glob, or set
+  the list in the config.
+
+What Stryker gives that the hand-rolled pass could not: it refuses to score a red baseline at all, it
+writes a JSON report instead of a sentence, and the same code produces the same mutants next round, so
+two rounds are finally comparable.
+
+**The first run paid for the switch.** 132 mutants on `src/engines/ome.ts`, score 50.76, and among the
+65 survivors was one that inverts the admission webhook's allow-or-deny decision while all 294 tests
+stay green. Five gated pull requests had touched that file and none of them caught it. It is now
+TEST-25.
+
+**R2 still applies to the survivor list.** On that same run I read three survivors on
+`if (!admissionSecret)` as the SEC-3 guard going untested, and it is a `logger.warn`. Twenty-two of
+the sixty-five survivors were `StringLiteral` mutations of log text, equivalent by design. **A
+survivor list is leads, not findings**, and each one is verified against the code exactly as a lens
+finding is.
 
 ## Lens prompt rules
 
@@ -190,7 +377,9 @@ checkable, rather than on the size of the number attached to it.
 - **Give the test-integrity lens mutation as its method, not reading.** On #30 it ran 36 mutations and
   named, for each survivor, an assertion that did not assert what its title claimed. On #32 it ran 51
   and found that a test written to document a missing timeout would have stayed green once the timeout
-  landed. Reading the files produces neither result.
+  landed. Reading the files produces neither result. **The lens no longer generates or executes the
+  mutants** (see [Mutation is a command now](#mutation-is-a-command-now)). It receives the survivor
+  list and does the part only it can do.
 - **Verify the reviewer's proposed fix, not only its finding.** Already required by R2, and worth
   repeating in the prompt. On #29 the auditor correctly spotted an imprecise sentence, then proposed a
   rewording wrong in the other direction, turning a real event into a hypothetical one.
@@ -223,11 +412,15 @@ checkable, rather than on the size of the number attached to it.
   about the expected answer, so R1 still holds with it. Not a uniform win: on #28, the round that
   introduced it, it cut the test lens 20% on tokens and 38% on time and cost the security lens 19% more.
   Keep using it and keep watching.
-- **The mechanical lenses do not need the top model tier.** Test integrity and claims audit mostly run
-  commands and count, where security and correctness genuinely reason. On #29's 13-line config diff,
-  three lenses a tier down cost 49k, 34k and 29k tokens against roughly 50k to 70k each at full tier,
-  and the cheap ones still produced a byte-level `.gitignore` check and a per-package `outDir`
-  comparison. That was a config diff, so do not assume it holds on a logic-heavy one without checking.
+- **The mechanical lenses do not need the top model tier**, and the tier table above is what says which
+  those are: the claims auditor and mutation triage. This bullet used to name test integrity among
+  them, which now contradicts the table's classification of it as a reasoning lens, and nothing in R4
+  records which tier a lens actually ran at, so the divergence would be undetectable afterwards. The
+  measurement behind the rule stands: on #29's 13-line config diff, three lenses a tier down cost 49k,
+  34k and 29k tokens against roughly 50k to 70k each at full tier, and the cheap ones still produced a
+  byte-level `.gitignore` check and a per-package `outDir` comparison. **That was a config diff, so do
+  not assume it holds on a logic-heavy one without checking**, and that caveat travels with the numbers
+  wherever they are quoted, including the tier section above.
 
 ## Fail closed
 
