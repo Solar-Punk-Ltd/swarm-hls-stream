@@ -7,6 +7,7 @@ import { introducedVersions, lockfileVersions, splitVersion } from '../src/lockf
 import { formatSuiteCounts, parseSuiteCounts } from '../src/parseSuiteCounts.js';
 import { mutationApplicability, surfacesTouched } from '../src/surfaces.js';
 import type { GateFacts } from '../src/types.js';
+import { packagesMissingTotals } from '../src/workspacePackages.js';
 
 describe('parseSuiteCounts', () => {
   it('reads the TAP totals every node:test package prints', () => {
@@ -99,6 +100,22 @@ describe('lockfileVersions', () => {
       version: '9.6.1',
     });
     assert.deepEqual(splitVersion('express@5.2.1'), { name: 'express', version: '5.2.1' });
+  });
+});
+
+describe('packagesMissingTotals', () => {
+  it('names a package that ran and reported nothing', () => {
+    // The uploader runs with --test-force-exit, which calls process.exit() and truncates pending
+    // stdout writes to a pipe, so its summary never survives pnpm's aggregation. Without this the
+    // artifact listed five packages where the workspace has six and nothing said which was gone.
+    const expected = ['deploy', 'packages/cli', 'packages/stream-uploader'];
+    const reported = ['deploy', 'packages/cli'];
+
+    assert.deepEqual(packagesMissingTotals(expected, reported), ['packages/stream-uploader']);
+  });
+
+  it('is empty when every package reported', () => {
+    assert.deepEqual(packagesMissingTotals(['a', 'b'], ['b', 'a']), []);
   });
 });
 

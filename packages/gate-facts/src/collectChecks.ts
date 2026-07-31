@@ -1,6 +1,7 @@
 import { formatSuiteCounts, parseSuiteCounts } from './parseSuiteCounts.js';
 import { describe, run } from './run.js';
 import type { FactGroup } from './types.js';
+import { packagesMissingTotals, packagesWithTests } from './workspacePackages.js';
 
 interface AuditMetadata {
   info?: number;
@@ -29,7 +30,7 @@ function countAdvisoryFindings(report: string): string {
  * `pnpm verify` already runs lint, typecheck, the tests and the format check, so the suite counts
  * are read out of that run rather than paid for a second time.
  */
-export async function collectChecks(): Promise<FactGroup> {
+export async function collectChecks(repoRoot: string): Promise<FactGroup> {
   const verifyArgs = ['verify'];
   const verify = await run('pnpm', verifyArgs);
 
@@ -43,6 +44,10 @@ export async function collectChecks(): Promise<FactGroup> {
   const gate = await run('pnpm', gateArgs);
 
   const suites = parseSuiteCounts(verify.stdout);
+  const missing = packagesMissingTotals(
+    packagesWithTests(repoRoot),
+    suites.map((s) => s.packageName),
+  );
 
   return {
     title: 'Checks',
@@ -64,6 +69,14 @@ export async function collectChecks(): Promise<FactGroup> {
         value: formatSuiteCounts(suites),
         command: describe('pnpm', verifyArgs),
         failed: suites.some((s) => s.failed > 0),
+      },
+      {
+        key: 'packages that reported no total',
+        // A package absent from the row above is the failure this artifact exists to prevent: the
+        // reader counts the packages listed and sees a complete set, because nothing says otherwise.
+        value: missing.length === 0 ? 'none' : `${missing.length}: ${missing.join(', ')}`,
+        command: describe('pnpm', verifyArgs),
+        failed: missing.length > 0,
       },
       { key: 'advisory findings', value: countAdvisoryFindings(audit.stdout), command: describe('pnpm', auditArgs) },
       {

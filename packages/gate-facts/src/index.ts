@@ -27,7 +27,8 @@ async function main(): Promise<void> {
 
   // The diff is collected first because it is fast and it decides whether the slow ones are owed.
   const diff = await collectDiff(base, head);
-  const [checks, provenance] = await Promise.all([collectChecks(), collectProvenance(base, head)]);
+  const repoRoot = process.cwd();
+  const [checks, provenance] = await Promise.all([collectChecks(repoRoot), collectProvenance(base, head)]);
 
   const facts: GateFacts = {
     base,
