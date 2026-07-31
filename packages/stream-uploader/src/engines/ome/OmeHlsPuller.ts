@@ -2,7 +2,7 @@ import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../../utils/common.js';
 
-import { Fetcher, PlaylistEntry, PullerOptions } from './interfaces.js';
+import { Fetcher, PullerOptions } from './interfaces.js';
 import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './utils.js';
 
 const logger = Logger.getInstance();
@@ -33,12 +33,6 @@ export class OmeHlsPuller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private state: 'idle' | 'running' | 'stopped' = 'idle';
   private lastSeq = -1;
-  /**
-   * The playlist URI the segment at `lastSeq` was delivered from, or null when `lastSeq` was reached
-   * by writing an index off rather than delivering it. Kept in step with `lastSeq` at every site that
-   * moves it, since a URI belonging to a different index would be evidence of nothing.
-   */
-  private lastDeliveredUri: string | null = null;
   /**
    * First playlist index this puller ever saw. `lastSeq` cannot serve as the floor for a gap report
    * until something is delivered, and a puller that fails from its very first segment never delivers
@@ -203,7 +197,6 @@ export class OmeHlsPuller {
    */
   private async processPlaylist(playlist: string, url: string): Promise<void> {
     const segments = parseMediaPlaylist(playlist);
-    this.resetIfOriginRestarted(segments);
 
     for (const segment of segments) {
       if (this.isStopped) {
@@ -251,7 +244,6 @@ export class OmeHlsPuller {
         }
 
         this.lastSeq = segment.seq;
-        this.lastDeliveredUri = segment.uri;
         this.failingSeq = null;
         this.failedAttempts = 0;
       } catch (error) {
@@ -268,62 +260,6 @@ export class OmeHlsPuller {
         }
       }
     }
-  }
-
-  /**
-   * An origin that restarts numbers its new session from its own beginning, so the indexes it
-   * advertises are ones this puller already delivered. `seq <= lastSeq` then discards that playlist
-   * and every later one, because nothing moves `lastSeq` back: the stream goes silent for good rather
-   * than noisily wrong, which is why no signal sees it. See CON-16.
-   *
-   * Only this puller's position is reset. Whether the new session then reaches Swarm depends on the
-   * orchestrator holding a fresh uploader for it, which is what an announce provides: the engine
-   * replaces the puller on one, and this is the fallback for a restart that never announced.
-   */
-  private resetIfOriginRestarted(segments: PlaylistEntry[]): void {
-    if (this.lastSeq < 0 || segments.length === 0) {
-      return;
-    }
-
-    const cause = this.originRestartEvidence(segments);
-    if (!cause) {
-      return;
-    }
-
-    logger.error(`[OME] Origin restarted for ${this.streamId}: ${cause}. Following the new session from its start`);
-    this.lastSeq = -1;
-    this.lastDeliveredUri = null;
-    this.baselineSeq = null;
-    this.failingSeq = null;
-    this.failedAttempts = 0;
-  }
-
-  /**
-   * Why this playlist cannot belong to the session the puller has been delivering, or null when it
-   * still can. Two separate cases, because a restart looks like nothing at all when the new session
-   * happens to be advertising as many segments as the old one had reached: the indexes then match the
-   * ordinary poll that found nothing new, and only the segment sitting at that index gives it away.
-   *
-   * Getting this wrong in either direction is not symmetric. A false positive re-pulls one window,
-   * whose indexes the orchestrator already holds and drops as duplicates. A false negative is the
-   * permanent silence this exists to end, so the cheaper mistake is the one to prefer.
-   */
-  private originRestartEvidence(segments: PlaylistEntry[]): string | null {
-    const newestSeq = segments[segments.length - 1].seq;
-    if (newestSeq < this.lastSeq) {
-      return `its newest index ${newestSeq} is below the last one delivered, ${this.lastSeq}`;
-    }
-
-    if (this.lastDeliveredUri === null) {
-      return null;
-    }
-
-    const atLastDelivered = segments.find((segment) => segment.seq === this.lastSeq);
-    if (atLastDelivered && atLastDelivered.uri !== this.lastDeliveredUri) {
-      return `index ${this.lastSeq} now carries ${atLastDelivered.uri}, not the ${this.lastDeliveredUri} delivered from it`;
-    }
-
-    return null;
   }
 
   /**
@@ -390,8 +326,6 @@ export class OmeHlsPuller {
 
     logger.error(`[OME] ${subject} lost for ${this.streamId} after ${cause}, marking a discontinuity`);
     this.lastSeq = lastSeq;
-    // Nothing was delivered from this index, so there is no URI to compare a later playlist against.
-    this.lastDeliveredUri = null;
     this.failingSeq = null;
     this.failedAttempts = 0;
     return true;
