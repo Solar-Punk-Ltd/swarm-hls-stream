@@ -305,13 +305,20 @@ Scope it to what the diff touched, because the whole uploader is 1839 mutants ag
 suite and that is an overnight run, not a pull request gate:
 
 ```bash
-./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome{,/**/*}.ts'
+./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome.ts,packages/stream-uploader/src/engines/ome/**/*.ts'
 ```
 
-**`engines/ome.ts` and `engines/ome/` are a sibling file and directory, and a `dir/**/_.ts`glob
-matches only the second.** The obvious`engines/ome/\*\*/_.ts`takes 4 files and 461 mutants while
-silently skipping`ome.ts`, which is the file that produced TEST-25. Check the "Found N of M files to
-be mutated" line against what you expected before letting a run stand.
+**Scope with a comma-separated list, and read the `Found N of M` line before believing a run.**
+`engines/ome.ts` and `engines/ome/` are a sibling file and directory, and a recursive glob over the
+directory never matches the file. Measured on 2026-08-01 against this config: the file alone matches
+1, the directory glob matches 4, the comma-separated pair matches all 5, and **the brace form
+`ome{,/...}.ts` matches ZERO**. So does the extglob form.
+
+That brace form was published here as the _fix_ for this trap, on the round that found the trap, and
+it was never run. **A run matching nothing prints `Instrumented 0 source file(s) with 0 mutant(s)`,
+reports `Done`, and exits 0**, so it reads exactly like a mutation check that passed. Until a wrapper
+guards that, the `Found N of M` line is the only thing standing between a scoping typo and a check
+that silently did not happen.
 
 **The division of labour is the point.** Stryker generates, executes and reports. It cannot tell an
 equivalent mutant from a real coverage gap, and it only ever mutates syntax. The lens receives the
