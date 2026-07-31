@@ -376,8 +376,15 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
     await waitFor(() => published.length > 0, DELIVERY_TIMEOUT_MS);
 
-    origin.restart(RESTARTED_HIGH);
+    // The announce comes first and the restarted origin serves media second, which is the order OME
+    // gives: the admission webhook is admission control, so the republish does not produce a segment
+    // until this call has answered it. Restarting ahead of the announce instead leaves the replaced
+    // puller polling an origin nothing has told the engine about, and its high-water is below these
+    // indexes, so it delivers them into the session they replace. That window is real but no signal
+    // closes it, since a jump from 3 to 9 is what rolling the playlist window forward looks like too.
+    // See CON-19.
     await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
+    origin.restart(RESTARTED_HIGH);
     await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), DELIVERY_TIMEOUT_MS);
     await postAdmission(engine, orchestrator, 'closing', RESTART_SECRET, STREAM_URL);
 
