@@ -533,6 +533,7 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
     const outgoingStartedAt = new Date(Date.now() - 60_000);
     const reconnectedStartedAt = new Date(Date.now() - 20_000);
     const published: VodEntry[] = [];
+    const uploaded: string[] = [];
     const origin = makeIdlingOrigin(
       omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
       omePlaylist(RECONNECTED_SEGMENTS, 0, reconnectedStartedAt, RECONNECTED_SEGMENT_SECONDS),
@@ -544,6 +545,10 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
     const orchestrator = makeTestOrchestrator(
       {},
       {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
         uploadPayload: async (index: number) => {
           await sleep(FINALIZE_LATENCY_MS);
           return { reference: { toHex: () => `soc${index}` } };
@@ -590,6 +595,25 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       `the reconnected session's recording is not the length of what it broadcast, so the outgoing session's media was published inside it; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
+    );
+
+    // The durations above are aggregates, and an aggregate cannot say whose media it is made of. This
+    // fixture labels every segment body with the session that served it, and until these two lines
+    // existed it labelled them for nobody: making both sessions return byte-identical bodies, or
+    // making the origin switch playlists while still serving the outgoing bytes, left the whole suite
+    // green. The second of those is the shape of the defect under test, since OME reuses its segment
+    // file names across broadcasts.
+    assert.equal(
+      uploaded.filter((body) => body.startsWith('outgoing-')).length,
+      OUTGOING_SEGMENTS.length,
+      `more of the outgoing broadcast reached Bee than it ever served, so its media was uploaded a second time inside the session that replaced it; uploaded: ${uploaded.join(
+        ', ',
+      )}`,
+    );
+    assert.equal(
+      uploaded.filter((body) => body.startsWith('reconnected-')).length,
+      RECONNECTED_SEGMENTS.length,
+      `the reconnected broadcast did not all reach Bee; uploaded: ${uploaded.join(', ')}`,
     );
   });
 
@@ -659,6 +683,69 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       `the undated session's media did not all reach its recording, so the floor is dropping segments it cannot judge; durations: ${vods
         .map((entry) => entry.duration)
         .join(', ')}`,
+    );
+  });
+
+  /**
+   * The sequence a real OME produces, and the one that defeated the first version of this fix.
+   *
+   * When a broadcaster reconnects inside the idle window OME answers the admission webhook, then
+   * rejects the publish as a duplicate stream name and sends `closing` 111ms later. A broadcaster
+   * whose client retries again therefore announces after a close, not after another open. Reading the
+   * floor off the outgoing puller lost it there, because the close had already destroyed the puller,
+   * and the warning that should have said so was itself gated on the puller still existing.
+   */
+  it('still knows where the outgoing broadcast ended after a closing has come and gone', async () => {
+    const outgoingStartedAt = new Date(Date.now() - 60_000);
+    const reconnectedStartedAt = new Date(Date.now() - 20_000);
+    const published: VodEntry[] = [];
+    const uploaded: string[] = [];
+    const origin = makeIdlingOrigin(
+      omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
+      omePlaylist(RECONNECTED_SEGMENTS, 0, reconnectedStartedAt, RECONNECTED_SEGMENT_SECONDS),
+    );
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: SECRET,
+      fetcher: origin.fetcher,
+    });
+    const orchestrator = makeTestOrchestrator(
+      {},
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+        uploadPayload: async (index: number) => {
+          await sleep(FINALIZE_LATENCY_MS);
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      undefined,
+      makeRecordingCatalog(published),
+    );
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => uploaded.length >= OUTGOING_SEGMENTS.length, DELIVERY_TIMEOUT_MS);
+
+    // The rejected republish: OME opens, is refused the name, and closes again.
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+
+    const beforeRetry = origin.playlistPolls();
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => origin.playlistPolls() > beforeRetry + 2, DELIVERY_TIMEOUT_MS);
+    origin.turnOver();
+    await waitFor(
+      () => uploaded.filter((body) => body.startsWith('reconnected-')).length === RECONNECTED_SEGMENTS.length,
+      DELIVERY_TIMEOUT_MS,
+    );
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+
+    assert.equal(
+      uploaded.filter((body) => body.startsWith('outgoing-')).length,
+      OUTGOING_SEGMENTS.length,
+      `the outgoing broadcast was uploaded again after a closing destroyed the puller holding the boundary; uploaded: ${uploaded.join(
+        ', ',
+      )}`,
     );
   });
 

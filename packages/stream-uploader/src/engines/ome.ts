@@ -35,12 +35,42 @@ export function createOmeEngineFromEnv(seams: OmeEngineSeams = {}): EnginePlugin
   });
 }
 
+/**
+ * What the origin was last seen serving for one stream. `newest` is null when playlists were read and
+ * none carried a date-time, which is a different state from never having watched the stream at all and
+ * is the only thing that can tell an unprotected origin from a first announce.
+ */
+interface ObservedSegmentTime {
+  newest: number | null;
+  recordedAt: number;
+}
+
+/**
+ * How long a stream's observation stays usable as a handover floor. A reconnect races the origin's
+ * idle timeout and is over in seconds, so anything older describes a different broadcast, and holding
+ * every stream id ever announced would grow without bound.
+ */
+const OBSERVED_SEGMENT_TIME_TTL_MS = 120_000;
+
+function recallSegmentTime(
+  observed: Map<string, ObservedSegmentTime>,
+  streamId: string,
+): ObservedSegmentTime | undefined {
+  const record = observed.get(streamId);
+  if (record && Date.now() - record.recordedAt > OBSERVED_SEGMENT_TIME_TTL_MS) {
+    observed.delete(streamId);
+    return undefined;
+  }
+  return record;
+}
+
 export function createOmeEngine(
   hlsBaseUrl: string,
   pollIntervalMs: number,
   options: OmeEngineOptions = {},
 ): EnginePlugin {
   const pullers = new Map<string, OmeHlsPuller>();
+  const observedSegmentTimes = new Map<string, ObservedSegmentTime>();
   const admissionSecret = options.admissionSecret ?? '';
   const failOpen = options.failOpen ?? false;
   const fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
@@ -58,20 +88,26 @@ export function createOmeEngine(
     // the origin is still serving. OME keeps a dropped publisher's HLS output up until the SRT session
     // is reaped, five seconds when measured, and the admission webhook that lands the reconnect fires
     // inside that window. See CON-20.
+    //
+    // Read from the per-stream record rather than off the outgoing puller, because OME sends a
+    // `closing` between two announces whenever it rejects a republish as a duplicate name, 111ms after
+    // answering in the measured case. That closing destroys the puller, and reading the floor off the
+    // puller therefore lost it on exactly the retry this protects.
+    const observed = recallSegmentTime(observedSegmentTimes, streamId);
+    const staleBefore = observed?.newest ?? undefined;
     const stale = pullers.get(streamId);
-    const staleBefore = stale?.latestProgramDateTime ?? undefined;
     if (stale) {
       logger.info(`[OME] Stream ${streamId} announced again, replacing its HLS puller`);
-      if (staleBefore === undefined) {
-        // Said here rather than left to the puller, because this is where the absence is knowable for
-        // the whole session instead of one segment at a time. A floor that matches nothing reads from
-        // the outside exactly like a floor that is holding, and this is the one line that separates them.
-        logger.warn(
-          `[OME] Replacing the puller for ${streamId} with no ${HLS_PROGRAM_DATE_TIME} to go on, so the replaced session's media cannot be told from the new session's and will be delivered into it`,
-        );
-      }
       stale.stop();
       pullers.delete(streamId);
+    }
+    if (observed && staleBefore === undefined) {
+      // Gated on having watched this stream before and seen no date-time, not on the predecessor still
+      // being in the map. A floor that matches nothing reads from the outside exactly like a floor
+      // that is holding, and this is the one line that separates them, so it has to mean what it says.
+      logger.warn(
+        `[OME] Replacing the puller for ${streamId} with no ${HLS_PROGRAM_DATE_TIME} to go on, so the replaced session's media cannot be told from the new session's and will be delivered into it`,
+      );
     }
 
     const onHalt = (): void => {
@@ -87,6 +123,9 @@ export function createOmeEngine(
       fetchTimeoutMs,
       fetcher,
       staleBefore,
+      onSegmentTimeObserved: (newest) => {
+        observedSegmentTimes.set(streamId, { newest, recordedAt: Date.now() });
+      },
     });
     pullers.set(streamId, puller);
     puller.start();
