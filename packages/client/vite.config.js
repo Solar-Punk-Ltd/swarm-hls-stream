@@ -25,13 +25,6 @@ export default defineConfig(({ mode }) => {
       // product decision, so it belongs in a commit that says so.
       target: ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'],
     },
-    css: {
-      preprocessorOptions: {
-        scss: {
-          api: 'modern-compiler',
-        },
-      },
-    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'src'),
