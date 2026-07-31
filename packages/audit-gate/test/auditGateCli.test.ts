@@ -79,7 +79,12 @@ function reportOf(advisories: readonly { ghsa: string; packageName: string }[]):
     },
   ]);
 
-  return JSON.stringify({ actions: [], advisories: Object.fromEntries(entries), muted: [], metadata: {} });
+  return JSON.stringify({
+    actions: [],
+    advisories: Object.fromEntries(entries),
+    muted: [],
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: advisories.length, critical: 0 } },
+  });
 }
 
 describe('the audit gate command', () => {

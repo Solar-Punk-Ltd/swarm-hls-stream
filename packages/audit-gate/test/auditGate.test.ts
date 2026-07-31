@@ -185,6 +185,34 @@ describe('audit report parsing', () => {
   it('throws on a severity it does not recognise instead of letting it through', () => {
     assert.throws(() => parseAuditReport(rawReport({ severity: 'spicy' })), /spicy/);
   });
+
+  it('throws when pnpm counted more vulnerabilities than it listed', () => {
+    const report = JSON.parse(rawReport({ github_advisory_id: 'GHSA-aaaa-aaaa-aaaa' }));
+    report.advisories = {};
+
+    assert.throws(() => parseAuditReport(JSON.stringify(report)), /auditConfig/);
+  });
+
+  it('throws when a suppressed report is empty on both sides of the map but not in the count', () => {
+    const raw = JSON.stringify({
+      advisories: {},
+      muted: [],
+      metadata: { vulnerabilities: { info: 0, low: 1, moderate: 0, high: 1, critical: 0 } },
+    });
+
+    assert.throws(() => parseAuditReport(raw), /counted 2 .* holds 0/s);
+  });
+
+  it('throws rather than trusting a report with no vulnerability counts to check against', () => {
+    assert.throws(() => parseAuditReport(JSON.stringify({ advisories: {} })), /metadata\.vulnerabilities/);
+  });
+
+  it('names what the command printed when the advisories map is missing', () => {
+    assert.throws(
+      () => parseAuditReport('{"error":{"code":"ECONNREFUSED","message":"request to registry failed"}}'),
+      /ECONNREFUSED/,
+    );
+  });
 });
 
 describe('the shipped allowlist', () => {
