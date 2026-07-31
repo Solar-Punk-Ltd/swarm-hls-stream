@@ -1,6 +1,9 @@
 node_modules
 dist
 .env*
+
+# Batch id written beside .env when stamp:setup cannot record it there (OPS-1)
+stamp-batch-*.txt
 !.env.sample
 .DS_Store
 *.log

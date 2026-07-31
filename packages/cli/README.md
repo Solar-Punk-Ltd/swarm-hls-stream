@@ -54,11 +54,20 @@ pnpm stamp:setup
 ```
 
 1. Polls the bee node until it's healthy
-2. Checks wallet balance — if the node has no BZZ or xDAI, prints the node's ethereum address and stops so you can fund it
-3. Checks for existing usable stamps — uses one if found
-4. Buys a new stamp via `createPostageBatch` (default: amount `10000000000`, depth `20`)
-5. Waits for the stamp to become usable (~5 minutes)
-6. Writes `STAMP=<batchId>` to the root `.env`
+2. Checks wallet balance. If the node has no BZZ or xDAI, prints the node's ethereum address and stops so you can fund it
+3. Checks for existing usable stamps, and uses one if found
+4. Checks the root `.env` can be written, and **refuses to buy anything if it cannot**. A batch id that cannot be recorded is worth nothing, and this is the last moment refusing is free
+5. Buys a new stamp via `createPostageBatch` (default: amount `10000000000`, depth `20`)
+6. Writes `STAMP=<batchId>` to the root `.env` **immediately**, before anything else that can fail
+7. Waits for the stamp to become usable (~5 minutes)
+
+Steps 6 and 7 are in that order deliberately. The wait routinely times out on a slow chain, and it
+used to sit between the purchase and the only write, so a timeout meant a batch you had paid for
+whose id existed only in terminal scrollback.
+
+If the write fails after the purchase, the command writes the id to a recovery file, prints it, and
+exits non-zero. It never reports success for a batch it could not record. `pnpm stamp:buy` behaves
+the same way.
 
 ### Node funding
 
