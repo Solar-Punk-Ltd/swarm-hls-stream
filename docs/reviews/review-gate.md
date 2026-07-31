@@ -346,7 +346,8 @@ two rounds are finally comparable.
 
 **The first run paid for the switch.** 132 mutants on `src/engines/ome.ts`, score 50.76, and among the
 65 survivors was one that inverts the admission webhook's allow-or-deny decision while all 294 tests
-stay green. That file had passed sixteen gated pull requests. It is now TEST-25.
+stay green. Five gated pull requests had touched that file and none of them caught it. It is now
+TEST-25.
 
 **R2 still applies to the survivor list.** On that same run I read three survivors on
 `if (!admissionSecret)` as the SEC-3 guard going untested, and it is a `logger.warn`. Twenty-two of
