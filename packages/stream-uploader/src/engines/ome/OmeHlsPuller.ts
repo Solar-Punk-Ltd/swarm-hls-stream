@@ -2,7 +2,7 @@ import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../../utils/common.js';
 
-import { Fetcher, PullerOptions } from './interfaces.js';
+import { Fetcher, PlaylistEntry, PullerOptions } from './interfaces.js';
 import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './utils.js';
 
 const logger = Logger.getInstance();
@@ -15,6 +15,9 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
  * it out of its window anyway, so the honest answer is to announce the gap and move on.
  */
 export const SEGMENT_RETRY_LIMIT = 3;
+
+/** How long a playlist may keep answering 404 before the puller gives up on the stream. */
+export const DEFAULT_HALT_AFTER_NOT_FOUND_MS = 60_000;
 
 /**
  * `AbortSignal.timeout` aborts with a `TimeoutError` DOMException, and an explicit `controller.abort()`
@@ -31,6 +34,12 @@ export class OmeHlsPuller {
   private state: 'idle' | 'running' | 'stopped' = 'idle';
   private lastSeq = -1;
   /**
+   * The playlist URI the segment at `lastSeq` was delivered from, or null when `lastSeq` was reached
+   * by writing an index off rather than delivering it. Kept in step with `lastSeq` at every site that
+   * moves it, since a URI belonging to a different index would be evidence of nothing.
+   */
+  private lastDeliveredUri: string | null = null;
+  /**
    * First playlist index this puller ever saw. `lastSeq` cannot serve as the floor for a gap report
    * until something is delivered, and a puller that fails from its very first segment never delivers
    * anything, so without this the losses at a cold start are the ones that go unreported.
@@ -42,11 +51,10 @@ export class OmeHlsPuller {
   private readonly masterUrl: string;
   private mediaPlaylistUrl: string | null = null;
 
-  private static readonly RETRY_THRESHOLD_IN_MS = 60_000;
-
   private readonly onHalt?: () => void;
   private readonly fetcher: Fetcher;
   private readonly fetchTimeoutMs: number;
+  private readonly haltAfterNotFoundMs: number;
 
   constructor(
     private streamId: string,
@@ -62,8 +70,18 @@ export class OmeHlsPuller {
     // construction is still seen. Capturing it here would silently opt this class out of an APM agent.
     this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    this.haltAfterNotFoundMs = options.haltAfterNotFoundMs ?? DEFAULT_HALT_AFTER_NOT_FOUND_MS;
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
+  }
+
+  /**
+   * Read through an accessor rather than testing `state` inline, because `stop()` is called from
+   * outside this class while a pass is awaiting a fetch. Narrowing on a field convinces the compiler
+   * the value cannot have changed across that await, and it is precisely the value that does.
+   */
+  private get isStopped(): boolean {
+    return this.state === 'stopped';
   }
 
   start(): void {
@@ -86,7 +104,7 @@ export class OmeHlsPuller {
   }
 
   private scheduleNext(delayMs: number): void {
-    if (this.state === 'stopped') {
+    if (this.isStopped) {
       return;
     }
     if (this.timer) {
@@ -119,7 +137,7 @@ export class OmeHlsPuller {
   }
 
   private async tick(): Promise<void> {
-    if (this.state === 'stopped') {
+    if (this.isStopped) {
       return;
     }
 
@@ -185,9 +203,10 @@ export class OmeHlsPuller {
    */
   private async processPlaylist(playlist: string, url: string): Promise<void> {
     const segments = parseMediaPlaylist(playlist);
+    this.resetIfOriginRestarted(segments);
 
     for (const segment of segments) {
-      if (this.state === 'stopped') {
+      if (this.isStopped) {
         return;
       }
       if (segment.seq <= this.lastSeq) {
@@ -213,6 +232,15 @@ export class OmeHlsPuller {
         }
 
         const segmentBuffer = Buffer.from(await segmentResponse.arrayBuffer());
+
+        if (this.isStopped) {
+          // Same reason `reportSegmentLoss` refuses to report after a stop: this download started
+          // before it and answered after, so by now the id can belong to a different session, and
+          // handing this over would publish one session's media into another's manifest.
+          logger.warn(`[OME] Segment ${segment.seq} arrived for ${this.streamId} after the puller stopped, discarding`);
+          return;
+        }
+
         const result = this.orchestrator.handleSegment(this.streamId, segment.seq, segment.duration, segmentBuffer);
 
         if (!result.accepted) {
@@ -223,6 +251,7 @@ export class OmeHlsPuller {
         }
 
         this.lastSeq = segment.seq;
+        this.lastDeliveredUri = segment.uri;
         this.failingSeq = null;
         this.failedAttempts = 0;
       } catch (error) {
@@ -239,6 +268,62 @@ export class OmeHlsPuller {
         }
       }
     }
+  }
+
+  /**
+   * An origin that restarts numbers its new session from its own beginning, so the indexes it
+   * advertises are ones this puller already delivered. `seq <= lastSeq` then discards that playlist
+   * and every later one, because nothing moves `lastSeq` back: the stream goes silent for good rather
+   * than noisily wrong, which is why no signal sees it. See CON-16.
+   *
+   * Only this puller's position is reset. Whether the new session then reaches Swarm depends on the
+   * orchestrator holding a fresh uploader for it, which is what an announce provides: the engine
+   * replaces the puller on one, and this is the fallback for a restart that never announced.
+   */
+  private resetIfOriginRestarted(segments: PlaylistEntry[]): void {
+    if (this.lastSeq < 0 || segments.length === 0) {
+      return;
+    }
+
+    const cause = this.originRestartEvidence(segments);
+    if (!cause) {
+      return;
+    }
+
+    logger.error(`[OME] Origin restarted for ${this.streamId}: ${cause}. Following the new session from its start`);
+    this.lastSeq = -1;
+    this.lastDeliveredUri = null;
+    this.baselineSeq = null;
+    this.failingSeq = null;
+    this.failedAttempts = 0;
+  }
+
+  /**
+   * Why this playlist cannot belong to the session the puller has been delivering, or null when it
+   * still can. Two separate cases, because a restart looks like nothing at all when the new session
+   * happens to be advertising as many segments as the old one had reached: the indexes then match the
+   * ordinary poll that found nothing new, and only the segment sitting at that index gives it away.
+   *
+   * Getting this wrong in either direction is not symmetric. A false positive re-pulls one window,
+   * whose indexes the orchestrator already holds and drops as duplicates. A false negative is the
+   * permanent silence this exists to end, so the cheaper mistake is the one to prefer.
+   */
+  private originRestartEvidence(segments: PlaylistEntry[]): string | null {
+    const newestSeq = segments[segments.length - 1].seq;
+    if (newestSeq < this.lastSeq) {
+      return `its newest index ${newestSeq} is below the last one delivered, ${this.lastSeq}`;
+    }
+
+    if (this.lastDeliveredUri === null) {
+      return null;
+    }
+
+    const atLastDelivered = segments.find((segment) => segment.seq === this.lastSeq);
+    if (atLastDelivered && atLastDelivered.uri !== this.lastDeliveredUri) {
+      return `index ${this.lastSeq} now carries ${atLastDelivered.uri}, not the ${this.lastDeliveredUri} delivered from it`;
+    }
+
+    return null;
   }
 
   /**
@@ -288,7 +373,7 @@ export class OmeHlsPuller {
     const count = lastSeq - firstSeq + 1;
     const subject = count === 1 ? `Segment ${firstSeq}` : `Segments ${firstSeq} to ${lastSeq}`;
 
-    if (this.state === 'stopped') {
+    if (this.isStopped) {
       // A fetch started before the stop can answer after it, and by then the id may belong to a new
       // session. Reporting there degrades a healthy stream and marks its first segment with a
       // discontinuity that never happened.
@@ -305,6 +390,8 @@ export class OmeHlsPuller {
 
     logger.error(`[OME] ${subject} lost for ${this.streamId} after ${cause}, marking a discontinuity`);
     this.lastSeq = lastSeq;
+    // Nothing was delivered from this index, so there is no URI to compare a later playlist against.
+    this.lastDeliveredUri = null;
     this.failingSeq = null;
     this.failedAttempts = 0;
     return true;
@@ -342,12 +429,18 @@ export class OmeHlsPuller {
   }
 
   private handleNotFound(target: string): void {
+    if (this.isStopped) {
+      // This poll started before the stop and answered after it. Halting here would fire `onHalt`
+      // for a puller the engine has already dropped, finalizing whichever session took its place.
+      return;
+    }
+
     const now = Date.now();
     if (this.notFoundSince === null) {
       this.notFoundSince = now;
     }
 
-    if (now - this.notFoundSince > OmeHlsPuller.RETRY_THRESHOLD_IN_MS) {
+    if (now - this.notFoundSince > this.haltAfterNotFoundMs) {
       logger.info(`[OME] ${target} gone for ${this.streamId}, halting puller`);
       this.stop();
       this.onHalt?.();

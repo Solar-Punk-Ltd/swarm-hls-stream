@@ -874,3 +874,406 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
     });
   }
 });
+
+describe('OmeHlsPuller origin restart (CON-16)', () => {
+  const PLAYLIST_URL = 'http://ome/hls/app/stream/ts:playlist.m3u8';
+
+  function mediaPlaylist(uris: string[]): string {
+    return ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0', ...uris.flatMap((uri) => ['#EXTINF:2.0,', uri])].join('\n');
+  }
+
+  // The audit measured a puller that had delivered 0..7 against an origin republishing 0..3. The
+  // shorter second window is what a just-restarted origin serves, since it has only encoded a few
+  // segments by the time of the next poll.
+  const FIRST_SESSION = mediaPlaylist([
+    's1_0.ts',
+    's1_1.ts',
+    's1_2.ts',
+    's1_3.ts',
+    's1_4.ts',
+    's1_5.ts',
+    's1_6.ts',
+    's1_7.ts',
+  ]);
+  const SECOND_SESSION = mediaPlaylist(['s2_0.ts', 's2_1.ts', 's2_2.ts', 's2_3.ts']);
+  // The same origin one poll later, once it has caught back up to the length of the old session. Its
+  // indexes are then indistinguishable from an idle poll, and only the segment at the last delivered
+  // index says otherwise.
+  const SECOND_SESSION_CAUGHT_UP = mediaPlaylist([
+    's2_0.ts',
+    's2_1.ts',
+    's2_2.ts',
+    's2_3.ts',
+    's2_4.ts',
+    's2_5.ts',
+    's2_6.ts',
+    's2_7.ts',
+  ]);
+  const FIRST_SESSION_SEQS = [0, 1, 2, 3, 4, 5, 6, 7];
+
+  interface RestartingOrigin {
+    fetcher: Fetcher;
+    fetched: string[];
+    restart(playlist?: string): void;
+  }
+
+  /** Serves one session, then the same media sequence again with different segments, as a restarted OME does. */
+  function makeOrigin(): RestartingOrigin {
+    let playlist = FIRST_SESSION;
+    const fetched: string[] = [];
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      fetched.push(url);
+      if (url === PLAYLIST_URL) {
+        return { ok: true, status: 200, text: async () => playlist } as unknown as Response;
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response;
+    }) as unknown as Fetcher;
+
+    return {
+      fetcher,
+      fetched,
+      restart: (next = SECOND_SESSION) => {
+        playlist = next;
+      },
+    };
+  }
+
+  function makeRestartPuller(fetcher: Fetcher, delivered: number[]): { tick(): Promise<void>; stop(): void } {
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true };
+      },
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+    return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as { tick(): Promise<void>; stop(): void };
+  }
+
+  // Without an escape from `seq <= lastSeq` the puller keeps polling, keeps getting 200s, and hands
+  // nothing on: the second session's indexes all sit at or below the first session's, so every one of
+  // them is skipped. Ten ticks stands in for the forty the audit measured.
+  it('fetches the restarted origin instead of discarding every index it already used', async () => {
+    const origin = makeOrigin();
+    const delivered: number[] = [];
+    const puller = makeRestartPuller(origin.fetcher, delivered);
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      assert.deepEqual(
+        delivered,
+        FIRST_SESSION_SEQS,
+        'the first session must be delivered before the restart means anything',
+      );
+
+      origin.restart();
+      for (let i = 0; i < 10; i++) {
+        await puller.tick();
+      }
+    });
+    puller.stop();
+
+    const secondSessionFetches = origin.fetched.filter((url) => url.includes('s2_'));
+    assert.ok(
+      secondSessionFetches.length > 0,
+      `the restarted origin's segments were never even fetched, so the puller is silent for good; fetched: ${origin.fetched.join(
+        ', ',
+      )}`,
+    );
+  });
+
+  it('reports the restart rather than going quiet about it', async () => {
+    const origin = makeOrigin();
+    const delivered: number[] = [];
+    const puller = makeRestartPuller(origin.fetcher, delivered);
+
+    const logs = await withCapturedLogs(async () => {
+      await puller.tick();
+      origin.restart();
+      await puller.tick();
+    });
+    puller.stop();
+
+    assert.ok(
+      logs.errors.some((line) => /restart/i.test(line)),
+      `an origin restart is an operator-visible event and nothing said so; errors: ${JSON.stringify(logs.errors)}`,
+    );
+  });
+
+  // The steady state is a playlist whose newest index is exactly the last one delivered. Treating that
+  // as a restart would re-pull the whole window on every idle poll, so the guard has to exclude it.
+  it('does not treat a playlist with no new segments as a restart', async () => {
+    const origin = makeOrigin();
+    const delivered: number[] = [];
+    const puller = makeRestartPuller(origin.fetcher, delivered);
+
+    const logs = await withCapturedLogs(async () => {
+      await puller.tick();
+      await puller.tick();
+      await puller.tick();
+    });
+    puller.stop();
+
+    assert.deepEqual(delivered, FIRST_SESSION_SEQS, 'an unchanged playlist must not be re-delivered');
+    assert.ok(
+      !logs.errors.some((line) => /restart/i.test(line)),
+      `an idle playlist was reported as a restart; errors: ${JSON.stringify(logs.errors)}`,
+    );
+  });
+
+  // The case the index comparison alone cannot see. By the time the puller polls again the restarted
+  // origin can be advertising as many segments as the old session had reached, so every index matches
+  // what was already delivered and the playlist reads as an idle one. Nothing recovers on its own
+  // here: the indexes never climb past `lastSeq` again until the new session outgrows the old one.
+  it('follows a restarted origin that has already caught up to the old session length', async () => {
+    const origin = makeOrigin();
+    const delivered: number[] = [];
+    const puller = makeRestartPuller(origin.fetcher, delivered);
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      origin.restart(SECOND_SESSION_CAUGHT_UP);
+      for (let i = 0; i < 3; i++) {
+        await puller.tick();
+      }
+    });
+    puller.stop();
+
+    const secondSessionFetches = origin.fetched.filter((url) => url.includes('s2_'));
+    assert.ok(
+      secondSessionFetches.length > 0,
+      `a restart that lands on the same indexes was read as an idle playlist, so the new session was never fetched; fetched: ${origin.fetched.join(
+        ', ',
+      )}`,
+    );
+  });
+});
+
+// A puller is stopped from outside, by the engine replacing it or by an announce closing the stream,
+// while a poll of its own is in flight. Everything below is what that in-flight poll must not do when
+// it finally answers, because by then the stream id can belong to a different session.
+describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
+  const MEDIA = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
+
+  interface StoppablePuller {
+    tick(): Promise<void>;
+    stop(): void;
+  }
+
+  it('does not hand over a segment whose download outlived the stop', async () => {
+    const delivered: number[] = [];
+
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('.m3u8')) {
+        return { ok: true, status: 200, text: async () => MEDIA } as unknown as Response;
+      }
+      // The stop lands while this download is outstanding, which is the only way the race happens.
+      puller.stop();
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response;
+    }) as unknown as Fetcher;
+
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true };
+      },
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as StoppablePuller;
+
+    await withSilencedLogs(() => puller.tick());
+
+    assert.deepEqual(
+      delivered,
+      [],
+      'a segment fetched before the stop was published after it, into whichever session holds the id now',
+    );
+  });
+
+  it('does not halt the stream when the 404 that would trigger it outlived the stop', async () => {
+    const halts: string[] = [];
+    let polls = 0;
+
+    const fetcher = (async () => {
+      polls++;
+      // Second poll: the stop lands while this one is outstanding. With the halt threshold at zero,
+      // an unguarded handleNotFound gives up here and finalizes a stream it no longer owns.
+      if (polls > 1) {
+        puller.stop();
+      }
+      return { ok: false, status: 404, text: async () => '' } as unknown as Response;
+    }) as unknown as Fetcher;
+
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StoppablePuller;
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      // Real elapsed time, so the zero threshold is genuinely exceeded on the second poll.
+      await sleep(5);
+      await puller.tick();
+    });
+
+    assert.deepEqual(halts, [], 'a stopped puller halted anyway, taking the session that replaced it with it');
+  });
+
+  // Proves the threshold seam is wired to the path it claims to control, so the test above is not
+  // passing because nothing could ever halt.
+  it('does halt on a 404 past the threshold while it is still running', async () => {
+    const halts: string[] = [];
+    const fetcher = (async () =>
+      ({ ok: false, status: 404, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StoppablePuller;
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+    });
+    puller.stop();
+
+    assert.deepEqual(halts, ['halted'], 'the halt path never fired, so the guard above proves nothing');
+  });
+});
+
+// The reset is destructive: it rewinds the puller to the start of a playlist it has already worked
+// through. Firing it when the origin did not restart re-delivers a whole window and reports a gap
+// that never happened, so these pin the two states that look like a restart and are not.
+describe('OmeHlsPuller restart detection false positives (CON-16)', () => {
+  const PLAYLIST_URL = 'http://ome/hls/app/stream/ts:playlist.m3u8';
+
+  function playlistFrom(mediaSeq: number, uris: string[]): string {
+    return ['#EXTM3U', `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}`, ...uris.flatMap((uri) => ['#EXTINF:2.0,', uri])].join('\n');
+  }
+
+  interface Losses {
+    firstIndex: number;
+    count: number;
+  }
+
+  interface DrivenPuller {
+    tick(): Promise<void>;
+    stop(): void;
+    losses: Losses[];
+    delivered: number[];
+    serve(playlist: string): void;
+  }
+
+  /**
+   * Serves one playlist until told otherwise. Deliberately not switched on a poll count: the first
+   * tick fetches the playlist twice, once to resolve the media URL and once to read it, so a counter
+   * moves the origin on before the puller has processed anything.
+   */
+  function drive(initialPlaylist: string, segmentOk: (uri: string) => boolean): DrivenPuller {
+    const losses: Losses[] = [];
+    const delivered: number[] = [];
+    let playlist = initialPlaylist;
+
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === PLAYLIST_URL) {
+        return { ok: true, status: 200, text: async () => playlist } as unknown as Response;
+      }
+      const uri = url.slice(url.lastIndexOf('/') + 1);
+      return segmentOk(uri)
+        ? ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response)
+        : ({ ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) } as unknown as Response);
+    }) as unknown as Fetcher;
+
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true };
+      },
+      handleSegmentLoss: (_id: string, firstIndex: number, count: number) => {
+        losses.push({ firstIndex, count });
+        return true;
+      },
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as { tick(): Promise<void>; stop(): void };
+
+    return Object.assign(puller, {
+      losses,
+      delivered,
+      serve: (next: string) => {
+        playlist = next;
+      },
+    });
+  }
+
+  // Writing a segment off moves the position to an index nothing was delivered from, so there is no
+  // URI belonging to it. Comparing the one from an earlier index against whatever sits there now
+  // makes every later poll of an unchanged playlist look like a restart. The written-off segment is
+  // the last in the window on purpose: anywhere else the next delivery in the same pass overwrites
+  // the stale URI before a second poll can read it, and the defect hides.
+  it('does not read a written-off segment as a restart on the next poll', async () => {
+    const PLAYLIST = playlistFrom(0, ['seg_0.ts', 'seg_1.ts', 'seg_2.ts', 'seg_3.ts']);
+    const puller = drive(PLAYLIST, (uri) => uri !== 'seg_3.ts');
+
+    const logs = await withCapturedLogs(async () => {
+      // Three passes write seg_3 off, a fourth reads the same playlist with the position sitting on it.
+      for (let i = 0; i < SEGMENT_RETRY_LIMIT + 1; i++) {
+        await puller.tick();
+      }
+    });
+    puller.stop();
+
+    assert.ok(
+      !logs.errors.some((line) => /Origin restarted/.test(line)),
+      `an unchanged playlist was read as a restart after a segment was written off; errors: ${JSON.stringify(
+        logs.errors,
+      )}`,
+    );
+  });
+
+  // After a real restart the puller starts over, so the first index of the new session is its new
+  // floor. Keeping the old session's floor makes everything between the two look rolled out, and a
+  // rollout report marks a discontinuity and moves the counter /health reads.
+  it('does not report a gap between the old session floor and the new one', async () => {
+    const OLD_SESSION = playlistFrom(0, ['s1_0.ts', 's1_1.ts', 's1_2.ts', 's1_3.ts', 's1_4.ts', 's1_5.ts']);
+    // Restarted, and already rolled its own first indexes out of its window: it starts at 3, below
+    // the 5 last delivered, so this is a restart, and above the 0 the old session started from.
+    const NEW_SESSION = playlistFrom(3, ['s2_3.ts', 's2_4.ts']);
+    const puller = drive(OLD_SESSION, () => true);
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      assert.deepEqual(puller.delivered, [0, 1, 2, 3, 4, 5], 'the old session must be delivered first');
+      puller.serve(NEW_SESSION);
+      await puller.tick();
+    });
+    puller.stop();
+
+    assert.deepEqual(
+      puller.losses,
+      [],
+      'a restart was reported as lost segments, marking a discontinuity over indexes the new session never had',
+    );
+  });
+});

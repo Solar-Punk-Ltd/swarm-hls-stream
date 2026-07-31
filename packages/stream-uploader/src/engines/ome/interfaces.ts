@@ -13,6 +13,12 @@ export interface PullerOptions {
    * without this a black-holed connection stalls the poll loop for as long as the socket stays open.
    */
   fetchTimeoutMs?: number;
+  /**
+   * How long a playlist may stay missing before the puller gives up and calls `onHalt`. Injectable
+   * only so the halt path can be driven at all: at its default the sequence takes a minute of wall
+   * clock, which is why nothing covered it.
+   */
+  haltAfterNotFoundMs?: number;
 }
 
 export interface AppStream {
