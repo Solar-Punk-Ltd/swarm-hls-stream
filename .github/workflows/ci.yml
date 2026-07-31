@@ -62,6 +62,14 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # Nothing here built the bundle until now, and that is how a build-tool
+      # upgrade shipped a silent browser-target change: typecheck, lint and the
+      # client's five unit tests all pass without a bundler ever running. This
+      # does not check what the bundle contains, only that one can be produced,
+      # which is the cheap half of a gap recorded in full as TEST-22.
+      - name: Build
+        run: pnpm build
+
   audit:
     name: audit
     runs-on: ubuntu-latest
