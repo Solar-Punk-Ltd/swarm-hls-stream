@@ -5,6 +5,7 @@ import { manifestFetcher } from '@/components/SwarmHlsPlayer/CustomManifestLoade
 import { ManifestStateManager } from '@/components/SwarmHlsPlayer/ManifestManagement';
 import { Stream } from '@/types/stream';
 import { config } from '@/utils/config';
+import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
 
 type AppContextState = {
   streamList: Stream[];
@@ -63,7 +64,7 @@ export const AppContextProvider = ({ children }: Props) => {
 
   const fetchAppState = useCallback(async () => {
     const topic = Topic.fromString(config.rawAppTopic);
-    const response = await fetch(`${gatewayRef.current}/feeds/${config.appOwner}/${topic.toString()}`);
+    const response = await fetchWithTimeout(`${gatewayRef.current}/feeds/${config.appOwner}/${topic.toString()}`);
     return response.json();
   }, []);
 

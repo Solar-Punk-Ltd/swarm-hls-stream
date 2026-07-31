@@ -3,6 +3,7 @@ import Pqueue from 'p-queue';
 
 import { makeFeedIdentifier } from '@/utils/bee';
 import { config } from '@/utils/config';
+import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
 
 export interface Segment {
   extinf: string;
@@ -276,7 +277,7 @@ export class ManifestFetcher {
   }
 
   private async fetchResource(path: string): Promise<Response> {
-    const response = await fetch(`${this._beeUrl}/${path}`);
+    const response = await fetchWithTimeout(`${this._beeUrl}/${path}`);
     if (!response.ok) {
       throw new Error(`Failed to fetch: ${path}`);
     }
