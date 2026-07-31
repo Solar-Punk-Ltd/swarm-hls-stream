@@ -43,7 +43,7 @@ review gate: #27 through #39 and #41. **PR #13 into `main` is closed as supersed
 on 2026-07-31, with the reasoning recorded on the pull request itself. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
 stay that way.
 
-**Test baseline is 274 uploader, 40 cli, 13 client, 38 audit-gate, 10 deploy**, with lint, typecheck and whole-tree prettier clean. One
+**Test baseline is 274 uploader, 40 cli, 27 client, 38 audit-gate, 12 deploy**, with lint, typecheck and whole-tree prettier clean. One
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
@@ -60,10 +60,19 @@ which already exposes the same secret two other ways. The two conditions that wo
 in the SEC-13 row: shipping container logs off the host, and an operator pasting SRS logs into a
 ticket.
 
-**No CRITICALs remain open.** The last two closed on 2026-07-31. OPS-2 turned out to be three
-straggler sweeps rather than the one the row named, and OBS-2's client half three unbounded requests
-rather than one. Both rows record what they got wrong about their own location, which is now a
-pattern worth expecting rather than a surprise.
+**No CRITICALs remain open,** as of the PR #42 gate and not before it. Both rows were marked closed
+once on evidence that did not support it, and the gate reopened them. OPS-2 turned out to be three
+straggler sweeps rather than the one the row named, and then, after those were fixed, `docker compose
+down` turned out to ignore `--profile` entirely, so a service clean still destroyed every co-located
+service one step earlier. OBS-2's client half was three unbounded requests rather than one, and the
+helper written to bound them bounded only the wait for headers, leaving the body read unbounded and
+making one case worse than before.
+
+**The transferable part is how both slipped through:** in each case a test suite was green beside an
+open CRITICAL, because the thing doing the damage was stubbed out. `deploy`'s docker stub treated
+every `compose` call as an inert no-op, and the client's fake gateway never answered at all, so
+neither could see a failure that begins with a successful response. **Ask what your stub makes
+impossible, not only what it makes observable.**
 
 **The cli package now has tests**, 40 of them, including `test/helpers/fakeBee.ts`, which models the
 four stages a real postage batch purchase goes through. It was verified against bee-js's own
