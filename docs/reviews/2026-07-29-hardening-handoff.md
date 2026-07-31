@@ -42,7 +42,7 @@ review gate: #27 through #39, #41 and #42. **PR #13 into `main` is closed as sup
 decision on 2026-07-31, with the reasoning recorded on the pull request itself. `feature/uploader-hardening`
 @ `f146588` and `main` are untouched and must stay that way.
 
-**Test baseline is 282 uploader, 40 cli, 27 client, 38 audit-gate, 12 deploy**, with lint, typecheck and whole-tree prettier clean. One
+**Test baseline is 294 uploader, 40 cli, 27 client, 38 audit-gate, 12 deploy**, with lint, typecheck and whole-tree prettier clean. One
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
@@ -187,11 +187,17 @@ responses) are also still open.
 
 ### The queue after that, in severity order
 
-0. **TEST-22, HIGH.** Nothing asserts anything about the client bundle, which is how PR #39 shipped a
+0. **CON-21, HIGH, and it is the reason CON-20's fix is not the end of this area.** A `closing` carries
+   no session identity, so a delayed or reordered one can finalize the session that replaced the one it
+   was sent for. Registered off the PR #43 gate with its reachability corrected: the concurrency lens's
+   ordinary-timeline scenario is refuted by this repo's own OME measurements, and what is left needs a
+   webhook to arrive out of order. Read the row before starting, because the severity rests on that
+   narrower path.
+1. **TEST-22, HIGH.** Nothing asserts anything about the client bundle, which is how PR #39 shipped a
    silent browser-target regression past two gates and a manual browser check. CI builds now, which
    proves a bundle can be produced and nothing about what is in it. The two assertions that would
    have caught it are cheap and named in the register row.
-1. **Test debt, now including TEST-23.** Nothing proves `retireSession` is needed in the re-announce
+2. **Test debt, now including TEST-23 and TEST-24.** Nothing proves `retireSession` is needed in the re-announce
    branch: delete that line and all 274 uploader tests still pass, because p-queue runs its job
    inline and the overwrite hides it. The line stays and needs covering, which takes a busy queue
    no current test can arrange. Alongside it: 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
@@ -199,6 +205,28 @@ responses) are also still open.
    deleted with the suite green. Same module-scope obstacle as TEST-11. Plus S0.3 (coverage baseline). **S0.4's
    FakeBee now exists** for the stamp path, at `packages/cli/test/helpers/fakeBee.ts`, verified
    against the vendor's own implementation.
+
+**PR #43: the gate found more against the fix than the fix found against the code, and that is the
+result, not a failure.** Six lenses produced eleven confirmed findings on a change of about 500 lines.
+Three deserve carrying forward.
+
+**A fix can reintroduce the exact failure its own finding wrongly predicted.** CON-20's register row
+predicted a fabricated discontinuity, and the measurement refuted it. The fix then produced one, by
+skipping a segment without excluding it from the rolled-out gap report, so a deliberate drop became an
+error-level loss and a discontinuity in the manifest. **When you add a way to discard something, walk
+every reporting path that reasons about what is missing.**
+
+**A signal can name the wrong cause and still look like it is working.** The warning added for "this
+origin publishes no date-times" also fired whenever the previous puller had not finished a poll yet, so
+it accused correct origins, and the one deployment state it existed to make audible became noise. It
+was gated on the predecessor still being in a map rather than on the thing it claimed to detect. **Gate
+a signal on its own subject, not on a proxy that happens to correlate.**
+
+**An aggregate cannot say whose data it is made of.** The acceptance test labelled every segment body
+with the session that served it and then asserted only on durations. Making both sessions return
+identical bytes left the suite green, and so did serving the outgoing session's bytes under the new
+session's playlist, which is the shape of the defect under test. Fixing an aggregate collision by
+changing the numbers, as an earlier round of this same test did, does not fix the blindness.
 
 ### The lesson every gate keeps producing
 
