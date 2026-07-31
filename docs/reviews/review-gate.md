@@ -42,7 +42,9 @@ Each reviewer receives the diff and read access to the repository. Each reviewer
 - the reasoning behind the commits,
 - the author's own account of what the change does or why it is correct,
 - the finding in the register that the change is meant to close, or any statement of the expected
-  answer.
+  answer,
+- the rejected-findings list, for the reason and with the one exception given in
+  [R5](#r5-refutations-go-into-the-register).
 
 Withholding the description is the single most important rule here and the easiest one to break by
 accident. A PR body in this project is a persuasive document that argues the change is correct. A
@@ -121,13 +123,33 @@ Every REFUTED finding is appended to the rejected-findings table in
 carries a stable `R<n>` id in its first cell. Real findings that fall outside the pull request's
 scope become new register rows instead of scope creep.
 
-**Cite the id rather than restating the disproof.** Before verifying a finding, grep the rejected
-section for its subject. If a prior round already killed it, the verification is a lookup and the
-posted result says "refuted before as R23" instead of re-deriving the argument. Ids are assigned in
-document order and appending a round only adds ids at the end, so an id already published stays
-valid. The ids exist for this side of the gate only. **Do not hand the list to a lens**, because
-telling a reviewer what the author considers settled is the anchoring R1 exists to prevent, and it
-would suppress the case where a claim refuted on old code becomes true again on new code.
+**Cite the id to shorten the write-up, never to skip the check.** Before verifying a finding, grep the
+rejected section for its subject. A hit saves you re-deriving the argument in prose. It does not save
+you the verification, and R2 is not amended: the posted result cites R23 **and names the command
+re-run to confirm the disproof still holds at this head**. Where the diff touches any file the cited
+row's evidence names, the disproof is re-derived in full.
+
+That is not caution for its own sake. Register rows go stale, and this project has the case on record:
+CON-20's row predicted a consequence the live measurement then refuted. Several rejected rows are
+openly state-dependent, and **R12** even cites a `package.json` line number that this very change
+moved. A row saying `retryUntilDeadlineAsync` "throws on exhaustion and never returns null" is a
+disproof of one shape of finding against one shape of code, and the day that function learns to return
+null the citation closes a real defect while the gate reports pass.
+
+The ids exist for the author's side of the gate. **Do not hand the list to a lens**, because telling a
+reviewer what the author considers settled is the anchoring R1 exists to prevent. **One exception, and
+it is not optional:** when the diff itself contains register rows, R1's grant of the diff wins and the
+lens gets them. That happened on the very pull request that wrote this rule, whose diff rewrote every
+rejected row. Accept the anchoring for that round and name it in the posted result rather than
+pretending the ban held.
+
+**Ids are permanent and never renumbered.** The next id is one past the highest ever issued, wherever
+that row sits in the document, and no id is reused. A row that is later overturned keeps its id and
+gains a line naming what superseded it. "Assigned in document order" would have been true only until
+the first correction, and the first correction has already happened: the PR #43 table was misfiled
+after `## Finding register` and moving it back reordered the section. Under a position-keyed scheme
+the next round either issues a duplicate id or renumbers, and renumbering silently repoints every
+"refuted before as R23" already published in an immutable pull request comment.
 
 Two things this section has already caught about itself. The PR #43 round appended its table under
 the wrong heading, so four refutations sat outside the section that exists to hold them. And the
