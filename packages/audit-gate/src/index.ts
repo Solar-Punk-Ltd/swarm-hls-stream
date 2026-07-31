@@ -15,14 +15,22 @@ const MAX_REPORT_BYTES = 16 * 1024 * 1024;
  * leaves the command running against the CI job's own ceiling and reporting as
  * cancelled rather than failed. Generous, because it is a whole dependency
  * resolution and not one request.
+ *
+ * Overridable only so the hang can be driven at all: at its default a test would
+ * have to wait five minutes, which is why nothing covered it.
  */
-const AUDIT_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_AUDIT_TIMEOUT_MS = 5 * 60 * 1000;
+
+function auditTimeoutMs(): number {
+  const override = Number(process.env.AUDIT_GATE_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : DEFAULT_AUDIT_TIMEOUT_MS;
+}
 
 async function readAuditReport(): Promise<string> {
   try {
     const { stdout } = await execFileAsync('pnpm', ['audit', '--json'], {
       maxBuffer: MAX_REPORT_BYTES,
-      timeout: AUDIT_TIMEOUT_MS,
+      timeout: auditTimeoutMs(),
     });
     return stdout;
   } catch (error) {

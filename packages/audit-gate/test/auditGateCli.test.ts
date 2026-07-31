@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -25,6 +25,8 @@ interface StubbedRun {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** Wall clock for the run. The hang case is only a real check if it asserts the gate gave up early. */
+  elapsedMs: number;
 }
 
 /**
@@ -33,15 +35,21 @@ interface StubbedRun {
  * the non-zero-exit handling and the report parsing inside the same assertion,
  * and an exit code nothing asserts is how a broken gate ships green.
  */
-async function runGateWithPath(path: string): Promise<StubbedRun> {
+async function runGateWithPath(path: string, env: NodeJS.ProcessEnv = {}): Promise<StubbedRun> {
+  const startedAt = Date.now();
   try {
     const result = await execFileAsync(process.execPath, ['--import', 'tsx', GATE_ENTRY], {
-      env: { ...process.env, PATH: path },
+      env: { ...process.env, ...env, PATH: path },
     });
-    return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
+    return { stdout: result.stdout, stderr: result.stderr, exitCode: 0, elapsedMs: Date.now() - startedAt };
   } catch (error) {
     const failure = error as { stdout?: string; stderr?: string; code?: number };
-    return { stdout: failure.stdout ?? '', stderr: failure.stderr ?? '', exitCode: failure.code ?? -1 };
+    return {
+      stdout: failure.stdout ?? '',
+      stderr: failure.stderr ?? '',
+      exitCode: failure.code ?? -1,
+      elapsedMs: Date.now() - startedAt,
+    };
   }
 }
 
@@ -51,17 +59,33 @@ function workspace(): string {
   return created;
 }
 
-async function runGateAgainstStub(stdout: string, exitCode: number): Promise<StubbedRun> {
+interface StubbedGate extends StubbedRun {
+  /** What the gate actually asked `pnpm` to do. Without recording this the stub answers any command at all. */
+  argv: string;
+}
+
+interface StubOptions {
+  /** Replaces the canned answer entirely, for stubs that hang or misbehave. */
+  body?: string;
+  /** Only the hang case sets this. Left unset elsewhere so a slow machine cannot make an ordinary run flaky. */
+  timeoutMs?: number;
+}
+
+async function runGateAgainstStub(stdout: string, exitCode: number, options: StubOptions = {}): Promise<StubbedGate> {
   const dir = workspace();
 
   const reportPath = join(dir, 'report.json');
   writeFileSync(reportPath, stdout);
+  const argvPath = join(dir, 'argv');
 
   const stubPath = join(dir, 'pnpm');
-  writeFileSync(stubPath, `#!/bin/sh\ncat ${JSON.stringify(reportPath)}\nexit ${exitCode}\n`);
+  const answer = options.body ?? `cat ${JSON.stringify(reportPath)}\nexit ${exitCode}\n`;
+  writeFileSync(stubPath, `#!/bin/sh\nprintf '%s' "$*" > ${JSON.stringify(argvPath)}\n${answer}`);
   chmodSync(stubPath, 0o755);
 
-  return runGateWithPath(`${dir}:${process.env.PATH ?? ''}`);
+  const env = options.timeoutMs ? { AUDIT_GATE_TIMEOUT_MS: String(options.timeoutMs) } : {};
+  const run = await runGateWithPath(`${dir}:${process.env.PATH ?? ''}`, env);
+  return { ...run, argv: existsSync(argvPath) ? readFileSync(argvPath, 'utf8') : '' };
 }
 
 interface StubbedAdvisory {
@@ -130,6 +154,24 @@ describe('the audit gate command', () => {
 
     assert.equal(run.exitCode, 1);
     assert.match(run.stderr, /did not return JSON/);
+  });
+
+  it('asks pnpm for the audit as JSON, and nothing else', async () => {
+    const run = await runGateAgainstStub(reportOf(ALLOWED_ADVISORIES), 1);
+
+    assert.equal(run.exitCode, 0, run.stderr);
+    assert.equal(run.argv, 'audit --json');
+  });
+
+  it('exits 1 rather than hanging when the registry accepts the connection and never answers', async () => {
+    const run = await runGateAgainstStub('', 0, { body: 'sleep 60\n', timeoutMs: 3000 });
+
+    assert.equal(run.exitCode, 1);
+    assert.match(run.stderr, /could not run/);
+    // The outcome alone does not pin this. With no timeout the stub simply
+    // finishes its sleep and the gate reaches the same verdict a minute later,
+    // so giving up early is the behaviour and the elapsed time is the assertion.
+    assert.ok(run.elapsedMs < 20_000, `gave up after ${run.elapsedMs}ms, so the timeout did not fire`);
   });
 
   it('blames the command rather than the report when pnpm cannot be run at all', async () => {

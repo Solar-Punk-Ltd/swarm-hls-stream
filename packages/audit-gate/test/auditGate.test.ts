@@ -144,6 +144,42 @@ describe('audit gate verdicts', () => {
     assert.match(failures[0].detail, /react-router/);
   });
 
+  it('fails on a package mismatch whichever way round the two names sort', () => {
+    const raw = rawReport({ github_advisory_id: 'GHSA-aaaa-aaaa-aaaa', module_name: 'elliptic' });
+
+    const failures = evaluateAudit(parseAuditReport(raw), [allow('GHSA-aaaa-aaaa-aaaa', 'react-router')]);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].kind, 'package-mismatch');
+  });
+
+  it('reports a package mismatch once, not alongside a drift on the same advisory', () => {
+    const raw = rawReport({
+      github_advisory_id: 'GHSA-aaaa-aaaa-aaaa',
+      module_name: 'react-router',
+      severity: 'critical',
+    });
+
+    const failures = evaluateAudit(parseAuditReport(raw), [allow('GHSA-aaaa-aaaa-aaaa', 'elliptic')]);
+
+    assert.deepEqual(
+      failures.map((failure) => failure.kind),
+      ['package-mismatch'],
+    );
+  });
+
+  it('fails on a re-score in either direction, not only an upward one', () => {
+    const lowered = rawReport({ github_advisory_id: 'GHSA-aaaa-aaaa-aaaa', severity: 'low' });
+    const raised = rawReport({ github_advisory_id: 'GHSA-aaaa-aaaa-aaaa', severity: 'moderate' });
+    const reviewedLow = allow('GHSA-aaaa-aaaa-aaaa', 'left-pad', { reviewedSeverity: 'low' });
+
+    assert.equal(
+      evaluateAudit(parseAuditReport(lowered), [allow('GHSA-aaaa-aaaa-aaaa', 'left-pad')])[0].kind,
+      'advisory-changed',
+    );
+    assert.equal(evaluateAudit(parseAuditReport(raised), [reviewedLow])[0].kind, 'advisory-changed');
+  });
+
   it('fails when a fix has shipped for an advisory whose exception says none exists', () => {
     const raw = rawReport({
       github_advisory_id: 'GHSA-aaaa-aaaa-aaaa',
