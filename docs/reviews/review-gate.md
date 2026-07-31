@@ -146,11 +146,15 @@ Owner rule, 2026-07-30. Decide per pull request, run what you selected, and name
 
 Lenses fall into two tiers, and the tier decides how the slot is filled.
 
-**Mechanical tier, always on.** The claims auditor and the mutation check. Both mostly run commands
-and count, so both run on every pull request whatever the diff touches, and both run a model tier
-down. On #29's 13-line config diff, three lenses a tier down cost 49k, 34k and 29k tokens against
-roughly 50k to 70k each at full tier, and the cheap ones still produced a byte-level `.gitignore`
-check and a per-package `outDir` comparison.
+**Mechanical tier.** The claims auditor and the mutation check. Both mostly run commands and count, so
+both run a model tier down. On #29's 13-line config diff, three lenses a tier down cost 49k, 34k and
+29k tokens against roughly 50k to 70k each at full tier, and the cheap ones still produced a
+byte-level `.gitignore` check and a per-package `outDir` comparison.
+
+**The claims auditor is unconditional. The mutation check runs on every pull request that changes
+`src/`.** A diff with no source in it has nothing to mutate, so the selection comment records the
+mutation check as not applicable rather than letting a vacuous pass read as coverage. Only the auditor
+is unconditional, because only the auditor has an artifact on every pull request.
 
 **Reasoning tier, by surface.** Correctness, security, concurrency, behaviour preservation, config
 consistency, silent failure, protocol correctness. These genuinely reason, they cost accordingly, and
@@ -198,7 +202,7 @@ reach it, which is the failure rule 4 exists to prevent.
 | Lens                   | Tier       | Select when                                                                     | Hunts                                                                                                                     |
 | ---------------------- | ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Claims audit           | Mechanical | **Always**                                                                      | Assertions in the description that were never checked, or are stale                                                       |
-| Mutation triage        | Mechanical | **Always.** Stryker generates and runs, the lens only triages                   | Survivors that are real coverage gaps rather than equivalent mutants, and the semantic mutations no AST operator produces |
+| Mutation triage        | Mechanical | **Any `src/` change.** Stryker generates and runs, the lens only triages        | Survivors that are real coverage gaps rather than equivalent mutants, and the semantic mutations no AST operator produces |
 | Correctness            | Reasoning  | Any logic change                                                                | Wrong output for specific inputs, false green, false red                                                                  |
 | Security               | Reasoning  | Input handling, auth, filesystem paths, CI, dependencies                        | A concrete attack path with a named attacker and what they control                                                        |
 | Concurrency            | Reasoning  | The orchestrator, queues, timers, recovery                                      | Interleavings that corrupt state, lost updates, races between entry points                                                |
