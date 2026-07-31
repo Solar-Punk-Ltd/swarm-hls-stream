@@ -355,6 +355,46 @@ the sixty-five survivors were `StringLiteral` mutations of log text, equivalent 
 survivor list is leads, not findings**, and each one is verified against the code exactly as a lens
 finding is.
 
+## A lens that gets expensive is a defect in this document
+
+Owner rule, 2026-08-01, and it is standing rather than a one-off.
+
+**When a lens starts costing too much time, the response is to change the process, not to absorb the
+cost and not to quietly stop running it.** Those are the two failure modes, and the second is worse
+because it looks like compliance. A gate nobody can afford is a gate that gets skipped, and skipping
+it silently is exactly what the fail-closed clause exists to prevent.
+
+The response is always the same shape: find the work the lens is doing that a command could do once,
+move it to the command, and leave the lens the judgement. That is what happened to mutation, which
+was an agent inventing and running its own mutants and is now `pnpm mutate`. It is what happened to
+the claims auditor below.
+
+**The claims auditor's inputs come from `pnpm gate:facts`.**
+
+```bash
+pnpm gate:facts
+```
+
+It collects the suite counts, the check exit codes, the advisory counts, the diff's surfaces and
+mutation applicability, and the publish age, signature and SLSA provenance of every version the
+change introduces. The author pastes the block into the description. **The auditor regenerates it and
+compares two artifacts**, rather than re-deriving each number from scratch.
+
+Two rules follow from that, and they belong in the prompt:
+
+- **Do not reproduce anything `gate:facts` emits.** Spot-check a sample, because a number is not true
+  because a script printed it, and every row carries the command that produced it for exactly that
+  purpose. Do not re-derive the set.
+- **Author-measured rows are verdicted, not repeated.** A twelve-minute mutation run and a
+  sixty-four-run flake sweep are declared by the author and marked as such. **UNVERIFIABLE is the
+  correct verdict on those**, and reproducing one is a deliberate choice rather than the default.
+
+The measurement that forced this: the PR #44 claims audit spent roughly 285k tokens, 115 tool calls
+and 38 minutes, and almost all of it was recomputing numbers already measured. The cost was in the
+prompt, not in the lens. It re-ran Stryker end to end, made two registry calls for each of 108
+packages, ran `npm audit signatures` twice, ran `pnpm verify` and `pnpm build`, and ran the uploader
+suite twice.
+
 ## Lens prompt rules
 
 Each of these came out of a round of this gate rather than out of general principle. They live here
