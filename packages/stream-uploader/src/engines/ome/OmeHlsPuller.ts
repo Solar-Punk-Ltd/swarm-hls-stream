@@ -2,7 +2,7 @@ import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../../utils/common.js';
 
-import { Fetcher, PullerOptions } from './interfaces.js';
+import { Fetcher, PlaylistEntry, PullerOptions } from './interfaces.js';
 import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './utils.js';
 
 const logger = Logger.getInstance();
@@ -45,10 +45,18 @@ export class OmeHlsPuller {
   private readonly masterUrl: string;
   private mediaPlaylistUrl: string | null = null;
 
+  /**
+   * Newest segment start this puller has seen advertised, whether or not it delivered it. What the
+   * origin was *serving* is what the replacement has to skip past, so a high-water over delivered
+   * segments alone would leave the tail this puller never got to.
+   */
+  private newestProgramDateTime: number | null = null;
+
   private readonly onHalt?: () => void;
   private readonly fetcher: Fetcher;
   private readonly fetchTimeoutMs: number;
   private readonly haltAfterNotFoundMs: number;
+  private readonly staleBefore: number | null;
 
   constructor(
     private streamId: string,
@@ -65,8 +73,18 @@ export class OmeHlsPuller {
     this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
     this.haltAfterNotFoundMs = options.haltAfterNotFoundMs ?? DEFAULT_HALT_AFTER_NOT_FOUND_MS;
+    this.staleBefore = options.staleBefore ?? null;
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
+  }
+
+  /**
+   * The floor a puller replacing this one needs, so it can tell this session's media from its own.
+   * Null until a playlist carrying a date-time has been read, which is also the honest answer: there
+   * is nothing to hand over before then.
+   */
+  get latestProgramDateTime(): number | null {
+    return this.newestProgramDateTime;
   }
 
   /**
@@ -197,12 +215,18 @@ export class OmeHlsPuller {
    */
   private async processPlaylist(playlist: string, url: string): Promise<void> {
     const segments = parseMediaPlaylist(playlist);
+    this.recordNewestProgramDateTime(segments);
 
     for (const segment of segments) {
       if (this.isStopped) {
         return;
       }
       if (segment.seq <= this.lastSeq) {
+        continue;
+      }
+      // Before the baseline is taken and before any loss is reported, because media from the session
+      // this puller replaced is neither this session's starting point nor a gap in it.
+      if (this.belongsToReplacedSession(segment)) {
         continue;
       }
 
@@ -260,6 +284,44 @@ export class OmeHlsPuller {
         }
       }
     }
+  }
+
+  private recordNewestProgramDateTime(segments: PlaylistEntry[]): void {
+    for (const segment of segments) {
+      if (
+        segment.programDateTime !== undefined &&
+        segment.programDateTime > (this.newestProgramDateTime ?? -Infinity)
+      ) {
+        this.newestProgramDateTime = segment.programDateTime;
+      }
+    }
+  }
+
+  /**
+   * Whether this segment was already being served by the session this puller took over from.
+   *
+   * A replacement puller starts with no high-water and a duplicate filter the orchestrator has just
+   * reset, so on a reconnect it would otherwise ingest whatever the origin still had up: measured
+   * against a real OME as a full five-segment window of the previous broadcast, for the five seconds
+   * it takes the dropped SRT session to be reaped. See CON-20.
+   *
+   * Nothing is skipped without a date-time to judge it by. That an origin publishes none is reported
+   * by the engine when it builds the replacement, which is where the absence is knowable for the
+   * whole session rather than one segment at a time.
+   */
+  private belongsToReplacedSession(segment: PlaylistEntry): boolean {
+    if (this.staleBefore === null || segment.programDateTime === undefined) {
+      return false;
+    }
+
+    if (segment.programDateTime > this.staleBefore) {
+      return false;
+    }
+
+    logger.info(
+      `[OME] Skipping segment ${segment.seq} for ${this.streamId}: it belongs to the session this puller replaced`,
+    );
+    return true;
   }
 
   /**

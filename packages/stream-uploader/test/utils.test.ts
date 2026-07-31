@@ -173,7 +173,7 @@ describe('parseMediaPlaylist', () => {
       '',
       '#EXTINF:2.0,',
       '# just a comment',
-      '#EXT-X-PROGRAM-DATE-TIME:2026-06-10T00:00:00Z',
+      '#EXT-X-KEY:METHOD=NONE',
       'a.ts',
       '   ',
       '#EXT-X-DISCONTINUITY',
@@ -224,5 +224,110 @@ describe('parseMediaPlaylist', () => {
   it('returns an empty array for an empty or tag-only playlist', () => {
     assert.deepEqual(parseMediaPlaylist(''), []);
     assert.deepEqual(parseMediaPlaylist('#EXTM3U\n#EXT-X-ENDLIST'), []);
+  });
+
+  // The date-time is the only field that separates one session's media from the next one's, since OME
+  // restarts the media sequence at zero and reuses its segment file names across both. See CON-20.
+  describe('#EXT-X-PROGRAM-DATE-TIME', () => {
+    it('stamps each segment from the date-time that precedes it', () => {
+      const text = [
+        '#EXTM3U',
+        '#EXT-X-MEDIA-SEQUENCE:0',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-07-31T14:20:45.325+00:00',
+        '#EXTINF:2.0,',
+        'a.ts',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-07-31T14:20:47.325+00:00',
+        '#EXTINF:2.0,',
+        'b.ts',
+      ].join('\n');
+
+      assert.deepEqual(
+        parseMediaPlaylist(text).map((entry) => entry.programDateTime),
+        [Date.parse('2026-07-31T14:20:45.325Z'), Date.parse('2026-07-31T14:20:47.325Z')],
+      );
+    });
+
+    // RFC 8216 lets a playlist stamp only its first segment. Deriving the rest is what keeps the floor
+    // working against an origin that spells it that way, and a floor that quietly covers one segment
+    // out of five looks exactly like one that covers all of them.
+    it('derives later segments from one date-time and the durations before them', () => {
+      const text = [
+        '#EXTM3U',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-07-31T14:20:45.000+00:00',
+        '#EXTINF:2.0,',
+        'a.ts',
+        '#EXTINF:3.5,',
+        'b.ts',
+        '#EXTINF:2.0,',
+        'c.ts',
+      ].join('\n');
+
+      const base = Date.parse('2026-07-31T14:20:45.000Z');
+      assert.deepEqual(
+        parseMediaPlaylist(text).map((entry) => entry.programDateTime),
+        [base, base + 2_000, base + 5_500],
+      );
+    });
+
+    it('leaves the field off a playlist that carries no date-time', () => {
+      const text = ['#EXTM3U', '#EXTINF:2.0,', 'a.ts'].join('\n');
+
+      assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 2.0, uri: 'a.ts' }]);
+    });
+
+    // An unparseable date parses to NaN, and NaN compares false against any floor, so carrying it
+    // would turn every comparison into a silent pass. Absent says the same thing and says it once.
+    it('leaves the field off when the date-time cannot be parsed', () => {
+      const text = ['#EXTM3U', '#EXT-X-PROGRAM-DATE-TIME:not-a-date', '#EXTINF:2.0,', 'a.ts'].join('\n');
+
+      assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 2.0, uri: 'a.ts' }]);
+    });
+
+    /**
+     * Byte-for-byte what a real OvenMediaEngine served, captured on 2026-07-31 from
+     * `airensoft/ovenmediaengine:latest` under this repo's own `Server.xml.template`, at the instant it
+     * asked the admission webhook whether to admit a reconnect. Every case above is hand-written, so
+     * all of them would keep passing if OME spelled any of this differently: the `+00:00` offset rather
+     * than a `Z`, `2.000` rather than `2.0`, or the tag before `#EXTINF` rather than after it.
+     */
+    it('parses a playlist captured from a real OvenMediaEngine', () => {
+      const captured = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:2',
+        '#EXT-X-MEDIA-SEQUENCE:5',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-07-31T14:44:54.314+00:00',
+        '#EXTINF:2.000,',
+        'seg_917977731947844006_5_hls.ts',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-07-31T14:44:56.314+00:00',
+        '#EXTINF:2.000,',
+        'seg_917977731947844006_6_hls.ts',
+        '#EXT-X-PROGRAM-DATE-TIME:2026-07-31T14:44:58.314+00:00',
+        '#EXTINF:2.000,',
+        'seg_917977731947844006_7_hls.ts',
+        '',
+      ].join('\n');
+
+      assert.deepEqual(parseMediaPlaylist(captured), [
+        {
+          seq: 5,
+          duration: 2,
+          uri: 'seg_917977731947844006_5_hls.ts',
+          programDateTime: Date.parse('2026-07-31T14:44:54.314Z'),
+        },
+        {
+          seq: 6,
+          duration: 2,
+          uri: 'seg_917977731947844006_6_hls.ts',
+          programDateTime: Date.parse('2026-07-31T14:44:56.314Z'),
+        },
+        {
+          seq: 7,
+          duration: 2,
+          uri: 'seg_917977731947844006_7_hls.ts',
+          programDateTime: Date.parse('2026-07-31T14:44:58.314Z'),
+        },
+      ]);
+    });
   });
 });

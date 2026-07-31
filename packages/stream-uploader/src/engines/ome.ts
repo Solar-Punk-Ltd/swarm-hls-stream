@@ -4,6 +4,7 @@ import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, optionalBool, optionalInt, required } from '../utils/env.js';
+import { HLS_PROGRAM_DATE_TIME } from '../utils/hlsTags.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
 import { AppStream, OmeAdmissionPayload, OmeEngineOptions, OmeEngineSeams } from './ome/interfaces.js';
@@ -53,9 +54,22 @@ export function createOmeEngine(
     // orchestrator has already finalized the old uploader and spawned a fresh one. Keeping the old
     // puller left the two halves disagreeing about which session is live: it carries the previous
     // session's `lastSeq`, so it discards every index the new session publishes, forever. See CON-16.
+    // The replacement has to be told where the outgoing session's media ends, or it ingests whatever
+    // the origin is still serving. OME keeps a dropped publisher's HLS output up until the SRT session
+    // is reaped, five seconds when measured, and the admission webhook that lands the reconnect fires
+    // inside that window. See CON-20.
     const stale = pullers.get(streamId);
+    const staleBefore = stale?.latestProgramDateTime ?? undefined;
     if (stale) {
       logger.info(`[OME] Stream ${streamId} announced again, replacing its HLS puller`);
+      if (staleBefore === undefined) {
+        // Said here rather than left to the puller, because this is where the absence is knowable for
+        // the whole session instead of one segment at a time. A floor that matches nothing reads from
+        // the outside exactly like a floor that is holding, and this is the one line that separates them.
+        logger.warn(
+          `[OME] Replacing the puller for ${streamId} with no ${HLS_PROGRAM_DATE_TIME} to go on, so the replaced session's media cannot be told from the new session's and will be delivered into it`,
+        );
+      }
       stale.stop();
       pullers.delete(streamId);
     }
@@ -72,6 +86,7 @@ export function createOmeEngine(
       onHalt,
       fetchTimeoutMs,
       fetcher,
+      staleBefore,
     });
     pullers.set(streamId, puller);
     puller.start();
