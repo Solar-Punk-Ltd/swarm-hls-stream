@@ -38,7 +38,8 @@ export type GateFailureKind =
   | 'stale-exception'
   | 'package-mismatch'
   | 'duplicate-exception'
-  | 'advisory-changed';
+  | 'advisory-changed'
+  | 'malformed-exception';
 
 export interface GateFailure {
   kind: GateFailureKind;

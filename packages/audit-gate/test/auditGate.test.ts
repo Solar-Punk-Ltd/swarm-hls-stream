@@ -300,6 +300,32 @@ describe('audit report parsing', () => {
   });
 });
 
+describe('allowlist hygiene, checked by the gate rather than only by these tests', () => {
+  it('fails an entry whose ghsa is not a GHSA id', () => {
+    const failures = evaluateAudit(parseAuditReport(rawReport()), [allow('CVE-2025-1234', 'left-pad')]);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].kind, 'malformed-exception');
+  });
+
+  it('fails an entry carrying no reason', () => {
+    const failures = evaluateAudit(parseAuditReport(rawReport()), [
+      allow('GHSA-aaaa-aaaa-aaaa', 'left-pad', { reason: '   ' }),
+    ]);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].kind, 'malformed-exception');
+    assert.match(failures[0].detail, /reason/);
+  });
+
+  it('fails an entry naming no package', () => {
+    const failures = evaluateAudit(parseAuditReport(rawReport()), [allow('GHSA-aaaa-aaaa-aaaa', '')]);
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].kind, 'malformed-exception');
+  });
+});
+
 describe('the shipped allowlist', () => {
   it('names one package and one reason per entry', () => {
     for (const entry of ALLOWED_ADVISORIES) {

@@ -11,6 +11,17 @@ export function evaluateAudit(advisories: readonly Advisory[], allowlist: readon
   const allowedByGhsa = new Map<string, AllowedAdvisory>();
 
   for (const entry of allowlist) {
+    const malformed = describeMalformedEntry(entry);
+    if (malformed) {
+      failures.push({
+        kind: 'malformed-exception',
+        ghsa: entry.ghsa,
+        packageName: entry.packageName,
+        detail: malformed,
+      });
+      continue;
+    }
+
     const existing = allowedByGhsa.get(entry.ghsa);
     if (existing) {
       failures.push({
@@ -61,7 +72,9 @@ export function evaluateAudit(advisories: readonly Advisory[], allowlist: readon
     }
   }
 
-  for (const entry of allowlist) {
+  // Only entries that survived validation, so one bad line produces one failure
+  // rather than also being reported as stale for never having matched.
+  for (const entry of allowedByGhsa.values()) {
     if (!reportedGhsas.has(entry.ghsa)) {
       failures.push({
         kind: 'stale-exception',
@@ -73,6 +86,27 @@ export function evaluateAudit(advisories: readonly Advisory[], allowlist: readon
   }
 
   return failures;
+}
+
+const GHSA_PATTERN = /^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/;
+
+/**
+ * Names why an entry is not usable, or nothing when it is well formed. These
+ * used to be asserted only by this package's own tests, which the `verify` job
+ * runs and the `audit` job does not, so a malformed exception passed the very
+ * job that depends on it.
+ */
+function describeMalformedEntry(entry: AllowedAdvisory): string | undefined {
+  if (!GHSA_PATTERN.test(entry.ghsa)) {
+    return `"${entry.ghsa}" is not a GHSA id, so it can never match a reported advisory and the exception is inert.`;
+  }
+  if (entry.packageName.trim().length === 0) {
+    return 'Names no package, so there is nothing to check the reported advisory against.';
+  }
+  if (entry.reason.trim().length === 0) {
+    return 'Carries no reason. The reason is the whole substance of an exception and nothing else records why this is accepted.';
+  }
+  return undefined;
 }
 
 /**
