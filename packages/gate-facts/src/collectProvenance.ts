@@ -168,9 +168,27 @@ export async function collectProvenance(base: string, head: string): Promise<Fac
     return result.stdout;
   };
 
-  const introduced = introducedVersions(await lockAt(base), await lockAt(head));
-  if (introduced.length === 0) {
+  const baseLock = await lockAt(base);
+  const headLock = await lockAt(head);
+  if (baseLock === headLock) {
+    // The group is absent only when the lockfile is untouched. A lockfile that moved and introduced
+    // nothing is a different fact and gets a row saying so, because an absent group and a clean one
+    // would otherwise read the same.
     return null;
+  }
+
+  const introduced = introducedVersions(baseLock, headLock);
+  if (introduced.length === 0) {
+    return {
+      title: 'Provenance of introduced versions',
+      facts: [
+        {
+          key: 'versions introduced',
+          value: '0, though the lockfile did change. Nothing new resolved, so there is nothing to check.',
+          command: describe('git', ['diff', `${base}..${head}`, '--', 'pnpm-lock.yaml']),
+        },
+      ],
+    };
   }
 
   const summary = summarise(await provenanceFor(introduced));
