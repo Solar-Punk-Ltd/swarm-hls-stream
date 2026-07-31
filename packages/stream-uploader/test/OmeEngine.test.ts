@@ -14,7 +14,7 @@ import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { STREAM_STATUS_VOD } from '../src/types.js';
 
-import { makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
+import { makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
 
 /** The catalog entry shape these tests read back, narrowed from what StreamCatalog accepts. */
 interface VodEntry {
@@ -33,6 +33,13 @@ async function postAdmission(
   status: 'opening' | 'closing',
   secret: string,
   streamUrl: string,
+  /**
+   * The publisher's socket, which real OME sends on every admission and which is the only field that
+   * tells one session of a stream from the next. Captured from a live SRT publish: a session's
+   * opening and its closing carry the same port, and two sessions of one stream carry different
+   * ones. Omit it to reproduce a payload that carries no session identity at all.
+   */
+  client?: { address: string; port: number },
 ): Promise<void> {
   const app = express();
   // Mirrors the raw-body capture in api/server.ts, which is what the signature is computed over.
@@ -49,7 +56,10 @@ async function postAdmission(
   try {
     await once(server, 'listening');
     const { port } = server.address() as AddressInfo;
-    const body = JSON.stringify({ request: { direction: 'incoming', status, url: streamUrl } });
+    const body = JSON.stringify({
+      ...(client ? { client } : {}),
+      request: { direction: 'incoming', status, url: streamUrl },
+    });
     await fetch(`http://127.0.0.1:${port}${engine.prefix}/admission`, {
       method: 'POST',
       headers: {
@@ -779,6 +789,152 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       `replacing a puller with no date-time to go on has to be reported, or an unprotected deployment looks like a protected one; warnings: ${
         warnings.join(' | ') || '(none)'
       }`,
+    );
+  });
+});
+
+/**
+ * CON-21: a `closing` carries no session identity, so a delayed one can finalize the session that
+ * replaced the session it was actually sent for.
+ *
+ * The `closing` branch keys on the stream URL alone and stops whatever currently holds that id. Two
+ * admissions for one stream are independent HTTP requests against a 3000ms admission timeout, so a
+ * slow `closing` for a dropped session can be processed after an `opening` that OME did admit.
+ *
+ * The reachability reported by the PR #43 concurrency lens is refuted in the register: OME rejects a
+ * reconnect admitted while the dropped session is still up, 4 of 4, so the ordinary timeline lands
+ * both closings first. What remains is the reordered webhook, which is what this drives.
+ *
+ * The fix rests on a measurement rather than on the interface. A real OME publish, kill and
+ * republish on 2026-08-01 produced four admissions carrying `client.port`, and the port matches its
+ * own session's opening and closing while differing between sessions: 44546 for the first, 22138 for
+ * the second. The interface declares that field optional; a real SRT publish always populates it.
+ */
+describe('createOmeEngine reordered closing (CON-21)', () => {
+  const SECRET = 'session-identity-secret';
+  const HLS_BASE = 'http://ome:8081';
+  const STREAM_URL = 'srt://ome:10080/video/demo';
+  const PLAYLIST_URL = `${HLS_BASE}/video/demo/ts:playlist.m3u8`;
+  const POLL_INTERVAL_MS = 20;
+  const SETTLE_MS = 5_000;
+
+  // The two sockets the live capture recorded, kept as the real numbers so the fixture cannot drift
+  // into a shape OME does not produce.
+  const SESSION_A = { address: '192.168.65.1', port: 44546 };
+  const SESSION_B = { address: '192.168.65.1', port: 22138 };
+
+  const PLAYLIST = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:2',
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '#EXT-X-PROGRAM-DATE-TIME:2026-08-01T00:00:00.000+00:00',
+    '#EXTINF:2.000,',
+    'seg_0_hls.ts',
+    '',
+  ].join('\n');
+
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    originalEnv = { ...process.env };
+    process.env.OME_HLS_BASE_URL = HLS_BASE;
+    process.env.OME_HLS_POLL_INTERVAL_MS = String(POLL_INTERVAL_MS);
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  function makePollCountingOrigin(): { fetcher: Fetcher; polls(): number } {
+    let polls = 0;
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === PLAYLIST_URL) {
+        polls++;
+        return { ok: true, status: 200, text: async () => PLAYLIST } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => new TextEncoder().encode('seg').buffer,
+      } as Response;
+    }) as unknown as Fetcher;
+    return { fetcher, polls: () => polls };
+  }
+
+  it('leaves the live session alone when a closing for the session it replaced arrives late', async () => {
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    // Session A publishes, then drops without a clean close.
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+
+    // Session B reconnects and is admitted, replacing A. Replacing A finalizes A, so A's own VOD is
+    // expected here and is not the defect. What must not happen is a second one.
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_B);
+    const pollsWhenBWasLive = origin.polls();
+    await waitFor(() => origin.polls() > pollsWhenBWasLive, SETTLE_MS);
+    const vodsBeforeStaleClosing = published.filter((entry) => entry.state === STREAM_STATUS_VOD).length;
+
+    // A's closing finally arrives, out of order, carrying A's socket rather than B's.
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+
+    const pollsAfterStaleClosing = origin.polls();
+    await sleep(POLL_INTERVAL_MS * 8);
+
+    assert.ok(
+      origin.polls() > pollsAfterStaleClosing,
+      `a closing for a session that has already been replaced must not stop the live puller, but polling stopped at ${pollsAfterStaleClosing}`,
+    );
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      vodsBeforeStaleClosing,
+      'the live session was VOD-finalized by a closing that was sent for the session it replaced',
+    );
+  });
+
+  it('still stops the stream when the closing matches the live session', async () => {
+    // The guard must not turn into a stream that never finalizes, which would be the worse failure:
+    // a leaked puller and no VOD at all.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'a closing carrying the live session’s own socket has to finalize it',
+    );
+  });
+
+  it('stops the stream when the payload carries no session identity at all', async () => {
+    // OME populates client on every real SRT publish, but the field is optional in the protocol and a
+    // future transport might omit it. Refusing to stop without evidence would leak the stream, so the
+    // guard is strict only when it has an identity to be strict with.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'a payload with no client cannot be matched, so the closing has to be honoured rather than dropped',
     );
   });
 });

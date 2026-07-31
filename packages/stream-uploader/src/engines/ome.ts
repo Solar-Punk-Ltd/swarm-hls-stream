@@ -139,6 +139,26 @@ export function createOmeEngine(
     }
   };
 
+  const liveSessions = new Map<string, string>();
+  const sessions: SessionRegistry = {
+    remember: (streamId, key) => {
+      if (key === null) {
+        // Nothing to match a later closing against, so forget any earlier key rather than leaving a
+        // stale one that would reject the closing this session does send.
+        liveSessions.delete(streamId);
+        return;
+      }
+      liveSessions.set(streamId, key);
+    },
+    belongsToReplacedSession: (streamId, key) => {
+      const live = liveSessions.get(streamId);
+      // Strict only with evidence on both sides. Refusing to stop a stream whose identity is unknown
+      // would leak a puller and never produce a VOD, which is worse than what this guards against.
+      return live !== undefined && key !== null && live !== key;
+    },
+    forget: (streamId) => liveSessions.delete(streamId),
+  };
+
   return {
     name: 'ome',
     prefix: '/engines/ome',
@@ -160,7 +180,7 @@ export function createOmeEngine(
           reply(res, { allowed: false, reason: 'invalid signature' });
           return;
         }
-        handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen);
+        handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen, sessions);
       });
 
       return router;
@@ -182,6 +202,33 @@ export function createOmeEngine(
 }
 
 // See https://airensoft.gitbook.io/ovenmediaengine/access-control/admission-webhooks
+/**
+ * Identity of one publishing session, from the socket OME reports on every admission.
+ *
+ * Measured against a real OvenMediaEngine rather than inferred: a publish, an abrupt kill and a
+ * republish produced four admissions, and `client.port` matched its own session's opening and
+ * closing while differing between the two sessions. The stream id cannot do this, because both
+ * sessions carry the same one, which is the whole of CON-21.
+ *
+ * Null when the payload carries no socket. The protocol marks `client` optional and a real SRT
+ * publish always populates it, so this is the transport nobody has met rather than the normal case.
+ */
+function sessionKey(payload: OmeAdmissionPayload): string | null {
+  const client = payload?.client;
+  if (!client || client.address === undefined || client.port === undefined) {
+    return null;
+  }
+  return `${client.address}:${client.port}`;
+}
+
+/** Which publishing session currently holds a stream id, so a late closing can be told from a live one. */
+interface SessionRegistry {
+  remember(streamId: string, key: string | null): void;
+  /** True only when both sides have an identity and they differ, so an unknown identity is never rejected. */
+  belongsToReplacedSession(streamId: string, key: string | null): boolean;
+  forget(streamId: string): void;
+}
+
 function handleAdmission(
   req: Request,
   res: Response,
@@ -189,6 +236,7 @@ function handleAdmission(
   startPuller: StartPuller,
   stopPuller: StopPuller,
   failOpen: boolean,
+  sessions: SessionRegistry,
 ): void {
   try {
     const payload = req.body as OmeAdmissionPayload;
@@ -208,9 +256,24 @@ function handleAdmission(
     }
 
     const streamId = buildStreamId(parsed.app, parsed.stream);
+    const session = sessionKey(payload);
 
     if (request.status === 'closing') {
+      if (sessions.belongsToReplacedSession(streamId, session)) {
+        // Two admissions for one stream are independent requests against a 3000ms timeout, so a slow
+        // `closing` for a dropped session can be processed after an `opening` OME did admit. Acting on
+        // it would stop the live puller and VOD-finalize the session that replaced the sender. See
+        // CON-21. Answered `allowed` because OME only wants the acknowledgement, and the session this
+        // was sent for is already gone.
+        logger.warn(
+          `[OME] Ignoring a closing for ${streamId} from ${session}: that session has already been replaced and the live one is not it`,
+        );
+        reply(res, { allowed: true, lifetime: 0, reason: 'ok (closing for a replaced session)' });
+        return;
+      }
+
       logger.info(`[OME] Stream closing: ${streamId}`);
+      sessions.forget(streamId);
       stopPuller(streamId);
       reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
 
@@ -229,6 +292,10 @@ function handleAdmission(
       reply(res, { allowed: false, reason: 'orchestrator rejected' });
       return;
     }
+
+    // Recorded only once the orchestrator has taken the stream, so a rejected announce cannot make
+    // the live session's own closing look like it came from somewhere else.
+    sessions.remember(streamId, session);
 
     logger.info(`[OME] Stream opening: ${streamId} (${mediatype})`);
 

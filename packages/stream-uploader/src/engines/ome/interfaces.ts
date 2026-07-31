@@ -89,7 +89,16 @@ export interface OmeAdmissionRequest {
 }
 
 export interface OmeAdmissionPayload {
-  client?: { address?: string; port?: number };
+  /**
+   * The publisher's socket. Optional because the protocol allows it to be absent, but every field
+   * here was populated on every admission in a live SRT capture on 2026-08-01, including `real_ip`,
+   * which this interface did not previously declare at all.
+   *
+   * `port` is the only session discriminator an admission carries: it matches its own session's
+   * opening and closing and differs between two sessions of the same stream, where the stream id is
+   * identical for both. See CON-21.
+   */
+  client?: { address?: string; port?: number; real_ip?: string };
   request: OmeAdmissionRequest;
 }
 
