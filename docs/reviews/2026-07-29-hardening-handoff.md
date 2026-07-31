@@ -37,7 +37,7 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` at `976acec`. Thirteen pull requests merged, each through the
+**Where the code is.** `feat/ai-hardening` at `bd1bccc`. Thirteen pull requests merged, each through the
 review gate: #27 through #38. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
 stay that way.
 
@@ -96,6 +96,26 @@ drain completed inside one microtask cascade ahead of the puller's first tick. I
 that failed in production on every restart, and one millisecond took it from 4 of 4 delivered to 0 of 4. Anything standing in for a network call needs a real yield, or the window you are testing is
 closed before your test looks at it. `sleep(0)` is enough.
 
+**A test can drive an ordering the real system never produces, and the flake then reads as the exact
+defect the test guards.** CON-19. The CON-16 acceptance test restarted its fake origin before posting
+the announce, which OME cannot do because the admission webhook gates the publish. Under CI
+contention the replaced puller polled the restarted origin in that gap and delivered it into the
+session it replaced, so the assertion failed with the true signature of the defect it was written for,
+on code that does not have it. Two sessions went into hypotheses about the engine before anyone asked
+whether the _test's_ sequence was one the component could reach. When a guard fails with its own
+signature, check the setup against the real contract before reading the failure as a regression. The
+matching trap on the other side is that nothing in a playlist distinguishes that window from ordinary
+progress, so a reorder here was the fix and a fix in the engine would have been theatre.
+
+**A test that asserts on one of two published artifacts is blind to the other, and CON-20 was hiding
+there the whole time.** The CON-16 acceptance test checks `vods[0]`, the retired session. Both
+sessions publish a VOD. Probing `vods[1]` shows the new session's recording carrying the outgoing
+session's tail plus a fabricated discontinuity, wrong in 5 of 8 runs, and no assertion has ever looked
+at it. Two review rounds and a closed HIGH went past this. When a fix produces a pair of artifacts,
+assert on both, because the one you did not name is where the mirror image of your bug lives. The
+reorder is what made the suite start traversing that state, which is the only reason it surfaced: **a
+change that makes a system take a new path is worth re-probing even when its own assertion passes.**
+
 **A fix that moves work earlier can break a path that relied on it being later.** Making the
 replacement spawn synchronous was correct and introduced a CRITICAL: a drain that started before a
 re-announce still detached by stream id when it finished, and that id belonged to the replacement by
@@ -145,16 +165,19 @@ responses) are also still open.
 
 ### The queue after that, in severity order
 
-0. **CON-19, HIGH, and CI is red on this branch right now.** CON-16's own acceptance test fails
-   intermittently on CI with `expected 8, actual 16`, which is both sessions inside one recording,
-   the defect it exists to catch. Same tree passed eight times on the topic branch, failed twice
-   on `feat/ai-hardening`, then passed again, so about two runs in eleven. A green CI run on
-   this branch does not mean it is fixed. Does not reproduce locally. Read the register row before touching it: two
-   hypotheses are already refuted there.
-1. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
+0. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
    by compose-project label and ignores the service filter, so cleaning one service destroys the live
    stack. The client's `ManifestManagement.ts` still has a bare `fetch` with no timeout, the uploader
    half being closed in #34.
+1. **CON-20, HIGH, and it is the mirror image of CON-16.** The outgoing session's media reaching the
+   _new_ uploader, where CON-16 was the reverse. The replacement puller starts at `scheduleNext(0)`
+   with `lastSeq = -1` against a duplicate filter `spawnUploader` has just reset, so whatever the
+   origin is serving at that instant opens the new session's manifest, followed by a discontinuity
+   that never happened. Reproduced at 5 of 8 runs in the harness. **Start with the acceptance
+   criterion, not the fix:** production reachability needs OME to still be serving the previous
+   session's output when it answers the republish webhook, and that is an observation against the
+   real stack rather than something the suite can settle. If it turns out unreachable the row should
+   be downgraded, not quietly closed.
 2. **TEST-22, HIGH.** Nothing asserts anything about the client bundle, which is how PR #39 shipped a
    silent browser-target regression past two gates and a manual browser check. CI builds now, which
    proves a bundle can be produced and nothing about what is in it. The two assertions that would
@@ -579,6 +602,8 @@ it accurate and keep it in the same commit as the work it describes.
 | **OBS-12 closed**        | `59e261e`                                                                              | 2026-07-30 | **Closes OBS-12.** `optionalInt` checks the whole string rather than a prefix and a per-variable range, and throws where it is read. `0`, `-1`, `2147483648` and `10s` now stop startup with a named error instead of disabling the puller once a stream begins. Ranges are per call site because the constraints differ: `API_PORT` allows zero for an ephemeral port, everything else has a floor of 1, and the default ceiling is `setTimeout`'s 32-bit limit. Covers every `optionalInt` variable, not only the one that exposed it. Seven mutations, seven killed. Suite 155 to 167.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **TEST-15 closed**       | `e00210b`                                                                              | 2026-07-30 | **Closes TEST-15.** `OmeEngineSeams` gives the environment path an injectable fetcher, which is what makes the abort window observable from outside the module, and it deliberately carries no configuration so a test cannot prove a plumbing path a deployment lacks. The test drives one real admission lifecycle, opening to closing, so the file gains no timer of its own. Also closed: the media playlist call site, the fresh-signal-per-call rationale, the `AbortError` arm and the ordinary-failure half of the abort distinction at both log sites. All twelve surviving mutations killed. Suite 167 to 179.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **S2.2 uploader half**   | `a4c7149`, `a87230b`, `f0c0ee5`                                                        | 2026-07-30 | **Closes the uploader half of OBS-2.** All three puller calls route through one `fetchWithTimeout`, so a new call site cannot forget the window, each with a fresh `AbortSignal.timeout` rather than a shared signal that would abort later requests the instant the first window elapsed. An abort logs at error level where an ordinary failure stays at warn, since a cut-off request is otherwise indistinguishable from a healthy stream. `OME_FETCH_TIMEOUT_MS`, default 10s, and `a87230b` is there because `a4c7149` shipped it unreachable in a container, repeating the `SEGMENT_STALL_MS` miss the #30 gate caught. The test in this spot was **inert**: its fake ignored the abort signal, so it passed with and without a timeout. Replaced with fakes that reject with `signal.reason`, the real `TimeoutError`. Suite 142 to 145.                                                                                                                                                                                                                                                                    |
+| **SEC-7 closed**         | PR #39, merged as `976acec`                                                            | 2026-07-31 | **Closes SEC-7.** `pnpm audit` 63 findings to 3, including the one critical, through `pnpm.overrides` plus three allowlisted residuals that each carry a written reason. A new `packages/audit-gate` runs in CI on push, on pull requests and on a weekly cron, and fails on anything the allowlist does not cover, on an exception whose severity or patched range has drifted, and on a report whose finding counts do not reconcile with its advisory list, which is what catches a suppression added through `pnpm.auditConfig`. 38 tests. Two findings from its own gate round were fixed before merge. **Dependabot is not a substitute:** it scans the default branch only, and separately lagged the advisory data `pnpm audit` reads by 4 GHSAs to 7 on three packages at identical versions. See SEC-16 through SEC-19. PR #13 into `main` is superseded, and closing it is the owner's call.                                                                                                                                                                                                             |
+| **CON-19 closed**        | `af9ef76`                                                                              | 2026-07-31 | **Closes CON-19, and CON-16 stands.** The flake was in the acceptance test, not the engine. It restarted its fake origin before posting the announce, an ordering OME cannot produce because the admission webhook gates the publish, and in that gap the replaced puller delivered the restarted origin into the session it replaced. Reproduced on demand by widening the gap to 120ms, and under 24 busy loops on 12 cores, where the old order fails 3 of 15 and the new one 0 of 15. That is the same fault reproduced, not the same rate: CI's own figure is 2 of 16, counted across every commit carrying the test. The window itself is unclosable, see CON-17 for why a puller-local restart detector cannot converge. Mutation-checked rather than assumed: the pre-CON-16 `startStream` fails the reordered test 20 of 20. Suite stays at 274.                                                                                                                                                                                                                                                           |
 
 ### Sprint 0 remaining
 
