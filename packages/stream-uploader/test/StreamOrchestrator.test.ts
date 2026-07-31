@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
+import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
@@ -195,6 +196,46 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
       removed,
       [],
       'finalizing the replaced session deleted the recovery entry of the session that replaced it',
+    );
+    await orch.cleanup();
+  });
+
+  // A broadcaster that drops and reconnects inside the drain its own disconnect started. The stop
+  // captured the outgoing uploader before the reconnect, so when it finishes it must not detach
+  // whatever holds the id by then. Getting this wrong is silent and permanent: the reconnected
+  // session is unregistered, every segment comes back as an unknown stream, and with the id gone
+  // from the active map the stall signal has nothing left to report it through.
+  it('keeps the reconnected session when a stop that began before it finishes after it', async () => {
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const finalizeStarted: string[] = [];
+    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
+      addStream: async (entry: unknown) => {
+        finalizeStarted.push('vod');
+        // Long enough that the reconnect below lands inside this drain rather than after it.
+        await sleep(60);
+        published.push(entry);
+      },
+    } as unknown as StreamCatalog);
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    // The disconnect. Deliberately not awaited: every caller in the engines fires it and moves on.
+    const stopping = orch.stopStream(id);
+    await waitFor(() => finalizeStarted.length > 0);
+
+    // The reconnect, while that drain is still running.
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await stopping;
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'the drain that started first unregistered the reconnected session');
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('two')),
+      { accepted: true },
+      'the reconnected broadcaster cannot deliver anything, and nothing reports why',
     );
     await orch.cleanup();
   });

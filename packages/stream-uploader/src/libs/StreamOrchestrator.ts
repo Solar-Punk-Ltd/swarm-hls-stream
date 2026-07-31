@@ -472,6 +472,16 @@ export class StreamOrchestrator {
     }
 
     await this.drainUploader(streamId, uploader);
+
+    // A re-announce during this drain registers a replacement under the same id, so detaching by id
+    // now would unregister a live session that this drain never touched. Every segment after that
+    // comes back as an unknown stream, permanently, and the stall signal cannot see it either
+    // because the id is no longer in `activeStreams` at all.
+    if (this.activeStreams.get(streamId) !== uploader) {
+      this.logger.info(`[StreamOrchestrator] Drained a replaced session for ${streamId}, its successor stays live`);
+      return;
+    }
+
     this.retireSession(streamId);
 
     this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
