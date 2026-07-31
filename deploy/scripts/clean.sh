@@ -14,7 +14,7 @@ usage() {
   echo ""
   echo "Options:"
   echo "  --profile=<name>  Target a specific profile (default: \"default\")"
-  echo "  --volumes         Also remove Docker volumes (data will be lost!)"
+  echo "  --volumes         Also remove Docker volumes (data will be lost!). Whole project only."
   echo "  --all             Remove everything including remote files"
   echo "  --yes             Skip the interactive confirmation prompt"
   echo ""
@@ -80,6 +80,18 @@ for arg in "$@"; do
   esac
 done
 
+# Compose volumes carry the project label and have no per-service equivalent, so there is no way to
+# remove one service's data without reaching every other service's as well. Refusing is the only
+# honest answer: silently ignoring the flag would leave an operator believing data was removed, and
+# honouring it destroys recordings nobody named. See OPS-2.
+if [ "$REMOVE_VOLUMES" = "true" ] && [ ${#FILTER_SERVICES[@]} -gt 0 ]; then
+  log_error "--volumes cannot be limited to a service (${FILTER_SERVICES[*]})."
+  echo "  Compose volumes are labelled per project, not per service, so removing them would take"
+  echo "  every other service's data with them. Run without a service to clean the whole project,"
+  echo "  or remove that one volume by hand with 'docker volume rm'."
+  exit 1
+fi
+
 # --- Filter helpers ---
 
 is_in_filter() {
@@ -124,6 +136,30 @@ sweep_container_ids() {
   done
 }
 
+# The compose subcommand that tears the requested services down.
+#
+# **`--profile` does not scope `down`.** Measured against Compose v5.3.1 with this repo's own compose
+# file: `docker compose -p X --profile bee-uploader down` removed the bee-gateway container too, which
+# is every co-located service in the project. So the profile flags that select what to act on are
+# silently ignored by the one subcommand that does the removing, and narrowing the straggler sweep
+# alone left the stack being destroyed one step earlier. See OPS-2.
+#
+# With services named, `stop` followed by `rm -f` is used instead, because both take an explicit
+# service list and honour it. `down` is reserved for the unfiltered case, where removing the project's
+# networks and orphans is the actual request. `--remove-orphans` goes with it for the same reason:
+# an orphan belongs to the project, not to any named service.
+compose_teardown_flags() {
+  if [ ${#FILTER_SERVICES[@]} -gt 0 ]; then
+    echo "rm --stop --force ${FILTER_SERVICES[*]}"
+    return
+  fi
+  if [ "$REMOVE_VOLUMES" = "true" ]; then
+    echo "down -v --remove-orphans"
+    return
+  fi
+  echo "down --remove-orphans"
+}
+
 # The services a sweep must stay inside, empty when the operator named none and the whole project is
 # fair game. Kept as one accessor so the local, remote and post-loop sweeps cannot drift apart.
 sweep_scope() {
@@ -139,13 +175,7 @@ clean_target() {
   local services=("$@")
   local project_flag down_flags
   project_flag=$(compose_project_flag)
-  # `down` removes containers + networks for the listed compose profiles.
-  # With --volumes also remove the named volumes.
-  if [ "$REMOVE_VOLUMES" = "true" ]; then
-    down_flags="down -v"
-  else
-    down_flags="down"
-  fi
+  down_flags=$(compose_teardown_flags)
 
   echo ""
   log_info "Cleaning on $target: ${services[*]}"
@@ -155,11 +185,11 @@ clean_target() {
     compose_files=$(build_compose_files "$DEPLOY_DIR")
     profiles=$(build_profile_flags "${services[@]}")
     cd "$DEPLOY_DIR"
-    # Run compose down with stderr visible so the user actually sees what was removed.
+    # Run the teardown with stderr visible so the user actually sees what was removed.
     # `|| true` lets us continue to the safety-net sweep below even when compose has
     # nothing to do (or the env/config drifted since the deploy).
     # shellcheck disable=SC2086
-    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles $down_flags --remove-orphans || true
+    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles $down_flags || true
 
     # Safety net: nuke any leftover containers labelled with this compose project,
     # in case config.json or the env file has drifted since the deploy and `down`
@@ -187,7 +217,7 @@ clean_target() {
         exit 0
       fi
       cd $REMOTE_BASE/deploy
-      docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env $profiles $down_flags --remove-orphans || true
+      docker compose $project_flag $remote_compose_files --env-file $REMOTE_BASE/.env $profiles $down_flags || true
 
       # Safety net (same idea as local, and scoped the same way): catch any container labelled with
       # this project, narrowed to the named services so cleaning one does not take the stack.
