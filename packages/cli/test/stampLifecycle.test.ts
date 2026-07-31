@@ -63,6 +63,16 @@ describe('the real wait loop against a node that behaves like a real one', () =>
     assert.ok(fake.pollCount() > 5, `must have polled through both stages, polled ${fake.pollCount()}`);
   });
 
+  it('retries while the node is still starting up', async () => {
+    // waitForNode's retry loop was never driven: the fake's health check always answered on the
+    // first call, so its tolerance and its poll interval were unpinned.
+    const fake = createFakeBee({ unhealthyPolls: 3 });
+
+    await silence(() => waitForNode(fake.bee, TIMEOUT_MS, POLL_MS));
+
+    assert.ok(fake.healthPolls() > 3, `must have retried past the unhealthy window, polled ${fake.healthPolls()}`);
+  });
+
   it('throws when the batch never becomes usable, which is the common slow-chain failure', async () => {
     const fake = createFakeBee({ neverUsable: true });
 
@@ -83,9 +93,11 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
     envPath = join(dir, '.env');
   });
 
-  // Only the Bee client is a stand-in. buyStamp, waitForNode, waitForStamp, recordBatchId and
-  // writeEnvKey are all the real implementations, so this exercises the ordering the whole change
-  // is about against the sequence a real node actually produces.
+  // The Bee client is a stand-in, `exit` throws instead of ending the process, and `envPath` points
+  // at a temp directory. Everything else is real: buyStamp, waitForNode, waitForStamp,
+  // recordBatchId, assertEnvKeyWritable and writeEnvKey, so this exercises the ordering the whole
+  // change is about against the sequence a real node actually produces. Note the compressed clock
+  // is more permissive than production, 250 iterations against 100, not equivalent to it.
   function realSeams(fake: ReturnType<typeof createFakeBee>) {
     return {
       createBee: () => fake.bee,
@@ -106,6 +118,16 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
 
     assert.equal(fake.purchaseCount(), 1, 'exactly one batch may be bought');
     assert.match(readFileSync(envPath, 'utf-8'), new RegExp(`^STAMP=${fake.purchased()}$`, 'm'));
+
+    // The premise the whole lifecycle model rests on, and nothing pinned it. With waitForUsable
+    // left at its default, bee-js blocks inside createPostageBatch for up to four minutes and then
+    // throws, so buyStamp never returns, the id is never recorded, and OPS-1 is back with the
+    // money spent.
+    assert.equal(
+      fake.purchaseOptions()?.waitForUsable,
+      false,
+      'buyStamp must return as soon as the id is known, and let waitForStamp own the waiting',
+    );
   });
 
   it('keeps the id when the batch never becomes usable', async () => {
@@ -133,7 +155,7 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
   });
 
   it('does not write a STAMP when the transaction itself fails', async () => {
-    // The transaction reverted, so nothing was spent and there is no id. Writing an empty STAMP
+    // Rejected before submission, so nothing was spent and there is no id. Writing an empty STAMP
     // here would poison the operator's config.
     const fake = createFakeBee({ purchaseError: 'insufficient funds for gas * price + value' });
 
@@ -142,6 +164,7 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
       /exit\(1\)/,
     );
 
+    assert.equal(fake.purchaseCount(), 1, 'the failure must be the purchase itself, not an earlier refusal');
     assert.equal(existsSync(envPath), false, 'a failed transaction must leave no STAMP behind');
   });
 

@@ -28,6 +28,8 @@ export interface FakeBeeOptions {
   purchaseError?: string;
   /** Never become usable, so the caller has to hit its timeout. */
   neverUsable?: boolean;
+  /** Polls where the node is not yet answering health checks, as it is while starting up. */
+  unhealthyPolls?: number;
   /** Batches the node already holds, before anything is bought. */
   existingBatches?: { batchID: string; usable: boolean }[];
   bzz?: bigint;
@@ -36,6 +38,10 @@ export interface FakeBeeOptions {
 
 export interface FakeBee {
   bee: Bee;
+  /** Options `createPostageBatch` was called with. `waitForUsable` is the one that matters. */
+  purchaseOptions(): { waitForUsable?: boolean; immutableFlag?: boolean } | undefined;
+  /** How many times the node was polled for health. */
+  healthPolls(): number;
   /** Batch id the purchase returned, or undefined if nothing was bought. */
   purchased(): string | undefined;
   /** How many times `createPostageBatch` was called. One is correct, two means a duplicate. */
@@ -44,7 +50,9 @@ export interface FakeBee {
   pollCount(): number;
 }
 
-const BATCH_ID = 'be'.repeat(32);
+// Unique per process, so a recovery file one run leaks cannot satisfy another run's assertion.
+// The suite this replaced had exactly that hazard.
+const BATCH_ID = `${process.pid.toString(16).padStart(8, '0')}`.repeat(8).slice(0, 64);
 
 function batch(id: string, usable: boolean): PostageBatch {
   return {
@@ -61,11 +69,19 @@ export function createFakeBee(options: FakeBeeOptions = {}): FakeBee {
   const unusablePolls = options.unusablePolls ?? 2;
 
   let purchasedId: string | undefined;
+  let purchaseOpts: { waitForUsable?: boolean; immutableFlag?: boolean } | undefined;
   let purchases = 0;
   let polls = 0;
+  let healths = 0;
 
   const bee = {
-    getHealth: async () => ({ status: 'ok' }),
+    getHealth: async () => {
+      healths += 1;
+      if (healths <= (options.unhealthyPolls ?? 0)) {
+        throw new Error('connect ECONNREFUSED: node still starting');
+      }
+      return { status: 'ok' };
+    },
 
     getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
 
@@ -82,10 +98,14 @@ export function createFakeBee(options: FakeBeeOptions = {}): FakeBee {
 
     getPostageBatches: async () => (options.existingBatches ?? []).map((b) => batch(b.batchID, b.usable)),
 
-    createPostageBatch: async () => {
+    createPostageBatch: async (
+      _amount: string,
+      _depth: number,
+      opts?: { waitForUsable?: boolean; immutableFlag?: boolean },
+    ) => {
       purchases += 1;
+      purchaseOpts = opts;
       if (options.purchaseError) {
-        // The money is NOT spent in this case: the transaction never landed.
         throw new Error(options.purchaseError);
       }
       purchasedId = BATCH_ID;
@@ -94,6 +114,11 @@ export function createFakeBee(options: FakeBeeOptions = {}): FakeBee {
 
     getPostageBatch: async (id: string) => {
       polls += 1;
+      // A real node 404s an id it does not know, forever. Without this the fake happily returns a
+      // batch for any string, and a test polling the wrong id would still pass.
+      if (purchasedId !== undefined && id !== purchasedId) {
+        throw new Error(`batch not found: ${id}`);
+      }
       if (polls <= notFoundPolls) {
         // What a real node does before it has indexed the batch. The caller must swallow this.
         throw new Error(`batch not found: ${id}`);
@@ -107,6 +132,8 @@ export function createFakeBee(options: FakeBeeOptions = {}): FakeBee {
 
   return {
     bee,
+    purchaseOptions: () => purchaseOpts,
+    healthPolls: () => healths,
     purchased: () => purchasedId,
     purchaseCount: () => purchases,
     pollCount: () => polls,
