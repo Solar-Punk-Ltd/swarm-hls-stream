@@ -65,7 +65,7 @@ export const AppContextProvider = ({ children }: Props) => {
   const fetchAppState = useCallback(async () => {
     const topic = Topic.fromString(config.rawAppTopic);
     const response = await fetchWithTimeout(`${gatewayRef.current}/feeds/${config.appOwner}/${topic.toString()}`);
-    return response.json();
+    return JSON.parse(response.text);
   }, []);
 
   const setNewStreamList = (data: any) => {

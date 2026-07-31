@@ -3,7 +3,7 @@ import Pqueue from 'p-queue';
 
 import { makeFeedIdentifier } from '@/utils/bee';
 import { config } from '@/utils/config';
-import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
+import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 
 export interface Segment {
   extinf: string;
@@ -227,8 +227,7 @@ export class ManifestFetcher {
   private async handleInitialFetch(owner: string, topic: Topic): Promise<string> {
     const hexTopic = topic.toString();
     const res = await this.fetchResource(`feeds/${owner}/${hexTopic}`);
-    const text = await res.text();
-    const parsed = parseManifest(text);
+    const parsed = parseManifest(res.text);
 
     const shouldContinue = this.stateManager.updateManifest(
       hexTopic,
@@ -250,8 +249,7 @@ export class ManifestFetcher {
     this.fetchResource(`soc/${owner}/${nextId}`)
       .then((res) => {
         manifestQueue.add(async () => {
-          const text = await res.text();
-          const parsed = parseManifest(text);
+          const parsed = parseManifest(res.text);
           const shouldContinue = this.stateManager.updateManifest(
             hexTopic,
             parsed.headers,
@@ -276,7 +274,7 @@ export class ManifestFetcher {
     return makeFeedIdentifier(topic, currentIndex.next()).toString();
   }
 
-  private async fetchResource(path: string): Promise<Response> {
+  private async fetchResource(path: string): Promise<TimedResponse> {
     const response = await fetchWithTimeout(`${this._beeUrl}/${path}`);
     if (!response.ok) {
       throw new Error(`Failed to fetch: ${path}`);
@@ -284,7 +282,7 @@ export class ManifestFetcher {
     return response;
   }
 
-  private extractIndex(response: Response): FeedIndex {
+  private extractIndex(response: TimedResponse): FeedIndex {
     const hex = response.headers.get('Swarm-Feed-Index');
     if (!hex) {
       throw new Error('Missing feed index header');
