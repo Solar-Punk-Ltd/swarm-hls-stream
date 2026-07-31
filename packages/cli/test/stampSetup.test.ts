@@ -316,6 +316,30 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     assert.match(result.output, /No money has been spent/);
   });
 
+  it('reuses an existing batch even when the wallet balance cannot be read', async () => {
+    // Listing is local to the node, the balance needs a working chain RPC. A node with a usable
+    // batch and a failing RPC has to keep working: reuse spends nothing, so refusing it protects
+    // the operator from nothing and costs them the one free outcome.
+    const existing = 'cd'.repeat(32);
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
+          getWalletBalance: async () => {
+            throw new Error('Request failed with status code 500');
+          },
+          getPostageBatches: async () => [
+            { usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false },
+          ],
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 0);
+    assert.equal(result.exitCode, undefined, 'reuse must not be blocked by an unreadable balance');
+    assert.match(readFileSync(envPath, 'utf-8'), new RegExp(`^STAMP=${existing}$`, 'm'));
+  });
+
   it('does not spend when existing stamps cannot be listed', async () => {
     // A transient error here is indistinguishable from "there are none", and the difference costs
     // a whole batch: carrying on buys a duplicate and orphans one of them.

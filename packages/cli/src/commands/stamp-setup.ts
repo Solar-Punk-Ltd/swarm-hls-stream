@@ -54,7 +54,52 @@ export async function stampSetup(
     return exit(1);
   }
 
-  // Step 2: Check wallet balance.
+  // Step 2: Check for existing usable stamps.
+  // Ahead of the wallet check on purpose. Listing is served from the node's local store and needs
+  // no chain, while the balance needs a working Gnosis RPC. Reusing a batch spends nothing, so a
+  // failing RPC must not block the one path that costs the operator nothing.
+  let batches;
+  try {
+    batches = await bee.getPostageBatches();
+  } catch (err) {
+    // Indistinguishable from "there are none", and the difference costs a whole batch: carrying on
+    // buys a duplicate and orphans whichever one STAMP does not name. See OPS-12.
+    error(`Could not list existing stamps: ${err instanceof Error ? err.message : 'unknown'}`);
+    info('Refusing to buy a stamp that may duplicate one you already own. No money has been spent.');
+    info('Check with: pnpm stamp:check');
+    return exit(1);
+  }
+
+  // Deliberately outside the try above, so the exits below are not caught and re-reported as a
+  // listing failure. That is the same mistake the wallet block used to make.
+  const usable = batches.filter((b) => b.usable);
+  if (usable.length > 0) {
+    warn(`Found ${usable.length} existing usable stamp(s):`);
+    for (const batch of usable) {
+      table('  Batch ID', batch.batchID.toHex());
+      table('  Depth', String(batch.depth));
+      table('  Amount', batch.amount);
+      table('  Immutable', String(batch.immutableFlag));
+    }
+    console.log('');
+
+    const existing = usable[0];
+    const existingHex = existing.batchID.toHex();
+    info(`Using existing stamp: ${existingHex}`);
+    const reused = recordBatchId(envPath, existingHex);
+    if (!reachedEnvFile(envPath, reused)) {
+      for (const line of batchIdRecoveryNotice(envPath, existingHex, reused, false)) {
+        error(line);
+      }
+      return exit(1);
+    }
+    ok(`Written ${STAMP_ENV_KEY}=${existingHex} to .env`);
+    console.log('');
+    info('Run ./deploy/scripts/deploy.sh to deploy the full stack');
+    return;
+  }
+
+  // Step 3: Check the wallet balance, now that a purchase is actually on the cards.
   // The refusal is deliberately outside the try. It used to sit inside, so anything it threw was
   // caught by this catch and downgraded to "Could not check wallet", and the run bought a stamp
   // anyway. That made the branch untestable through the exit seam and one refactor away from being
@@ -98,45 +143,6 @@ export async function stampSetup(
   }
 
   ok('Wallet is funded');
-
-  // Step 3: Check for existing usable stamps
-  try {
-    const batches = await bee.getPostageBatches();
-    const usable = batches.filter((b) => b.usable);
-
-    if (usable.length > 0) {
-      warn(`Found ${usable.length} existing usable stamp(s):`);
-      for (const batch of usable) {
-        table('  Batch ID', batch.batchID.toHex());
-        table('  Depth', String(batch.depth));
-        table('  Amount', batch.amount);
-        table('  Immutable', String(batch.immutableFlag));
-      }
-      console.log('');
-
-      const existing = usable[0];
-      const existingHex = existing.batchID.toHex();
-      info(`Using existing stamp: ${existingHex}`);
-      const reused = recordBatchId(envPath, existingHex);
-      if (!reachedEnvFile(envPath, reused)) {
-        for (const line of batchIdRecoveryNotice(envPath, existingHex, reused, false)) {
-          error(line);
-        }
-        return exit(1);
-      }
-      ok(`Written ${STAMP_ENV_KEY}=${existingHex} to .env`);
-      console.log('');
-      info('Run ./deploy/scripts/deploy.sh to deploy the full stack');
-      return;
-    }
-  } catch (err) {
-    // Indistinguishable from "there are none", and the difference costs a whole batch: carrying on
-    // buys a duplicate and orphans whichever one STAMP does not name. See OPS-12.
-    error(`Could not list existing stamps: ${err instanceof Error ? err.message : 'unknown'}`);
-    info('Refusing to buy a stamp that may duplicate one you already own. No money has been spent.');
-    info('Check with: pnpm stamp:check');
-    return exit(1);
-  }
 
   // Step 4: Establish that the result can be recorded, before spending anything.
   // A batch id that cannot be written down is worth nothing to the operator, and this is the last
