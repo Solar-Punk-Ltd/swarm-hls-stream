@@ -23,3 +23,7 @@ deploy/.env.deploy*
 # file names on the command line and so ignores tsconfig.json's outDir.
 packages/*/src/**/*.js
 packages/*/test/**/*.js
+
+# Stryker copies the whole tree into a sandbox per run and writes its report beside it.
+.stryker-tmp/
+reports/mutation/

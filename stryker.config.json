@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "pnpm",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "npx tsx --test --test-force-exit packages/stream-uploader/test/*.test.ts"
+  },
+  "coverageAnalysis": "off",
+  "mutate": ["packages/stream-uploader/src/**/*.ts"],
+  "reporters": ["clear-text", "progress-append-only", "json"],
+  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "clearTextReporter": { "allowColor": false, "maxTestsToLog": 0 },
+  "concurrency": 4,
+  "timeoutMS": 30000,
+  "timeoutFactor": 2,
+  "disableTypeChecks": true,
+  "tempDirName": ".stryker-tmp"
+}
