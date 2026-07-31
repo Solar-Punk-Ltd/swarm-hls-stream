@@ -59,19 +59,34 @@ export function recordBatchId(envPath: string, batchIdHex: string): BatchIdRecor
   return { writtenTo, envError };
 }
 
+/** Whether the id reached `.env` itself, which is the only outcome that needs no operator action. */
+export function reachedEnvFile(envPath: string, record: BatchIdRecord): boolean {
+  return record.writtenTo[0] === envPath;
+}
+
 /**
  * The lines an operator needs to recover a batch id that did not reach `.env`.
  *
- * Separate from the recording so it can be asserted directly, and so the caller cannot record
- * without having something to print.
+ * `spent` selects the first line, and it is not cosmetic. This is also used where an existing batch
+ * is being reused and nothing was bought, and telling someone their money is gone when it is not is
+ * the mirror image of the bug this whole path exists to prevent.
  */
-export function batchIdRecoveryNotice(envPath: string, batchIdHex: string, record: BatchIdRecord): string[] {
-  if (record.writtenTo[0] === envPath) {
+export function batchIdRecoveryNotice(
+  envPath: string,
+  batchIdHex: string,
+  record: BatchIdRecord,
+  spent: boolean,
+): string[] {
+  if (reachedEnvFile(envPath, record)) {
     return [];
   }
 
+  const headline = spent
+    ? `The postage batch was PAID FOR but could not be written to ${basename(envPath)}.`
+    : `The existing batch id could not be written to ${basename(envPath)}. Nothing was bought.`;
+
   const lines = [
-    `The postage batch was PAID FOR but could not be written to ${basename(envPath)}.`,
+    headline,
     record.envError ? `Reason: ${record.envError}` : 'Reason: unknown',
     '',
     `  ${STAMP_ENV_KEY}=${batchIdHex}`,

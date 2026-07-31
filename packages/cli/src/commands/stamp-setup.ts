@@ -1,6 +1,6 @@
 import { Bee } from '@ethersphere/bee-js';
 
-import { batchIdRecoveryNotice, recordBatchId, STAMP_ENV_KEY } from '../lib/batch-id-record.js';
+import { batchIdRecoveryNotice, reachedEnvFile, recordBatchId, STAMP_ENV_KEY } from '../lib/batch-id-record.js';
 import { createBee } from '../lib/bee-client.js';
 import { getEnvPath, loadEnv, resolveBeeUploaderTarget } from '../lib/config-reader.js';
 import { assertEnvKeyWritable } from '../lib/env-writer.js';
@@ -54,38 +54,46 @@ export async function stampSetup(
     return exit(1);
   }
 
-  // Step 2: Check wallet balance
+  // Step 2: Check wallet balance.
+  // The refusal is deliberately outside the try. It used to sit inside, so anything it threw was
+  // caught by this catch and downgraded to "Could not check wallet", and the run bought a stamp
+  // anyway. That made the branch untestable through the exit seam and one refactor away from being
+  // untrue in production too.
+  let funding: { hasBzz: boolean; hasGas: boolean; address: string } | undefined;
   try {
     const addresses = await bee.getNodeAddresses();
     const wallet = await bee.getWalletBalance();
-    const bzz = wallet.bzzBalance.toDecimalString();
-    const xdai = wallet.nativeTokenBalance.toDecimalString();
 
     table('Node address', addresses.ethereum.toHex());
-    table('BZZ balance', bzz);
-    table('xDAI balance', xdai);
+    table('BZZ balance', wallet.bzzBalance.toDecimalString());
+    table('xDAI balance', wallet.nativeTokenBalance.toDecimalString());
     console.log('');
 
-    const hasBzz = wallet.bzzBalance.toPLURBigInt() > 0n;
-    const hasGas = wallet.nativeTokenBalance.toWeiBigInt() > 0n;
-
-    if (!hasBzz || !hasGas) {
-      error('Node wallet is not funded');
-      if (!hasGas) {
-        warn('Send xDAI (Gnosis Chain) for gas fees');
-      }
-      if (!hasBzz) {
-        warn('Send BZZ tokens to buy postage stamps');
-      }
-      console.log('');
-      info(`Fund this address: ${addresses.ethereum.toHex()}`);
-      info('Then run pnpm stamp:setup again');
-      return exit(1);
-    }
-
-    ok('Wallet is funded');
+    funding = {
+      hasBzz: wallet.bzzBalance.toPLURBigInt() > 0n,
+      hasGas: wallet.nativeTokenBalance.toWeiBigInt() > 0n,
+      address: addresses.ethereum.toHex(),
+    };
   } catch (err) {
     warn(`Could not check wallet: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+
+  if (funding && (!funding.hasBzz || !funding.hasGas)) {
+    error('Node wallet is not funded');
+    if (!funding.hasGas) {
+      warn('Send xDAI (Gnosis Chain) for gas fees');
+    }
+    if (!funding.hasBzz) {
+      warn('Send BZZ tokens to buy postage stamps');
+    }
+    console.log('');
+    info(`Fund this address: ${funding.address}`);
+    info('Then run pnpm stamp:setup again');
+    return exit(1);
+  }
+
+  if (funding) {
+    ok('Wallet is funded');
   }
 
   // Step 3: Check for existing usable stamps
@@ -107,12 +115,13 @@ export async function stampSetup(
       const existingHex = existing.batchID.toHex();
       info(`Using existing stamp: ${existingHex}`);
       const reused = recordBatchId(envPath, existingHex);
-      for (const line of batchIdRecoveryNotice(envPath, existingHex, reused)) {
-        warn(line);
+      if (!reachedEnvFile(envPath, reused)) {
+        for (const line of batchIdRecoveryNotice(envPath, existingHex, reused, false)) {
+          error(line);
+        }
+        return exit(1);
       }
-      if (reused.writtenTo[0] === envPath) {
-        ok(`Written ${STAMP_ENV_KEY}=${existingHex} to .env`);
-      }
+      ok(`Written ${STAMP_ENV_KEY}=${existingHex} to .env`);
       console.log('');
       info('Run ./deploy/scripts/deploy.sh to deploy the full stack');
       return;
@@ -144,21 +153,24 @@ export async function stampSetup(
   // Step 6: Record it immediately. Nothing that can throw may come between the spend and this,
   // including waiting for the batch to become usable, which routinely times out.
   const record = recordBatchId(envPath, batchIdHex);
-  const notice = batchIdRecoveryNotice(envPath, batchIdHex, record);
-  if (notice.length > 0) {
-    for (const line of notice) {
+  if (!reachedEnvFile(envPath, record)) {
+    // The money is already gone, so this is a failure the operator has to act on. Exiting non-zero
+    // matters as much as the message: `pnpm stamp:setup && ./deploy/scripts/deploy.sh` otherwise
+    // carries straight on, and the run used to end by telling them to deploy.
+    for (const line of batchIdRecoveryNotice(envPath, batchIdHex, record, true)) {
       error(line);
     }
-  } else {
-    ok(`Written ${STAMP_ENV_KEY}=${batchIdHex} to .env`);
+    return exit(1);
   }
+  ok(`Written ${STAMP_ENV_KEY}=${batchIdHex} to .env`);
 
   // Step 7: Wait for the stamp to become usable
   try {
     await awaitStamp(bee, batchIdHex);
   } catch (err) {
     error(err instanceof Error ? err.message : 'Stamp did not become usable');
-    warn('The batch id above is already recorded. Check later with: pnpm stamp:check');
+    // Only sayable because the branch above returned when the write failed.
+    warn(`The batch id is recorded in ${envPath}. Check later with: pnpm stamp:check`);
     return exit(1);
   }
 
