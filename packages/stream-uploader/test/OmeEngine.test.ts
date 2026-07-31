@@ -40,7 +40,7 @@ async function postAdmission(
    * ones. Omit it to reproduce a payload that carries no session identity at all.
    */
   client?: { address: string; port: number },
-): Promise<void> {
+): Promise<unknown> {
   const app = express();
   // Mirrors the raw-body capture in api/server.ts, which is what the signature is computed over.
   app.use(
@@ -60,7 +60,7 @@ async function postAdmission(
       ...(client ? { client } : {}),
       request: { direction: 'incoming', status, url: streamUrl },
     });
-    await fetch(`http://127.0.0.1:${port}${engine.prefix}/admission`, {
+    const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}/admission`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -68,6 +68,9 @@ async function postAdmission(
       },
       body,
     });
+    // Returned so a caller can assert what OME is actually told. TEST-25 records that nothing else in
+    // this suite reads the admission reply, which is how an inverted allow/deny stayed green.
+    return await response.json();
   } finally {
     server.close();
   }
@@ -881,7 +884,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     const vodsBeforeStaleClosing = published.filter((entry) => entry.state === STREAM_STATUS_VOD).length;
 
     // A's closing finally arrives, out of order, carrying A's socket rather than B's.
-    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+    const staleReply = await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
 
     const pollsAfterStaleClosing = origin.polls();
     await sleep(POLL_INTERVAL_MS * 8);
@@ -894,6 +897,11 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
       vodsBeforeStaleClosing,
       'the live session was VOD-finalized by a closing that was sent for the session it replaced',
+    );
+    assert.deepEqual(
+      staleReply,
+      { allowed: true, lifetime: 0, reason: 'ok (closing for a replaced session)' },
+      'OME still needs its acknowledgement, and TEST-25 records that nothing else asserts what this route answers',
     );
   });
 
@@ -914,6 +922,28 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
       1,
       'a closing carrying the live session’s own socket has to finalize it',
+    );
+  });
+
+  it('stops the stream when the opening carried a socket and the closing does not', async () => {
+    // The asymmetric case, and the one the no-identity test above cannot reach: there IS a recorded
+    // key, and the closing has none to match it with. Judging that as foreign would leave the stream
+    // running forever. Mutation found this: forcing sessionKey to always return a key survived the
+    // suite, because in the no-identity test nothing was recorded either.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'a closing with no socket cannot be shown to be foreign, so it has to be honoured',
     );
   });
 

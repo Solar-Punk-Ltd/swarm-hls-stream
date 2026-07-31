@@ -156,6 +156,10 @@ export function createOmeEngine(
       // would leak a puller and never produce a VOD, which is worse than what this guards against.
       return live !== undefined && key !== null && live !== key;
     },
+    // Bounds the map for streams that close and never reopen. It changes no behaviour on its own,
+    // because an accepted opening overwrites the key anyway, so a mutation removing it survives the
+    // suite and no behavioural test can see the difference. Kept for the same reason
+    // OBSERVED_SEGMENT_TIME_TTL_MS exists: holding every stream id ever announced grows without bound.
     forget: (streamId) => liveSessions.delete(streamId),
   };
 
