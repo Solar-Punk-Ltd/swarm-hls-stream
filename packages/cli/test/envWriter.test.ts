@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
@@ -107,6 +116,72 @@ describe('assertEnvKeyWritable', () => {
     const dir = workspace();
     chmodSync(dir, 0o500);
 
-    assert.throws(() => assertEnvKeyWritable(join(dir, '.env')), /cannot be created|not writable/i);
+    assert.throws(() => assertEnvKeyWritable(join(dir, '.env')), /is not writable/);
+  });
+
+  it('names a missing directory as missing rather than as unwritable', () => {
+    // The two cases have different fixes, so the message has to tell them apart.
+    assert.throws(() => assertEnvKeyWritable(join(workspace(), 'no-such-dir', '.env')), /does not exist/);
+  });
+
+  // Each of these passed the old check and then threw on the write. The preflight is only worth
+  // having if it agrees with what the write actually does.
+  it('rejects a file that is writable but not readable', () => {
+    const dir = workspace();
+    const envPath = join(dir, '.env');
+    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+    chmodSync(envPath, 0o200);
+
+    assert.throws(() => assertEnvKeyWritable(envPath), /readable and writable/);
+  });
+
+  it('rejects a directory sitting where the file should be', () => {
+    const dir = workspace();
+    const envPath = join(dir, '.env');
+    mkdirSync(envPath);
+
+    assert.throws(() => assertEnvKeyWritable(envPath), /not a regular file/);
+  });
+
+  it('rejects a read-only directory even when the file itself is writable', () => {
+    // Replacing the file means creating and renaming a sibling, so the directory has to be
+    // writable too. An in-place write did not need that, this one does.
+    const dir = workspace();
+    const envPath = join(dir, '.env');
+    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+    chmodSync(dir, 0o500);
+
+    assert.throws(() => assertEnvKeyWritable(envPath), /is not writable/);
+  });
+});
+
+describe('writeEnvKey durability', () => {
+  it('leaves the original untouched when the replacement cannot be written', () => {
+    // writeFileSync truncates before it writes, so a failure partway used to leave .env holding
+    // whatever had made it to disk: STREAM_KEY, API_AUTH_TOKEN and the rest gone, with nothing in
+    // the output saying so. Writing a sibling and renaming makes it all-or-nothing.
+    const dir = workspace();
+    const envPath = join(dir, '.env');
+    const original = 'STREAM_KEY=secret-aaa\nAPI_AUTH_TOKEN=secret-bbb\nSTAMP=old\n';
+    writeFileSync(envPath, original);
+    chmodSync(dir, 0o500);
+
+    assert.throws(() => writeEnvKey(envPath, 'STAMP', 'new'));
+    assert.equal(readFileSync(envPath, 'utf-8'), original, 'a failed write must not damage the file');
+  });
+
+  it('leaves no temporary file behind when the replacement fails', () => {
+    const dir = workspace();
+    const envPath = join(dir, '.env');
+    writeFileSync(envPath, 'STAMP=old\n');
+    chmodSync(join(dir), 0o500);
+
+    assert.throws(() => writeEnvKey(envPath, 'STAMP', 'new'));
+    chmodSync(dir, 0o700);
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name !== '.env'),
+      [],
+      'a half-written sibling must not survive',
+    );
   });
 });
