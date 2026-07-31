@@ -37,12 +37,13 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` at `97e13cb`. Fourteen pull requests merged, each through the
+**Where the code is.** `feat/ai-hardening` at `97e13cb`, with the two remaining CRITICALs closed on a
+topic branch on top of it. Fourteen pull requests merged, each through the
 review gate: #27 through #39 and #41. **PR #13 into `main` is closed as superseded**, by owner decision
 on 2026-07-31, with the reasoning recorded on the pull request itself. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
 stay that way.
 
-**Test baseline is 274 uploader, 40 cli, 5 client, 38 audit-gate**, with lint, typecheck and whole-tree prettier clean. One
+**Test baseline is 274 uploader, 40 cli, 27 client, 38 audit-gate, 12 deploy**, with lint, typecheck and whole-tree prettier clean. One
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
@@ -59,9 +60,19 @@ which already exposes the same secret two other ways. The two conditions that wo
 in the SEC-13 row: shipping container logs off the host, and an operator pasting SRS logs into a
 ticket.
 
-**Two CRITICALs remain**, neither about money: OBS-2's client half (`ManifestManagement.ts` still has
-a bare `fetch` with no timeout, the uploader half is closed) and OPS-2 (`clean.sh` destroys the whole
-stack when cleaning one service).
+**No CRITICALs remain open,** as of the PR #42 gate and not before it. Both rows were marked closed
+once on evidence that did not support it, and the gate reopened them. OPS-2 turned out to be three
+straggler sweeps rather than the one the row named, and then, after those were fixed, `docker compose
+down` turned out to ignore `--profile` entirely, so a service clean still destroyed every co-located
+service one step earlier. OBS-2's client half was three unbounded requests rather than one, and the
+helper written to bound them bounded only the wait for headers, leaving the body read unbounded and
+making one case worse than before.
+
+**The transferable part is how both slipped through:** in each case a test suite was green beside an
+open CRITICAL, because the thing doing the damage was stubbed out. `deploy`'s docker stub treated
+every `compose` call as an inert no-op, and the client's fake gateway never answered at all, so
+neither could see a failure that begins with a successful response. **Ask what your stub makes
+impossible, not only what it makes observable.**
 
 **The cli package now has tests**, 40 of them, including `test/helpers/fakeBee.ts`, which models the
 four stages a real postage batch purchase goes through. It was verified against bee-js's own
@@ -166,11 +177,7 @@ responses) are also still open.
 
 ### The queue after that, in severity order
 
-0. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
-   by compose-project label and ignores the service filter, so cleaning one service destroys the live
-   stack. The client's `ManifestManagement.ts` still has a bare `fetch` with no timeout, the uploader
-   half being closed in #34.
-1. **CON-20, HIGH, and it is the mirror image of CON-16.** The outgoing session's media reaching the
+0. **CON-20, HIGH, and it is the mirror image of CON-16.** The outgoing session's media reaching the
    _new_ uploader, where CON-16 was the reverse. The replacement puller starts at `scheduleNext(0)`
    with `lastSeq = -1` against a duplicate filter `spawnUploader` has just reset, so whatever the
    origin is serving at that instant opens the new session's manifest, followed by a discontinuity
@@ -179,11 +186,11 @@ responses) are also still open.
    session's output when it answers the republish webhook, and that is an observation against the
    real stack rather than something the suite can settle. If it turns out unreachable the row should
    be downgraded, not quietly closed.
-2. **TEST-22, HIGH.** Nothing asserts anything about the client bundle, which is how PR #39 shipped a
+1. **TEST-22, HIGH.** Nothing asserts anything about the client bundle, which is how PR #39 shipped a
    silent browser-target regression past two gates and a manual browser check. CI builds now, which
    proves a bundle can be produced and nothing about what is in it. The two assertions that would
    have caught it are cheap and named in the register row.
-3. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
+2. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
    largest single gap is that **nothing loads `config.ts`**, so every `required()` call in it can be
    deleted with the suite green. Same module-scope obstacle as TEST-11. Plus S0.3 (coverage baseline). **S0.4's
    FakeBee now exists** for the stamp path, at `packages/cli/test/helpers/fakeBee.ts`, verified

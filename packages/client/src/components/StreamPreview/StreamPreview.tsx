@@ -10,6 +10,7 @@ import { CustomFragmentLoader } from '@/components/SwarmHlsPlayer/CustomManifest
 import { parseManifest } from '@/components/SwarmHlsPlayer/ManifestManagement';
 import { useAppContext } from '@/providers/App';
 import { MediaType, StreamState } from '@/types/stream';
+import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
 import { formatDuration } from '@/utils/format';
 
 import './StreamPreview.scss';
@@ -45,11 +46,10 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title 
 
       try {
         const hexTopic = Topic.fromString(topic).toString();
-        const res = await fetch(`${gatewayUrl}/feeds/${owner}/${hexTopic}`, {
+        const res = await fetchWithTimeout(`${gatewayUrl}/feeds/${owner}/${hexTopic}`, {
           signal: abort.signal,
         });
-        const text = await res.text();
-        const { segments } = parseManifest(text);
+        const { segments } = parseManifest(res.text);
 
         if (segments.length === 0 || abort.signal.aborted) {
           return;
