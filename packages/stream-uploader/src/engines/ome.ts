@@ -49,8 +49,15 @@ export function createOmeEngine(
   // restart it without a fresh admission call — OME never re-announces a session that stayed open
   // across the crash, so `resumeRecoveredStream` reuses exactly this path.
   const startPuller: StartPuller = (orchestrator, streamId, app, stream) => {
-    if (pullers.has(streamId)) {
-      return;
+    // An announce for a stream already being pulled means the origin restarted its session, and the
+    // orchestrator has already finalized the old uploader and spawned a fresh one. Keeping the old
+    // puller left the two halves disagreeing about which session is live: it carries the previous
+    // session's `lastSeq`, so it discards every index the new session publishes, forever. See CON-16.
+    const stale = pullers.get(streamId);
+    if (stale) {
+      logger.info(`[OME] Stream ${streamId} announced again, replacing its HLS puller`);
+      stale.stop();
+      pullers.delete(streamId);
     }
 
     const onHalt = (): void => {

@@ -15,8 +15,8 @@ const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 const NON_RETRYABLE_STATUS = 400;
 
 export interface FakeUploads {
-  /** Segment payload write. Defaults to resolving with a fresh reference. */
-  uploadData?: () => Promise<unknown>;
+  /** Segment payload write, called as Bee is: stamp, then payload. Defaults to a fresh reference. */
+  uploadData?: (stamp: string, data: Uint8Array) => Promise<unknown>;
   /** Manifest SOC write. Defaults to resolving with a reference for the requested index. */
   uploadPayload?: (index: number) => Promise<unknown>;
 }
