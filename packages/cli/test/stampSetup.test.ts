@@ -161,7 +161,8 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
 
     const recovery = readdirSync(dir).filter((name) => name.startsWith('stamp-batch-'));
     const savedSomewhere =
-      recovery.length > 0 || readdirSync(tmpdir()).some((name) => name.startsWith(`stamp-batch-${BATCH_ID.slice(0, 16)}`));
+      recovery.length > 0 ||
+      readdirSync(tmpdir()).some((name) => name.startsWith(`stamp-batch-${BATCH_ID.slice(0, 16)}`));
 
     assert.ok(savedSomewhere, 'the id must be written somewhere on disk');
     assert.match(result.output, /PAID FOR/, 'the operator must be told the money is already gone');

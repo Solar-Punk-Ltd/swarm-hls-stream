@@ -41,7 +41,10 @@ export function recordBatchId(envPath: string, batchIdHex: string): BatchIdRecor
     return { writtenTo };
   }
 
-  const fallbacks = [join(dirname(envPath), recoveryFileName(batchIdHex)), join(tmpdir(), recoveryFileName(batchIdHex))];
+  const fallbacks = [
+    join(dirname(envPath), recoveryFileName(batchIdHex)),
+    join(tmpdir(), recoveryFileName(batchIdHex)),
+  ];
 
   for (const fallback of fallbacks) {
     try {
