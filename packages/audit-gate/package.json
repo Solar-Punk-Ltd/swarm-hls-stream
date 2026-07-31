@@ -1,5 +1,5 @@
 {
-  "name": "@swarm-hls-stream/cli",
+  "name": "@swarm-hls-stream/audit-gate",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,10 +7,6 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "tsx --test --test-force-exit test/*.test.ts"
-  },
-  "dependencies": {
-    "@ethersphere/bee-js": "^9.0.3",
-    "dotenv": "^16.4.7"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",

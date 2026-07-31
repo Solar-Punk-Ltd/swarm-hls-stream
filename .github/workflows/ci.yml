@@ -4,6 +4,14 @@ on:
   push:
     branches: ['**']
   pull_request:
+  # An advisory gets published against a tree nobody has touched, so the audit
+  # job needs a trigger that is not a diff. Two limits to know before relying on
+  # it. GitHub only runs scheduled workflows on the default branch, so this
+  # covers main and nothing else until a branch lands there. And GitHub disables
+  # a schedule after 60 days of repository inactivity, silently, which is
+  # precisely the dormant case the trigger exists for.
+  schedule:
+    - cron: '17 6 * * 1'
 
 # Every job here only reads the checked out tree. Declared explicitly so the
 # grant does not silently widen if the repository default is ever changed.
@@ -11,7 +19,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The event name is in the key because `github.ref` is `refs/heads/main` for a
+  # scheduled run and for a push to main alike, so without it the weekly audit
+  # sweep and ordinary activity on main cancel each other. A cancelled run reports
+  # as cancelled rather than failed and notifies nobody, so the one trigger that
+  # exists to catch an advisory against an untouched tree was the one that could
+  # be killed in silence.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -47,6 +61,43 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Nothing here built the bundle until now, and that is how a build-tool
+      # upgrade shipped a silent browser-target change: typecheck, lint and the
+      # client's five unit tests all pass without a bundler ever running. This
+      # does not check what the bundle contains, only that one can be produced,
+      # which is the cheap half of a gap recorded in full as TEST-22.
+      - name: Build
+        run: pnpm build
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    # A registry that accepts the connection and never answers would otherwise
+    # sit against GitHub's 6 hour default and then report as cancelled, which
+    # reads as benign. This makes a hung audit go red.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Kept out of `pnpm verify` on purpose. This is the one check that needs
+      # the registry, and the local loop stays runnable on a train. The gate
+      # fails on an advisory nobody has written down and equally on an allowlist
+      # entry that has stopped matching, which is what stops the exception list
+      # from quietly outliving its reasons.
+      - name: Dependency advisories
+        run: pnpm audit:check
 
   format:
     name: format

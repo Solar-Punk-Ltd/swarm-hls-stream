@@ -1,0 +1,75 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+import { ALLOWED_ADVISORIES } from './allowlist.js';
+import { evaluateAudit } from './evaluateAudit.js';
+import { parseAuditReport } from './parseAuditReport.js';
+
+const execFileAsync = promisify(execFile);
+
+/** The report for this workspace measures about 5 kB, so this is headroom rather than a limit anyone reaches. */
+const MAX_REPORT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * A registry can accept the connection and then never answer, which without this
+ * leaves the command running against the CI job's own ceiling and reporting as
+ * cancelled rather than failed. Generous, because it is a whole dependency
+ * resolution and not one request.
+ *
+ * Overridable only so the hang can be driven at all: at its default a test would
+ * have to wait five minutes, which is why nothing covered it.
+ */
+const DEFAULT_AUDIT_TIMEOUT_MS = 5 * 60 * 1000;
+
+function auditTimeoutMs(): number {
+  const override = Number(process.env.AUDIT_GATE_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : DEFAULT_AUDIT_TIMEOUT_MS;
+}
+
+async function readAuditReport(): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('pnpm', ['audit', '--json'], {
+      maxBuffer: MAX_REPORT_BYTES,
+      timeout: auditTimeoutMs(),
+    });
+    return stdout;
+  } catch (error) {
+    // pnpm audit exits non-zero whenever it finds anything at all, so a non-zero
+    // exit is the ordinary case here and the report still arrives on stdout.
+    // Empty stdout is the one that means the command itself never ran.
+    const stdout = (error as { stdout?: unknown }).stdout;
+    if (typeof stdout === 'string' && stdout.trim().length > 0) {
+      return stdout;
+    }
+    throw error;
+  }
+}
+
+async function main(): Promise<void> {
+  const advisories = parseAuditReport(await readAuditReport());
+  const failures = evaluateAudit(advisories, ALLOWED_ADVISORIES);
+
+  if (failures.length === 0) {
+    console.log(`Audit gate passed. ${advisories.length} advisories reported, every one of them allowlisted.`);
+    return;
+  }
+
+  // Two counts rather than a ratio: a failure can come from the allowlist side,
+  // and "failed on 2 of 0 reported advisories" is what a ratio said then.
+  console.error(
+    `Audit gate failed with ${failures.length} problems, across ${advisories.length} reported advisories and ${ALLOWED_ADVISORIES.length} allowlist entries.`,
+  );
+  for (const failure of failures) {
+    console.error(`  [${failure.kind}] ${failure.ghsa} (${failure.packageName})`);
+    console.error(`    ${failure.detail}`);
+  }
+  console.error('');
+  console.error('Upgrade the dependency, or add the advisory to packages/audit-gate/src/allowlist.ts');
+  console.error('with the reason it cannot be closed today.');
+  process.exitCode = 1;
+}
+
+main().catch((error: unknown) => {
+  console.error(`Audit gate could not run: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+});
