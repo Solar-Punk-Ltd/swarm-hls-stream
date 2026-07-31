@@ -8,8 +8,11 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const POLL_INTERVAL_MS = 3000;
 
 /**
- * Poll until the bee node is healthy and connected to peers.
- * Throws after timeout.
+ * Poll until the bee node answers a health check. Throws after the timeout.
+ *
+ * It does not inspect the response, so this establishes the node is up and serving, not that it is
+ * connected to peers or that its status reads ok. The docstring claimed peer connectivity and never
+ * checked it.
  */
 export async function waitForNode(bee: Bee, timeoutMs = DEFAULT_TIMEOUT_MS, pollMs = POLL_INTERVAL_MS): Promise<void> {
   const s = spinner('Waiting for bee node to be ready...');
