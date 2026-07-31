@@ -1,4 +1,4 @@
-import { Request, Response, Router } from 'express';
+import { NextFunction, Request, RequestHandler, Response, Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 
@@ -6,11 +6,17 @@ import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
-import { optional } from '../utils/env.js';
+import { optional, required } from '../utils/env.js';
 
+import { assertUsableWebhookToken, hasValidWebhookToken, redactWebhookToken } from './srs/webhookToken.js';
 import { EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
+
+export interface SrsEngineOptions {
+  /** Shared secret SRS carries in its hook URL. Empty rejects every webhook, it does not disable the check. */
+  webhookToken?: string;
+}
 
 // SRS webhook response codes
 const SRS_ACCEPT = 0;
@@ -54,17 +60,63 @@ function buildStreamId(app: string, stream: string): string {
 
 export function createSrsEngineFromEnv(): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
+  const webhookToken = required('SRS_WEBHOOK_TOKEN');
+  const engine = createSrsEngine(mediaPath, { webhookToken });
+  // After construction, not before. `required` covers a missing or empty value, but the charset and
+  // length checks live inside createSrsEngine, so logging first announced a successfully loaded
+  // engine and then threw for a token that was merely too short.
   logger.info(`[Engine] SRS engine loaded, media path: ${mediaPath}`);
-  return createSrsEngine(mediaPath);
+  return engine;
 }
 
-export function createSrsEngine(mediaRootPath: string): EnginePlugin {
+/**
+ * SRS cannot sign its callbacks and cannot send a header, so the credential travels in the hook URL
+ * that entrypoint.sh writes into srs.conf.
+ *
+ * One factory, mounted twice on purpose. On the router it is the authorization guard, so a webhook
+ * added later is covered without whoever adds it remembering, and mounting the router by itself is
+ * safe. At app level, ahead of the body parsers, it is the resource guard. See `EnginePlugin`.
+ */
+function createWebhookGate(webhookToken: string): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!hasValidWebhookToken(req, webhookToken)) {
+      // Named route, because the two webhooks fail in ways that need different responses: on_publish
+      // rejected means no stream ever starts, on_hls rejected means the stream runs and every
+      // segment is silently dropped. Redacted, because originalUrl is where the credential lives.
+      logger.warn(
+        `[SRS] Rejected webhook with missing or invalid token: ` +
+          `${req.method} ${redactWebhookToken(req.originalUrl)} from ${req.ip}`,
+      );
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  };
+}
+
+export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions = {}): EnginePlugin {
+  const webhookToken = options.webhookToken ?? '';
+  if (webhookToken) {
+    assertUsableWebhookToken(webhookToken);
+  } else {
+    // Loud for the same reason `ome.ts` is loud about a missing admission secret: an engine that
+    // rejects every webhook looks like a broadcaster problem from the outside, not a configuration
+    // one, and nothing else in the process ever says otherwise.
+    logger.warn('[SRS] No webhook token configured, every webhook will be rejected');
+  }
+
   return {
     name: 'srs',
     prefix: '/engines/srs',
 
+    createAuthMiddleware(): RequestHandler {
+      return createWebhookGate(webhookToken);
+    },
+
     createRouter(streamOrchestrator: StreamOrchestrator): Router {
       const router = Router();
+
+      router.use(createWebhookGate(webhookToken));
 
       router.post('/streams', (req: Request, res: Response) => {
         handleStreams(req, res, streamOrchestrator);

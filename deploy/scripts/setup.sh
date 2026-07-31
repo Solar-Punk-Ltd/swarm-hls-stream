@@ -48,6 +48,11 @@ for engine in "$SVC_SRS" "$SVC_OME"; do
       log_warn "  Set OME_ADMISSION_SECRET in engines/$engine/.env before deploying: openssl rand -hex 32"
       log_warn "  An ENGINE=ome deployment refuses to start while it is empty, which is deliberate."
     fi
+    if [ "$engine" = "$SVC_SRS" ]; then
+      log_warn "  Set SRS_WEBHOOK_TOKEN in engines/$engine/.env before deploying: openssl rand -hex 32"
+      log_warn "  Both the SRS container and the uploader refuse to start while it is empty."
+      log_warn "  Use a different value from API_AUTH_TOKEN: they guard different surfaces."
+    fi
   fi
 done
 
@@ -83,6 +88,7 @@ echo "Next steps:"
 echo "  1. Edit config.json to set deployment targets"
 echo "  2. Edit .env with your STREAM_KEY and API_AUTH_TOKEN"
 echo "     The uploader refuses to start while API_AUTH_TOKEN is empty, which is deliberate."
+echo "     Engine secrets live in engines/<engine>/.env, not here. SRS needs SRS_WEBHOOK_TOKEN."
 echo "  3. Deploy bee node:    ./deploy/scripts/deploy.sh bee-uploader"
 echo "  4. Fund the node:      pnpm node:addresses  (send xDAI + BZZ)"
 echo "  5. Setup stamp:        pnpm stamp:setup"

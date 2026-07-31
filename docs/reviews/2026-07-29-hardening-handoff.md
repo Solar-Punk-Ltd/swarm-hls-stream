@@ -34,156 +34,117 @@ progress log says. Ask me before pushing anything to a shared branch.
 
 ## Next session starts here
 
-Written 2026-07-30. That session ran S0.7, S2.1, SEC-11, TEST-9, a dead-code sweep, and S0.5 plus S0.6,
-landing three pull requests each through its own review gate. Read this before the sprint plan below,
-because it supersedes anything in this document that contradicts it.
+Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
+supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening`, at `8d50e1b` plus the handover commits that carry this paragraph, so the tip is a docs commit or two ahead of that sha by construction. The progress-log rows below are the shas to trust. Six PRs merged, each through the review gate:
-S1.4 as #27, S1.3 as #28, the working-loop changes as #29, S0.7 + S2.1 + SEC-11 + TEST-9 as #30, the dead-code sweep as #31, and S0.5 + S0.6 as #32.
-`feature/uploader-hardening` @ `f146588` and `main` @ `6b82baa` are untouched and must stay that way.
+**Where the code is.** `feat/ai-hardening` at `9be9348`. Nine pull requests merged, each through the
+review gate: #27, #28, #29, #30, #31, #32, #33, #34 and #35. `feature/uploader-hardening` @ `f146588`
+and `main` @ `6b82baa` are untouched and must stay that way.
 
-**PR #33 also merged**, the review-gate amendment: lens selection per pull request, the full catalogue
-only as a sprint-exit deep run, and ten measured prompt rules. Read `review-gate.md`, not the summary
-here.
+**Test baseline is 262 uploader, 5 client**, with lint, typecheck and whole-tree prettier clean. One
+command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
+test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
-**PR #34 is open and has passed two gates**, with every finding from both answered. Branch
-`feat/fetch-timeouts`, S2.2's uploader half. Its first gate found a HIGH regression the change itself
-introduced, recorded as **OBS-11**. Its second gate found that fix incomplete in three further ways, all
-now closed. Read both posted results before judging the diff, because most of the branch's commits exist
-only because of them.
+### Start here: PR #36 is gated and answered, waiting on one owner decision
 
-What the regression was, since the shape of it generalises. The abort window worked, but a segment the
-puller failed to download was skipped permanently while `lastSeq` advanced past it, so the manifest got a
-hole players are told is contiguous while `/health` stayed 200. At base that scenario hung the loop
-instead and the stall signal caught it at 503, so the branch traded a detected outage for undetected data
-loss. Three lenses found it independently, measured against the real orchestrator and real `/health`.
+S1.2 is on `feat/srs-webhook-auth`, and [PR #36](https://github.com/Solar-Punk-Ltd/swarm-hls-stream/pull/36)
+into `feat/ai-hardening` **has been through the review gate**. Six lenses ran, the selection was posted
+before any of them launched, every finding was confirmed and answered, and the fixes are committed on
+the branch. The gate result is on the pull request.
 
-**How it was closed, and the trap that was in it.** Both halves were needed. Every failure now ends the
-pass, on the whole `catch` and the `!ok` branch rather than on the abort check, because four doors reach
-that spot and three of them predate this branch. Guarding only `isAbortedRequest` closes one door and
-looks like a fix. Then the loss is made loud through a `handleSegmentLoss` seam from puller to
-orchestrator to uploader, because holding position alone starves the live edge and still leaves an
-unmarked gap once the segment rolls out of OME's window.
+**It is not merged**, and the thing holding it is not code. See SEC-13: SRS writes the webhook
+credential into its own container log on every hook, roughly 40 times a minute per stream, because the
+credential travels in the hook URL and SRS trace-logs that URL. That is the standing cost of the design
+S1.2 chose, it was not visible when the approach was picked, and it needs the owner to choose between
+accepting it, lowering the SRS log level, or moving to a header-injecting reverse proxy. Do not merge
+and do not write SEC-1 up as unqualified until that call is made.
 
-Two non-effects in that fix are worth carrying, because each would have re-opened the finding through a
-different door. The loss is deliberately not recorded as stream activity, so a stream that only loses
-segments still trips the stall signal instead of hiding behind its own losses. And the uploader queues
-the loss behind segments already awaiting upload, since applied inline the discontinuity would attach to
-a segment that arrived before the gap rather than after it.
+**What the round produced.** Every lens found something and the three largest were each found
+independently by two or three lenses, which is not a good sign about the diff. The comparison accepted
+tokens that were not the token, because `latin1` keeps only the low byte of each code point while a
+query parameter is UTF-8. The redactor was narrower than the gate, so `?%74oken=` authenticated and
+then landed in the log in cleartext. The gate sat behind the body parser, so anonymous callers got a
+500 and free unhandled-error lines. Two more: `engines/srs/docker-compose.yml` never passed the token,
+so the documented standalone path crash-looped forever with the value set exactly where the error
+message says to put it, and `setup.sh` never named the variable on the default engine path.
 
-A third thing that fix got wrong on the first attempt, worth carrying because the question generalises.
-The scan that reports a rolled-out gap walked every missing index, and the **origin** picks that number
-through `#EXT-X-MEDIA-SEQUENCE`. A gap of one million kills the process. No review caught it: it came
-from asking which numbers in the new code an outside party controls, which is worth asking of any loop
-whose bound comes off the wire.
+**Read the four new register rows before touching this area**: SEC-13, SEC-14, SEC-15, OBS-15, OPS-10,
+OPS-11, TEST-17. OBS-15 is the recurring one, `/health` stays green while every webhook is rejected.
 
-**OBS-12 and TEST-15 are closed on the branch too.** Integer env vars are now validated where they are
-read, so a zero abort window, a 32-bit overflow and `10s` each stop the process at startup with a named
-error rather than disabling the puller quietly once a stream begins. And the environment-to-puller
-plumbing has coverage through a new `OmeEngineSeams` fetcher, which is what makes the window measurable
-from outside the module. All twelve mutations that survived the first gate are killed.
+**One thing worth copying.** The obvious structural fix for SEC-15, redacting inside
+`Logger.formatMessage` so no call site can forget, was written and then reverted inside the same round.
+The redactor is URL-shaped: applied to a whole log line it treats everything after the token as query
+string and eats the tail, turning `POST /x?token=SECRET 200 1ms` into `POST /x?token=REDACTED`. It was
+caught by probing the change rather than by reasoning about it. A plausible wrong fix is the most
+expensive thing a review round can produce, and this one would have shipped as an improvement.
 
-**Still open: S2.2's client half.** Three sites, not the one OBS-2 named, and it needs a client fetch
-seam first.
+### What SEC-1's closure does and does not mean
 
-Test baseline is **216 uploader, 5 client**, with lint, typecheck and whole-tree prettier all clean.
-Check all four with one command: **`pnpm verify`**. It short-circuits at the first failing stage, so a
-lint error hides later test results, where CI runs the four as independent jobs and reports all of
-them. Do not let any of it regress. Typecheck now covers `test/` as well, see TEST-9.
+Both halves are closed, `/stream/*` in #35 and the SRS webhooks on this branch. What that means is that
+an anonymous caller can no longer cause a stamp-spending upload. What it does not mean is that the
+ingest surface is finished: **SEC-5 is still open**, there is no rate limiting and no per-stream quota,
+so an authenticated caller with a leaked token is unbounded. S1.5 (schema validation) and S1.7 (error
+responses) are also still open.
 
-**The lesson from the #34 gate, which is the #30 lesson word for word.** The handoff already said it:
-when you add a signal, enumerate the failure modes it is supposed to catch and check each one reaches it.
-S2.2 added an abort and verified that it aborts. Nobody checked what the system reported _afterwards_,
-and the answer was "healthy". A change that makes one failure loud can make a neighbouring one silent.
+### The queue after that, in severity order
 
-**One more trap, this time in how the gate was run.** Five lenses shared a single working tree and two of
-them mutated source concurrently. One lens's mutate-and-restore cycle discarded another's uncommitted
-draft fix, and a probe file was left inside `src/` where `tsc` and `git add -A` would both pick it up.
-Run source-mutating lenses isolated or serialized, and do not commit while they are running.
+1. **S4.1 / OPS-1, CRITICAL.** The stamp batch id is written to `.env` _after_ the on-chain spend, and
+   `writeEnvKey` throws ENOENT when `.env` is missing, so a fresh clone spends BZZ and then crashes
+   with the id only in scrollback. This is the last unclosed CRITICAL in the register.
+2. **CON-16, HIGH.** An origin that restarts its media sequence silences the puller permanently:
+   `lastSeq` only moves forward and `seq <= lastSeq` has no escape. Measured through the real engine.
+   Largest thing open in the OME path.
+3. **SEC-7, HIGH.** 60 Dependabot alerts, axios 22 of them at runtime scope through bee-js. Reconcile
+   against PR #13 into `main`, which already claims 32 of 33 resolved, before duplicating work.
+4. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
+   largest single gap is that **nothing loads `config.ts`**, so every `required()` call in it can be
+   deleted with the suite green. Same module-scope obstacle as TEST-11. Plus S0.3 (coverage baseline)
+   and S0.4 (FakeBee), the last two open Sprint 0 items.
 
-**The client half is three sites, not the one OBS-2 named**, and the sprint tables further down still say
-"all four" for the task as a whole, which is wrong in the same direction. `ManifestManagement.ts:279` and
-`providers/App.tsx:66` are bare, and `StreamPreview/StreamPreview.tsx:48` carries an unmount
-`AbortSignal` but no timeout, so it hangs just as long. **It needs a fetch seam first**, because the client
-has no injection point equivalent to the one S0.6 added to the puller, only a module-level
-`manifestFetcher` singleton.
+### The lesson these two rounds keep producing
 
-**A trap this task already sprang once, worth carrying.** The previous version of this paragraph told the
-next session that `OmeHlsPuller.test.ts` held a tripwire asserting `assert.deepEqual(inits, [undefined])`,
-and that flipping it was the first move. `git log --all -S'inits'` on that file returns nothing: the line
-never existed in any commit, and a decision had been written up as though implemented. The test that was
-really there was inert, its fake fetcher ignoring any signal handed to it, so it passed identically with
-and without a timeout. Two lessons that generalise. Do not describe a test as existing without grepping
-for it, and a fake that ignores the mechanism under test proves nothing about that mechanism.
+Three gates running, the same shape: **a signal was added and the failure it was meant to catch did not
+reach it.** On #30 three signals were added and the likeliest failure reached none. On #34 a lost
+segment was counted on a consecutive counter that the very next success cleared, so 3623 polls answered
+200 while a segment was genuinely lost. On #35 a token that passed validation could lock every caller
+out permanently, and a green e2e suite would not have shown it because Node `fetch` and curl encoded
+the header differently.
 
-Then S1.1 and S4.1. Sprint 0 still has S0.3 and S0.4 open, and S0.4's FakeBee is largely built already in
-`test/helpers/fakes.ts`, which offers per-call upload control, immediate rejection with a non-retryable
-status, and a never-settling response.
+The generalisable move, and the one that would have caught all three: **drive the real component, not
+the seam.** Every one of those defects was hidden by a test that called the thing directly and then
+asserted on it. The test that caught the #34 defect drives the actual puller into the actual `/health`.
 
-**The clock seam stops at the orchestrator.** `OmeHlsPuller` still schedules its own polls with a raw
-`setTimeout` and `retryUntilDeadlineAsync` still sleeps for real, so the suite is not free of real waiting.
-S2.3's backoff will want the puller's.
+Second, cheaper move: **ask which numbers in the new code an outside party controls.** That is what
+found the unbounded gap scan in `5be1a72`, which no review caught.
 
-**The one thing to take from the #30 gate before writing any more of Sprint 2.** The change that closed
-OBS-1 was substantially wrong when it was first pushed, and every fix came from the gate rather than from
-the author. The CRITICAL is the lesson: three signals were added, and the most likely real failure, a
-refused segment upload on a spent postage batch, was invisible to all three at once. When you add a
-signal, enumerate the failure modes it is supposed to catch and check each one reaches it, because
-"`/health` degrades" is not the same claim as "`/health` degrades when this breaks". Two of the ten fixes
-were against commits written an hour earlier in the same session.
+### Traps still live
 
-**S0.5 is now the binding constraint on Sprint 2.** Nothing can advance a clock or a timer, which is
-why S2.1's manifest-failure threshold is proven by feeding one segment at a time and waiting for the
-counter rather than by stepping time. Every remaining Sprint 2 task with a timing element wants it.
+- **This repo is a git submodule** of `streaming-infra-manager` at `manager/swarm-hls-stream`, tracking
+  `branch = feature/uploader-hardening`, **not** `feat/ai-hardening`. The e2e suite will not see any of
+  this work until that is merged back or the submodule is repointed.
+- **The e2e suite will now fail against a current uploader** until it sends `Authorization: Bearer
+$API_AUTH_TOKEN` on every `/stream/*` call. Nothing in this repo calls those routes, so the breakage
+  is entirely in the sibling repo.
+- `engines/ome/.env` **cannot** fix a failing OME container: `Dockerfile.uploader` copies only
+  `package.json` and `dist/`, so the file is not in the image. The deploy `.env` is the only lever.
+- **On-chain actions are the owner's.** Never buy or top up a postage stamp.
+- **Never run the deploy or clean scripts casually.** `clean.sh` over-reaches beyond the service named,
+  which is OPS-2.
+- `gh pr merge` is blocked here. Merge locally and push; GitHub marks the PR merged.
+- `git merge -F -` does not read stdin, unlike `git commit -F -`.
+- **`tsx --test test/` with a bare directory does not work** and reports a spurious single failure that
+  reads exactly like a mutation kill. TEST-7 records it and it still produced wrong numbers during the
+  #34 gate. Use `pnpm test`.
+- A **prettier hook reformats markdown on write**, so table columns get re-padded after you save.
+- **Prettier cannot see a broken markdown table.** A paragraph inserted between a table body and its
+  last row turns that row into prose, and `--check` passes. The #35 gate found one.
 
-**SEC-11 is closed.** The owner chose the empty sample value on 2026-07-30, so a fresh OME deploy now
-stops at a named startup error rather than running the `change-me` secret published in this
-repository. The rejected alternative was generating a secret in `setup.sh`, an OPS change to a script
-that touches live deployments.
+### Still blocked, unchanged
 
-**Three working-loop changes landed in PR #29.** A committed `.claude/settings.json` that disables the
-GateGuard edit-write fact hook **for everyone who clones this repo**, the `.gitignore` rule that
-closes TEST-10, and the `pnpm verify` script. The hook scope and the script are documented in
-README's Development section, which is where a contributor will look.
-
-That merge is the first **merge commit** in this branch's history, because the handover commit had
-already landed on `feat/ai-hardening` and rebasing would have rewritten `a19edd6`, which the gate
-result and the pull request body both cite by sha. Every earlier task branch fast-forwarded. Expect a
-fast-forward again unless the same thing happens, and prefer preserving a reviewed sha over a linear
-history when the two conflict.
-
-**Lens selection is in the protocol now, not just in these notes.** The owner's rule of 2026-07-30 is to
-select the lenses the diff in front of you needs, run those, name the ones you dropped, and save the full
-catalogue for a sprint-exit deep run. [`review-gate.md`](./review-gate.md) carries it as of PR #33: R1's
-floor of three reviewers plus the claims auditor is **withdrawn**, R4 requires both lists in the posted
-result, and fail-closed keys on a selected lens that did not run rather than on a count. The gate's "Lens
-prompt rules" section now holds ten rules: seven moved out of this section, two were promoted from the
-traps list below it, and one is new. An eighth rule from this section, "four lenses not five on small
-diffs", was deleted rather than moved, because the selection rule supersedes it. Read the gate document
-for the procedure rather than this paragraph.
-
-What is worth keeping here is why the rule exists. The same fleet was running on a 13-line config diff as
-on a four-task logic change, and #30 showed that the way to need fewer lenses is a tighter pull request
-rather than a shorter list on a broad one. The claims auditor is never dropped.
-
-**Traps found the hard way this session.**
-
-- Both lens-agent traps found this session are now prompt rules in `review-gate.md`: worktrees created
-  inside the repo, one of them holding `feat/ai-hardening` checked out and blocking a merge, and a `tsc`
-  run that named files on the command line, silently ignoring `tsconfig.json` and emitting 15 `.js` files
-  beside the sources. Two author-side habits survive them. Run `git worktree list` before a merge rather
-  than after it fails, and stage explicit paths while lenses are running, because a `git add -A` swept one
-  lens's leftover probe directory into a commit.
-- `engines/ome/.env` **cannot** fix a failing OME container. `Dockerfile.uploader` copies only
-  `package.json` and `dist/`, so the file is not in the image, and dotenv does not override an
-  already-present empty value. The deploy `.env` is the only lever.
-- Test files are outside `tsconfig.json`'s `include`, so `pnpm typecheck` never reads them (TEST-9).
-  Typecheck a new test file explicitly.
-
-**Still blocked, unchanged.** The bee-uploader node has zero postage stamps and buying one is an
-on-chain action only the owner can perform. The deployed uploader is stale and updating it needs
-`pnpm build` followed by an operator `scp`. The QA stress test is deferred to the very end by owner
-decision, which keeps PR #10 and the `streaming-infra-manager` branch held for the duration.
+The bee-uploader node has zero postage stamps and buying one is the owner's action. The deployed
+uploader is stale and updating it needs a local `pnpm build` then an operator `scp`. The QA stress test
+is deferred to the very end by owner decision, which keeps the `streaming-infra-manager`
+branch held for the duration.
 
 ## Branch model
 
@@ -452,7 +413,7 @@ and running it after everything is strictly better than that.
 
 Two consequences to carry, neither of them blockers:
 
-- **PR #10 and the `streaming-infra-manager` branch stay held for the duration**, since nandibaa's
+- **The `streaming-infra-manager` branch stays held for the duration**, since nandibaa's
   review gated them on QA numbers. That is a long hold now. Say so when it comes up rather than
   letting people assume the hold is short.
 - **Nothing establishes a latency baseline until then either.** S5.1 exists to instrument
@@ -478,7 +439,7 @@ it accurate and keep it in the same commit as the work it describes.
 | Task                     | Commit                                                                                 | Date       | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------ | -------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | —                        | `f146588`                                                                              | 2026-07-29 | Branch point. Audit and handoff docs only, zero code changes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| SEC-7 added              | `f0d19f3`                                                                              | 2026-07-29 | New register row. GitHub reports 60 open Dependabot alerts, axios 21 of them at runtime scope through bee-js. The audit had inferred "no known vulnerabilities" from package.json without checking advisories. Promotes the bee-js work in S6.3 from optional spike to remediation path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| SEC-7 added              | `f0d19f3`                                                                              | 2026-07-29 | New register row. GitHub reports 60 open Dependabot alerts, axios 22 of them at runtime scope through bee-js. The audit had inferred "no known vulnerabilities" from package.json without checking advisories. Promotes the bee-js work in S6.3 from optional spike to remediation path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **S0.2 done**            | `b1d37e9`, `64f7ffa`                                                                   | 2026-07-29 | eslint config added to `packages/cli`, mirroring stream-uploader minus the jest env. Root `pnpm lint` now exits 0, previously always 1. The config surfaced 9 pre-existing violations across 6 files (curly, one import-sort), all autofixed in the second commit. `tsc --noEmit` clean.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **S0.8 done**            | `96b3e57`                                                                              | 2026-07-29 | README quickstart fixed. `pnpm dev`, `pnpm start:uploader`, `pnpm srs:up` did not exist. Now `client:start`, `uploader:start`, `srs:host`, plus `ome:host` since the block only ever named SRS. Verified by asserting every `pnpm X` in the block resolves to a real script or a pnpm builtin. Closes DOC-1.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **S0.1 done**            | `db06455`, `6f84776`                                                                   | 2026-07-29 | CI workflow added, **verified green on a real run** (node 20 and 22). Runs typecheck, lint, test. Formatting is gated on changed files only, see the note below. Its first run immediately caught a latent bug: the uploader test glob never worked on node 20, fixed in `6f84776`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -507,6 +468,7 @@ it accurate and keep it in the same commit as the work it describes.
 | **Round 2 fixes**        | `7bd32b9`, `6e704e1`, `e701146`, `505d830`, `6103ae3`                                  | 2026-07-30 | A loss now has its own reason `segment_loss` reported as an age, since nothing later makes a loss untrue and there is no consecutive run to measure. `handleSegmentLoss` answers whether anything recorded the gap, so the puller holds rather than stepping over indexes nobody saw. The roll-out floor is the first index a puller ever saw rather than `lastSeq`, which is -1 until the first delivery, so cold-start and crash-recovery gaps were exactly the ones excluded. A loss after a stop is not reported, so it cannot land on the next session. And the logger renders an error by its message: every handler passes errors straight through and `JSON.stringify` renders one as `{}`, so OBS-12's named startup error read `Failed to start: {}`.                                                                                                                                                                                                                                                                                                                                                     |
 | **S1.1 done**            | `a776563`, `704e4aa`                                                                   | 2026-07-31 | **Closes the `/stream/*` half of SEC-1**, the last unclosed CRITICAL. A bearer gate on the router, not in the handlers, so a later route is covered by construction. The tests spy on the orchestrator rather than reading status codes, because a 401 returned after a segment was already uploaded and paid for satisfies a code assertion and none of the point. Constant-time comparison, case-insensitive scheme per RFC 7235, nothing echoed back. `API_AUTH_TOKEN` required with a 32 character floor, sample empty so a first deploy stops at a named error. Eight mutations, seven killed. **This breaks every existing deployment until an operator sets the variable**, which is the intended direction. S1.2, the `/engines/*` half, is blocked on an owner decision rather than on work.                                                                                                                                                                                                                                                                                                               |
 | **Gate on #35**          | posted on the pull request                                                             | 2026-07-31 | Five lenses: claims audit, security, correctness, config consistency, test integrity. **No auth bypass**, established over 30 raw-socket request-targets covering encodings, traversal, double slashes, absolute-form targets and matrix parameters, all 401 with the orchestrator spy at zero. Everything else was found and fixed. Correctness: a non-ASCII token passed validation and then locked every caller out permanently, because a header arrives latin1-decoded and the comparison re-encoded it as UTF-8, with a split-brain variant where Node fetch authenticated and curl did not, so a green e2e suite would have hidden it. Security: 50MB was buffered per anonymous connection before the gate, 583MB of RSS for eight of them, so the gate moved ahead of the parsers. Config consistency: the paragraph added to the README turned the `GET /health` row into prose and prettier could not see it. Claims audit: the justification for leaving `/health` open named compose healthchecks, which do not exist anywhere in the repo and which the handoff had already recorded as not existing. |
+| **S1.2 done**            | `1f9f34e`, `fdd2fe3`                                                                   | 2026-07-31 | **Closes SEC-1 entirely.** Owner took the URL-secret mechanism on 2026-07-31. `SRS_WEBHOOK_TOKEN` rides in the hook URL because SRS 6 offers no HMAC and no custom header, so the register's "correctly signed" criterion is unachievable and this is the nearest achievable thing. `requestLogger` redacts it, tested against four shapes rather than the one produced today. Router-mounted, constant-time, empty rejects rather than disables, unreserved URL characters enforced at construction. `entrypoint.sh` refuses to start on an empty value. Suite 222 to 237. **Not yet gated: PR not opened.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **OBS-12 closed**        | `59e261e`                                                                              | 2026-07-30 | **Closes OBS-12.** `optionalInt` checks the whole string rather than a prefix and a per-variable range, and throws where it is read. `0`, `-1`, `2147483648` and `10s` now stop startup with a named error instead of disabling the puller once a stream begins. Ranges are per call site because the constraints differ: `API_PORT` allows zero for an ephemeral port, everything else has a floor of 1, and the default ceiling is `setTimeout`'s 32-bit limit. Covers every `optionalInt` variable, not only the one that exposed it. Seven mutations, seven killed. Suite 155 to 167.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **TEST-15 closed**       | `e00210b`                                                                              | 2026-07-30 | **Closes TEST-15.** `OmeEngineSeams` gives the environment path an injectable fetcher, which is what makes the abort window observable from outside the module, and it deliberately carries no configuration so a test cannot prove a plumbing path a deployment lacks. The test drives one real admission lifecycle, opening to closing, so the file gains no timer of its own. Also closed: the media playlist call site, the fresh-signal-per-call rationale, the `AbortError` arm and the ordinary-failure half of the abort distinction at both log sites. All twelve surviving mutations killed. Suite 167 to 179.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **S2.2 uploader half**   | `a4c7149`, `a87230b`, `f0c0ee5`                                                        | 2026-07-30 | **Closes the uploader half of OBS-2.** All three puller calls route through one `fetchWithTimeout`, so a new call site cannot forget the window, each with a fresh `AbortSignal.timeout` rather than a shared signal that would abort later requests the instant the first window elapsed. An abort logs at error level where an ordinary failure stays at warn, since a cut-off request is otherwise indistinguishable from a healthy stream. `OME_FETCH_TIMEOUT_MS`, default 10s, and `a87230b` is there because `a4c7149` shipped it unreachable in a container, repeating the `SEGMENT_STALL_MS` miss the #30 gate caught. The test in this spot was **inert**: its fake ignored the abort signal, so it passed with and without a timeout. Replaced with fakes that reject with `signal.reason`, the real `TimeoutError`. Suite 142 to 145.                                                                                                                                                                                                                                                                    |

@@ -305,6 +305,30 @@ describe('api auth (S1.1, closes SEC-1)', () => {
     );
   });
 
+  it('redacts a webhook credential that reaches the rejection log', async () => {
+    // This sink and the request log are the only two that write a request URL. The SRS credential
+    // travels in a URL, so the one that forgets is the one that leaks it in cleartext.
+    const secret = 'srs-webhook-secret-0123456789abcdef';
+    const api = await start(noCalls());
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+
+    try {
+      await api.request(`/stream/start?token=${secret}`, {
+        ...startBody(),
+        headers: { 'content-type': 'application/json', ...NO_AUTH_HEADER },
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const rejection = warnings.find((line) => line.includes('[Auth] Rejected'));
+    assert.ok(rejection, `expected a rejection line, got ${JSON.stringify(warnings)}`);
+    assert.ok(!rejection.includes(secret), `the credential must not survive the line, got ${rejection}`);
+    assert.ok(rejection.includes('token=REDACTED'), `expected a redacted marker, got ${rejection}`);
+  });
+
   it('refuses to build an app with a token short enough to guess', () => {
     assert.throws(
       () => createApiApp(makeTestOrchestrator(), { authToken: 'short' }),

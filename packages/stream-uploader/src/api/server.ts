@@ -38,6 +38,18 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
   // `deploy/scripts/health.sh` reads, which accepts no input and spends nothing.
   app.use('/stream', createAuthMiddleware(authToken));
 
+  // Same reason, for the engine webhooks. Without this the engine's own router-level gate still
+  // refuses the request, but only after express.json has read and parsed the body, so an anonymous
+  // caller gets a 500 from the parser instead of a 401 and can drive unhandled-error lines into the
+  // log at will. Each engine also gates its own router, so this is the resource guard rather than
+  // the authorization guard.
+  for (const engine of engines) {
+    const gate = engine.createAuthMiddleware?.();
+    if (gate) {
+      app.use(engine.prefix, gate);
+    }
+  }
+
   app.use('/stream/segment', express.raw({ type: '*/*', limit: '50mb' }));
   app.use(
     express.json({

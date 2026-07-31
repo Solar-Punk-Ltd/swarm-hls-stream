@@ -1,6 +1,7 @@
 import { NextFunction, Request, RequestHandler, Response } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 
+import { redactWebhookToken } from '../../engines/srs/webhookToken.js';
 import { Logger } from '../../libs/Logger.js';
 
 const logger = Logger.getInstance();
@@ -54,7 +55,8 @@ function matches(presented: string, expected: string): boolean {
  * Mounted on the router rather than inside each handler, so a route added to that router later is
  * covered without whoever adds it remembering. It covers the prefix it is mounted on and nothing
  * else: `/health` is outside it deliberately, and the engine webhook routes under `/engines` carry
- * their own credential or, for SRS, none at all. See SEC-1 and S1.2.
+ * their own credential, an HMAC over the body for OME and a shared secret in the hook URL for SRS.
+ * See SEC-1 and S1.2.
  *
  * The rejection carries nothing back about what was wrong or what was asked for.
  */
@@ -75,7 +77,13 @@ export function createAuthMiddleware(expectedToken: string): RequestHandler {
     if (presented === null || !matches(presented, expectedToken)) {
       // originalUrl, not path: express strips the mount prefix, so `req.path` here reads `/start`
       // rather than `/stream/start` and the line names a route that does not exist.
-      logger.warn(`[Auth] Rejected unauthenticated ${req.method} ${req.originalUrl} from ${req.ip}`);
+      //
+      // Redacted for the same reason the request log is. These routes take no query parameters
+      // today, so nothing legitimate carries the SRS credential here, but this is the second of the
+      // two sinks that write a request URL and it is not worth being the one that forgets.
+      logger.warn(
+        `[Auth] Rejected unauthenticated ${req.method} ${redactWebhookToken(req.originalUrl)} from ${req.ip}`,
+      );
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
