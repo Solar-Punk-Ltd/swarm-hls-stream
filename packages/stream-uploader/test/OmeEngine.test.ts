@@ -430,3 +430,355 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     );
   });
 });
+
+/**
+ * The mirror image of CON-16, and measured against a real OvenMediaEngine rather than argued from the
+ * code. On an abrupt publisher drop OME keeps both the SRT session and its HLS output alive until the
+ * peer-idle timeout, which took 5.0s on 2026-07-31 against `airensoft/ovenmediaengine:latest` with
+ * this repo's own `Server.xml.template`. A reconnect inside that window is put to the admission
+ * webhook first, so the uploader opens a new session, resets its duplicate filter and starts a puller
+ * whose high-water is -1, while the playlist the puller reads still holds the previous broadcast.
+ *
+ * The probe answered the admission at the same point in the tick order the puller polls at, and read
+ * `#EXT-X-MEDIA-SEQUENCE:5` with the outgoing session's five segments. So the new session's manifest
+ * opens with up to a full playlist window of the previous broadcast, and a VOD is paid for with
+ * postage to record it.
+ */
+describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () => {
+  const SECRET = 'reconnect-secret';
+  const HLS_BASE = 'http://ome:8081';
+  const STREAM_URL = 'srt://ome:10080/video/demo';
+  const PLAYLIST_URL = `${HLS_BASE}/video/demo/ts:playlist.m3u8`;
+  const POLL_INTERVAL_MS = 20;
+  const DELIVERY_TIMEOUT_MS = 5_000;
+  const FINALIZE_LATENCY_MS = 25;
+
+  /**
+   * OME's own HLS output, including the per-segment `#EXT-X-PROGRAM-DATE-TIME` it emits by default and
+   * which the CON-16 fixtures leave out. Both sessions number from zero and reuse the same segment
+   * file names, because that is what OME does: it derives them from the app and stream name, so the
+   * live capture showed `seg_917977731947844006_0_hls.ts` in two different broadcasts. That leaves the
+   * date-time as the only thing in the playlist that tells the two apart.
+   */
+  function omePlaylist(uris: string[], mediaSeq: number, firstSegmentAt: Date, segmentSeconds: number): string {
+    return [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      `#EXT-X-TARGETDURATION:${Math.ceil(segmentSeconds)}`,
+      `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}`,
+      ...uris.flatMap((uri, offset) => [
+        `#EXT-X-PROGRAM-DATE-TIME:${new Date(firstSegmentAt.getTime() + offset * segmentSeconds * 1000).toISOString()}`,
+        `#EXTINF:${segmentSeconds}.0,`,
+        uri,
+      ]),
+    ].join('\n');
+  }
+
+  const OUTGOING_SEGMENTS = ['seg_0.ts', 'seg_1.ts', 'seg_2.ts', 'seg_3.ts'];
+  const RECONNECTED_SEGMENTS = ['seg_0.ts', 'seg_1.ts', 'seg_2.ts'];
+
+  /**
+   * The two sessions run at different segment durations so that the recorded length of a VOD says
+   * which broadcast is inside it, not merely how much of something is.
+   *
+   * With equal durations the assertion was satisfiable by the wrong media: leaking three stale
+   * segments and then discarding all three real ones came to the same total as delivering the three
+   * real ones, and a mutation that shrank the floor to a single segment passed because of it. No
+   * subset of four 2-second segments and three 5-second ones reaches 15 except the three real ones.
+   */
+  const OUTGOING_SEGMENT_SECONDS = 2;
+  const RECONNECTED_SEGMENT_SECONDS = 5;
+
+  /**
+   * An origin that keeps serving the outgoing broadcast after its publisher is gone, and only turns
+   * over when the test says so. The turnover is explicit because leaving it to timing is what made
+   * this reproduce 5 times in 8 rather than every time.
+   */
+  function makeIdlingOrigin(
+    outgoing: string,
+    reconnected: string,
+  ): {
+    fetcher: Fetcher;
+    turnOver(): void;
+    playlistPolls(): number;
+  } {
+    let session = 'outgoing';
+    let playlist = outgoing;
+    let playlistPolls = 0;
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === PLAYLIST_URL) {
+        playlistPolls++;
+        return { ok: true, status: 200, text: async () => playlist } as Response;
+      }
+      const body = `${session}-${url.slice(url.lastIndexOf('/') + 1)}`;
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => new TextEncoder().encode(body).buffer,
+      } as Response;
+    }) as unknown as Fetcher;
+
+    return {
+      fetcher,
+      turnOver: () => {
+        session = 'reconnected';
+        playlist = reconnected;
+      },
+      playlistPolls: () => playlistPolls,
+    };
+  }
+
+  it('keeps the outgoing broadcast out of the session that replaces it', async () => {
+    const outgoingStartedAt = new Date(Date.now() - 60_000);
+    const reconnectedStartedAt = new Date(Date.now() - 20_000);
+    const published: VodEntry[] = [];
+    const uploaded: string[] = [];
+    const origin = makeIdlingOrigin(
+      omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
+      omePlaylist(RECONNECTED_SEGMENTS, 0, reconnectedStartedAt, RECONNECTED_SEGMENT_SECONDS),
+    );
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: SECRET,
+      fetcher: origin.fetcher,
+    });
+    const orchestrator = makeTestOrchestrator(
+      {},
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+        uploadPayload: async (index: number) => {
+          await sleep(FINALIZE_LATENCY_MS);
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      undefined,
+      makeRecordingCatalog(published),
+    );
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => published.length > 0, DELIVERY_TIMEOUT_MS);
+
+    // The reconnect is announced while the origin is still serving the broadcast that is ending, which
+    // is the state the live probe found at this exact point. The origin turns over only after the
+    // replacement puller has had polls to spend on the stale playlist, so the window is closed by the
+    // test rather than by luck.
+    const beforeReconnect = origin.playlistPolls();
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => origin.playlistPolls() > beforeReconnect + 2, DELIVERY_TIMEOUT_MS);
+    origin.turnOver();
+
+    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+
+    const vods = published.filter((entry) => entry.state === STREAM_STATUS_VOD);
+    assert.equal(
+      vods.length,
+      2,
+      `both sessions have to reach a VOD or there is nothing to compare; durations: ${vods
+        .map((entry) => entry.duration)
+        .join(', ')}`,
+    );
+    assert.equal(
+      vods[0].duration,
+      OUTGOING_SEGMENT_SECONDS * OUTGOING_SEGMENTS.length,
+      `the outgoing session's own recording is wrong, so the reconnected one below proves nothing; durations: ${vods
+        .map((entry) => entry.duration)
+        .join(', ')}`,
+    );
+    assert.equal(
+      vods[1].duration,
+      RECONNECTED_SEGMENT_SECONDS * RECONNECTED_SEGMENTS.length,
+      `the reconnected session's recording is not the length of what it broadcast, so the outgoing session's media was published inside it; durations: ${vods
+        .map((entry) => entry.duration)
+        .join(', ')}`,
+    );
+
+    // The durations above are aggregates, and an aggregate cannot say whose media it is made of. This
+    // fixture labels every segment body with the session that served it, and until these two lines
+    // existed it labelled them for nobody: making both sessions return byte-identical bodies, or
+    // making the origin switch playlists while still serving the outgoing bytes, left the whole suite
+    // green. The second of those is the shape of the defect under test, since OME reuses its segment
+    // file names across broadcasts.
+    assert.equal(
+      uploaded.filter((body) => body.startsWith('outgoing-')).length,
+      OUTGOING_SEGMENTS.length,
+      `more of the outgoing broadcast reached Bee than it ever served, so its media was uploaded a second time inside the session that replaced it; uploaded: ${uploaded.join(
+        ', ',
+      )}`,
+    );
+    assert.equal(
+      uploaded.filter((body) => body.startsWith('reconnected-')).length,
+      RECONNECTED_SEGMENTS.length,
+      `the reconnected broadcast did not all reach Bee; uploaded: ${uploaded.join(', ')}`,
+    );
+  });
+
+  function undatedPlaylist(uris: string[], segmentSeconds: number): string {
+    return [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      `#EXT-X-TARGETDURATION:${Math.ceil(segmentSeconds)}`,
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      ...uris.flatMap((uri) => [`#EXTINF:${segmentSeconds}.0,`, uri]),
+    ].join('\n');
+  }
+
+  /**
+   * A segment with no date-time under a floor is undecidable, not stale, and the two directions fail
+   * very differently. Dropping it loses a live broadcast for as long as the origin keeps publishing
+   * that way, silently, which is the CON-16 failure this register rates worst. Delivering it costs at
+   * most the stale window once. So the undecidable case degrades to the behaviour that predates the
+   * floor, and it is pinned here because nothing else in the suite could tell the two apart.
+   */
+  it('still delivers a session whose segments carry no date-time to judge them by', async () => {
+    const outgoingStartedAt = new Date(Date.now() - 60_000);
+    const published: VodEntry[] = [];
+    const origin = makeIdlingOrigin(
+      omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
+      undatedPlaylist(RECONNECTED_SEGMENTS, RECONNECTED_SEGMENT_SECONDS),
+    );
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: SECRET,
+      fetcher: origin.fetcher,
+    });
+    const orchestrator = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async (index: number) => {
+          await sleep(FINALIZE_LATENCY_MS);
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      undefined,
+      makeRecordingCatalog(published),
+    );
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => published.length > 0, DELIVERY_TIMEOUT_MS);
+
+    const beforeReconnect = origin.playlistPolls();
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => origin.playlistPolls() > beforeReconnect + 2, DELIVERY_TIMEOUT_MS);
+    origin.turnOver();
+
+    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+
+    const vods = published.filter((entry) => entry.state === STREAM_STATUS_VOD);
+    assert.equal(
+      vods.length,
+      2,
+      `the undated session never reached a VOD at all, so the floor swallowed a live broadcast; durations: ${vods
+        .map((entry) => entry.duration)
+        .join(', ')}`,
+    );
+    assert.equal(
+      vods[1].duration,
+      RECONNECTED_SEGMENT_SECONDS * RECONNECTED_SEGMENTS.length,
+      `the undated session's media did not all reach its recording, so the floor is dropping segments it cannot judge; durations: ${vods
+        .map((entry) => entry.duration)
+        .join(', ')}`,
+    );
+  });
+
+  /**
+   * The sequence a real OME produces, and the one that defeated the first version of this fix.
+   *
+   * When a broadcaster reconnects inside the idle window OME answers the admission webhook, then
+   * rejects the publish as a duplicate stream name and sends `closing` 111ms later. A broadcaster
+   * whose client retries again therefore announces after a close, not after another open. Reading the
+   * floor off the outgoing puller lost it there, because the close had already destroyed the puller,
+   * and the warning that should have said so was itself gated on the puller still existing.
+   */
+  it('still knows where the outgoing broadcast ended after a closing has come and gone', async () => {
+    const outgoingStartedAt = new Date(Date.now() - 60_000);
+    const reconnectedStartedAt = new Date(Date.now() - 20_000);
+    const published: VodEntry[] = [];
+    const uploaded: string[] = [];
+    const origin = makeIdlingOrigin(
+      omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
+      omePlaylist(RECONNECTED_SEGMENTS, 0, reconnectedStartedAt, RECONNECTED_SEGMENT_SECONDS),
+    );
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: SECRET,
+      fetcher: origin.fetcher,
+    });
+    const orchestrator = makeTestOrchestrator(
+      {},
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+        uploadPayload: async (index: number) => {
+          await sleep(FINALIZE_LATENCY_MS);
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      undefined,
+      makeRecordingCatalog(published),
+    );
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => uploaded.length >= OUTGOING_SEGMENTS.length, DELIVERY_TIMEOUT_MS);
+
+    // The rejected republish: OME opens, is refused the name, and closes again.
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+
+    const beforeRetry = origin.playlistPolls();
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => origin.playlistPolls() > beforeRetry + 2, DELIVERY_TIMEOUT_MS);
+    origin.turnOver();
+    await waitFor(
+      () => uploaded.filter((body) => body.startsWith('reconnected-')).length === RECONNECTED_SEGMENTS.length,
+      DELIVERY_TIMEOUT_MS,
+    );
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+
+    assert.equal(
+      uploaded.filter((body) => body.startsWith('outgoing-')).length,
+      OUTGOING_SEGMENTS.length,
+      `the outgoing broadcast was uploaded again after a closing destroyed the puller holding the boundary; uploaded: ${uploaded.join(
+        ', ',
+      )}`,
+    );
+  });
+
+  // The protection is only as real as the origin's date-times, and an origin that publishes none
+  // leaves the uploader exactly where it was before this fix. That has to be audible: nothing about a
+  // floor matching zero segments looks different from a floor holding, and this repo has already
+  // shipped two green suites over defects that were stubbed out of view.
+  it('says so when the origin gives it nothing to tell the two sessions apart', async () => {
+    const undated = undatedPlaylist(OUTGOING_SEGMENTS, OUTGOING_SEGMENT_SECONDS);
+    const origin = makeIdlingOrigin(undated, undated);
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: SECRET,
+      fetcher: origin.fetcher,
+    });
+    const orchestrator = makeTestOrchestrator();
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+    try {
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+      await waitFor(() => origin.playlistPolls() > 0, DELIVERY_TIMEOUT_MS);
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.ok(
+      warnings.some((line) => line.includes('EXT-X-PROGRAM-DATE-TIME') && line.includes('video/demo')),
+      `replacing a puller with no date-time to go on has to be reported, or an unprotected deployment looks like a protected one; warnings: ${
+        warnings.join(' | ') || '(none)'
+      }`,
+    );
+  });
+});

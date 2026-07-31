@@ -1,6 +1,6 @@
 import { Logger } from '../../libs/Logger.js';
 import { getErrorMessage } from '../../utils/common.js';
-import { HLS_EXTINF, HLS_MEDIA_SEQUENCE, HLS_STREAM_INF } from '../../utils/hlsTags.js';
+import { HLS_EXTINF, HLS_MEDIA_SEQUENCE, HLS_PROGRAM_DATE_TIME, HLS_STREAM_INF } from '../../utils/hlsTags.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
@@ -8,6 +8,7 @@ import { AppStream, PlaylistEntry } from './interfaces.js';
 const STREAM_INF_PREFIX = `${HLS_STREAM_INF}:`;
 const MEDIA_SEQUENCE_PREFIX = `${HLS_MEDIA_SEQUENCE}:`;
 const EXTINF_PREFIX = `${HLS_EXTINF}:`;
+const PROGRAM_DATE_TIME_PREFIX = `${HLS_PROGRAM_DATE_TIME}:`;
 
 export function isMasterPlaylist(text: string): boolean {
   return text.split(/\r?\n/).some((line) => line.trim().startsWith(STREAM_INF_PREFIX));
@@ -35,6 +36,11 @@ export function parseMediaPlaylist(text: string): PlaylistEntry[] {
   const lines = text.split(/\r?\n/);
   let mediaSeq = 0;
   let pendingDuration: number | null = null;
+  // Carried forward rather than read per segment, because RFC 8216 lets a playlist stamp only its
+  // first segment and leave the rest to be derived by accumulating durations. OME stamps every one,
+  // but a puller that only understood OME's spelling would silently lose the floor against any origin
+  // using the other, and losing the floor is indistinguishable from having one.
+  let nextProgramDateTime: number | null = null;
   let index = 0;
   const entries: PlaylistEntry[] = [];
 
@@ -48,6 +54,11 @@ export function parseMediaPlaylist(text: string): PlaylistEntry[] {
       mediaSeq = parseInt(line.slice(MEDIA_SEQUENCE_PREFIX.length), 10) || 0;
       continue;
     }
+    if (line.startsWith(PROGRAM_DATE_TIME_PREFIX)) {
+      const parsed = Date.parse(line.slice(PROGRAM_DATE_TIME_PREFIX.length).trim());
+      nextProgramDateTime = Number.isNaN(parsed) ? null : parsed;
+      continue;
+    }
     if (line.startsWith(EXTINF_PREFIX)) {
       const value = line.slice(EXTINF_PREFIX.length).split(',')[0];
       pendingDuration = parseFloat(value);
@@ -58,13 +69,54 @@ export function parseMediaPlaylist(text: string): PlaylistEntry[] {
     }
 
     if (pendingDuration !== null) {
-      entries.push({ seq: mediaSeq + index, duration: pendingDuration, uri: line });
+      entries.push({
+        seq: mediaSeq + index,
+        duration: pendingDuration,
+        uri: line,
+        // Left off the entry entirely rather than set to undefined, so an unstamped playlist parses to
+        // exactly the shape it did before this field existed.
+        ...(nextProgramDateTime !== null ? { programDateTime: nextProgramDateTime } : {}),
+      });
+      if (nextProgramDateTime !== null) {
+        // A duration that is not a finite number cannot advance a clock. Adding it anyway carries NaN
+        // onto every later entry, and NaN loses every comparison, including the ones a consumer uses
+        // to decide whether to keep a segment. Dropping the anchor says "unknown" instead, which is
+        // the answer that keeps media rather than discarding it.
+        nextProgramDateTime = Number.isFinite(pendingDuration) ? nextProgramDateTime + pendingDuration * 1000 : null;
+      }
       pendingDuration = null;
       index++;
     }
   }
 
-  return entries;
+  return datePrecedingSegments(entries);
+}
+
+/**
+ * RFC 8216 section 6.3.3: when the first `#EXT-X-PROGRAM-DATE-TIME` appears after one or more segment
+ * URIs, a client extrapolates backward from it to date the segments in front of it.
+ *
+ * Without this the oldest part of a partly stamped playlist carries no date at all, and a consumer
+ * using the date to decide what to keep reads that as "cannot judge" rather than "old". Origins that
+ * stamp on an interval rather than per segment produce exactly this shape on every poll once the
+ * window has slid past the first tag.
+ */
+function datePrecedingSegments(entries: PlaylistEntry[]): PlaylistEntry[] {
+  const firstStamped = entries.findIndex((entry) => entry.programDateTime !== undefined);
+  if (firstStamped <= 0) {
+    return entries;
+  }
+
+  const dated = [...entries];
+  for (let i = firstStamped - 1; i >= 0; i--) {
+    const nextStart = dated[i + 1].programDateTime;
+    if (nextStart === undefined || !Number.isFinite(dated[i].duration)) {
+      break;
+    }
+    dated[i] = { ...dated[i], programDateTime: nextStart - dated[i].duration * 1000 };
+  }
+
+  return dated;
 }
 
 const logger = Logger.getInstance();
