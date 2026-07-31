@@ -31,7 +31,8 @@
     "ome:logs": "cd engines/ome && docker compose logs -f",
     "audit:check": "tsx packages/audit-gate/src/index.ts",
     "mutate": "stryker run",
-    "verify": "pnpm lint && pnpm typecheck && pnpm test && git ls-files -z | xargs -0 -r npx prettier --check --ignore-unknown"
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && git ls-files -z | xargs -0 -r npx prettier --check --ignore-unknown",
+    "gate:facts": "tsx packages/gate-facts/src/index.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.0",
