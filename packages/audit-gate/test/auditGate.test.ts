@@ -12,6 +12,7 @@ interface RawAdvisoryOverrides {
   severity?: string;
   title?: string;
   patched_versions?: string;
+  findings?: { version: string; paths: string[] }[];
 }
 
 /**
@@ -39,11 +40,18 @@ function rawReport(...advisories: RawAdvisoryOverrides[]): string {
     return [String(advisory.id), advisory] as const;
   });
 
+  // pnpm counts findings here rather than advisories, so the stub has to as well
+  // or the report is one pnpm would never emit.
+  const findings = entries.reduce((total, [, advisory]) => {
+    const list = (advisory as { findings?: unknown }).findings;
+    return total + (Array.isArray(list) ? list.length : 0);
+  }, 0);
+
   return JSON.stringify({
     actions: [],
     advisories: Object.fromEntries(entries),
     muted: [],
-    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: advisories.length, critical: 0 } },
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: findings, critical: 0 } },
   });
 }
 
@@ -200,11 +208,31 @@ describe('audit report parsing', () => {
       metadata: { vulnerabilities: { info: 0, low: 1, moderate: 0, high: 1, critical: 0 } },
     });
 
-    assert.throws(() => parseAuditReport(raw), /counted 2 .* holds 0/s);
+    assert.throws(() => parseAuditReport(raw), /counted 2 .* describe 0/s);
   });
 
   it('throws rather than trusting a report with no vulnerability counts to check against', () => {
     assert.throws(() => parseAuditReport(JSON.stringify({ advisories: {} })), /metadata\.vulnerabilities/);
+  });
+
+  it('accepts one advisory reported against two resolved versions, which counts as two', () => {
+    const raw = rawReport({
+      github_advisory_id: 'GHSA-aaaa-aaaa-aaaa',
+      module_name: 'brace-expansion',
+      findings: [
+        { version: '1.1.18', paths: ['. > minimatch > brace-expansion'] },
+        { version: '2.1.4', paths: ['. > minimatch > brace-expansion'] },
+      ],
+    });
+
+    assert.equal(parseAuditReport(raw).length, 1);
+  });
+
+  it('throws rather than guessing when an advisory carries no findings array', () => {
+    const report = JSON.parse(rawReport({ github_advisory_id: 'GHSA-aaaa-aaaa-aaaa' }));
+    delete report.advisories[Object.keys(report.advisories)[0]].findings;
+
+    assert.throws(() => parseAuditReport(JSON.stringify(report)), /findings/);
   });
 
   it('names what the command printed when the advisories map is missing', () => {
