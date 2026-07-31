@@ -10,6 +10,7 @@ import { createOmeEngine, createOmeEngineFromEnv } from '../src/engines/ome.js';
 import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { DEFAULT_FETCH_TIMEOUT_MS } from '../src/engines/ome/OmeHlsPuller.js';
 import { EnginePlugin, RawBodyRequest } from '../src/engines/types.js';
+import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
 import { makeTestOrchestrator } from './helpers/fakes.js';
@@ -245,11 +246,13 @@ describe('createOmeEngine origin restart (CON-16)', () => {
    * session produced it. Both sessions number from `#EXT-X-MEDIA-SEQUENCE:0`, which is what a
    * restarted OME serves and what puts the new indexes at or below the ones already delivered.
    */
-  function makeOrigin(): { fetcher: Fetcher; restart(): void } {
+  function makeOrigin(): { fetcher: Fetcher; restart(): void; playlistPolls(): number } {
     let session = 's1';
+    let playlistPolls = 0;
     const fetcher = (async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url === PLAYLIST_URL) {
+        playlistPolls++;
         return { ok: true, status: 200, text: async () => SESSION_PLAYLIST } as Response;
       }
       const body = `${session}-${url.slice(url.lastIndexOf('/') + 1)}`;
@@ -265,12 +268,23 @@ describe('createOmeEngine origin restart (CON-16)', () => {
       restart: () => {
         session = 's2';
       },
+      playlistPolls: () => playlistPolls,
     };
   }
 
+  /**
+   * Finalizing the outgoing session has to take real time, or this test proves nothing.
+   *
+   * The whole defect lives in the window between a re-announce and the old session leaving the live
+   * maps. A fake Bee that resolves immediately closes that window inside one microtask cascade, ahead
+   * of the new puller's first tick, and the test passes against code that fails in production on
+   * every restart. One millisecond is enough to reopen it, and one Bee round trip is never less.
+   */
+  const FINALIZE_LATENCY_MS = 25;
+
   // The whole failure is invisible one layer up: the puller keeps polling, every response is a 200,
-  // and the orchestrator has a healthy-looking uploader. Only what reaches Bee shows that the second
-  // session was discarded, so that is where this asserts.
+  // and the orchestrator has an uploader registered throughout. Only what reaches Bee shows that the
+  // second session was discarded, so that is where this asserts.
   it('delivers the new session after the origin restarts its media sequence', async () => {
     const uploaded: string[] = [];
     const origin = makeOrigin();
@@ -278,6 +292,11 @@ describe('createOmeEngine origin restart (CON-16)', () => {
       admissionSecret: RESTART_SECRET,
       fetcher: origin.fetcher,
     });
+    const slowCatalog = {
+      addStream: async () => {
+        await sleep(FINALIZE_LATENCY_MS);
+      },
+    } as unknown as StreamCatalog;
     const orchestrator = makeTestOrchestrator(
       {},
       {
@@ -285,7 +304,13 @@ describe('createOmeEngine origin restart (CON-16)', () => {
           uploaded.push(new TextDecoder().decode(data));
           return { reference: { toHex: () => `ref${uploaded.length}` } };
         },
+        uploadPayload: async (index: number) => {
+          await sleep(FINALIZE_LATENCY_MS);
+          return { reference: { toHex: () => `soc${index}` } };
+        },
       },
+      undefined,
+      slowCatalog,
     );
 
     await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
@@ -306,6 +331,37 @@ describe('createOmeEngine origin restart (CON-16)', () => {
       `nothing from the restarted origin was ever uploaded, so the stream is silent for good; uploaded: ${
         uploaded.join(', ') || '(nothing)'
       }`,
+    );
+  });
+
+  // Dropping the replaced puller from the map without stopping it leaves it polling OME forever for a
+  // session nobody can reach: it is no longer under its stream id, so no close, halt or shutdown can
+  // ever reach it either. Invisible in what gets uploaded, because its own position is already past
+  // everything the restarted origin advertises. A closed stream not polling its origin is the only
+  // thing that shows it.
+  it('leaves nothing polling the origin once the replaced stream closes', async () => {
+    const origin = makeOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: RESTART_SECRET,
+      fetcher: origin.fetcher,
+    });
+    const orchestrator = makeTestOrchestrator();
+
+    await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
+    await waitFor(() => origin.playlistPolls() > 0, DELIVERY_TIMEOUT_MS);
+
+    origin.restart();
+    await postAdmission(engine, orchestrator, 'opening', RESTART_SECRET, STREAM_URL);
+    await waitFor(() => origin.playlistPolls() > 2, DELIVERY_TIMEOUT_MS);
+    await postAdmission(engine, orchestrator, 'closing', RESTART_SECRET, STREAM_URL);
+
+    const afterClose = origin.playlistPolls();
+    await sleep(POLL_INTERVAL_MS * 5);
+
+    assert.equal(
+      origin.playlistPolls(),
+      afterClose,
+      'a puller kept polling after its stream closed, so a replaced one was orphaned rather than stopped',
     );
   });
 });

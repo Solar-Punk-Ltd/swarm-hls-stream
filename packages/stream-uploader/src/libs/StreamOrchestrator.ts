@@ -76,19 +76,56 @@ export class StreamOrchestrator {
       return true;
     }
 
-    if (this.activeStreams.has(streamId)) {
+    const stale = this.activeStreams.get(streamId);
+    if (stale) {
       // The engine re-announced a stream we still track — it restarted without sending on_unpublish
       // (e.g. the media engine was restarted). Finalize the stale session as a VOD, then start the
       // new one, so the broadcaster resumes instead of being rejected as "already active".
+      //
+      // The stale session leaves the live maps in this same synchronous turn, before anything can
+      // deliver to it again. Finalizing it in the background and leaving it registered meanwhile
+      // handed the new session's segments to the old uploader for the whole drain: indexes it had
+      // already seen were absorbed by the duplicate filter and reported as accepted, and indexes
+      // above its high-water were published into the outgoing session's manifest. Neither reached
+      // `handleSegmentLoss`, and a draining stream is excluded from the stall signal, so the whole
+      // window was silent. See CON-16.
       this.logger.info(`[StreamOrchestrator] Stream ${streamId} re-announced; finalizing stale session and restarting`);
-      void this.stopStream(streamId)
-        .catch((error) => this.errorHandler.handleError(error, `StreamOrchestrator.restart - ${streamId}`))
-        .then(() => this.spawnUploader(streamId, mediatype));
+      stale.retire();
+      this.retireSession(streamId);
+      this.spawnUploader(streamId, mediatype);
+      void this.finalizeRetiredSession(streamId, stale);
       return true;
     }
 
     this.spawnUploader(streamId, mediatype);
     return true;
+  }
+
+  /**
+   * Detach a stream from the live maps so nothing can reach it by id any more, without waiting for
+   * it to finish. The caller keeps the uploader and is responsible for finalizing it.
+   */
+  private retireSession(streamId: string): void {
+    this.activeStreams.delete(streamId);
+    this.processedSegments.delete(streamId);
+    this.streamActivityAt.delete(streamId);
+  }
+
+  /**
+   * Finalize a session that a newer one has already replaced under the same id.
+   *
+   * Takes the uploader by reference rather than looking it up, because by now the id belongs to the
+   * replacement: a lookup would VOD-finalize the live session instead. For the same reason it does
+   * not register in `drainPromises`, which excludes a stream from the stall signal, and the stream
+   * under that id is now live and has to stay answerable to it.
+   */
+  private async finalizeRetiredSession(streamId: string, uploader: StreamUploader): Promise<void> {
+    try {
+      await this.drainUploader(streamId, uploader);
+      this.logger.info(`[StreamOrchestrator] Finalized the replaced session for ${streamId}`);
+    } catch (error) {
+      this.errorHandler.handleError(error, `StreamOrchestrator.finalizeRetiredSession - ${streamId}`);
+    }
   }
 
   private spawnUploader(streamId: string, mediatype: MediaType): void {
@@ -434,6 +471,14 @@ export class StreamOrchestrator {
       return;
     }
 
+    await this.drainUploader(streamId, uploader);
+    this.retireSession(streamId);
+
+    this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
+  }
+
+  /** Let an uploader finish what it has in hand and publish its VOD, under a deadline. */
+  private async drainUploader(streamId: string, uploader: StreamUploader): Promise<void> {
     let drainTimer: Timer | undefined;
     const drainTimeout = new Promise<void>((_, reject) => {
       drainTimer = this.clock.setTimer(
@@ -454,11 +499,5 @@ export class StreamOrchestrator {
       // timer holding the event loop open, one per stopped stream.
       drainTimer?.cancel();
     }
-
-    this.activeStreams.delete(streamId);
-    this.processedSegments.delete(streamId);
-    this.streamActivityAt.delete(streamId);
-
-    this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
   }
 }

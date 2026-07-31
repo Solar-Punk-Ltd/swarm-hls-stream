@@ -4,7 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -113,22 +113,89 @@ describe('StreamOrchestrator recovery hygiene', () => {
 });
 
 describe('StreamOrchestrator re-announce (E: engine restart)', () => {
+  interface PublishedEntry {
+    state: string;
+  }
+
+  function startedOrchestrator(published: unknown[], removed: string[]): StreamOrchestrator {
+    return makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore({ remove: (streamId: string) => removed.push(streamId) }),
+      makeRecordingCatalog(published),
+    );
+  }
+
   it('accepts a re-announced already-active stream and restarts it instead of rejecting', async () => {
     const id = 'live/stream';
+    const published: unknown[] = [];
     const removed: string[] = [];
-    const orch = makeOrchestrator(makeFakeRecoveryStore({ remove: (streamId: string) => removed.push(streamId) }));
+    const orch = startedOrchestrator(published, removed);
 
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true);
     await waitFor(() => orch.getActiveStreamCount() === 1);
     assert.equal(orch.getActiveStreamCount(), 1, 'first publish starts the stream');
+    // Content, so finalizing the stale session is observable as the VOD it publishes. Recovery-entry
+    // removal cannot serve as that signal any more: the id belongs to the live session by then.
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
     // Previously this returned false → SRS rejected the broadcaster. It must now be accepted.
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 're-announce of an active stream must be accepted');
 
-    // The stale session is finalized (recovery state removed) and a fresh uploader takes its place.
-    await waitFor(() => removed.includes(id) && orch.getActiveStreamCount() === 1);
-    assert.ok(removed.includes(id), 'the stale session must be finalized on re-announce');
+    await waitFor(() => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD));
+    assert.ok(
+      published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      'the stale session must be finalized on re-announce, not abandoned',
+    );
     assert.equal(orch.getActiveStreamCount(), 1, 'a fresh stream is active after the re-announce restart');
+    await orch.cleanup();
+  });
+
+  // The outgoing session and the live one share a stream id, and the recovery entry under it now
+  // describes the live one. Anything the outgoing session writes there lands on a broadcast that is
+  // still running: its VOD commit saves an outgoing session's state over the live one's, and the
+  // delete that ends `notifyStop` discards it outright. Both directions, because each fails alone.
+  it('stops touching the recovery entry once another session has replaced it', async () => {
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const removed: string[] = [];
+    const saved: StreamState[] = [];
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore({
+        remove: (streamId: string) => removed.push(streamId),
+        save: (_streamId: string, state: StreamState) => saved.push(state),
+      }),
+      makeRecordingCatalog(published),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+    await waitFor(() => saved.length > 0);
+
+    // Each uploader owns a freshly generated feed topic, so the topic is what tells the outgoing
+    // session's recovery writes apart from the live one's.
+    const retiredTopic = saved[saved.length - 1].streamRawTopic;
+    const writesBeforeRetirement = saved.length;
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD));
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('two'));
+    await waitFor(() => saved.length > writesBeforeRetirement);
+
+    const afterRetirement = saved.slice(writesBeforeRetirement);
+    assert.ok(
+      !afterRetirement.some((state) => state.streamRawTopic === retiredTopic),
+      'the replaced session saved its own state over the recovery entry of the session that replaced it',
+    );
+    assert.deepEqual(
+      removed,
+      [],
+      'finalizing the replaced session deleted the recovery entry of the session that replaced it',
+    );
     await orch.cleanup();
   });
 });
