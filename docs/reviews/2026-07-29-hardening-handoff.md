@@ -45,19 +45,17 @@ and `main` @ `6b82baa` are untouched and must stay that way.
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
-### Start here: PR #36 is gated and answered, waiting on one owner decision
+### Where things stand: SEC-1 is closed, the queue starts at OPS-1
 
-S1.2 is on `feat/srs-webhook-auth`, and [PR #36](https://github.com/Solar-Punk-Ltd/swarm-hls-stream/pull/36)
-into `feat/ai-hardening` **has been through the review gate**. Six lenses ran, the selection was posted
-before any of them launched, every finding was confirmed and answered, and the fixes are committed on
-the branch. The gate result is on the pull request.
+[PR #36](https://github.com/Solar-Punk-Ltd/swarm-hls-stream/pull/36) went through the review gate with
+six lenses and **merged into `feat/ai-hardening` on 2026-07-31**. With it, **SEC-1 is closed**: the
+endpoints that spend postage stamp money are no longer reachable without a credential, on either half.
 
-**It is not merged**, and the thing holding it is not code. See SEC-13: SRS writes the webhook
-credential into its own container log on every hook, roughly 40 times a minute per stream, because the
-credential travels in the hook URL and SRS trace-logs that URL. That is the standing cost of the design
-S1.2 chose, it was not visible when the approach was picked, and it needs the owner to choose between
-accepting it, lowering the SRS log level, or moving to a header-injecting reverse proxy. Do not merge
-and do not write SEC-1 up as unqualified until that call is made.
+**SEC-13 is deferred to the backlog by owner decision, at MEDIUM.** SRS writes the webhook credential
+into its own container log on every hook. Reading that log needs container access, which already
+exposes the same secret two other ways, so it is untidy rather than dangerous. **Do not re-open this
+decision.** The two things that would change it are written into the SEC-13 row: shipping container
+logs off the host, and an operator pasting SRS logs into a ticket.
 
 **What the round produced.** Every lens found something and the three largest were each found
 independently by two or three lenses, which is not a good sign about the diff. The comparison accepted
