@@ -21,7 +21,31 @@ else
   log_ok "config.json already exists"
 fi
 
-# 3. Create .env if missing
+# 3. Create .env if missing, or top up one that is missing sample keys.
+# Existence is not enough: pnpm stamp:setup creates .env when it records a batch id, so a run in
+# that order would otherwise leave a one-key file that this step skips and nothing ever fills in.
+missing_sample_keys() {
+  local key
+  while IFS= read -r key; do
+    grep -qE "^${key}=" "$ENV_FILE" || return 0
+  done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$ENV_SAMPLE" | tr -d '=')
+  return 1
+}
+
+if [ -f "$ENV_FILE" ] && missing_sample_keys; then
+  log_warn ".env exists but is missing keys from .env.sample, appending them"
+  while IFS= read -r line; do
+    case "$line" in
+      [A-Z_]*=*)
+        key="${line%%=*}"
+        grep -qE "^${key}=" "$ENV_FILE" || echo "$line" >>"$ENV_FILE"
+        ;;
+      *) ;;
+    esac
+  done <"$ENV_SAMPLE"
+  log_ok "Topped up .env from .env.sample"
+fi
+
 if [ ! -f "$ENV_FILE" ]; then
   cp "$ENV_SAMPLE" "$ENV_FILE"
   echo ""
