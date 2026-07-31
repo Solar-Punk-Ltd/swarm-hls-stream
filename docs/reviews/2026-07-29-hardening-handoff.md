@@ -37,8 +37,9 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` at `bd1bccc`. Thirteen pull requests merged, each through the
-review gate: #27 through #38. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
+**Where the code is.** `feat/ai-hardening` at `97e13cb`. Fourteen pull requests merged, each through the
+review gate: #27 through #39 and #41. **PR #13 into `main` is closed as superseded**, by owner decision
+on 2026-07-31, with the reasoning recorded on the pull request itself. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
 stay that way.
 
 **Test baseline is 274 uploader, 40 cli, 5 client, 38 audit-gate**, with lint, typecheck and whole-tree prettier clean. One
