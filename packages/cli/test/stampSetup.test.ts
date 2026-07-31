@@ -7,7 +7,11 @@ import { after, beforeEach, describe, it } from 'node:test';
 
 import { stampSetup, StampSetupSeams } from '../src/commands/stamp-setup.js';
 
-const BATCH_ID = 'ab'.repeat(32);
+// Unique per process. A fixed id let the recovery file this suite leaks into the shared temp
+// directory satisfy the next run's assertion, so the entire fallback mechanism could be deleted and
+// the suite stayed green on any machine that had run it once.
+const BATCH_ID = `${process.pid.toString(16).padStart(8, '0')}`.repeat(8).slice(0, 64);
+const recoveryFiles: string[] = [];
 const workspaces: string[] = [];
 
 function workspace(): string {
@@ -17,6 +21,9 @@ function workspace(): string {
 }
 
 after(() => {
+  for (const file of recoveryFiles) {
+    rmSync(file, { force: true });
+  }
   for (const dir of workspaces) {
     try {
       chmodSync(dir, 0o700);
@@ -159,14 +166,25 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
       },
     });
 
-    const recovery = readdirSync(dir).filter((name) => name.startsWith('stamp-batch-'));
-    const savedSomewhere =
-      recovery.length > 0 ||
-      readdirSync(tmpdir()).some((name) => name.startsWith(`stamp-batch-${BATCH_ID.slice(0, 16)}`));
+    // The path is read out of the output rather than discovered by scanning a shared directory, and
+    // its contents are checked. Scanning let a previous run's leftover satisfy this.
+    const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
+    assert.ok(savedAt, `the notice must name where it saved the id, got: ${result.output}`);
+    recoveryFiles.push(savedAt);
 
-    assert.ok(savedSomewhere, 'the id must be written somewhere on disk');
+    assert.equal(
+      readFileSync(savedAt, 'utf-8').trim(),
+      `STAMP=${BATCH_ID}`,
+      'the recovery file must hold the id that was actually bought',
+    );
+    assert.equal(result.exitCode, 1, 'a spend whose id never reached .env is a failure');
     assert.match(result.output, /PAID FOR/, 'the operator must be told the money is already gone');
     assert.match(result.output, new RegExp(BATCH_ID), 'the id must be echoed whatever else fails');
+    assert.doesNotMatch(
+      result.output,
+      /Run \.\/deploy\/scripts\/deploy\.sh/,
+      'a run that could not record the id must not end by telling the operator to deploy',
+    );
   });
 
   it('does not claim a successful .env write when the write failed', async () => {
@@ -179,6 +197,102 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     });
 
     assert.doesNotMatch(result.output, /Written STAMP=.* to \.env/, 'reporting a write that did not happen is the bug');
+  });
+
+  it('exits zero on a fully successful run', async () => {
+    // Without this, appending exit(1) to the success path changes no test, which is how the
+    // opposite defect got in: a failed write exiting zero.
+    const result = await run({ envPath });
+
+    assert.equal(result.exitCode, undefined, 'a successful run must not exit non-zero');
+    assert.match(result.output, /Run \.\/deploy\/scripts\/deploy\.sh/);
+  });
+
+  it('fails without writing anything when the purchase itself throws', async () => {
+    // The stub for this existed and no test ever used it. Swallowing the error here would write an
+    // empty STAMP= into the operator's .env and report it as written.
+    const result = await run({ envPath, buyThrows: true });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(existsSync(envPath), false, 'a failed purchase must not create or touch .env');
+    assert.doesNotMatch(result.output, /Written STAMP=/);
+  });
+
+  it('does not spend when the wallet is unfunded', async () => {
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
+          getWalletBalance: async () => ({
+            bzzBalance: { toDecimalString: () => '0', toPLURBigInt: () => 0n },
+            nativeTokenBalance: { toDecimalString: () => '0', toWeiBigInt: () => 0n },
+          }),
+          getPostageBatches: async () => [],
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 0, 'an unfunded wallet must never reach the purchase');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /not funded/);
+  });
+
+  it('reuses an existing usable batch without spending', async () => {
+    // The whole reuse branch, including its own recording, was never entered by any test.
+    const existing = 'cd'.repeat(32);
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
+          getWalletBalance: async () => ({
+            bzzBalance: { toDecimalString: () => '1.0', toPLURBigInt: () => 1n },
+            nativeTokenBalance: { toDecimalString: () => '1.0', toWeiBigInt: () => 1n },
+          }),
+          getPostageBatches: async () => [
+            { usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false },
+          ],
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 0, 'a usable batch already exists, nothing may be bought');
+    assert.equal(result.exitCode, undefined);
+    assert.match(readFileSync(envPath, 'utf-8'), new RegExp(`^STAMP=${existing}$`, 'm'));
+    assert.doesNotMatch(result.output, /PAID FOR/, 'nothing was paid for on this path');
+  });
+
+  it('does not claim a purchase when reuse cannot record the id', async () => {
+    const existing = 'cd'.repeat(32);
+    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+    chmodSync(dir, 0o500);
+
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
+          getWalletBalance: async () => ({
+            bzzBalance: { toDecimalString: () => '1.0', toPLURBigInt: () => 1n },
+            nativeTokenBalance: { toDecimalString: () => '1.0', toWeiBigInt: () => 1n },
+          }),
+          getPostageBatches: async () => [
+            { usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false },
+          ],
+        } as unknown as Bee),
+    });
+
+    const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
+    if (savedAt) {
+      recoveryFiles.push(savedAt);
+    }
+    assert.equal(result.spends, 0);
+    assert.equal(result.exitCode, 1, 'an id that never reached .env is a failure here too');
+    assert.doesNotMatch(
+      result.output,
+      /PAID FOR/,
+      'telling someone their money is gone when it is not is the mirror bug',
+    );
+    assert.match(result.output, /Nothing was bought/);
   });
 
   it('does not spend when the node is unreachable', async () => {
