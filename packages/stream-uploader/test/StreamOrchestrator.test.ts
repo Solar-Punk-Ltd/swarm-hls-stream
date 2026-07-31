@@ -3,8 +3,9 @@ import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
+import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, REJECT_UNKNOWN_STREAM, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -112,23 +113,259 @@ describe('StreamOrchestrator recovery hygiene', () => {
   });
 });
 
+describe('StreamOrchestrator per-stream bookkeeping', () => {
+  /** Reaches the maps directly, because a retained entry has no behavioural signal to observe. */
+  interface OrchestratorMaps {
+    processedSegments: Map<string, Set<number>>;
+    streamActivityAt: Map<string, number>;
+  }
+
+  // A stopped stream leaves nothing behind. The per-stream duplicate filter holds one index per
+  // segment the broadcast ever delivered, so a long-running uploader that has served many streams
+  // keeps every one of those sets alive for the life of the process.
+  it('drops its per-stream entries when a stream stops', async () => {
+    const id = 'live/stream';
+    const orch = makeOrchestrator();
+    const maps = orch as unknown as OrchestratorMaps;
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+    assert.equal(maps.processedSegments.has(id), true, 'the stream must be tracked before the stop means anything');
+
+    await orch.stopStream(id);
+
+    assert.equal(maps.processedSegments.has(id), false, 'the duplicate filter outlived the stream it belonged to');
+    assert.equal(maps.streamActivityAt.has(id), false, 'the activity reading outlived the stream it belonged to');
+  });
+});
+
 describe('StreamOrchestrator re-announce (E: engine restart)', () => {
+  interface PublishedEntry {
+    state: string;
+  }
+
+  function startedOrchestrator(published: unknown[], removed: string[]): StreamOrchestrator {
+    return makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore({ remove: (streamId: string) => removed.push(streamId) }),
+      makeRecordingCatalog(published),
+    );
+  }
+
   it('accepts a re-announced already-active stream and restarts it instead of rejecting', async () => {
     const id = 'live/stream';
+    const published: unknown[] = [];
     const removed: string[] = [];
-    const orch = makeOrchestrator(makeFakeRecoveryStore({ remove: (streamId: string) => removed.push(streamId) }));
+    const orch = startedOrchestrator(published, removed);
 
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true);
     await waitFor(() => orch.getActiveStreamCount() === 1);
     assert.equal(orch.getActiveStreamCount(), 1, 'first publish starts the stream');
+    // Content, so finalizing the stale session is observable as the VOD it publishes. Recovery-entry
+    // removal cannot serve as that signal any more: the id belongs to the live session by then.
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
     // Previously this returned false → SRS rejected the broadcaster. It must now be accepted.
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 're-announce of an active stream must be accepted');
 
-    // The stale session is finalized (recovery state removed) and a fresh uploader takes its place.
-    await waitFor(() => removed.includes(id) && orch.getActiveStreamCount() === 1);
-    assert.ok(removed.includes(id), 'the stale session must be finalized on re-announce');
+    await waitFor(() => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD));
+    assert.ok(
+      published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      'the stale session must be finalized on re-announce, not abandoned',
+    );
     assert.equal(orch.getActiveStreamCount(), 1, 'a fresh stream is active after the re-announce restart');
+    await orch.cleanup();
+  });
+
+  // The outgoing session and the live one share a stream id, and the recovery entry under it now
+  // describes the live one. Anything the outgoing session writes there lands on a broadcast that is
+  // still running: its VOD commit saves an outgoing session's state over the live one's, and the
+  // delete that ends `notifyStop` discards it outright. Both directions, because each fails alone.
+  it('stops touching the recovery entry once another session has replaced it', async () => {
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const removed: string[] = [];
+    const saved: StreamState[] = [];
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore({
+        remove: (streamId: string) => removed.push(streamId),
+        save: (_streamId: string, state: StreamState) => saved.push(state),
+      }),
+      makeRecordingCatalog(published),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+    await waitFor(() => saved.length > 0);
+
+    // Each uploader owns a freshly generated feed topic, so the topic is what tells the outgoing
+    // session's recovery writes apart from the live one's.
+    const retiredTopic = saved[saved.length - 1].streamRawTopic;
+    const writesBeforeRetirement = saved.length;
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD));
+    // Without this the rest holds vacuously: a build that never finalizes the replaced session at all
+    // also never touches the entry, and both assertions below would pass on that.
+    assert.ok(
+      published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      'the replaced session was never finalized, so nothing here has been exercised',
+    );
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('two'));
+    await waitFor(() => saved.length > writesBeforeRetirement);
+
+    const afterRetirement = saved.slice(writesBeforeRetirement);
+    assert.ok(
+      !afterRetirement.some((state) => state.streamRawTopic === retiredTopic),
+      'the replaced session saved its own state over the recovery entry of the session that replaced it',
+    );
+    assert.deepEqual(
+      removed,
+      [],
+      'finalizing the replaced session deleted the recovery entry of the session that replaced it',
+    );
+    await orch.cleanup();
+  });
+
+  // The core of the failure, at the layer it belongs to. A re-announced session must get its own
+  // duplicate filter: the outgoing one holds every index the previous broadcast delivered, and the
+  // restarted origin numbers from its own beginning, so sharing it means the new session's opening
+  // segments come back accepted and are never uploaded. Accepted-as-duplicate is indistinguishable
+  // from accepted-and-published to everything upstream, which is why this went unseen.
+  it('accepts the new session at an index the outgoing one had already delivered', async () => {
+    const id = 'live/stream';
+    const orch = makeOrchestrator();
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('one')),
+      { accepted: true },
+      'the outgoing session must deliver index 0 before a re-announce means anything',
+    );
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('one again')),
+      { accepted: true },
+      'a replay of a delivered index is accepted silently, which is what the next assertion has to out-rank',
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('restarted'));
+
+    assert.equal(
+      (orch as unknown as { processedSegments: Map<string, Set<number>> }).processedSegments.get(id)?.size,
+      1,
+      'the new session inherited the outgoing filter, so its own index 0 was swallowed as a duplicate',
+    );
+    await orch.cleanup();
+  });
+
+  // The replacement has to be registered before the finalize rather than after it. Deferring it
+  // looks like it only costs latency and does not: a close arriving inside that window finds no
+  // uploader to drain, and the deferred spawn then registers one after the close, live for the rest
+  // of the process with nothing left to stop it and a catalog entry that never becomes a VOD.
+  it('leaves nothing running when a close arrives while the replaced session is finalizing', async () => {
+    const id = 'live/stream';
+    const finalizing: string[] = [];
+    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
+      addStream: async () => {
+        finalizing.push('vod');
+        await sleep(60);
+      },
+    } as unknown as StreamCatalog);
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => finalizing.length > 0);
+    await orch.stopStream(id);
+    // Long enough that a spawn deferred behind the finalize would have landed by now.
+    await sleep(150);
+
+    assert.equal(
+      orch.getActiveStreamCount(),
+      0,
+      'a stream survived its own close, so nothing will ever finalize it or move it off live',
+    );
+    await orch.cleanup();
+  });
+
+  // Finalizing the outgoing session must not borrow the machinery that hides a stopping stream from
+  // the stall signal, because the id it would hide belongs to the live one by then. A whole finalize
+  // window, up to the five minute drain timeout, in which a broadcaster that goes quiet reports
+  // nothing at all. This is the shape every round of review here keeps finding: a fix whose safety
+  // rests on a signal staying live, with nothing holding it there.
+  it('leaves the replacement visible to the stall signal while the outgoing session finalizes', async () => {
+    const id = 'live/stream';
+    const finalizing: string[] = [];
+    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
+      addStream: async () => {
+        finalizing.push('vod');
+        await sleep(60);
+      },
+    } as unknown as StreamCatalog);
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => finalizing.length > 0 && orch.getActiveStreamCount() === 1);
+
+    assert.notEqual(
+      orch.getMsSinceStreamActivity(),
+      null,
+      'the live stream is unreadable to the stall signal for as long as the replaced one takes to finalize',
+    );
+    await orch.cleanup();
+  });
+
+  // A broadcaster that drops and reconnects inside the drain its own disconnect started. The stop
+  // captured the outgoing uploader before the reconnect, so when it finishes it must not detach
+  // whatever holds the id by then. Getting this wrong is silent and permanent: the reconnected
+  // session is unregistered, every segment comes back as an unknown stream, and with the id gone
+  // from the active map the stall signal has nothing left to report it through.
+  it('keeps the reconnected session when a stop that began before it finishes after it', async () => {
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const finalizeStarted: string[] = [];
+    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
+      addStream: async (entry: unknown) => {
+        finalizeStarted.push('vod');
+        // Long enough that the reconnect below lands inside this drain rather than after it.
+        await sleep(60);
+        published.push(entry);
+      },
+    } as unknown as StreamCatalog);
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    // The disconnect. Deliberately not awaited: every caller in the engines fires it and moves on.
+    const stopping = orch.stopStream(id);
+    await waitFor(() => finalizeStarted.length > 0);
+
+    // The reconnect, while that drain is still running.
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await stopping;
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'the drain that started first unregistered the reconnected session');
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('two')),
+      { accepted: true },
+      'the reconnected broadcaster cannot deliver anything, and nothing reports why',
+    );
     await orch.cleanup();
   });
 });

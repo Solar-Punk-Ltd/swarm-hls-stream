@@ -874,3 +874,111 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
     });
   }
 });
+
+// A puller is stopped from outside, by the engine replacing it or by an announce closing the stream,
+// while a poll of its own is in flight. Everything below is what that in-flight poll must not do when
+// it finally answers, because by then the stream id can belong to a different session.
+describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
+  const MEDIA = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
+
+  interface StoppablePuller {
+    tick(): Promise<void>;
+    stop(): void;
+  }
+
+  it('does not hand over a segment whose download outlived the stop', async () => {
+    const delivered: number[] = [];
+
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('.m3u8')) {
+        return { ok: true, status: 200, text: async () => MEDIA } as unknown as Response;
+      }
+      // The stop lands while this download is outstanding, which is the only way the race happens.
+      puller.stop();
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response;
+    }) as unknown as Fetcher;
+
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true };
+      },
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+    }) as unknown as StoppablePuller;
+
+    await withSilencedLogs(() => puller.tick());
+
+    assert.deepEqual(
+      delivered,
+      [],
+      'a segment fetched before the stop was published after it, into whichever session holds the id now',
+    );
+  });
+
+  it('does not halt the stream when the 404 that would trigger it outlived the stop', async () => {
+    const halts: string[] = [];
+    let polls = 0;
+
+    const fetcher = (async () => {
+      polls++;
+      // Second poll: the stop lands while this one is outstanding. With the halt threshold at zero,
+      // an unguarded handleNotFound gives up here and finalizes a stream it no longer owns.
+      if (polls > 1) {
+        puller.stop();
+      }
+      return { ok: false, status: 404, text: async () => '' } as unknown as Response;
+    }) as unknown as Fetcher;
+
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StoppablePuller;
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      // Real elapsed time, so the zero threshold is genuinely exceeded on the second poll.
+      await sleep(5);
+      await puller.tick();
+    });
+
+    assert.deepEqual(halts, [], 'a stopped puller halted anyway, taking the session that replaced it with it');
+  });
+
+  // Proves the threshold seam is wired to the path it claims to control, so the test above is not
+  // passing because nothing could ever halt.
+  it('does halt on a 404 past the threshold while it is still running', async () => {
+    const halts: string[] = [];
+    const fetcher = (async () =>
+      ({ ok: false, status: 404, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StoppablePuller;
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+    });
+    puller.stop();
+
+    assert.deepEqual(halts, ['halted'], 'the halt path never fired, so the guard above proves nothing');
+  });
+});

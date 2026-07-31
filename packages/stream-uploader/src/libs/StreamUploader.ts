@@ -47,6 +47,8 @@ export class StreamUploader {
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
   private consecutiveSegmentFailures = 0;
+  /** Whether the recovery entry under this stream id still describes this uploader. See `retire`. */
+  private ownsRecoveryEntry = true;
 
   private manifestManager: ManifestManager;
 
@@ -154,7 +156,7 @@ export class StreamUploader {
 
     if (!this.manifestManager.hasSegments()) {
       this.logger.warn(`Stream ${this.streamId} has no segments, skipping VOD finalization`);
-      this.recoveryStore.remove(this.streamId);
+      this.clearRecoveryEntry();
       return;
     }
 
@@ -178,7 +180,26 @@ export class StreamUploader {
     this.logger.log(`Updating stream in list to VOD: ${JSON.stringify(entry)}`);
     await this.streamCatalog.addStream(entry);
 
-    this.recoveryStore.remove(this.streamId);
+    this.clearRecoveryEntry();
+  }
+
+  /**
+   * Stop owning the crash-recovery entry under this stream id, because a newer session now holds it.
+   *
+   * A re-announce starts the replacement while this uploader is still finalizing, and both carry the
+   * same stream id. Everything this one writes to or deletes from the recovery store after that point
+   * lands on a broadcast that is still running: a save replaces the live session's state with an
+   * outgoing session's, and the delete at the end of `notifyStop` discards it outright. The published
+   * media is unaffected, since each uploader owns its own feed topic.
+   */
+  public retire(): void {
+    this.ownsRecoveryEntry = false;
+  }
+
+  private clearRecoveryEntry(): void {
+    if (this.ownsRecoveryEntry) {
+      this.recoveryStore.remove(this.streamId);
+    }
   }
 
   public getStreamState(): StreamState {
@@ -269,6 +290,9 @@ export class StreamUploader {
   }
 
   private persistState(): void {
+    if (!this.ownsRecoveryEntry) {
+      return;
+    }
     try {
       this.recoveryStore.save(this.streamId, this.getStreamState());
     } catch (error) {

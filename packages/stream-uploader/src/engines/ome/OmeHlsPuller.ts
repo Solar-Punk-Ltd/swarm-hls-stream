@@ -16,6 +16,9 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
  */
 export const SEGMENT_RETRY_LIMIT = 3;
 
+/** How long a playlist may keep answering 404 before the puller gives up on the stream. */
+export const DEFAULT_HALT_AFTER_NOT_FOUND_MS = 60_000;
+
 /**
  * `AbortSignal.timeout` aborts with a `TimeoutError` DOMException, and an explicit `controller.abort()`
  * with an `AbortError`. Both mean the request was cut off rather than answered, which is the case an
@@ -42,11 +45,10 @@ export class OmeHlsPuller {
   private readonly masterUrl: string;
   private mediaPlaylistUrl: string | null = null;
 
-  private static readonly RETRY_THRESHOLD_IN_MS = 60_000;
-
   private readonly onHalt?: () => void;
   private readonly fetcher: Fetcher;
   private readonly fetchTimeoutMs: number;
+  private readonly haltAfterNotFoundMs: number;
 
   constructor(
     private streamId: string,
@@ -62,8 +64,18 @@ export class OmeHlsPuller {
     // construction is still seen. Capturing it here would silently opt this class out of an APM agent.
     this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    this.haltAfterNotFoundMs = options.haltAfterNotFoundMs ?? DEFAULT_HALT_AFTER_NOT_FOUND_MS;
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
+  }
+
+  /**
+   * Read through an accessor rather than testing `state` inline, because `stop()` is called from
+   * outside this class while a pass is awaiting a fetch. Narrowing on a field convinces the compiler
+   * the value cannot have changed across that await, and it is precisely the value that does.
+   */
+  private get isStopped(): boolean {
+    return this.state === 'stopped';
   }
 
   start(): void {
@@ -86,7 +98,7 @@ export class OmeHlsPuller {
   }
 
   private scheduleNext(delayMs: number): void {
-    if (this.state === 'stopped') {
+    if (this.isStopped) {
       return;
     }
     if (this.timer) {
@@ -119,7 +131,7 @@ export class OmeHlsPuller {
   }
 
   private async tick(): Promise<void> {
-    if (this.state === 'stopped') {
+    if (this.isStopped) {
       return;
     }
 
@@ -187,7 +199,7 @@ export class OmeHlsPuller {
     const segments = parseMediaPlaylist(playlist);
 
     for (const segment of segments) {
-      if (this.state === 'stopped') {
+      if (this.isStopped) {
         return;
       }
       if (segment.seq <= this.lastSeq) {
@@ -213,6 +225,15 @@ export class OmeHlsPuller {
         }
 
         const segmentBuffer = Buffer.from(await segmentResponse.arrayBuffer());
+
+        if (this.isStopped) {
+          // Same reason `reportSegmentLoss` refuses to report after a stop: this download started
+          // before it and answered after, so by now the id can belong to a different session, and
+          // handing this over would publish one session's media into another's manifest.
+          logger.warn(`[OME] Segment ${segment.seq} arrived for ${this.streamId} after the puller stopped, discarding`);
+          return;
+        }
+
         const result = this.orchestrator.handleSegment(this.streamId, segment.seq, segment.duration, segmentBuffer);
 
         if (!result.accepted) {
@@ -288,7 +309,7 @@ export class OmeHlsPuller {
     const count = lastSeq - firstSeq + 1;
     const subject = count === 1 ? `Segment ${firstSeq}` : `Segments ${firstSeq} to ${lastSeq}`;
 
-    if (this.state === 'stopped') {
+    if (this.isStopped) {
       // A fetch started before the stop can answer after it, and by then the id may belong to a new
       // session. Reporting there degrades a healthy stream and marks its first segment with a
       // discontinuity that never happened.
@@ -342,12 +363,18 @@ export class OmeHlsPuller {
   }
 
   private handleNotFound(target: string): void {
+    if (this.isStopped) {
+      // This poll started before the stop and answered after it. Halting here would fire `onHalt`
+      // for a puller the engine has already dropped, finalizing whichever session took its place.
+      return;
+    }
+
     const now = Date.now();
     if (this.notFoundSince === null) {
       this.notFoundSince = now;
     }
 
-    if (now - this.notFoundSince > OmeHlsPuller.RETRY_THRESHOLD_IN_MS) {
+    if (now - this.notFoundSince > this.haltAfterNotFoundMs) {
       logger.info(`[OME] ${target} gone for ${this.streamId}, halting puller`);
       this.stop();
       this.onHalt?.();
