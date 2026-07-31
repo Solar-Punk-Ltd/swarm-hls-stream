@@ -12,6 +12,23 @@ else
   sed -i '/pbkeylen/d' "$CONF"
 fi
 
+
+# Refuse rather than splice. These values land inside a `sed` s/// expression, where a `/` aborts
+# the substitution and `&` expands to the whole match, so a typo would either crash-loop the
+# container under `restart: unless-stopped` or silently write a corrupt config.
+require_number() {
+  case "$2" in
+    '' | *[!0-9.]* | *.*.*) echo "$1 must be a positive number, got '$2'" >&2; exit 1 ;;
+  esac
+}
+
+# Segment length, and how much of it the playlist keeps. SRS can only cut on a keyframe, so a
+# publisher whose GOP is longer than the fragment produces segments longer than this asks for.
+require_number HLS_FRAGMENT "${HLS_FRAGMENT:-1.5}"
+require_number HLS_WINDOW "${HLS_WINDOW:-22.5}"
+sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-1.5}/" "$CONF"
+sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-22.5}/" "$CONF"
+
 # Substitute webhook host and port
 sed -i "s/SRS_ADAPTER_HOST_PLACEHOLDER/${SRS_ADAPTER_HOST:-stream-uploader}/g" "$CONF"
 sed -i "s/SRS_ADAPTER_PORT_PLACEHOLDER/${SRS_ADAPTER_PORT:-3000}/g" "$CONF"
