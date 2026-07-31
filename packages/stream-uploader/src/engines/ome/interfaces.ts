@@ -22,10 +22,24 @@ export interface PullerOptions {
   /**
    * Segments starting at or before this epoch-millisecond instant belong to the session this puller
    * replaced, and are skipped rather than delivered. Set only for a replacement puller, from the
-   * newest `#EXT-X-PROGRAM-DATE-TIME` its predecessor saw, so the two values come from the origin's
-   * clock alone and no skew between it and this host can enter the comparison. See CON-20.
+   * newest `#EXT-X-PROGRAM-DATE-TIME` observed for this stream before it was built. Both sides of the
+   * comparison are parsed from the origin's own playlists, so a fixed offset between its clock and
+   * this host's cancels. A playlist that omits the timezone is the exception, since RFC 8216 section
+   * 6.3.3 has a client read that as local time. See CON-20.
    */
   staleBefore?: number;
+  /**
+   * How long every advertised segment may sit under `staleBefore`, with nothing delivered, before the
+   * floor is abandoned as wrong. Injectable only so the abandon path can be driven in a test.
+   */
+  abandonFloorAfterMs?: number;
+  /**
+   * Called with the newest segment start observed so far, or null while none has been, every time a
+   * playlist is parsed. The engine keeps this per stream rather than reading it off the puller at
+   * handover, because a `closing` between two announces destroys the puller and would take the only
+   * copy of the floor with it.
+   */
+  onSegmentTimeObserved?: (newest: number | null) => void;
 }
 
 export interface AppStream {

@@ -982,3 +982,253 @@ describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
     assert.deepEqual(halts, ['halted'], 'the halt path never fired, so the guard above proves nothing');
   });
 });
+
+/**
+ * The handover floor's own failure modes. Every case here was found by a review-gate lens against the
+ * first version of the fix, and each one is a way for the floor to destroy media rather than protect
+ * it. See CON-20.
+ */
+describe('OmeHlsPuller handover floor (CON-20)', () => {
+  const FLOOR = Date.parse('2026-07-31T12:00:00.000Z');
+  const PLAYLIST_URL = 'http://ome/hls/app/stream/ts:playlist.m3u8';
+
+  function stamped(entries: Array<{ uri: string; at: number }>, mediaSeq = 0): string {
+    return [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}`,
+      ...entries.flatMap(({ uri, at }) => [
+        `#EXT-X-PROGRAM-DATE-TIME:${new Date(at).toISOString()}`,
+        '#EXTINF:2.0,',
+        uri,
+      ]),
+    ].join('\n');
+  }
+
+  function drive(playlist: string, options: Record<string, unknown> = {}) {
+    const delivered: number[] = [];
+    const losses: Array<{ first: number; count: number }> = [];
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true } as SegmentResult;
+      },
+      handleSegmentLoss: (_id: string, first: number, count: number) => {
+        losses.push({ first, count });
+        return true;
+      },
+    } as unknown as OrchestratorArg;
+
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === PLAYLIST_URL) {
+        return { ok: true, status: 200, text: async () => playlist } as Response;
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
+    }) as unknown as Fetcher;
+
+    const puller = new OmeHlsPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      staleBefore: FLOOR,
+      ...options,
+    }) as unknown as PullerInternals & { tick(): Promise<void> };
+
+    return { puller, delivered, losses };
+  }
+
+  /**
+   * A segment under the floor arriving after this session has already delivered something is not a gap
+   * in this session's media, but the rolled-out report could not tell the difference: it worked from
+   * the high-water alone, so a deliberate skip became an error-level loss and a discontinuity in the
+   * manifest, for a segment that was in the playlist and downloadable one tick earlier. That is the
+   * very fabrication the register wrongly attributed to the defect this floor exists to fix.
+   */
+  it('does not announce a segment it skipped on purpose as media the origin rolled out', async () => {
+    const { puller, delivered, losses } = drive(
+      stamped([
+        { uri: 'live_0.ts', at: FLOOR + 2_000 },
+        { uri: 'stale_1.ts', at: FLOOR - 5_000 },
+        { uri: 'live_2.ts', at: FLOOR + 6_000 },
+      ]),
+    );
+
+    await withSilencedLogs(() => puller.tick());
+
+    assert.deepEqual(delivered, [0, 2], 'the two live segments should be the ones delivered');
+    assert.deepEqual(losses, [], `a deliberate skip was reported as a loss: ${JSON.stringify(losses)}`);
+  });
+
+  /**
+   * A floor above everything the origin serves discards the whole broadcast, and every signal that
+   * could show it is bypassed: nothing is delivered so no gap is reported, and the playlist answers
+   * 200 so the not-found halt never fires. An origin clock stepping backwards between two sessions
+   * produces exactly that. Giving the floor up costs one playlist window; keeping it costs the stream.
+   */
+  it('gives up a floor that has matched every segment for too long, and says so', async () => {
+    const playlist = stamped([
+      { uri: 'a.ts', at: FLOOR - 8_000 },
+      { uri: 'b.ts', at: FLOOR - 6_000 },
+    ]);
+    const { puller, delivered } = drive(playlist, { abandonFloorAfterMs: 0 });
+
+    const logs = await withCapturedLogs(async () => {
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+    });
+
+    assert.deepEqual(delivered, [0, 1], `the broadcast never arrived, so the floor swallowed it: ${delivered}`);
+    assert.ok(
+      logs.errors.some((line) => line.includes('cannot be right')),
+      `abandoning the floor has to be loud, or a stream recording nothing looks like a quiet one; errors: ${
+        logs.errors.join(' | ') || '(none)'
+      }`,
+    );
+  });
+
+  it('keeps a floor that is doing its job rather than giving it up on a timer', async () => {
+    let playlist = stamped([
+      { uri: 'stale_0.ts', at: FLOOR - 4_000 },
+      { uri: 'live_1.ts', at: FLOOR + 2_000 },
+    ]);
+    const delivered: number[] = [];
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true } as SegmentResult;
+      },
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.endsWith('ts:playlist.m3u8')) {
+        return { ok: true, status: 200, text: async () => playlist } as Response;
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
+    }) as unknown as Fetcher;
+    const puller = new OmeHlsPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      staleBefore: FLOOR,
+      abandonFloorAfterMs: 0,
+    }) as unknown as PullerInternals & { tick(): Promise<void> };
+
+    await withSilencedLogs(async () => {
+      // Two ordinary passes first, so a retirement rule that ignored how much it was actually skipping
+      // would have elapsed its window by now.
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+      // Only then does a segment of the replaced session turn up. It is the one the floor exists for,
+      // and it arrives after the point where a careless timer would already have thrown the floor away.
+      playlist = stamped([{ uri: 'stale_2.ts', at: FLOOR - 3_000 }], 2);
+      await sleep(5);
+      await puller.tick();
+    });
+
+    assert.deepEqual(
+      delivered,
+      [1],
+      `the outgoing session's media was delivered, so the floor had been given up before it was needed: ${delivered}`,
+    );
+  });
+
+  /**
+   * Retirement is for a floor that rejects everything the origin keeps producing, not for a pass that
+   * happens to contain only stragglers. A straggler is stepped over once and absorbed by the
+   * high-water on the next pass, so the run of all-skipped passes that retirement waits for cannot
+   * form, and the floor stays in force for the media that comes after.
+   */
+  it('does not retire the floor over stragglers that are stepped over and then absorbed', async () => {
+    let playlist = stamped([
+      { uri: 'stale_0.ts', at: FLOOR - 4_000 },
+      { uri: 'live_1.ts', at: FLOOR + 2_000 },
+    ]);
+    const delivered: number[] = [];
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true } as SegmentResult;
+      },
+      handleSegmentLoss: () => true,
+    } as unknown as OrchestratorArg;
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.endsWith('ts:playlist.m3u8')) {
+        return { ok: true, status: 200, text: async () => playlist } as Response;
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
+    }) as unknown as Fetcher;
+    const puller = new OmeHlsPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      staleBefore: FLOOR,
+      abandonFloorAfterMs: 0,
+    }) as unknown as PullerInternals & { tick(): Promise<void> };
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      // Every segment in this pass is under the floor and none has been seen, which is exactly the
+      // shape that retires a floor that never delivered anything.
+      playlist = stamped(
+        [
+          { uri: 'stale_2.ts', at: FLOOR - 3_000 },
+          { uri: 'stale_3.ts', at: FLOOR - 2_000 },
+        ],
+        2,
+      );
+      // Four passes, because retirement needs one pass to start its clock, a second to elapse it, and
+      // a third before anything the abandoned floor was holding back can actually be delivered.
+      for (let pass = 0; pass < 3; pass++) {
+        await sleep(5);
+        await puller.tick();
+      }
+    });
+
+    assert.deepEqual(
+      delivered,
+      [1],
+      `the floor was given up after it had already done its job, so the outgoing session's stragglers were delivered: ${delivered}`,
+    );
+  });
+
+  // The skip does not advance the high-water during a handover, so an unchanged playlist is re-examined
+  // every tick. Logging each time turned a five-segment window into a line every poll interval, for as
+  // long as the origin served it.
+  it('announces each skipped segment once, not once per poll', async () => {
+    const { puller } = drive(
+      stamped([
+        { uri: 'stale_0.ts', at: FLOOR - 6_000 },
+        { uri: 'stale_1.ts', at: FLOOR - 4_000 },
+      ]),
+    );
+
+    const { infos } = await withCapturedInfo(async () => {
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+    });
+
+    const skipLines = infos.filter((line) => line.includes('belongs to the session this puller replaced'));
+    assert.equal(skipLines.length, 2, `one line per skipped segment, not per poll; got: ${skipLines.join(' | ')}`);
+  });
+});
+
+async function withCapturedInfo(run: () => Promise<unknown>): Promise<{ infos: string[] }> {
+  const { info, error, warn } = console;
+  const infos: string[] = [];
+  console.info = (...args: unknown[]) => infos.push(args.map(String).join(' '));
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    await run();
+    return { infos };
+  } finally {
+    console.info = info;
+    console.error = error;
+    console.warn = warn;
+  }
+}

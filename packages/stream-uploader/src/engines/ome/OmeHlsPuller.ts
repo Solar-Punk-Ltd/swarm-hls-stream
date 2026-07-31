@@ -20,6 +20,13 @@ export const SEGMENT_RETRY_LIMIT = 3;
 export const DEFAULT_HALT_AFTER_NOT_FOUND_MS = 60_000;
 
 /**
+ * How long every segment in the playlist may sit under the handover floor, with nothing delivered,
+ * before the floor is given up as wrong. Comfortably longer than any real handover, which is over
+ * within one playlist window, and far shorter than a broadcast.
+ */
+export const DEFAULT_ABANDON_FLOOR_AFTER_MS = 30_000;
+
+/**
  * `AbortSignal.timeout` aborts with a `TimeoutError` DOMException, and an explicit `controller.abort()`
  * with an `AbortError`. Both mean the request was cut off rather than answered, which is the case an
  * operator needs to see at error level: it is indistinguishable from a healthy stream in every other log.
@@ -51,12 +58,17 @@ export class OmeHlsPuller {
    * segments alone would leave the tail this puller never got to.
    */
   private newestProgramDateTime: number | null = null;
+  /** Highest index already logged as skipped, so an unchanged playlist is not re-announced every poll. */
+  private highestSkipLogged: number | null = null;
+  private floorMatchedEverythingSince: number | null = null;
 
   private readonly onHalt?: () => void;
+  private readonly onSegmentTimeObserved?: (newest: number | null) => void;
   private readonly fetcher: Fetcher;
   private readonly fetchTimeoutMs: number;
   private readonly haltAfterNotFoundMs: number;
-  private readonly staleBefore: number | null;
+  private readonly abandonFloorAfterMs: number;
+  private staleBefore: number | null;
 
   constructor(
     private streamId: string,
@@ -73,18 +85,11 @@ export class OmeHlsPuller {
     this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
     this.haltAfterNotFoundMs = options.haltAfterNotFoundMs ?? DEFAULT_HALT_AFTER_NOT_FOUND_MS;
+    this.abandonFloorAfterMs = options.abandonFloorAfterMs ?? DEFAULT_ABANDON_FLOOR_AFTER_MS;
     this.staleBefore = options.staleBefore ?? null;
+    this.onSegmentTimeObserved = options.onSegmentTimeObserved;
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
-  }
-
-  /**
-   * The floor a puller replacing this one needs, so it can tell this session's media from its own.
-   * Null until a playlist carrying a date-time has been read, which is also the honest answer: there
-   * is nothing to hand over before then.
-   */
-  get latestProgramDateTime(): number | null {
-    return this.newestProgramDateTime;
   }
 
   /**
@@ -216,6 +221,7 @@ export class OmeHlsPuller {
   private async processPlaylist(playlist: string, url: string): Promise<void> {
     const segments = parseMediaPlaylist(playlist);
     this.recordNewestProgramDateTime(segments);
+    let skipped = 0;
 
     for (const segment of segments) {
       if (this.isStopped) {
@@ -227,6 +233,15 @@ export class OmeHlsPuller {
       // Before the baseline is taken and before any loss is reported, because media from the session
       // this puller replaced is neither this session's starting point nor a gap in it.
       if (this.belongsToReplacedSession(segment)) {
+        skipped++;
+        // Once this session has delivered something the handover is behind us, so a straggler under
+        // the floor is not a gap in this session's media. Leaving the high-water where it is makes
+        // `reportSegmentsRolledOutBefore` announce the skipped index as rolled-out media: an error
+        // line and a discontinuity in the manifest for a segment that was deliberately dropped and
+        // was sitting in the playlist a tick earlier.
+        if (this.lastSeq >= 0) {
+          this.lastSeq = segment.seq;
+        }
         continue;
       }
 
@@ -284,6 +299,8 @@ export class OmeHlsPuller {
         }
       }
     }
+
+    this.retireFloorIfItIsSwallowingTheStream(skipped, segments.length);
   }
 
   private recordNewestProgramDateTime(segments: PlaylistEntry[]): void {
@@ -295,6 +312,44 @@ export class OmeHlsPuller {
         this.newestProgramDateTime = segment.programDateTime;
       }
     }
+    this.onSegmentTimeObserved?.(this.newestProgramDateTime);
+  }
+
+  /**
+   * A floor above everything the origin serves discards the entire broadcast, and does it silently and
+   * without end: nothing is delivered, so no gap is ever reported, and the playlist keeps answering
+   * 200, so the not-found halt never fires either. The stream looks alive and records nothing, and at
+   * close it publishes no VOD at all.
+   *
+   * The only thing that produces a floor that high is a floor that was wrong when it was handed over,
+   * which an origin clock stepping backwards between two sessions does. Give it up rather than keep
+   * discarding, and say so loudly: losing the handover costs one playlist window, losing the floor's
+   * judgement costs the broadcast.
+   */
+  private retireFloorIfItIsSwallowingTheStream(skipped: number, advertised: number): void {
+    // No exemption once this session has delivered something. A straggler pass cannot reach here,
+    // because a skip past the handover steps the high-water and the next pass absorbs it before the
+    // floor is consulted, so arriving here at all means the origin keeps producing new media the floor
+    // keeps rejecting, which is the same broken boundary whether or not something landed earlier.
+    if (this.staleBefore === null || advertised === 0 || skipped < advertised) {
+      this.floorMatchedEverythingSince = null;
+      return;
+    }
+
+    const now = Date.now();
+    if (this.floorMatchedEverythingSince === null) {
+      this.floorMatchedEverythingSince = now;
+      return;
+    }
+    if (now - this.floorMatchedEverythingSince <= this.abandonFloorAfterMs) {
+      return;
+    }
+
+    logger.error(
+      `[OME] Every segment ${this.streamId} advertised has been older than the session this puller replaced for ${this.abandonFloorAfterMs}ms, so that boundary cannot be right. Giving it up and taking what the origin serves.`,
+    );
+    this.staleBefore = null;
+    this.floorMatchedEverythingSince = null;
   }
 
   /**
@@ -318,9 +373,15 @@ export class OmeHlsPuller {
       return false;
     }
 
-    logger.info(
-      `[OME] Skipping segment ${segment.seq} for ${this.streamId}: it belongs to the session this puller replaced`,
-    );
+    // Once per index, not once per poll. The skip deliberately does not advance the high-water during
+    // a handover, so the same segments are re-examined on every tick, and logging each time turns a
+    // five-segment window into a line every hundred milliseconds for as long as the origin serves it.
+    if (segment.seq > (this.highestSkipLogged ?? -Infinity)) {
+      this.highestSkipLogged = segment.seq;
+      logger.info(
+        `[OME] Skipping segment ${segment.seq} for ${this.streamId}: it belongs to the session this puller replaced`,
+      );
+    }
     return true;
   }
 
