@@ -59,7 +59,7 @@ export async function stampSetup(
   // caught by this catch and downgraded to "Could not check wallet", and the run bought a stamp
   // anyway. That made the branch untestable through the exit seam and one refactor away from being
   // untrue in production too.
-  let funding: { hasBzz: boolean; hasGas: boolean; address: string } | undefined;
+  let funding: { hasBzz: boolean; hasGas: boolean; address: string };
   try {
     const addresses = await bee.getNodeAddresses();
     const wallet = await bee.getWalletBalance();
@@ -75,10 +75,15 @@ export async function stampSetup(
       address: addresses.ethereum.toHex(),
     };
   } catch (err) {
-    warn(`Could not check wallet: ${err instanceof Error ? err.message : 'unknown'}`);
+    // A failed check is not a passed check. This used to warn on one line and carry on to the
+    // purchase with the balance unknown, which is the one state where proceeding is least
+    // defensible: the next step spends money. See OPS-12.
+    error(`Could not check the wallet balance: ${err instanceof Error ? err.message : 'unknown'}`);
+    info('Refusing to buy a stamp without knowing the balance. No money has been spent.');
+    return exit(1);
   }
 
-  if (funding && (!funding.hasBzz || !funding.hasGas)) {
+  if (!funding.hasBzz || !funding.hasGas) {
     error('Node wallet is not funded');
     if (!funding.hasGas) {
       warn('Send xDAI (Gnosis Chain) for gas fees');
@@ -92,9 +97,7 @@ export async function stampSetup(
     return exit(1);
   }
 
-  if (funding) {
-    ok('Wallet is funded');
-  }
+  ok('Wallet is funded');
 
   // Step 3: Check for existing usable stamps
   try {
@@ -127,7 +130,12 @@ export async function stampSetup(
       return;
     }
   } catch (err) {
-    warn(`Could not check existing stamps: ${err instanceof Error ? err.message : 'unknown'}`);
+    // Indistinguishable from "there are none", and the difference costs a whole batch: carrying on
+    // buys a duplicate and orphans whichever one STAMP does not name. See OPS-12.
+    error(`Could not list existing stamps: ${err instanceof Error ? err.message : 'unknown'}`);
+    info('Refusing to buy a stamp that may duplicate one you already own. No money has been spent.');
+    info('Check with: pnpm stamp:check');
+    return exit(1);
   }
 
   // Step 4: Establish that the result can be recorded, before spending anything.

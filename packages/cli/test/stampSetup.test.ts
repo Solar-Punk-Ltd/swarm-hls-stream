@@ -295,6 +295,50 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     assert.match(result.output, /Nothing was bought/);
   });
 
+  // OPS-12: a check that fails is not a check that passed. Both of these used to warn on one line
+  // and carry on to the purchase.
+  it('does not spend when the wallet balance cannot be read', async () => {
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
+          getWalletBalance: async () => {
+            throw new Error('connect ECONNREFUSED 127.0.0.1:1633');
+          },
+          getPostageBatches: async () => [],
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 0, 'buying with the balance unknown is the least defensible spend');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /Could not check the wallet balance/);
+    assert.match(result.output, /No money has been spent/);
+  });
+
+  it('does not spend when existing stamps cannot be listed', async () => {
+    // A transient error here is indistinguishable from "there are none", and the difference costs
+    // a whole batch: carrying on buys a duplicate and orphans one of them.
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
+          getWalletBalance: async () => ({
+            bzzBalance: { toDecimalString: () => '1.0', toPLURBigInt: () => 1n },
+            nativeTokenBalance: { toDecimalString: () => '1.0', toWeiBigInt: () => 1n },
+          }),
+          getPostageBatches: async () => {
+            throw new Error('Request failed with status code 500');
+          },
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 0, 'a duplicate batch is a whole batch of wasted money');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /Could not list existing stamps/);
+  });
+
   it('does not spend when the node is unreachable', async () => {
     const result = await run({
       envPath,
