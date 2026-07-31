@@ -37,11 +37,11 @@ progress log says. Ask me before pushing anything to a shared branch.
 Written 2026-07-31, replacing the 2026-07-30 note. Read this before the sprint plan below, because it
 supersedes anything in this document that contradicts it.
 
-**Where the code is.** `feat/ai-hardening` at `c6f3599`. Twelve pull requests merged, each through the
+**Where the code is.** `feat/ai-hardening` at `976acec`. Thirteen pull requests merged, each through the
 review gate: #27 through #38. `feature/uploader-hardening` @ `f146588` and `main` are untouched and must
 stay that way.
 
-**Test baseline is 274 uploader, 40 cli, 5 client**, with lint, typecheck and whole-tree prettier clean. One
+**Test baseline is 274 uploader, 40 cli, 5 client, 38 audit-gate**, with lint, typecheck and whole-tree prettier clean. One
 command: **`pnpm verify`**. It short-circuits at the first failing stage, so a lint error hides later
 test results. Do not let any of it regress. Typecheck covers `test/` as well, see TEST-9.
 
@@ -145,12 +145,14 @@ responses) are also still open.
 
 ### The queue after that, in severity order
 
-1. **SEC-7, HIGH.** 60 Dependabot alerts, axios 22 of them at runtime scope through bee-js. Reconcile
-   against PR #13 into `main`, which already claims 32 of 33 resolved, before duplicating work.
-2. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
+1. **OPS-2, CRITICAL, and OBS-2's client half, CRITICAL.** The two CRITICALs left. `clean.sh` sweeps
    by compose-project label and ignores the service filter, so cleaning one service destroys the live
    stack. The client's `ManifestManagement.ts` still has a bare `fetch` with no timeout, the uploader
    half being closed in #34.
+2. **TEST-22, HIGH.** Nothing asserts anything about the client bundle, which is how PR #39 shipped a
+   silent browser-target regression past two gates and a manual browser check. CI builds now, which
+   proves a bundle can be produced and nothing about what is in it. The two assertions that would
+   have caught it are cheap and named in the register row.
 3. **Test debt.** 36 mutations survived the #34 gate and more the #35 one, recorded as TEST-16. The
    largest single gap is that **nothing loads `config.ts`**, so every `required()` call in it can be
    deleted with the suite green. Same module-scope obstacle as TEST-11. Plus S0.3 (coverage baseline). **S0.4's
@@ -159,7 +161,7 @@ responses) are also still open.
 
 ### The lesson every gate keeps producing
 
-Seven rounds running, the same shape: **a signal was added and the failure it was meant to catch did not
+Eight rounds running, the same shape: **a signal was added and the failure it was meant to catch did not
 reach it.** On #30 three signals were added and the likeliest failure reached none. On #34 a lost
 segment was counted on a consecutive counter that the very next success cleared, so 3623 polls answered
 200 while a segment was genuinely lost. On #35 a token that passed validation could lock every caller
@@ -185,6 +187,16 @@ scanning shared state, and clean up what you write.
 **#37 again: a fake's premise needs pinning like any other behaviour.** `fakeBee.ts` argued at length
 for `waitForUsable: false` and could not detect its removal.
 
+**#39: the control was disabled by a supported setting in the file the change itself edited.** A
+`pnpm.auditConfig.ignoreGhsas` key makes `pnpm audit` drop advisories from the report entirely, not
+into `muted`, so a gate built to fail on an unreviewed advisory printed "every one of them
+allowlisted" with two live in the tree. Before shipping a control, ask what the tool it wraps already
+offers for suppressing the thing being gated, and make the control refuse that too. The evidence was
+inside the document the gate had already parsed. **And a default you inherit is not a default you
+keep:** vite 5 and vite 8 default `build.target` differently, no source file changed, so the diff read
+as mechanical while the emitted CSS gained range syntax older engines drop whole. Loading the built
+page in a current browser is exactly the check that cannot see it.
+
 **#38: the test could not fail, because its fake closed the window it was testing.** The seventh round
 produced the same shape from a new direction: the control was added, the failure was real, and the
 test that was meant to catch it ran in a world where the failure could not occur. Round one of that
@@ -206,6 +218,16 @@ $API_AUTH_TOKEN` on every `/stream/*` call. Nothing in this repo calls those rou
   is entirely in the sibling repo.
 - `engines/ome/.env` **cannot** fix a failing OME container: `Dockerfile.uploader` copies only
   `package.json` and `dist/`, so the file is not in the image. The deploy `.env` is the only lever.
+- **PR #13 into `main` is superseded, not merged.** It resolved the advisory set as it stood on
+  2026-06-10 and rotted: 33 alerts became 60 and six of its pins fell behind. SEC-7 supersedes it from
+  `feat/ai-hardening`. Closing it is the owner's call and it has not been made.
+- **Dependabot only ever scans the default branch.** A dependency added on `feat/ai-hardening` is
+  invisible to it until the branch merges, which is how a vitest CRITICAL sat with no alert. `pnpm
+audit:check` runs on every branch and is the thing that actually gates. See SEC-17.
+- **A dependency bump is not verified because the advisories cleared.** Check publish age, registry
+  signature and SLSA provenance, `npm audit signatures`, and malware advisories, on every version the
+  change introduces. During SEC-7 the base branch sat on axios 0.30.3 with a malicious 0.30.4 inside
+  the range bee-js declares.
 - **On-chain actions are the owner's.** Never buy or top up a postage stamp.
 - **Never run the deploy or clean scripts casually.** `clean.sh` over-reaches beyond the service named,
   which is OPS-2.
