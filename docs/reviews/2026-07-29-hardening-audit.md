@@ -59,7 +59,14 @@ So the target is the full [sprint plan](#sprint-plan) again, with three changes 
 2. **Gate at sprint boundaries, not per pull request.** Per pull request the check is `pnpm verify` and
    `pnpm audit:check` in CI, which is a machine and produces no findings to triage. The lens round and
    the Stryker run happen once per sprint over that sprint's whole diff.
-3. **At a sprint gate a finding is fixed in that sprint or archived on sight.** There is no third tier.
+3. **At a sprint gate a finding is fixed in that sprint, archived on sight, or moved to the
+   live-infrastructure block below, and that third destination is owner-added only.** A row enters it
+   only when the specific assertion no fake can make is named. "Easier with a live engine" does not
+   qualify, and neither does a row a session would rather not do. Without that gate the block is the
+   "we will get to it" tier this rule was written to abolish, and any row can reach it by being
+   described as needing a stack.
+   The rule as first written said there is no third tier at all, which the block then contradicted
+   forty lines later in this same file.
    The register reached 124 rows because there was always a "we will get to it", and that tier is the
    whole of why documentation outran source four to one.
 
@@ -133,15 +140,15 @@ it and the spend itself is never exercised.
 Kept because the rows are still the rows, and because the reasoning below still holds for how to order
 work inside a sprint.
 
-| Row         | Sev    | Why it is on the path to done                                                                                           |
-| ----------- | ------ | ----------------------------------------------------------------------------------------------------------------------- |
-| **CON-22**  | MEDIUM | **CLOSED.** The session guard disarms itself between an accepted closing and the next opening. Reconnect.               |
-| **CON-23**  | MEDIUM | **CLOSED.** Two sessions sharing a source port produce one key, which puts CON-21 back in full. Reconnect.              |
-| **CON-17**  | HIGH   | REPORTED and never verified, in the puller's playlist handling. Verify first, it may be nothing.                        |
-| **OBS-17**  | MEDIUM | Nothing scrapes `/health`, and it answers `ok` at the moment a live session has been wrongly killed. Operator can tell. |
-| **OBS-18**  | MEDIUM | A puller that outlives its closing has one exit, a 404, which a proxy removes. Leaked puller, no VOD.                   |
-| **TEST-22** | HIGH   | Suite reliability.                                                                                                      |
-| **TEST-24** | HIGH   | Contention scores a flaky failure as a killed mutant, so mutation numbers can lie about all of the above.               |
+| Row         | Sev    | Why it is on the path to done                                                                                                                                                                                                  |
+| ----------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **CON-22**  | MEDIUM | **CLOSED.** The session guard disarms itself between an accepted closing and the next opening. Reconnect.                                                                                                                      |
+| **CON-23**  | MEDIUM | **CLOSED.** Two sessions sharing a source port produce one key, which puts CON-21 back in full. Reconnect.                                                                                                                     |
+| **CON-17**  | HIGH   | **VERIFIED in consequence, unestablished in reachability, and deferred to the live-infrastructure block.** Do not fix on the consequence alone: rewinding `lastSeq` was tried and reverted in `cb34d1b`. See its register row. |
+| **OBS-17**  | MEDIUM | Nothing scrapes `/health`, and it answers `ok` at the moment a live session has been wrongly killed. Operator can tell.                                                                                                        |
+| **OBS-18**  | MEDIUM | A puller that outlives its closing has one exit, a 404, which a proxy removes. Leaked puller, no VOD.                                                                                                                          |
+| **TEST-22** | HIGH   | Suite reliability.                                                                                                                                                                                                             |
+| **TEST-24** | HIGH   | Contention scores a flaky failure as a killed mutant, so mutation numbers can lie about all of the above.                                                                                                                      |
 
 **Severity is not the ordering.** CON-22 and CON-23 are MEDIUM and were first, because they are the
 reconnect case and the definition of done names it. Several open HIGHs are archived because they are
@@ -375,13 +382,18 @@ this exists for is a later session that does not know which pull requests to ope
 reason R5 built a register instead of trusting the timeline.
 
 **A row closes when a later round runs that lens on the same surface**, which is the next pull request
-touching it. Sprint exit is not the deadline: no sprint exit has been reached in this project, and a
-deadline that has never arrived is not one. **An open row here fails the sprint exit gate**, which is
-enumerated in [the handoff](./2026-07-29-hardening-handoff.md) as its single home.
+touching it. **The S3 gate on 2026-08-01 is the first sprint exit this project has reached**, and it
+cleared the only open row. **An open row here fails the sprint exit gate**, which is enumerated in
+[the handoff](./2026-07-29-hardening-handoff.md) as its single home.
 
-| PR  | Lens           | Surface | Deferred on | Cleared by               |
-| --- | -------------- | ------- | ----------- | ------------------------ |
-| #47 | Test integrity | `tests` | `3ac0540`   | **open, at the S3 gate** |
+| PR  | Lens           | Surface | Deferred on | Cleared by                                    |
+| --- | -------------- | ------- | ----------- | --------------------------------------------- |
+| #47 | Test integrity | `tests` | `3ac0540`   | **closed at the S3 gate, PR #51, 2026-08-01** |
+
+**What clearing it produced**, since a row cleared by assertion is not cleared: 109 mutations over the
+S3 diff, 82 killed, 27 survivors triaged to nine findings, of which four were HIGH. The sharpest is
+worth carrying because it is the shape this whole table exists to catch: the keepalive-activity test
+asserted nothing at all, and replacing the entire code path it named with a `throw` still passed it.
 
 **Why the S3 gate and not PR #49.** PR #49 does touch `tests`, which under the rule below is what
 clears a row, and it did not clear this one: its surface selected concurrency, and one reasoning lens
