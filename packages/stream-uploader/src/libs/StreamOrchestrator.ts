@@ -7,6 +7,7 @@ import {
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
   QueuePressure,
+  REJECT_DRAINING,
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
   SegmentResult,
@@ -167,10 +168,34 @@ export class StreamOrchestrator {
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
 
+  /**
+   * Whether this uploader's own drain is running, so nothing it is handed can still be published.
+   *
+   * `notifyStop` waits on `segmentQueue.onIdle()` and then commits the VOD manifest, and it stays
+   * registered in `activeStreams` for the whole of that. Anything enqueued after the barrier resolves
+   * is uploaded and paid for into a manifest that is already built, so it reaches no player. The
+   * publish it triggers is worse than the loss: it commits a live manifest at a SOC index above the
+   * VOD's, which leaves the feed's newest entry a live playlist for a finished broadcast, and the
+   * state it persists on the way through restores the recovery entry `notifyStop` just deleted, so
+   * the next boot recovers a stream that is over and finalizes it a second time.
+   *
+   * Matched on the uploader, not the id, for the reason `stopStream` matches on it: a reconnect
+   * registers a replacement under the id the outgoing drain is still keyed by, and that replacement is
+   * live. Refusing by id alone would silence a broadcaster who is already back, for as long as the
+   * finalize takes, which is up to `DRAIN_TIMEOUT_MS`.
+   */
+  private isDraining(streamId: string, uploader: StreamUploader): boolean {
+    return this.drainPromises.get(streamId)?.uploader === uploader;
+  }
+
   public handleSegment(streamId: string, segmentIndex: number, duration: number, data: Buffer): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
+    }
+
+    if (this.isDraining(streamId, uploader)) {
+      return { accepted: false, reason: REJECT_DRAINING };
     }
 
     // Segments arriving mean the engine is feeding this stream again. If it was just recovered after
@@ -221,6 +246,13 @@ export class StreamOrchestrator {
       // Answered rather than swallowed, so the caller can hold its position instead of stepping over
       // indexes nobody recorded. A stream can leave `activeStreams` between a puller's fetch and its
       // report, through a drain, a recovery timeout or a re-announce.
+      return false;
+    }
+
+    // Same window and same answer as `handleSegment`. A discontinuity queued behind a resolved
+    // `segmentQueue.onIdle()` marks a manifest that is already committed, and the state it persists
+    // on the way through restores a recovery entry the drain has deleted.
+    if (this.isDraining(streamId, uploader)) {
       return false;
     }
 

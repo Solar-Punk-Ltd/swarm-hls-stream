@@ -5,10 +5,11 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, REJECT_DRAINING, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
+  FakeUploads,
   makeFakeRecoveryStore,
   makeRecordingCatalog,
   makeRecoveredState,
@@ -649,5 +650,112 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
       5_000,
       'refreshing the activity clock on a loss would hide a dead stream behind its own losses',
     );
+  });
+});
+
+describe('StreamOrchestrator draining stream (CON-6)', () => {
+  /** The first segment publishes a live manifest at SOC index 0, so the VOD manifest lands at 1. */
+  const LIVE_SOC_INDEX = 0;
+  const VOD_SOC_INDEX = 1;
+
+  interface HeldVodCommit {
+    uploads: FakeUploads;
+    /** SOC indexes in commit order, so a manifest published above the VOD's index is visible. */
+    socWrites: number[];
+    release: () => void;
+  }
+
+  /**
+   * Holds the drain open inside the VOD manifest commit, which is the only place it can be held that
+   * is past `segmentQueue.onIdle()`. That is CON-6's window: the queue barrier the drain waits on has
+   * already resolved, so anything enqueued from here on is uploaded into a manifest that is finished.
+   */
+  function holdTheVodCommit(): HeldVodCommit {
+    const socWrites: number[] = [];
+    let releaseVodCommit = () => {};
+    const vodCommitHeld = new Promise<void>((resolve) => {
+      releaseVodCommit = resolve;
+    });
+
+    return {
+      socWrites,
+      release: () => releaseVodCommit(),
+      uploads: {
+        uploadPayload: async (index: number) => {
+          socWrites.push(index);
+          if (index === VOD_SOC_INDEX) {
+            await vodCommitHeld;
+          }
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+    };
+  }
+
+  async function startedWithOneSegment(id: string, held: HeldVodCommit, published: unknown[]) {
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      held.uploads,
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    assert.deepEqual(orch.handleSegment(id, 0, 2, Buffer.from('seg0')), { accepted: true });
+    await waitFor(() => held.socWrites.includes(LIVE_SOC_INDEX), SETTLE_CEILING_MS);
+
+    return orch;
+  }
+
+  it('refuses a segment once the drain is past the queue barrier, so the engine keeps its copy', async () => {
+    // Accepted, it was uploaded and paid for and then added to a manifest already built and committed,
+    // so it reached no player. Worse than lost: the publish it triggers commits a live manifest at a
+    // SOC index above the VOD's, leaving the feed's newest entry a live playlist for a finished
+    // broadcast, and the state it persists restores a recovery entry `notifyStop` had just deleted.
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const held = holdTheVodCommit();
+    const orch = await startedWithOneSegment(id, held, published);
+
+    const stopped = orch.stopStream(id);
+    await waitFor(() => held.socWrites.includes(VOD_SOC_INDEX), SETTLE_CEILING_MS);
+
+    assert.deepEqual(
+      orch.handleSegment(id, 1, 2, Buffer.from('seg1')),
+      { accepted: false, reason: REJECT_DRAINING },
+      'a segment the finalized manifest can no longer carry must be refused, not accepted and dropped',
+    );
+    assert.equal(
+      orch.handleSegmentLoss(id, 2, 1),
+      false,
+      'and a loss reported into that same window records nothing, so the caller has to hold its position',
+    );
+
+    held.release();
+    await stopped;
+  });
+
+  it('still accepts segments for the session that replaced a draining one', async () => {
+    // The guard has to be answerable per session, not per id. A reconnect during a drain registers a
+    // replacement under the id the drain is still keyed by, and refusing its segments would silence a
+    // broadcaster who is already back, for as long as the outgoing finalize takes.
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const held = holdTheVodCommit();
+    const orch = await startedWithOneSegment(id, held, published);
+
+    const stopped = orch.stopStream(id);
+    await waitFor(() => held.socWrites.includes(VOD_SOC_INDEX), SETTLE_CEILING_MS);
+
+    assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 'the reconnect is accepted');
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('replacement')),
+      { accepted: true },
+      'the replacement session is live and its segments belong to a manifest nothing has finalized',
+    );
+
+    held.release();
+    await stopped;
+    await orch.cleanup();
   });
 });
