@@ -59,6 +59,12 @@ export interface PlaylistEntry {
    * belongs to.
    */
   programDateTime?: number;
+  /**
+   * Whether the origin declared an `#EXT-X-DISCONTINUITY` immediately before this segment, meaning the
+   * media from here on is not a continuation of what came before it. Undefined for the ordinary case,
+   * so a playlist without the tag parses to the shape it did before this field existed.
+   */
+  discontinuity?: boolean;
 }
 
 export interface OmeEngineOptions {

@@ -1,6 +1,12 @@
 import { Logger } from '../../libs/Logger.js';
 import { getErrorMessage } from '../../utils/common.js';
-import { HLS_EXTINF, HLS_MEDIA_SEQUENCE, HLS_PROGRAM_DATE_TIME, HLS_STREAM_INF } from '../../utils/hlsTags.js';
+import {
+  HLS_DISCONTINUITY,
+  HLS_EXTINF,
+  HLS_MEDIA_SEQUENCE,
+  HLS_PROGRAM_DATE_TIME,
+  HLS_STREAM_INF,
+} from '../../utils/hlsTags.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
@@ -32,10 +38,20 @@ export function parseMasterPlaylist(text: string): string {
   throw new Error('Master playlist has no variant URI');
 }
 
+/**
+ * A duration that can go into a manifest. Anything else reaches `#EXTINF` verbatim, and a playlist
+ * that says `NaN` or a negative length is one no player can follow. Zero is degenerate rather than
+ * unusable: it publishes cleanly and adds nothing to a total.
+ */
+function isUsableDuration(duration: number): boolean {
+  return Number.isFinite(duration) && duration >= 0;
+}
+
 export function parseMediaPlaylist(text: string): PlaylistEntry[] {
   const lines = text.split(/\r?\n/);
   let mediaSeq = 0;
   let pendingDuration: number | null = null;
+  let pendingDiscontinuity = false;
   // Carried forward rather than read per segment, because RFC 8216 lets a playlist stamp only its
   // first segment and leave the rest to be derived by accumulating durations. OME stamps every one,
   // but a puller that only understood OME's spelling would silently lose the floor against any origin
@@ -64,28 +80,55 @@ export function parseMediaPlaylist(text: string): PlaylistEntry[] {
       pendingDuration = parseFloat(value);
       continue;
     }
+    if (line === HLS_DISCONTINUITY) {
+      pendingDiscontinuity = true;
+      // The tag says the media after it is not a continuation of the media before it, so the next
+      // segment's start cannot be derived by adding a duration to the last one. Unknown is the honest
+      // answer, and a consumer reading these to judge what is old treats unknown as "cannot judge"
+      // rather than acting on a number that describes a timeline that no longer applies.
+      nextProgramDateTime = null;
+      continue;
+    }
     if (line.startsWith('#')) {
       continue;
     }
 
-    if (pendingDuration !== null) {
-      entries.push({
-        seq: mediaSeq + index,
-        duration: pendingDuration,
-        uri: line,
-        // Left off the entry entirely rather than set to undefined, so an unstamped playlist parses to
-        // exactly the shape it did before this field existed.
-        ...(nextProgramDateTime !== null ? { programDateTime: nextProgramDateTime } : {}),
-      });
-      if (nextProgramDateTime !== null) {
-        // A duration that is not a finite number cannot advance a clock. Adding it anyway carries NaN
-        // onto every later entry, and NaN loses every comparison, including the ones a consumer uses
-        // to decide whether to keep a segment. Dropping the anchor says "unknown" instead, which is
-        // the answer that keeps media rather than discarding it.
-        nextProgramDateTime = Number.isFinite(pendingDuration) ? nextProgramDateTime + pendingDuration * 1000 : null;
-      }
-      pendingDuration = null;
-      index++;
+    if (pendingDuration === null) {
+      continue;
+    }
+
+    const duration = pendingDuration;
+    const discontinuity = pendingDiscontinuity;
+    pendingDuration = null;
+    pendingDiscontinuity = false;
+    // Spent whether or not the segment turns out to be usable, because the origin numbers by position.
+    // Skipping without advancing hands every later segment in the playlist an index that belongs to
+    // other media, and the orchestrator's duplicate filter then swallows real segments as ones it has
+    // already seen.
+    const seq = mediaSeq + index;
+    index++;
+
+    if (!isUsableDuration(duration)) {
+      // It would reach `#EXTINF` in the manifest we publish verbatim, which makes that playlist
+      // unplayable, and poison the total the VOD catalog entry advertises. Dropping the position
+      // leaves a gap the puller reports as a loss, which marks the next segment as a discontinuity,
+      // so players skip it rather than being told the gap is contiguous. See CON-7.
+      logger.warn(`[OME] Skipping segment ${seq} (${line}): ${HLS_EXTINF} duration is unusable`);
+      nextProgramDateTime = null;
+      continue;
+    }
+
+    entries.push({
+      seq,
+      duration,
+      uri: line,
+      // Left off the entry entirely rather than set to undefined, so an unstamped playlist parses to
+      // exactly the shape it did before these fields existed.
+      ...(nextProgramDateTime !== null ? { programDateTime: nextProgramDateTime } : {}),
+      ...(discontinuity ? { discontinuity: true } : {}),
+    });
+    if (nextProgramDateTime !== null) {
+      nextProgramDateTime += duration * 1000;
     }
   }
 
@@ -110,7 +153,10 @@ function datePrecedingSegments(entries: PlaylistEntry[]): PlaylistEntry[] {
   const dated = [...entries];
   for (let i = firstStamped - 1; i >= 0; i--) {
     const nextStart = dated[i + 1].programDateTime;
-    if (nextStart === undefined || !Number.isFinite(dated[i].duration)) {
+    // Extrapolating back over a discontinuity dates the older media off the newer timeline, which is
+    // exactly as wrong as carrying the anchor forward over one. Every duration is usable by the time
+    // it gets here, so there is nothing else left to stop on.
+    if (nextStart === undefined || dated[i + 1].discontinuity) {
       break;
     }
     dated[i] = { ...dated[i], programDateTime: nextStart - dated[i].duration * 1000 };
