@@ -758,17 +758,25 @@ export class StreamOrchestrator {
     }
 
     const outcome = await this.drainUploader(streamId, uploader);
-    this.recordStopOutcome(outcome);
 
     // A re-announce during this drain registers a replacement under the same id, so detaching by id
     // now would unregister a live session that this drain never touched. Every segment after that
     // comes back as an unknown stream, permanently, and the stall signal cannot see it either
     // because the id is no longer in `activeStreams` at all.
+    //
+    // The outcome is recorded below this check rather than above it, and that is the whole point.
+    // Above it, a predecessor settling late wrote its own verdict onto an id that belongs to another
+    // broadcast: a caller told `failed` for a session that published nothing was then told
+    // `finalized`, describing a VOD under the predecessor's feed topic. That is the exact confusion
+    // the 202-then-poll protocol exists to remove, reintroduced at the one endpoint whose job is
+    // answering whether the recording exists. It also counted one finalize twice, because
+    // `finalizeRetiredSession` awaits the same memoized `notifyStop` and counts it too.
     if (this.activeStreams.get(streamId) !== uploader) {
       this.logger.info(`[StreamOrchestrator] Drained a replaced session for ${streamId}, its successor stays live`);
       return;
     }
 
+    this.recordStopOutcome(outcome);
     this.retireSession(streamId);
 
     this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);

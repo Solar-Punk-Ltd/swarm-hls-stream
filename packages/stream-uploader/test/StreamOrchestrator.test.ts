@@ -1224,3 +1224,119 @@ async function withSilencedLogs<T>(run: () => Promise<T>): Promise<T> {
     console.warn = warn;
   }
 }
+
+describe('StreamOrchestrator stop outcome under a reconnect (gate on PR 52)', () => {
+  const id = 'live/replaced';
+
+  /**
+   * The verdict is recorded under a stream id, and a reconnect gives that id to a different session
+   * while its predecessor is still draining. Recorded before the check that already knows this, a
+   * predecessor settling late overwrote the live session's own verdict with its own.
+   */
+  it('does not let a predecessor settling late write its verdict onto the session that replaced it', async () => {
+    const published: { state?: string; topic?: string }[] = [];
+    let releasePredecessor: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          // Captured before the await. Read after it, this is the *shared* counter, which has moved
+          // on by then, so the predecessor's own commit answered for the replacement's write and
+          // failed with it. That made the test pass against the defect it was written to catch.
+          const write = socWrites;
+          // The predecessor's VOD commit, held open so the reconnect lands inside its drain.
+          if (write === 2) {
+            await new Promise<void>((resolve) => {
+              releasePredecessor = resolve;
+            });
+          }
+          // The replacement's VOD commit, refused, so its own stop is a real `failed`.
+          if (write >= 4) {
+            return null;
+          }
+          return { reference: { toHex: () => `soc${write}` } };
+        },
+      },
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('first'));
+      const predecessorStop = orch.stopStream(id);
+      await waitFor(() => releasePredecessor !== null, SETTLE_CEILING_MS);
+
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('second'));
+      await orch.stopStream(id);
+
+      assert.equal(
+        orch.getStreamStatus(id).state,
+        'failed',
+        'the replacement published no VOD, so its own stop failed',
+      );
+
+      (releasePredecessor as unknown as () => void)();
+      await predecessorStop;
+      // The predecessor's own accounting runs in `finalizeRetiredSession`, which nothing awaits, so
+      // settle rather than poll a counter: the claim is that its verdict never lands on this id.
+      await sleep(50);
+
+      assert.equal(
+        orch.getStreamStatus(id).state,
+        'failed',
+        'a predecessor settling late overwrote the live session’s verdict with a VOD that is not its own',
+      );
+    });
+  });
+
+  it('counts one finalize when a reconnect replaces the session being stopped', async () => {
+    const published: unknown[] = [];
+    let releasePredecessor: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          if (socWrites === 2) {
+            await new Promise<void>((resolve) => {
+              releasePredecessor = resolve;
+            });
+          }
+          return { reference: { toHex: () => `soc${socWrites}` } };
+        },
+      },
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('first'));
+      const predecessorStop = orch.stopStream(id);
+      await waitFor(() => releasePredecessor !== null, SETTLE_CEILING_MS);
+
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+      (releasePredecessor as unknown as () => void)();
+      await predecessorStop;
+      await sleep(30);
+    });
+
+    const vods = published.filter((entry) => (entry as { state?: string }).state === 'vod').length;
+    assert.equal(vods, 1, 'this test is meaningless unless exactly one VOD was published');
+    assert.equal(
+      orch.getMetricsSnapshot().streamsFinalizedTotal,
+      1,
+      'both drains await the same memoized notifyStop, so one finalize was counted twice',
+    );
+  });
+});
