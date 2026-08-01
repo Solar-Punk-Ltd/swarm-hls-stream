@@ -773,3 +773,49 @@ nothing claims to support a second version any more.
 Note that **Node 22 is in maintenance as of mid-2026 and 24 is the current active LTS**, so moving to
 24 is a real follow-up. The image change only takes effect on the next deploy, which needs a build and
 an operator-run `scp`.
+
+## Sprint 4 exit, 2026-08-02
+
+**S4.3 through S4.8, closing OPS-3 through OPS-8 in one batch.** Seven commits, one per fix, on
+`feat/ai-hardening`. `pnpm verify` exit 0: uploader 483, cli 57, gate-facts 49, audit-gate 38,
+deploy 39, client 31.
+
+**Every fix proven by reverting it.** Fifteen proofs, each failing only the tests that guard it: six
+on the shell side, nine on the CLI side, plus the shellcheck gate proven live twice, once with a new
+file and once with an unquoted expansion added to `stop.sh`.
+
+Two rows were not what they said.
+
+**OPS-6 was wrong when it was written.** It records `_lib.sh:441` as evaluating raw `.env` lines. At
+the audited commit that line is `compose_project_flag`, and `load_env_file` already carried an
+explicit non-evaluating parser with a comment saying so. That is the fifth register row to turn out
+defective on inspection, and the reason every row is checked against the source before it is worked.
+It still earned a commit, because "no eval today" is not "no eval tomorrow".
+
+**OPS-3's fix is not the one the row implies.** Scoping `stop.sh` by passing the right `--profile`
+flags would have changed nothing: compose ignores `--profile` when choosing what `down` removes,
+which the OPS-2 work had already measured against v5.3.1 and written down in `clean.sh`. The first
+version of the test asserted on those flags and passed while the whole stack still came down. Read
+what the neighbouring fix learned before writing the assertion.
+
+**Two tests were caught by their own revert-proofs rather than by review.** `stop.sh`'s per-target
+filter revert failed exactly one test, which said the filter was doing less than it looked; the case
+it actually buys is a stack split across two hosts. And `stampBuy`'s "asks before spending" read an
+event log that stays empty when the prompt is never reached, so turning the confirmation off left it
+green. Both now assert the sequence. This is the same shape as TEST-34's first fix and it is worth
+saying plainly: **a revert-proof that fails fewer tests than expected is a finding, not a formality.**
+
+**Four new rows: TEST-36, TEST-37, TEST-38 and OPS-14.** The one worth reading is TEST-38. The
+stubbed `docker` in `deploy/test` was launched through `#!/usr/bin/env node`, and Node keeps parsing
+its own options past the script path, so a `--env-file <missing>` argument killed the stub before it
+recorded anything. A dead stub and a script that correctly issued no docker command are the same
+observation. `clean.sh`'s remote path had been hiding it behind `|| true`.
+
+**Scope note on OPS-7.** The row scopes the spend confirmation to `stamp-buy`. It shipped on
+`stamp-setup` as well, because shipping a guard on one money path and not the other is exactly how
+OPS-2 came to have three sweeps to fix instead of one.
+
+**S4.8's baseline is in `.shellcheckrc`, not in the severity.** CI runs at `--severity=style`, the
+strictest level, and every exception is a named code with its reason next to it. The image is pinned
+by digest: ShellCheck ships on the GitHub runner and `stable` is a moving tag, so either would let a
+version bump land new findings in a pull request that never touched a shell script.
