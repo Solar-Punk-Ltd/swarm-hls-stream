@@ -108,7 +108,11 @@ documentation and it outlives the review.
 ### R4. The result is posted, not just discussed
 
 The outcome lands on the pull request as a review through `gh`, listing the lenses that ran, the lenses
-that were selected against, what was confirmed, what was refuted and why, and what changed as a result.
+that were selected against, **the lenses deferred under [what blocks a merge](#what-blocks-a-merge-and-what-only-files-a-row)**,
+what was confirmed, what was refuted and why, and what changed as a result. **Deferred is a third
+state and it gets its own list.** Folded in with the ones selected against it would be invisible to
+[fail closed](#fail-closed), which reads that list as not-selected, so the one rule that could catch a
+deferral nobody ever cleared would be structurally incapable of firing on it.
 
 **When the mutation check ran, the result also carries its exact `stryker` invocation, the
 `Found N of M file(s) to be mutated` line verbatim, the mutant total, the survivor total, the score,
@@ -240,38 +244,80 @@ tokens and the owner stopped it twice. **The cut is by what a lens produces, not
 request is**, because those are different questions and only the first one predicts whether waiting is
 safe.
 
-**Blocking, on every pull request: the claims auditor plus the reasoning lenses the surface selects.**
-Usually one or two. These hunt defects that are live in the code right now, and PR #46 is the evidence:
-both HIGHs it found came from reasoning lenses, both were already committed, and both would have
-merged.
+**Blocking, on every pull request: the claims auditor, the Stryker run, and every reasoning lens the
+surface selects except test integrity.** These hunt defects that are live in the code right now, and
+PR #46 is the evidence: both HIGHs it found came from reasoning lenses, both were already committed,
+and both would have merged.
 
-**Non-blocking, run after the merge or at sprint exit: mutation triage and test integrity.** Across
-PR #46 **every finding either produced was a coverage gap and none was a live bug** ("a test does not
-prove X", never "the code is wrong"). A coverage gap is safe to carry for a few days in a way a wrong
-answer is not. They produce register rows rather than merge blockers.
+**Exactly two things defer, and they are named rather than described**, because a rule that describes
+its exceptions grows them. **Mutation triage** and **test integrity**. Nothing else, and extending the
+list to a third is an owner decision rather than a session's.
 
-**The honest cost of this, stated because a rule that hides its price gets followed until it hurts.**
-On the very round that motivated it, the test-integrity lens found a HIGH: dropping `live !== undefined`
-left the whole suite green, and that arm is what protects crash recovery. Under this rule that ships
-untested and waits. **TEST-25 is the story of exactly that going wrong**, an untested arm that turned
-out to invert the admission decision. So the mitigation is not optional: a non-blocking lens that has
-not run is a row nobody wrote, and the sprint-exit gate is where that debt is paid rather than
-discovered.
+**Test integrity has to be named, because the sentence above would otherwise select it.** The
+catalogue classifies it as a reasoning lens on "new or changed tests", and rule 2 makes that column
+binding. The first version of this section said "the reasoning lenses the surface selects" and left
+the catalogue untouched, so it made test integrity blocking and deferred three lines apart. The
+**Blocks** column in the catalogue is now the single place that answers this, so the rule and the
+table cannot drift.
 
-**Two artifacts keep this from becoming a licence**, since [fail closed](#fail-closed) otherwise reads
-as satisfied the moment the blocking set passes:
+**The Stryker run does not defer, only the triage of its survivors does.** The run is a background
+command: it costs wall clock and no attention, and 188 mutants scoped to a diff is about ten minutes
+that overlaps everything else. It is also what emits the `Found N of M file(s) to be mutated` line
+that R4 requires and the claims auditor checks against the count committed to in the selection
+comment. Deferring the run would delete the only thing standing between a mis-scoped run and a gate
+that records itself as satisfied, which is a check this document added one pull request earlier. What
+defers is the lens that reads the survivor list and judges equivalence.
 
-1. **The selection comment names the deferred lenses explicitly**, in the same list as the ones
-   selected against. Deferred is not the same as not applicable, and writing it down is what makes the
-   difference auditable.
-2. **A deferred lens that never ran by sprint exit is a sprint-exit blocker.** Deferral moves a lens,
-   it does not delete one. If the sprint-exit run cannot cover them, the gate is not satisfied and the
-   sprint does not close.
+### When a deferral expires
 
-**This does not license dropping a reasoning lens for cost.** Selection is still by surface, and the
-rule that [a lens that gets expensive is a defect in this document](#a-lens-that-gets-expensive-is-a-defect-in-this-document)
-still says the response is to fix the process rather than to skip the lens. What changed is which
-lenses have to finish before a merge, not which lenses run.
+**At the next pull request that touches the same surface, not at sprint exit.**
+
+Sprint exit is the wrong deadline for two reasons and both are checkable. The sprint exit gate is
+enumerated in [the handoff](./2026-07-29-hardening-handoff.md), not here, and the register is explicit
+that the procedure lives in exactly one place, so a deadline asserted from this document binds
+nothing. And **no sprint exit has ever been reached in this project**: Sprint 0 is still open with
+`S0.3` and `S0.4` unstarted while Sprint 1 and Sprint 2 work has merged. A deadline that has never
+once arrived is not a deadline.
+
+Surface recurrence is the right one because the selection comment already computes it. One
+`git diff --name-only` answers whether this diff touches a surface with an open deferral, which makes
+the expiry mechanical rather than remembered.
+
+**The ledger is a register row, not a pull request comment.** A comment is permanent and checkable by
+a reader already looking at that pull request, which is not the reader this needs: a later session has
+to find deferrals without knowing which pull requests to open. That is why R5 built a register rather
+than trusting the timeline. The row carries the pull request number, the lens, the surface, the head
+sha it was deferred on, and the round that cleared it.
+
+**R4 lists deferred lenses as their own third state**, not folded in with the ones selected against.
+Those are the two lists R4 had, and [fail closed](#fail-closed) reads "selected against" as
+not-selected, so filing a deferral there would have made fail-closed structurally incapable of ever
+firing on one.
+
+### Why this is a real weakening, argued against itself
+
+**The safety argument that opened this section was wrong and is withdrawn.** It said every finding
+mutation triage and test integrity produced on PR #46 was a coverage gap and never a live bug. That is
+an observation about how those lenses phrase findings, not about the state of the code, and the
+register contradicts it directly. **TEST-19, HIGH**, from this family: a test that "passed against code
+that failed in production on every restart", where one millisecond of latency took it from 4 of 4
+delivered to 0 of 4. **TEST-24** took the class to HIGH precisely because contention "silently inflates
+the mutation score and hides the coverage gaps the run exists to find". One round is not a sample, and
+this document elsewhere refuses exactly this move.
+
+So the justification is not that these lenses are safe to defer. It is that **the deferral is bounded
+by an event that recurs on its own**, and that the blocking set holds the lenses the record actually
+credits with catching live defects.
+
+**The price, stated plainly.** On the round that motivated this, test integrity found a HIGH: dropping
+`live !== undefined` left the whole suite green, and that arm protects crash recovery. Under this rule
+that ships and waits for the next pull request touching `tests`. **TEST-25 is the story of an untested
+arm turning out to invert the admission decision**, so this is a real cost and not a theoretical one.
+
+**This does not license dropping a reasoning lens for cost.** Selection is still by surface, and
+[a lens that gets expensive is a defect in this document](#a-lens-that-gets-expensive-is-a-defect-in-this-document)
+still says the response is to fix the process rather than to skip the lens. What changed is which of
+two named lenses have to finish before a merge, not which lenses run.
 
 ### Keep the diff small, because the diff sets the price
 
@@ -318,18 +364,18 @@ reach it, which is the failure rule 4 exists to prevent.
 
 ### Lens catalogue
 
-| Lens                   | Tier       | Select when                                                                     | Hunts                                                                                                                     |
-| ---------------------- | ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Claims audit           | Mechanical | **Always**                                                                      | Assertions in the description that were never checked, or are stale                                                       |
-| Mutation triage        | Mechanical | **Any `src/` change.** Stryker generates and runs, the lens only triages        | Survivors that are real coverage gaps rather than equivalent mutants, and the semantic mutations no AST operator produces |
-| Correctness            | Reasoning  | Any logic change                                                                | Wrong output for specific inputs, false green, false red                                                                  |
-| Security               | Reasoning  | Input handling, auth, filesystem paths, CI, dependencies                        | A concrete attack path with a named attacker and what they control                                                        |
-| Concurrency            | Reasoning  | The orchestrator, queues, timers, recovery                                      | Interleavings that corrupt state, lost updates, races between entry points                                                |
-| Behaviour preservation | Reasoning  | Refactors, autofixes, anything claimed to be mechanical                         | Hunks where behaviour actually differs from the version they replaced                                                     |
-| Config consistency     | Reasoning  | Config, scripts, CI, packaging, docs describing commands                        | Two things in the repo that disagree, and what breaks because they do                                                     |
-| Silent failure         | Reasoning  | Error paths, health and status reporting, retries                               | Swallowed errors, fallbacks that mask a fault, a green that means nothing                                                 |
-| Test integrity         | Reasoning  | New or changed tests                                                            | Tests that pass without exercising the behaviour, and coverage that lies                                                  |
-| Protocol correctness   | Reasoning  | This gate, the handoff's working protocol, any rule a later session must follow | Obligations removed or weakened, requirements no artifact can prove, and the cheapest review the new text permits         |
+| Lens                   | Tier       | Blocks?        | Select when                                                                     | Hunts                                                                                                                     |
+| ---------------------- | ---------- | -------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Claims audit           | Mechanical | yes            | **Always**                                                                      | Assertions in the description that were never checked, or are stale                                                       |
+| Mutation triage        | Mechanical | no, deferrable | **Any `src/` change.** Stryker generates and runs, the lens only triages        | Survivors that are real coverage gaps rather than equivalent mutants, and the semantic mutations no AST operator produces |
+| Correctness            | Reasoning  | yes            | Any logic change                                                                | Wrong output for specific inputs, false green, false red                                                                  |
+| Security               | Reasoning  | yes            | Input handling, auth, filesystem paths, CI, dependencies                        | A concrete attack path with a named attacker and what they control                                                        |
+| Concurrency            | Reasoning  | yes            | The orchestrator, queues, timers, recovery                                      | Interleavings that corrupt state, lost updates, races between entry points                                                |
+| Behaviour preservation | Reasoning  | yes            | Refactors, autofixes, anything claimed to be mechanical                         | Hunks where behaviour actually differs from the version they replaced                                                     |
+| Config consistency     | Reasoning  | yes            | Config, scripts, CI, packaging, docs describing commands                        | Two things in the repo that disagree, and what breaks because they do                                                     |
+| Silent failure         | Reasoning  | yes            | Error paths, health and status reporting, retries                               | Swallowed errors, fallbacks that mask a fault, a green that means nothing                                                 |
+| Test integrity         | Reasoning  | no, deferrable | New or changed tests                                                            | Tests that pass without exercising the behaviour, and coverage that lies                                                  |
+| Protocol correctness   | Reasoning  | yes            | This gate, the handoff's working protocol, any rule a later session must follow | Obligations removed or weakened, requirements no artifact can prove, and the cheapest review the new text permits         |
 
 ### What selection has measured
 
@@ -459,7 +505,11 @@ the claims auditor below.
 **If nothing in a lens can be moved to a command, the cost is paid and the lens runs.** Seven of the
 ten in the catalogue are the reasoning tier, which exists precisely because they cannot be
 mechanised, so "nothing to move" is the ordinary case rather than the exception. **Cost is never a
-reason recorded in the selection comment. Selection is by surface.** Without that sentence this rule
+reason recorded in the selection comment. Selection is by surface.** The one exception is the named
+two-lens deferral in [what blocks a merge](#what-blocks-a-merge-and-what-only-files-a-row), which
+moves when a lens finishes rather than whether it runs, is closed to exactly two lenses, and expires
+on a recurring event. Extending it to a third lens is an owner decision. Read as anything wider, this
+paragraph's own worked failure applies to it. Without that sentence this rule
 reads as a licence: a session finds a lens expensive, finds nothing mechanisable, drops it, and
 records the drop, which satisfies fail-closed and satisfies the ban on stopping quietly. Surface-driven
 selection would become cost-driven one defensible drop at a time.
