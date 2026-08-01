@@ -116,6 +116,7 @@ describe('createOmeEngine resumeRecoveredStream (F: OME crash recovery)', () => 
     const orchestrator = {
       handleSegment: () => ({ accepted: true }),
       stopStream: async () => {},
+      keepAlive: () => false,
     } as unknown as StreamOrchestrator;
 
     const { resumeRecoveredStream } = engine;
@@ -288,6 +289,7 @@ describe('createOmeEngineFromEnv fetch timeout plumbing (TEST-15)', () => {
       stopStream: async () => {},
       handleSegment: () => ({ accepted: true }),
       handleSegmentLoss: () => true,
+      keepAlive: () => false,
     } as unknown as StreamOrchestrator;
 
     await postAdmission(engine, orchestrator, 'opening', PLUMBING_SECRET, STREAM_URL);
