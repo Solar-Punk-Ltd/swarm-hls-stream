@@ -68,9 +68,11 @@ function stopBody(): RequestInit {
 }
 
 const ROUTES = [
-  { path: '/stream/start', init: startBody, spy: 'startStream' as const },
-  { path: '/stream/segment', init: segmentBody, spy: 'handleSegment' as const },
-  { path: '/stream/stop', init: stopBody, spy: 'stopStream' as const },
+  { path: '/stream/start', init: startBody, spy: 'startStream' as const, authenticated: 200 },
+  { path: '/stream/segment', init: segmentBody, spy: 'handleSegment' as const, authenticated: 200 },
+  // 202 rather than 200 since S2.5: the stop is accepted here and its outcome is read back from
+  // `GET /stream/status`, because a drain has five minutes to publish and no webhook waits that long.
+  { path: '/stream/stop', init: stopBody, spy: 'stopStream' as const, authenticated: 202 },
 ];
 
 describe('api auth (S1.1, closes SEC-1)', () => {
@@ -117,7 +119,7 @@ describe('api auth (S1.1, closes SEC-1)', () => {
 
       const { status } = await api.request(route.path, route.init());
 
-      assert.equal(status, 200, 'a correctly authenticated caller is unaffected');
+      assert.equal(status, route.authenticated, 'a correctly authenticated caller is unaffected');
       assert.ok(calls[route.spy].length > 0, `${route.spy} ran for an authenticated caller`);
     });
   }

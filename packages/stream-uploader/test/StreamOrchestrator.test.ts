@@ -24,6 +24,7 @@ import {
   makeRecoveredState,
   makeTestOrchestrator,
   neverSettles,
+  rejectImmediately,
   toRecoveryFileId,
 } from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
@@ -1148,3 +1149,78 @@ describe('StreamOrchestrator draining stream (CON-6)', () => {
     await orch.cleanup();
   });
 });
+
+describe('StreamOrchestrator stop outcome (OBS-3, OBS-10)', () => {
+  const id = 'live/stopping';
+
+  /**
+   * `drainUploader` caught everything, logged it and returned normally, so `stopStream` resolved on a
+   * finalize that never published. The route's own `.catch` was unreachable for this: there was
+   * nothing left to reject. A failed stop and a successful one were the same event at every layer.
+   */
+  it('reports a finalize that never published as failed, not as a stop that worked', async () => {
+    const orch = makeTestOrchestrator({}, { uploadPayload: rejectImmediately });
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    orch.handleSegment(id, 0, 2, Buffer.from('seg0'));
+
+    await withSilencedLogs(() => orch.stopStream(id));
+
+    const report = orch.getStreamStatus(id);
+    assert.equal(report.state, 'failed', `a VOD that never landed reported ${report.state}`);
+    assert.ok(report.reason, 'a failed stop with no reason tells an operator nothing they can act on');
+  });
+
+  it('reports a stop that published as finalized', async () => {
+    const published: unknown[] = [];
+    const orch = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    orch.handleSegment(id, 0, 2, Buffer.from('seg0'));
+
+    await orch.stopStream(id);
+
+    assert.equal(orch.getStreamStatus(id).state, 'finalized');
+    assert.equal(published.length, 2, 'live then vod, so the finalized verdict is about a VOD that exists');
+  });
+
+  it('answers live for a stream that is still broadcasting, and unknown for one it never saw', () => {
+    const orch = makeTestOrchestrator();
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+
+    assert.equal(orch.getStreamStatus(id).state, 'live');
+    assert.equal(orch.getStreamStatus('live/never').state, 'unknown');
+  });
+
+  /**
+   * A stop that fails still has to leave the live maps. Rethrowing out of the drain would skip
+   * `retireSession`, so the id would stay in `activeStreams` with nothing feeding it and the stall
+   * signal would report a stream that had already ended, for the life of the process.
+   */
+  it('retires the stream from the live maps even when the finalize failed', async () => {
+    const orch = makeTestOrchestrator({}, { uploadPayload: rejectImmediately });
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    orch.handleSegment(id, 0, 2, Buffer.from('seg0'));
+
+    await withSilencedLogs(() => orch.stopStream(id));
+
+    assert.equal(orch.getActiveStreamCount(), 0, 'a failed stop left the stream registered and apparently live');
+    assert.equal(orch.getMsSinceStreamActivity(), null, 'and it would have gone on to report a stall for it');
+  });
+});
+
+async function withSilencedLogs<T>(run: () => Promise<T>): Promise<T> {
+  const { error, warn } = console;
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    return await run();
+  } finally {
+    console.error = error;
+    console.warn = warn;
+  }
+}

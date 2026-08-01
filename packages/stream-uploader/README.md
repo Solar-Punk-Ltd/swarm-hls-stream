@@ -82,12 +82,28 @@ Engine-independent HTTP interface for pushing segments directly.
 | ---------------------- | ------------------------------------ | ------------------------------------------ |
 | `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                      |
 | `POST /stream/segment` | Raw body + headers                   | Push a segment                             |
-| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream                               |
+| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream, answered `202`               |
+| `GET /stream/status`   | Query: `?streamId=<id>`              | What became of a stream                    |
 | `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
 
-All three `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, it accepts no input and it spends nothing. No compose healthcheck consumes it today.
+All four `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, it accepts no input and it spends nothing. No compose healthcheck consumes it today.
 
 The `/engines/*` webhook routes are **not** behind this gate. OME admission carries its own HMAC signature. The two SRS routes carry no credential at all, and `POST /engines/srs/hls` reaches the same stamp-spending path `/stream/segment` does, so on a default `ENGINE=srs` deployment an anonymous caller can still cause an upload. That is the open half of SEC-1, tracked as S1.2.
+
+**Stop is asynchronous.** `POST /stream/stop` answers `202` with `{ ok, accepted, streamId, statusUrl }`
+and drains in the background, because a drain has five minutes to publish its VOD and no media server
+will hold a webhook open that long. The outcome is read from `GET /stream/status?streamId=<id>`, which
+answers one of:
+
+| `state`     | Meaning                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------ |
+| `live`      | Registered and accepting segments                                                          |
+| `draining`  | Stopping, the VOD has not settled yet                                                      |
+| `finalized` | The VOD manifest was committed and the catalog entry published                             |
+| `failed`    | The finalize did not complete, with a `reason`. There is no VOD, and no retry is scheduled |
+
+A stream the service has never seen, or one whose stop settled more than fifteen minutes ago, answers
+`404` rather than a state, so a caller polling a mistyped id is not told its broadcast is fine.
 
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
 `reasons` array:
@@ -204,6 +220,11 @@ curl -X POST http://localhost:3000/stream/stop \
   -H "Authorization: Bearer $API_AUTH_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"streamId": "test/mystream"}'
+
+# The stop is accepted, not completed. Poll for what became of it.
+curl -G http://localhost:3000/stream/status \
+  -H "Authorization: Bearer $API_AUTH_TOKEN" \
+  --data-urlencode 'streamId=test/mystream'
 ```
 
 ## Core Components

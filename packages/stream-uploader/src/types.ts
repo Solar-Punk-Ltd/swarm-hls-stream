@@ -119,3 +119,30 @@ export interface HealthReport {
   status: HealthStatus;
   reasons: HealthReason[];
 }
+
+export const STREAM_LIFECYCLE_LIVE = 'live' as const;
+export const STREAM_LIFECYCLE_DRAINING = 'draining' as const;
+export const STREAM_LIFECYCLE_FINALIZED = 'finalized' as const;
+export const STREAM_LIFECYCLE_FAILED = 'failed' as const;
+/** Never registered, or settled long enough ago that its outcome has been swept. */
+export const STREAM_LIFECYCLE_UNKNOWN = 'unknown' as const;
+
+export type StreamLifecycle =
+  | typeof STREAM_LIFECYCLE_LIVE
+  | typeof STREAM_LIFECYCLE_DRAINING
+  | typeof STREAM_LIFECYCLE_FINALIZED
+  | typeof STREAM_LIFECYCLE_FAILED
+  | typeof STREAM_LIFECYCLE_UNKNOWN;
+
+/**
+ * What became of a stream, for a caller that was answered `202` by `POST /stream/stop` and needs to
+ * find out whether the VOD it asked for exists.
+ */
+export interface StreamStatusReport {
+  streamId: string;
+  state: StreamLifecycle;
+  /** Why the finalize did not complete. Present only for `failed`. */
+  reason?: string;
+  /** When the stop settled, epoch milliseconds. Absent while the stream is live or draining. */
+  settledAt?: number;
+}

@@ -158,6 +158,98 @@ describe('api server over http (S0.7 test layer)', () => {
   });
 });
 
+describe('POST /stream/stop outcome (S2.5, OBS-3)', () => {
+  const servers: ApiTestServer[] = [];
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  async function start(...args: Parameters<typeof startTestApi>): Promise<ApiTestServer> {
+    const server = await startTestApi(...args);
+    servers.push(server);
+    return server;
+  }
+
+  function stop(api: ApiTestServer, streamId = STREAM_ID) {
+    return api.request('/stream/stop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ streamId }),
+    });
+  }
+
+  function status(api: ApiTestServer, streamId = STREAM_ID) {
+    return api.request(`/stream/status?streamId=${encodeURIComponent(streamId)}`);
+  }
+
+  it('accepts the stop with 202 and names where the outcome will be', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    const { status: code, body } = await stop(api);
+
+    assert.equal(code, 202, 'a stop is accepted, not completed, because the drain outruns any webhook');
+    assert.equal((body as { statusUrl?: string }).statusUrl, '/stream/status');
+  });
+
+  /**
+   * The whole of OBS-3, read the way a caller would. The finalize cannot publish its VOD, and before
+   * this the caller was told `ok`: `drainUploader` caught its own failure and returned normally, so
+   * the rejection the route watches for never arrived either.
+   */
+  it('reports a finalize that never published, where it used to answer ok', async () => {
+    const api = await start(makeTestOrchestrator({}, { uploadPayload: rejectImmediately }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+    await stop(api);
+
+    const { status: code, body } = await api.requestUntil(
+      `/stream/status?streamId=${encodeURIComponent(STREAM_ID)}`,
+      (received) => (received as { state?: string }).state !== 'draining',
+    );
+
+    assert.equal(code, 200);
+    assert.equal((body as { state?: string }).state, 'failed');
+    assert.ok((body as { reason?: string }).reason, 'a failed stop with no reason is not actionable');
+  });
+
+  it('reports a stop that published as finalized', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+    await stop(api);
+
+    const { body } = await api.requestUntil(
+      `/stream/status?streamId=${encodeURIComponent(STREAM_ID)}`,
+      (received) => (received as { state?: string }).state !== 'draining',
+    );
+
+    assert.equal((body as { state?: string }).state, 'finalized');
+  });
+
+  it('answers 404 for a stream it never saw, rather than a state', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    const { status: code } = await status(api, 'live/never');
+
+    assert.equal(code, 404, 'a caller polling a typo must not be told its broadcast is fine');
+  });
+
+  it('rejects a status request with no streamId', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    const { status: code } = await api.request('/stream/status');
+
+    assert.equal(code, 400);
+  });
+});
+
 describe('POST /stream/segment for a finalizing stream (CON-6)', () => {
   const servers: ApiTestServer[] = [];
   after(async () => {

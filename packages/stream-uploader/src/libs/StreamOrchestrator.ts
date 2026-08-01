@@ -11,6 +11,12 @@ import {
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
   SegmentResult,
+  STREAM_LIFECYCLE_DRAINING,
+  STREAM_LIFECYCLE_FAILED,
+  STREAM_LIFECYCLE_FINALIZED,
+  STREAM_LIFECYCLE_LIVE,
+  STREAM_LIFECYCLE_UNKNOWN,
+  StreamStatusReport,
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 
@@ -24,6 +30,13 @@ import { StreamUploader } from './StreamUploader.js';
 
 const DRAIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
+/**
+ * How long a settled stop stays readable through `getStreamStatus`. Comfortably longer than
+ * `DRAIN_TIMEOUT_MS`, so a caller polling a stop that ran to its own deadline still finds the verdict
+ * waiting, and short enough that the map is bounded by the poll window rather than by uptime.
+ */
+const DEFAULT_STOP_OUTCOME_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
 export interface StreamOrchestratorConfig {
   streamKey: string;
   stamp: string;
@@ -35,6 +48,11 @@ export interface StreamOrchestratorConfig {
   segmentDedupWindow: number;
   /** Defaults to the real clock. Injected so tests can step time rather than wait for it. */
   clock?: Clock;
+  /**
+   * How long a settled stop stays readable through `getStreamStatus`. Injectable only so the expiry
+   * can be driven at all: at its default the record outlives any test worth writing.
+   */
+  stopOutcomeTtlMs?: number;
 }
 
 export class StreamOrchestrator {
@@ -56,6 +74,8 @@ export class StreamOrchestrator {
   private streamActivityAt = new Map<string, number>();
   /** Per stream, the monotonic reading of the most recent segment the engine could not deliver. */
   private segmentLossAt = new Map<string, number>();
+  /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
+  private stopOutcomes = new Map<string, StreamStatusReport>();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
@@ -66,9 +86,11 @@ export class StreamOrchestrator {
     private config: StreamOrchestratorConfig,
   ) {
     this.clock = config.clock ?? systemClock;
+    this.stopOutcomeTtlMs = config.stopOutcomeTtlMs ?? DEFAULT_STOP_OUTCOME_TTL_MS;
   }
 
   private readonly clock: Clock;
+  private readonly stopOutcomeTtlMs: number;
 
   public startStream(streamId: string, mediatype: MediaType): boolean {
     // If recovering, cancel the recovery timeout and resume
@@ -129,9 +151,21 @@ export class StreamOrchestrator {
    */
   private async finalizeRetiredSession(streamId: string, uploader: StreamUploader): Promise<void> {
     try {
-      await this.drainUploader(streamId, uploader);
+      const outcome = await this.drainUploader(streamId, uploader);
+      if (outcome.state === STREAM_LIFECYCLE_FAILED) {
+        // Not recorded as this id's stop outcome, because the id belongs to the replacement and its
+        // own stop will answer for itself. This is the only place the loss can be said at all, and it
+        // has to be said: the log line below used to run unconditionally, so once `drainUploader`
+        // stopped throwing it would have announced a finalize that never published.
+        this.logger.error(
+          `[StreamOrchestrator] The session replaced under ${streamId} was not finalized, so its broadcast has no VOD: ${outcome.reason}`,
+        );
+        return;
+      }
       this.logger.info(`[StreamOrchestrator] Finalized the replaced session for ${streamId}`);
     } catch (error) {
+      // A backstop rather than the drain's error path, which answers instead of throwing. Nothing
+      // awaits this call, so an unexpected rejection here would be an unhandled one.
       this.errorHandler.handleError(error, `StreamOrchestrator.finalizeRetiredSession - ${streamId}`);
     }
   }
@@ -582,6 +616,45 @@ export class StreamOrchestrator {
   }
 
   /**
+   * What became of a stream, for the caller `POST /stream/stop` answered `202` to.
+   *
+   * A stop is answered before the drain runs, because a drain has `DRAIN_TIMEOUT_MS` to finish and no
+   * media server's webhook will wait five minutes for one. That is why the outcome has to be readable
+   * afterwards: until it was, a finalize that never published and one that did were the same event at
+   * every layer, since `drainUploader` caught its own failure and returned normally.
+   */
+  public getStreamStatus(streamId: string): StreamStatusReport {
+    if (this.drainPromises.has(streamId)) {
+      return { streamId, state: STREAM_LIFECYCLE_DRAINING };
+    }
+    if (this.activeStreams.has(streamId)) {
+      return { streamId, state: STREAM_LIFECYCLE_LIVE };
+    }
+
+    this.sweepStopOutcomes();
+    return this.stopOutcomes.get(streamId) ?? { streamId, state: STREAM_LIFECYCLE_UNKNOWN };
+  }
+
+  private recordStopOutcome(outcome: StreamStatusReport): void {
+    this.sweepStopOutcomes();
+    this.stopOutcomes.set(outcome.streamId, outcome);
+  }
+
+  /**
+   * Swept on every write and on every read, because the ordinary end of a broadcast is a stream that
+   * stops and is never asked about again. Expiring lazily on read alone would therefore expire nothing
+   * on exactly the path that creates entries, leaving one per stream id ever stopped.
+   */
+  private sweepStopOutcomes(): void {
+    const now = Date.now();
+    for (const [streamId, outcome] of this.stopOutcomes) {
+      if (now - (outcome.settledAt ?? now) > this.stopOutcomeTtlMs) {
+        this.stopOutcomes.delete(streamId);
+      }
+    }
+  }
+
+  /**
    * Age of the most recent reported loss across registered streams, so the freshest one sets the
    * number. `null` when none has been reported.
    */
@@ -647,7 +720,7 @@ export class StreamOrchestrator {
       return;
     }
 
-    await this.drainUploader(streamId, uploader);
+    this.recordStopOutcome(await this.drainUploader(streamId, uploader));
 
     // A re-announce during this drain registers a replacement under the same id, so detaching by id
     // now would unregister a live session that this drain never touched. Every segment after that
@@ -663,8 +736,17 @@ export class StreamOrchestrator {
     this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
   }
 
-  /** Let an uploader finish what it has in hand and publish its VOD, under a deadline. */
-  private async drainUploader(streamId: string, uploader: StreamUploader): Promise<void> {
+  /**
+   * Let an uploader finish what it has in hand and publish its VOD, under a deadline, and answer
+   * whether it managed to.
+   *
+   * Answers rather than throws, deliberately. A stop that fails still has to leave the live maps, and
+   * rethrowing would skip `retireSession`, leaving the id in `activeStreams` with nothing feeding it
+   * and the stall signal reporting a stream that had already ended for the life of the process. The
+   * drain really does complete here. It just completes unsuccessfully, and that is a result rather
+   * than an exception.
+   */
+  private async drainUploader(streamId: string, uploader: StreamUploader): Promise<StreamStatusReport> {
     let drainTimer: Timer | undefined;
     const drainTimeout = new Promise<void>((_, reject) => {
       drainTimer = this.clock.setTimer(
@@ -677,6 +759,7 @@ export class StreamOrchestrator {
 
     try {
       await Promise.race([uploader.notifyStop(), drainTimeout]);
+      return { streamId, state: STREAM_LIFECYCLE_FINALIZED, settledAt: Date.now() };
     } catch (error) {
       const msg = getErrorMessage(error);
       this.logger.error(`[StreamOrchestrator] Force-stopping stream ${streamId}: ${msg}`);
@@ -690,6 +773,7 @@ export class StreamOrchestrator {
       // next boot recovers a stream that may already be finalized. A wasted VOD is postage. The other
       // way round is a live broadcast with no recovery at all.
       uploader.retire();
+      return { streamId, state: STREAM_LIFECYCLE_FAILED, reason: msg, settledAt: Date.now() };
     } finally {
       // Losing the race does not cancel the timer, so without this every stop leaves a five minute
       // timer holding the event loop open, one per stopped stream.
