@@ -250,3 +250,60 @@ describe('StreamUploader live manifest failure surfacing', () => {
     assert.equal(state.segments.length, 1);
   });
 });
+
+describe('StreamUploader finalization (CON-25)', () => {
+  /**
+   * Two callers reach `notifyStop` for one session and neither can see the other. A reconnect during a
+   * drain retires the live session and hands it to `finalizeRetiredSession`, which deliberately stays
+   * out of `drainPromises` because the id belongs to the replacement by then, so the guard in
+   * `stopStream` that answers a duplicate stop with the in-flight drain never sees it. Both then
+   * finalize the same session: two VOD manifests, each a SOC write and the postage for it, and the
+   * second rewrites the catalog entry the first published.
+   */
+  it('publishes one VOD however many times it is asked to finalize', async () => {
+    const socWrites: number[] = [];
+    const published: { state: string }[] = [];
+    const bee = {
+      uploadData: async () => ({ reference: { toHex: () => 'ref0' } }),
+      makeFeedWriter: () => ({
+        uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => {
+          socWrites.push(opts.index);
+          return { reference: { toHex: () => `soc${opts.index}` } };
+        },
+      }),
+    } as unknown as Bee;
+    const catalog = {
+      addStream: async (entry: { state: string }) => {
+        published.push(entry);
+      },
+    } as unknown as StreamCatalog;
+
+    const uploader = new StreamUploader(
+      bee,
+      '',
+      catalog,
+      makeFakeRecoveryStore(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    // Both settled before anything is read, so the second finalize has either happened or cannot.
+    await Promise.all([uploader.notifyStop(), uploader.notifyStop()]);
+
+    assert.deepEqual(
+      published.map((entry) => entry.state),
+      ['live', 'vod'],
+      'a session announces once and finalizes once, whoever asks',
+    );
+    assert.deepEqual(
+      socWrites,
+      [0, 1],
+      'the second finalize committed another VOD manifest at the next index, paid for and identical',
+    );
+  });
+});

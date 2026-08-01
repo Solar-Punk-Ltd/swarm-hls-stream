@@ -49,6 +49,8 @@ export class StreamUploader {
   private consecutiveSegmentFailures = 0;
   /** Whether the recovery entry under this stream id still describes this uploader. See `retire`. */
   private ownsRecoveryEntry = true;
+  /** The one finalize this session gets, so a second caller joins it rather than repeating it. */
+  private finalizing: Promise<void> | undefined;
 
   private manifestManager: ManifestManager;
 
@@ -150,7 +152,25 @@ export class StreamUploader {
     return this.streamCatalog.addStream(entry);
   }
 
+  /**
+   * Finalize this session as a VOD, once, however many callers ask.
+   *
+   * Two of them reach here for one session and neither can see the other. A reconnect during a drain
+   * retires the live session and hands it to `finalizeRetiredSession`, which deliberately stays out of
+   * the orchestrator's `drainPromises` because the id belongs to the replacement by then, so the guard
+   * that answers a duplicate stop with the drain already running never sees it. Unguarded, both ran the
+   * body below: two VOD manifests, each its own SOC write and the postage for it, and the second
+   * rewriting the catalog entry the first had published.
+   *
+   * A finalize that throws is shared rather than retried, which is what the callers already did with
+   * the orchestrator's drain promise, and no path retries one today.
+   */
   public async notifyStop(): Promise<void> {
+    this.finalizing ??= this.finalize();
+    return this.finalizing;
+  }
+
+  private async finalize(): Promise<void> {
     await this.segmentQueue.onIdle();
     await this.manifestQueue.onIdle();
 
