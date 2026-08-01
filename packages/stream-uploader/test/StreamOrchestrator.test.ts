@@ -15,21 +15,20 @@ import {
   makeTestOrchestrator,
   toRecoveryFileId,
 } from './helpers/fakes.js';
+import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 const RECOVERY_TIMEOUT_MS = 80;
+/**
+ * A ceiling on a hung wait, not a measurement of how long anything here takes. The budgets it replaces
+ * read as generous and were not: at eight concurrent suites a finalize that normally lands in 90ms
+ * took longer than 480ms, and a wait that expired quietly let the assertion after it report a correct
+ * orchestrator as broken. A satisfied wait returns at the poll it is satisfied on, so raising this
+ * costs nothing on the passing path.
+ */
+const SETTLE_CEILING_MS = 4_000;
 
-function makeOrchestrator(recovery: RecoveryStore = makeFakeRecoveryStore()): StreamOrchestrator {
-  return makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, recovery);
-}
-
-async function waitFor(pred: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!pred()) {
-    if (Date.now() >= deadline) {
-      return;
-    }
-    await sleep(10);
-  }
+function makeOrchestrator(recovery: RecoveryStore = makeFakeRecoveryStore(), clock?: FakeClock): StreamOrchestrator {
+  return makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS, clock }, {}, recovery);
 }
 
 describe('recovery file id sanitizing', () => {
@@ -57,21 +56,26 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
     await orch.recoverStreams();
     assert.equal(orch.getActiveStreamCount(), 1, 'recovered stream should be active with a pending timer');
 
-    await waitFor(() => orch.getActiveStreamCount() === 0, RECOVERY_TIMEOUT_MS * 6);
+    await waitFor(() => orch.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
     assert.equal(orch.getActiveStreamCount(), 0, 'an unfed recovered stream is finalized by the recovery timer');
   });
 
   it('keeps a recovered stream alive when segments resume before on_publish (cancels the finalize timer)', async () => {
     const id = 'live/stream';
+    const clock = new FakeClock();
     const orch = makeOrchestrator(
       makeFakeRecoveryStore({ listActive: () => [toRecoveryFileId(id)], load: () => makeRecoveredState(id) }),
+      clock,
     );
 
     await orch.recoverStreams();
+    assert.equal(clock.pendingCount(), 1, 'the recovered stream waits on a finalize timer');
+
     const result = orch.handleSegment(id, 7, 2, Buffer.from('seg7'));
     assert.equal(result.accepted, true, 'segments for a recovered stream must be accepted');
+    assert.equal(clock.pendingCount(), 0, 'and resuming cancels that timer rather than racing it');
 
-    await sleep(RECOVERY_TIMEOUT_MS * 3);
+    await clock.advance(RECOVERY_TIMEOUT_MS * 3);
     assert.equal(
       orch.getActiveStreamCount(),
       1,
@@ -129,7 +133,7 @@ describe('StreamOrchestrator per-stream bookkeeping', () => {
     const maps = orch as unknown as OrchestratorMaps;
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
     assert.equal(maps.processedSegments.has(id), true, 'the stream must be tracked before the stop means anything');
 
@@ -161,7 +165,7 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     const orch = startedOrchestrator(published, removed);
 
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     assert.equal(orch.getActiveStreamCount(), 1, 'first publish starts the stream');
     // Content, so finalizing the stale session is observable as the VOD it publishes. Recovery-entry
     // removal cannot serve as that signal any more: the id belongs to the live session by then.
@@ -170,7 +174,10 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     // Previously this returned false → SRS rejected the broadcaster. It must now be accepted.
     assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 're-announce of an active stream must be accepted');
 
-    await waitFor(() => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD));
+    await waitFor(
+      () => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      SETTLE_CEILING_MS,
+    );
     assert.ok(
       published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
       'the stale session must be finalized on re-announce, not abandoned',
@@ -199,9 +206,9 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
-    await waitFor(() => saved.length > 0);
+    await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
 
     // Each uploader owns a freshly generated feed topic, so the topic is what tells the outgoing
     // session's recovery writes apart from the live one's.
@@ -209,16 +216,19 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     const writesBeforeRetirement = saved.length;
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD));
+    await waitFor(
+      () => published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
+      SETTLE_CEILING_MS,
+    );
     // Without this the rest holds vacuously: a build that never finalizes the replaced session at all
     // also never touches the entry, and both assertions below would pass on that.
     assert.ok(
       published.some((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD),
       'the replaced session was never finalized, so nothing here has been exercised',
     );
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('two'));
-    await waitFor(() => saved.length > writesBeforeRetirement);
+    await waitFor(() => saved.length > writesBeforeRetirement, SETTLE_CEILING_MS);
 
     const afterRetirement = saved.slice(writesBeforeRetirement);
     assert.ok(
@@ -243,7 +253,7 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     const orch = makeOrchestrator();
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     assert.deepEqual(
       orch.handleSegment(id, 0, 2, Buffer.from('one')),
       { accepted: true },
@@ -256,7 +266,7 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('restarted'));
 
     assert.equal(
@@ -282,11 +292,11 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     } as unknown as StreamCatalog);
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => finalizing.length > 0);
+    await waitFor(() => finalizing.length > 0, SETTLE_CEILING_MS);
     await orch.stopStream(id);
     // Long enough that a spawn deferred behind the finalize would have landed by now.
     await sleep(150);
@@ -315,11 +325,11 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     } as unknown as StreamCatalog);
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => finalizing.length > 0 && orch.getActiveStreamCount() === 1);
+    await waitFor(() => finalizing.length > 0 && orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
 
     assert.notEqual(
       orch.getMsSinceStreamActivity(),
@@ -346,7 +356,7 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
     await Promise.all([orch.stopStream(id), orch.stopStream(id)]);
@@ -381,16 +391,16 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     } as unknown as StreamCatalog);
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('outgoing'));
 
     // The outgoing session's close. Fire and forget, the way every engine caller sends it.
     const stoppingOutgoing = orch.stopStream(id);
-    await waitFor(() => finalizeStarted.length > 0);
+    await waitFor(() => finalizeStarted.length > 0, SETTLE_CEILING_MS);
 
     // The reconnect, inside that drain, followed by its own close.
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('reconnected'));
     await orch.stopStream(id);
     await stoppingOutgoing;
@@ -436,16 +446,16 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     } as unknown as StreamCatalog);
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     orch.handleSegment(id, 0, 2, Buffer.from('one'));
 
     // The disconnect. Deliberately not awaited: every caller in the engines fires it and moves on.
     const stopping = orch.stopStream(id);
-    await waitFor(() => finalizeStarted.length > 0);
+    await waitFor(() => finalizeStarted.length > 0, SETTLE_CEILING_MS);
 
     // The reconnect, while that drain is still running.
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    await waitFor(() => orch.getActiveStreamCount() === 1);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     await stopping;
 
     assert.equal(orch.getActiveStreamCount(), 1, 'the drain that started first unregistered the reconnected session');
@@ -494,7 +504,7 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
 
     // One step past a minute. Real time does not move, so this costs no wall clock.
     await clock.advance(RECOVERY_TIMEOUT_60S);
-    await waitFor(() => orch.getActiveStreamCount() === 0);
+    await waitFor(() => orch.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
 
     assert.equal(orch.getActiveStreamCount(), 0, 'the timer fired and the stream was finalized');
     // TEST-4: the old assertion stopped at the count above, which passes even if nothing was published.
@@ -549,7 +559,7 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     await clock.advance(RECOVERY_TIMEOUT_60S * 10);
     // advance yields a macrotask per fired timer, so a finalize that wrongly started has had room to
     // land by now. Asserting immediately after a synchronous advance could not see it at all.
-    await waitFor(() => catalogEntries.length > 0, 200);
+    await waitAndConfirmNothingHappened(() => catalogEntries.length === 0, 200);
 
     assert.equal(orch.getActiveStreamCount(), 1, 'a resumed stream is never VOD-ed by the timer it cancelled');
     assert.deepEqual(catalogEntries, [], 'and nothing is published as VOD');
