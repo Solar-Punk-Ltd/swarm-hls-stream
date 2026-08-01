@@ -257,22 +257,45 @@ describe('createOmeEngineFromEnv fetch timeout plumbing (TEST-15)', () => {
     }
   });
 
-  // OME_FETCH_TIMEOUT_MS reached the puller through four hops and no test crossed any of them, so
-  // each hop could be severed with the whole suite, typecheck and lint still green. The window is
-  // measured here rather than read back, because nothing exposes the number an AbortSignal carries.
+  /**
+   * OME_FETCH_TIMEOUT_MS reached the puller through four hops and no test crossed any of them, so
+   * each hop could be severed with the whole suite, typecheck and lint still green.
+   *
+   * The window is read back from the call the puller makes rather than timed with a clock. Timing it
+   * was the second flaky test the TEST-31 hunt exposed, twice in 160 runs: the puller creates the
+   * signal and then calls the fetcher, while the fetcher can only start its stopwatch once it is
+   * running, so any scheduling stall between those two points is subtracted from what it measures.
+   * Under an 8-wide parallel run that produced 120ms and 128ms against a 150ms window and a 20ms
+   * tolerance. Reading the argument is also exact where the band was approximate: it separates the
+   * configured window from a neighbouring wrong value, which no tolerance wide enough to survive
+   * contention could do.
+   */
   it('applies the environment window to the pullers it starts', async () => {
     process.env.OME_ADMISSION_SECRET = PLUMBING_SECRET;
     process.env.OME_FETCH_TIMEOUT_MS = String(CONFIGURED_WINDOW_MS);
-    // One poll inside the test window, so the abort measured below is the first fetch and only fetch.
+    // One poll inside the test window, so the window recorded below is the first fetch and only fetch.
     process.env.OME_HLS_POLL_INTERVAL_MS = '1000000';
     process.env.OME_HLS_URL = 'http://ome:8081';
 
-    const abortDelaysMs: number[] = [];
+    // Correlated to the signal rather than collected as they are handed out. Pullers other tests in
+    // this file started are still polling on the built-in default, so a flat list of every window
+    // requested during this test is mostly theirs: the first run of this assertion read
+    // `10000, 150, 10000, ...`. This records only the windows arming *this* engine's requests.
+    const windowForSignal = new WeakMap<AbortSignal, number>();
+    const realTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = ((ms: number) => {
+      const signal = realTimeout.call(AbortSignal, ms);
+      windowForSignal.set(signal, ms);
+      return signal;
+    }) as typeof AbortSignal.timeout;
+
+    const armedWindowsMs: (number | undefined)[] = [];
+    const aborts: number[] = [];
     const fetcher = ((_input: RequestInfo | URL, init?: RequestInit) => {
-      const startedAt = performance.now();
+      armedWindowsMs.push(init?.signal ? windowForSignal.get(init.signal) : undefined);
       return new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
-          abortDelaysMs.push(performance.now() - startedAt);
+          aborts.push(aborts.length);
           reject(init.signal?.reason);
         });
       });
@@ -280,25 +303,29 @@ describe('createOmeEngineFromEnv fetch timeout plumbing (TEST-15)', () => {
 
     const engine = createOmeEngineFromEnv({ fetcher });
     const orchestrator = makeFakeOrchestrator();
+    try {
+      await postAdmission(engine, orchestrator, 'opening', PLUMBING_SECRET, STREAM_URL);
+      await waitFor(() => aborts.length > 0, DEFAULT_FETCH_TIMEOUT_MS / 5);
+      await postAdmission(engine, orchestrator, 'closing', PLUMBING_SECRET, STREAM_URL);
+    } finally {
+      AbortSignal.timeout = realTimeout;
+    }
 
-    await postAdmission(engine, orchestrator, 'opening', PLUMBING_SECRET, STREAM_URL);
-    await waitFor(() => abortDelaysMs.length > 0, DEFAULT_FETCH_TIMEOUT_MS / 5);
-    await postAdmission(engine, orchestrator, 'closing', PLUMBING_SECRET, STREAM_URL);
-
+    // Keeps the wiring in the assertion and not only the number: a window handed to a signal that
+    // never reaches the request would satisfy the check below on its own.
     assert.equal(
-      abortDelaysMs.length,
+      aborts.length,
       1,
       `the puller's fetch never aborted inside ${
         DEFAULT_FETCH_TIMEOUT_MS / 5
-      }ms, so it is not running on the configured ${CONFIGURED_WINDOW_MS}ms window`,
+      }ms, so the window it was given is not the one arming its requests`,
     );
-    assert.ok(
-      abortDelaysMs[0] >= CONFIGURED_WINDOW_MS - 20,
-      `aborted after ${abortDelaysMs[0]}ms, far below the configured ${CONFIGURED_WINDOW_MS}ms, so the window is not the one that was set`,
-    );
-    assert.ok(
-      abortDelaysMs[0] < DEFAULT_FETCH_TIMEOUT_MS,
-      `aborted after ${abortDelaysMs[0]}ms, which is the built-in default rather than the configured window`,
+    assert.deepEqual(
+      [...new Set(armedWindowsMs)],
+      [CONFIGURED_WINDOW_MS],
+      `the puller armed its requests with ${
+        armedWindowsMs.join(', ') || '(nothing)'
+      } rather than the configured ${CONFIGURED_WINDOW_MS}ms, so a hop between the environment and the request is dropping it`,
     );
   });
 });
