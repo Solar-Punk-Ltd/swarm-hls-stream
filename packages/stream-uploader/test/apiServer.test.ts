@@ -14,6 +14,8 @@ import {
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
   MEDIA_TYPE_VIDEO,
+  REJECT_DRAINING,
+  REJECT_UNKNOWN_STREAM,
 } from '../src/types.js';
 import { MANIFEST_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
@@ -148,6 +150,45 @@ describe('api server over http (S0.7 test layer)', () => {
 
     assert.equal(status, 404);
     assert.deepEqual(body, { ok: false, error: 'Unknown stream: live/ghost', statusCode: 404 });
+  });
+});
+
+describe('POST /stream/segment for a finalizing stream (CON-6)', () => {
+  const servers: ApiTestServer[] = [];
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  // The orchestrator's reason is pinned by its own tests, but the route branches on the constant's
+  // *value*, and nothing held that: renaming it to `unknown_stream` left the suite green while a
+  // finalizing stream started telling senders its stream does not exist.
+  it('answers 409, distinct from the 404 an unknown stream gets', async () => {
+    const orchestrator = {
+      startStream: () => true,
+      stopStream: async () => {},
+      handleSegment: (streamId: string) =>
+        streamId === 'live/draining'
+          ? { accepted: false, reason: REJECT_DRAINING }
+          : { accepted: false, reason: REJECT_UNKNOWN_STREAM },
+    } as unknown as StreamOrchestrator;
+
+    const server = await startTestApi(orchestrator);
+    servers.push(server);
+
+    const send = (streamId: string) =>
+      server.request('/stream/segment', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-stream-id': streamId,
+          'x-segment-index': '0',
+          'x-duration': '2',
+        },
+        body: Buffer.from('seg'),
+      });
+
+    assert.equal((await send('live/draining')).status, 409, 'a finalizing stream is a conflict, not a 404');
+    assert.equal((await send('live/nothing')).status, 404, 'and an unknown stream still answers 404');
   });
 });
 

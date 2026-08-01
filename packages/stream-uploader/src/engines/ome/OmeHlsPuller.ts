@@ -135,6 +135,13 @@ export class OmeHlsPuller {
         } else {
           logger.warn(`[OME] Puller tick error for ${this.streamId}: ${msg}`);
         }
+        // Every failure that is not a 404 arrives here: a refused connection, a 5xx, a timeout, a
+        // playlist that would not parse. They are the same thing to the stream as a 404 is, so they
+        // have to reach the same accounting, or the deferral misses the outage it exists for and the
+        // halt never fires on an origin that is permanently broken rather than merely absent.
+        if (this.noteOriginUnusable('the origin')) {
+          return;
+        }
         this.scheduleNext(this.intervalMs);
       });
     }, delayMs);
@@ -273,7 +280,13 @@ export class OmeHlsPuller {
           return;
         }
 
-        const result = this.orchestrator.handleSegment(this.streamId, segment.seq, segment.duration, segmentBuffer);
+        const result = this.orchestrator.handleSegment(
+          this.streamId,
+          segment.seq,
+          segment.duration,
+          segmentBuffer,
+          segment.discontinuity,
+        );
 
         if (!result.accepted) {
           logger.warn(`[OME] Segment ${segment.seq} not accepted for ${this.streamId}: ${result.reason}`);
@@ -466,8 +479,6 @@ export class OmeHlsPuller {
       throw new Error(`Master playlist HTTP ${res.status}`);
     }
 
-    this.resetRetryCounter();
-
     const playlist = await res.text();
     this.setMediaPlaylistUrl(playlist);
 
@@ -492,18 +503,50 @@ export class OmeHlsPuller {
       return;
     }
 
+    if (this.noteOriginUnusable(target)) {
+      return;
+    }
+
+    this.scheduleNext(this.intervalMs);
+  }
+
+  /**
+   * The origin did not give us usable media this poll, whatever the reason. Answers whether the puller
+   * has now given up, so the caller knows not to schedule another tick.
+   *
+   * A 404 is only one of the ways an origin goes quiet, and it is not the likeliest. A restarting
+   * container refuses the connection, and one behind a proxy answers 502 or 503, both of which reject
+   * or throw rather than reaching a status check. Routing every one of them through here is what makes
+   * the two effects below cover the case they were written for. See CON-10 and OBS-18.
+   */
+  private noteOriginUnusable(target: string): boolean {
     const now = Date.now();
     if (this.notFoundSince === null) {
       this.notFoundSince = now;
+      logger.warn(
+        `[OME] ${target} not answering for ${this.streamId}, retrying for up to ${this.haltAfterNotFoundMs}ms`,
+      );
     }
+
+    // A crash-recovered stream is the one most likely to be here, because the engine and the uploader
+    // come back on their own schedules. Without this the recovery timer finalized the broadcast as a
+    // VOD while this puller was still retrying for it, and the two windows are the same 60s by default,
+    // so an OME restart only had to be marginally slow.
+    //
+    // The deferral is bounded by the halt below and by nothing else, which is why `notFoundSince` has
+    // to accumulate across every kind of failure. It previously did not: `fetchMediaPlaylistUrl` reset
+    // it on a master that answered, so a master serving 200 with a variant serving 404 deferred the
+    // finalize on every poll and never halted. That stream was never finalized at all, and a stream
+    // awaiting recovery is excluded from the stall signal, so nothing said so.
+    this.orchestrator.keepAlive(this.streamId);
 
     if (now - this.notFoundSince > this.haltAfterNotFoundMs) {
       logger.info(`[OME] ${target} gone for ${this.streamId}, halting puller`);
       this.stop();
       this.onHalt?.();
-      return;
+      return true;
     }
 
-    this.scheduleNext(this.intervalMs);
+    return false;
   }
 }

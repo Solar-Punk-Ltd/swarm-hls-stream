@@ -99,6 +99,7 @@ async function start() {
       maxQueueSize: config.maxQueueSize,
       recoveryTimeout: config.recoveryTimeout,
       segmentStallMs: config.segmentStallMs,
+      segmentDedupWindow: config.segmentDedupWindow,
     });
 
     const recoveredStreamIds = await streamOrchestrator.recoverStreams();

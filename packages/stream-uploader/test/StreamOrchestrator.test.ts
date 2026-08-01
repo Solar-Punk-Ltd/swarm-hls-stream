@@ -5,14 +5,25 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
+import {
+  MEDIA_TYPE_VIDEO,
+  PRESSURE_HIGH,
+  REJECT_DRAINING,
+  REJECT_QUEUE_FULL,
+  REJECT_UNKNOWN_STREAM,
+  STREAM_STATUS_VOD,
+  StreamState,
+  StreamStatus,
+} from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
+  FakeUploads,
   makeFakeRecoveryStore,
   makeRecordingCatalog,
   makeRecoveredState,
   makeTestOrchestrator,
+  neverSettles,
   toRecoveryFileId,
 } from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
@@ -26,6 +37,12 @@ const RECOVERY_TIMEOUT_MS = 80;
  * costs nothing on the passing path.
  */
 const SETTLE_CEILING_MS = 4_000;
+
+/** The feed topic of the newest persisted state, which is what tells one session's writes from another's. */
+async function waitForTopic(saved: StreamState[]): Promise<string> {
+  await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+  return saved[saved.length - 1].streamRawTopic;
+}
 
 function makeOrchestrator(recovery: RecoveryStore = makeFakeRecoveryStore(), clock?: FakeClock): StreamOrchestrator {
   return makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS, clock }, {}, recovery);
@@ -157,6 +174,38 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
       makeRecordingCatalog(published),
     );
   }
+
+  it('registers every session before it returns, so a reconnect is addressable in its own tick', async () => {
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const orch = startedOrchestrator(published, []);
+
+    // Three announces, each fed in the same tick it arrives. CON-1's own account of this race is wrong
+    // and the correction is what this test pins: p-queue 8 runs the first job inside `add()`, so two
+    // announces never did both take the fresh-stream path. The window opens on the second one, which
+    // retires the live session and queues its replacement, and that queued write is deferred. Between
+    // there and the microtask that ran it, `activeStreams` held nothing for a stream mid-broadcast, so
+    // a segment was refused as an unknown stream and a third announce found the id free and started
+    // yet another session over the top of the pending one, which was then never retired or finalized.
+    for (const index of [0, 1, 2]) {
+      assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, `announce ${index} is accepted`);
+      assert.deepEqual(
+        orch.handleSegment(id, index, 2, Buffer.from(`seg${index}`)),
+        { accepted: true },
+        `the segment after announce ${index} reaches the session that announce just started`,
+      );
+    }
+
+    // Two retirements, so two VODs. A session that is overwritten rather than retired publishes
+    // nothing, which is how the loss shows up.
+    await waitFor(
+      () => published.filter((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD).length >= 2,
+      SETTLE_CEILING_MS,
+    );
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'exactly one session holds the id at the end');
+    await orch.cleanup();
+  });
 
   it('accepts a re-announced already-active stream and restarts it instead of rejecting', async () => {
     const id = 'live/stream';
@@ -565,6 +614,100 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     assert.deepEqual(catalogEntries, [], 'and nothing is published as VOD');
     await orch.cleanup();
   });
+
+  // The recovery timer's only input was whether a segment arrived, and after a crash the engine that
+  // would send one is being waited on too. A pull-based engine restarts its puller straight away and
+  // then retries a silent origin for `haltAfterNotFoundMs`, which is 60s by default, the same 60s this
+  // timer runs on. So an OME restart slower than the timer VOD-ed a broadcast whose publisher never
+  // went away, and the puller was mid-retry when it happened. See CON-10.
+  it('defers the recovery finalize for as long as the engine says it is still trying', async () => {
+    const clock = new FakeClock();
+    const catalogEntries: CatalogEntry[] = [];
+    const orch = makeRecoveringOrchestrator(clock, catalogEntries, []);
+
+    await orch.recoverStreams();
+
+    // Four keepalives spanning three times the timeout, which is a puller polling a 404 origin.
+    for (let elapsed = 0; elapsed < RECOVERY_TIMEOUT_60S * 3; elapsed += RECOVERY_TIMEOUT_60S - 1) {
+      assert.equal(orch.keepAlive('live/stream'), true, 'a recovering stream has a finalize to defer');
+      await clock.advance(RECOVERY_TIMEOUT_60S - 1);
+    }
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'a stream the engine is still working on must not be VOD-ed');
+    assert.deepEqual(
+      catalogEntries.map((entry) => entry.state),
+      [],
+      'and nothing is published as VOD while it is deferred',
+    );
+
+    // The deferral is only ever as long as the last keepalive bought. Stopping is what a puller does
+    // when it gives up, and the finalize has to arrive on its own after that, not wait for the halt.
+    await clock.advance(RECOVERY_TIMEOUT_60S);
+    await waitFor(() => orch.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+    assert.deepEqual(
+      catalogEntries.map((entry) => entry.state),
+      ['vod'],
+      'once the keepalives stop the stream finalizes, or an unreachable origin holds it live forever',
+    );
+  });
+
+  // There is deliberately no test that a keepalive is not recorded as stream activity. The claim was
+  // made and a test was written for it, and the test asserted nothing: `startStream` cancels the
+  // recovery timer, so the keepalive after it took the no-op path. Removing that setup only moves the
+  // problem, because `getMsSinceStreamActivity` excludes any stream holding a recovery timer, which is
+  // every stream a keepalive can reach. The non-effect is real and unobservable through this API, and
+  // both paths that end recovery set a fresh reading anyway, so it is recorded here rather than
+  // guarded by a test that would pass whatever the code did. See the note on `keepAlive`.
+
+  // A recovered stream re-pulls the origin's whole current window by design, so its first segments are
+  // duplicates. Nothing covered the rebuild: deleting it outright, emptying it, or shifting every index
+  // by one all left the suite green, and every one of them re-uploads a broadcast that is already paid
+  // for.
+  it('rebuilds the duplicate filter from the restored manifest, so a resumed stream re-pays for nothing', async () => {
+    const clock = new FakeClock();
+    const uploaded: string[] = [];
+    const id = 'live/stream';
+    const orch = makeTestOrchestrator(
+      { clock, recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+      },
+      makeFakeRecoveryStore({ listActive: () => [toRecoveryFileId(id)], load: () => makeRecoveredState(id) }),
+    );
+
+    await orch.recoverStreams();
+
+    // `makeRecoveredState` restores exactly index 0, which is what the origin still has at the top of
+    // its window and what a fresh puller therefore delivers first.
+    assert.deepEqual(orch.handleSegment(id, 0, 2, Buffer.from('already published')), { accepted: true });
+    assert.deepEqual(orch.handleSegment(id, 1, 2, Buffer.from('genuinely new')), { accepted: true });
+
+    await waitFor(() => uploaded.includes('genuinely new'), SETTLE_CEILING_MS);
+    assert.deepEqual(
+      uploaded,
+      ['genuinely new'],
+      'a restored index was uploaded again, so a resumed stream pays twice for media it already published',
+    );
+    await orch.cleanup();
+  });
+
+  it('reports that a stream with no pending finalize had nothing to defer', async () => {
+    const clock = new FakeClock();
+    const orch = makeRecoveringOrchestrator(clock, [], []);
+
+    orch.startStream('live/stream', MEDIA_TYPE_VIDEO);
+
+    assert.equal(
+      orch.keepAlive('live/stream'),
+      false,
+      'a live stream is not recovering, and a keepalive that silently does nothing reads exactly like one that worked',
+    );
+    assert.equal(orch.keepAlive('live/never-started'), false, 'and a stream nothing registered has nothing to defer');
+    await orch.cleanup();
+  });
 });
 
 describe('StreamOrchestrator segment loss (OBS-11)', () => {
@@ -617,5 +760,371 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
       5_000,
       'refreshing the activity clock on a loss would hide a dead stream behind its own losses',
     );
+  });
+});
+
+describe('StreamOrchestrator origin discontinuity (CON-9)', () => {
+  it('carries a declared discontinuity onto the segment it was declared for', async () => {
+    const saved: StreamState[] = [];
+    const orch = makeTestOrchestrator(
+      {},
+      {},
+      makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/one', 0, 2, Buffer.from('before'));
+    orch.handleSegment('live/one', 1, 2, Buffer.from('after'), true);
+
+    await waitFor(() => saved.some((state) => state.segments.length === 2), SETTLE_CEILING_MS);
+
+    const manifest = saved.filter((state) => state.segments.length === 2).pop() as StreamState;
+    assert.equal(
+      manifest.segments.find((segment) => segment.index === 1)?.discontinuity,
+      true,
+      'the origin said the media here is not a continuation, and a manifest that omits that stalls players on it',
+    );
+    assert.notEqual(
+      manifest.segments.find((segment) => segment.index === 0)?.discontinuity,
+      true,
+      'and only the segment it was declared for, or every join looks like a break',
+    );
+    await orch.cleanup();
+  });
+
+  // Issued ahead of the segment, the marker outlived every path that refuses one and attached to the
+  // next segment that was taken. A recovered stream meets this constantly: its duplicate filter is
+  // rebuilt from the restored manifest while its puller restarts at the top of the origin's window.
+  it('persists the pending marker before the segment that consumes it, so a crash keeps it', async () => {
+    const saved: StreamState[] = [];
+    let uploads = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        // The first lands so the queue is free for the marker; the second never answers, so the only
+        // state write that can follow the marker is the marker's own.
+        uploadData: async () => (uploads++ === 0 ? { reference: { toHex: () => 'ref0' } } : neverSettles()),
+      },
+      makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/one', 0, 2, Buffer.from('lands'));
+    await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+
+    orch.handleSegment('live/one', 1, 2, Buffer.from('never uploads'), true);
+
+    // Without the marker's own persist a crash here restores a stream that has forgotten the break
+    // the origin declared, and the segment after the gap is published as a seamless join.
+    await waitFor(() => saved.some((state) => state.pendingDiscontinuity === true), SETTLE_CEILING_MS);
+  });
+
+  it('drops the marker with the segment when the segment is a duplicate', async () => {
+    const saved: StreamState[] = [];
+    const orch = makeTestOrchestrator(
+      {},
+      {},
+      makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/one', 0, 2, Buffer.from('first'));
+    // Re-delivered, and the origin declares a break on it. It was already taken without one.
+    orch.handleSegment('live/one', 0, 2, Buffer.from('replay'), true);
+    orch.handleSegment('live/one', 1, 2, Buffer.from('next'));
+
+    await waitFor(() => saved.some((state) => state.segments.length === 2), SETTLE_CEILING_MS);
+
+    const manifest = saved.filter((state) => state.segments.length === 2).pop() as StreamState;
+    assert.notEqual(
+      manifest.segments.find((segment) => segment.index === 1)?.discontinuity,
+      true,
+      'a break declared for a segment that was never taken must not be published on the next one that was',
+    );
+    await orch.cleanup();
+  });
+
+  it('drops the marker when the queue is full, rather than queueing one per poll behind the limit', async () => {
+    const orch = makeTestOrchestrator({ maxQueueSize: 1 }, { uploadData: () => neverSettles() });
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    // The first is running rather than waiting, and p-queue's `size` counts only what waits, so it
+    // takes two to reach a ceiling of one.
+    orch.handleSegment('live/one', 0, 2, Buffer.from('running'));
+    orch.handleSegment('live/one', 1, 2, Buffer.from('fills the queue'));
+
+    for (let poll = 0; poll < 20; poll++) {
+      assert.deepEqual(
+        orch.handleSegment('live/one', 2, 2, Buffer.from('refused'), true),
+        { accepted: false, reason: REJECT_QUEUE_FULL },
+        'the segment is refused, and the marker has to be refused with it',
+      );
+    }
+
+    assert.equal(
+      orch.getQueuePressure('live/one'),
+      PRESSURE_HIGH,
+      'nothing beyond the one held segment reached the queue, so the ceiling still means what it says',
+    );
+  });
+
+  it('refuses a segment and its marker for a stream it does not have or is finalizing', async () => {
+    const orch = makeTestOrchestrator();
+
+    assert.deepEqual(orch.handleSegment('live/never-started', 0, 2, Buffer.from('x'), true), {
+      accepted: false,
+      reason: REJECT_UNKNOWN_STREAM,
+    });
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    const stopped = orch.stopStream('live/one');
+    assert.deepEqual(
+      orch.handleSegment('live/one', 0, 2, Buffer.from('x'), true),
+      { accepted: false, reason: REJECT_DRAINING },
+      'a finalized manifest can take a marker no more than it can take media',
+    );
+    await stopped;
+  });
+});
+
+describe('StreamOrchestrator drain that outlives its deadline (CON-26)', () => {
+  const DRAIN_TIMEOUT_MS = 5 * 60 * 1000;
+
+  it('gives up the recovery entry when it gives up waiting, so a replacement keeps its own', async () => {
+    const id = 'live/stream';
+    const clock = new FakeClock();
+    const saved: StreamState[] = [];
+    const removed: string[] = [];
+    let releaseBee = () => {};
+    const beeAnswers = new Promise<void>((resolve) => {
+      releaseBee = resolve;
+    });
+
+    const orch = makeTestOrchestrator(
+      { clock, recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      // Accepted the write and went silent, so the drain can only end on its deadline. Released later,
+      // because a Bee that never answers also never lets the abandoned finalize do any damage, and the
+      // damage is the point.
+      {
+        uploadPayload: async (index: number) => {
+          await beeAnswers;
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      makeFakeRecoveryStore({
+        save: (_id: string, state: StreamState) => saved.push(state),
+        remove: (streamId: string) => removed.push(streamId),
+      }),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(id, 0, 2, Buffer.from('held'));
+    const abandonedTopic = await waitForTopic(saved);
+
+    const stopped = orch.stopStream(id);
+    await clock.advance(DRAIN_TIMEOUT_MS + 1);
+    await stopped;
+
+    // The id is free now, so this is a plain start rather than a re-announce, and nothing on that
+    // path retires the session the timed-out drain walked away from.
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(id, 0, 2, Buffer.from('the live one'));
+    const writesBefore = saved.length;
+
+    // Now let the abandoned finalize run to completion, which is what it does in production the moment
+    // the node answers: it publishes its VOD and clears what it still believes is its recovery entry.
+    releaseBee();
+    await waitFor(() => saved.length > writesBefore, SETTLE_CEILING_MS);
+    await waitAndConfirmNothingHappened(() => removed.length === 0, 150);
+
+    const afterHandover = saved.slice(writesBefore);
+    assert.ok(
+      !afterHandover.some((state) => state.streamRawTopic === abandonedTopic),
+      'the abandoned finalize wrote its own state over the recovery entry of the broadcast that is live',
+    );
+    assert.deepEqual(removed, [], "and it must not delete the live session's entry on its way out either");
+  });
+});
+
+describe('StreamOrchestrator stall signal during a drain', () => {
+  it('still watches a replacement registered while its predecessor drains', async () => {
+    const id = 'live/stream';
+    const clock = new FakeClock();
+    const orch = makeTestOrchestrator(
+      { clock, recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      { uploadPayload: () => neverSettles() },
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(id, 0, 2, Buffer.from('held'));
+    const stopped = orch.stopStream(id);
+
+    // The broadcaster is back while the outgoing session is still finalizing, and then goes quiet.
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    clock.advance(90_000);
+
+    assert.equal(
+      orch.getMsSinceStreamActivity(),
+      90_000,
+      'a live stream sending nothing has to reach the stall signal even while its predecessor drains',
+    );
+
+    await clock.advance(5 * 60 * 1000 + 1);
+    await stopped;
+  });
+});
+
+describe('StreamOrchestrator duplicate filter (CON-8)', () => {
+  const DEDUP_WINDOW = 2;
+  const SEGMENTS = DEDUP_WINDOW * 3;
+
+  it('bounds the filter at the configured window and not at the length of the broadcast', async () => {
+    const id = 'live/stream';
+    const uploaded: string[] = [];
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS, segmentDedupWindow: DEDUP_WINDOW },
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+      },
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    for (let index = 0; index < SEGMENTS; index++) {
+      orch.handleSegment(id, index, 2, Buffer.from(`seg${index}`));
+    }
+    await waitFor(() => uploaded.length === SEGMENTS, SETTLE_CEILING_MS);
+
+    // Queued in this order onto one FIFO queue, so a replay that was let through arrives before the
+    // one below it. Waiting for the second is therefore a barrier on the first, not a guess at timing.
+    orch.handleSegment(id, SEGMENTS - 1, 2, Buffer.from('replay-inside-the-window'));
+    orch.handleSegment(id, 0, 2, Buffer.from('replay-behind-the-window'));
+    await waitFor(() => uploaded.includes('replay-behind-the-window'), SETTLE_CEILING_MS);
+
+    assert.ok(
+      !uploaded.includes('replay-inside-the-window'),
+      'a re-delivered index inside the window has to stay suppressed, or the bound costs duplicate uploads',
+    );
+    // Pins the window from below as well. Everything above is satisfied by a window of one, so without
+    // this the configured value could be ignored entirely in favour of any smaller constant.
+    assert.deepEqual(
+      orch.handleSegment(id, SEGMENTS - DEDUP_WINDOW, 2, Buffer.from('replay-at-the-window-edge')),
+      { accepted: true },
+      'the oldest index the window still guarantees has to be remembered, or the window is not the configured one',
+    );
+    await waitAndConfirmNothingHappened(() => !uploaded.includes('replay-at-the-window-edge'), 150);
+    // The counterweight. Suppressing both also satisfies the line above, and only a filter that
+    // actually forgets can be bounded at all. That the oldest index is re-taken is the price, and it
+    // is unreachable in practice: an engine can only re-deliver what its playlist window still holds.
+    await orch.cleanup();
+  });
+});
+
+describe('StreamOrchestrator draining stream (CON-6)', () => {
+  /** The first segment publishes a live manifest at SOC index 0, so the VOD manifest lands at 1. */
+  const LIVE_SOC_INDEX = 0;
+  const VOD_SOC_INDEX = 1;
+
+  interface HeldVodCommit {
+    uploads: FakeUploads;
+    /** SOC indexes in commit order, so a manifest published above the VOD's index is visible. */
+    socWrites: number[];
+    release: () => void;
+  }
+
+  /**
+   * Holds the drain open inside the VOD manifest commit, which is the only place it can be held that
+   * is past `segmentQueue.onIdle()`. That is CON-6's window: the queue barrier the drain waits on has
+   * already resolved, so anything enqueued from here on is uploaded into a manifest that is finished.
+   */
+  function holdTheVodCommit(): HeldVodCommit {
+    const socWrites: number[] = [];
+    let releaseVodCommit = () => {};
+    const vodCommitHeld = new Promise<void>((resolve) => {
+      releaseVodCommit = resolve;
+    });
+
+    return {
+      socWrites,
+      release: () => releaseVodCommit(),
+      uploads: {
+        uploadPayload: async (index: number) => {
+          socWrites.push(index);
+          if (index === VOD_SOC_INDEX) {
+            await vodCommitHeld;
+          }
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+    };
+  }
+
+  async function startedWithOneSegment(id: string, held: HeldVodCommit, published: unknown[]) {
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      held.uploads,
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    assert.deepEqual(orch.handleSegment(id, 0, 2, Buffer.from('seg0')), { accepted: true });
+    await waitFor(() => held.socWrites.includes(LIVE_SOC_INDEX), SETTLE_CEILING_MS);
+
+    return orch;
+  }
+
+  it('refuses a segment once the drain is past the queue barrier, so the engine keeps its copy', async () => {
+    // Accepted, it was uploaded and paid for and then added to a manifest already built and committed,
+    // so it reached no player. Worse than lost: the publish it triggers commits a live manifest at a
+    // SOC index above the VOD's, leaving the feed's newest entry a live playlist for a finished
+    // broadcast, and the state it persists restores a recovery entry `notifyStop` had just deleted.
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const held = holdTheVodCommit();
+    const orch = await startedWithOneSegment(id, held, published);
+
+    const stopped = orch.stopStream(id);
+    await waitFor(() => held.socWrites.includes(VOD_SOC_INDEX), SETTLE_CEILING_MS);
+
+    assert.deepEqual(
+      orch.handleSegment(id, 1, 2, Buffer.from('seg1')),
+      { accepted: false, reason: REJECT_DRAINING },
+      'a segment the finalized manifest can no longer carry must be refused, not accepted and dropped',
+    );
+    assert.equal(
+      orch.handleSegmentLoss(id, 2, 1),
+      false,
+      'and a loss reported into that same window records nothing, so the caller has to hold its position',
+    );
+
+    held.release();
+    await stopped;
+  });
+
+  it('still accepts segments for the session that replaced a draining one', async () => {
+    // The guard has to be answerable per session, not per id. A reconnect during a drain registers a
+    // replacement under the id the drain is still keyed by, and refusing its segments would silence a
+    // broadcaster who is already back, for as long as the outgoing finalize takes.
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const held = holdTheVodCommit();
+    const orch = await startedWithOneSegment(id, held, published);
+
+    const stopped = orch.stopStream(id);
+    await waitFor(() => held.socWrites.includes(VOD_SOC_INDEX), SETTLE_CEILING_MS);
+
+    assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, 'the reconnect is accepted');
+    assert.deepEqual(
+      orch.handleSegment(id, 0, 2, Buffer.from('replacement')),
+      { accepted: true },
+      'the replacement session is live and its segments belong to a manifest nothing has finalized',
+    );
+
+    held.release();
+    await stopped;
+    await orch.cleanup();
   });
 });

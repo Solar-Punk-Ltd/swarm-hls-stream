@@ -59,6 +59,22 @@ async function withSilencedLogs<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Every method the puller calls on the orchestrator, so a stub cannot go stale by omitting one. These
+ * are cast through `unknown`, so a method the puller starts calling is not a compile error anywhere:
+ * it is a runtime failure in whichever tests happen to reach that line, and only those. That has now
+ * happened twice while adding `keepAlive`, which is why the shape lives in one place.
+ */
+function makeOrchestratorStub(overrides: Record<string, unknown> = {}): OrchestratorArg {
+  return {
+    handleSegment: () => ({ accepted: true }),
+    handleSegmentLoss: () => true,
+    keepAlive: () => false,
+    markDiscontinuity: () => true,
+    ...overrides,
+  } as unknown as OrchestratorArg;
+}
+
 function makePuller(handleSegment: () => SegmentResult): PullerInternals {
   const orchestrator = { handleSegment } as unknown as OrchestratorArg;
   const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1000, orchestrator);
@@ -221,6 +237,7 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
         pulled.push(seq);
         return { accepted: true };
       },
+      keepAlive: () => false,
     } as unknown as OrchestratorArg;
 
     // A huge interval by default so the puller's own scheduled ticks never fire and the test drives
@@ -815,10 +832,7 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
   it('logs an ordinary playlist failure at warn from the tick catch, not at error', async () => {
     const failing = (() =>
       Promise.resolve({ ok: false, status: 500, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
-    const orchestrator = {
-      handleSegment: () => ({ accepted: true }),
-      handleSegmentLoss: () => true,
-    } as unknown as OrchestratorArg;
+    const orchestrator = makeOrchestratorStub();
     const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, orchestrator, {
       fetcher: failing,
     }) as unknown as { start(): void; stop(): void };
@@ -886,6 +900,171 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
 
 // A puller is stopped from outside, by the engine replacing it or by an announce closing the stream,
 // while a poll of its own is in flight. Everything below is what that in-flight poll must not do when
+/**
+ * A crash-recovered stream is finalized as a VOD if nothing reaches it inside the recovery timeout,
+ * and a puller restarted against an origin that is not back yet reaches it with nothing. Both windows
+ * default to 60s, so an OME restart only had to be marginally slow to take a broadcast whose publisher
+ * never went away. See CON-10.
+ */
+describe('OmeHlsPuller origin discontinuity (CON-9)', () => {
+  it('hands the declared break over on the segment it belongs to, not ahead of it', async () => {
+    const handovers: string[] = [];
+    const playlist = [
+      '#EXTM3U',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:2.0,',
+      'b.ts',
+    ].join('\n');
+
+    const orchestrator = makeOrchestratorStub({
+      handleSegment: (_id: string, seq: number, _duration: number, _data: Buffer, discontinuity?: boolean) => {
+        handovers.push(`segment ${seq}${discontinuity ? ' (break)' : ''}`);
+        return { accepted: true };
+      },
+    });
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher: (async (input: RequestInfo | URL) =>
+        String(input).endsWith('.ts')
+          ? ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response)
+          : ({ ok: true, status: 200, text: async () => playlist } as unknown as Response)) as unknown as Fetcher,
+    }) as unknown as { tick(): Promise<void>; stop(): void };
+
+    await puller.tick();
+    puller.stop();
+
+    // Carried by the segment rather than issued in front of it, so a segment the orchestrator refuses
+    // takes its marker with it instead of leaving it for whichever segment is accepted next.
+    assert.deepEqual(
+      handovers,
+      ['segment 0', 'segment 1 (break)'],
+      'the marker has to travel with the segment the origin declared it for',
+    );
+  });
+});
+
+describe('OmeHlsPuller keepalive through an origin outage (CON-10)', () => {
+  interface TickablePuller {
+    tick(): Promise<void>;
+    stop(): void;
+  }
+
+  /** Driven through `start()` rather than `tick()`, because the scheduler's catch is the path under test. */
+  interface StartablePuller {
+    start(): void;
+    stop(): void;
+  }
+
+  /** A ceiling on a hung poll loop, not a measurement. The interval is 1ms, so a healthy run is instant. */
+  const POLL_CEILING_MS = 4_000;
+
+  /**
+   * A 404 is the least likely way an origin goes quiet. A restarting container refuses the connection
+   * and one behind a proxy answers 502, and neither reaches the status check a 404 does. The gate found
+   * this: the fix shipped covering only the case its own commit message did not describe.
+   */
+  it('says it is still trying when the origin refuses the connection, not only when it answers 404', async () => {
+    const keptAlive: string[] = [];
+    const refused = (async () => {
+      throw Object.assign(new Error('connect ECONNREFUSED 172.18.0.4:8081'), { code: 'ECONNREFUSED' });
+    }) as unknown as Fetcher;
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => true,
+      keepAlive: (streamId: string) => {
+        keptAlive.push(streamId);
+        return true;
+      },
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
+      fetcher: refused,
+      haltAfterNotFoundMs: 60_000,
+    }) as unknown as StartablePuller;
+
+    await withSilencedLogs(async () => {
+      puller.start();
+      await waitFor(() => keptAlive.length >= 2, POLL_CEILING_MS);
+    });
+    puller.stop();
+
+    assert.ok(
+      keptAlive.length >= 2,
+      'an origin that is down never defers the recovery finalize, so the stream it belongs to is VOD-ed under it',
+    );
+  });
+
+  /**
+   * The other end of the same contract. The deferral is bounded by the halt and by nothing else, so
+   * anything that stops the halt window accumulating defers forever. A master that answers while its
+   * variant 404s did exactly that, and a stream awaiting recovery is excluded from the stall signal, so
+   * nothing would have said so.
+   */
+  it('still halts when the master answers and only the variant is missing', async () => {
+    const halts: string[] = [];
+    const master = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=1000', 'variant.m3u8'].join('\n');
+    const fetcher = (async (input: RequestInfo | URL) =>
+      String(input).endsWith('ts:playlist.m3u8')
+        ? ({ ok: true, status: 200, text: async () => master } as unknown as Response)
+        : ({ ok: false, status: 404, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => true,
+      keepAlive: () => true,
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
+      fetcher,
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StartablePuller;
+
+    await withSilencedLogs(async () => {
+      puller.start();
+      await waitFor(() => halts.length > 0, POLL_CEILING_MS);
+    });
+    puller.stop();
+
+    assert.deepEqual(halts, ['halted'], 'a puller that can never halt defers the finalize forever and is invisible');
+  });
+
+  it('tells the orchestrator it is still trying on every poll a silent origin answers', async () => {
+    const keptAlive: string[] = [];
+    const fetcher = (async () =>
+      ({ ok: false, status: 404, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
+    const orchestrator = {
+      handleSegment: () => ({ accepted: true }),
+      handleSegmentLoss: () => true,
+      keepAlive: (streamId: string) => {
+        keptAlive.push(streamId);
+        return true;
+      },
+    } as unknown as OrchestratorArg;
+
+    // Far above anything these two ticks span, so the puller is still retrying rather than halting.
+    // The halt is the other half of the contract: it ends the deferral by stopping the stream itself.
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher,
+      haltAfterNotFoundMs: 60_000,
+    }) as unknown as TickablePuller;
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      await puller.tick();
+    });
+    puller.stop();
+
+    assert.deepEqual(
+      keptAlive,
+      ['stream-test', 'stream-test'],
+      'a puller that never says it is still trying leaves the recovery timer to VOD the stream under it',
+    );
+  });
+});
+
 // it finally answers, because by then the stream id can belong to a different session.
 describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
   const MEDIA = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'segment_0.ts'].join('\n');
@@ -914,6 +1093,7 @@ describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
         return { accepted: true };
       },
       handleSegmentLoss: () => true,
+      keepAlive: () => false,
     } as unknown as OrchestratorArg;
 
     const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
@@ -946,6 +1126,7 @@ describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
     const orchestrator = {
       handleSegment: () => ({ accepted: true }),
       handleSegmentLoss: () => true,
+      keepAlive: () => false,
     } as unknown as OrchestratorArg;
 
     const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
@@ -973,6 +1154,7 @@ describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
     const orchestrator = {
       handleSegment: () => ({ accepted: true }),
       handleSegmentLoss: () => true,
+      keepAlive: () => false,
     } as unknown as OrchestratorArg;
 
     const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {

@@ -49,6 +49,8 @@ export class StreamUploader {
   private consecutiveSegmentFailures = 0;
   /** Whether the recovery entry under this stream id still describes this uploader. See `retire`. */
   private ownsRecoveryEntry = true;
+  /** The one finalize this session gets, so a second caller joins it rather than repeating it. */
+  private finalizing: Promise<void> | undefined;
 
   private manifestManager: ManifestManager;
 
@@ -128,10 +130,33 @@ export class StreamUploader {
    * Applied inline, the discontinuity would attach to a segment that arrived before the gap.
    */
   public handleSegmentLoss(firstIndex: number, count: number): void {
+    const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
+    this.queueDiscontinuity(() =>
+      this.logger.error(`${subject} for stream ${this.streamId} never reached the uploader, marking a discontinuity`),
+    );
+  }
+
+  /**
+   * A discontinuity the origin declared with `#EXT-X-DISCONTINUITY`, meaning the media from here on is
+   * not a continuation of what came before it. An encoder restart upstream produces exactly this, and
+   * a manifest that omits it tells players the join is seamless, which is what they stall on.
+   *
+   * Ordinary rather than an error, unlike a loss: nothing went wrong here and nothing was dropped.
+   */
+  public markDiscontinuity(): void {
+    this.queueDiscontinuity(() =>
+      this.logger.info(`Origin declared a discontinuity for stream ${this.streamId}, marking the next segment`),
+    );
+  }
+
+  /**
+   * Queued rather than applied inline so it takes its place behind segments already awaiting upload.
+   * Applied inline, the discontinuity would attach to a segment that arrived before the break.
+   */
+  private queueDiscontinuity(announce: () => void): void {
     this.segmentQueue.add(() => {
       this.pendingDiscontinuity = true;
-      const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
-      this.logger.error(`${subject} for stream ${this.streamId} never reached the uploader, marking a discontinuity`);
+      announce();
       this.persistState();
     });
   }
@@ -150,7 +175,25 @@ export class StreamUploader {
     return this.streamCatalog.addStream(entry);
   }
 
+  /**
+   * Finalize this session as a VOD, once, however many callers ask.
+   *
+   * Two of them reach here for one session and neither can see the other. A reconnect during a drain
+   * retires the live session and hands it to `finalizeRetiredSession`, which deliberately stays out of
+   * the orchestrator's `drainPromises` because the id belongs to the replacement by then, so the guard
+   * that answers a duplicate stop with the drain already running never sees it. Unguarded, both ran the
+   * body below: two VOD manifests, each its own SOC write and the postage for it, and the second
+   * rewriting the catalog entry the first had published.
+   *
+   * A finalize that throws is shared rather than retried, which is what the callers already did with
+   * the orchestrator's drain promise, and no path retries one today.
+   */
   public async notifyStop(): Promise<void> {
+    this.finalizing ??= this.finalize();
+    return this.finalizing;
+  }
+
+  private async finalize(): Promise<void> {
     await this.segmentQueue.onIdle();
     await this.manifestQueue.onIdle();
 

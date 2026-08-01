@@ -2,7 +2,7 @@ import { Request, Response, Router } from 'express';
 
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
-import { REJECT_QUEUE_FULL, REJECT_UNKNOWN_STREAM } from '../../types.js';
+import { REJECT_DRAINING, REJECT_QUEUE_FULL, REJECT_UNKNOWN_STREAM } from '../../types.js';
 import { getErrorMessage } from '../../utils/common.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { ApiError } from '../middleware/errorHandler.js';
@@ -53,6 +53,12 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
 
       if (result.reason === REJECT_UNKNOWN_STREAM) {
         throw new ApiError(404, `Unknown stream: ${streamId}`);
+      }
+
+      // Not 404, because the stream exists, and not 429, because no amount of waiting reopens a
+      // manifest that has been committed. The sender's copy is the only one left, so say so.
+      if (result.reason === REJECT_DRAINING) {
+        throw new ApiError(409, `Stream is finalizing and accepts no more segments: ${streamId}`);
       }
 
       throw new ApiError(500, 'Unexpected error');

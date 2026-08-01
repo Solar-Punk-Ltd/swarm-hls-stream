@@ -14,5 +14,9 @@ export const config = {
   maxQueueSize: optionalInt('MAX_QUEUE_SIZE', 100, { min: 1 }),
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000, { min: 1 }),
   segmentStallMs: optionalInt('SEGMENT_STALL_MS', 30000, { min: 1 }),
+  // Deliberately far above anything reachable: what an engine can re-deliver is bounded by its
+  // playlist window, which is single digits of segments. The number exists to bound memory, not to
+  // tune behaviour, so it is set where changing it can never change what is accepted. See CON-8.
+  segmentDedupWindow: optionalInt('SEGMENT_DEDUP_WINDOW', 10000, { min: 1 }),
   engine: optional('ENGINE', ''),
 };

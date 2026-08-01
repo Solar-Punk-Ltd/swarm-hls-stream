@@ -166,6 +166,8 @@ describe('parseMediaPlaylist', () => {
     );
   });
 
+  // `#EXT-X-DISCONTINUITY` used to be in this list and is not any more: it is the one tag here that
+  // changes what the segment after it means, and it has its own test below. See CON-9.
   it('ignores blank lines, comments, and unrelated tags between segments', () => {
     const text = [
       '#EXTM3U',
@@ -176,7 +178,7 @@ describe('parseMediaPlaylist', () => {
       '#EXT-X-KEY:METHOD=NONE',
       'a.ts',
       '   ',
-      '#EXT-X-DISCONTINUITY',
+      '#EXT-X-INDEPENDENT-SEGMENTS',
       '#EXTINF:2.0,',
       'b.ts',
     ].join('\n');
@@ -205,14 +207,161 @@ describe('parseMediaPlaylist', () => {
     assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 2.0, uri: 'a.ts' }]);
   });
 
-  it('emits a NaN duration for an #EXTINF with a non-numeric value (current behavior)', () => {
-    const text = ['#EXTM3U', '#EXTINF:not-a-number,', 'a.ts'].join('\n');
+  // Every one of these used to become the segment's duration verbatim. It reaches `#EXTINF` in the
+  // manifest we publish, which makes that playlist unplayable, and it poisons the total the VOD
+  // catalog entry advertises. See CON-7.
+  const UNUSABLE_DURATIONS = [
+    { label: 'non-numeric', extinf: '#EXTINF:not-a-number,' },
+    { label: 'empty', extinf: '#EXTINF:,' },
+    { label: 'missing entirely', extinf: '#EXTINF:' },
+    { label: 'whitespace only', extinf: '#EXTINF: ,' },
+    { label: 'infinite', extinf: '#EXTINF:Infinity,' },
+    { label: 'negative', extinf: '#EXTINF:-2.0,' },
+  ];
 
-    const entries = parseMediaPlaylist(text);
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].seq, 0);
-    assert.equal(entries[0].uri, 'a.ts');
-    assert.ok(Number.isNaN(entries[0].duration));
+  for (const { label, extinf } of UNUSABLE_DURATIONS) {
+    it(`skips a segment whose #EXTINF duration is ${label}, without renumbering the ones behind it`, () => {
+      const text = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:10', extinf, 'bad.ts', '#EXTINF:2.0,', 'good.ts'].join('\n');
+
+      // seq 11, not 10. The skipped position is spent either way, because the origin numbers by
+      // position: renumbering the rest onto it hands every later segment an index that belongs to
+      // other media, and the duplicate filter then swallows real segments as ones already seen.
+      //
+      // And the survivor carries the break, because the dropped media occupied real time. Without
+      // that the backward date walk treats the two as adjacent and dates the earlier one off a
+      // timeline that is short by however long the dropped segment ran.
+      assert.deepEqual(parseMediaPlaylist(text), [{ seq: 11, duration: 2.0, uri: 'good.ts', discontinuity: true }]);
+    });
+  }
+
+  it('keeps a zero duration, which is degenerate but not unusable', () => {
+    const text = ['#EXTM3U', '#EXTINF:0,', 'a.ts'].join('\n');
+
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 0, uri: 'a.ts' }]);
+  });
+
+  // Finite is not the same as sane. These publish as `#EXTINF:1e+308,` and a target duration to
+  // match, poison the total the VOD advertises, and drive derived timestamps to an infinity that a
+  // replacement puller then adopts as its handover floor and discards a live broadcast against.
+  it('rejects a duration no clock could mean, not only one that is not a number', () => {
+    const text = ['#EXTM3U', '#EXTINF:1e308,', 'huge.ts', '#EXTINF:2.0,', 'good.ts'].join('\n');
+
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 1, duration: 2.0, uri: 'good.ts', discontinuity: true }]);
+  });
+
+  it('keeps a long but plausible segment', () => {
+    const text = ['#EXTM3U', '#EXTINF:30,', 'a.ts'].join('\n');
+
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 30, uri: 'a.ts' }]);
+  });
+
+  // RFC 8216 does not order the two tags. Discarding an anchor the origin wrote for the segment that
+  // follows loses the stamp on exactly that segment, and it is the field the handover floor reads.
+  it('keeps a date the origin wrote for the segment after a discontinuity', () => {
+    const text = [
+      '#EXTM3U',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-08-01T10:05:00.000Z',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:2.0,',
+      'b.ts',
+    ].join('\n');
+
+    assert.deepEqual(
+      parseMediaPlaylist(text).map((entry) => entry.programDateTime),
+      [undefined, Date.parse('2026-08-01T10:05:00.000Z')],
+    );
+  });
+
+  // The tag an origin sends when the media after it is not a continuation of the media before it,
+  // which is what an encoder restart produces. Swallowed with every other `#` line, the manifest we
+  // publish told players the join was seamless and they stalled on it instead of resetting. See CON-9.
+  it('marks the segment after an #EXT-X-DISCONTINUITY, and only that one', () => {
+    const text = [
+      '#EXTM3U',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:2.0,',
+      'b.ts',
+      '#EXTINF:2.0,',
+      'c.ts',
+    ].join('\n');
+
+    assert.deepEqual(parseMediaPlaylist(text), [
+      { seq: 0, duration: 2.0, uri: 'a.ts' },
+      { seq: 1, duration: 2.0, uri: 'b.ts', discontinuity: true },
+      { seq: 2, duration: 2.0, uri: 'c.ts' },
+    ]);
+  });
+
+  // `#EXT-X-DISCONTINUITY-SEQUENCE` is a header counter, not a marker, and it starts with the marker's
+  // whole name. Matching loosely stamps a break on the first segment of every window and nulls the
+  // date anchor the handover floor reads. This diff took the marker out of the unrelated-tags test
+  // without putting its near miss anywhere.
+  it('does not treat #EXT-X-DISCONTINUITY-SEQUENCE as a discontinuity', () => {
+    const text = ['#EXTM3U', '#EXT-X-DISCONTINUITY-SEQUENCE:3', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'a.ts'].join(
+      '\n',
+    );
+
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 2.0, uri: 'a.ts' }]);
+  });
+
+  // The skip drops the anchor as well as the segment. Every case in the table above is built without
+  // a date, so the line that does it was uncovered and the survivor let the next segment inherit the
+  // skipped one's start time.
+  it("does not hand a skipped segment's start time to the one after it", () => {
+    const text = [
+      '#EXTM3U',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-08-01T10:00:00.000Z',
+      '#EXTINF:not-a-number,',
+      'bad.ts',
+      '#EXTINF:2.0,',
+      'good.ts',
+    ].join('\n');
+
+    assert.deepEqual(
+      parseMediaPlaylist(text).map((entry) => entry.programDateTime),
+      [undefined],
+    );
+  });
+
+  it('does not carry a date across a discontinuity, in either direction', () => {
+    const stamped = [
+      '#EXTM3U',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-08-01T10:00:00.000Z',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:2.0,',
+      'b.ts',
+    ].join('\n');
+
+    // Forward: the tag says the timeline restarts, so the next segment's start cannot be derived by
+    // adding a duration to the last one. Unknown is the honest answer, and the handover floor CON-20
+    // reads this for treats unknown as "cannot judge" rather than acting on a wrong number.
+    assert.deepEqual(
+      parseMediaPlaylist(stamped).map((entry) => entry.programDateTime),
+      [Date.parse('2026-08-01T10:00:00.000Z'), undefined],
+    );
+
+    const stampedAfter = [
+      '#EXTM3U',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-08-01T10:00:00.000Z',
+      '#EXTINF:2.0,',
+      'b.ts',
+    ].join('\n');
+
+    // Backward, which RFC 8216 6.3.3 otherwise allows: extrapolating back over the same boundary dates
+    // the older media off the newer timeline, and it is exactly as wrong.
+    assert.deepEqual(
+      parseMediaPlaylist(stampedAfter).map((entry) => entry.programDateTime),
+      [undefined, Date.parse('2026-08-01T10:00:00.000Z')],
+    );
   });
 
   it('handles CRLF line endings and surrounding whitespace', () => {

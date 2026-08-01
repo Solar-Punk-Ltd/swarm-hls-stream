@@ -116,6 +116,7 @@ describe('createOmeEngine resumeRecoveredStream (F: OME crash recovery)', () => 
     const orchestrator = {
       handleSegment: () => ({ accepted: true }),
       stopStream: async () => {},
+      keepAlive: () => false,
     } as unknown as StreamOrchestrator;
 
     const { resumeRecoveredStream } = engine;
@@ -127,6 +128,77 @@ describe('createOmeEngine resumeRecoveredStream (F: OME crash recovery)', () => 
     assert.ok(
       fetchedUrls.includes('http://ome:8081/video/stream/ts:playlist.m3u8'),
       `resuming a recovered OME stream must restart its puller; fetched: ${fetchedUrls.join(', ') || '(none)'}`,
+    );
+  });
+});
+
+/**
+ * The test above resumes into an empty puller map, which is the case a crash leaves behind only when
+ * the process is new. The one that mattered is the other one: a puller still mapped for the stream
+ * because it died without ever calling `onHalt`. `startPuller` used to early-return on exactly that,
+ * so the resumed stream pulled nothing and was VOD-ed at the recovery timer, and nothing here could
+ * see the difference. See CON-5.
+ */
+describe('createOmeEngine resumeRecoveredStream over a stale puller (CON-5)', () => {
+  const SECRET = 'stale-puller-secret';
+  const HLS_BASE = 'http://ome:8081';
+  const STREAM_URL = 'srt://ome:10080/video/demo';
+  const STREAM_ID = 'video/demo';
+  const PLAYLIST_URL = `${HLS_BASE}/${STREAM_ID}/ts:playlist.m3u8`;
+  const POLL_INTERVAL_MS = 20;
+  const DELIVERY_TIMEOUT_MS = 5_000;
+  const SEGMENTS = ['seg_0.ts', 'seg_1.ts'];
+
+  /**
+   * Deliberately without `#EXT-X-PROGRAM-DATE-TIME`. The handover floor CON-20 added is what stops a
+   * replacement puller re-ingesting the outgoing session's media, and it is keyed on that tag. Leaving
+   * it out is what a resume after a crash actually sees, since the floor is recorded per stream in
+   * memory and the process that recorded it is the one that died.
+   */
+  const PLAYLIST = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:2',
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    ...SEGMENTS.flatMap((uri) => ['#EXTINF:2.0,', uri]),
+  ].join('\n');
+
+  it('replaces a puller that is still mapped, so the recovered stream produces segments again', async () => {
+    const delivered: number[] = [];
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === PLAYLIST_URL) {
+        return { ok: true, status: 200, text: async () => PLAYLIST } as Response;
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) } as Response;
+    }) as unknown as Fetcher;
+
+    const orchestrator = {
+      startStream: () => true,
+      stopStream: async () => {},
+      handleSegmentLoss: () => true,
+      handleSegment: (_streamId: string, seq: number) => {
+        delivered.push(seq);
+        return { accepted: true };
+      },
+    } as unknown as StreamOrchestrator;
+
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher });
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => delivered.length === SEGMENTS.length, DELIVERY_TIMEOUT_MS);
+
+    // A fresh puller starts at `lastSeq = -1` against a reset duplicate filter, so it re-pulls what
+    // the origin is still serving. The blocked puller cannot: it carries the high-water it reached
+    // above, and every index in the playlist is at or below it, forever.
+    engine.resumeRecoveredStream?.(orchestrator, STREAM_ID);
+    await waitFor(() => delivered.filter((seq) => seq === 0).length > 1, DELIVERY_TIMEOUT_MS);
+
+    assert.ok(
+      delivered.filter((seq) => seq === 0).length > 1,
+      `the resumed stream never pulled anything, so it would be VOD-ed at the recovery timer; delivered: ${
+        delivered.join(', ') || '(none)'
+      }`,
     );
   });
 });
@@ -217,6 +289,7 @@ describe('createOmeEngineFromEnv fetch timeout plumbing (TEST-15)', () => {
       stopStream: async () => {},
       handleSegment: () => ({ accepted: true }),
       handleSegmentLoss: () => true,
+      keepAlive: () => false,
     } as unknown as StreamOrchestrator;
 
     await postAdmission(engine, orchestrator, 'opening', PLUMBING_SECRET, STREAM_URL);

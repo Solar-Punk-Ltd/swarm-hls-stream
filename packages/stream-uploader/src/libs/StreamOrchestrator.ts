@@ -1,5 +1,4 @@
 import { Bee } from '@ethersphere/bee-js';
-import PQueue from 'p-queue';
 
 import {
   HealthSignals,
@@ -8,6 +7,7 @@ import {
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
   QueuePressure,
+  REJECT_DRAINING,
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
   SegmentResult,
@@ -17,6 +17,7 @@ import { getErrorMessage } from '../utils/common.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
+import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { StreamCatalog } from './StreamCatalog.js';
 import { StreamUploader } from './StreamUploader.js';
@@ -30,6 +31,8 @@ export interface StreamOrchestratorConfig {
   maxQueueSize: number;
   recoveryTimeout: number;
   segmentStallMs: number;
+  /** How many further segments an index stays remembered for, so a duplicate inside that is refused. */
+  segmentDedupWindow: number;
   /** Defaults to the real clock. Injected so tests can step time rather than wait for it. */
   clock?: Clock;
 }
@@ -43,9 +46,8 @@ export class StreamOrchestrator {
    * stop of a stream nothing had registered.
    */
   private drainPromises = new Map<string, { uploader: StreamUploader | undefined; promise: Promise<void> }>();
-  private processedSegments = new Map<string, Set<number>>();
+  private processedSegments = new Map<string, RecentSegmentIndexes>();
   private recoveryTimers = new Map<string, Timer>();
-  private queue = new PQueue({ concurrency: 1 });
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
    * clock so a backwards NTP step cannot make an age negative and hide a stall. Registration counts
@@ -134,30 +136,76 @@ export class StreamOrchestrator {
     }
   }
 
+  /**
+   * Registers the stream before returning, which is the whole of CON-1's fix.
+   *
+   * This used to defer its body into a concurrency-1 `PQueue`, and the race that opened is not the one
+   * CON-1 describes. p-queue 8 runs a synchronous job inside `add()` when a slot is free, so a first
+   * announce did register before returning and a second one did see it. What it could not do is run a
+   * *second* job synchronously: the slot is only released a microtask later. So the window opened on
+   * the re-announce path, which retires the live session and then queues its replacement. Between
+   * those two, `activeStreams` held nothing for a stream mid-broadcast, and the measured consequences
+   * were a segment from a reconnecting broadcaster refused as `unknown_stream`, and a third announce
+   * in that same window finding the id free and starting a session over the top of the pending one,
+   * which was then never retired and never finalized.
+   *
+   * The queue bought nothing to lose. It had one producer, this method, and its job body was entirely
+   * synchronous, as is `StreamUploader`'s constructor: field assignments, a signer, a manifest manager
+   * and a uuid.
+   */
   private spawnUploader(streamId: string, mediatype: MediaType): void {
-    this.queue.add(() => {
-      const uploader = new StreamUploader(
-        this.bee,
-        this.config.manifestBeeUrl,
-        this.streamCatalog,
-        this.recoveryStore,
-        this.config.streamKey,
-        this.config.stamp,
-        streamId,
-        mediatype,
-      );
+    const uploader = new StreamUploader(
+      this.bee,
+      this.config.manifestBeeUrl,
+      this.streamCatalog,
+      this.recoveryStore,
+      this.config.streamKey,
+      this.config.stamp,
+      streamId,
+      mediatype,
+    );
 
-      this.activeStreams.set(streamId, uploader);
-      this.processedSegments.set(streamId, new Set());
-      this.streamActivityAt.set(streamId, this.clock.now());
-      this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
-    });
+    this.activeStreams.set(streamId, uploader);
+    this.processedSegments.set(streamId, this.newDuplicateFilter());
+    this.streamActivityAt.set(streamId, this.clock.now());
+    this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
 
-  public handleSegment(streamId: string, segmentIndex: number, duration: number, data: Buffer): SegmentResult {
+  /**
+   * Whether this uploader's own drain is running, so nothing it is handed can still be published.
+   *
+   * `notifyStop` waits on `segmentQueue.onIdle()` and then commits the VOD manifest, and it stays
+   * registered in `activeStreams` for the whole of that. Anything enqueued after the barrier resolves
+   * is uploaded and paid for into a manifest that is already built, so it reaches no player. The
+   * publish it triggers is worse than the loss: it commits a live manifest at a SOC index above the
+   * VOD's, which leaves the feed's newest entry a live playlist for a finished broadcast, and the
+   * state it persists on the way through restores the recovery entry `notifyStop` just deleted, so
+   * the next boot recovers a stream that is over and finalizes it a second time.
+   *
+   * Matched on the uploader, not the id, for the reason `stopStream` matches on it: a reconnect
+   * registers a replacement under the id the outgoing drain is still keyed by, and that replacement is
+   * live. Refusing by id alone would silence a broadcaster who is already back, for as long as the
+   * finalize takes, which is up to `DRAIN_TIMEOUT_MS`.
+   */
+  private isDraining(streamId: string, uploader: StreamUploader): boolean {
+    return this.drainPromises.get(streamId)?.uploader === uploader;
+  }
+
+  public handleSegment(
+    streamId: string,
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    /** The origin declared a break immediately before this segment. Applied only if the segment is taken. */
+    discontinuity = false,
+  ): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
+    }
+
+    if (this.isDraining(streamId, uploader)) {
+      return { accepted: false, reason: REJECT_DRAINING };
     }
 
     // Segments arriving mean the engine is feeding this stream again. If it was just recovered after
@@ -191,6 +239,16 @@ export class StreamOrchestrator {
 
     processed?.add(segmentIndex);
     this.streamActivityAt.set(streamId, this.clock.now());
+    // Carried on the segment rather than issued ahead of it, which is what the puller used to do. Every
+    // path above returns without taking the segment, and a marker issued before them outlived its
+    // segment and attached to the next one that was taken. A recovered stream reaches that constantly:
+    // its duplicate filter is rebuilt from the restored manifest while its puller restarts at the top
+    // of the origin's window, so the whole window comes back as duplicates. The marker also queued with
+    // no regard for `maxQueueSize`, one job per poll for as long as the origin kept serving the segment
+    // a full queue was refusing.
+    if (discontinuity) {
+      uploader.markDiscontinuity();
+    }
     uploader.handleSegment(segmentIndex, duration, data);
     return { accepted: true };
   }
@@ -211,8 +269,46 @@ export class StreamOrchestrator {
       return false;
     }
 
+    // Same window and same answer as `handleSegment`. A discontinuity queued behind a resolved
+    // `segmentQueue.onIdle()` marks a manifest that is already committed, and the state it persists
+    // on the way through restores a recovery entry the drain has deleted.
+    if (this.isDraining(streamId, uploader)) {
+      return false;
+    }
+
     this.segmentLossAt.set(streamId, this.clock.now());
     uploader.handleSegmentLoss(firstIndex, count);
+    return true;
+  }
+
+  /**
+   * Push the pending recovery finalize back, because the engine is still working on this stream.
+   * Answers whether there was one to push, so a caller cannot mistake a no-op for a deferral.
+   *
+   * The timer's only other input is a segment arriving, and after a crash the engine that would send
+   * one is being waited on too. A pull-based engine restarts its puller immediately and then retries a
+   * silent origin for its own patience window, 60s by default, which is the same 60s this timer runs
+   * on. An OME restart slower than that finalized a broadcast whose publisher never went away, with
+   * the puller mid-retry when it happened. See CON-10.
+   *
+   * Each call buys one more `recoveryTimeout`, and nothing renews it but the engine, so the total
+   * deferral is bounded by how long the engine keeps trying. When it gives up it stops the stream
+   * itself, and if it dies instead the timer arrives on its own one timeout later.
+   *
+   * Deliberately not recorded as stream activity, which is a choice rather than a guarantee: a stream
+   * holding a recovery timer is excluded from `getMsSinceStreamActivity` anyway, and both paths that
+   * end recovery set a fresh reading, so recording it here would be unobservable. It stays this way
+   * because a puller polling an origin that answers nothing is not progress, but no test guards it,
+   * because none can.
+   */
+  public keepAlive(streamId: string): boolean {
+    const pending = this.recoveryTimers.get(streamId);
+    if (!pending) {
+      return false;
+    }
+
+    pending.cancel();
+    this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
     return true;
   }
 
@@ -311,20 +407,16 @@ export class StreamOrchestrator {
       this.activeStreams.set(streamId, uploader);
       this.streamActivityAt.set(streamId, this.clock.now());
 
-      // Rebuild processed segments set from state
-      const processed = new Set(state.segments.map((s) => s.index));
+      // Rebuilt from the restored manifest, and bounded the same way a live stream's is. The oldest
+      // indexes of a long broadcast are dropped, which costs nothing: what a resumed puller can
+      // re-deliver is whatever the origin still has in its playlist window, never the whole stream.
+      const processed = this.newDuplicateFilter();
+      for (const segment of state.segments) {
+        processed.add(segment.index);
+      }
       this.processedSegments.set(streamId, processed);
 
-      // Set recovery timeout — if engine doesn't reconnect, finalize as VOD
-      const timer = this.clock.setTimer(() => {
-        this.recoveryTimers.delete(streamId);
-        this.logger.info(`[StreamOrchestrator] Recovery timeout for ${streamId}, finalizing as VOD`);
-        void this.stopStream(streamId).catch((error) =>
-          this.errorHandler.handleError(error, `StreamOrchestrator.recoveryTimeout - ${streamId}`),
-        );
-      }, this.config.recoveryTimeout);
-
-      this.recoveryTimers.set(streamId, timer);
+      this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
 
       this.logger.info(
         `[StreamOrchestrator] Recovered stream ${streamId} with ${state.segments.length} segments, ` +
@@ -335,6 +427,21 @@ export class StreamOrchestrator {
     }
 
     return recovered;
+  }
+
+  /** If the engine never reconnects, finalize the recovered stream as a VOD rather than hold it live. */
+  private scheduleRecoveryFinalize(streamId: string): Timer {
+    return this.clock.setTimer(() => {
+      this.recoveryTimers.delete(streamId);
+      this.logger.info(`[StreamOrchestrator] Recovery timeout for ${streamId}, finalizing as VOD`);
+      void this.stopStream(streamId).catch((error) =>
+        this.errorHandler.handleError(error, `StreamOrchestrator.recoveryTimeout - ${streamId}`),
+      );
+    }, this.config.recoveryTimeout);
+  }
+
+  private newDuplicateFilter(): RecentSegmentIndexes {
+    return new RecentSegmentIndexes(this.config.segmentDedupWindow);
   }
 
   public getQueuePressure(streamId: string): QueuePressure {
@@ -409,8 +516,12 @@ export class StreamOrchestrator {
     const now = this.clock.now();
     let oldest: number | null = null;
 
-    for (const streamId of this.activeStreams.keys()) {
-      if (this.drainPromises.has(streamId) || this.recoveryTimers.has(streamId)) {
+    for (const [streamId, uploader] of this.activeStreams) {
+      // Matched on the uploader for the reason `isDraining` is: a reconnect registers a replacement
+      // under the id its predecessor's drain is still keyed by, and that replacement is live and has
+      // to stay answerable. Excluding by id alone hid a broadcasting stream from this signal for as
+      // long as the outgoing finalize took, which is up to `DRAIN_TIMEOUT_MS`.
+      if (this.isDraining(streamId, uploader) || this.recoveryTimers.has(streamId)) {
         continue;
       }
       const activityAt = this.streamActivityAt.get(streamId);
@@ -483,15 +594,10 @@ export class StreamOrchestrator {
       }),
     );
 
-    await this.queue.onIdle();
-    this.queue.clear();
-
     this.logger.info('[StreamOrchestrator] Cleanup complete');
   }
 
   private async performDrain(streamId: string): Promise<void> {
-    await this.queue.onIdle();
-
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       this.logger.warn(`[StreamOrchestrator] No uploader found for ${streamId}`);
@@ -532,6 +638,16 @@ export class StreamOrchestrator {
     } catch (error) {
       const msg = getErrorMessage(error);
       this.logger.error(`[StreamOrchestrator] Force-stopping stream ${streamId}: ${msg}`);
+      // The finalize is still running and we have stopped waiting for it, so from here this is a
+      // session nobody tracks, under an id that is about to be free. Left owning the recovery entry,
+      // it wrote its own state over the broadcast that took the id next and then deleted it, so a
+      // crash lost a live stream outright. Measured: four saves carrying the abandoned session's feed
+      // topic under the live session's id, then a remove.
+      //
+      // The cost is one duplicate VOD when nothing takes the id, since the entry now survives and the
+      // next boot recovers a stream that may already be finalized. A wasted VOD is postage. The other
+      // way round is a live broadcast with no recovery at all.
+      uploader.retire();
     } finally {
       // Losing the race does not cancel the timer, so without this every stop leaves a five minute
       // timer holding the event loop open, one per stopped stream.
