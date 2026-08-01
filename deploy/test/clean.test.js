@@ -80,7 +80,13 @@ describe('clean.sh straggler sweep (OPS-2)', () => {
   // A scoped sweep that asked docker for the wrong project would quietly remove nothing and pass
   // every assertion above, since the stub answers only its own project.
   it('scopes the sweep to the profile it was given', async () => {
-    const sandbox = makeSandbox({ project: 'streamer1' });
+    // The profile's own env file is written because a named profile now requires one. Before OPS-4
+    // was fixed this test ran without it and passed, on the silent fallback to the default `.env`
+    // that OPS-4 describes.
+    const sandbox = makeSandbox({
+      project: 'streamer1',
+      envFiles: { '.env': 'STAMP=stamp\nSTREAM_KEY=key\n', '.env.streamer1': 'STAMP=s1\nSTREAM_KEY=k1\n' },
+    });
 
     await runClean(sandbox, ['--profile=streamer1', 'srs']);
 

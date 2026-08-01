@@ -29,8 +29,8 @@ readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
 # Set by parse_profile_args; defaults to "default".
 # - PROFILE         logical name, used as docker compose project name
 # - ENV_FILE        $ROOT_DIR/.env for default; $ROOT_DIR/.env.<profile> otherwise.
-#                   The non-default file is REQUIRED — require_env errors if it is missing
-#                   so a typo in --profile= doesn't silently deploy the wrong stack.
+#                   The non-default file is REQUIRED — parse_profile_args errors if it is
+#                   missing so a typo in --profile= doesn't silently deploy the wrong stack.
 # - REMOTE_BASE     ~/swarm-hls-stream for default, ~/swarm-hls-stream-<profile> otherwise
 # - PORT_SLOT       integer slot id (0-999). 0 = no slot, env values win.
 #                   For slot N>=1, every host-mapped port becomes default + N*10,
@@ -183,9 +183,20 @@ parse_profile_args() {
     exit 1
   fi
 
+  # A named profile's env file is required, and its absence is refused here rather than left to each
+  # script. Falling back to the default `.env` did not merely lose this profile's settings: it
+  # silently adopted the default deployment's ports, STAMP and STREAM_KEY, so `--profile=streamr1`
+  # brought up a second stack fighting the first one for the same port range. Refusing before any
+  # script has acted is what makes "never deploys" true for every entry point rather than only for
+  # the one that happens to call require_env. See OPS-4.
   if [ "$PROFILE" != "default" ]; then
-    if [ -f "$ROOT_DIR/.env.$PROFILE" ]; then
-      ENV_FILE="$ROOT_DIR/.env.$PROFILE"
+    ENV_FILE="$ROOT_DIR/.env.$PROFILE"
+    if [ ! -f "$ENV_FILE" ]; then
+      echo -e "${RED}ERROR: $ENV_FILE not found.${NC}" >&2
+      echo "Profile '$PROFILE' requires $ENV_FILE — check the spelling, or create it:" >&2
+      echo "  cp $ROOT_DIR/.env $ENV_FILE" >&2
+      echo "Then change ports / STAMP / STREAM_KEY / data dirs for this profile." >&2
+      exit 1
     fi
     REMOTE_BASE="~/swarm-hls-stream-$PROFILE"
   fi
