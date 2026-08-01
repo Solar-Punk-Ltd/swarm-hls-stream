@@ -1,7 +1,8 @@
 import express from 'express';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import net, { AddressInfo } from 'node:net';
+import type { AddressInfo } from 'node:net';
+import net from 'node:net';
 import { after, describe, it } from 'node:test';
 
 import { listenOnLoopback, LOOPBACK_HOST } from './helpers/loopbackServer.js';

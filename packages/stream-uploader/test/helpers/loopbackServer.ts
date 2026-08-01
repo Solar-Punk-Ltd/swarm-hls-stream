@@ -1,7 +1,7 @@
-import { Express } from 'express';
+import type { Express } from 'express';
 import { once } from 'node:events';
-import { Server } from 'node:http';
-import { AddressInfo } from 'node:net';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 /**
  * The one host every test server binds and every test client dials. Both come from here because the
