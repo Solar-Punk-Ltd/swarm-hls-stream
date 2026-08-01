@@ -15,6 +15,7 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { STREAM_STATUS_VOD } from '../src/types.js';
 
 import { makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
+import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 /** The catalog entry shape these tests read back, narrowed from what StreamCatalog accepts. */
 interface VodEntry {
@@ -84,36 +85,6 @@ async function postAdmission(
     return await response.json();
   } finally {
     server.close();
-  }
-}
-
-/**
- * Polls until the condition holds, and throws when it never does.
- *
- * Returning quietly on timeout made an expired wait indistinguishable from a satisfied one, so a test
- * could spend a whole deadline on something that was never going to happen and carry on to assert
- * something else. Two did, and those two were ten of this suite's fourteen seconds. Under mutation
- * that is multiplied by the mutant count, which is how ten seconds became fifty minutes.
- */
-async function waitFor(condition: () => boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition() && Date.now() < deadline) {
-    await sleep(10);
-  }
-  if (!condition()) {
-    throw new Error(`waited ${timeoutMs}ms for \`${condition.toString()}\`, which never became true`);
-  }
-}
-
-/**
- * Waits out a window in which something must NOT happen. Distinct from `waitFor` because the two read
- * alike at the call site and behave oppositely: this one is meant to reach its deadline, so it stays
- * short, while a `waitFor` that reaches its deadline is a failure.
- */
-async function waitAndConfirmNothingHappened(stillTrue: () => boolean, windowMs: number): Promise<void> {
-  const deadline = Date.now() + windowMs;
-  while (stillTrue() && Date.now() < deadline) {
-    await sleep(10);
   }
 }
 

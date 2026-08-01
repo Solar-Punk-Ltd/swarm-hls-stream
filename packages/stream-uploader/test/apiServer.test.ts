@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
+import { RecoveryStore } from '../src/libs/RecoveryStore.js';
+import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
@@ -17,7 +18,9 @@ import {
 import { MANIFEST_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
+import { FakeClock } from './helpers/fakeClock.js';
 import {
+  FakeUploads,
   makeFakeRecoveryStore,
   makeRecoveredState,
   makeTestOrchestrator,
@@ -151,6 +154,38 @@ describe('api server over http (S0.7 test layer)', () => {
 describe('GET /health status (S2.1)', () => {
   const servers: ApiTestServer[] = [];
 
+  const STALL_WINDOW_MS = 60;
+  const UNDER_THE_STALL_WINDOW_MS = 25;
+  const PAST_THE_STALL_WINDOW_MS = 120;
+  /** Long enough that no test here advances far enough to fire the recovery timer by accident. */
+  const RECOVERY_TIMEOUT_MS = 5_000;
+
+  /** A recovery store holding one crashed session of `STREAM_ID`, so recoverStreams restores it. */
+  const RECOVERING = makeFakeRecoveryStore({
+    listActive: () => [toRecoveryFileId(STREAM_ID)],
+    load: () => makeRecoveredState(STREAM_ID),
+  });
+
+  /**
+   * The stall signal is the distance between two readings of the orchestrator's clock, so every test
+   * below is really about that distance and not about elapsed time. Driving an injected clock is not
+   * merely faster than sleeping: a real sleep measures the machine, and on a loaded one the round trip
+   * of feeding a segment and then reading /health runs past a 60ms window all by itself. That is what
+   * failed `stays ok across the stall window` in 4 of 8 concurrent runs, with the code under test
+   * behaving correctly every time.
+   */
+  function makeStallingOrchestrator(
+    clock: FakeClock,
+    uploads: FakeUploads = {},
+    recoveryStore: RecoveryStore = makeFakeRecoveryStore(),
+  ): StreamOrchestrator {
+    return makeTestOrchestrator(
+      { segmentStallMs: STALL_WINDOW_MS, recoveryTimeout: RECOVERY_TIMEOUT_MS, clock },
+      uploads,
+      recoveryStore,
+    );
+  }
+
   async function start(...args: Parameters<typeof startTestApi>): Promise<ApiTestServer> {
     const server = await startTestApi(...args);
     servers.push(server);
@@ -241,7 +276,8 @@ describe('GET /health status (S2.1)', () => {
   });
 
   it('reports a stalled stream even while a sibling stream is feeding', async () => {
-    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }));
+    const clock = new FakeClock();
+    const api = await start(makeStallingOrchestrator(clock));
 
     await startStream(api, 'live/a');
     await startStream(api, 'live/b');
@@ -249,7 +285,7 @@ describe('GET /health status (S2.1)', () => {
 
     // Let both age past the window, then feed only live/a. A process-wide clock would read live/a's
     // fresh timestamp and call the whole service healthy while live/b is dead.
-    await sleep(120);
+    await clock.advance(PAST_THE_STALL_WINDOW_MS);
     await postSegment(api, 0, 'live/a');
 
     const { status, body } = await api.request('/health');
@@ -259,12 +295,13 @@ describe('GET /health status (S2.1)', () => {
   });
 
   it('does not treat a replayed segment index as progress', async () => {
-    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }));
+    const clock = new FakeClock();
+    const api = await start(makeStallingOrchestrator(clock));
 
     await startStream(api);
     await api.requestUntil('/health', hasActiveStreams(1));
     await postSegment(api, 0);
-    await sleep(120);
+    await clock.advance(PAST_THE_STALL_WINDOW_MS);
 
     const replay = await postSegment(api, 0);
     assert.equal(replay.status, 200, 'a duplicate is still accepted, it just is not progress');
@@ -278,17 +315,20 @@ describe('GET /health status (S2.1)', () => {
   it('does not report a stall against a stream that is draining', async () => {
     // notifyStop hangs on the VOD manifest write, so the stream stays registered for the whole drain.
     // A drain accepts no segments by design, and DRAIN_TIMEOUT_MS is 5 minutes against this window.
-    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }, { uploadPayload: neverSettles }));
+    const clock = new FakeClock();
+    const api = await start(makeStallingOrchestrator(clock, { uploadPayload: neverSettles }));
 
     await startStream(api);
     await api.requestUntil('/health', hasActiveStreams(1));
     await postSegment(api, 0);
+    // stopStream registers the drain before its first await, so it is registered by the time this
+    // response comes back, whatever the machine is doing. The route answers ahead of the drain.
     await api.request('/stream/stop', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ streamId: STREAM_ID }),
     });
-    await sleep(150);
+    await clock.advance(PAST_THE_STALL_WINDOW_MS);
 
     const { status, body } = await api.request('/health');
 
@@ -300,14 +340,18 @@ describe('GET /health status (S2.1)', () => {
     // The positive half of the stall signal. Without this, dropping the timestamp refresh on the
     // accept path leaves every stall test still passing, because a never-refreshed clock degrades
     // just as readily as a stalled one.
-    const api = await start(makeTestOrchestrator({ segmentStallMs: 60 }));
+    const clock = new FakeClock();
+    const api = await start(makeStallingOrchestrator(clock));
 
     await startStream(api);
     await api.requestUntil('/health', hasActiveStreams(1));
 
+    // Six gaps under the window that sum to well over it, which is the case a single reading cannot
+    // distinguish from a stall: what must stay small is the distance between consecutive segments,
+    // not the age of the stream.
     for (let index = 0; index < 6; index++) {
       await postSegment(api, index);
-      await sleep(25);
+      await clock.advance(UNDER_THE_STALL_WINDOW_MS);
       const { status, body } = await api.request('/health');
       assert.equal(status, 200, `a feeding stream must stay healthy, failed after segment ${index}`);
       assert.deepEqual((body as HealthBody).reasons, []);
@@ -315,18 +359,12 @@ describe('GET /health status (S2.1)', () => {
   });
 
   it('does not report a stall for a recovered stream, before or right after the engine resumes', async () => {
-    const orchestrator = makeTestOrchestrator(
-      { segmentStallMs: 60, recoveryTimeout: 5_000 },
-      {},
-      makeFakeRecoveryStore({
-        listActive: () => [toRecoveryFileId(STREAM_ID)],
-        load: () => makeRecoveredState(STREAM_ID),
-      }),
-    );
+    const clock = new FakeClock();
+    const orchestrator = makeStallingOrchestrator(clock, {}, RECOVERING);
     const api = await start(orchestrator);
 
     await orchestrator.recoverStreams();
-    await sleep(120);
+    await clock.advance(PAST_THE_STALL_WINDOW_MS);
 
     const waiting = await api.request('/health');
     assert.equal(waiting.status, 200, 'a stream awaiting reconnect is not stalled, its recovery timer owns that');
@@ -344,18 +382,12 @@ describe('GET /health status (S2.1)', () => {
     // The second route out of the recovery wait, and a different one from the test above: an engine
     // that sends on_publish rather than segments takes the recovery branch of startStream. Both
     // routes make the stream eligible for the stall signal again, so both need a fresh reading.
-    const orchestrator = makeTestOrchestrator(
-      { segmentStallMs: 60, recoveryTimeout: 5_000 },
-      {},
-      makeFakeRecoveryStore({
-        listActive: () => [toRecoveryFileId(STREAM_ID)],
-        load: () => makeRecoveredState(STREAM_ID),
-      }),
-    );
+    const clock = new FakeClock();
+    const orchestrator = makeStallingOrchestrator(clock, {}, RECOVERING);
     const api = await start(orchestrator);
 
     await orchestrator.recoverStreams();
-    await sleep(120);
+    await clock.advance(PAST_THE_STALL_WINDOW_MS);
     await startStream(api);
 
     const { status, body } = await api.request('/health');
