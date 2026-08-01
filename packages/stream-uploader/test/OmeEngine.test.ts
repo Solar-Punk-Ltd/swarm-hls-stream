@@ -38,8 +38,12 @@ async function postAdmission(
    * tells one session of a stream from the next. Captured from a live SRT publish: a session's
    * opening and its closing carry the same port, and two sessions of one stream carry different
    * ones. Omit it to reproduce a payload that carries no session identity at all.
+   *
+   * Typed looser than the interface declares on purpose. This goes out as JSON over a socket, so the
+   * engine has to survive the shapes a wire format can produce rather than the shapes TypeScript
+   * promises, and `null` is one it can produce for every field.
    */
-  client?: { address: string; port: number },
+  client?: { address?: string | null; port?: number | null },
 ): Promise<unknown> {
   const app = express();
   // Mirrors the raw-body capture in api/server.ts, which is what the signature is computed over.
@@ -967,4 +971,39 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       'a payload with no client cannot be matched, so the closing has to be honoured rather than dropped',
     );
   });
+
+  /**
+   * A `client` block that is present but incomplete. Omitting the field is only the tidiest way a
+   * payload can carry no identity, and the engine parses these off the wire rather than out of a
+   * TypeScript value, so each of these reaches it as readily as a real socket does.
+   */
+  const INCOMPLETE_SOCKETS: ReadonlyArray<{ name: string; client: { address?: string | null; port?: number | null } }> =
+    [
+      { name: 'null fields, which is how JSON says a field is absent', client: { address: null, port: null } },
+      {
+        name: 'port 0, which is what a socket torn down before the closing reports',
+        client: { address: '192.168.65.1', port: 0 },
+      },
+      { name: 'an empty address', client: { address: '', port: 44546 } },
+    ];
+
+  for (const { name, client } of INCOMPLETE_SOCKETS) {
+    it(`stops the stream when the closing carries ${name}`, async () => {
+      const origin = makePollCountingOrigin();
+      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const published: VodEntry[] = [];
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+      await waitFor(() => origin.polls() > 0, SETTLE_MS);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, client);
+
+      await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+      assert.equal(
+        published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+        1,
+        'half a socket is an absent identity, not a different one, so this closing has to be honoured',
+      );
+    });
+  }
 });

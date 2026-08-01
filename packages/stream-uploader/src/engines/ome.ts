@@ -214,15 +214,22 @@ export function createOmeEngine(
  * closing while differing between the two sessions. The stream id cannot do this, because both
  * sessions carry the same one, which is the whole of CON-21.
  *
- * Null when the payload carries no socket. The protocol marks `client` optional and a real SRT
- * publish always populates it, so this is the transport nobody has met rather than the normal case.
+ * Null whenever the payload does not carry a whole socket, which is a wider condition than the field
+ * being absent. This is parsed from a webhook body, so the declared types are a claim rather than a
+ * guarantee: JSON has no `undefined`, so an omitted field arrives as `null`, and a socket already
+ * torn down when the closing was sent reports port 0. Each of those says "no identity", and building
+ * a key out of one instead turns it into "a different identity", which is what makes the guard below
+ * drop a real closing and leave the puller running with nothing to stop it.
  */
 function sessionKey(payload: OmeAdmissionPayload): string | null {
   const client = payload?.client;
-  if (!client || client.address === undefined || client.port === undefined) {
+  if (!client) {
     return null;
   }
-  return `${client.address}:${client.port}`;
+  const { address, port } = client;
+  const hasAddress = typeof address === 'string' && address.length > 0;
+  const hasPort = typeof port === 'number' && Number.isInteger(port) && port > 0;
+  return hasAddress && hasPort ? `${address}:${port}` : null;
 }
 
 /** Which publishing session currently holds a stream id, so a late closing can be told from a live one. */
