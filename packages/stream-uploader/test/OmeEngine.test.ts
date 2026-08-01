@@ -80,9 +80,32 @@ async function postAdmission(
   }
 }
 
+/**
+ * Polls until the condition holds, and throws when it never does.
+ *
+ * Returning quietly on timeout made an expired wait indistinguishable from a satisfied one, so a test
+ * could spend a whole deadline on something that was never going to happen and carry on to assert
+ * something else. Two did, and those two were ten of this suite's fourteen seconds. Under mutation
+ * that is multiplied by the mutant count, which is how ten seconds became fifty minutes.
+ */
 async function waitFor(condition: () => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition() && Date.now() < deadline) {
+    await sleep(10);
+  }
+  if (!condition()) {
+    throw new Error(`waited ${timeoutMs}ms for \`${condition.toString()}\`, which never became true`);
+  }
+}
+
+/**
+ * Waits out a window in which something must NOT happen. Distinct from `waitFor` because the two read
+ * alike at the call site and behave oppositely: this one is meant to reach its deadline, so it stays
+ * short, while a `waitFor` that reaches its deadline is a failure.
+ */
+async function waitAndConfirmNothingHappened(stillTrue: () => boolean, windowMs: number): Promise<void> {
+  const deadline = Date.now() + windowMs;
+  while (stillTrue() && Date.now() < deadline) {
     await sleep(10);
   }
 }
@@ -587,7 +610,14 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
     await waitFor(() => origin.playlistPolls() > beforeReconnect + 2, DELIVERY_TIMEOUT_MS);
     origin.turnOver();
 
-    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+    // Waits for the replacement session's own media to land, which is what this actually needed. It
+    // used to wait for a second VOD here, before the closing that creates the second VOD had been
+    // sent, so the condition could not come true and the wait was five seconds of accidental sleep
+    // that the test then depended on. Same condition the sibling test below already used.
+    await waitFor(
+      () => uploaded.filter((body) => body.startsWith('reconnected-')).length === RECONNECTED_SEGMENTS.length,
+      DELIVERY_TIMEOUT_MS,
+    );
     await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
     await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
 
@@ -654,6 +684,10 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
   it('still delivers a session whose segments carry no date-time to judge them by', async () => {
     const outgoingStartedAt = new Date(Date.now() - 60_000);
     const published: VodEntry[] = [];
+    // Recorded only so the wait below has an exact condition. This test asserts on durations rather
+    // than on bodies, but "the replacement session's segments have landed" is the thing that has to be
+    // true before the closing, and a poll count is a proxy for it rather than the fact itself.
+    const uploaded: string[] = [];
     const origin = makeIdlingOrigin(
       omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
       undatedPlaylist(RECONNECTED_SEGMENTS, RECONNECTED_SEGMENT_SECONDS),
@@ -665,6 +699,10 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
     const orchestrator = makeTestOrchestrator(
       {},
       {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
         uploadPayload: async (index: number) => {
           await sleep(FINALIZE_LATENCY_MS);
           return { reference: { toHex: () => `soc${index}` } };
@@ -682,7 +720,14 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
     await waitFor(() => origin.playlistPolls() > beforeReconnect + 2, DELIVERY_TIMEOUT_MS);
     origin.turnOver();
 
-    await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
+    // Waits for the replacement session's own media to land, which is what this actually needed. It
+    // used to wait for a second VOD here, before the closing that creates the second VOD had been
+    // sent, so the condition could not come true and the wait was five seconds of accidental sleep
+    // that the test then depended on. Same condition the sibling test below already used.
+    await waitFor(
+      () => uploaded.filter((body) => body.startsWith('reconnected-')).length === RECONNECTED_SEGMENTS.length,
+      DELIVERY_TIMEOUT_MS,
+    );
     await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL);
     await waitFor(() => published.filter((entry) => entry.state === STREAM_STATUS_VOD).length > 1, DELIVERY_TIMEOUT_MS);
 
@@ -974,7 +1019,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // closing was honoured or dropped. The first version of this test asserted exactly that and
     // survived the mutation it was written for.
     const pollsAtClosing = origin.polls();
-    await waitFor(() => origin.polls() > pollsAtClosing, POLL_INTERVAL_MS * 10);
+    await waitAndConfirmNothingHappened(() => origin.polls() === pollsAtClosing, POLL_INTERVAL_MS * 10);
     assert.equal(
       origin.polls(),
       pollsAtClosing,
