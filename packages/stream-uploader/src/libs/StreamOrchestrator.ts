@@ -171,7 +171,6 @@ export class StreamOrchestrator {
         this.metrics.recordStreamFailed();
         return;
       }
-      this.metrics.recordStreamFinalized();
       this.logger.info(`[StreamOrchestrator] Finalized the replaced session for ${streamId}`);
     } catch (error) {
       // A backstop rather than the drain's error path, which answers instead of throwing. Nothing
@@ -673,9 +672,10 @@ export class StreamOrchestrator {
     this.stopOutcomes.set(outcome.streamId, outcome);
     if (outcome.state === STREAM_LIFECYCLE_FAILED) {
       this.metrics.recordStreamFailed();
-      return;
     }
-    this.metrics.recordStreamFinalized();
+    // A finalize is counted by the uploader that published it, where `notifyStop`'s memoization makes
+    // it exactly once. Counting it here as well would count a replaced session twice, and would count
+    // a stop that published nothing as a VOD.
   }
 
   /**

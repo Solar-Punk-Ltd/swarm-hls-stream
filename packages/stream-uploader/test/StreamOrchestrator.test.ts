@@ -1485,3 +1485,71 @@ describe('StreamOrchestrator unusable segment durations (gate on PR 52)', () => 
     });
   });
 });
+
+describe('StreamOrchestrator finalize accounting (gate on PR 52)', () => {
+  /**
+   * `streams_finalized_total` documents itself as "Streams whose stop published a VOD", and it
+   * counted every stop that did not throw. A broadcast whose every upload failed reached the
+   * empty-manifest branch and returned normally, so it answered `finalized` byte for byte like a
+   * healthy stop, with the counter agreeing.
+   */
+  it('reports a broadcast that lost every segment as failed, not finalized', async () => {
+    const published: unknown[] = [];
+    const orch = makeTestOrchestrator(
+      {},
+      { uploadData: rejectImmediately },
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/lost', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment('live/lost', 0, 2, Buffer.from('a'));
+      orch.handleSegment('live/lost', 1, 2, Buffer.from('b'));
+      await orch.stopStream('live/lost');
+    });
+
+    assert.equal(published.length, 0, 'this test means nothing unless the catalog really got nothing');
+    assert.equal(orch.getStreamStatus('live/lost').state, 'failed');
+    const metrics = orch.getMetricsSnapshot();
+    assert.equal(metrics.streamsFinalizedTotal, 0, 'a broadcast with no recording counted as a published VOD');
+    assert.equal(metrics.streamsFailedTotal, 1);
+  });
+
+  /**
+   * The other side of the same line, and the reason it is a count of offered segments rather than a
+   * flag. A session nobody sent anything to ends cleanly: there is no recording because there was
+   * nothing to record, so it is neither a finalize nor a failure.
+   */
+  it('treats a stop of a stream that was never fed as neither published nor failed', async () => {
+    const published: unknown[] = [];
+    const orch = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/empty', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      await orch.stopStream('live/empty');
+    });
+
+    assert.equal(orch.getStreamStatus('live/empty').state, 'finalized', 'nothing went wrong, so nothing is reported');
+    const metrics = orch.getMetricsSnapshot();
+    assert.equal(metrics.streamsFinalizedTotal, 0, 'no VOD was published, so nothing counts as one');
+    assert.equal(metrics.streamsFailedTotal, 0);
+  });
+
+  it('counts a stop that really published a VOD', async () => {
+    const published: { state?: string }[] = [];
+    const orch = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/good', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment('live/good', 0, 2, Buffer.from('a'));
+      await orch.stopStream('live/good');
+    });
+
+    assert.equal(published.filter((entry) => entry.state === 'vod').length, 1);
+    assert.equal(orch.getMetricsSnapshot().streamsFinalizedTotal, 1);
+  });
+});

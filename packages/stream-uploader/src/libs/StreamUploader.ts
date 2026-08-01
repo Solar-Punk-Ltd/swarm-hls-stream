@@ -84,6 +84,8 @@ export class StreamUploader {
   private readonly metrics?: ServiceMetrics;
   /** Playing time of everything still queued, in seconds, which is how far behind live this stream is. */
   private queuedSeconds = 0;
+  /** Segments this session was handed, so an empty finalize can tell "nothing to record" from "lost it all". */
+  private segmentsOffered = 0;
 
   private manifestManager: ManifestManager;
 
@@ -128,6 +130,7 @@ export class StreamUploader {
     // Counted when queued and released however the job ends, so a stream whose uploads are failing
     // reports a backlog that drains rather than one that grows forever.
     this.queuedSeconds += duration;
+    this.segmentsOffered += 1;
     this.segmentQueue.add(async () => {
       try {
         await this.uploadSegment(segmentIndex, duration, data);
@@ -251,6 +254,15 @@ export class StreamUploader {
     await this.manifestQueue.onIdle();
 
     if (!this.manifestManager.hasSegments()) {
+      // A session nobody sent anything to ends cleanly: there is no recording because there was
+      // nothing to record. A session that was handed media and has none to publish is the opposite,
+      // and it used to end the same way, so a broadcast whose every upload failed answered
+      // `finalized` byte for byte like a healthy stop and counted as one.
+      if (this.segmentsOffered > 0) {
+        throw new Error(
+          `Stream ${this.streamId} was handed ${this.segmentsOffered} segment(s) and published none, so it has no VOD`,
+        );
+      }
       this.logger.warn(`Stream ${this.streamId} has no segments, skipping VOD finalization`);
       this.clearRecoveryEntry();
       return;
@@ -276,6 +288,10 @@ export class StreamUploader {
     this.logger.log(`Updating stream in list to VOD: ${JSON.stringify(entry)}`);
     await this.streamCatalog.addStream(entry);
 
+    // Counted here rather than by the orchestrator because `notifyStop` is memoized, so this line
+    // runs exactly once however many drains ask. Counting it from a drain double-counted a session
+    // that a reconnect replaced, since two drains await this one promise.
+    this.metrics?.recordStreamFinalized();
     this.clearRecoveryEntry();
   }
 
