@@ -152,7 +152,17 @@ export function createOmeEngine(
       sessionsByStream.set(streamId, { phase: 'live', identity });
     },
     closed: (streamId) => {
-      sessionsByStream.set(streamId, { phase: 'closed', closedAt: Date.now() });
+      const now = Date.now();
+      // Swept here rather than only where a record is read, because the ordinary end of a broadcast is
+      // a stream that closes and never reopens, and nothing reads its record again. Expiring lazily
+      // would therefore expire nothing on exactly the path that produces records, leaving one per
+      // stream id ever closed, which is the growth this window exists to bound.
+      for (const [id, record] of sessionsByStream) {
+        if (record.phase === 'closed' && now - record.closedAt > closedSessionTtlMs) {
+          sessionsByStream.delete(id);
+        }
+      }
+      sessionsByStream.set(streamId, { phase: 'closed', closedAt: now });
     },
     forget: (streamId) => sessionsByStream.delete(streamId),
     reasonToIgnoreClosing: (streamId, identity) => {

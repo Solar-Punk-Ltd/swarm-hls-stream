@@ -1187,6 +1187,52 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     );
   });
 
+  it('does not accumulate a record per stream id ever closed', async () => {
+    // The bound has to be paid on the path that creates records, which is a stream closing and never
+    // reopening. Expiring only where a record is read expires nothing there, so the map keeps one entry
+    // for every stream id the process has ever seen. That is the growth the window exists to prevent,
+    // and it is memory rather than behaviour, so nothing observable from outside the engine can see it.
+    //
+    // Reached by recording what `createOmeEngine` constructs. The alternative was an unkillable line
+    // with a comment explaining why no test can see it, which this register has one of already.
+    const maps: Map<string, unknown>[] = [];
+    const RealMap = global.Map;
+    class RecordingMap<K, V> extends RealMap<K, V> {
+      constructor(entries?: readonly (readonly [K, V])[] | null) {
+        super(entries);
+        maps.push(this as unknown as Map<string, unknown>);
+      }
+    }
+    global.Map = RecordingMap as unknown as MapConstructor;
+    let engine: EnginePlugin;
+    try {
+      engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+        admissionSecret: SECRET,
+        fetcher: makePollCountingOrigin().fetcher,
+        closedSessionTtlMs: 0,
+      });
+    } finally {
+      global.Map = RealMap;
+    }
+
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog([]));
+    const CLOSED_STREAM_COUNT = 12;
+    for (let i = 0; i < CLOSED_STREAM_COUNT; i++) {
+      const url = `srt://ome:10080/video/broadcast-${i}`;
+      await postAdmission(engine, orchestrator, 'opening', SECRET, url, SESSION_A);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, url, SESSION_A);
+    }
+
+    const sessionRecords = maps.filter((map) =>
+      [...map.values()].some((value) => (value as { phase?: string })?.phase === 'closed'),
+    );
+    assert.equal(sessionRecords.length, 1, 'the session registry could not be identified among the engine’s maps');
+    assert.ok(
+      sessionRecords[0].size <= 1,
+      `every stream id ever closed stayed on record, holding ${sessionRecords[0].size} of ${CLOSED_STREAM_COUNT}`,
+    );
+  });
+
   it('arms again for the session that opens after a closed one, and stops it when its own closing arrives', async () => {
     // The other half of CON-22: remembering that a stream was closed must not become a stream that can
     // never be closed again. The session opening here is a different one on a different socket, which
