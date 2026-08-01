@@ -49,13 +49,13 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                                                                            |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `BEE_URL`           | Bee node API URL                                                                       |
-| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                  |
-| `STREAM_KEY`        | Private key (hex) for signing feeds                                                    |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                      |
-| `API_AUTH_TOKEN`    | Bearer token for the `/stream/*` routes, minimum 32 characters. `openssl rand -hex 32` |
+| Variable            | Description                                                                                    |
+| ------------------- | ---------------------------------------------------------------------------------------------- |
+| `BEE_URL`           | Bee node API URL                                                                               |
+| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                          |
+| `STREAM_KEY`        | Private key (hex) for signing feeds                                                            |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                              |
+| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32` |
 
 **Optional:**
 
@@ -78,18 +78,18 @@ Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live 
 
 Engine-independent HTTP interface for pushing segments directly.
 
-| Endpoint               | Method                               | Description                                |
-| ---------------------- | ------------------------------------ | ------------------------------------------ |
-| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                      |
-| `POST /stream/segment` | Raw body + headers                   | Push a segment                             |
-| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream, answered `202`               |
-| `GET /stream/status`   | Query: `?streamId=<id>`              | What became of a stream                    |
-| `GET /metrics`         | —                                    | Prometheus exposition                      |
-| `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
+| Endpoint               | Method                               | Description                                       |
+| ---------------------- | ------------------------------------ | ------------------------------------------------- |
+| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                             |
+| `POST /stream/segment` | Raw body + headers                   | Push a segment. `400` on an unusable `x-duration` |
+| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream, answered `202`                      |
+| `GET /stream/status`   | Query: `?streamId=<id>`              | What became of a stream                           |
+| `GET /metrics`         | —                                    | Prometheus exposition                             |
+| `GET /health`          | —                                    | Service health, `200` ok or `503` degraded        |
 
 All four `/stream/*` routes and `GET /metrics` require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that accepts no input and spends nothing, and both the `stream-uploader` compose healthcheck and `deploy/scripts/health.sh` read it unauthenticated.
 
-The `/engines/*` webhook routes are **not** behind this gate. OME admission carries its own HMAC signature. The two SRS routes carry no credential at all, and `POST /engines/srs/hls` reaches the same stamp-spending path `/stream/segment` does, so on a default `ENGINE=srs` deployment an anonymous caller can still cause an upload. That is the open half of SEC-1, tracked as S1.2.
+The `/engines/*` webhook routes are **not** behind this gate, because each carries its own. OME admission is verified by HMAC signature, and the two SRS routes by `SRS_WEBHOOK_TOKEN` in the hook URL, which is the only channel SRS 6 offers. Both fail closed on an empty secret rather than disabling the check. This paragraph described `POST /engines/srs/hls` as reachable by an anonymous caller until S1.2 closed it, and the gate on this pull request measured every shape of both routes answering 401 with the orchestrator untouched.
 
 **Something reads `/health`.** The `stream-uploader` service declares a compose healthcheck that polls
 it every 30 seconds and treats the `503` of a degraded service as a failure, so `docker ps` shows
@@ -119,11 +119,15 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream            |
 | `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream            |
 
-Unlike `/health`, `/metrics` is behind the bearer gate: it names when the last segment landed and how
-many broadcasts have run, which is more than a liveness probe should give away. Point a scraper at it
+Unlike `/health`, `/metrics` is behind the bearer gate, and the honest reason is narrower than it first
+looks: `/health` already discloses `activeStreams`, `queuePressure` and `msSinceStreamActivity` to anyone
+who asks, so the gate is really protecting the six process-lifetime counters, which say how many
+broadcasts have run and how many were lost. Point a scraper at it
 with an `authorization` credential:
 
 ```yaml
+# `stream-uploader:3000` is the default only. `API_PORT` sets both sides of the compose port map,
+# and `deploy.sh --portSlot` shifts it, so a second instance listens on 10010 rather than 3000.
 scrape_configs:
   - job_name: swarm-hls-stream
     authorization:
@@ -164,7 +168,9 @@ A stream the service has never seen, or one whose stop settled more than fifteen
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
 expected to be sending. The body also carries `activeStreams`, `staleManifestStreams`,
 `maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`,
-`msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed` and `engines`.
+`msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed`, `queueBacklogSeconds`
+and `engines`. `queueBacklogSeconds` is the only field that says which of `queue_pressure`'s two triggers
+fired.
 
 **Segment headers:**
 
