@@ -36,7 +36,13 @@ export interface StreamOrchestratorConfig {
 
 export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
-  private drainPromises = new Map<string, Promise<void>>();
+  /**
+   * The drain running for a stream id, with the session it is draining. The uploader is what makes the
+   * entry answerable: a reconnect registers a replacement under the same id while the outgoing drain is
+   * still running, and a drain of the predecessor is not a stop of the successor. `undefined` for a
+   * stop of a stream nothing had registered.
+   */
+  private drainPromises = new Map<string, { uploader: StreamUploader | undefined; promise: Promise<void> }>();
   private processedSegments = new Map<string, Set<number>>();
   private recoveryTimers = new Map<string, Timer>();
   private queue = new PQueue({ concurrency: 1 });
@@ -218,23 +224,35 @@ export class StreamOrchestrator {
       this.recoveryTimers.delete(streamId);
     }
 
-    // A stop already running for this id is the answer to this one. Every caller in the engines fires
-    // and forgets, and two of them sit next to each other: a puller that halts calls this, and the
-    // closing that follows calls it again. A second drain finds the uploader still registered, because
-    // the first has not retired it yet, and finalizes it a second time. The broadcast is not lost, it
-    // is published twice, under two catalog entries with nothing to say which one is real. See CON-22.
+    // A stop already running is the answer to this one, but only when it is draining the same session.
+    // Every caller in the engines fires and forgets, and two of them sit next to each other: a puller
+    // that halts calls this, and the closing that follows calls it again. A second drain of one
+    // uploader finalizes it twice, committing a second VOD manifest and rewriting the feed entry the
+    // first one published, which is postage spent for nothing. See CON-22.
+    //
+    // Matched on the uploader rather than the id, because those stop being the same thing the moment a
+    // reconnect registers a replacement under that id, and stay different for as long as the outgoing
+    // drain runs, up to DRAIN_TIMEOUT_MS. Answering the replacement's own stop with its predecessor's
+    // drain never finalizes the replacement at all: its catalog entry stays live for a broadcast that
+    // ended, it holds the id in `activeStreams` with no puller, and the stall signal reports it for the
+    // life of the process. That is a lost VOD where the duplicate above is only a wasted one.
+    const uploader = this.activeStreams.get(streamId);
     const inFlight = this.drainPromises.get(streamId);
-    if (inFlight) {
-      return inFlight;
+    if (inFlight && inFlight.uploader === uploader) {
+      return inFlight.promise;
     }
 
     const drainPromise = this.performDrain(streamId);
-    this.drainPromises.set(streamId, drainPromise);
+    this.drainPromises.set(streamId, { uploader, promise: drainPromise });
 
     try {
       await drainPromise;
     } finally {
-      this.drainPromises.delete(streamId);
+      // Only if this drain still owns the entry. A replacement's drain overwrites it while this one is
+      // still running, and clearing that would hide a live drain from the stall signal.
+      if (this.drainPromises.get(streamId)?.promise === drainPromise) {
+        this.drainPromises.delete(streamId);
+      }
     }
   }
 
