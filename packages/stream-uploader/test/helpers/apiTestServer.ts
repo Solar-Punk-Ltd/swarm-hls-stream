@@ -4,6 +4,7 @@ import http from 'node:http';
 import net, { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { RequestLimits } from '../../src/api/requestLimits.js';
 import { createApiApp } from '../../src/api/server.js';
 import { EnginePlugin } from '../../src/engines/types.js';
 import { StreamOrchestrator } from '../../src/libs/StreamOrchestrator.js';
@@ -26,6 +27,8 @@ export const NO_AUTH_HEADER = { authorization: 'none' };
 export interface ApiResponse {
   status: number;
   body: unknown;
+  /** Lowercased response headers, for the ones that carry meaning of their own such as `Retry-After`. */
+  headers: Record<string, string>;
 }
 
 export interface ApiTestServer {
@@ -46,8 +49,9 @@ export interface ApiTestServer {
 export async function startTestApi(
   streamOrchestrator: StreamOrchestrator,
   engines: EnginePlugin[] = [],
+  limits?: RequestLimits,
 ): Promise<ApiTestServer> {
-  const server = http.createServer(createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines }));
+  const server = http.createServer(createApiApp(streamOrchestrator, { authToken: TEST_AUTH_TOKEN, engines, limits }));
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -68,15 +72,16 @@ export async function startTestApi(
       supplied.delete('authorization');
     }
     const response = await fetch(`${origin}${path}`, { ...init, headers: supplied });
+    const headers = Object.fromEntries(response.headers);
     const text = await response.text();
     if (text === '') {
-      return { status: response.status, body: undefined };
+      return { status: response.status, body: undefined, headers };
     }
     // Parsed by what the server said it sent, rather than by assuming JSON. `/metrics` serves
     // Prometheus exposition, and parsing that as JSON throws a syntax error that reads like a broken
     // route instead of a test helper that only knows one content type.
     const isJson = response.headers.get('content-type')?.includes('json') ?? false;
-    return { status: response.status, body: isJson ? JSON.parse(text) : text };
+    return { status: response.status, body: isJson ? JSON.parse(text) : text, headers };
   }
 
   async function rawRequest(request: string): Promise<number> {

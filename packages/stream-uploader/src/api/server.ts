@@ -8,11 +8,20 @@ import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFound } from './middleware/notFound.js';
 import { createAuthRejectionObserver } from './middleware/observeAuthRejections.js';
+import { createRateLimiter } from './middleware/rateLimit.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { createAuthMiddleware } from './middleware/requireAuth.js';
 import { createHealthRouter } from './routes/health.js';
 import { createMetricsRouter } from './routes/metrics.js';
 import { createStreamRouter } from './routes/stream.js';
+import {
+  DEFAULT_REQUEST_LIMITS,
+  GLOBAL_RATE_KEY,
+  MAX_CONTROL_BODY,
+  MAX_SEGMENT_BODY,
+  RequestLimits,
+  segmentRateKey,
+} from './requestLimits.js';
 
 const logger = Logger.getInstance();
 
@@ -24,10 +33,12 @@ export interface ApiAppOptions {
   /** Shared bearer token for the control and ingest routes. Not optional: there is no unauthenticated mode. */
   authToken: string;
   engines?: EnginePlugin[];
+  /** Overridden by tests, which drive a rate they configure rather than trying to exceed the real one. */
+  limits?: RequestLimits;
 }
 
 export function createApiApp(streamOrchestrator: StreamOrchestrator, options: ApiAppOptions): express.Express {
-  const { authToken, engines = [] } = options;
+  const { authToken, engines = [], limits = DEFAULT_REQUEST_LIMITS } = options;
   const app = express();
 
   // Global middleware
@@ -57,9 +68,36 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
     }
   }
 
-  app.use('/stream/segment', express.raw({ type: '*/*', limit: '50mb' }));
+  // Behind the gate, so an anonymous flood is refused by the cheaper check and cannot spend the
+  // authenticated caller's budget, and ahead of the body parsers, so a refused request is answered
+  // before its body is read. The global limit is mounted first on purpose: it is what bounds how
+  // many distinct keys the per-stream limiter can hold inside one window.
+  app.use(
+    '/stream',
+    createRateLimiter({
+      windowMs: limits.windowMs,
+      max: limits.globalMax,
+      keyOf: () => GLOBAL_RATE_KEY,
+      message: 'Too many requests',
+    }),
+  );
+  app.use(
+    '/stream/segment',
+    createRateLimiter({
+      windowMs: limits.windowMs,
+      max: limits.perStreamMax,
+      keyOf: segmentRateKey,
+      // Deliberately not the wording of a full queue. Too fast and too deep are different faults
+      // with different remedies, and `/stream/segment` already answers 429 `Queue full` from
+      // backpressure, so a caller that cannot tell them apart will retry into the wrong one.
+      message: 'Too many segments for this stream',
+    }),
+  );
+
+  app.use('/stream/segment', express.raw({ type: '*/*', limit: MAX_SEGMENT_BODY }));
   app.use(
     express.json({
+      limit: MAX_CONTROL_BODY,
       verify: (req, _res, buf) => {
         (req as RawBodyRequest).rawBody = buf;
       },
