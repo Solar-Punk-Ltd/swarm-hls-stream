@@ -12,6 +12,13 @@ import {
 import { getErrorMessage } from '../../utils/common.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { ApiError } from '../middleware/errorHandler.js';
+import { parseOrBadRequest } from '../schemas/parseRequest.js';
+import {
+  segmentHeadersSchema,
+  startStreamBodySchema,
+  stopStreamBodySchema,
+  streamStatusQuerySchema,
+} from '../schemas/streamRequests.js';
 
 const logger = Logger.getInstance();
 
@@ -26,11 +33,7 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
   router.post(
     '/start',
     asyncHandler(async (req: Request, res: Response) => {
-      const { streamId, mediatype } = req.body;
-
-      if (!streamId || !mediatype) {
-        throw new ApiError(400, 'streamId and mediatype are required');
-      }
+      const { streamId, mediatype } = parseOrBadRequest(startStreamBodySchema, req.body);
 
       streamOrchestrator.startStream(streamId, mediatype);
       res.json({ ok: true });
@@ -40,13 +43,10 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
   router.post(
     '/segment',
     asyncHandler(async (req: Request, res: Response) => {
-      const streamId = req.headers['x-stream-id'] as string;
-      const segmentIndex = parseInt(req.headers['x-segment-index'] as string, 10);
-      const duration = parseFloat(req.headers['x-duration'] as string);
-
-      if (!streamId || isNaN(segmentIndex) || isNaN(duration)) {
-        throw new ApiError(400, 'x-stream-id, x-segment-index, x-duration headers are required');
-      }
+      const headers = parseOrBadRequest(segmentHeadersSchema, req.headers);
+      const streamId = headers['x-stream-id'];
+      const segmentIndex = headers['x-segment-index'];
+      const duration = headers['x-duration'];
 
       const data = Buffer.from(req.body);
       const result = streamOrchestrator.handleSegment(streamId, segmentIndex, duration, data);
@@ -91,11 +91,7 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
   router.post(
     '/stop',
     asyncHandler(async (req: Request, res: Response) => {
-      const { streamId } = req.body;
-
-      if (!streamId) {
-        throw new ApiError(400, 'streamId is required');
-      }
+      const { streamId } = parseOrBadRequest(stopStreamBodySchema, req.body);
 
       res.status(202).json({ ok: true, accepted: true, streamId, statusUrl: STATUS_PATH });
 
@@ -109,11 +105,7 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
   router.get(
     '/status',
     asyncHandler(async (req: Request, res: Response) => {
-      const streamId = req.query.streamId;
-
-      if (typeof streamId !== 'string' || streamId.length === 0) {
-        throw new ApiError(400, 'streamId query parameter is required');
-      }
+      const { streamId } = parseOrBadRequest(streamStatusQuerySchema, req.query);
 
       const report = streamOrchestrator.getStreamStatus(streamId);
 
