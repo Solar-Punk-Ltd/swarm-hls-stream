@@ -635,11 +635,21 @@ export class StreamOrchestrator {
    * every layer, since `drainUploader` caught its own failure and returned normally.
    */
   public getStreamStatus(streamId: string): StreamStatusReport {
-    if (this.drainPromises.has(streamId)) {
+    const live = this.activeStreams.get(streamId);
+    // Matched on the uploader, not the id, for the reason `isDraining` and `getMsSinceStreamActivity`
+    // both are: a reconnect registers a replacement under the id its predecessor's drain is still
+    // keyed by, and a drain of the predecessor is not a stop of the successor. Matching on the id
+    // alone answered `draining` for up to DRAIN_TIMEOUT_MS about a stream that was broadcasting, while
+    // `/stream/segment` accepted its segments instead of returning the 409 a draining stream gets.
+    if (live && this.isDraining(streamId, live)) {
       return { streamId, state: STREAM_LIFECYCLE_DRAINING };
     }
-    if (this.activeStreams.has(streamId)) {
+    if (live) {
       return { streamId, state: STREAM_LIFECYCLE_LIVE };
+    }
+    // No live session under this id, so a drain still running here is the only session there is.
+    if (this.drainPromises.has(streamId)) {
+      return { streamId, state: STREAM_LIFECYCLE_DRAINING };
     }
 
     this.sweepStopOutcomes();

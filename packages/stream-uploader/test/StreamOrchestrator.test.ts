@@ -1340,3 +1340,89 @@ describe('StreamOrchestrator stop outcome under a reconnect (gate on PR 52)', ()
     );
   });
 });
+
+describe('StreamOrchestrator status during a handover (gate on PR 52)', () => {
+  const id = 'live/handover';
+
+  /**
+   * `/stream/status` and `/stream/segment` have to agree about whether a stream is draining. Matched
+   * on the id alone, one said draining while the other accepted segments, for as long as the
+   * predecessor's drain ran.
+   */
+  it('answers live for a replacement while its predecessor is still draining', async () => {
+    let releasePredecessor: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          const write = socWrites;
+          if (write === 2) {
+            await new Promise<void>((resolve) => {
+              releasePredecessor = resolve;
+            });
+          }
+          return { reference: { toHex: () => `soc${write}` } };
+        },
+      },
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('first'));
+      const predecessorStop = orch.stopStream(id);
+      await waitFor(() => releasePredecessor !== null, SETTLE_CEILING_MS);
+
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+      const status = orch.getStreamStatus(id);
+      const segment = orch.handleSegment(id, 0, 2, Buffer.from('second'));
+
+      assert.equal(segment.accepted, true, 'this test means nothing unless the replacement is really taking segments');
+      assert.equal(status.state, 'live', 'status said draining about a stream that was accepting segments');
+
+      (releasePredecessor as unknown as () => void)();
+      await predecessorStop;
+    });
+  });
+
+  it('still answers draining for a stop with no replacement behind it', async () => {
+    let releaseDrain: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          const write = socWrites;
+          if (write === 2) {
+            await new Promise<void>((resolve) => {
+              releaseDrain = resolve;
+            });
+          }
+          return { reference: { toHex: () => `soc${write}` } };
+        },
+      },
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('only'));
+      const stop = orch.stopStream(id);
+      await waitFor(() => releaseDrain !== null, SETTLE_CEILING_MS);
+
+      assert.equal(
+        orch.getStreamStatus(id).state,
+        'draining',
+        'an ordinary stop in flight must still read as draining',
+      );
+
+      (releaseDrain as unknown as () => void)();
+      await stop;
+    });
+  });
+});
