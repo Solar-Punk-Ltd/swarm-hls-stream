@@ -43,6 +43,18 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.segmentsLostTotal,
     },
     {
+      name: 'segments_skipped_total',
+      type: 'counter',
+      help: 'Segments discarded on purpose because they belong to the session a puller replaced. Not a failure.',
+      value: snapshot.segmentsSkippedTotal,
+    },
+    {
+      name: 'auth_rejections_total',
+      type: 'counter',
+      help: 'Requests refused by a credential gate. Rising with no ingest means a secret this deployment holds is wrong.',
+      value: snapshot.authRejectionsTotal,
+    },
+    {
       name: 'manifest_publish_failures_total',
       type: 'counter',
       help: 'Live manifest publishes that failed. Retried at the same index when the next segment arrives.',

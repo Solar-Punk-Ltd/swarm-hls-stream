@@ -1,9 +1,16 @@
 import { Bee } from '@ethersphere/bee-js';
 
 import { RecoveryStore } from '../../src/libs/RecoveryStore.js';
+import { MetricsSnapshot } from '../../src/libs/ServiceMetrics.js';
 import { StreamCatalog } from '../../src/libs/StreamCatalog.js';
 import { StreamOrchestrator, StreamOrchestratorConfig } from '../../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, StreamState } from '../../src/types.js';
+import {
+  HealthSignals,
+  MEDIA_TYPE_VIDEO,
+  PRESSURE_LOW,
+  STREAM_LIFECYCLE_UNKNOWN,
+  StreamState,
+} from '../../src/types.js';
 
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 
@@ -64,6 +71,72 @@ export function makeRecordingCatalog(published: unknown[]): StreamCatalog {
       published.push(entry);
     },
   });
+}
+
+/**
+ * Every method a test double for the orchestrator plausibly needs, so a stub cannot go stale by
+ * omitting one. The same shape and the same reason as `makeFakeCatalog`, one layer up.
+ *
+ * This has now broken five times, most of them on a stub that was correct when it was written: the
+ * cast through `unknown` means a method the production code starts calling is not a compile error
+ * anywhere, so it surfaces as a `TypeError` in whichever tests happen to reach that line, and only
+ * in those. Prefer `makeTestOrchestrator`, which is a real orchestrator. Reach for this one only
+ * when the test is about what the caller does with the answer, and pass the answers as overrides.
+ */
+export function makeFakeOrchestrator(overrides: Record<string, unknown> = {}): StreamOrchestrator {
+  return {
+    startStream: () => true,
+    stopStream: async () => {},
+    handleSegment: () => ({ accepted: true }),
+    handleSegmentLoss: () => true,
+    keepAlive: () => false,
+    recordSegmentsSkipped: () => {},
+    recordAuthRejection: () => {},
+    getStreamStatus: () => ({ streamId: '', state: STREAM_LIFECYCLE_UNKNOWN }),
+    getSegmentStallMs: () => 30_000,
+    getHealthSignals: () => makeHealthSignals(),
+    getMetricsSnapshot: () => makeMetricsSnapshot(),
+    ...overrides,
+  } as unknown as StreamOrchestrator;
+}
+
+/** An entirely healthy reading, so a test that cares about one signal sets only that one. */
+export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): HealthSignals {
+  return {
+    activeStreams: 0,
+    staleManifestStreams: 0,
+    maxConsecutiveManifestFailures: 0,
+    maxConsecutiveSegmentFailures: 0,
+    queuePressure: PRESSURE_LOW,
+    msSinceStreamActivity: null,
+    msSinceSegmentLoss: null,
+    msSinceCatalogAnnounceFailed: null,
+    msSinceStatePersistFailed: null,
+    queueBacklogSeconds: 0,
+    msSinceAuthRejection: null,
+    hasIngestedMedia: false,
+    segmentsSkipped: 0,
+    ...overrides,
+  };
+}
+
+/** A process that has done nothing yet, which is every counter at zero and no segment on record. */
+export function makeMetricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
+  return {
+    segmentsUploadedTotal: 0,
+    segmentsDroppedTotal: 0,
+    segmentsLostTotal: 0,
+    segmentsSkippedTotal: 0,
+    manifestPublishFailuresTotal: 0,
+    streamsFinalizedTotal: 0,
+    streamsFailedTotal: 0,
+    authRejectionsTotal: 0,
+    lastSegmentAt: null,
+    activeStreams: 0,
+    queueDepth: 0,
+    queueBacklogSeconds: 0,
+    ...overrides,
+  };
 }
 
 export function makeFakeRecoveryStore(overrides: Partial<Record<keyof RecoveryStore, unknown>> = {}): RecoveryStore {

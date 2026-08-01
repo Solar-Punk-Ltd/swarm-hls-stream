@@ -3,7 +3,9 @@ import { after, describe, it } from 'node:test';
 
 import { MIN_AUTH_TOKEN_LENGTH } from '../src/api/middleware/requireAuth.js';
 import { createApiApp } from '../src/api/server.js';
-import { MEDIA_TYPE_VIDEO } from '../src/types.js';
+import { createOmeEngine } from '../src/engines/ome.js';
+import { EnginePlugin } from '../src/engines/types.js';
+import { HEALTH_REASON_INGEST_REFUSED, MEDIA_TYPE_VIDEO } from '../src/types.js';
 
 import { ApiTestServer, NO_AUTH_HEADER, startTestApi, TEST_AUTH_TOKEN } from './helpers/apiTestServer.js';
 import { makeTestOrchestrator } from './helpers/fakes.js';
@@ -150,7 +152,16 @@ describe('api auth (S1.1, closes SEC-1)', () => {
     const health = await api.request('/health', { headers: NO_AUTH_HEADER });
 
     assert.equal(metrics.status, 401);
-    assert.equal(health.status, 200, 'the liveness endpoint must stay reachable by an unauthenticated probe');
+    // Reachable, not necessarily 200. The refusal on the line above is itself a signal on a service
+    // that has ingested nothing, so this probe now reads 503 with `ingest_refused`, which is OBS-15
+    // working rather than the gate covering `/health`. What this test is about is the mount, and a
+    // health body coming back at all is what proves it: behind the gate there would be no body but
+    // `Unauthorized`.
+    assert.notEqual(health.status, 401, 'the liveness endpoint must stay reachable by an unauthenticated probe');
+    assert.ok(
+      (health.body as { status?: string }).status,
+      `expected a health body from an unauthenticated probe, got ${JSON.stringify(health.body)}`,
+    );
   });
 
   const BAD_TOKENS: { name: string; header: string }[] = [
@@ -366,5 +377,110 @@ describe('api auth (S1.1, closes SEC-1)', () => {
       { message: new RegExp(String(MIN_AUTH_TOKEN_LENGTH)) },
       'a weak token has to fail at startup, not quietly protect nothing',
     );
+  });
+});
+
+/**
+ * The register's measurement was five rejections in-process followed by `{"status":"ok","reasons":[]}`,
+ * and `deploy/scripts/health.sh` printing a green check over it. Since batch 2 the compose healthcheck
+ * reads the same endpoint, so the same state now also makes `docker ps` report `healthy`.
+ *
+ * Driven through the real app rather than `deriveHealthStatus`, because the gap this row describes is
+ * in the wiring: the policy could not fire because nothing was giving it the input. See OBS-15.
+ */
+describe('refused ingest reaches the health surface (OBS-15)', () => {
+  const servers: ApiTestServer[] = [];
+  // No puller can start from a rejected admission, but a real interval would be a live timer if one did.
+  const OME_POLL_INTERVAL_MS = 60_000;
+
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  async function start(engines: EnginePlugin[] = []): Promise<ApiTestServer> {
+    const server = await startTestApi(makeTestOrchestrator(), engines);
+    servers.push(server);
+    return server;
+  }
+
+  function unauthenticatedStart(): RequestInit {
+    const init = startBody();
+    return { ...init, headers: { ...(init.headers as Record<string, string>), ...NO_AUTH_HEADER } };
+  }
+
+  function reasonsOf(body: unknown): string[] {
+    return (body as { reasons: string[] }).reasons;
+  }
+
+  it('degrades on a refusal, where the same service answered ok a moment earlier', async () => {
+    const api = await start();
+
+    const before = await api.request('/health');
+    assert.equal(before.status, 200, 'the precondition is the false green, so it has to be shown');
+    assert.deepEqual(reasonsOf(before.body), []);
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const refused = await api.request('/stream/start', unauthenticatedStart());
+      assert.equal(refused.status, 401);
+    }
+
+    const after = await api.request('/health');
+    assert.equal(after.status, 503, `five refusals must not leave /health at 200, got ${JSON.stringify(after.body)}`);
+    assert.ok(
+      reasonsOf(after.body).includes(HEALTH_REASON_INGEST_REFUSED),
+      `expected ${HEALTH_REASON_INGEST_REFUSED}, got ${JSON.stringify(reasonsOf(after.body))}`,
+    );
+  });
+
+  /**
+   * The reason the count is taken from the response rather than from each gate reporting itself. OME
+   * signs the request body, so its check cannot run before the body is parsed and it lives inside the
+   * router rather than at a mounted gate. That router is the `on_publish` path, which is the one this
+   * row is about, so a wrapper around the mounted gates would have missed the case it was built for.
+   */
+  it('counts a refusal that happens inside an engine router, not at a mounted gate', async () => {
+    const engine = createOmeEngine('http://ome:8081', OME_POLL_INTERVAL_MS, { admissionSecret: 'admission-secret' });
+    const api = await start([engine]);
+
+    const refused = await api.request('/engines/ome/admission', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request: { direction: 'incoming', status: 'opening', url: 'srt://ome:9999/app/one' } }),
+    });
+    assert.equal(refused.status, 401, 'an unsigned admission has to be refused for this test to mean anything');
+
+    const health = await api.request('/health');
+    assert.ok(
+      reasonsOf(health.body).includes(HEALTH_REASON_INGEST_REFUSED),
+      `an in-router refusal reached no signal: ${JSON.stringify(health.body)}`,
+    );
+  });
+
+  it('exposes the refusals as a counter a scraper can rate', async () => {
+    const api = await start();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await api.request('/stream/start', unauthenticatedStart());
+    }
+
+    const { body } = await api.request('/metrics');
+
+    assert.match(String(body), /^swarm_hls_auth_rejections_total 3$/m, `got: ${String(body)}`);
+  });
+
+  /**
+   * The discriminator that keeps this from firing on ordinary internet noise. A scanner collecting a
+   * 401 against a service that is ingesting media says nothing about that service's credentials.
+   */
+  it('is ok once media has been ingested, even with a refusal on the record', async () => {
+    const api = await start();
+
+    await api.request('/stream/start', unauthenticatedStart());
+    await api.request('/stream/start', startBody());
+    await api.request('/stream/segment', segmentBody());
+
+    const health = await api.requestUntil('/health', (body) => reasonsOf(body).length === 0);
+
+    assert.equal(health.status, 200, `a working service must not degrade on a scanner's 401: ${health.body}`);
   });
 });

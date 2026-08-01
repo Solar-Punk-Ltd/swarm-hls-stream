@@ -28,9 +28,11 @@ describe('metrics exposition format', () => {
     segmentsUploadedTotal: 12,
     segmentsDroppedTotal: 3,
     segmentsLostTotal: 40,
+    segmentsSkippedTotal: 5,
     manifestPublishFailuresTotal: 2,
     streamsFinalizedTotal: 1,
     streamsFailedTotal: 1,
+    authRejectionsTotal: 4,
     lastSegmentAt: 1_700_000_000_000,
     activeStreams: 2,
     queueDepth: 7,
@@ -41,7 +43,7 @@ describe('metrics exposition format', () => {
     const body = renderPrometheusMetrics(SNAPSHOT);
 
     const samples = parseExposition(body);
-    assert.equal(samples.size, 10, `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`);
+    assert.equal(samples.size, 12, `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`);
     for (const name of samples.keys()) {
       assert.ok(body.includes(`# HELP ${name} `), `${name} has no HELP line`);
       assert.ok(body.includes(`# TYPE ${name} `), `${name} has no TYPE line`);

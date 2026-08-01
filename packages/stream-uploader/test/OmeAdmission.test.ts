@@ -11,6 +11,8 @@ import { OmeAdmissionReply } from '../src/engines/ome/interfaces.js';
 import { EnginePlugin, RawBodyRequest } from '../src/engines/types.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
+import { makeFakeOrchestrator } from './helpers/fakes.js';
+
 const SECRET = 'admission-secret';
 const HLS_BASE = 'http://ome:8081';
 
@@ -100,16 +102,12 @@ describe('createOmeEngineFromEnv requires an admission secret (SEC-3)', () => {
 });
 
 function fakeOrchestrator(startedStreamIds: string[]): StreamOrchestrator {
-  return {
+  return makeFakeOrchestrator({
     startStream: (streamId: string) => {
       startedStreamIds.push(streamId);
       return true;
     },
-    stopStream: async () => {},
-    handleSegment: () => ({ accepted: true }),
-    handleSegmentLoss: () => true,
-    keepAlive: () => false,
-  } as unknown as StreamOrchestrator;
+  });
 }
 
 interface AdmissionResponse {

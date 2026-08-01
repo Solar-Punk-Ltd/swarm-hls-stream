@@ -13,7 +13,13 @@ import { EnginePlugin, RawBodyRequest } from '../src/engines/types.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { STREAM_STATUS_VOD } from '../src/types.js';
 
-import { makeFakeCatalog, makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
+import {
+  makeFakeCatalog,
+  makeFakeOrchestrator,
+  makeFakeRecoveryStore,
+  makeRecordingCatalog,
+  makeTestOrchestrator,
+} from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 /** The catalog entry shape these tests read back, narrowed from what StreamCatalog accepts. */
@@ -112,11 +118,7 @@ describe('createOmeEngine resumeRecoveredStream (F: OME crash recovery)', () => 
 
   it('restarts the HLS puller for a recovered stream (polls its OME playlist)', async () => {
     const engine = createOmeEngine('http://ome:8081', 60_000);
-    const orchestrator = {
-      handleSegment: () => ({ accepted: true }),
-      stopStream: async () => {},
-      keepAlive: () => false,
-    } as unknown as StreamOrchestrator;
+    const orchestrator = makeFakeOrchestrator();
 
     const { resumeRecoveredStream } = engine;
     assert.ok(resumeRecoveredStream, 'OME engine must expose resumeRecoveredStream');
@@ -172,15 +174,12 @@ describe('createOmeEngine resumeRecoveredStream over a stale puller (CON-5)', ()
       return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(8) } as Response;
     }) as unknown as Fetcher;
 
-    const orchestrator = {
-      startStream: () => true,
-      stopStream: async () => {},
-      handleSegmentLoss: () => true,
+    const orchestrator = makeFakeOrchestrator({
       handleSegment: (_streamId: string, seq: number) => {
         delivered.push(seq);
         return { accepted: true };
       },
-    } as unknown as StreamOrchestrator;
+    });
 
     const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher });
 
@@ -283,13 +282,7 @@ describe('createOmeEngineFromEnv fetch timeout plumbing (TEST-15)', () => {
     }) as unknown as Fetcher;
 
     const engine = createOmeEngineFromEnv({ fetcher });
-    const orchestrator = {
-      startStream: () => true,
-      stopStream: async () => {},
-      handleSegment: () => ({ accepted: true }),
-      handleSegmentLoss: () => true,
-      keepAlive: () => false,
-    } as unknown as StreamOrchestrator;
+    const orchestrator = makeFakeOrchestrator();
 
     await postAdmission(engine, orchestrator, 'opening', PLUMBING_SECRET, STREAM_URL);
     await waitFor(() => abortDelaysMs.length > 0, DEFAULT_FETCH_TIMEOUT_MS / 5);

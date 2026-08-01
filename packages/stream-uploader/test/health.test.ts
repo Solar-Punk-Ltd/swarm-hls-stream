@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
+  HEALTH_REASON_INGEST_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
@@ -34,6 +35,11 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     msSinceCatalogAnnounceFailed: null,
     msSinceStatePersistFailed: null,
     queueBacklogSeconds: 0,
+    msSinceAuthRejection: null,
+    // A service that has ingested media, so an unrelated case cannot pick up `ingest_refused` by
+    // default. The OBS-15 cases below set both fields explicitly.
+    hasIngestedMedia: true,
+    segmentsSkipped: 0,
     ...overrides,
   };
 }
@@ -163,8 +169,20 @@ describe('health wire contract', () => {
         HEALTH_REASON_QUEUE_PRESSURE,
         HEALTH_REASON_SEGMENT_STALL,
         HEALTH_REASON_SEGMENT_LOSS,
+        HEALTH_REASON_UNLISTED_STREAM,
+        HEALTH_REASON_STATE_NOT_PERSISTED,
+        HEALTH_REASON_INGEST_REFUSED,
       ],
-      ['segment_upload_failure', 'stale_manifest', 'queue_pressure', 'segment_stall', 'segment_loss'],
+      [
+        'segment_upload_failure',
+        'stale_manifest',
+        'queue_pressure',
+        'segment_stall',
+        'segment_loss',
+        'unlisted_stream',
+        'state_not_persisted',
+        'ingest_refused',
+      ],
     );
   });
 
@@ -353,5 +371,70 @@ describe('deriveHealthStatus queue backlog (OBS-9)', () => {
     );
 
     assert.deepEqual(report.reasons, [HEALTH_REASON_QUEUE_PRESSURE]);
+  });
+});
+
+/**
+ * The one reason that has to fire on a service where nothing has ever run. Every other reason here
+ * is computed from a registered stream or from a counter a stream moved, so a credential wrong from
+ * startup leaves all of them at their healthy value: no `on_publish` succeeds, nothing registers, and
+ * `deploy/scripts/health.sh` prints a green check over a deployment that has never worked.
+ */
+describe('deriveHealthStatus refused ingest (OBS-15)', () => {
+  /** The state the row was measured in: rejections in-process, and every other signal spotless. */
+  function neverIngested(overrides: Partial<HealthSignals> = {}): HealthSignals {
+    return signals({ activeStreams: 0, msSinceStreamActivity: null, hasIngestedMedia: false, ...overrides });
+  }
+
+  it('degrades when a gate refused a request and no media has ever been ingested', () => {
+    const report = deriveHealthStatus(neverIngested({ msSinceAuthRejection: 50 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_INGEST_REFUSED]);
+  });
+
+  /** A service with nothing registered and nothing refused is idle, which is not a failure. */
+  it('is ok on a service that has ingested nothing and refused nothing', () => {
+    const report = deriveHealthStatus(neverIngested(), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  /**
+   * A public port collects 401s from scanners forever. Once a segment has landed the credential is
+   * proven, so a refusal after that is the internet rather than a misconfiguration, and a rotation
+   * mid-run is what `segment_stall` already catches.
+   */
+  it('is ok when a request was refused but media has already been ingested', () => {
+    const report = deriveHealthStatus(signals({ msSinceAuthRejection: 50, hasIngestedMedia: true }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  /**
+   * Latched rather than aged out, and this is the case that decides it. A broadcaster refused at
+   * startup retries on its own schedule, so any window wide enough to be quiet between retries lets
+   * exactly the from-startup failure fade back to `ok` while the deployment stays broken.
+   */
+  it('stays degraded however long ago the refusal was, while nothing has been ingested', () => {
+    const report = deriveHealthStatus(neverIngested({ msSinceAuthRejection: STALL_MS * 100 }), STALL_MS);
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_INGEST_REFUSED]);
+  });
+});
+
+describe('deriveHealthStatus deliberate discards (OBS-16)', () => {
+  /**
+   * A skip is the handover floor working, so it carries no threshold and raises no reason. It is on
+   * `HealthSignals` to be read, not to be judged: a floor matching zero segments and a floor holding
+   * correctly were indistinguishable from outside, and one number separates them.
+   */
+  it('does not degrade on segments the handover floor discarded on purpose', () => {
+    const report = deriveHealthStatus(signals({ segmentsSkipped: 25 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
   });
 });

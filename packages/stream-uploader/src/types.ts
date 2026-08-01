@@ -64,6 +64,7 @@ export const HEALTH_REASON_SEGMENT_STALL = 'segment_stall' as const;
 export const HEALTH_REASON_SEGMENT_LOSS = 'segment_loss' as const;
 export const HEALTH_REASON_UNLISTED_STREAM = 'unlisted_stream' as const;
 export const HEALTH_REASON_STATE_NOT_PERSISTED = 'state_not_persisted' as const;
+export const HEALTH_REASON_INGEST_REFUSED = 'ingest_refused' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
@@ -72,7 +73,8 @@ export type HealthReason =
   | typeof HEALTH_REASON_SEGMENT_STALL
   | typeof HEALTH_REASON_SEGMENT_LOSS
   | typeof HEALTH_REASON_UNLISTED_STREAM
-  | typeof HEALTH_REASON_STATE_NOT_PERSISTED;
+  | typeof HEALTH_REASON_STATE_NOT_PERSISTED
+  | typeof HEALTH_REASON_INGEST_REFUSED;
 
 export interface HealthSignals {
   activeStreams: number;
@@ -125,6 +127,32 @@ export interface HealthSignals {
    * behind live. This is the number the policy can actually judge. See OBS-9.
    */
   queueBacklogSeconds: number;
+  /**
+   * Age of the most recent request a credential gate refused, across every gate in the process, or
+   * `null` while none has been refused.
+   *
+   * Every gate is covered by observing the refusal rather than each gate reporting itself, because
+   * OME signs the request body and so refuses inside its router rather than at a mounted gate, which
+   * is the very path `on_publish` arrives on. See OBS-15.
+   */
+  msSinceAuthRejection: number | null;
+  /**
+   * Whether any segment has ever reached Swarm in this process's lifetime.
+   *
+   * A one-way latch, and the discriminator that makes a refusal judgeable at all: an anonymous
+   * caller getting a 401 is ordinary noise on a service that is working, and the same 401 on a
+   * service that has never once ingested media is indistinguishable from a credential this
+   * deployment has wrong.
+   */
+  hasIngestedMedia: boolean;
+  /**
+   * Segments discarded on purpose by the CON-20 handover floor, for this process's lifetime.
+   *
+   * Carries no threshold and raises no reason, because a skip during a handover is the floor working.
+   * It is here so that a floor matching zero segments and a floor holding correctly stop being
+   * indistinguishable from outside, which is the whole of OBS-16.
+   */
+  segmentsSkipped: number;
 }
 
 export interface HealthReport {
