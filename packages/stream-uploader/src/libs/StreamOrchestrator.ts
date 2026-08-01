@@ -12,6 +12,8 @@ import {
   REJECT_UNKNOWN_STREAM,
   REJECT_UNUSABLE_DURATION,
   SegmentResult,
+  STOP_FAILURE_DRAIN_TIMEOUT,
+  STOP_FAILURE_FINALIZE_FAILED,
   STREAM_LIFECYCLE_DRAINING,
   STREAM_LIFECYCLE_FAILED,
   STREAM_LIFECYCLE_FINALIZED,
@@ -23,6 +25,7 @@ import { getErrorMessage } from '../utils/common.js';
 import { isUsableDuration } from '../utils/segmentDuration.js';
 
 import { Clock, systemClock, Timer } from './Clock.js';
+import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
@@ -58,6 +61,19 @@ export interface StreamOrchestratorConfig {
   stopOutcomeTtlMs?: number;
 }
 
+/**
+ * A settled stop, kept until its window elapses.
+ *
+ * `recordedAt` and the report's own `settledAt` measure the same moment on different clocks, and both
+ * are needed. `settledAt` is a wall-clock epoch because the caller reads it as a date. `recordedAt`
+ * is the injected monotonic reading, because it is only ever used to compute an age, and an age taken
+ * from a wall clock is wrong by however far that clock is adjusted.
+ */
+interface RetainedStopOutcome {
+  report: StreamStatusReport;
+  recordedAt: number;
+}
+
 export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
   /**
@@ -78,7 +94,7 @@ export class StreamOrchestrator {
   /** Per stream, the monotonic reading of the most recent segment the engine could not deliver. */
   private segmentLossAt = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
-  private stopOutcomes = new Map<string, StreamStatusReport>();
+  private stopOutcomes = new Map<string, RetainedStopOutcome>();
   /** Totals that outlive the streams they describe, which is what `/health` structurally cannot do. */
   private readonly metrics = new ServiceMetrics();
   private logger = Logger.getInstance();
@@ -664,12 +680,12 @@ export class StreamOrchestrator {
     }
 
     this.sweepStopOutcomes();
-    return this.stopOutcomes.get(streamId) ?? { streamId, state: STREAM_LIFECYCLE_UNKNOWN };
+    return this.stopOutcomes.get(streamId)?.report ?? { streamId, state: STREAM_LIFECYCLE_UNKNOWN };
   }
 
   private recordStopOutcome(outcome: StreamStatusReport): void {
     this.sweepStopOutcomes();
-    this.stopOutcomes.set(outcome.streamId, outcome);
+    this.stopOutcomes.set(outcome.streamId, { report: outcome, recordedAt: this.clock.now() });
     if (outcome.state === STREAM_LIFECYCLE_FAILED) {
       this.metrics.recordStreamFailed();
     }
@@ -704,9 +720,9 @@ export class StreamOrchestrator {
    * on exactly the path that creates entries, leaving one per stream id ever stopped.
    */
   private sweepStopOutcomes(): void {
-    const now = Date.now();
-    for (const [streamId, outcome] of this.stopOutcomes) {
-      if (now - (outcome.settledAt ?? now) > this.stopOutcomeTtlMs) {
+    const now = this.clock.now();
+    for (const [streamId, retained] of this.stopOutcomes) {
+      if (now - retained.recordedAt > this.stopOutcomeTtlMs) {
         this.stopOutcomes.delete(streamId);
       }
     }
@@ -838,7 +854,7 @@ export class StreamOrchestrator {
     let drainTimer: Timer | undefined;
     const drainTimeout = new Promise<void>((_, reject) => {
       drainTimer = this.clock.setTimer(
-        () => reject(new Error(`Drain timeout after ${DRAIN_TIMEOUT_MS}ms`)),
+        () => reject(new DrainTimeoutError(DRAIN_TIMEOUT_MS)),
         DRAIN_TIMEOUT_MS,
         // A pending drain deadline is not a reason to keep the process alive.
         { unref: true },
@@ -861,7 +877,10 @@ export class StreamOrchestrator {
       // next boot recovers a stream that may already be finalized. A wasted VOD is postage. The other
       // way round is a live broadcast with no recovery at all.
       uploader.retire();
-      return { streamId, state: STREAM_LIFECYCLE_FAILED, reason: msg, settledAt: Date.now() };
+      // `msg` is logged above and deliberately not returned. It is whatever Bee, the filesystem or a
+      // timer produced, and this value is served verbatim by `GET /stream/status`. See S1.7.
+      const reason = error instanceof DrainTimeoutError ? STOP_FAILURE_DRAIN_TIMEOUT : STOP_FAILURE_FINALIZE_FAILED;
+      return { streamId, state: STREAM_LIFECYCLE_FAILED, reason, settledAt: Date.now() };
     } finally {
       // Losing the race does not cancel the timer, so without this every stop leaves a five minute
       // timer holding the event loop open, one per stopped stream.

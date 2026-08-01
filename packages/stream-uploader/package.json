@@ -13,7 +13,8 @@
     "@ethersphere/bee-js": "^9.0.3",
     "dotenv": "^16.4.7",
     "express": "^5.2.1",
-    "p-queue": "^8.1.0"
+    "p-queue": "^8.1.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

@@ -136,7 +136,7 @@ describe('api server over http (S0.7 test layer)', () => {
     });
 
     assert.equal(status, 400, 'json body parsing and ApiError both run in the real middleware chain');
-    assert.deepEqual(body, { ok: false, error: 'streamId and mediatype are required', statusCode: 400 });
+    assert.deepEqual(body, { ok: false, error: 'mediatype must be "audio" or "video"', statusCode: 400 });
   });
 
   it('accepts a segment for a started stream', async () => {

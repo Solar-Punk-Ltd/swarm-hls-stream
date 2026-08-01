@@ -1,8 +1,6 @@
 import express from 'express';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
-import type { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
 
 import { createSrsEngine, createSrsEngineFromEnv, SrsEngineOptions } from '../src/engines/srs.js';
@@ -16,6 +14,7 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
 import { startTestApi } from './helpers/apiTestServer.js';
 import { makeFakeOrchestrator } from './helpers/fakes.js';
+import { listenOnLoopback } from './helpers/loopbackServer.js';
 
 const TOKEN = 'srs-webhook-token-0123456789abcdef';
 
@@ -38,11 +37,9 @@ async function postStreams(query: string, options: SrsEngineOptions = { webhookT
   app.use(express.json());
   app.use(engine.prefix, engine.createRouter(orchestrator));
 
-  const server = app.listen(0);
+  const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    await once(server, 'listening');
-    const { port } = server.address() as AddressInfo;
-    const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}/streams${query}`, {
+    const response = await fetch(`${baseUrl}${engine.prefix}/streams${query}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo' }),
@@ -107,14 +104,11 @@ describe('SRS webhook auth (S1.2)', () => {
     const app = express();
     app.use(express.json());
     app.use(engine.prefix, engine.createRouter(orchestrator));
-    const server = app.listen(0);
+    const { server, baseUrl } = await listenOnLoopback(app);
 
     try {
-      await once(server, 'listening');
-      const { port } = server.address() as AddressInfo;
-
       for (const route of ['/streams', '/hls']) {
-        const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}${route}`, {
+        const response = await fetch(`${baseUrl}${engine.prefix}${route}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo', file: 'x.ts', seq_no: 1 }),
@@ -214,12 +208,10 @@ describe('SRS webhook auth (S1.2)', () => {
       const app = express();
       app.use(express.json());
       app.use(engine.prefix, engine.createRouter(orchestrator));
-      const server = app.listen(0);
+      const { server, baseUrl } = await listenOnLoopback(app);
 
       try {
-        await once(server, 'listening');
-        const { port } = server.address() as AddressInfo;
-        const url = `http://127.0.0.1:${port}${engine.prefix}/streams`;
+        const url = `${baseUrl}${engine.prefix}/streams`;
         const body = {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
