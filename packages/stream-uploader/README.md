@@ -87,9 +87,19 @@ Engine-independent HTTP interface for pushing segments directly.
 | `GET /metrics`         | —                                    | Prometheus exposition                      |
 | `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
 
-All four `/stream/*` routes and `GET /metrics` require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, it accepts no input and it spends nothing. No compose healthcheck consumes it today.
+All four `/stream/*` routes and `GET /metrics` require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that accepts no input and spends nothing, and both the `stream-uploader` compose healthcheck and `deploy/scripts/health.sh` read it unauthenticated.
 
 The `/engines/*` webhook routes are **not** behind this gate. OME admission carries its own HMAC signature. The two SRS routes carry no credential at all, and `POST /engines/srs/hls` reaches the same stamp-spending path `/stream/segment` does, so on a default `ENGINE=srs` deployment an anonymous caller can still cause an upload. That is the open half of SEC-1, tracked as S1.2.
+
+**Something reads `/health`.** The `stream-uploader` service declares a compose healthcheck that polls
+it every 30 seconds and treats the `503` of a degraded service as a failure, so `docker ps` shows
+`(unhealthy)` after three consecutive ones. Before that, every `503` this endpoint could raise was a
+value in a response body nobody requested.
+
+It reports and does not act, on purpose. Compose does not restart a container for failing its
+healthcheck, and nothing declares `depends_on: condition: service_healthy`. Restarting on degraded
+would be the wrong response anyway: most reasons describe media already lost or state already
+unwritten, and a restart drops every live broadcast to re-run a recovery that changes none of it.
 
 **Metrics.** `GET /metrics` serves Prometheus text exposition. These are process-lifetime totals and
 they deliberately outlive the streams they count, which is the one thing `/health` structurally cannot
