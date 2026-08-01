@@ -7,6 +7,11 @@ The companion document [`2026-07-29-hardening-audit.md`](./2026-07-29-hardening-
 findings register and the acceptance criteria. This document holds the ordering, the protocol, and the
 traps. Read both before touching code.
 
+> **Read [the definition of done](./2026-07-29-hardening-audit.md#definition-of-done-and-the-only-queue-that-counts)
+> first, owner decision 2026-08-01.** It names seven queued findings and archives the rest, and it
+> outranks the priorities in this document wherever they disagree. **The ordering below is history now,
+> not a queue.** `review-gate.md` is frozen, and a documentation-only pull request gets no lenses.
+
 ## Kickoff prompt
 
 Paste this to start a session:
