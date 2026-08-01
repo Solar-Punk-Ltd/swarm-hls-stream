@@ -1,0 +1,30 @@
+# ShellCheck configuration for deploy/scripts and nodes.
+#
+# CI runs at --severity=style, so anything not disabled here fails the build. Every entry below is a
+# deliberate exception with its reason, rather than a severity dial turned down until the noise
+# stopped: a code disabled here stops being reported everywhere, so the list is meant to stay short
+# and to be re-argued rather than grown.
+
+# `# shellcheck source=_lib.sh` directives are relative to the script, so shellcheck needs to be told
+# where to look before it can follow them.
+external-sources=true
+source-path=SCRIPTDIR
+
+# _lib.sh is a library. Its constants are consumed by the scripts that source it, which shellcheck
+# analyses separately and so cannot see, making every shared constant look dead.
+disable=SC2034
+
+# REMOTE_BASE deliberately holds an unexpanded `~`. It names a path on the remote host, and the
+# remote shell is what has to expand it: expanding locally would send this machine's home directory.
+disable=SC2088
+
+# The remote heredocs and `ssh host "..."` commands interpolate on purpose. Every value they carry
+# (REMOTE_BASE, the compose flags, the service list) is computed here and has no meaning on the far
+# side, which is the whole reason the delimiter is unquoted.
+disable=SC2087
+disable=SC2029
+
+# `services=($(get_filtered_services_for_target "$target"))` splits on purpose: the values are
+# service names from a fixed list in _lib.sh, so there is nothing to split wrongly. The suggested
+# `mapfile` needs bash 4, and these scripts run under the bash 3.2 that ships with macOS.
+disable=SC2207

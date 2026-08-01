@@ -19,9 +19,12 @@ readonly TARGET_NATIVE="native"
 readonly TARGET_DISABLED="disabled"
 
 # --- Paths ---
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
-readonly ROOT_DIR="$(dirname "$DEPLOY_DIR")"
+# Assigned before `readonly` rather than with it: `readonly X=$(...)` takes the exit status of the
+# `readonly`, not of the command substitution, so a failing `cd` would go unnoticed. (SC2155)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
+ROOT_DIR="$(dirname "$DEPLOY_DIR")"
+readonly SCRIPT_DIR DEPLOY_DIR ROOT_DIR
 readonly CONFIG_FILE="$DEPLOY_DIR/config.json"
 readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
 
