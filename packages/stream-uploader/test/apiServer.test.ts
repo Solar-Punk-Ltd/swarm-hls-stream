@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-import { setTimeout as sleep } from 'node:timers/promises';
 
 import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
