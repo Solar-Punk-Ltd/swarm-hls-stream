@@ -1066,6 +1066,10 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
         client: { address: '192.168.65.1', port: 0 },
       },
       { name: 'an empty address', client: { address: '', port: 44546 } },
+      {
+        name: 'a port that is not a whole number, which no socket has',
+        client: { address: '192.168.65.1', port: 44546.5 },
+      },
     ];
 
   for (const { name, client } of INCOMPLETE_SOCKETS) {
