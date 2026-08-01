@@ -1,4 +1,4 @@
-import { Bee } from '@ethersphere/bee-js';
+import { Bee, BZZ, DAI } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
 
 import { stampSetup, StampSetupSeams } from '../src/commands/stamp-setup.js';
+
+import { TEST_BATCH, TEST_BATCH_COST_PLUR } from './helpers/fakeBee.js';
 
 // Unique per process. A fixed id let the recovery file this suite leaks into the shared temp
 // directory satisfy the next run's assertion, so the entire fallback mechanism could be deleted and
@@ -43,16 +45,35 @@ class ExitCalled extends Error {
   }
 }
 
-/** A bee stub that funds the wallet and reports no existing batches, so the run reaches the spend. */
-function fundedBee(): Bee {
+interface WalletBeeOptions {
+  /** BZZ the node holds, in PLUR. Defaults to twice the cost of the batch this command would buy. */
+  bzzPlur?: bigint;
+  xdaiWei?: bigint;
+  batches?: unknown[];
+}
+
+/**
+ * A bee stub whose wallet holds exactly what the test says, and which reports the batches it names.
+ *
+ * The balances are real `BZZ` and `DAI` rather than objects carrying the two methods the caller
+ * happens to use. The sufficiency check compares two BZZ values, so a hand-rolled balance would be
+ * unable to answer the one question under test while still passing every other assertion here.
+ */
+function walletBee({ bzzPlur, xdaiWei = 1n, batches = [] }: WalletBeeOptions = {}): Bee {
   return {
     getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
     getWalletBalance: async () => ({
-      bzzBalance: { toDecimalString: () => '1.0', toPLURBigInt: () => 1n },
-      nativeTokenBalance: { toDecimalString: () => '1.0', toWeiBigInt: () => 1n },
+      bzzBalance: BZZ.fromPLUR(bzzPlur ?? TEST_BATCH_COST_PLUR * 2n),
+      nativeTokenBalance: DAI.fromWei(xdaiWei),
     }),
-    getPostageBatches: async () => [],
+    getChainState: async () => ({ chainTip: 1, block: 1, totalAmount: '0', currentPrice: 24000 }),
+    getPostageBatches: async () => batches,
   } as unknown as Bee;
+}
+
+/** A wallet that can pay, with no existing batches, so the run reaches the spend. */
+function fundedBee(): Bee {
+  return walletBee();
 }
 
 interface Run {
@@ -61,7 +82,9 @@ interface Run {
   exitCode?: number;
 }
 
-async function run(overrides: StampSetupSeams & { buyThrows?: boolean; waitThrows?: boolean }): Promise<Run> {
+async function run(
+  overrides: StampSetupSeams & { buyThrows?: boolean; waitThrows?: boolean; assumeYes?: boolean },
+): Promise<Run> {
   const captured: string[] = [];
   const sinks = ['log', 'info', 'warn', 'error'] as const;
   const originals = sinks.map((name) => [name, console[name]] as const);
@@ -73,27 +96,33 @@ async function run(overrides: StampSetupSeams & { buyThrows?: boolean; waitThrow
   let exitCode: number | undefined;
 
   try {
-    await stampSetup(undefined, undefined, undefined, undefined, {
-      createBee: () => fundedBee(),
-      waitForNode: async () => undefined,
-      buyStamp: async () => {
-        spends += 1;
-        if (overrides.buyThrows) {
-          throw new Error('chain rejected the transaction');
-        }
-        return BATCH_ID;
+    await stampSetup(
+      { ...TEST_BATCH, assumeYes: overrides.assumeYes },
+      {
+        createBee: () => fundedBee(),
+        // Every test here predates the spend confirmation and is about some other step, so the
+        // default answers yes. The prompt itself has its own tests below.
+        confirm: async () => true,
+        waitForNode: async () => undefined,
+        buyStamp: async () => {
+          spends += 1;
+          if (overrides.buyThrows) {
+            throw new Error('chain rejected the transaction');
+          }
+          return BATCH_ID;
+        },
+        waitForStamp: async () => {
+          if (overrides.waitThrows) {
+            throw new Error('stamp did not become usable in time');
+          }
+          return undefined;
+        },
+        exit: (code: number) => {
+          throw new ExitCalled(code);
+        },
+        ...overrides,
       },
-      waitForStamp: async () => {
-        if (overrides.waitThrows) {
-          throw new Error('stamp did not become usable in time');
-        }
-        return undefined;
-      },
-      exit: (code: number) => {
-        throw new ExitCalled(code);
-      },
-      ...overrides,
-    });
+    );
   } catch (err) {
     if (!(err instanceof ExitCalled)) {
       throw err;
@@ -221,20 +250,69 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
   it('does not spend when the wallet is unfunded', async () => {
     const result = await run({
       envPath,
-      createBee: () =>
-        ({
-          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
-          getWalletBalance: async () => ({
-            bzzBalance: { toDecimalString: () => '0', toPLURBigInt: () => 0n },
-            nativeTokenBalance: { toDecimalString: () => '0', toWeiBigInt: () => 0n },
-          }),
-          getPostageBatches: async () => [],
-        } as unknown as Bee),
+      createBee: () => walletBee({ bzzPlur: 0n, xdaiWei: 0n }),
     });
 
     assert.equal(result.spends, 0, 'an unfunded wallet must never reach the purchase');
     assert.equal(result.exitCode, 1);
-    assert.match(result.output, /not funded/);
+    assert.match(result.output, /cannot pay for this batch/);
+  });
+
+  // The check used to be `balance > 0`, so a wallet holding a single PLUR passed it and the run went
+  // on to submit a transaction the chain then reverted, after the gas for it had been spent. A batch
+  // costs `amount * 2^depth`, which is a number this command has known all along. See OPS-5.
+  it('does not spend when the wallet holds dust rather than the batch price', async () => {
+    const result = await run({ envPath, createBee: () => walletBee({ bzzPlur: 1n }) });
+
+    assert.equal(result.spends, 0, 'a dust balance reached the purchase');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /This batch costs .* BZZ and the node holds/);
+  });
+
+  // The other side of the same line, and the one an over-strict check breaks. A wallet holding
+  // exactly the price can afford the batch, so refusing it would be a refusal to spend money the
+  // operator has.
+  it('spends when the wallet holds exactly the batch price', async () => {
+    const result = await run({ envPath, createBee: () => walletBee({ bzzPlur: TEST_BATCH_COST_PLUR }) });
+
+    assert.equal(result.spends, 1, 'a wallet holding exactly the price was refused');
+    assert.equal(result.exitCode, undefined);
+  });
+
+  // Nothing prints the price of what is about to be bought unless it is asserted. The cost is
+  // derived rather than looked up, so an operator typing a depth one digit out has only this line
+  // between them and a batch costing four times what they meant to spend.
+  it('shows the cost and the lifetime before the spend', async () => {
+    const result = await run({ envPath });
+
+    assert.match(result.output, /Cost: [\d.]+ BZZ/);
+    assert.match(result.output, /Lasts for: \S+/);
+  });
+
+  it('does not spend when the confirmation is declined', async () => {
+    const result = await run({ envPath, confirm: async () => false });
+
+    assert.equal(result.spends, 0, 'a declined confirmation still bought a stamp');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /No money has been spent/);
+  });
+
+  // `--yes` is what a non-interactive run uses to approve a spend, and it has to work without ever
+  // reaching a prompt: `confirm` returns false with no TTY, so a run that still asked would abort.
+  it('spends without asking when --yes is given', async () => {
+    let asked = 0;
+    const result = await run({
+      envPath,
+      assumeYes: true,
+      confirm: async () => {
+        asked += 1;
+        return false;
+      },
+    });
+
+    assert.equal(asked, 0, '--yes still reached the prompt');
+    assert.equal(result.spends, 1);
+    assert.equal(result.exitCode, undefined);
   });
 
   it('reuses an existing usable batch without spending', async () => {
@@ -243,16 +321,9 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     const result = await run({
       envPath,
       createBee: () =>
-        ({
-          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
-          getWalletBalance: async () => ({
-            bzzBalance: { toDecimalString: () => '1.0', toPLURBigInt: () => 1n },
-            nativeTokenBalance: { toDecimalString: () => '1.0', toWeiBigInt: () => 1n },
-          }),
-          getPostageBatches: async () => [
-            { usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false },
-          ],
-        } as unknown as Bee),
+        walletBee({
+          batches: [{ usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false }],
+        }),
     });
 
     assert.equal(result.spends, 0, 'a usable batch already exists, nothing may be bought');
@@ -269,16 +340,9 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     const result = await run({
       envPath,
       createBee: () =>
-        ({
-          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
-          getWalletBalance: async () => ({
-            bzzBalance: { toDecimalString: () => '1.0', toPLURBigInt: () => 1n },
-            nativeTokenBalance: { toDecimalString: () => '1.0', toWeiBigInt: () => 1n },
-          }),
-          getPostageBatches: async () => [
-            { usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false },
-          ],
-        } as unknown as Bee),
+        walletBee({
+          batches: [{ usable: true, batchID: { toHex: () => existing }, depth: 20, amount: '1', immutableFlag: false }],
+        }),
     });
 
     const savedAt = /Saved a copy at: (.+)$/m.exec(result.output)?.[1];
@@ -347,11 +411,7 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
       envPath,
       createBee: () =>
         ({
-          getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
-          getWalletBalance: async () => ({
-            bzzBalance: { toDecimalString: () => '1.0', toPLURBigInt: () => 1n },
-            nativeTokenBalance: { toDecimalString: () => '1.0', toWeiBigInt: () => 1n },
-          }),
+          ...walletBee(),
           getPostageBatches: async () => {
             throw new Error('Request failed with status code 500');
           },

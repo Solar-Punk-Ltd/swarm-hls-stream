@@ -1,4 +1,4 @@
-import { Bee, type PostageBatch } from '@ethersphere/bee-js';
+import { Bee, BZZ, DAI, type PostageBatch, Utils } from '@ethersphere/bee-js';
 
 /**
  * A Bee stub that models what a real postage batch purchase actually does, so the wait loop can be
@@ -32,9 +32,27 @@ export interface FakeBeeOptions {
   unhealthyPolls?: number;
   /** Batches the node already holds, before anything is bought. */
   existingBatches?: { batchID: string; usable: boolean }[];
+  /** Wallet balance in PLUR. Defaults to exactly what the default batch costs, so a test says which side of the line it wants. */
   bzz?: bigint;
   xdai?: bigint;
+  /** PLUR per chunk per block, which is what turns an amount into a TTL. */
+  currentPrice?: number;
+  /** Make the chain-state lookup fail, the way a node with no working RPC does. */
+  chainStateError?: string;
 }
+
+/**
+ * Batch parameters every test passes explicitly, rather than letting the command's defaults apply.
+ *
+ * `resolveStampOptions` falls back to STAMP_AMOUNT and STAMP_DEPTH from the environment, and every
+ * command calls `loadEnv()` first, which loads the repository's own `.env`. So a test that let the
+ * defaults through would price a different batch on every machine: this one carries STAMP_DEPTH=22,
+ * which costs four times what a depth of 20 does.
+ */
+export const TEST_BATCH = { amount: '10000000000', depth: 20 };
+
+/** What TEST_BATCH costs, so a fixture wallet can be put on either side of affording it. */
+export const TEST_BATCH_COST_PLUR = Utils.getStampCost(TEST_BATCH.depth, TEST_BATCH.amount).toPLURBigInt();
 
 export interface FakeBee {
   bee: Bee;
@@ -85,16 +103,20 @@ export function createFakeBee(options: FakeBeeOptions = {}): FakeBee {
 
     getNodeAddresses: async () => ({ ethereum: { toHex: () => '0xnode' } }),
 
+    // Real BZZ and DAI rather than objects with the two methods the caller happens to use. The
+    // sufficiency check compares two BZZ values, and a hand-rolled balance would have made that
+    // comparison untestable by being the one thing it could not do.
     getWalletBalance: async () => ({
-      bzzBalance: {
-        toDecimalString: () => String(options.bzz ?? 1n),
-        toPLURBigInt: () => options.bzz ?? 1n,
-      },
-      nativeTokenBalance: {
-        toDecimalString: () => String(options.xdai ?? 1n),
-        toWeiBigInt: () => options.xdai ?? 1n,
-      },
+      bzzBalance: BZZ.fromPLUR(options.bzz ?? TEST_BATCH_COST_PLUR),
+      nativeTokenBalance: DAI.fromWei(options.xdai ?? 1n),
     }),
+
+    getChainState: async () => {
+      if (options.chainStateError) {
+        throw new Error(options.chainStateError);
+      }
+      return { chainTip: 1, block: 1, totalAmount: '0', currentPrice: options.currentPrice ?? 24000 };
+    },
 
     getPostageBatches: async () => (options.existingBatches ?? []).map((b) => batch(b.batchID, b.usable)),
 

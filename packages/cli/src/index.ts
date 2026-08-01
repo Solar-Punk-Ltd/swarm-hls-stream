@@ -5,12 +5,24 @@ import { stampBuy } from './commands/stamp-buy.js';
 import { stampCheck } from './commands/stamp-check.js';
 import { stampSetup } from './commands/stamp-setup.js';
 import { error } from './lib/output.js';
+import { StampCommandArgs } from './lib/stamp.js';
 
 interface ParsedArgs {
   command: string;
   url?: string;
   immutable?: boolean;
+  assumeYes: boolean;
   positional: string[];
+}
+
+function stampArgs(a: ParsedArgs): StampCommandArgs {
+  return {
+    url: a.url,
+    amount: a.positional[0],
+    depth: a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
+    immutable: a.immutable,
+    assumeYes: a.assumeYes,
+  };
 }
 
 const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
@@ -19,10 +31,9 @@ const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
   'node-wallets': (a) => nodeWallets(a.url),
   'stamp-check': (a) => stampCheck(a.url),
   'stamp-buy': async (a) => {
-    await stampBuy(a.url, a.positional[0], a.positional[1] ? parseInt(a.positional[1], 10) : undefined, a.immutable);
+    await stampBuy(stampArgs(a));
   },
-  'stamp-setup': (a) =>
-    stampSetup(a.url, a.positional[0], a.positional[1] ? parseInt(a.positional[1], 10) : undefined, a.immutable),
+  'stamp-setup': (a) => stampSetup(stampArgs(a)),
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -30,6 +41,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const command = args[0];
   let url: string | undefined;
   let immutable: boolean | undefined;
+  let assumeYes = false;
   const positional: string[] = [];
 
   for (let i = 1; i < args.length; i++) {
@@ -38,12 +50,14 @@ function parseArgs(argv: string[]): ParsedArgs {
       i++;
     } else if (args[i] === '--immutable') {
       immutable = true;
+    } else if (args[i] === '--yes' || args[i] === '-y') {
+      assumeYes = true;
     } else {
       positional.push(args[i]);
     }
   }
 
-  return { command, url, immutable, positional };
+  return { command, url, immutable, assumeYes, positional };
 }
 
 function printUsage(): void {
@@ -54,12 +68,13 @@ function printUsage(): void {
   console.log('  node-addresses    Ethereum + overlay addresses');
   console.log('  node-wallets      Wallet balances (BZZ + xDAI)');
   console.log('  stamp-check       List all stamps with status');
-  console.log('  stamp-buy         Buy a stamp [amount] [depth] [--immutable]');
-  console.log('  stamp-setup       Full workflow: wait → buy → write .env [--immutable]');
+  console.log('  stamp-buy         Buy a stamp [amount] [depth] [--immutable] [--yes]');
+  console.log('  stamp-setup       Full workflow: wait → buy → write .env [--immutable] [--yes]');
   console.log('');
   console.log('Options:');
   console.log('  --url <url>       Override bee node URL (auto-detected from config.json)');
   console.log('  --immutable       Create immutable stamp (default: mutable)');
+  console.log('  --yes, -y         Skip the confirmation before an on-chain spend');
 }
 
 async function main(): Promise<void> {

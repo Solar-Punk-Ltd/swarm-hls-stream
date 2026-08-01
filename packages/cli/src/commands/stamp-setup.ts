@@ -3,9 +3,17 @@ import { Bee } from '@ethersphere/bee-js';
 import { batchIdRecoveryNotice, reachedEnvFile, recordBatchId, STAMP_ENV_KEY } from '../lib/batch-id-record.js';
 import { createBee } from '../lib/bee-client.js';
 import { getEnvPath, loadEnv, resolveBeeUploaderTarget } from '../lib/config-reader.js';
+import { confirm } from '../lib/confirm.js';
 import { assertEnvKeyWritable } from '../lib/env-writer.js';
 import { error, header, info, ok, table, warn } from '../lib/output.js';
-import { buyStamp, resolveStampOptions, StampOptions } from '../lib/stamp.js';
+import {
+  buyStamp,
+  printStampQuote,
+  quoteStamp,
+  resolveStampOptions,
+  StampCommandArgs,
+  StampOptions,
+} from '../lib/stamp.js';
 import { waitForNode, waitForStamp } from '../lib/wait.js';
 
 /**
@@ -21,20 +29,18 @@ export interface StampSetupSeams {
   envPath?: string;
   /** Defaults to `process.exit`. Tests pass one that throws, so a failure path cannot end the run. */
   exit?: (code: number) => never;
+  /** Defaults to a terminal prompt. A test passes one that answers without a TTY. */
+  confirm?: (question: string) => Promise<boolean>;
 }
 
-export async function stampSetup(
-  urlOverride?: string,
-  amount?: string,
-  depth?: number,
-  immutable?: boolean,
-  seams: StampSetupSeams = {},
-): Promise<void> {
+export async function stampSetup(args: StampCommandArgs = {}, seams: StampSetupSeams = {}): Promise<void> {
+  const { url: urlOverride, amount, depth, immutable, assumeYes } = args;
   const makeBee = seams.createBee ?? createBee;
   const buy = seams.buyStamp ?? buyStamp;
   const awaitNode = seams.waitForNode ?? waitForNode;
   const awaitStamp = seams.waitForStamp ?? waitForStamp;
   const exit = seams.exit ?? ((code: number) => process.exit(code));
+  const ask = seams.confirm ?? confirm;
 
   loadEnv();
 
@@ -104,20 +110,31 @@ export async function stampSetup(
   // caught by this catch and downgraded to "Could not check wallet", and the run bought a stamp
   // anyway. That made the branch untestable through the exit seam and one refactor away from being
   // untrue in production too.
-  let funding: { hasBzz: boolean; hasGas: boolean; address: string };
+  let funding: { affordsBatch: boolean; hasGas: boolean; address: string; balance: string; cost: string };
   try {
     const addresses = await bee.getNodeAddresses();
     const wallet = await bee.getWalletBalance();
+    const quote = await quoteStamp(bee, options);
 
     table('Node address', addresses.ethereum.toHex());
     table('BZZ balance', wallet.bzzBalance.toDecimalString());
     table('xDAI balance', wallet.nativeTokenBalance.toDecimalString());
     console.log('');
+    printStampQuote(options, quote);
+    console.log('');
 
     funding = {
-      hasBzz: wallet.bzzBalance.toPLURBigInt() > 0n,
+      // A batch costs `amount * 2^depth`, so "has any BZZ at all" was never the question. One PLUR
+      // of dust passed the old check and the transaction then failed on chain, after the gas for it
+      // had been spent. See OPS-5.
+      affordsBatch: wallet.bzzBalance.gte(quote.cost),
+      // No equivalent sufficiency check exists for gas: the fee depends on the chain's price at the
+      // moment of the transaction, which nothing here can read, so this stays a non-zero check and
+      // is deliberately not dressed up as more than that.
       hasGas: wallet.nativeTokenBalance.toWeiBigInt() > 0n,
       address: addresses.ethereum.toHex(),
+      balance: wallet.bzzBalance.toSignificantDigits(6),
+      cost: quote.cost.toSignificantDigits(6),
     };
   } catch (err) {
     // A failed check is not a passed check. This used to warn on one line and carry on to the
@@ -128,21 +145,22 @@ export async function stampSetup(
     return exit(1);
   }
 
-  if (!funding.hasBzz || !funding.hasGas) {
-    error('Node wallet is not funded');
+  if (!funding.affordsBatch || !funding.hasGas) {
+    error('Node wallet cannot pay for this batch');
     if (!funding.hasGas) {
       warn('Send xDAI (Gnosis Chain) for gas fees');
     }
-    if (!funding.hasBzz) {
-      warn('Send BZZ tokens to buy postage stamps');
+    if (!funding.affordsBatch) {
+      warn(`This batch costs ${funding.cost} BZZ and the node holds ${funding.balance} BZZ`);
+      warn('Send BZZ, or buy a smaller batch with a lower depth or amount');
     }
     console.log('');
     info(`Fund this address: ${funding.address}`);
-    info('Then run pnpm stamp:setup again');
+    info('Then run pnpm stamp:setup again. No money has been spent.');
     return exit(1);
   }
 
-  ok('Wallet is funded');
+  ok('Wallet can pay for this batch');
 
   // Step 4: Establish that the result can be recorded, before spending anything.
   // A batch id that cannot be written down is worth nothing to the operator, and this is the last
@@ -155,7 +173,15 @@ export async function stampSetup(
     return exit(1);
   }
 
-  // Step 5: Buy a new stamp
+  // Step 5: Ask. The cost and TTL are already on screen from step 3, and this is the last point at
+  // which the operator can still stop. Deliberately after the writability check, so nobody is asked
+  // to approve a purchase this run was going to refuse anyway.
+  if (!assumeYes && !(await ask('Buy this stamp?'))) {
+    info('Aborted. No money has been spent.');
+    return exit(1);
+  }
+
+  // Step 6: Buy a new stamp
   let batchIdHex: string;
   try {
     batchIdHex = await buy(bee, options);
