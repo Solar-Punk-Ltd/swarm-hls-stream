@@ -7,10 +7,10 @@ import {
   HLS_PROGRAM_DATE_TIME,
   HLS_STREAM_INF,
 } from '../../utils/hlsTags.js';
+import { isUsableDuration } from '../../utils/segmentDuration.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
-import { isUsableDuration } from '../../utils/segmentDuration.js';
 
 const STREAM_INF_PREFIX = `${HLS_STREAM_INF}:`;
 const MEDIA_SEQUENCE_PREFIX = `${HLS_MEDIA_SEQUENCE}:`;
