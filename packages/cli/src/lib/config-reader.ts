@@ -36,12 +36,33 @@ export function getEnvPath(): string {
   return ENV_PATH;
 }
 
-function readConfig(): DeployConfig {
+/**
+ * Read `deploy/config.json`, distinguishing "there is no config yet" from "the config is broken".
+ *
+ * Swallowing both used to return `{ services: {} }`, and every resolver below reads a missing
+ * service as localhost. So a config.json with one trailing comma silently pointed `pnpm stamp:setup`
+ * at localhost, on a machine whose bee node is somewhere else entirely, and bought the batch there.
+ * A missing file keeps the empty default because that is the fresh-clone case setup.sh exists to
+ * fix, and localhost is the right guess when nobody has said otherwise. See OPS-8.
+ */
+export function readDeployConfig(path: string): DeployConfig {
+  let raw: string;
   try {
-    const raw = readFileSync(CONFIG_PATH, 'utf-8');
+    raw = readFileSync(path, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { services: {} };
+    }
+    throw new Error(`Cannot read ${path}: ${err instanceof Error ? err.message : 'unknown error'}`);
+  }
+
+  try {
     return JSON.parse(raw) as DeployConfig;
-  } catch {
-    return { services: {} };
+  } catch (err) {
+    throw new Error(
+      `${path} is not valid JSON: ${err instanceof Error ? err.message : 'unknown error'}. ` +
+        'Fix it, or delete it and run ./deploy/scripts/setup.sh to recreate it from the sample.',
+    );
   }
 }
 
@@ -82,8 +103,9 @@ function resolveBeeTarget(
   portEnvVar: string,
   defaultPort: number,
   fallbackUrlEnvVar?: string,
+  configPath: string = CONFIG_PATH,
 ): BeeTarget | null {
-  const config = readConfig();
+  const config = readDeployConfig(configPath);
   const target = config.services[service];
   const port = parseInt(process.env[portEnvVar] || '', 10) || defaultPort;
 
@@ -117,10 +139,13 @@ function resolveBeeTarget(
 
 /**
  * Resolve bee-uploader target. Falls back to BEE_URL env var, then localhost.
+ *
+ * `configPath` is a test seam and production passes nothing: pointing a resolver at a fixture is the
+ * only way to prove what a corrupt config does without corrupting the repo's own.
  */
-export function resolveBeeUploaderTarget(): BeeTarget {
+export function resolveBeeUploaderTarget(configPath?: string): BeeTarget {
   return (
-    resolveBeeTarget(SVC_BEE_UPLOADER, 'BEE_UPLOADER_API_PORT', DEFAULT_BEE_UPLOADER_PORT, 'BEE_URL') ?? {
+    resolveBeeTarget(SVC_BEE_UPLOADER, 'BEE_UPLOADER_API_PORT', DEFAULT_BEE_UPLOADER_PORT, 'BEE_URL', configPath) ?? {
       url: `http://localhost:${DEFAULT_BEE_UPLOADER_PORT}`,
       host: 'localhost',
       port: DEFAULT_BEE_UPLOADER_PORT,
@@ -131,6 +156,6 @@ export function resolveBeeUploaderTarget(): BeeTarget {
 /**
  * Resolve bee-gateway target. Returns null if disabled.
  */
-export function resolveBeeGatewayTarget(): BeeTarget | null {
-  return resolveBeeTarget(SVC_BEE_GATEWAY, 'BEE_GATEWAY_API_PORT', DEFAULT_BEE_GATEWAY_PORT);
+export function resolveBeeGatewayTarget(configPath?: string): BeeTarget | null {
+  return resolveBeeTarget(SVC_BEE_GATEWAY, 'BEE_GATEWAY_API_PORT', DEFAULT_BEE_GATEWAY_PORT, undefined, configPath);
 }
