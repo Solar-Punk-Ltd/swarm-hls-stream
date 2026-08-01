@@ -557,9 +557,19 @@ Per task:
    does not pass.
 6. **Close on evidence.** A finding closes when its acceptance test exists and passes.
 
-Sprint exit gate, all five required: every acceptance test in the sprint passes, the re-audit reports no
+Sprint exit gate, all six required: every acceptance test in the sprint passes, the re-audit reports no
 new CRITICAL or HIGH in the touched files, **the full lens catalogue has had its deep run**, no
-review-gate finding is left unaddressed or unrebutted, and CI is green.
+review-gate finding is left unaddressed or unrebutted, **no deferral row in the register is still
+open**, and CI is green.
+
+The sixth arrives with the two-lens deferral in
+[the review gate](./review-gate.md#what-blocks-a-merge-and-what-only-files-a-row), and it is
+enumerated here rather than asserted there because this list is the single home for the sprint exit
+gate. **The deep run does not already cover it.** That condition is discharged by running the
+catalogue against sprint HEAD, which a session can answer without ever learning a lens was deferred,
+and without the run's scope reaching the diffs it was deferred on. This project has already shipped
+one sprint exit gate whose two copies disagreed, and the condition missing from one of them was the
+deep run itself.
 
 The deep run is the other half of per-PR lens selection. Selecting narrowly during a sprint is only safe
 if breadth arrives somewhere, and sprint exit is where it arrives, because that is when a fix in one

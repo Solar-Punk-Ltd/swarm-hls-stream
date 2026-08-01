@@ -205,6 +205,34 @@ exactly like a mutation check that passed" is false. Stryker prints
 code, not silence, and the corrected text says so. A protocol that misdiagnoses its own hole argues
 for the wrong fix.
 
+## Deferred lenses
+
+A lens the surface selected, that did not run before the merge, under
+[what blocks a merge](./review-gate.md#what-blocks-a-merge-and-what-only-files-a-row). **Exactly two
+lenses may appear here, mutation triage and test integrity.** Anything else in this table is a rule
+violation rather than a deferral.
+
+It lives in the register rather than in a pull request comment because of who has to find it. A
+comment is permanent and checkable by a reader already looking at that pull request, and the reader
+this exists for is a later session that does not know which pull requests to open. That is the same
+reason R5 built a register instead of trusting the timeline.
+
+**A row closes when a later round runs that lens on the same surface**, which is the next pull request
+touching it. Sprint exit is not the deadline: no sprint exit has been reached in this project, and a
+deadline that has never arrived is not one. **An open row here fails the sprint exit gate**, which is
+enumerated in [the handoff](./2026-07-29-hardening-handoff.md) as its single home.
+
+| PR  | Lens           | Surface | Deferred on | Cleared by |
+| --- | -------------- | ------- | ----------- | ---------- |
+| #47 | Test integrity | `tests` | `3ac0540`   | **open**   |
+
+**About that row.** PR #47 changes `test/OmeEngine.test.ts`, including the contract of its `waitFor`
+helper, which now throws where it used to return. That is squarely test integrity's surface. It was
+deferred under the rule the same pull request introduces, which is either the rule working as intended
+or the first instance of the drift it is designed to prevent, and only the round that clears it will
+say which. The mutation triage half did **not** defer: the Stryker run is blocking, it ran, and its
+numbers are in the posted result.
+
 ## Finding register
 
 ### Security surface (SEC)
