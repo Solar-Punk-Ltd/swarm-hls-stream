@@ -10,6 +10,8 @@ import {
   REJECT_DRAINING,
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
+  STREAM_LIFECYCLE_FINALIZED,
+  STREAM_LIFECYCLE_UNKNOWN,
   STREAM_STATUS_VOD,
   StreamState,
   StreamStatus,
@@ -1551,5 +1553,68 @@ describe('StreamOrchestrator finalize accounting (gate on PR 52)', () => {
 
     assert.equal(published.filter((entry) => entry.state === 'vod').length, 1);
     assert.equal(orch.getMetricsSnapshot().streamsFinalizedTotal, 1);
+  });
+});
+
+/**
+ * TEST-32: the `stopOutcomeTtlMs` seam, which existed for a test that was never written.
+ *
+ * Its own doc said it was injectable so the expiry could be driven, and nothing injected it, so the
+ * seam was a claim about testability that nothing checked and the sweep it exists for had no
+ * coverage at all. The window is driven through the injected clock rather than by sleeping, since a
+ * real one long enough to be worth reading is longer than a test should take.
+ */
+describe('a settled stop expires from the status map (TEST-32)', () => {
+  const STREAM_ID = 'live/one';
+  const TTL_MS = 60_000;
+
+  async function stopAndSettle(clock: FakeClock) {
+    const orch = makeTestOrchestrator({ clock, stopOutcomeTtlMs: TTL_MS });
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await orch.stopStream(STREAM_ID);
+    return orch;
+  }
+
+  it('is readable while its window is open', async () => {
+    const clock = new FakeClock();
+    const orch = await stopAndSettle(clock);
+
+    await clock.advance(TTL_MS);
+
+    assert.equal(
+      orch.getStreamStatus(STREAM_ID).state,
+      STREAM_LIFECYCLE_FINALIZED,
+      'the outcome expired at or before its window elapsed, so a caller polling a stop can miss it',
+    );
+  });
+
+  it('is gone once its window has passed', async () => {
+    const clock = new FakeClock();
+    const orch = await stopAndSettle(clock);
+
+    await clock.advance(TTL_MS + 1);
+
+    assert.equal(
+      orch.getStreamStatus(STREAM_ID).state,
+      STREAM_LIFECYCLE_UNKNOWN,
+      'the outcome outlived its window, so the map holds one entry per stream id ever stopped',
+    );
+  });
+
+  // The reading the sweep compares against has to be the injected one. Taken from the wall clock it
+  // is not drivable at all, and an age measured on a wall clock is wrong by however far that clock
+  // is adjusted while the entry is held.
+  it('measures the window on the injected clock', async () => {
+    const clock = new FakeClock();
+    const orch = await stopAndSettle(clock);
+
+    assert.equal(orch.getStreamStatus(STREAM_ID).state, STREAM_LIFECYCLE_FINALIZED);
+    await clock.advance(TTL_MS * 10);
+
+    assert.equal(
+      orch.getStreamStatus(STREAM_ID).state,
+      STREAM_LIFECYCLE_UNKNOWN,
+      'advancing the injected clock well past the window expired nothing, so the sweep reads a different clock',
+    );
   });
 });

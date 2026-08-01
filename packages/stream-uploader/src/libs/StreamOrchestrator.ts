@@ -61,6 +61,19 @@ export interface StreamOrchestratorConfig {
   stopOutcomeTtlMs?: number;
 }
 
+/**
+ * A settled stop, kept until its window elapses.
+ *
+ * `recordedAt` and the report's own `settledAt` measure the same moment on different clocks, and both
+ * are needed. `settledAt` is a wall-clock epoch because the caller reads it as a date. `recordedAt`
+ * is the injected monotonic reading, because it is only ever used to compute an age, and an age taken
+ * from a wall clock is wrong by however far that clock is adjusted.
+ */
+interface RetainedStopOutcome {
+  report: StreamStatusReport;
+  recordedAt: number;
+}
+
 export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
   /**
@@ -81,7 +94,7 @@ export class StreamOrchestrator {
   /** Per stream, the monotonic reading of the most recent segment the engine could not deliver. */
   private segmentLossAt = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
-  private stopOutcomes = new Map<string, StreamStatusReport>();
+  private stopOutcomes = new Map<string, RetainedStopOutcome>();
   /** Totals that outlive the streams they describe, which is what `/health` structurally cannot do. */
   private readonly metrics = new ServiceMetrics();
   private logger = Logger.getInstance();
@@ -667,12 +680,12 @@ export class StreamOrchestrator {
     }
 
     this.sweepStopOutcomes();
-    return this.stopOutcomes.get(streamId) ?? { streamId, state: STREAM_LIFECYCLE_UNKNOWN };
+    return this.stopOutcomes.get(streamId)?.report ?? { streamId, state: STREAM_LIFECYCLE_UNKNOWN };
   }
 
   private recordStopOutcome(outcome: StreamStatusReport): void {
     this.sweepStopOutcomes();
-    this.stopOutcomes.set(outcome.streamId, outcome);
+    this.stopOutcomes.set(outcome.streamId, { report: outcome, recordedAt: this.clock.now() });
     if (outcome.state === STREAM_LIFECYCLE_FAILED) {
       this.metrics.recordStreamFailed();
     }
@@ -707,9 +720,9 @@ export class StreamOrchestrator {
    * on exactly the path that creates entries, leaving one per stream id ever stopped.
    */
   private sweepStopOutcomes(): void {
-    const now = Date.now();
-    for (const [streamId, outcome] of this.stopOutcomes) {
-      if (now - (outcome.settledAt ?? now) > this.stopOutcomeTtlMs) {
+    const now = this.clock.now();
+    for (const [streamId, retained] of this.stopOutcomes) {
+      if (now - retained.recordedAt > this.stopOutcomeTtlMs) {
         this.stopOutcomes.delete(streamId);
       }
     }
