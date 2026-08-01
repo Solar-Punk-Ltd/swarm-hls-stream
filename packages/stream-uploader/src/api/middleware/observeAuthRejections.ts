@@ -11,9 +11,10 @@ const HTTP_UNAUTHORIZED = 401;
  * and lives inside the router. That last one is the `on_publish` path, which is precisely the one
  * OBS-15 is about, so a wrapper around the mounted gates would have missed the case it was built for.
  *
- * Mounted first, so the `finish` listener is attached before any gate can answer. Every 401 this
- * service emits comes from a credential gate: no route answers 401 for any other reason, and the
- * rejection body is a fixed `Unauthorized` that carries nothing about what was wrong.
+ * Mounted ahead of every gate, so the `finish` listener is attached before anything can answer 401.
+ * `requestLogger` runs before it and only reads. Every 401 this service emits comes from a credential
+ * gate: no route answers 401 for any other reason, and the rejection body is a fixed `Unauthorized`
+ * that carries nothing about what was wrong.
  */
 export function createAuthRejectionObserver(onRejected: () => void): RequestHandler {
   return (_req: Request, res: Response, next: NextFunction): void => {
