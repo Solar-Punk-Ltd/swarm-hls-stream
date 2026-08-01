@@ -1408,6 +1408,66 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
   });
 });
 
+describe('OmeHlsPuller unusable origin (OBS-18)', () => {
+  interface StartablePuller {
+    start(): void;
+    stop(): void;
+  }
+
+  /** A ceiling on a hung poll loop, not a measurement. */
+  const POLL_CEILING_MS = 4_000;
+
+  function makeCounters() {
+    const keptAlive: string[] = [];
+    const halts: string[] = [];
+    return { keptAlive, halts };
+  }
+
+  /**
+   * OBS-18 registered a 404 as the puller's only exit, so an origin behind a proxy answering 502 was
+   * held forever: one request every poll interval, no VOD, and the stream pinned in `activeStreams`
+   * for the life of the process. CON-10 routed every non-404 failure through the same accounting, so
+   * the row is closed by code that already shipped. This is what says so, and what keeps it closed.
+   */
+  it('halts on a proxy answering 502, not only on a 404', async () => {
+    const { halts } = makeCounters();
+    const fetcher = (async () => ({ ok: false, status: 502, text: async () => '' } as unknown as Response)) as Fetcher;
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, makeOrchestratorStub(), {
+      fetcher,
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StartablePuller;
+
+    await withSilencedLogs(async () => {
+      puller.start();
+      await waitFor(() => halts.length > 0, POLL_CEILING_MS);
+    });
+    puller.stop();
+
+    assert.deepEqual(halts, ['halted'], 'a 502 that never halts leaks the puller and publishes no VOD');
+  });
+
+  it('halts on a refused connection, which is what a restarting container does', async () => {
+    const { halts } = makeCounters();
+    const refused = (async () => {
+      throw Object.assign(new Error('connect ECONNREFUSED 172.18.0.4:8081'), { code: 'ECONNREFUSED' });
+    }) as unknown as Fetcher;
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, makeOrchestratorStub(), {
+      fetcher: refused,
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StartablePuller;
+
+    await withSilencedLogs(async () => {
+      puller.start();
+      await waitFor(() => halts.length > 0, POLL_CEILING_MS);
+    });
+    puller.stop();
+
+    assert.deepEqual(halts, ['halted'], 'a refused connection that never halts leaks the puller the same way');
+  });
+});
+
 async function withCapturedInfo(run: () => Promise<unknown>): Promise<{ infos: string[] }> {
   const { info, error, warn } = console;
   const infos: string[] = [];
