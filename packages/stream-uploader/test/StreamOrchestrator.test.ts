@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, REJECT_UNKNOWN_STREAM, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
