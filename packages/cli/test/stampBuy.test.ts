@@ -172,23 +172,25 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
     assert.match(result.output, /Lasts for: \S+/);
   });
 
-  it('asks before spending, and shows the numbers before it asks', async () => {
-    let outputWhenAsked = '';
-    const seen: string[] = [];
+  // The order matters as much as the prompt existing: an approval collected after the money is gone
+  // is not an approval. The event log rather than a flag, because "was the prompt reached" and "was
+  // it reached first" are different questions and only the sequence answers both.
+  it('asks before spending, not after', async () => {
+    const events: string[] = [];
     const result = await run({
       envPath,
       confirm: async () => {
-        outputWhenAsked = seen.join('\n');
+        events.push('ASKED');
         return true;
       },
       buyStamp: async () => {
-        seen.push('BOUGHT');
+        events.push('BOUGHT');
         return BATCH_ID;
       },
     });
 
     assert.equal(result.exitCode, undefined);
-    assert.doesNotMatch(outputWhenAsked, /BOUGHT/, 'the purchase happened before the operator was asked');
+    assert.deepEqual(events, ['ASKED', 'BOUGHT']);
   });
 
   it('does not spend when the confirmation is declined', async () => {

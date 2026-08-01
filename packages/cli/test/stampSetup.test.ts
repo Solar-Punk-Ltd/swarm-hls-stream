@@ -297,6 +297,27 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     assert.match(result.output, /No money has been spent/);
   });
 
+  // The order matters as much as the prompt existing: an approval collected after the money is gone
+  // is not an approval. The event log rather than a flag, because "was the prompt reached" and "was
+  // it reached first" are different questions and only the sequence answers both.
+  it('asks before spending, not after', async () => {
+    const events: string[] = [];
+    const result = await run({
+      envPath,
+      confirm: async () => {
+        events.push('ASKED');
+        return true;
+      },
+      buyStamp: async () => {
+        events.push('BOUGHT');
+        return BATCH_ID;
+      },
+    });
+
+    assert.equal(result.exitCode, undefined);
+    assert.deepEqual(events, ['ASKED', 'BOUGHT']);
+  });
+
   // `--yes` is what a non-interactive run uses to approve a spend, and it has to work without ever
   // reaching a prompt: `confirm` returns false with no TTY, so a run that still asked would abort.
   it('spends without asking when --yes is given', async () => {
