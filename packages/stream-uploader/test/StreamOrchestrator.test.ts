@@ -38,6 +38,12 @@ const RECOVERY_TIMEOUT_MS = 80;
  */
 const SETTLE_CEILING_MS = 4_000;
 
+/** The feed topic of the newest persisted state, which is what tells one session's writes from another's. */
+async function waitForTopic(saved: StreamState[]): Promise<string> {
+  await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+  return saved[saved.length - 1].streamRawTopic;
+}
+
 function makeOrchestrator(recovery: RecoveryStore = makeFakeRecoveryStore(), clock?: FakeClock): StreamOrchestrator {
   return makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS, clock }, {}, recovery);
 }
@@ -827,6 +833,93 @@ describe('StreamOrchestrator origin discontinuity (CON-9)', () => {
       { accepted: false, reason: REJECT_DRAINING },
       'a finalized manifest can take a marker no more than it can take media',
     );
+    await stopped;
+  });
+});
+
+describe('StreamOrchestrator drain that outlives its deadline (CON-26)', () => {
+  const DRAIN_TIMEOUT_MS = 5 * 60 * 1000;
+
+  it('gives up the recovery entry when it gives up waiting, so a replacement keeps its own', async () => {
+    const id = 'live/stream';
+    const clock = new FakeClock();
+    const saved: StreamState[] = [];
+    const removed: string[] = [];
+    let releaseBee = () => {};
+    const beeAnswers = new Promise<void>((resolve) => {
+      releaseBee = resolve;
+    });
+
+    const orch = makeTestOrchestrator(
+      { clock, recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      // Accepted the write and went silent, so the drain can only end on its deadline. Released later,
+      // because a Bee that never answers also never lets the abandoned finalize do any damage, and the
+      // damage is the point.
+      {
+        uploadPayload: async (index: number) => {
+          await beeAnswers;
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      makeFakeRecoveryStore({
+        save: (_id: string, state: StreamState) => saved.push(state),
+        remove: (streamId: string) => removed.push(streamId),
+      }),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(id, 0, 2, Buffer.from('held'));
+    const abandonedTopic = await waitForTopic(saved);
+
+    const stopped = orch.stopStream(id);
+    await clock.advance(DRAIN_TIMEOUT_MS + 1);
+    await stopped;
+
+    // The id is free now, so this is a plain start rather than a re-announce, and nothing on that
+    // path retires the session the timed-out drain walked away from.
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(id, 0, 2, Buffer.from('the live one'));
+    const writesBefore = saved.length;
+
+    // Now let the abandoned finalize run to completion, which is what it does in production the moment
+    // the node answers: it publishes its VOD and clears what it still believes is its recovery entry.
+    releaseBee();
+    await waitFor(() => saved.length > writesBefore, SETTLE_CEILING_MS);
+    await waitAndConfirmNothingHappened(() => removed.length === 0, 150);
+
+    const afterHandover = saved.slice(writesBefore);
+    assert.ok(
+      !afterHandover.some((state) => state.streamRawTopic === abandonedTopic),
+      'the abandoned finalize wrote its own state over the recovery entry of the broadcast that is live',
+    );
+    assert.deepEqual(removed, [], "and it must not delete the live session's entry on its way out either");
+  });
+});
+
+describe('StreamOrchestrator stall signal during a drain', () => {
+  it('still watches a replacement registered while its predecessor drains', async () => {
+    const id = 'live/stream';
+    const clock = new FakeClock();
+    const orch = makeTestOrchestrator(
+      { clock, recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      { uploadPayload: () => neverSettles() },
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(id, 0, 2, Buffer.from('held'));
+    const stopped = orch.stopStream(id);
+
+    // The broadcaster is back while the outgoing session is still finalizing, and then goes quiet.
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    clock.advance(90_000);
+
+    assert.equal(
+      orch.getMsSinceStreamActivity(),
+      90_000,
+      'a live stream sending nothing has to reach the stall signal even while its predecessor drains',
+    );
+
+    await clock.advance(5 * 60 * 1000 + 1);
     await stopped;
   });
 });

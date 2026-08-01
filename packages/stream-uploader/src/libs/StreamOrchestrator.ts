@@ -513,8 +513,12 @@ export class StreamOrchestrator {
     const now = this.clock.now();
     let oldest: number | null = null;
 
-    for (const streamId of this.activeStreams.keys()) {
-      if (this.drainPromises.has(streamId) || this.recoveryTimers.has(streamId)) {
+    for (const [streamId, uploader] of this.activeStreams) {
+      // Matched on the uploader for the reason `isDraining` is: a reconnect registers a replacement
+      // under the id its predecessor's drain is still keyed by, and that replacement is live and has
+      // to stay answerable. Excluding by id alone hid a broadcasting stream from this signal for as
+      // long as the outgoing finalize took, which is up to `DRAIN_TIMEOUT_MS`.
+      if (this.isDraining(streamId, uploader) || this.recoveryTimers.has(streamId)) {
         continue;
       }
       const activityAt = this.streamActivityAt.get(streamId);
@@ -631,6 +635,16 @@ export class StreamOrchestrator {
     } catch (error) {
       const msg = getErrorMessage(error);
       this.logger.error(`[StreamOrchestrator] Force-stopping stream ${streamId}: ${msg}`);
+      // The finalize is still running and we have stopped waiting for it, so from here this is a
+      // session nobody tracks, under an id that is about to be free. Left owning the recovery entry,
+      // it wrote its own state over the broadcast that took the id next and then deleted it, so a
+      // crash lost a live stream outright. Measured: four saves carrying the abandoned session's feed
+      // topic under the live session's id, then a remove.
+      //
+      // The cost is one duplicate VOD when nothing takes the id, since the entry now survives and the
+      // next boot recovers a stream that may already be finalized. A wasted VOD is postage. The other
+      // way round is a live broadcast with no recovery at all.
+      uploader.retire();
     } finally {
       // Losing the race does not cancel the timer, so without this every stop leaves a five minute
       // timer holding the event loop open, one per stopped stream.
