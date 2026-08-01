@@ -218,6 +218,16 @@ export class StreamOrchestrator {
       this.recoveryTimers.delete(streamId);
     }
 
+    // A stop already running for this id is the answer to this one. Every caller in the engines fires
+    // and forgets, and two of them sit next to each other: a puller that halts calls this, and the
+    // closing that follows calls it again. A second drain finds the uploader still registered, because
+    // the first has not retired it yet, and finalizes it a second time. The broadcast is not lost, it
+    // is published twice, under two catalog entries with nothing to say which one is real. See CON-22.
+    const inFlight = this.drainPromises.get(streamId);
+    if (inFlight) {
+      return inFlight;
+    }
+
     const drainPromise = this.performDrain(streamId);
     this.drainPromises.set(streamId, drainPromise);
 

@@ -329,6 +329,36 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     await orch.cleanup();
   });
 
+  // Two stops for one stream, close enough together that the second starts before the first has
+  // finished. Every caller in the engines fires and forgets, and two of them sit next to each other on
+  // the same id: a puller that halts calls this, and the closing OME sends afterwards calls it again.
+  // A second drain finds the uploader still registered, because the first has not retired it yet, and
+  // finalizes it a second time. The stream is not lost, it is published twice, and a viewer reading the
+  // list sees the same broadcast under two entries with nothing to say which is real. See CON-22.
+  it('finalizes a stream once when a second stop lands inside the first drain', async () => {
+    const id = 'live/stream';
+    const published: { state?: StreamState }[] = [];
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    await Promise.all([orch.stopStream(id), orch.stopStream(id)]);
+
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'one broadcast was published as two VODs, because both stops drained the same uploader',
+    );
+    await orch.cleanup();
+  });
+
   // A broadcaster that drops and reconnects inside the drain its own disconnect started. The stop
   // captured the outgoing uploader before the reconnect, so when it finishes it must not detach
   // whatever holds the id by then. Getting this wrong is silent and permanent: the reconnected
