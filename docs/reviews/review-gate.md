@@ -233,6 +233,46 @@ when" column and no other way.
 5. **Name the lenses you did not run**, in the posted result required by R4. That list is the next
    round's work.
 
+### What blocks a merge, and what only files a row
+
+Owner decision, 2026-08-01, after the PR #46 gate cost roughly 35 minutes of wall clock and 810k
+tokens and the owner stopped it twice. **The cut is by what a lens produces, not by how big the pull
+request is**, because those are different questions and only the first one predicts whether waiting is
+safe.
+
+**Blocking, on every pull request: the claims auditor plus the reasoning lenses the surface selects.**
+Usually one or two. These hunt defects that are live in the code right now, and PR #46 is the evidence:
+both HIGHs it found came from reasoning lenses, both were already committed, and both would have
+merged.
+
+**Non-blocking, run after the merge or at sprint exit: mutation triage and test integrity.** Across
+PR #46 **every finding either produced was a coverage gap and none was a live bug** ("a test does not
+prove X", never "the code is wrong"). A coverage gap is safe to carry for a few days in a way a wrong
+answer is not. They produce register rows rather than merge blockers.
+
+**The honest cost of this, stated because a rule that hides its price gets followed until it hurts.**
+On the very round that motivated it, the test-integrity lens found a HIGH: dropping `live !== undefined`
+left the whole suite green, and that arm is what protects crash recovery. Under this rule that ships
+untested and waits. **TEST-25 is the story of exactly that going wrong**, an untested arm that turned
+out to invert the admission decision. So the mitigation is not optional: a non-blocking lens that has
+not run is a row nobody wrote, and the sprint-exit gate is where that debt is paid rather than
+discovered.
+
+**Two artifacts keep this from becoming a licence**, since [fail closed](#fail-closed) otherwise reads
+as satisfied the moment the blocking set passes:
+
+1. **The selection comment names the deferred lenses explicitly**, in the same list as the ones
+   selected against. Deferred is not the same as not applicable, and writing it down is what makes the
+   difference auditable.
+2. **A deferred lens that never ran by sprint exit is a sprint-exit blocker.** Deferral moves a lens,
+   it does not delete one. If the sprint-exit run cannot cover them, the gate is not satisfied and the
+   sprint does not close.
+
+**This does not license dropping a reasoning lens for cost.** Selection is still by surface, and the
+rule that [a lens that gets expensive is a defect in this document](#a-lens-that-gets-expensive-is-a-defect-in-this-document)
+still says the response is to fix the process rather than to skip the lens. What changed is which
+lenses have to finish before a merge, not which lenses run.
+
 ### Keep the diff small, because the diff sets the price
 
 Owner decision, 2026-08-01, and it is the real cost lever rather than the lens count.
