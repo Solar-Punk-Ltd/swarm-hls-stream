@@ -4,6 +4,7 @@ import { after, describe, it } from 'node:test';
 import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
+import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
   HEALTH_DEGRADED,
@@ -13,6 +14,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_UNLISTED_STREAM,
   MEDIA_TYPE_VIDEO,
   REJECT_DRAINING,
   REJECT_UNKNOWN_STREAM,
@@ -95,6 +97,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'engines',
         'maxConsecutiveManifestFailures',
         'maxConsecutiveSegmentFailures',
+        'msSinceCatalogAnnounceFailed',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',
         'queuePressure',
@@ -293,6 +296,38 @@ describe('GET /health status (S2.1)', () => {
     assert.equal(status, 503);
     assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
     assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_STALE_MANIFEST]);
+  });
+
+  /**
+   * The whole path, not the policy function: a real orchestrator, a real uploader and a catalog that
+   * refuses the write, read over HTTP. The media path is perfect here, every segment lands in Swarm
+   * and the live manifest publishes, and the broadcast is still unwatchable because nothing lists it.
+   * That combination used to answer `200 ok`.
+   */
+  it('reports degraded and 503 when a live stream never reaches the catalog (CON-3)', async () => {
+    const refusingCatalog = {
+      addStream: async () => {
+        throw new Error('catalog feed write refused');
+      },
+    } as unknown as StreamCatalog;
+    const api = await start(makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), refusingCatalog));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).reasons?.includes(HEALTH_REASON_UNLISTED_STREAM) === true,
+    );
+
+    assert.equal(status, 503);
+    assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
+    assert.deepEqual(
+      (body as HealthBody).reasons,
+      [HEALTH_REASON_UNLISTED_STREAM],
+      'the media path is healthy, so being unlisted has to be its own reason rather than riding on another',
+    );
   });
 
   it('reports degraded and 503 when accepted segments are not reaching swarm', async () => {

@@ -99,12 +99,13 @@ The `/engines/*` webhook routes are **not** behind this gate. OME admission carr
 | `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                             |
 | `queue_pressure`         | A segment queue above 80% of `MAX_QUEUE_SIZE`                                                                                                                                                                                    |
 | `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                        |
+| `unlisted_stream`        | A live stream is absent from the catalog, so no viewer can find it. Reported from the first failed announce, with no threshold, because `StreamCatalog` has already spent its own 10 second retry window by then                 |
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
 expected to be sending. The body also carries `activeStreams`, `staleManifestStreams`,
-`maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`
-and `engines`.
+`maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`,
+`msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed` and `engines`.
 
 **Segment headers:**
 

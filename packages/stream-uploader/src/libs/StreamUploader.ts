@@ -16,6 +16,17 @@ const MANIFEST_UPLOAD_RETRY_WINDOW_MS = 15_000;
 const UPLOAD_RETRY_BASE_MS = 350;
 const UPLOAD_RETRY_CAP_MS = 2_000;
 
+/**
+ * How long to wait before re-attempting a catalog announce that failed.
+ *
+ * The announce has to keep retrying, because the catalog entry is the only thing that makes a live
+ * broadcast discoverable and a stream that gives up is unwatchable for its whole duration. What it
+ * must not do is retry on the segment cadence, which is what tied a dead catalog to a feed read, a
+ * feed write and the postage for it every two seconds. The right rate is how long a viewer can wait
+ * for a broadcast to appear, not how often media arrives.
+ */
+const CATALOG_ANNOUNCE_RETRY_MS = 30_000;
+
 interface RestoreState {
   streamRawTopic: string;
   socIndex: number | null;
@@ -24,6 +35,16 @@ interface RestoreState {
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
   pendingDiscontinuity?: boolean;
+}
+
+export interface StreamUploaderOptions {
+  /** State from a previous run of this stream id, so a restart resumes rather than starting over. */
+  restoreState?: RestoreState;
+  /**
+   * How long to wait before re-attempting a failed catalog announce. Injectable only so the retry can
+   * be driven in a test: at its default the sequence takes half a minute of wall clock.
+   */
+  catalogAnnounceRetryMs?: number;
 }
 
 export class StreamUploader {
@@ -51,6 +72,10 @@ export class StreamUploader {
   private ownsRecoveryEntry = true;
   /** The one finalize this session gets, so a second caller joins it rather than repeating it. */
   private finalizing: Promise<void> | undefined;
+  /** When the catalog announce first failed and has not since succeeded, or null while it is listed. */
+  private catalogAnnounceFailedAt: number | null = null;
+  private lastCatalogAnnounceAt: number | null = null;
+  private readonly catalogAnnounceRetryMs: number;
 
   private manifestManager: ManifestManager;
 
@@ -63,8 +88,10 @@ export class StreamUploader {
     stamp: string,
     streamId: string,
     mediatype: MediaType,
-    restoreState?: RestoreState,
+    options: StreamUploaderOptions = {},
   ) {
+    const { restoreState } = options;
+    this.catalogAnnounceRetryMs = options.catalogAnnounceRetryMs ?? CATALOG_ANNOUNCE_RETRY_MS;
     this.bee = bee;
     this.streamSigner = new PrivateKey(streamKey);
     this.streamCatalog = streamCatalog;
@@ -319,17 +346,49 @@ export class StreamUploader {
 
     if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
       this.persistState();
-      try {
-        await this.notifyStart();
-        this.isFirstManifestReady = true;
-      } catch (error) {
-        this.errorHandler.handleError(error, 'StreamUploader.notifyStart');
-      }
+      await this.announceToCatalog();
     }
 
     this.logger.log(`Manifest uploaded at SOC index ${nextIndex}`);
     this.persistState();
     return nextIndex;
+  }
+
+  /**
+   * Publish this stream to the catalog, at most once per `CATALOG_ANNOUNCE_RETRY_MS`.
+   *
+   * The rate limit is the whole point: a failure left `isFirstManifestReady` false, and every later
+   * manifest publish then re-attempted, so a catalog that was down cost a paid feed write per segment
+   * and nothing said so. Giving up instead would be worse, since the entry is the only thing that
+   * makes a live broadcast discoverable, so this keeps trying at a rate set by the viewer rather than
+   * by the encoder.
+   */
+  private async announceToCatalog(): Promise<void> {
+    const now = Date.now();
+    if (this.lastCatalogAnnounceAt !== null && now - this.lastCatalogAnnounceAt < this.catalogAnnounceRetryMs) {
+      return;
+    }
+
+    this.lastCatalogAnnounceAt = now;
+    try {
+      await this.notifyStart();
+      this.isFirstManifestReady = true;
+      this.catalogAnnounceFailedAt = null;
+    } catch (error) {
+      this.catalogAnnounceFailedAt ??= now;
+      this.errorHandler.handleError(error, 'StreamUploader.notifyStart');
+    }
+  }
+
+  /**
+   * How long this stream has been live and absent from the catalog, or null while it is listed.
+   *
+   * An age rather than a count of failures, because the retry window and the segment cadence are
+   * unrelated: a count says how many times the write was attempted, and the thing an operator needs
+   * is how long a viewer has been unable to find a broadcast that is running.
+   */
+  public getMsSinceCatalogAnnounceFailed(): number | null {
+    return this.catalogAnnounceFailedAt === null ? null : Date.now() - this.catalogAnnounceFailedAt;
   }
 
   private persistState(): void {

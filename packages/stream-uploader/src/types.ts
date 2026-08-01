@@ -59,13 +59,15 @@ export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure' as 
 export const HEALTH_REASON_QUEUE_PRESSURE = 'queue_pressure' as const;
 export const HEALTH_REASON_SEGMENT_STALL = 'segment_stall' as const;
 export const HEALTH_REASON_SEGMENT_LOSS = 'segment_loss' as const;
+export const HEALTH_REASON_UNLISTED_STREAM = 'unlisted_stream' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
   | typeof HEALTH_REASON_SEGMENT_UPLOAD_FAILURE
   | typeof HEALTH_REASON_QUEUE_PRESSURE
   | typeof HEALTH_REASON_SEGMENT_STALL
-  | typeof HEALTH_REASON_SEGMENT_LOSS;
+  | typeof HEALTH_REASON_SEGMENT_LOSS
+  | typeof HEALTH_REASON_UNLISTED_STREAM;
 
 export interface HealthSignals {
   activeStreams: number;
@@ -90,6 +92,15 @@ export interface HealthSignals {
    * one behind it in the same pass.
    */
   msSinceSegmentLoss: number | null;
+  /**
+   * How long the longest-waiting live stream has been absent from the catalog, or `null` while every
+   * one of them is listed. The catalog entry is the only thing that makes a broadcast discoverable,
+   * so this is a stream publishing every segment on time that no viewer can find.
+   *
+   * On the wall clock rather than the orchestrator's injected one, because the uploader that owns the
+   * instant has no clock seam. Nothing in the policy compares it against a faked time.
+   */
+  msSinceCatalogAnnounceFailed: number | null;
 }
 
 export interface HealthReport {

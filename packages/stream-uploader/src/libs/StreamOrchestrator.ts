@@ -394,13 +394,15 @@ export class StreamOrchestrator {
         state.streamId,
         state.mediatype,
         {
-          streamRawTopic: state.streamRawTopic,
-          socIndex: state.socIndex,
-          segments: state.segments,
-          hlsHeaders: state.hlsHeaders,
-          isFirstSegmentReady: state.isFirstSegmentReady,
-          isFirstManifestReady: state.isFirstManifestReady,
-          pendingDiscontinuity: state.pendingDiscontinuity,
+          restoreState: {
+            streamRawTopic: state.streamRawTopic,
+            socIndex: state.socIndex,
+            segments: state.segments,
+            hlsHeaders: state.hlsHeaders,
+            isFirstSegmentReady: state.isFirstSegmentReady,
+            isFirstManifestReady: state.isFirstManifestReady,
+            pendingDiscontinuity: state.pendingDiscontinuity,
+          },
         },
       );
 
@@ -505,6 +507,24 @@ export class StreamOrchestrator {
   }
 
   /**
+   * How long the longest-waiting live stream has been absent from the catalog, so the worst stream
+   * sets the number. `null` while every one of them is listed.
+   *
+   * On the wall clock rather than `this.clock`, because the instant belongs to the uploader and the
+   * uploader has no clock seam. Nothing compares it against a faked time.
+   */
+  public getMsSinceCatalogAnnounceFailed(): number | null {
+    let oldest: number | null = null;
+    for (const uploader of this.activeStreams.values()) {
+      const age = uploader.getMsSinceCatalogAnnounceFailed();
+      if (age !== null && (oldest === null || age > oldest)) {
+        oldest = age;
+      }
+    }
+    return oldest;
+  }
+
+  /**
    * Age of the least recently active stream that is expected to be producing segments right now, so
    * one busy stream cannot mask a dead sibling. `null` when no stream qualifies.
    *
@@ -572,6 +592,7 @@ export class StreamOrchestrator {
       queuePressure: this.getOverallQueuePressure(),
       msSinceStreamActivity: this.getMsSinceStreamActivity(),
       msSinceSegmentLoss: this.getMsSinceSegmentLoss(),
+      msSinceCatalogAnnounceFailed: this.getMsSinceCatalogAnnounceFailed(),
     };
   }
 

@@ -6,6 +6,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_UNLISTED_STREAM,
   HealthReason,
   HealthReport,
   HealthSignals,
@@ -55,6 +56,13 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   const hasRecentLoss = signals.msSinceSegmentLoss !== null && signals.msSinceSegmentLoss <= segmentStallMs;
   if (hasRecentLoss) {
     reasons.push(HEALTH_REASON_SEGMENT_LOSS);
+  }
+
+  // No threshold, unlike the manifest counter, because a failure that reaches this signal has already
+  // survived `StreamCatalog`'s own 10 second retry window: there is no hiccup left to ride out, and
+  // the state it reports is a broadcast that is running and that no viewer can find.
+  if (signals.msSinceCatalogAnnounceFailed !== null) {
+    reasons.push(HEALTH_REASON_UNLISTED_STREAM);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

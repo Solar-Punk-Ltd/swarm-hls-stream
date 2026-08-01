@@ -9,6 +9,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_UNLISTED_STREAM,
   HealthSignals,
   PRESSURE_HIGH,
   PRESSURE_LOW,
@@ -27,6 +28,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     queuePressure: PRESSURE_LOW,
     msSinceStreamActivity: 1_000,
     msSinceSegmentLoss: null,
+    msSinceCatalogAnnounceFailed: null,
     ...overrides,
   };
 }
@@ -233,5 +235,39 @@ describe('deriveHealthStatus segment loss', () => {
     );
 
     assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_SEGMENT_LOSS, HEALTH_REASON_SEGMENT_UPLOAD_FAILURE].sort());
+  });
+});
+
+describe('deriveHealthStatus unlisted stream (CON-3)', () => {
+  /**
+   * No threshold, unlike the manifest counter, because a failure that reaches this signal has already
+   * survived `StreamCatalog`'s own 10 second retry window. There is no hiccup left to ride out: the
+   * broadcast is running and no viewer can find it, and it stays that way until the next announce.
+   */
+  it('degrades as soon as a live stream is absent from the catalog', () => {
+    const report = deriveHealthStatus(signals({ msSinceCatalogAnnounceFailed: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_UNLISTED_STREAM]);
+  });
+
+  it('is ok while every live stream is listed', () => {
+    const report = deriveHealthStatus(signals({ msSinceCatalogAnnounceFailed: null }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  /**
+   * The media path and the discovery path fail independently: a stream can publish every segment on
+   * time into a manifest nobody can find. Reporting one must not stand in for the other.
+   */
+  it('reports being unlisted separately from a stalled or failing media path', () => {
+    const report = deriveHealthStatus(
+      signals({ msSinceCatalogAnnounceFailed: 5_000, msSinceStreamActivity: STALL_MS + 1 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_SEGMENT_STALL, HEALTH_REASON_UNLISTED_STREAM].sort());
   });
 });
