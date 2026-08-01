@@ -893,6 +893,50 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
  * default to 60s, so an OME restart only had to be marginally slow to take a broadcast whose publisher
  * never went away. See CON-10.
  */
+describe('OmeHlsPuller origin discontinuity (CON-9)', () => {
+  it('hands a declared discontinuity over before the segment it belongs to', async () => {
+    const handovers: string[] = [];
+    const playlist = [
+      '#EXTM3U',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:2.0,',
+      'b.ts',
+    ].join('\n');
+
+    const orchestrator = {
+      handleSegment: (_id: string, seq: number) => {
+        handovers.push(`segment ${seq}`);
+        return { accepted: true };
+      },
+      handleSegmentLoss: () => true,
+      keepAlive: () => false,
+      markDiscontinuity: () => {
+        handovers.push('discontinuity');
+        return true;
+      },
+    } as unknown as OrchestratorArg;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+      fetcher: (async (input: RequestInfo | URL) =>
+        String(input).endsWith('.ts')
+          ? ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response)
+          : ({ ok: true, status: 200, text: async () => playlist } as unknown as Response)) as unknown as Fetcher,
+    }) as unknown as { tick(): Promise<void>; stop(): void };
+
+    await puller.tick();
+    puller.stop();
+
+    assert.deepEqual(
+      handovers,
+      ['segment 0', 'discontinuity', 'segment 1'],
+      'the marker has to reach the uploader in front of the segment it belongs to, or it attaches to the wrong one',
+    );
+  });
+});
+
 describe('OmeHlsPuller keepalive through an origin outage (CON-10)', () => {
   interface TickablePuller {
     tick(): Promise<void>;

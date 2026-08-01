@@ -721,6 +721,52 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
   });
 });
 
+describe('StreamOrchestrator origin discontinuity (CON-9)', () => {
+  it('carries a declared discontinuity through to the uploader, onto the segment that follows it', async () => {
+    const saved: StreamState[] = [];
+    const orch = makeTestOrchestrator(
+      {},
+      {},
+      makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/one', 0, 2, Buffer.from('before'));
+    assert.equal(orch.markDiscontinuity('live/one'), true);
+    orch.handleSegment('live/one', 1, 2, Buffer.from('after'));
+
+    await waitFor(() => saved.some((state) => state.segments.length === 2), SETTLE_CEILING_MS);
+
+    const manifest = saved.filter((state) => state.segments.length === 2).pop() as StreamState;
+    assert.equal(
+      manifest.segments.find((segment) => segment.index === 1)?.discontinuity,
+      true,
+      'the origin said the media here is not a continuation, and a manifest that omits that stalls players on it',
+    );
+    assert.notEqual(
+      manifest.segments.find((segment) => segment.index === 0)?.discontinuity,
+      true,
+      'and only the segment after the tag, or every join looks like a break',
+    );
+    await orch.cleanup();
+  });
+
+  it('refuses a discontinuity for a stream it does not have or is finalizing', async () => {
+    const orch = makeTestOrchestrator();
+
+    assert.equal(orch.markDiscontinuity('live/never-started'), false);
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    const stopped = orch.stopStream('live/one');
+    assert.equal(
+      orch.markDiscontinuity('live/one'),
+      false,
+      'a finalized manifest cannot take a marker any more than it can take a segment',
+    );
+    await stopped;
+  });
+});
+
 describe('StreamOrchestrator duplicate filter (CON-8)', () => {
   const DEDUP_WINDOW = 2;
   const SEGMENTS = DEDUP_WINDOW * 3;

@@ -292,6 +292,21 @@ export class StreamOrchestrator {
     return true;
   }
 
+  /**
+   * A discontinuity the engine's origin declared, to be carried onto the next segment this stream
+   * takes. Answers whether a session was there to record it, for the same reason `handleSegmentLoss`
+   * does: a caller that cannot tell has no way to hold its position.
+   */
+  public markDiscontinuity(streamId: string): boolean {
+    const uploader = this.activeStreams.get(streamId);
+    if (!uploader || this.isDraining(streamId, uploader)) {
+      return false;
+    }
+
+    uploader.markDiscontinuity();
+    return true;
+  }
+
   public async stopStream(streamId: string): Promise<void> {
     // Cancel recovery timer if stopping a recovering stream
     const recoveryTimer = this.recoveryTimers.get(streamId);

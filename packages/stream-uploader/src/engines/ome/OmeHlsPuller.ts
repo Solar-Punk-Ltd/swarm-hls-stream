@@ -273,6 +273,17 @@ export class OmeHlsPuller {
           return;
         }
 
+        // Immediately before the handover and after the stop guard, so it lands on the queue in front
+        // of this segment and never on a session that replaced this one. Repeating it if this segment
+        // is retried costs nothing: the flag it sets is cleared by the next segment to carry it.
+
+        // Immediately before the handover and after the stop guard, so it lands on the queue in front
+        // of this segment and never on a session that replaced this one. Repeating it if this segment
+        // is retried costs nothing: the flag it sets is cleared by the next segment to carry it.
+        if (segment.discontinuity) {
+          this.orchestrator.markDiscontinuity(this.streamId);
+        }
+
         const result = this.orchestrator.handleSegment(this.streamId, segment.seq, segment.duration, segmentBuffer);
 
         if (!result.accepted) {

@@ -240,9 +240,16 @@ describe('parseMediaPlaylist', () => {
   // which is what an encoder restart produces. Swallowed with every other `#` line, the manifest we
   // publish told players the join was seamless and they stalled on it instead of resetting. See CON-9.
   it('marks the segment after an #EXT-X-DISCONTINUITY, and only that one', () => {
-    const text = ['#EXTM3U', '#EXTINF:2.0,', 'a.ts', '#EXT-X-DISCONTINUITY', '#EXTINF:2.0,', 'b.ts', '#EXTINF:2.0,', 'c.ts'].join(
-      '\n',
-    );
+    const text = [
+      '#EXTM3U',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:2.0,',
+      'b.ts',
+      '#EXTINF:2.0,',
+      'c.ts',
+    ].join('\n');
 
     assert.deepEqual(parseMediaPlaylist(text), [
       { seq: 0, duration: 2.0, uri: 'a.ts' },

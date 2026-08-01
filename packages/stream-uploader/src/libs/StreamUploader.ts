@@ -130,10 +130,33 @@ export class StreamUploader {
    * Applied inline, the discontinuity would attach to a segment that arrived before the gap.
    */
   public handleSegmentLoss(firstIndex: number, count: number): void {
+    const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
+    this.queueDiscontinuity(() =>
+      this.logger.error(`${subject} for stream ${this.streamId} never reached the uploader, marking a discontinuity`),
+    );
+  }
+
+  /**
+   * A discontinuity the origin declared with `#EXT-X-DISCONTINUITY`, meaning the media from here on is
+   * not a continuation of what came before it. An encoder restart upstream produces exactly this, and
+   * a manifest that omits it tells players the join is seamless, which is what they stall on.
+   *
+   * Ordinary rather than an error, unlike a loss: nothing went wrong here and nothing was dropped.
+   */
+  public markDiscontinuity(): void {
+    this.queueDiscontinuity(() =>
+      this.logger.info(`Origin declared a discontinuity for stream ${this.streamId}, marking the next segment`),
+    );
+  }
+
+  /**
+   * Queued rather than applied inline so it takes its place behind segments already awaiting upload.
+   * Applied inline, the discontinuity would attach to a segment that arrived before the break.
+   */
+  private queueDiscontinuity(announce: () => void): void {
     this.segmentQueue.add(() => {
       this.pendingDiscontinuity = true;
-      const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
-      this.logger.error(`${subject} for stream ${this.streamId} never reached the uploader, marking a discontinuity`);
+      announce();
       this.persistState();
     });
   }
