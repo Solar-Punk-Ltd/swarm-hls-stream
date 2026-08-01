@@ -110,14 +110,18 @@ documentation and it outlives the review.
 The outcome lands on the pull request as a review through `gh`, listing the lenses that ran, the lenses
 that were selected against, what was confirmed, what was refuted and why, and what changed as a result.
 
-**When the mutation check ran, the result also carries its exact `stryker` invocation, the mutant
-total, the survivor total, the score, and the `concurrency` and host core count it ran at.** Four
-lines, and without them the check has no artifact at all: the JSON report is gitignored, so scoping
-the run to one file out of five is undetectable by the triage lens, which is forbidden from generating
-its own mutants and is never told the scope. The claim that two rounds are finally comparable is only
-true if the numbers are posted somewhere immutable. The concurrency and core count belong there
-because a flaky failure scores as a killed mutant, so a run on a smaller machine reports a better
-score for a worse suite.
+**When the mutation check ran, the result also carries its exact `stryker` invocation, the
+`Found N of M file(s) to be mutated` line verbatim, the mutant total, the survivor total, the score,
+and the `concurrency` and host core count it ran at.** Five lines, and without them the check has no
+artifact at all: the JSON report is gitignored, so scoping the run to one file out of five is
+undetectable by the triage lens, which is forbidden from generating its own mutants and is never told
+the scope. **The file count is the only one of these that separates a correct scope from a
+mis-scoped one**, and it was the only one this rule did not ask for until a lens pointed out that the
+hazard was named here and then left undetectable. When the run matched nothing the line does not
+exist, and saying so in its place is the required answer rather than an omission. The claim that two
+rounds are finally comparable is only true if the numbers are posted somewhere immutable. The
+concurrency and core count belong there because a flaky failure scores as a killed mutant, so a run
+on a smaller machine reports a better score for a worse suite.
 A review that exists only in a session transcript provides no auditability, and once the transcript is
 gone nobody can tell whether the gate ran or which lenses it used.
 
@@ -203,6 +207,15 @@ every mutant and produce pure noise.
 **Not applicable means genuinely neither**, as on a docs, deploy or CI diff. The selection comment
 states which of the three it is, and the claims auditor verifies that statement, because it is a
 binary fact one `git diff --name-only` settles and R3 otherwise never looks at the selection comment.
+
+**When it applies, the selection comment also states how many files the scope is expected to match**,
+before the run. That is what turns R4's `Found N of M` line into a comparison instead of a glance:
+the expectation is timestamped ahead of the number, by the same fail-closed logic that puts lens
+selection ahead of the lenses. **The run's scope is a binary fact and the claims auditor verifies it**,
+the same carve-out the paragraph above already grants, and it is not covered by the rule that
+author-measured mutation figures are UNVERIFIABLE. The score costs an hour to reproduce. Checking one
+posted invocation against one `git diff --name-only` costs nothing, and it is the only thing standing
+between a mis-scoped run and a gate that records itself as satisfied.
 
 **Reasoning tier, by surface.** Correctness, security, concurrency, behaviour preservation, config
 consistency, silent failure, protocol correctness. These genuinely reason, they cost accordingly, and
@@ -305,13 +318,46 @@ Scope it to what the diff touched, because the whole uploader is 1839 mutants ag
 suite and that is an overnight run, not a pull request gate:
 
 ```bash
-./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome{,/**/*}.ts'
+./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome.ts,packages/stream-uploader/src/engines/ome/**/*.ts'
 ```
 
-**`engines/ome.ts` and `engines/ome/` are a sibling file and directory, and a `dir/**/_.ts`glob
-matches only the second.** The obvious`engines/ome/\*\*/_.ts`takes 4 files and 461 mutants while
-silently skipping`ome.ts`, which is the file that produced TEST-25. Check the "Found N of M files to
-be mutated" line against what you expected before letting a run stand.
+**On the command line scope with a comma-separated list. In the config use one array entry per
+pattern. The two are not interchangeable and the same string in the wrong one matches nothing.**
+`--mutate` is parsed with `createSplitter(',')` ([`stryker-cli.js:11`](../../node_modules/@stryker-mutator/core/dist/src/stryker-cli.js)),
+so the CLI splits the value on every comma **before** any globbing happens. The `mutate` array in
+`stryker.config.json` gets no such split, so a comma-joined string there is one glob pattern
+containing commas and matches no file at all. Measured on 2026-08-01, and these are that day's counts
+for this scope rather than an expectation to hold every future run against:
+
+| pattern                              | on the CLI | as one config entry |
+| ------------------------------------ | ---------- | ------------------- |
+| `engines/ome.ts`                     | 1          | 1                   |
+| `engines/ome/**/*.ts`                | 4          | 4                   |
+| `engines/ome.ts,engines/ome/**/*.ts` | **5**      | **0**               |
+| `engines/ome{,/**/*}.ts`             | **0**      | **5**               |
+
+`engines/ome.ts` and `engines/ome/` are a sibling file and directory, and a recursive glob over the
+directory never matches the file. The brace form is exactly inverted from the comma form, because its
+own comma is what the CLI splitter destroys, leaving the two dead fragments `engines/ome{` and
+`/**/*}.ts`.
+
+That brace form was published here as the _fix_ for this trap, on the round that found the trap, and
+it was never run.
+
+**Check `Found N of M file(s) to be mutated` against a number you committed to before the run, and
+treat the line's absence as the failure it is.** A run matching nothing does not print it at all:
+Stryker logs that line only inside its non-empty branch, and the zero case takes a warning branch
+instead. So the check most worth having is the one the line cannot perform. What a zero-match run
+does print is `Instrumented 0 source file(s) with 0 mutant(s)` and
+`No files found for mutation with the given glob expressions`, then **`Done` and exit 0**. Naming the
+failure in a warning while exiting 0 is what makes it survivable, not silence.
+
+The number matters more than the line, because the likelier mistake is not zero. Dropping `ome.ts`
+and mutating only the directory prints `Found 4 of 258` and a plausible score, and every number
+[R4](#r4-the-result-is-posted-not-just-discussed) requires is consistent with a healthy run. So R4
+requires the `Found N of M` line verbatim in the posted result, and the selection comment states the
+expected file count before the run, which is what makes the comparison an artifact rather than a
+glance.
 
 **The division of labour is the point.** Stryker generates, executes and reports. It cannot tell an
 equivalent mutant from a real coverage gap, and it only ever mutates syntax. The lens receives the
@@ -344,10 +390,11 @@ What Stryker gives that the hand-rolled pass could not: it refuses to score a re
 writes a JSON report instead of a sentence, and the same code produces the same mutants next round, so
 two rounds are finally comparable.
 
-**The first run paid for the switch.** 132 mutants on `src/engines/ome.ts`, score 50.76, and among the
-65 survivors was one that inverts the admission webhook's allow-or-deny decision while all 294 tests
-stay green. Five gated pull requests had touched that file and none of them caught it. It is now
-TEST-25.
+**The first run paid for the switch.** 132 mutants on `src/engines/ome.ts` **on 2026-07-31**, score
+50.76, and among the 65 survivors was one that inverts the admission webhook's allow-or-deny decision
+while all 294 tests stay green. Five gated pull requests had touched that file and none of them caught
+it. It is now TEST-25. That file reached 172 mutants a day later, so read the count as the record of
+one run rather than as what the next one should print.
 
 **R2 still applies to the survivor list.** On that same run I read three survivors on
 `if (!admissionSecret)` as the SEC-3 guard going untested, and it is a `logger.warn`. Twenty-two of
@@ -446,6 +493,47 @@ and 38 minutes, and almost all of it was recomputing numbers already measured. T
 prompt, not in the lens. It re-ran Stryker end to end, made two registry calls for each of 108
 packages, ran `npm audit signatures` twice, ran `pnpm verify` and `pnpm build`, and ran the uploader
 suite twice.
+
+### The mutation check's price is the suite's runtime, multiplied
+
+Owner intervention on PR #46, 2026-08-01: a mutation run reported 70 minutes remaining and the owner
+stopped it. **Nothing about that run was misconfigured in the way this section usually means.** The
+lens was not doing work a command could do, because Stryker is already the command. There was nothing
+left to move.
+
+The arithmetic is the whole finding. Stryker's command runner re-runs the **entire** suite once per
+mutant, so the price is `suite runtime x mutants / concurrency`. At 14 seconds, 633 mutants and
+concurrency 4, that is an hour. Measured the same day:
+
+|                                                | runtime      |
+| ---------------------------------------------- | ------------ |
+| whole uploader suite, 17 files, 298 tests      | 14.0s        |
+| `test/OmeEngine.test.ts` alone, 18 tests       | **12.2s**    |
+| its two sibling OME files                      | 1.45s, 1.52s |
+| a typical file, `test/utils.test.ts`, 39 tests | 1.3s         |
+
+One file is 12 of the 14 seconds, and two tests inside it are 10 of that 12, each spending a full
+`waitFor` deadline of `DELIVERY_TIMEOUT_MS = 5_000` on a condition that never comes true. The helper
+never throws, so an expired wait is indistinguishable from a satisfied one and nothing has ever
+reported it.
+
+**Three things follow, and the first is the general one.**
+
+**Suite runtime is a gate concern, not a nicety, from the moment a mutation check exists.** A slow
+test is normally an annoyance costing seconds. Under mutation it is multiplied by the mutant count,
+so ten wasted seconds became fifty wasted minutes. Scoping the mutants is the obvious lever and it is
+the weaker one: it divides the multiplicand and leaves the multiplier alone.
+
+**Cost is diagnosed by measurement, not by the first plausible story.** The first hypothesis here was
+that the runner executes all 17 test files when only 3 can kill an OME mutant. It was wrong: cutting
+14 files saved 0.9 seconds. The second was two misplaced waits: also wrong, removing them saved
+nothing and broke both tests. Only timing each file found it. Both wrong answers were reasonable and
+either would have been shipped as a fix on argument alone, which is [R2](#r2-verification-defaults-to-refuted)
+applied to this document rather than to a lens.
+
+**A wait that expires silently is the same defect as a check that exits 0 on nothing**, and this
+section now holds one of each. `waitFor` returning normally on timeout, and a zero-match mutation run
+printing `Done`, are one shape: a tool answering "fine" for "I did not do it".
 
 ## Lens prompt rules
 

@@ -15,14 +15,6 @@ export const ALLOWED_ADVISORIES: readonly AllowedAdvisory[] = [
       'No release fixes it anywhere. The advisory records its patched range as "<0.0.0", meaning upstream has shipped nothing to move to. It reaches the client bundle through vite-plugin-node-polyfills and crypto-browserify, so it goes when that chain does or when elliptic publishes a fix.',
   },
   {
-    ghsa: 'GHSA-mh99-v99m-4gvg',
-    packageName: 'brace-expansion',
-    reviewedSeverity: 'high',
-    reviewedPatchedVersions: '>=5.0.8',
-    reason:
-      'The advisory declares its affected range as "<= 5.0.7" with no lower bound, so plain semver matches every 1.x and 2.x release as well and no version of those lines can ever satisfy it. That is an upstream range defect rather than a statement that brace-expansion 1.1.18 carries the bug. Satisfying it literally means forcing those lines to 5.x, which was tried and reverted: 5.0.9 exports an object rather than a callable from its CJS entry, so minimatch 3.1.5 and 9.0.9 throw "expand is not a function" on the first brace glob anyone writes. Reported against 1.1.18 and 2.1.4, both dev-only, reached through eslint and rimraf with no attacker-controlled pattern. The 5.x line is on 5.0.9 and genuinely patched.',
-  },
-  {
     ghsa: 'GHSA-qwww-vcr4-c8h2',
     packageName: 'react-router',
     reviewedSeverity: 'high',
