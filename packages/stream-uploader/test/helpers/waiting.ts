@@ -29,13 +29,25 @@ export async function waitFor(condition: () => boolean, timeoutMs: number): Prom
 }
 
 /**
- * Waits out a window in which something must NOT happen. Distinct from `waitFor` because the two read
- * alike at the call site and behave oppositely: this one is meant to reach its deadline, so it stays
- * short, while a `waitFor` that reaches its deadline is a failure.
+ * Waits out a window in which something must NOT happen, and throws if it does. Distinct from
+ * `waitFor` because the two read alike at the call site and behave oppositely: this one is meant to
+ * reach its deadline, so it stays short, while a `waitFor` that reaches its deadline is a failure.
+ *
+ * It throws for the same reason `waitFor` does. Returning quietly the moment the predicate flipped
+ * would leave a helper called `confirm` confirming nothing, and a caller that forgot the assertion
+ * after it would pass on the very event it was watching for. Every current caller does assert, so
+ * this closes a trap rather than a live defect, and it fails at the flip rather than after it.
  */
 export async function waitAndConfirmNothingHappened(stillTrue: () => boolean, windowMs: number): Promise<void> {
-  const deadline = Date.now() + windowMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + windowMs;
   while (stillTrue() && Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
+  }
+  if (!stillTrue()) {
+    throw new Error(
+      `\`${stillTrue.toString()}\` held for only ${Date.now() - startedAt}ms of a ${windowMs}ms window ` +
+        'in which it had to hold throughout',
+    );
   }
 }
