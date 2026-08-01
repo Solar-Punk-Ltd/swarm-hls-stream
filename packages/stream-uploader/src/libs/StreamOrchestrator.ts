@@ -12,6 +12,8 @@ import {
   REJECT_UNKNOWN_STREAM,
   REJECT_UNUSABLE_DURATION,
   SegmentResult,
+  STOP_FAILURE_DRAIN_TIMEOUT,
+  STOP_FAILURE_FINALIZE_FAILED,
   STREAM_LIFECYCLE_DRAINING,
   STREAM_LIFECYCLE_FAILED,
   STREAM_LIFECYCLE_FINALIZED,
@@ -23,6 +25,7 @@ import { getErrorMessage } from '../utils/common.js';
 import { isUsableDuration } from '../utils/segmentDuration.js';
 
 import { Clock, systemClock, Timer } from './Clock.js';
+import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
@@ -838,7 +841,7 @@ export class StreamOrchestrator {
     let drainTimer: Timer | undefined;
     const drainTimeout = new Promise<void>((_, reject) => {
       drainTimer = this.clock.setTimer(
-        () => reject(new Error(`Drain timeout after ${DRAIN_TIMEOUT_MS}ms`)),
+        () => reject(new DrainTimeoutError(DRAIN_TIMEOUT_MS)),
         DRAIN_TIMEOUT_MS,
         // A pending drain deadline is not a reason to keep the process alive.
         { unref: true },
@@ -861,7 +864,10 @@ export class StreamOrchestrator {
       // next boot recovers a stream that may already be finalized. A wasted VOD is postage. The other
       // way round is a live broadcast with no recovery at all.
       uploader.retire();
-      return { streamId, state: STREAM_LIFECYCLE_FAILED, reason: msg, settledAt: Date.now() };
+      // `msg` is logged above and deliberately not returned. It is whatever Bee, the filesystem or a
+      // timer produced, and this value is served verbatim by `GET /stream/status`. See S1.7.
+      const reason = error instanceof DrainTimeoutError ? STOP_FAILURE_DRAIN_TIMEOUT : STOP_FAILURE_FINALIZE_FAILED;
+      return { streamId, state: STREAM_LIFECYCLE_FAILED, reason, settledAt: Date.now() };
     } finally {
       // Losing the race does not cancel the timer, so without this every stop leaves a five minute
       // timer holding the event loop open, one per stopped stream.

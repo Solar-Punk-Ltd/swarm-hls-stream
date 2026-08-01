@@ -178,11 +178,27 @@ export type StreamLifecycle =
  * What became of a stream, for a caller that was answered `202` by `POST /stream/stop` and needs to
  * find out whether the VOD it asked for exists.
  */
+/** The drain ran past its deadline. The finalize may still be in flight, so a VOD may yet appear. */
+export const STOP_FAILURE_DRAIN_TIMEOUT = 'drain_timeout' as const;
+/** The finalize rejected. Nothing further will happen for this stream without an operator. */
+export const STOP_FAILURE_FINALIZE_FAILED = 'finalize_failed' as const;
+
+/**
+ * Why a stop did not finalize, as a closed set rather than free text.
+ *
+ * A union and not a `string` on purpose. This field is served to the caller by `GET /stream/status`,
+ * and it used to carry `getErrorMessage()` of whatever the finalize rejected with, which is a Bee
+ * URL, a host and port, a filesystem path or an internal timeout constant depending on the failure.
+ * Typing it closed means no message built inside `src/libs/` can reach a response body by accident,
+ * which a sanitizer on the way out would not guarantee. The detail still goes to the log. See S1.7.
+ */
+export type StopFailureReason = typeof STOP_FAILURE_DRAIN_TIMEOUT | typeof STOP_FAILURE_FINALIZE_FAILED;
+
 export interface StreamStatusReport {
   streamId: string;
   state: StreamLifecycle;
   /** Why the finalize did not complete. Present only for `failed`. */
-  reason?: string;
+  reason?: StopFailureReason;
   /** When the stop settled, epoch milliseconds. Absent while the stream is live or draining. */
   settledAt?: number;
 }
