@@ -17,6 +17,7 @@ import { getErrorMessage } from '../utils/common.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
+import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { StreamCatalog } from './StreamCatalog.js';
 import { StreamUploader } from './StreamUploader.js';
@@ -30,6 +31,8 @@ export interface StreamOrchestratorConfig {
   maxQueueSize: number;
   recoveryTimeout: number;
   segmentStallMs: number;
+  /** How many further segments an index stays remembered for, so a duplicate inside that is refused. */
+  segmentDedupWindow: number;
   /** Defaults to the real clock. Injected so tests can step time rather than wait for it. */
   clock?: Clock;
 }
@@ -43,7 +46,7 @@ export class StreamOrchestrator {
    * stop of a stream nothing had registered.
    */
   private drainPromises = new Map<string, { uploader: StreamUploader | undefined; promise: Promise<void> }>();
-  private processedSegments = new Map<string, Set<number>>();
+  private processedSegments = new Map<string, RecentSegmentIndexes>();
   private recoveryTimers = new Map<string, Timer>();
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
@@ -163,7 +166,7 @@ export class StreamOrchestrator {
     );
 
     this.activeStreams.set(streamId, uploader);
-    this.processedSegments.set(streamId, new Set());
+    this.processedSegments.set(streamId, this.newDuplicateFilter());
     this.streamActivityAt.set(streamId, this.clock.now());
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
@@ -384,8 +387,13 @@ export class StreamOrchestrator {
       this.activeStreams.set(streamId, uploader);
       this.streamActivityAt.set(streamId, this.clock.now());
 
-      // Rebuild processed segments set from state
-      const processed = new Set(state.segments.map((s) => s.index));
+      // Rebuilt from the restored manifest, and bounded the same way a live stream's is. The oldest
+      // indexes of a long broadcast are dropped, which costs nothing: what a resumed puller can
+      // re-deliver is whatever the origin still has in its playlist window, never the whole stream.
+      const processed = this.newDuplicateFilter();
+      for (const segment of state.segments) {
+        processed.add(segment.index);
+      }
       this.processedSegments.set(streamId, processed);
 
       this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
@@ -410,6 +418,10 @@ export class StreamOrchestrator {
         this.errorHandler.handleError(error, `StreamOrchestrator.recoveryTimeout - ${streamId}`),
       );
     }, this.config.recoveryTimeout);
+  }
+
+  private newDuplicateFilter(): RecentSegmentIndexes {
+    return new RecentSegmentIndexes(this.config.segmentDedupWindow);
   }
 
   public getQueuePressure(streamId: string): QueuePressure {

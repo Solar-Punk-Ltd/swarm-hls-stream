@@ -721,6 +721,46 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
   });
 });
 
+describe('StreamOrchestrator duplicate filter (CON-8)', () => {
+  const DEDUP_WINDOW = 2;
+  const SEGMENTS = DEDUP_WINDOW * 3;
+
+  it('bounds the filter at the configured window and not at the length of the broadcast', async () => {
+    const id = 'live/stream';
+    const uploaded: string[] = [];
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS, segmentDedupWindow: DEDUP_WINDOW },
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+      },
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    for (let index = 0; index < SEGMENTS; index++) {
+      orch.handleSegment(id, index, 2, Buffer.from(`seg${index}`));
+    }
+    await waitFor(() => uploaded.length === SEGMENTS, SETTLE_CEILING_MS);
+
+    // Queued in this order onto one FIFO queue, so a replay that was let through arrives before the
+    // one below it. Waiting for the second is therefore a barrier on the first, not a guess at timing.
+    orch.handleSegment(id, SEGMENTS - 1, 2, Buffer.from('replay-inside-the-window'));
+    orch.handleSegment(id, 0, 2, Buffer.from('replay-behind-the-window'));
+    await waitFor(() => uploaded.includes('replay-behind-the-window'), SETTLE_CEILING_MS);
+
+    assert.ok(
+      !uploaded.includes('replay-inside-the-window'),
+      'a re-delivered index inside the window has to stay suppressed, or the bound costs duplicate uploads',
+    );
+    // The counterweight. Suppressing both also satisfies the line above, and only a filter that
+    // actually forgets can be bounded at all. That the oldest index is re-taken is the price, and it
+    // is unreachable in practice: an engine can only re-deliver what its playlist window still holds.
+    await orch.cleanup();
+  });
+});
+
 describe('StreamOrchestrator draining stream (CON-6)', () => {
   /** The first segment publishes a live manifest at SOC index 0, so the VOD manifest lands at 1. */
   const LIVE_SOC_INDEX = 0;

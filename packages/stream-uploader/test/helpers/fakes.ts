@@ -100,6 +100,7 @@ export function makeTestOrchestrator(
     maxQueueSize: 100,
     recoveryTimeout: 60_000,
     segmentStallMs: 30_000,
+    segmentDedupWindow: 10_000,
     ...config,
   });
 }
