@@ -3,7 +3,7 @@
   "packageManager": "pnpm",
   "testRunner": "command",
   "commandRunner": {
-    "command": "npx tsx --test --test-force-exit packages/stream-uploader/test/*.test.ts"
+    "command": "./node_modules/.bin/tsx --test --test-force-exit packages/stream-uploader/test/*.test.ts"
   },
   "coverageAnalysis": "off",
   "mutate": ["packages/stream-uploader/src/**/*.ts"],
