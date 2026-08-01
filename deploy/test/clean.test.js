@@ -15,7 +15,7 @@ after(removeSandboxes);
  * compose and the sweep that follows it, and a unit test of either half would have missed it.
  */
 async function runClean(sandbox, args) {
-  const result = await execFileAsync('bash', [sandbox.cleanScript, '--yes', ...args], {
+  const result = await execFileAsync('bash', [sandbox.scriptPath('clean.sh'), '--yes', ...args], {
     env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
   });
   return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };

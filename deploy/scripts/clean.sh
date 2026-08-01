@@ -45,7 +45,6 @@ apply_port_slot
 REMOVE_VOLUMES=false
 REMOVE_ALL=false
 ASSUME_YES=false
-FILTER_SERVICES=()
 
 for arg in "$@"; do
   case "$arg" in
@@ -65,17 +64,10 @@ for arg in "$@"; do
       exit 1
       ;;
     *)
-      # Validate service name
-      valid=false
-      for svc in "${ALL_SERVICES[@]}"; do
-        [ "$arg" = "$svc" ] && valid=true && break
-      done
-      if [ "$valid" = "false" ]; then
-        log_error "Unknown service: $arg"
+      add_service_filter "$arg" || {
         usage
         exit 1
-      fi
-      FILTER_SERVICES+=("$arg")
+      }
       ;;
   esac
 done
@@ -91,28 +83,6 @@ if [ "$REMOVE_VOLUMES" = "true" ] && [ ${#FILTER_SERVICES[@]} -gt 0 ]; then
   echo "  or remove that one volume by hand with 'docker volume rm'."
   exit 1
 fi
-
-# --- Filter helpers ---
-
-is_in_filter() {
-  local svc="$1"
-  if [ ${#FILTER_SERVICES[@]} -eq 0 ]; then
-    return 0
-  fi
-  for f in "${FILTER_SERVICES[@]}"; do
-    [ "$f" = "$svc" ] && return 0
-  done
-  return 1
-}
-
-get_filtered_services_for_target() {
-  local target="$1"
-  for svc in $(get_services_for_target "$target"); do
-    if is_in_filter "$svc"; then
-      echo "$svc"
-    fi
-  done
-}
 
 # --- Clean ---
 

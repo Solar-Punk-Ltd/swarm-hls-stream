@@ -416,6 +416,49 @@ get_services_for_target() {
   done
 }
 
+# --- Service filter ---
+
+# Services named on the command line. Empty means the operator asked about the whole target, which
+# is not the same as asking about nothing: every consumer treats empty as "all", so a filter that
+# failed to populate widens the command rather than narrowing it.
+FILTER_SERVICES=()
+
+# Append one argv entry to FILTER_SERVICES, or report an unknown service name and return 1 so the
+# caller can print its own usage before exiting. Compose reads an unknown `--profile` as "select no
+# services" and exits 0, so a typo that reached it would report success while the service the
+# operator named kept running. See OPS-3.
+add_service_filter() {
+  local arg="$1" svc
+  for svc in "${ALL_SERVICES[@]}"; do
+    if [ "$arg" = "$svc" ]; then
+      FILTER_SERVICES+=("$arg")
+      return 0
+    fi
+  done
+  log_error "Unknown service: $arg"
+  return 1
+}
+
+is_in_filter() {
+  local svc="$1" f
+  if [ ${#FILTER_SERVICES[@]} -eq 0 ]; then
+    return 0
+  fi
+  for f in "${FILTER_SERVICES[@]}"; do
+    [ "$f" = "$svc" ] && return 0
+  done
+  return 1
+}
+
+get_filtered_services_for_target() {
+  local target="$1" svc
+  for svc in $(get_services_for_target "$target"); do
+    if is_in_filter "$svc"; then
+      echo "$svc"
+    fi
+  done
+}
+
 # Build --profile flags for a list of services.
 build_profile_flags() {
   local flags=""

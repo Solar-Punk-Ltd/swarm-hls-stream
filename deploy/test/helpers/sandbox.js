@@ -1,7 +1,12 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const DEPLOY_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -45,6 +50,9 @@ export const ALL_REMOTE = {
   },
 };
 
+/** Env files written into a sandbox root, keyed by filename. Enough for the scripts to load and run. */
+const DEFAULT_ENV_FILES = { '.env': 'STAMP=stamp\nSTREAM_KEY=key\n' };
+
 const sandboxes = [];
 
 export function removeSandboxes() {
@@ -62,7 +70,7 @@ export function removeSandboxes() {
  * `clean.sh` at all: the real script removes containers and volumes, and nothing here may reach a
  * live stack.
  */
-export function makeSandbox({ project = 'default', config = ALL_LOCAL } = {}) {
+export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles = DEFAULT_ENV_FILES } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-clean-'));
   sandboxes.push(root);
 
@@ -70,7 +78,9 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL } = {}) {
   cpSync(join(DEPLOY_DIR, 'scripts'), join(deploy, 'scripts'), { recursive: true });
   cpSync(join(DEPLOY_DIR, 'docker-compose.yml'), join(deploy, 'docker-compose.yml'));
   writeFileSync(join(deploy, 'config.json'), JSON.stringify(config, null, 2));
-  writeFileSync(join(root, '.env'), 'STAMP=stamp\nSTREAM_KEY=key\n');
+  for (const [name, contents] of Object.entries(envFiles)) {
+    writeFileSync(join(root, name), contents);
+  }
 
   // Stands in for the remote host's filesystem. `ssh` runs the script it is handed with HOME pointed
   // here, so the deployment-exists guard in that script passes and the sweep under it actually runs.
@@ -84,13 +94,14 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL } = {}) {
   writeFileSync(localJournal, '');
   writeFileSync(remoteJournal, '');
 
-  writeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
+  writeNodeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
   writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, join(root, 'ssh-argv')));
 
   return {
     root,
     binDir,
-    cleanScript: join(deploy, 'scripts', 'clean.sh'),
+    /** Path to one of the real deploy scripts, copied into this sandbox. */
+    scriptPath: (name) => join(deploy, 'scripts', name),
     /** Every `docker` invocation made on this host, in order, one argv per entry. */
     calls: () => readLines(localJournal),
     /** Every `docker` invocation made by the script `ssh` carried to the remote host. */
@@ -98,9 +109,68 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL } = {}) {
   };
 }
 
+/**
+ * Runs one of the real deploy scripts inside a sandbox whose `docker` and `ssh` are stubs, and
+ * reports how it exited instead of throwing. Half of what these scripts are asked to prove is that
+ * they refuse, so the exit code is an assertion rather than an error.
+ */
+export async function runScript(sandbox, name, args = []) {
+  try {
+    const ok = await execFileAsync('bash', [sandbox.scriptPath(name), ...args], {
+      env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+    });
+    return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
+  } catch (error) {
+    return { stdout: error.stdout ?? '', stderr: error.stderr ?? '', exitCode: error.code ?? -1 };
+  }
+}
+
+/**
+ * Sources the real `_lib.sh` from a sandbox and runs `snippet` against it, for the helpers whose
+ * whole behaviour is what they leave in the shell rather than what they call out to.
+ */
+export async function sourceLib(sandbox, snippet) {
+  return runShell(sandbox, `source ${JSON.stringify(sandbox.scriptPath('_lib.sh'))}\n${snippet}`);
+}
+
+async function runShell(sandbox, script) {
+  try {
+    const ok = await execFileAsync('bash', ['-c', script], {
+      env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+    });
+    return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
+  } catch (error) {
+    return { stdout: error.stdout ?? '', stderr: error.stderr ?? '', exitCode: error.code ?? -1 };
+  }
+}
+
+/** For the paths where the script is supposed to succeed, so a crash cannot pass as a silent no-op. */
+export async function runScriptOk(sandbox, name, args = []) {
+  const run = await runScript(sandbox, name, args);
+  assert.equal(run.exitCode, 0, `${name} failed: ${run.stdout}${run.stderr}`);
+  return run;
+}
+
 function writeStub(path, body) {
   writeFileSync(path, body);
   chmodSync(path, 0o755);
+}
+
+/**
+ * A stub written in JavaScript, launched so that Node cannot mistake the stubbed command's arguments
+ * for its own.
+ *
+ * `#!/usr/bin/env node` is not safe here: Node keeps parsing its own options past the script path, so
+ * a `docker compose --env-file <path>` call makes Node try to load that path as an env file and exit
+ * before the stub records anything. `node -- <script>` is what stops the parsing. Measured on Node
+ * 22.22.3 with a missing path: the stub died with `node: <path>: not found` and journalled no call,
+ * which reads exactly like a script that correctly issued no docker command at all.
+ */
+function writeNodeStub(path, body) {
+  // `.cjs` rather than `.js`: the stub uses `require`, and a sandbox that ever landed under a
+  // `"type": "module"` package would otherwise fail to load it.
+  writeFileSync(`${path}.cjs`, body);
+  writeStub(path, '#!/bin/sh\nexec node -- "$0.cjs" "$@"\n');
 }
 
 function readLines(path) {
@@ -115,8 +185,7 @@ function readLines(path) {
  * one: a stub that ignored it would report success for either.
  */
 function dockerStub(defaultJournal, project) {
-  return `#!/usr/bin/env node
-const fs = require('fs');
+  return `const fs = require('fs');
 const argv = process.argv.slice(2);
 fs.appendFileSync(process.env.DOCKER_STUB_JOURNAL || ${JSON.stringify(defaultJournal)}, argv.join(' ') + '\\n');
 
