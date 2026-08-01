@@ -1,6 +1,7 @@
 import {
   HEALTH_DEGRADED,
   HEALTH_OK,
+  HEALTH_REASON_INGEST_REFUSED,
   HEALTH_REASON_QUEUE_PRESSURE,
   HEALTH_REASON_SEGMENT_LOSS,
   HEALTH_REASON_SEGMENT_STALL,
@@ -78,6 +79,20 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   // the future, and it arrives whole at the next restart.
   if (signals.msSinceStatePersistFailed !== null) {
     reasons.push(HEALTH_REASON_STATE_NOT_PERSISTED);
+  }
+
+  // The one reason that can fire while nothing is registered and nothing has ever run, which is what
+  // every other reason here structurally cannot do: a credential wrong from startup means no
+  // `on_publish` ever succeeds, so `activeStreams` stays 0, every counter stays 0, and no threshold
+  // below can reach. See OBS-15.
+  //
+  // Latched rather than aged out, and cleared by the first segment rather than by time. A refusal on
+  // a service that has never ingested anything is indistinguishable from a secret this deployment
+  // has wrong, so a window would let exactly the from-startup case fade back to `ok` between a
+  // broadcaster's retries. Once media flows the credential is proven and later refusals are the
+  // internet, or a mid-run rotation, which `segment_stall` already catches.
+  if (signals.msSinceAuthRejection !== null && !signals.hasIngestedMedia) {
+    reasons.push(HEALTH_REASON_INGEST_REFUSED);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

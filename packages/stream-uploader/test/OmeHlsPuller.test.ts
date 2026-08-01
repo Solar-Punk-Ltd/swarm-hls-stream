@@ -63,7 +63,9 @@ async function withSilencedLogs<T>(run: () => Promise<T>): Promise<T> {
  * Every method the puller calls on the orchestrator, so a stub cannot go stale by omitting one. These
  * are cast through `unknown`, so a method the puller starts calling is not a compile error anywhere:
  * it is a runtime failure in whichever tests happen to reach that line, and only those. That has now
- * happened twice while adding `keepAlive`, which is why the shape lives in one place.
+ * happened five times across this repository's stubs, twice here while adding `keepAlive`, which is
+ * why the shape lives in one place. The inline stubs left in this file are the ones whose omissions
+ * are load-bearing: they prove the puller does not reach for a method on some path. See TEST-33.
  */
 function makeOrchestratorStub(overrides: Record<string, unknown> = {}): OrchestratorArg {
   return {
@@ -71,6 +73,7 @@ function makeOrchestratorStub(overrides: Record<string, unknown> = {}): Orchestr
     handleSegmentLoss: () => true,
     keepAlive: () => false,
     markDiscontinuity: () => true,
+    recordSegmentsSkipped: () => {},
     ...overrides,
   } as unknown as OrchestratorArg;
 }
@@ -1200,6 +1203,7 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
   function drive(playlist: string, options: Record<string, unknown> = {}) {
     const delivered: number[] = [];
     const losses: Array<{ first: number; count: number }> = [];
+    const skips: number[] = [];
     const orchestrator = {
       handleSegment: (_id: string, seq: number) => {
         delivered.push(seq);
@@ -1208,6 +1212,9 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
       handleSegmentLoss: (_id: string, first: number, count: number) => {
         losses.push({ first, count });
         return true;
+      },
+      recordSegmentsSkipped: (count: number) => {
+        skips.push(count);
       },
     } as unknown as OrchestratorArg;
 
@@ -1225,7 +1232,7 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
       ...options,
     }) as unknown as PullerInternals & { tick(): Promise<void> };
 
-    return { puller, delivered, losses };
+    return { puller, delivered, losses, skips };
   }
 
   /**
@@ -1286,13 +1293,12 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
       { uri: 'live_1.ts', at: FLOOR + 2_000 },
     ]);
     const delivered: number[] = [];
-    const orchestrator = {
+    const orchestrator = makeOrchestratorStub({
       handleSegment: (_id: string, seq: number) => {
         delivered.push(seq);
         return { accepted: true } as SegmentResult;
       },
-      handleSegmentLoss: () => true,
-    } as unknown as OrchestratorArg;
+    });
     const fetcher = (async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url.endsWith('ts:playlist.m3u8')) {
@@ -1338,13 +1344,12 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
       { uri: 'live_1.ts', at: FLOOR + 2_000 },
     ]);
     const delivered: number[] = [];
-    const orchestrator = {
+    const orchestrator = makeOrchestratorStub({
       handleSegment: (_id: string, seq: number) => {
         delivered.push(seq);
         return { accepted: true } as SegmentResult;
       },
-      handleSegmentLoss: () => true,
-    } as unknown as OrchestratorArg;
+    });
     const fetcher = (async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url.endsWith('ts:playlist.m3u8')) {
@@ -1405,6 +1410,56 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
 
     const skipLines = infos.filter((line) => line.includes('belongs to the session this puller replaced'));
     assert.equal(skipLines.length, 2, `one line per skipped segment, not per poll; got: ${skipLines.join(' | ')}`);
+  });
+
+  /**
+   * The counter that makes a floor holding correctly distinguishable from a floor matching nothing.
+   * See OBS-16.
+   */
+  it('reports a deliberate discard, which no signal could see before', async () => {
+    const { puller, delivered, skips } = drive(
+      stamped([
+        { uri: 'stale_0.ts', at: FLOOR - 6_000 },
+        { uri: 'live_1.ts', at: FLOOR + 2_000 },
+      ]),
+    );
+
+    await withSilencedLogs(() => puller.tick());
+
+    assert.deepEqual(delivered, [1], 'the live segment should still be the one delivered');
+    assert.equal(
+      skips.reduce((total, count) => total + count, 0),
+      1,
+      'the segment the floor discarded on purpose has to be counted somewhere',
+    );
+  });
+
+  /**
+   * The same guard the log line needs, and for a sharper reason: counted per pass, the five-segment
+   * window measured against a real OME would report ten skips a second at the 500ms poll interval,
+   * so the number `/metrics` exists to answer would have been the poll rate rather than the media.
+   */
+  it('counts each skipped segment once, not once per poll', async () => {
+    const { puller, skips } = drive(
+      stamped([
+        { uri: 'stale_0.ts', at: FLOOR - 6_000 },
+        { uri: 'stale_1.ts', at: FLOOR - 4_000 },
+      ]),
+    );
+
+    await withSilencedLogs(async () => {
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+      await sleep(5);
+      await puller.tick();
+    });
+
+    assert.equal(
+      skips.reduce((total, count) => total + count, 0),
+      2,
+      `two segments were skipped across three polls, got ${JSON.stringify(skips)}`,
+    );
   });
 });
 

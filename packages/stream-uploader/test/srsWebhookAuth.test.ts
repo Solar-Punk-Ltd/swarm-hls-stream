@@ -15,6 +15,7 @@ import {
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
 import { startTestApi } from './helpers/apiTestServer.js';
+import { makeFakeOrchestrator } from './helpers/fakes.js';
 
 const TOKEN = 'srs-webhook-token-0123456789abcdef';
 
@@ -25,15 +26,12 @@ interface Attempt {
 
 async function postStreams(query: string, options: SrsEngineOptions = { webhookToken: TOKEN }): Promise<Attempt> {
   const startedStreams: string[] = [];
-  const orchestrator = {
+  const orchestrator = makeFakeOrchestrator({
     startStream: (streamId: string) => {
       startedStreams.push(streamId);
       return true;
     },
-    stopStream: async () => {},
-    handleSegment: () => ({ accepted: true }),
-    handleSegmentLoss: () => true,
-  } as unknown as StreamOrchestrator;
+  });
 
   const engine = createSrsEngine('/tmp/media-unused', options);
   const app = express();
@@ -100,12 +98,10 @@ describe('SRS webhook auth (S1.2)', () => {
     // app-level gate is the only thing that proves the mount covers routes beyond /streams:
     // moving the check into the /streams handler leaves /hls open and every other test green.
     const reached: string[] = [];
-    const orchestrator = {
+    const orchestrator = makeFakeOrchestrator({
       startStream: () => (reached.push('startStream'), true),
-      stopStream: async () => {},
       handleSegment: () => (reached.push('handleSegment'), { accepted: true }),
-      handleSegmentLoss: () => true,
-    } as unknown as StreamOrchestrator;
+    });
 
     const engine = createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN });
     const app = express();
@@ -213,12 +209,7 @@ describe('SRS webhook auth (S1.2)', () => {
       // Pins the call site rather than the helper: the token has to reach createSrsEngine.
       process.env.SRS_WEBHOOK_TOKEN = TOKEN;
       const engine = createSrsEngineFromEnv();
-      const orchestrator = {
-        startStream: () => true,
-        stopStream: async () => {},
-        handleSegment: () => ({ accepted: true }),
-        handleSegmentLoss: () => true,
-      } as unknown as StreamOrchestrator;
+      const orchestrator = makeFakeOrchestrator();
 
       const app = express();
       app.use(express.json());
@@ -268,26 +259,12 @@ describe('SRS webhook gate on the production app', () => {
     const calls: string[] = [];
     return {
       calls,
-      orchestrator: {
+      orchestrator: makeFakeOrchestrator({
         startStream: (streamId: string) => {
           calls.push(streamId);
           return true;
         },
-        stopStream: async () => {},
-        handleSegment: () => ({ accepted: true }),
-        handleSegmentLoss: () => true,
-        getHealthSignals: () => ({
-          activeStreams: 0,
-          queuePressure: 'low',
-          maxConsecutiveManifestFailures: 0,
-          maxConsecutiveSegmentFailures: 0,
-          msSinceCatalogAnnounceFailed: null,
-          msSinceStatePersistFailed: null,
-          queueBacklogSeconds: 0,
-          msSinceSegmentLoss: null,
-          msSinceStreamActivity: null,
-        }),
-      } as unknown as StreamOrchestrator,
+      }),
     };
   }
 

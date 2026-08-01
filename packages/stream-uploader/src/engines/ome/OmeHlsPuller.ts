@@ -75,8 +75,8 @@ export class OmeHlsPuller {
    * segments alone would leave the tail this puller never got to.
    */
   private newestProgramDateTime: number | null = null;
-  /** Highest index already logged as skipped, so an unchanged playlist is not re-announced every poll. */
-  private highestSkipLogged: number | null = null;
+  /** Highest index already announced as skipped, so an unchanged playlist is not re-announced every poll. */
+  private highestSkipAnnounced: number | null = null;
   private floorMatchedEverythingSince: number | null = null;
 
   private readonly onHalt?: () => void;
@@ -429,10 +429,15 @@ export class OmeHlsPuller {
     }
 
     // Once per index, not once per poll. The skip deliberately does not advance the high-water during
-    // a handover, so the same segments are re-examined on every tick, and logging each time turns a
+    // a handover, so the same segments are re-examined on every tick, and announcing each time turns a
     // five-segment window into a line every hundred milliseconds for as long as the origin serves it.
-    if (segment.seq > (this.highestSkipLogged ?? -Infinity)) {
-      this.highestSkipLogged = segment.seq;
+    //
+    // The counter shares this guard for the same reason and not merely to match: counted per pass, a
+    // five-segment window at the 500ms poll interval would report ten skips a second for as long as
+    // the origin kept serving it, and the number `/metrics` exists to answer would be the poll rate.
+    if (segment.seq > (this.highestSkipAnnounced ?? -Infinity)) {
+      this.highestSkipAnnounced = segment.seq;
+      this.orchestrator.recordSegmentsSkipped(1);
       logger.info(
         `[OME] Skipping segment ${segment.seq} for ${this.streamId}: it belongs to the session this puller replaced`,
       );

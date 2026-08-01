@@ -18,7 +18,10 @@ export class ServiceMetrics {
   private manifestPublishFailures = 0;
   private streamsFinalized = 0;
   private streamsFailed = 0;
+  private segmentsSkipped = 0;
+  private authRejections = 0;
   private lastSegmentAt: number | null = null;
+  private lastAuthRejectionAt: number | null = null;
 
   /** A segment whose payload reached Swarm. */
   public recordSegmentUploaded(at: number): void {
@@ -52,14 +55,40 @@ export class ServiceMetrics {
     this.streamsFailed += 1;
   }
 
+  /**
+   * Segments the CON-20 handover floor discarded on purpose, counted once per playlist index.
+   *
+   * The floor deliberately leaves the high-water where it is during a handover, so the same indexes
+   * are re-examined on every poll. Counting per pass would turn a five-segment window into hundreds.
+   */
+  public recordSegmentsSkipped(count: number): void {
+    this.segmentsSkipped += count;
+  }
+
+  /** A request a credential gate refused. Never reset, so a scraper can take a rate over it. */
+  public recordAuthRejection(at: number): void {
+    this.authRejections += 1;
+    this.lastAuthRejectionAt = at;
+  }
+
+  /**
+   * Deliberately not part of `MetricsCounters`, which is exactly the set `/metrics` renders. This
+   * feeds the `/health` policy, which needs an age rather than an instant.
+   */
+  public getLastAuthRejectionAt(): number | null {
+    return this.lastAuthRejectionAt;
+  }
+
   public getCounters(): MetricsCounters {
     return {
       segmentsUploadedTotal: this.segmentsUploaded,
       segmentsDroppedTotal: this.segmentsDropped,
       segmentsLostTotal: this.segmentsLost,
+      segmentsSkippedTotal: this.segmentsSkipped,
       manifestPublishFailuresTotal: this.manifestPublishFailures,
       streamsFinalizedTotal: this.streamsFinalized,
       streamsFailedTotal: this.streamsFailed,
+      authRejectionsTotal: this.authRejections,
       lastSegmentAt: this.lastSegmentAt,
     };
   }
@@ -69,9 +98,13 @@ export interface MetricsCounters {
   segmentsUploadedTotal: number;
   segmentsDroppedTotal: number;
   segmentsLostTotal: number;
+  /** Segments the CON-20 handover floor discarded on purpose. Correct behaviour, not a failure. */
+  segmentsSkippedTotal: number;
   manifestPublishFailuresTotal: number;
   streamsFinalizedTotal: number;
   streamsFailedTotal: number;
+  /** Requests refused by a credential gate, across every gate in the process. */
+  authRejectionsTotal: number;
   /** Epoch milliseconds of the newest segment that reached Swarm, or null while none has. */
   lastSegmentAt: number | null;
 }

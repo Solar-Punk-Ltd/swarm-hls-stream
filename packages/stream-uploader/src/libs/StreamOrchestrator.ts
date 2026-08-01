@@ -734,7 +734,24 @@ export class StreamOrchestrator {
     return freshest;
   }
 
+  /**
+   * A segment the OME handover floor discarded on purpose, counted once per playlist index by the
+   * puller. Not routed through `handleSegmentLoss`: nothing was lost, and a stream that has already
+   * left `activeStreams` still skipped what it skipped. See OBS-16.
+   */
+  public recordSegmentsSkipped(count: number): void {
+    this.metrics.recordSegmentsSkipped(count);
+  }
+
+  /** A request a credential gate refused. On the wall clock, since the gates have no clock seam. */
+  public recordAuthRejection(): void {
+    this.metrics.recordAuthRejection(Date.now());
+  }
+
   public getHealthSignals(): HealthSignals {
+    const counters = this.metrics.getCounters();
+    const lastAuthRejectionAt = this.metrics.getLastAuthRejectionAt();
+
     return {
       activeStreams: this.activeStreams.size,
       staleManifestStreams: this.getStaleManifestStreamCount(),
@@ -746,6 +763,9 @@ export class StreamOrchestrator {
       msSinceCatalogAnnounceFailed: this.getMsSinceCatalogAnnounceFailed(),
       msSinceStatePersistFailed: this.getMsSinceStatePersistFailed(),
       queueBacklogSeconds: this.getMetricsSnapshot().queueBacklogSeconds,
+      msSinceAuthRejection: lastAuthRejectionAt === null ? null : Date.now() - lastAuthRejectionAt,
+      hasIngestedMedia: counters.segmentsUploadedTotal > 0,
+      segmentsSkipped: counters.segmentsSkippedTotal,
     };
   }
 
