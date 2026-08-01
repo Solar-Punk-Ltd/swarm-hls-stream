@@ -34,6 +34,11 @@ export interface PullerOptions {
    */
   abandonFloorAfterMs?: number;
   /**
+   * How long an unusable origin is retried at the ordinary poll interval before the puller slows to
+   * one poll per this long. Injectable only so the slow path can be driven in a test.
+   */
+  slowPollAfterMs?: number;
+  /**
    * Called with the newest segment start observed so far, or null while none has been, every time a
    * playlist is parsed. The engine keeps this per stream rather than reading it off the puller at
    * handover, because a `closing` between two announces destroys the puller and would take the only

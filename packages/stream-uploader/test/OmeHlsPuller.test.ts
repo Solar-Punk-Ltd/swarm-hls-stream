@@ -1408,7 +1408,7 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
   });
 });
 
-describe('OmeHlsPuller unusable origin (OBS-18)', () => {
+describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
   interface StartablePuller {
     start(): void;
     stop(): void;
@@ -1465,6 +1465,134 @@ describe('OmeHlsPuller unusable origin (OBS-18)', () => {
     puller.stop();
 
     assert.deepEqual(halts, ['halted'], 'a refused connection that never halts leaks the puller the same way');
+  });
+
+  /**
+   * The scheduler's catch reaches outside this object twice, and a poll that started before a `stop()`
+   * answers after it, by which time the stream id can belong to the session that replaced this puller.
+   * `handleNotFound` has guarded this since it was written. The catch CON-10 added did not.
+   *
+   * The harm is on the reconnect path, where `startPuller` calls `stale.stop()` and builds a
+   * replacement under the same id: `onHalt` runs `pullers.delete(streamId)`, dropping the **live**
+   * puller out of the engine's registry, and `orchestrator.stopStream(streamId)`, finalizing the live
+   * broadcast as a VOD.
+   */
+  it('does not reach the orchestrator when a poll rejects after the puller was stopped', async () => {
+    const { keptAlive, halts } = makeCounters();
+    let rejectPoll: ((error: Error) => void) | null = null;
+    let polls = 0;
+    const fetcher = (async () => {
+      polls++;
+      if (polls === 1) {
+        throw new Error('connect ECONNREFUSED 172.18.0.4:8081');
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        rejectPoll = reject;
+      });
+    }) as unknown as Fetcher;
+
+    const orchestrator = makeOrchestratorStub({
+      keepAlive: (streamId: string) => {
+        keptAlive.push(streamId);
+        return true;
+      },
+    });
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
+      fetcher,
+      // Already elapsed by the time the second poll rejects, so the halt is armed. A window that
+      // could not fire would prove only that this test never reached the branch.
+      haltAfterNotFoundMs: 0,
+      onHalt: () => halts.push('halted'),
+    }) as unknown as StartablePuller;
+
+    await withSilencedLogs(async () => {
+      puller.start();
+      await waitFor(() => rejectPoll !== null, POLL_CEILING_MS);
+      const keepAlivesBeforeStop = keptAlive.length;
+      puller.stop();
+      (rejectPoll as unknown as (error: Error) => void)(new Error('connect ECONNREFUSED 172.18.0.4:8081'));
+      await sleep(20);
+
+      assert.equal(
+        keptAlive.length,
+        keepAlivesBeforeStop,
+        'a stopped puller deferred the recovery finalize of whichever session now holds this id',
+      );
+    });
+
+    assert.deepEqual(halts, [], 'a stopped puller halted, which finalizes the live session that replaced it');
+  });
+
+  /**
+   * A broken origin was polled at the ordinary interval for the whole halt window, 120 requests at the
+   * 500ms default. The grace period is the reason this is two-speed rather than immediate: a cold start
+   * is a 404, because the puller polls before OME has published the playlist, so the commonest run of
+   * failures belongs to a stream that is about to work.
+   */
+  it('polls a cold-starting origin at the ordinary interval, then slows once it stays unusable', async () => {
+    const polledAt: number[] = [];
+    const fetcher = (async () => {
+      polledAt.push(Date.now());
+      return { ok: false, status: 404, text: async () => '' } as unknown as Response;
+    }) as unknown as Fetcher;
+
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, makeOrchestratorStub(), {
+      fetcher,
+      haltAfterNotFoundMs: 60_000,
+      slowPollAfterMs: 60,
+    }) as unknown as StartablePuller;
+
+    await withSilencedLogs(async () => {
+      puller.start();
+      await waitFor(() => polledAt.length > 0 && Date.now() - polledAt[0] > 200, POLL_CEILING_MS);
+    });
+    puller.stop();
+
+    const graceStart = polledAt[0];
+    const duringGrace = polledAt.filter((at) => at - graceStart < 60).length;
+    const afterGrace = polledAt.filter((at) => at - graceStart >= 60).length;
+
+    assert.ok(duringGrace >= 5, `a cold start must keep its ordinary interval, got ${duringGrace} polls in the grace`);
+    assert.ok(
+      afterGrace <= 5,
+      `an origin unusable past the grace must slow down, got ${afterGrace} polls in the ~200ms after it`,
+    );
+  });
+
+  /**
+   * Slowing down is only safe while nothing is riding on the poll rate. A crash-recovered stream is:
+   * each poll buys it one more `RECOVERY_TIMEOUT` and nothing else does, so a puller polling slower
+   * than that window lets the timer finalize a live broadcast underneath it.
+   *
+   * The window is narrow but it is real, and it is narrower than it was: `RECOVERY_TIMEOUT` has a
+   * floor of 1ms, so before the slow poll existed the deferral held for anything above one interval,
+   * and a slow poll alone would have moved that boundary from 500ms to 5s.
+   */
+  it('keeps its ordinary interval while its polls are deferring a recovery finalize', async () => {
+    const polledAt: number[] = [];
+    const fetcher = (async () => {
+      polledAt.push(Date.now());
+      return { ok: false, status: 404, text: async () => '' } as unknown as Response;
+    }) as unknown as Fetcher;
+
+    const orchestrator = makeOrchestratorStub({ keepAlive: () => true });
+    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, orchestrator, {
+      fetcher,
+      haltAfterNotFoundMs: 60_000,
+      slowPollAfterMs: 60,
+    }) as unknown as StartablePuller;
+
+    await withSilencedLogs(async () => {
+      puller.start();
+      await waitFor(() => polledAt.length > 0 && Date.now() - polledAt[0] > 200, POLL_CEILING_MS);
+    });
+    puller.stop();
+
+    const afterGrace = polledAt.filter((at) => at - polledAt[0] >= 60).length;
+    assert.ok(
+      afterGrace >= 8,
+      `a deferred recovery is renewed once per poll, so slowing to ${afterGrace} polls finalizes it under the puller`,
+    );
   });
 });
 
