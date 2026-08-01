@@ -2,6 +2,21 @@
 
 Standing protocol. Every pull request into `feat/ai-hardening` passes this before it merges.
 
+> **FROZEN, owner decision 2026-08-01. Do not edit this document.**
+>
+> Edit it only when a pull request is actually blocked by something written here. A defect you notice
+> in these rules gets one archived row in the register and nothing else, and a protocol finding is
+> **capped at MEDIUM** unless it lets a production defect through undetected.
+>
+> The reason is measured rather than felt. On 2026-08-01 this repository produced 379 lines of process
+> documentation against 99 lines of product source, and the round that triggered the freeze was a
+> change to these rules, gated by these rules, which found three HIGHs in the new rules and generated
+> more rules. **A control that needs continuous maintenance is not controlling anything.**
+>
+> **Read [the definition of done](./2026-07-29-hardening-audit.md#definition-of-done-and-the-only-queue-that-counts)
+> before this file.** It names the only seven findings that are queued, and it outranks everything
+> here. A documentation-only pull request gets no lenses at all, not even the claims auditor.
+
 This replaces the Copilot gate described in
 [`2026-07-29-hardening-handoff.md`](./2026-07-29-hardening-handoff.md). The Copilot review quota for
 the organization is exhausted for the month, so the automated outside reviewer is unavailable. The

@@ -8,6 +8,76 @@ Swarm and hls.js library capability, architecture and patterns, and silent failu
 
 Scope audited: ~5,900 lines of TypeScript, ~1,780 lines of shell, plus compose files and templates.
 
+## Definition of done, and the only queue that counts
+
+**Owner decision, 2026-08-01. This section outranks everything below it.** A later session reads this
+first and works nothing else without asking.
+
+### Done
+
+> A live stream survives a publisher reconnect, an uploader crash, and a Bee outage without losing a
+> VOD or leaking a puller, and an operator can tell when it does not.
+
+That is the whole bar. **The register being empty is not the bar and never was.**
+
+### Why this exists
+
+Measured on 2026-08-01 across the two pull requests of that day: **379 lines of process documentation,
+367 lines of tests, 99 lines of product source.** Nearly four lines of process for every line of the
+system. Eight findings opened, two closed. The register stood at 124 rows and 23 open HIGHs.
+
+Three things were compounding.
+
+**The review protocol became a workstream rather than a control.** A change to make reviews cheaper was
+itself gated, that gate found three HIGHs in the new rules, and correcting them produced more rules.
+`review-gate.md` is longer than most of the code it governs.
+
+**The register has no drain.** Every round opened more rows than its fix closed, so a document meant to
+track work became a document that generates it.
+
+**One severity ladder served both the product and the paperwork.** "The guard silently drops real
+closings and never publishes a VOD" and "fail-closed cannot fire on a deferred lens" were both HIGH.
+That is how documentation outweighed source four to one, because the doc work genuinely felt as urgent.
+
+The sharpest evidence is in this file: **CON-21 is marked CLOSED and CON-22, CON-23 and CON-24 are all
+about the same guard.** The fix renamed the problem into three.
+
+### The queue
+
+Seven rows. Everything else in this register is **archived**, which means recorded and not queued. A
+session may read an archived row for context and may not start work on it without the owner.
+
+| Row         | Sev    | Why it is on the path to done                                                                                           |
+| ----------- | ------ | ----------------------------------------------------------------------------------------------------------------------- |
+| **CON-22**  | MEDIUM | The session guard disarms itself between an accepted closing and the next opening. Reconnect.                           |
+| **CON-23**  | MEDIUM | Two sessions sharing a source port produce one key, which puts CON-21 back in full and does not self-heal. Reconnect.   |
+| **CON-17**  | HIGH   | REPORTED and never verified, in the puller's playlist handling. Verify first, it may be nothing.                        |
+| **OBS-17**  | MEDIUM | Nothing scrapes `/health`, and it answers `ok` at the moment a live session has been wrongly killed. Operator can tell. |
+| **OBS-18**  | MEDIUM | A puller that outlives its closing has one exit, a 404, which a proxy removes. Leaked puller, no VOD.                   |
+| **TEST-22** | HIGH   | Suite reliability.                                                                                                      |
+| **TEST-24** | HIGH   | Contention scores a flaky failure as a killed mutant, so mutation numbers can lie about all of the above.               |
+
+**Severity is not the ordering.** CON-22 and CON-23 are MEDIUM and are first, because they are the
+reconnect case and the definition of done names it. Several open HIGHs are archived because they are
+not on this path.
+
+### Three rules that keep it from growing back
+
+1. **`review-gate.md` is frozen.** No edits unless a pull request is actually blocked by it. A protocol
+   defect gets one archived row and the session moves on. It is a control, and a control that needs
+   continuous maintenance is not controlling anything.
+2. **A protocol finding is capped at MEDIUM**, unless it lets a production defect through undetected.
+   The severity ladder above describes the running system, and a rule inconsistency is not silent wrong
+   behaviour in the live path.
+3. **A documentation-only pull request gets no lenses**, not even the claims auditor. Everything else
+   gets the auditor plus one reasoning lens chosen by surface.
+
+### What closing this looks like
+
+The seven above are done, and a reconnect, a crash and a Bee outage have each been driven end to end
+against a real engine with the VOD and the puller checked afterwards. At that point the hardening work
+is finished, whatever the register still holds.
+
 ## How to read this
 
 Every finding carries a status:
