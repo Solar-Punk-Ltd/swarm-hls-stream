@@ -107,6 +107,8 @@ function fakeOrchestrator(startedStreamIds: string[]): StreamOrchestrator {
     },
     stopStream: async () => {},
     handleSegment: () => ({ accepted: true }),
+    handleSegmentLoss: () => true,
+    keepAlive: () => false,
   } as unknown as StreamOrchestrator;
 }
 

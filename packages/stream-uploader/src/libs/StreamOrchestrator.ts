@@ -191,7 +191,14 @@ export class StreamOrchestrator {
     return this.drainPromises.get(streamId)?.uploader === uploader;
   }
 
-  public handleSegment(streamId: string, segmentIndex: number, duration: number, data: Buffer): SegmentResult {
+  public handleSegment(
+    streamId: string,
+    segmentIndex: number,
+    duration: number,
+    data: Buffer,
+    /** The origin declared a break immediately before this segment. Applied only if the segment is taken. */
+    discontinuity = false,
+  ): SegmentResult {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
@@ -232,6 +239,16 @@ export class StreamOrchestrator {
 
     processed?.add(segmentIndex);
     this.streamActivityAt.set(streamId, this.clock.now());
+    // Carried on the segment rather than issued ahead of it, which is what the puller used to do. Every
+    // path above returns without taking the segment, and a marker issued before them outlived its
+    // segment and attached to the next one that was taken. A recovered stream reaches that constantly:
+    // its duplicate filter is rebuilt from the restored manifest while its puller restarts at the top
+    // of the origin's window, so the whole window comes back as duplicates. The marker also queued with
+    // no regard for `maxQueueSize`, one job per poll for as long as the origin kept serving the segment
+    // a full queue was refusing.
+    if (discontinuity) {
+      uploader.markDiscontinuity();
+    }
     uploader.handleSegment(segmentIndex, duration, data);
     return { accepted: true };
   }
@@ -289,21 +306,6 @@ export class StreamOrchestrator {
 
     pending.cancel();
     this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
-    return true;
-  }
-
-  /**
-   * A discontinuity the engine's origin declared, to be carried onto the next segment this stream
-   * takes. Answers whether a session was there to record it, for the same reason `handleSegmentLoss`
-   * does: a caller that cannot tell has no way to hold its position.
-   */
-  public markDiscontinuity(streamId: string): boolean {
-    const uploader = this.activeStreams.get(streamId);
-    if (!uploader || this.isDraining(streamId, uploader)) {
-      return false;
-    }
-
-    uploader.markDiscontinuity();
     return true;
   }
 

@@ -5,12 +5,22 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, REJECT_DRAINING, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
+import {
+  MEDIA_TYPE_VIDEO,
+  PRESSURE_HIGH,
+  REJECT_DRAINING,
+  REJECT_QUEUE_FULL,
+  REJECT_UNKNOWN_STREAM,
+  STREAM_STATUS_VOD,
+  StreamState,
+  StreamStatus,
+} from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
   FakeUploads,
   makeFakeRecoveryStore,
+  neverSettles,
   makeRecordingCatalog,
   makeRecoveredState,
   makeTestOrchestrator,
@@ -722,7 +732,7 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
 });
 
 describe('StreamOrchestrator origin discontinuity (CON-9)', () => {
-  it('carries a declared discontinuity through to the uploader, onto the segment that follows it', async () => {
+  it('carries a declared discontinuity onto the segment it was declared for', async () => {
     const saved: StreamState[] = [];
     const orch = makeTestOrchestrator(
       {},
@@ -732,8 +742,7 @@ describe('StreamOrchestrator origin discontinuity (CON-9)', () => {
 
     orch.startStream('live/one', MEDIA_TYPE_VIDEO);
     orch.handleSegment('live/one', 0, 2, Buffer.from('before'));
-    assert.equal(orch.markDiscontinuity('live/one'), true);
-    orch.handleSegment('live/one', 1, 2, Buffer.from('after'));
+    orch.handleSegment('live/one', 1, 2, Buffer.from('after'), true);
 
     await waitFor(() => saved.some((state) => state.segments.length === 2), SETTLE_CEILING_MS);
 
@@ -746,22 +755,77 @@ describe('StreamOrchestrator origin discontinuity (CON-9)', () => {
     assert.notEqual(
       manifest.segments.find((segment) => segment.index === 0)?.discontinuity,
       true,
-      'and only the segment after the tag, or every join looks like a break',
+      'and only the segment it was declared for, or every join looks like a break',
     );
     await orch.cleanup();
   });
 
-  it('refuses a discontinuity for a stream it does not have or is finalizing', async () => {
+  // Issued ahead of the segment, the marker outlived every path that refuses one and attached to the
+  // next segment that was taken. A recovered stream meets this constantly: its duplicate filter is
+  // rebuilt from the restored manifest while its puller restarts at the top of the origin's window.
+  it('drops the marker with the segment when the segment is a duplicate', async () => {
+    const saved: StreamState[] = [];
+    const orch = makeTestOrchestrator(
+      {},
+      {},
+      makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/one', 0, 2, Buffer.from('first'));
+    // Re-delivered, and the origin declares a break on it. It was already taken without one.
+    orch.handleSegment('live/one', 0, 2, Buffer.from('replay'), true);
+    orch.handleSegment('live/one', 1, 2, Buffer.from('next'));
+
+    await waitFor(() => saved.some((state) => state.segments.length === 2), SETTLE_CEILING_MS);
+
+    const manifest = saved.filter((state) => state.segments.length === 2).pop() as StreamState;
+    assert.notEqual(
+      manifest.segments.find((segment) => segment.index === 1)?.discontinuity,
+      true,
+      'a break declared for a segment that was never taken must not be published on the next one that was',
+    );
+    await orch.cleanup();
+  });
+
+  it('drops the marker when the queue is full, rather than queueing one per poll behind the limit', async () => {
+    const orch = makeTestOrchestrator({ maxQueueSize: 1 }, { uploadData: () => neverSettles() });
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    // The first is running rather than waiting, and p-queue's `size` counts only what waits, so it
+    // takes two to reach a ceiling of one.
+    orch.handleSegment('live/one', 0, 2, Buffer.from('running'));
+    orch.handleSegment('live/one', 1, 2, Buffer.from('fills the queue'));
+
+    for (let poll = 0; poll < 20; poll++) {
+      assert.deepEqual(
+        orch.handleSegment('live/one', 2, 2, Buffer.from('refused'), true),
+        { accepted: false, reason: REJECT_QUEUE_FULL },
+        'the segment is refused, and the marker has to be refused with it',
+      );
+    }
+
+    assert.equal(
+      orch.getQueuePressure('live/one'),
+      PRESSURE_HIGH,
+      'nothing beyond the one held segment reached the queue, so the ceiling still means what it says',
+    );
+  });
+
+  it('refuses a segment and its marker for a stream it does not have or is finalizing', async () => {
     const orch = makeTestOrchestrator();
 
-    assert.equal(orch.markDiscontinuity('live/never-started'), false);
+    assert.deepEqual(orch.handleSegment('live/never-started', 0, 2, Buffer.from('x'), true), {
+      accepted: false,
+      reason: REJECT_UNKNOWN_STREAM,
+    });
 
     orch.startStream('live/one', MEDIA_TYPE_VIDEO);
     const stopped = orch.stopStream('live/one');
-    assert.equal(
-      orch.markDiscontinuity('live/one'),
-      false,
-      'a finalized manifest cannot take a marker any more than it can take a segment',
+    assert.deepEqual(
+      orch.handleSegment('live/one', 0, 2, Buffer.from('x'), true),
+      { accepted: false, reason: REJECT_DRAINING },
+      'a finalized manifest can take a marker no more than it can take media',
     );
     await stopped;
   });

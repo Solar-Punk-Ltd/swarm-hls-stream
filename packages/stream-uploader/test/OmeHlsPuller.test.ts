@@ -907,7 +907,7 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
  * never went away. See CON-10.
  */
 describe('OmeHlsPuller origin discontinuity (CON-9)', () => {
-  it('hands a declared discontinuity over before the segment it belongs to', async () => {
+  it('hands the declared break over on the segment it belongs to, not ahead of it', async () => {
     const handovers: string[] = [];
     const playlist = [
       '#EXTM3U',
@@ -919,18 +919,12 @@ describe('OmeHlsPuller origin discontinuity (CON-9)', () => {
       'b.ts',
     ].join('\n');
 
-    const orchestrator = {
-      handleSegment: (_id: string, seq: number) => {
-        handovers.push(`segment ${seq}`);
+    const orchestrator = makeOrchestratorStub({
+      handleSegment: (_id: string, seq: number, _duration: number, _data: Buffer, discontinuity?: boolean) => {
+        handovers.push(`segment ${seq}${discontinuity ? ' (break)' : ''}`);
         return { accepted: true };
       },
-      handleSegmentLoss: () => true,
-      keepAlive: () => false,
-      markDiscontinuity: () => {
-        handovers.push('discontinuity');
-        return true;
-      },
-    } as unknown as OrchestratorArg;
+    });
 
     const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher: (async (input: RequestInfo | URL) =>
@@ -942,10 +936,12 @@ describe('OmeHlsPuller origin discontinuity (CON-9)', () => {
     await puller.tick();
     puller.stop();
 
+    // Carried by the segment rather than issued in front of it, so a segment the orchestrator refuses
+    // takes its marker with it instead of leaving it for whichever segment is accepted next.
     assert.deepEqual(
       handovers,
-      ['segment 0', 'discontinuity', 'segment 1'],
-      'the marker has to reach the uploader in front of the segment it belongs to, or it attaches to the wrong one',
+      ['segment 0', 'segment 1 (break)'],
+      'the marker has to travel with the segment the origin declared it for',
     );
   });
 });
