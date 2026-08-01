@@ -104,6 +104,19 @@ describe('stop.sh service filter (OPS-3)', () => {
     assert.deepEqual(sandbox.calls(), [], `docker was called despite the refusal: ${sandbox.calls().join(' | ')}`);
   });
 
+  // The filter has to narrow per target, not only overall. With the stack split across two hosts,
+  // handing the service list to a target that does not run it makes compose fail with "no such
+  // service", and the operator sees an error from the one host that was never involved.
+  it('touches only the target that runs the named service', async () => {
+    const sandbox = makeSandbox({ config: { services: { srs: 'streamhost', client: 'localhost' } } });
+
+    await runScriptOk(sandbox, 'stop.sh', ['srs']);
+
+    assert.deepEqual(sandbox.calls(), [], `the local host was touched for a remote service: ${sandbox.calls()}`);
+    const stopped = sandbox.remoteCalls().find((call) => / stop(\s|$)/.test(call));
+    assert.ok(stopped, `no remote compose stop was issued; calls: ${sandbox.remoteCalls().join(' | ')}`);
+  });
+
   // A service the config disables is a different case from a misspelled one: the name is real, so
   // the refusal above must not fire, and there is nothing running to stop.
   it('stops nothing when the named service is disabled on every target', async () => {
