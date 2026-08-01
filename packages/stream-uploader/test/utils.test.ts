@@ -296,6 +296,37 @@ describe('parseMediaPlaylist', () => {
     ]);
   });
 
+  // `#EXT-X-DISCONTINUITY-SEQUENCE` is a header counter, not a marker, and it starts with the marker's
+  // whole name. Matching loosely stamps a break on the first segment of every window and nulls the
+  // date anchor the handover floor reads. This diff took the marker out of the unrelated-tags test
+  // without putting its near miss anywhere.
+  it('does not treat #EXT-X-DISCONTINUITY-SEQUENCE as a discontinuity', () => {
+    const text = ['#EXTM3U', '#EXT-X-DISCONTINUITY-SEQUENCE:3', '#EXT-X-MEDIA-SEQUENCE:0', '#EXTINF:2.0,', 'a.ts'].join(
+      '\n',
+    );
+
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 2.0, uri: 'a.ts' }]);
+  });
+
+  // The skip drops the anchor as well as the segment. Every case in the table above is built without
+  // a date, so the line that does it was uncovered and the survivor let the next segment inherit the
+  // skipped one's start time.
+  it("does not hand a skipped segment's start time to the one after it", () => {
+    const text = [
+      '#EXTM3U',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-08-01T10:00:00.000Z',
+      '#EXTINF:not-a-number,',
+      'bad.ts',
+      '#EXTINF:2.0,',
+      'good.ts',
+    ].join('\n');
+
+    assert.deepEqual(
+      parseMediaPlaylist(text).map((entry) => entry.programDateTime),
+      [undefined],
+    );
+  });
+
   it('does not carry a date across a discontinuity, in either direction', () => {
     const stamped = [
       '#EXTM3U',

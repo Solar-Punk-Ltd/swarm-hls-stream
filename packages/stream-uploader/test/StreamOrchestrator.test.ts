@@ -20,10 +20,10 @@ import { FakeClock } from './helpers/fakeClock.js';
 import {
   FakeUploads,
   makeFakeRecoveryStore,
-  neverSettles,
   makeRecordingCatalog,
   makeRecoveredState,
   makeTestOrchestrator,
+  neverSettles,
   toRecoveryFileId,
 } from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
@@ -651,19 +651,45 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     );
   });
 
-  it('does not count a keepalive as stream activity, so a silent origin still stalls', async () => {
+  // There is deliberately no test that a keepalive is not recorded as stream activity. The claim was
+  // made and a test was written for it, and the test asserted nothing: `startStream` cancels the
+  // recovery timer, so the keepalive after it took the no-op path. Removing that setup only moves the
+  // problem, because `getMsSinceStreamActivity` excludes any stream holding a recovery timer, which is
+  // every stream a keepalive can reach. The non-effect is real and unobservable through this API, and
+  // both paths that end recovery set a fresh reading anyway, so it is recorded here rather than
+  // guarded by a test that would pass whatever the code did. See the note on `keepAlive`.
+
+  // A recovered stream re-pulls the origin's whole current window by design, so its first segments are
+  // duplicates. Nothing covered the rebuild: deleting it outright, emptying it, or shifting every index
+  // by one all left the suite green, and every one of them re-uploads a broadcast that is already paid
+  // for.
+  it('rebuilds the duplicate filter from the restored manifest, so a resumed stream re-pays for nothing', async () => {
     const clock = new FakeClock();
-    const orch = makeRecoveringOrchestrator(clock, [], []);
+    const uploaded: string[] = [];
+    const id = 'live/stream';
+    const orch = makeTestOrchestrator(
+      { clock, recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {
+        uploadData: async (_stamp: string, data: Uint8Array) => {
+          uploaded.push(new TextDecoder().decode(data));
+          return { reference: { toHex: () => `ref${uploaded.length}` } };
+        },
+      },
+      makeFakeRecoveryStore({ listActive: () => [toRecoveryFileId(id)], load: () => makeRecoveredState(id) }),
+    );
 
     await orch.recoverStreams();
-    orch.startStream('live/stream', MEDIA_TYPE_VIDEO);
-    await clock.advance(5_000);
-    orch.keepAlive('live/stream');
 
-    assert.equal(
-      orch.getMsSinceStreamActivity(),
-      5_000,
-      'a puller retrying an origin that answers nothing is not progress, and must not read as it',
+    // `makeRecoveredState` restores exactly index 0, which is what the origin still has at the top of
+    // its window and what a fresh puller therefore delivers first.
+    assert.deepEqual(orch.handleSegment(id, 0, 2, Buffer.from('already published')), { accepted: true });
+    assert.deepEqual(orch.handleSegment(id, 1, 2, Buffer.from('genuinely new')), { accepted: true });
+
+    await waitFor(() => uploaded.includes('genuinely new'), SETTLE_CEILING_MS);
+    assert.deepEqual(
+      uploaded,
+      ['genuinely new'],
+      'a restored index was uploaded again, so a resumed stream pays twice for media it already published',
     );
     await orch.cleanup();
   });
@@ -769,6 +795,30 @@ describe('StreamOrchestrator origin discontinuity (CON-9)', () => {
   // Issued ahead of the segment, the marker outlived every path that refuses one and attached to the
   // next segment that was taken. A recovered stream meets this constantly: its duplicate filter is
   // rebuilt from the restored manifest while its puller restarts at the top of the origin's window.
+  it('persists the pending marker before the segment that consumes it, so a crash keeps it', async () => {
+    const saved: StreamState[] = [];
+    let uploads = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        // The first lands so the queue is free for the marker; the second never answers, so the only
+        // state write that can follow the marker is the marker's own.
+        uploadData: async () => (uploads++ === 0 ? { reference: { toHex: () => 'ref0' } } : neverSettles()),
+      },
+      makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orch.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orch.handleSegment('live/one', 0, 2, Buffer.from('lands'));
+    await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+
+    orch.handleSegment('live/one', 1, 2, Buffer.from('never uploads'), true);
+
+    // Without the marker's own persist a crash here restores a stream that has forgotten the break
+    // the origin declared, and the segment after the gap is published as a seamless join.
+    await waitFor(() => saved.some((state) => state.pendingDiscontinuity === true), SETTLE_CEILING_MS);
+  });
+
   it('drops the marker with the segment when the segment is a duplicate', async () => {
     const saved: StreamState[] = [];
     const orch = makeTestOrchestrator(
@@ -957,6 +1007,14 @@ describe('StreamOrchestrator duplicate filter (CON-8)', () => {
       !uploaded.includes('replay-inside-the-window'),
       'a re-delivered index inside the window has to stay suppressed, or the bound costs duplicate uploads',
     );
+    // Pins the window from below as well. Everything above is satisfied by a window of one, so without
+    // this the configured value could be ignored entirely in favour of any smaller constant.
+    assert.deepEqual(
+      orch.handleSegment(id, SEGMENTS - DEDUP_WINDOW, 2, Buffer.from('replay-at-the-window-edge')),
+      { accepted: true },
+      'the oldest index the window still guarantees has to be remembered, or the window is not the configured one',
+    );
+    await waitAndConfirmNothingHappened(() => !uploaded.includes('replay-at-the-window-edge'), 150);
     // The counterweight. Suppressing both also satisfies the line above, and only a filter that
     // actually forgets can be bounded at all. That the oldest index is re-taken is the price, and it
     // is unreachable in practice: an engine can only re-deliver what its playlist window still holds.

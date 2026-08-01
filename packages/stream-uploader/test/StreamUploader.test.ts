@@ -292,8 +292,12 @@ describe('StreamUploader finalization (CON-25)', () => {
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
 
-    // Both settled before anything is read, so the second finalize has either happened or cannot.
-    await Promise.all([uploader.notifyStop(), uploader.notifyStop()]);
+    // Sequential, not concurrent. Two calls issued before either is awaited are deduped by any memo,
+    // including one that clears itself once the first settles, and that mutant survived. The second
+    // stop really can arrive after the first finished: `stopStream` deletes its `drainPromises` entry
+    // when the drain resolves, and `finalizeRetiredSession` never registers one at all.
+    await uploader.notifyStop();
+    await uploader.notifyStop();
 
     assert.deepEqual(
       published.map((entry) => entry.state),

@@ -295,8 +295,11 @@ export class StreamOrchestrator {
    * deferral is bounded by how long the engine keeps trying. When it gives up it stops the stream
    * itself, and if it dies instead the timer arrives on its own one timeout later.
    *
-   * Deliberately not recorded as stream activity. A puller polling an origin that answers nothing is
-   * not making progress, and refreshing the clock here would hide a dead stream behind the retries.
+   * Deliberately not recorded as stream activity, which is a choice rather than a guarantee: a stream
+   * holding a recovery timer is excluded from `getMsSinceStreamActivity` anyway, and both paths that
+   * end recovery set a fresh reading, so recording it here would be unobservable. It stays this way
+   * because a puller polling an origin that answers nothing is not progress, but no test guards it,
+   * because none can.
    */
   public keepAlive(streamId: string): boolean {
     const pending = this.recoveryTimers.get(streamId);
