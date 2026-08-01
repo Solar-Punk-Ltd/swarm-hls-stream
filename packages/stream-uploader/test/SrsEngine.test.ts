@@ -1,8 +1,6 @@
 import express from 'express';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import fs from 'node:fs';
-import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, afterEach, before, beforeEach, describe, it, mock } from 'node:test';
@@ -10,6 +8,8 @@ import { after, afterEach, before, beforeEach, describe, it, mock } from 'node:t
 import { createSrsEngine, resolveSegmentPath } from '../src/engines/srs.js';
 import { SRS_WEBHOOK_TOKEN_PARAM } from '../src/engines/srs/webhookToken.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
+
+import { listenOnLoopback } from './helpers/loopbackServer.js';
 
 const MEDIA_ROOT = '/srv/media';
 const SRS_PREFIX = './objs/nginx/html/';
@@ -75,18 +75,13 @@ async function postHls(mediaRoot: string, orchestrator: StreamOrchestrator, file
   app.use(express.json());
   app.use(engine.prefix, engine.createRouter(orchestrator));
 
-  const server = app.listen(0);
+  const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    await once(server, 'listening');
-    const { port } = server.address() as AddressInfo;
-    const response = await fetch(
-      `http://127.0.0.1:${port}${engine.prefix}/hls?${SRS_WEBHOOK_TOKEN_PARAM}=${TEST_WEBHOOK_TOKEN}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'on_hls', app: 'video', stream: 'demo', file, seq_no: 1, duration: 4 }),
-      },
-    );
+    const response = await fetch(`${baseUrl}${engine.prefix}/hls?${SRS_WEBHOOK_TOKEN_PARAM}=${TEST_WEBHOOK_TOKEN}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'on_hls', app: 'video', stream: 'demo', file, seq_no: 1, duration: 4 }),
+    });
     return response.status;
   } finally {
     server.close();

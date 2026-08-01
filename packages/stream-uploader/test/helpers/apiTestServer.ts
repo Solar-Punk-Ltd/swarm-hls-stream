@@ -8,6 +8,8 @@ import { createApiApp } from '../../src/api/server.js';
 import { EnginePlugin } from '../../src/engines/types.js';
 import { StreamOrchestrator } from '../../src/libs/StreamOrchestrator.js';
 
+import { LOOPBACK_HOST } from './loopbackServer.js';
+
 const POLL_INTERVAL_MS = 10;
 const RAW_RESPONSE_TIMEOUT_MS = 2_000;
 
@@ -49,11 +51,11 @@ export async function startTestApi(
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
+    server.listen(0, LOOPBACK_HOST, resolve);
   });
 
   const { port } = server.address() as AddressInfo;
-  const origin = `http://127.0.0.1:${port}`;
+  const origin = `http://${LOOPBACK_HOST}:${port}`;
 
   async function request(path: string, init?: RequestInit): Promise<ApiResponse> {
     // Authenticated unless the caller says otherwise, so every pre-auth test keeps working unchanged
@@ -78,7 +80,7 @@ export async function startTestApi(
   }
 
   async function rawRequest(request: string): Promise<number> {
-    const socket = net.connect(port, '127.0.0.1');
+    const socket = net.connect(port, LOOPBACK_HOST);
     try {
       await once(socket, 'connect');
       socket.write(request);

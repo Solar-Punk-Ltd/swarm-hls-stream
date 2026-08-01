@@ -1,8 +1,6 @@
 import express from 'express';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { once } from 'node:events';
-import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -20,6 +18,7 @@ import {
   makeRecordingCatalog,
   makeTestOrchestrator,
 } from './helpers/fakes.js';
+import { listenOnLoopback } from './helpers/loopbackServer.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 /** The catalog entry shape these tests read back, narrowed from what StreamCatalog accepts. */
@@ -69,15 +68,13 @@ async function postAdmission(
   );
   app.use(engine.prefix, engine.createRouter(orchestrator));
 
-  const server = app.listen(0);
+  const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    await once(server, 'listening');
-    const { port } = server.address() as AddressInfo;
     const body = JSON.stringify({
       ...(client ? { client } : {}),
       request: { direction: 'incoming', status, url: streamUrl, ...(requestTime ? { time: requestTime } : {}) },
     });
-    const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}/admission`, {
+    const response = await fetch(`${baseUrl}${engine.prefix}/admission`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

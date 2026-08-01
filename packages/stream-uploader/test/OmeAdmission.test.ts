@@ -1,8 +1,6 @@
 import express, { Request } from 'express';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { once } from 'node:events';
-import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { createOmeEngine, createOmeEngineFromEnv } from '../src/engines/ome.js';
@@ -12,6 +10,7 @@ import { EnginePlugin, RawBodyRequest } from '../src/engines/types.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 
 import { makeFakeOrchestrator } from './helpers/fakes.js';
+import { listenOnLoopback, LOOPBACK_HOST } from './helpers/loopbackServer.js';
 
 const SECRET = 'admission-secret';
 const HLS_BASE = 'http://ome:8081';
@@ -131,15 +130,13 @@ async function postAdmission(
   );
   app.use(engine.prefix, engine.createRouter(orchestrator));
 
-  const server = app.listen(0);
+  const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    await once(server, 'listening');
-    const { port } = server.address() as AddressInfo;
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (signature) {
       headers['x-ome-signature'] = signature;
     }
-    const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}/admission`, {
+    const response = await fetch(`${baseUrl}${engine.prefix}/admission`, {
       method: 'POST',
       headers,
       body: ADMISSION_BODY,
@@ -159,7 +156,7 @@ describe('OME admission route with no secret configured (SEC-3)', () => {
     originalFetch = globalThis.fetch;
     globalThis.fetch = ((input: string | URL, init?: RequestInit) => {
       const url = input.toString();
-      if (url.startsWith('http://127.0.0.1:')) {
+      if (url.startsWith(`http://${LOOPBACK_HOST}:`)) {
         return originalFetch(input, init);
       }
       return Promise.resolve({ ok: false, status: 404, text: async () => '' } as Response);
