@@ -30,9 +30,10 @@ The stream-uploader also exposes a generic API that works without any engine plu
 ```
 POST /stream/start    { "streamId": "<id>", "mediatype": "video" | "audio" }
 POST /stream/segment  Headers: x-stream-id, x-segment-index, x-duration  Body: raw binary
-POST /stream/stop     { "streamId": "<id>" }
+POST /stream/stop     { "streamId": "<id>" }  Answered 202, drains in the background
+GET  /stream/status   ?streamId=<id>              live | draining | finalized | failed
 
-All three require `Authorization: Bearer $API_AUTH_TOKEN`. There is no unauthenticated mode:
+All four require `Authorization: Bearer $API_AUTH_TOKEN`. There is no unauthenticated mode:
 every accepted segment spends postage stamp money, so an open write endpoint drains the batch.
 ```
 

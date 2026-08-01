@@ -14,6 +14,7 @@ interface OrchestratorCalls {
   startStream: unknown[][];
   handleSegment: unknown[][];
   stopStream: unknown[][];
+  getStreamStatus: unknown[][];
 }
 
 /**
@@ -35,7 +36,7 @@ function spyingOrchestrator(calls: OrchestratorCalls) {
 }
 
 function noCalls(): OrchestratorCalls {
-  return { startStream: [], handleSegment: [], stopStream: [] };
+  return { startStream: [], handleSegment: [], stopStream: [], getStreamStatus: [] };
 }
 
 function startBody(): RequestInit {
@@ -59,6 +60,10 @@ function segmentBody(): RequestInit {
   };
 }
 
+function statusQuery(): RequestInit {
+  return { method: 'GET' };
+}
+
 function stopBody(): RequestInit {
   return {
     method: 'POST',
@@ -68,9 +73,20 @@ function stopBody(): RequestInit {
 }
 
 const ROUTES = [
-  { path: '/stream/start', init: startBody, spy: 'startStream' as const },
-  { path: '/stream/segment', init: segmentBody, spy: 'handleSegment' as const },
-  { path: '/stream/stop', init: stopBody, spy: 'stopStream' as const },
+  { path: '/stream/start', init: startBody, spy: 'startStream' as const, authenticated: 200 },
+  { path: '/stream/segment', init: segmentBody, spy: 'handleSegment' as const, authenticated: 200 },
+  // 202 rather than 200 since S2.5: the stop is accepted here and its outcome is read back from
+  // `GET /stream/status`, because a drain has five minutes to publish and no webhook waits that long.
+  { path: '/stream/stop', init: stopBody, spy: 'stopStream' as const, authenticated: 202 },
+  // S1.1's criterion names the routes it covers, and S2.5 added a fourth. Enumerated here rather
+  // than left to the prefix test below, because that one proves the mount is a prefix mount, not
+  // that this route is under it.
+  {
+    path: '/stream/status?streamId=live%2Fone',
+    init: statusQuery,
+    spy: 'getStreamStatus' as const,
+    authenticated: 200,
+  },
 ];
 
 describe('api auth (S1.1, closes SEC-1)', () => {
@@ -117,10 +133,25 @@ describe('api auth (S1.1, closes SEC-1)', () => {
 
       const { status } = await api.request(route.path, route.init());
 
-      assert.equal(status, 200, 'a correctly authenticated caller is unaffected');
+      assert.equal(status, route.authenticated, 'a correctly authenticated caller is unaffected');
       assert.ok(calls[route.spy].length > 0, `${route.spy} ran for an authenticated caller`);
     });
   }
+
+  /**
+   * Gated where `/health` is not, because it names when the last segment landed and how many
+   * broadcasts have run. `/health` stays open as a liveness endpoint that accepts no input and
+   * spends nothing, and the compose healthcheck reads it.
+   */
+  it('refuses GET /metrics without a token, while /health stays open', async () => {
+    const api = await start(noCalls());
+
+    const metrics = await api.request('/metrics', { headers: NO_AUTH_HEADER });
+    const health = await api.request('/health', { headers: NO_AUTH_HEADER });
+
+    assert.equal(metrics.status, 401);
+    assert.equal(health.status, 200, 'the liveness endpoint must stay reachable by an unauthenticated probe');
+  });
 
   const BAD_TOKENS: { name: string; header: string }[] = [
     { name: 'a wrong token of the same length', header: `Bearer ${'x'.repeat(TEST_AUTH_TOKEN.length)}` },

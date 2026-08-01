@@ -9,12 +9,24 @@ import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
+import { ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
 
 const SEGMENT_UPLOAD_RETRY_WINDOW_MS = 15_000;
 const MANIFEST_UPLOAD_RETRY_WINDOW_MS = 15_000;
 const UPLOAD_RETRY_BASE_MS = 350;
 const UPLOAD_RETRY_CAP_MS = 2_000;
+
+/**
+ * How long to wait before re-attempting a catalog announce that failed.
+ *
+ * The announce has to keep retrying, because the catalog entry is the only thing that makes a live
+ * broadcast discoverable and a stream that gives up is unwatchable for its whole duration. What it
+ * must not do is retry on the segment cadence, which is what tied a dead catalog to a feed read, a
+ * feed write and the postage for it every two seconds. The right rate is how long a viewer can wait
+ * for a broadcast to appear, not how often media arrives.
+ */
+const CATALOG_ANNOUNCE_RETRY_MS = 30_000;
 
 interface RestoreState {
   streamRawTopic: string;
@@ -24,6 +36,18 @@ interface RestoreState {
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
   pendingDiscontinuity?: boolean;
+}
+
+export interface StreamUploaderOptions {
+  /** State from a previous run of this stream id, so a restart resumes rather than starting over. */
+  restoreState?: RestoreState;
+  /**
+   * How long to wait before re-attempting a failed catalog announce. Injectable only so the retry can
+   * be driven in a test: at its default the sequence takes half a minute of wall clock.
+   */
+  catalogAnnounceRetryMs?: number;
+  /** Process-lifetime counters this session reports into. Absent in tests that do not read them. */
+  metrics?: ServiceMetrics;
 }
 
 export class StreamUploader {
@@ -51,6 +75,17 @@ export class StreamUploader {
   private ownsRecoveryEntry = true;
   /** The one finalize this session gets, so a second caller joins it rather than repeating it. */
   private finalizing: Promise<void> | undefined;
+  /** When the catalog announce first failed and has not since succeeded, or null while it is listed. */
+  private catalogAnnounceFailedAt: number | null = null;
+  private lastCatalogAnnounceAt: number | null = null;
+  private readonly catalogAnnounceRetryMs: number;
+  /** When this stream's state first failed to reach disk and has not since landed. See OBS-4. */
+  private statePersistFailedAt: number | null = null;
+  private readonly metrics?: ServiceMetrics;
+  /** Playing time of everything still queued, in seconds, which is how far behind live this stream is. */
+  private queuedSeconds = 0;
+  /** Segments this session was handed, so an empty finalize can tell "nothing to record" from "lost it all". */
+  private segmentsOffered = 0;
 
   private manifestManager: ManifestManager;
 
@@ -63,8 +98,11 @@ export class StreamUploader {
     stamp: string,
     streamId: string,
     mediatype: MediaType,
-    restoreState?: RestoreState,
+    options: StreamUploaderOptions = {},
   ) {
+    const { restoreState } = options;
+    this.catalogAnnounceRetryMs = options.catalogAnnounceRetryMs ?? CATALOG_ANNOUNCE_RETRY_MS;
+    this.metrics = options.metrics;
     this.bee = bee;
     this.streamSigner = new PrivateKey(streamKey);
     this.streamCatalog = streamCatalog;
@@ -89,31 +127,49 @@ export class StreamUploader {
   }
 
   public handleSegment(segmentIndex: number, duration: number, data: Buffer): void {
+    // Counted when queued and released however the job ends, so a stream whose uploads are failing
+    // reports a backlog that drains rather than one that grows forever.
+    this.queuedSeconds += duration;
+    this.segmentsOffered += 1;
     this.segmentQueue.add(async () => {
-      const result = await this.uploadDataToBee(data);
-      if (!result) {
-        // Nothing landed within the retry window; flag the next segment as a discontinuity
-        // so players skip the gap instead of stalling on a silent hole.
-        this.pendingDiscontinuity = true;
-        this.consecutiveSegmentFailures += 1;
-        this.logger.error(
-          `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
-        );
-        this.persistState();
-        return;
+      try {
+        await this.uploadSegment(segmentIndex, duration, data);
+      } finally {
+        this.queuedSeconds -= duration;
       }
-
-      this.consecutiveSegmentFailures = 0;
-      const ref = result.reference.toHex();
-      this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
-      this.pendingDiscontinuity = false;
-      this.isFirstSegmentReady = true;
-
-      this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
-
-      this.uploadLiveManifest();
-      this.persistState();
     });
+  }
+
+  public getQueuedSeconds(): number {
+    return this.queuedSeconds;
+  }
+
+  private async uploadSegment(segmentIndex: number, duration: number, data: Buffer): Promise<void> {
+    const result = await this.uploadDataToBee(data);
+    if (!result) {
+      // Nothing landed within the retry window; flag the next segment as a discontinuity
+      // so players skip the gap instead of stalling on a silent hole.
+      this.pendingDiscontinuity = true;
+      this.consecutiveSegmentFailures += 1;
+      this.logger.error(
+        `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
+      );
+      this.metrics?.recordSegmentDropped();
+      this.persistState();
+      return;
+    }
+
+    this.consecutiveSegmentFailures = 0;
+    const ref = result.reference.toHex();
+    this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
+    this.pendingDiscontinuity = false;
+    this.isFirstSegmentReady = true;
+
+    this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
+
+    this.metrics?.recordSegmentUploaded(Date.now());
+    this.uploadLiveManifest();
+    this.persistState();
   }
 
   /**
@@ -198,6 +254,15 @@ export class StreamUploader {
     await this.manifestQueue.onIdle();
 
     if (!this.manifestManager.hasSegments()) {
+      // A session nobody sent anything to ends cleanly: there is no recording because there was
+      // nothing to record. A session that was handed media and has none to publish is the opposite,
+      // and it used to end the same way, so a broadcast whose every upload failed answered
+      // `finalized` byte for byte like a healthy stop and counted as one.
+      if (this.segmentsOffered > 0) {
+        throw new Error(
+          `Stream ${this.streamId} was handed ${this.segmentsOffered} segment(s) and published none, so it has no VOD`,
+        );
+      }
       this.logger.warn(`Stream ${this.streamId} has no segments, skipping VOD finalization`);
       this.clearRecoveryEntry();
       return;
@@ -223,6 +288,10 @@ export class StreamUploader {
     this.logger.log(`Updating stream in list to VOD: ${JSON.stringify(entry)}`);
     await this.streamCatalog.addStream(entry);
 
+    // Counted here rather than by the orchestrator because `notifyStop` is memoized, so this line
+    // runs exactly once however many drains ask. Counting it from a drain double-counted a session
+    // that a reconnect replaced, since two drains await this one promise.
+    this.metrics?.recordStreamFinalized();
     this.clearRecoveryEntry();
   }
 
@@ -294,6 +363,7 @@ export class StreamUploader {
       const index = await this.commitManifest(manifest);
       if (index === null) {
         this.consecutiveManifestFailures += 1;
+        this.metrics?.recordManifestPublishFailure();
         this.logger.warn(
           `Live manifest for stream ${this.streamId} is stale: ${this.consecutiveManifestFailures} consecutive publish failure(s)`,
         );
@@ -319,17 +389,60 @@ export class StreamUploader {
 
     if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
       this.persistState();
-      try {
-        await this.notifyStart();
-        this.isFirstManifestReady = true;
-      } catch (error) {
-        this.errorHandler.handleError(error, 'StreamUploader.notifyStart');
-      }
+      await this.announceToCatalog();
     }
 
     this.logger.log(`Manifest uploaded at SOC index ${nextIndex}`);
     this.persistState();
     return nextIndex;
+  }
+
+  /**
+   * Publish this stream to the catalog, at most once per `CATALOG_ANNOUNCE_RETRY_MS`.
+   *
+   * The rate limit is the whole point: a failure left `isFirstManifestReady` false, and every later
+   * manifest publish then re-attempted, so a catalog that was down cost a paid feed write per segment
+   * and nothing said so. Giving up instead would be worse, since the entry is the only thing that
+   * makes a live broadcast discoverable, so this keeps trying at a rate set by the viewer rather than
+   * by the encoder.
+   */
+  private async announceToCatalog(): Promise<void> {
+    const now = Date.now();
+    if (this.lastCatalogAnnounceAt !== null && now - this.lastCatalogAnnounceAt < this.catalogAnnounceRetryMs) {
+      return;
+    }
+
+    this.lastCatalogAnnounceAt = now;
+    try {
+      await this.notifyStart();
+      this.isFirstManifestReady = true;
+      this.catalogAnnounceFailedAt = null;
+    } catch (error) {
+      this.catalogAnnounceFailedAt ??= now;
+      this.errorHandler.handleError(error, 'StreamUploader.notifyStart');
+    }
+  }
+
+  /**
+   * How long this stream has been live and absent from the catalog, or null while it is listed.
+   *
+   * An age rather than a count of failures, because the retry window and the segment cadence are
+   * unrelated: a count says how many times the write was attempted, and the thing an operator needs
+   * is how long a viewer has been unable to find a broadcast that is running.
+   */
+  public getMsSinceCatalogAnnounceFailed(): number | null {
+    return this.catalogAnnounceFailedAt === null ? null : Date.now() - this.catalogAnnounceFailedAt;
+  }
+
+  /**
+   * How long this stream's state has been failing to reach disk, or null when the last save landed.
+   *
+   * The failure was logged and otherwise swallowed, which made it the quietest way to lose a
+   * broadcast: recovery reads whatever did land, so a crash then re-uploads or drops everything
+   * written since, and until it happens the stream looks perfectly healthy.
+   */
+  public getMsSinceStatePersistFailed(): number | null {
+    return this.statePersistFailedAt === null ? null : Date.now() - this.statePersistFailedAt;
   }
 
   private persistState(): void {
@@ -338,7 +451,9 @@ export class StreamUploader {
     }
     try {
       this.recoveryStore.save(this.streamId, this.getStreamState());
+      this.statePersistFailedAt = null;
     } catch (error) {
+      this.statePersistFailedAt ??= Date.now();
       this.logger.error(`Failed to persist state for ${this.streamId}:`, error);
     }
   }

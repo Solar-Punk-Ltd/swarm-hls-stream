@@ -10,11 +10,10 @@ import { createOmeEngine, createOmeEngineFromEnv } from '../src/engines/ome.js';
 import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { DEFAULT_FETCH_TIMEOUT_MS } from '../src/engines/ome/OmeHlsPuller.js';
 import { EnginePlugin, RawBodyRequest } from '../src/engines/types.js';
-import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { STREAM_STATUS_VOD } from '../src/types.js';
 
-import { makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
+import { makeFakeCatalog, makeFakeRecoveryStore, makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 /** The catalog entry shape these tests read back, narrowed from what StreamCatalog accepts. */
@@ -395,11 +394,11 @@ describe('createOmeEngine origin restart (CON-16)', () => {
       admissionSecret: RESTART_SECRET,
       fetcher: origin.fetcher,
     });
-    const slowCatalog = {
+    const slowCatalog = makeFakeCatalog({
       addStream: async () => {
         await sleep(FINALIZE_LATENCY_MS);
       },
-    } as unknown as StreamCatalog;
+    });
     const orchestrator = makeTestOrchestrator(
       {},
       {

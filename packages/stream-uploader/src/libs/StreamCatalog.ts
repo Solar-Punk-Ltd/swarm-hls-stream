@@ -46,6 +46,14 @@ export class StreamCatalog {
     );
   }
 
+  /**
+   * How long the persisted feed index has been failing to update, or null when the last save landed
+   * and when no index is persisted at all. See `CatalogIndexStore.getMsSinceSaveFailed`.
+   */
+  public getMsSinceIndexSaveFailed(): number | null {
+    return this.indexStore?.getMsSinceSaveFailed() ?? null;
+  }
+
   public async init(): Promise<void> {
     const owner = this.signer.publicKey().address();
     // The lookup asks the local bee for the feed head, but a freshly restarted node without

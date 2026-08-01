@@ -85,6 +85,38 @@ services:
       OME_FETCH_TIMEOUT_MS: ${OME_FETCH_TIMEOUT_MS:-10000}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
       OME_ADMISSION_FAIL_OPEN: ${OME_ADMISSION_FAIL_OPEN:-false}
+    # Something finally reads /health. Every 503 it can raise was a value in a response body nobody
+    # requested: there was no healthcheck here, health.sh is human-run, and `restart: unless-stopped`
+    # cannot act on a degraded service because the process does not exit. See OBS-17.
+    #
+    # This reports and does not act, deliberately. Compose does not restart a container for failing
+    # its healthcheck, and nothing here declares `depends_on: condition: service_healthy`, so the
+    # whole effect is that `docker ps` says `(unhealthy)`. Restarting on degraded would be wrong
+    # anyway: most reasons are about media already lost or state already unwritten, and a restart
+    # drops every live broadcast to re-run a recovery that changes none of it.
+    #
+    # node rather than curl or wget, because the image is node:22-alpine and has neither. `r.ok` is
+    # false for the 503 a degraded service answers, which is the point.
+    #
+    # Concatenation rather than a template literal because compose interpolates `$` in this file
+    # before the container ever sees it: `${process.env.API_PORT||3000}` is read as a variable named
+    # `process.env.API_PORT`, and `docker compose config` refuses the file outright. A probe with no
+    # `$` in it has nothing to escape and nothing to get wrong.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:'+(process.env.API_PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      # Three consecutive failures, so one dropped segment upload does not flap `docker ps` on its
+      # own: SEGMENT_FAILURE_THRESHOLD is 1 and it clears on the next segment that lands.
+      retries: 3
+      # Long enough for StreamCatalog.init to finish its feed lookup against a cold bee node.
+      start_period: 30s
 
   # --- React Client (viewer) ---
 

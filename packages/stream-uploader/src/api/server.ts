@@ -10,6 +10,7 @@ import { notFound } from './middleware/notFound.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { createAuthMiddleware } from './middleware/requireAuth.js';
 import { createHealthRouter } from './routes/health.js';
+import { createMetricsRouter } from './routes/metrics.js';
 import { createStreamRouter } from './routes/stream.js';
 
 const logger = Logger.getInstance();
@@ -37,6 +38,9 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
   // read. `/health` is outside the gate deliberately, as a liveness endpoint that
   // `deploy/scripts/health.sh` reads, which accepts no input and spends nothing.
   app.use('/stream', createAuthMiddleware(authToken));
+  // `/metrics` names when the last segment landed and how many broadcasts have run, which is more
+  // than a liveness probe should give away, so it is gated where `/health` is not.
+  app.use('/metrics', createAuthMiddleware(authToken));
 
   // Same reason, for the engine webhooks. Without this the engine's own router-level gate still
   // refuses the request, but only after express.json has read and parsed the body, so an anonymous
@@ -67,6 +71,7 @@ export function createApiApp(streamOrchestrator: StreamOrchestrator, options: Ap
 
   // Core routes
   app.use('/stream', createStreamRouter(streamOrchestrator));
+  app.use('/metrics', createMetricsRouter(streamOrchestrator));
   app.use(
     '/health',
     createHealthRouter(

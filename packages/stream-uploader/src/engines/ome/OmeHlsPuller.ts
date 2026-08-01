@@ -20,6 +20,21 @@ export const SEGMENT_RETRY_LIMIT = 3;
 export const DEFAULT_HALT_AFTER_NOT_FOUND_MS = 60_000;
 
 /**
+ * How long an unusable origin is retried at the ordinary poll interval before the puller slows to one
+ * poll per this long. At the 500ms default interval that turns the halt window's 120 requests into 21.
+ *
+ * Two-speed rather than immediate because a cold start is a 404: the puller polls from the moment the
+ * admission lands, and OME publishes the playlist a moment later, so the commonest run of failures
+ * belongs to a stream that is about to work. Backing off from the first one would add startup latency
+ * to every stream in exchange for sparing an origin that does not need sparing.
+ *
+ * Well under the halt window, since the halt is only checked on a retry and so cannot fire more than
+ * one slow poll late. It does not have to stay under `RECOVERY_TIMEOUT`, which has a floor of 1ms:
+ * `retryDelayMs` refuses to slow down at all while a recovery finalize is riding on the polls.
+ */
+export const DEFAULT_SLOW_POLL_AFTER_MS = 5_000;
+
+/**
  * How long every segment in the playlist may sit under the handover floor, with nothing delivered,
  * before the floor is given up as wrong. Comfortably longer than any real handover, which is over
  * within one playlist window, and far shorter than a broadcast.
@@ -49,6 +64,8 @@ export class OmeHlsPuller {
   private failingSeq: number | null = null;
   private failedAttempts = 0;
   private notFoundSince: number | null = null;
+  /** Whether the last poll renewed a pending recovery finalize, which is what makes the poll rate matter. */
+  private isDeferringRecovery = false;
   private readonly masterUrl: string;
   private mediaPlaylistUrl: string | null = null;
 
@@ -68,6 +85,7 @@ export class OmeHlsPuller {
   private readonly fetchTimeoutMs: number;
   private readonly haltAfterNotFoundMs: number;
   private readonly abandonFloorAfterMs: number;
+  private readonly slowPollAfterMs: number;
   private staleBefore: number | null;
 
   constructor(
@@ -86,6 +104,7 @@ export class OmeHlsPuller {
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
     this.haltAfterNotFoundMs = options.haltAfterNotFoundMs ?? DEFAULT_HALT_AFTER_NOT_FOUND_MS;
     this.abandonFloorAfterMs = options.abandonFloorAfterMs ?? DEFAULT_ABANDON_FLOOR_AFTER_MS;
+    this.slowPollAfterMs = options.slowPollAfterMs ?? DEFAULT_SLOW_POLL_AFTER_MS;
     this.staleBefore = options.staleBefore ?? null;
     this.onSegmentTimeObserved = options.onSegmentTimeObserved;
     const base = hlsBaseUrl.replace(/\/+$/, '');
@@ -142,9 +161,32 @@ export class OmeHlsPuller {
         if (this.noteOriginUnusable('the origin')) {
           return;
         }
-        this.scheduleNext(this.intervalMs);
+        this.scheduleNext(this.retryDelayMs);
       });
     }, delayMs);
+  }
+
+  /**
+   * How long to wait before retrying an origin that has not given us usable media. Ordinary interval
+   * while the outage is young, then one poll per `slowPollAfterMs`. See `DEFAULT_SLOW_POLL_AFTER_MS`
+   * for why it is two-speed rather than growing from the first failure.
+   */
+  private get retryDelayMs(): number {
+    // Slowing down is only safe while nothing is riding on the poll rate, and a crash-recovered stream
+    // is: its finalize is deferred one `RECOVERY_TIMEOUT` per poll and by nothing else, so polling
+    // slower than that window finalizes a live broadcast under its own puller. `RECOVERY_TIMEOUT` has
+    // a floor of 1ms and this puller cannot see it, so the deferral says when it is load-bearing
+    // instead, which is what `keepAlive` answers.
+    if (this.isDeferringRecovery) {
+      return this.intervalMs;
+    }
+
+    const unusableForMs = this.notFoundSince === null ? 0 : Date.now() - this.notFoundSince;
+    if (unusableForMs < this.slowPollAfterMs) {
+      return this.intervalMs;
+    }
+    // An operator who polls slower than this would otherwise be sped up by the origin breaking.
+    return Math.max(this.intervalMs, this.slowPollAfterMs);
   }
 
   private resetRetryCounter(): void {
@@ -497,17 +539,11 @@ export class OmeHlsPuller {
   }
 
   private handleNotFound(target: string): void {
-    if (this.isStopped) {
-      // This poll started before the stop and answered after it. Halting here would fire `onHalt`
-      // for a puller the engine has already dropped, finalizing whichever session took its place.
-      return;
-    }
-
     if (this.noteOriginUnusable(target)) {
       return;
     }
 
-    this.scheduleNext(this.intervalMs);
+    this.scheduleNext(this.retryDelayMs);
   }
 
   /**
@@ -520,6 +556,18 @@ export class OmeHlsPuller {
    * the two effects below cover the case they were written for. See CON-10 and OBS-18.
    */
   private noteOriginUnusable(target: string): boolean {
+    if (this.isStopped) {
+      // This poll started before the stop and answered after it, so by now the id can belong to the
+      // session that replaced this puller, and both effects below reach outside this object.
+      // `keepAlive` would defer that session's recovery finalize. `onHalt` is worse: the engine wires
+      // it to `pullers.delete(streamId)`, which drops the **live** puller out of its registry, and to
+      // `orchestrator.stopStream(streamId)`, which finalizes a running broadcast as a VOD.
+      //
+      // Reported as given up, because a stopped puller has, which is also what keeps the caller from
+      // scheduling another poll.
+      return true;
+    }
+
     const now = Date.now();
     if (this.notFoundSince === null) {
       this.notFoundSince = now;
@@ -538,7 +586,7 @@ export class OmeHlsPuller {
     // it on a master that answered, so a master serving 200 with a variant serving 404 deferred the
     // finalize on every poll and never halted. That stream was never finalized at all, and a stream
     // awaiting recovery is excluded from the stall signal, so nothing said so.
-    this.orchestrator.keepAlive(this.streamId);
+    this.isDeferringRecovery = this.orchestrator.keepAlive(this.streamId);
 
     if (now - this.notFoundSince > this.haltAfterNotFoundMs) {
       logger.info(`[OME] ${target} gone for ${this.streamId}, halting puller`);

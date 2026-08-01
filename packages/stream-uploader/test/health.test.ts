@@ -9,6 +9,8 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_STATE_NOT_PERSISTED,
+  HEALTH_REASON_UNLISTED_STREAM,
   HealthSignals,
   PRESSURE_HIGH,
   PRESSURE_LOW,
@@ -17,6 +19,8 @@ import {
 import { deriveHealthStatus, MANIFEST_FAILURE_THRESHOLD, SEGMENT_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
 const STALL_MS = 30_000;
+/** Named apart from STALL_MS so the backlog cases read as judged against the same window, not a new one. */
+const STALL_MS_FOR_BACKLOG = STALL_MS;
 
 function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
   return {
@@ -27,6 +31,9 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     queuePressure: PRESSURE_LOW,
     msSinceStreamActivity: 1_000,
     msSinceSegmentLoss: null,
+    msSinceCatalogAnnounceFailed: null,
+    msSinceStatePersistFailed: null,
+    queueBacklogSeconds: 0,
     ...overrides,
   };
 }
@@ -233,5 +240,118 @@ describe('deriveHealthStatus segment loss', () => {
     );
 
     assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_SEGMENT_LOSS, HEALTH_REASON_SEGMENT_UPLOAD_FAILURE].sort());
+  });
+});
+
+describe('deriveHealthStatus unlisted stream (CON-3)', () => {
+  /**
+   * No threshold, unlike the manifest counter, because a failure that reaches this signal has already
+   * survived `StreamCatalog`'s own 10 second retry window. There is no hiccup left to ride out: the
+   * broadcast is running and no viewer can find it, and it stays that way until the next announce.
+   */
+  it('degrades as soon as a live stream is absent from the catalog', () => {
+    const report = deriveHealthStatus(signals({ msSinceCatalogAnnounceFailed: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_UNLISTED_STREAM]);
+  });
+
+  it('is ok while every live stream is listed', () => {
+    const report = deriveHealthStatus(signals({ msSinceCatalogAnnounceFailed: null }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  /**
+   * The media path and the discovery path fail independently: a stream can publish every segment on
+   * time into a manifest nobody can find. Reporting one must not stand in for the other.
+   */
+  it('reports being unlisted separately from a stalled or failing media path', () => {
+    const report = deriveHealthStatus(
+      signals({ msSinceCatalogAnnounceFailed: 5_000, msSinceStreamActivity: STALL_MS + 1 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_SEGMENT_STALL, HEALTH_REASON_UNLISTED_STREAM].sort());
+  });
+});
+
+describe('deriveHealthStatus unpersisted state (OBS-4, OBS-5)', () => {
+  /**
+   * The quietest failure in the service: the running process is perfectly healthy and stays that way,
+   * because it holds the right state in memory. The damage arrives whole at the next restart, as a
+   * stream resuming from stale segments or a catalog feed forked at an index readers have passed.
+   */
+  it('degrades while state is not reaching disk', () => {
+    const report = deriveHealthStatus(signals({ msSinceStatePersistFailed: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_STATE_NOT_PERSISTED]);
+  });
+
+  it('is ok while every write is landing', () => {
+    const report = deriveHealthStatus(signals({ msSinceStatePersistFailed: null }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  it('reports unpersisted state separately from being unlisted', () => {
+    // Both are written by the same process into the same STATE_DIR, and they still say different
+    // things: one is a broadcast nobody can find now, the other a restart that will do the wrong
+    // thing later. Collapsing them would let a fixed catalog imply a healthy disk.
+    const report = deriveHealthStatus(
+      signals({ msSinceStatePersistFailed: 10, msSinceCatalogAnnounceFailed: 10 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_STATE_NOT_PERSISTED, HEALTH_REASON_UNLISTED_STREAM].sort());
+  });
+});
+
+describe('deriveHealthStatus queue backlog (OBS-9)', () => {
+  /**
+   * The measured case from the register: a 39 deep queue against a `MAX_QUEUE_SIZE` of 100 is a ratio
+   * of 0.39, so the pressure band reports `low` and the service reports `ok`, while a viewer is 78
+   * seconds behind live. The ceiling the ratio is measured against has no relationship to how stale a
+   * playlist anybody will sit through, which is why the seconds are what the policy judges.
+   */
+  it('degrades on a backlog the pressure ratio calls low', () => {
+    const report = deriveHealthStatus(
+      signals({ queuePressure: PRESSURE_LOW, queueBacklogSeconds: 78 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_QUEUE_PRESSURE]);
+  });
+
+  it('is ok at the window and degrades one second past it', () => {
+    const atTheWindow = deriveHealthStatus(
+      signals({ queueBacklogSeconds: STALL_MS_FOR_BACKLOG / 1000 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+    const pastIt = deriveHealthStatus(
+      signals({ queueBacklogSeconds: STALL_MS_FOR_BACKLOG / 1000 + 1 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+
+    assert.equal(atTheWindow.status, HEALTH_OK);
+    assert.equal(pastIt.status, HEALTH_DEGRADED);
+  });
+
+  /**
+   * The ratio still has to fire on its own. A queue near `MAX_QUEUE_SIZE` is about to start refusing
+   * segments outright, whatever the playing time behind it, and that is a different failure from
+   * being behind live.
+   */
+  it('still degrades on a full queue holding almost no playing time', () => {
+    const report = deriveHealthStatus(
+      signals({ queuePressure: PRESSURE_HIGH, queueBacklogSeconds: 0 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_QUEUE_PRESSURE]);
   });
 });

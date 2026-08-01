@@ -3,7 +3,6 @@ import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
-import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
   MEDIA_TYPE_VIDEO,
@@ -19,11 +18,13 @@ import {
 import { FakeClock } from './helpers/fakeClock.js';
 import {
   FakeUploads,
+  makeFakeCatalog,
   makeFakeRecoveryStore,
   makeRecordingCatalog,
   makeRecoveredState,
   makeTestOrchestrator,
   neverSettles,
+  rejectImmediately,
   toRecoveryFileId,
 } from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
@@ -333,12 +334,17 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('leaves nothing running when a close arrives while the replaced session is finalizing', async () => {
     const id = 'live/stream';
     const finalizing: string[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async () => {
-        finalizing.push('vod');
-        await sleep(60);
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async () => {
+          finalizing.push('vod');
+          await sleep(60);
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
@@ -366,12 +372,17 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('leaves the replacement visible to the stall signal while the outgoing session finalizes', async () => {
     const id = 'live/stream';
     const finalizing: string[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async () => {
-        finalizing.push('vod');
-        await sleep(60);
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async () => {
+          finalizing.push('vod');
+          await sleep(60);
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
@@ -428,16 +439,21 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     const id = 'live/stream';
     const finalizeStarted: string[] = [];
     const published: { state?: StreamStatus; topic?: string }[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async (entry: unknown) => {
-        finalizeStarted.push('vod');
-        // Long enough that the reconnect and its own close both land inside this drain, which is the
-        // whole scenario. A real one has the same shape for as long as a Bee that is answering slowly
-        // holds the VOD commit, up to the drain deadline.
-        await sleep(60);
-        published.push(entry as { state?: StreamStatus; topic?: string });
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: unknown) => {
+          finalizeStarted.push('vod');
+          // Long enough that the reconnect and its own close both land inside this drain, which is the
+          // whole scenario. A real one has the same shape for as long as a Bee that is answering slowly
+          // holds the VOD commit, up to the drain deadline.
+          await sleep(60);
+          published.push(entry as { state?: StreamStatus; topic?: string });
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
@@ -485,14 +501,19 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     const id = 'live/stream';
     const published: unknown[] = [];
     const finalizeStarted: string[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async (entry: unknown) => {
-        finalizeStarted.push('vod');
-        // Long enough that the reconnect below lands inside this drain rather than after it.
-        await sleep(60);
-        published.push(entry);
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: unknown) => {
+          finalizeStarted.push('vod');
+          // Long enough that the reconnect below lands inside this drain rather than after it.
+          await sleep(60);
+          published.push(entry);
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
@@ -1126,5 +1147,409 @@ describe('StreamOrchestrator draining stream (CON-6)', () => {
     held.release();
     await stopped;
     await orch.cleanup();
+  });
+});
+
+describe('StreamOrchestrator stop outcome (OBS-3, OBS-10)', () => {
+  const id = 'live/stopping';
+
+  /**
+   * `drainUploader` caught everything, logged it and returned normally, so `stopStream` resolved on a
+   * finalize that never published. The route's own `.catch` was unreachable for this: there was
+   * nothing left to reject. A failed stop and a successful one were the same event at every layer.
+   */
+  it('reports a finalize that never published as failed, not as a stop that worked', async () => {
+    const orch = makeTestOrchestrator({}, { uploadPayload: rejectImmediately });
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    orch.handleSegment(id, 0, 2, Buffer.from('seg0'));
+
+    await withSilencedLogs(() => orch.stopStream(id));
+
+    const report = orch.getStreamStatus(id);
+    assert.equal(report.state, 'failed', `a VOD that never landed reported ${report.state}`);
+    assert.ok(report.reason, 'a failed stop with no reason tells an operator nothing they can act on');
+  });
+
+  it('reports a stop that published as finalized', async () => {
+    const published: unknown[] = [];
+    const orch = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    orch.handleSegment(id, 0, 2, Buffer.from('seg0'));
+
+    await orch.stopStream(id);
+
+    assert.equal(orch.getStreamStatus(id).state, 'finalized');
+    assert.equal(published.length, 2, 'live then vod, so the finalized verdict is about a VOD that exists');
+  });
+
+  it('answers live for a stream that is still broadcasting, and unknown for one it never saw', () => {
+    const orch = makeTestOrchestrator();
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+
+    assert.equal(orch.getStreamStatus(id).state, 'live');
+    assert.equal(orch.getStreamStatus('live/never').state, 'unknown');
+  });
+
+  /**
+   * A stop that fails still has to leave the live maps. Rethrowing out of the drain would skip
+   * `retireSession`, so the id would stay in `activeStreams` with nothing feeding it and the stall
+   * signal would report a stream that had already ended, for the life of the process.
+   */
+  it('retires the stream from the live maps even when the finalize failed', async () => {
+    const orch = makeTestOrchestrator({}, { uploadPayload: rejectImmediately });
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    orch.handleSegment(id, 0, 2, Buffer.from('seg0'));
+
+    await withSilencedLogs(() => orch.stopStream(id));
+
+    assert.equal(orch.getActiveStreamCount(), 0, 'a failed stop left the stream registered and apparently live');
+    assert.equal(orch.getMsSinceStreamActivity(), null, 'and it would have gone on to report a stall for it');
+  });
+});
+
+async function withSilencedLogs<T>(run: () => Promise<T>): Promise<T> {
+  const { error, warn } = console;
+  console.error = () => {};
+  console.warn = () => {};
+  try {
+    return await run();
+  } finally {
+    console.error = error;
+    console.warn = warn;
+  }
+}
+
+describe('StreamOrchestrator stop outcome under a reconnect (gate on PR 52)', () => {
+  const id = 'live/replaced';
+
+  /**
+   * The verdict is recorded under a stream id, and a reconnect gives that id to a different session
+   * while its predecessor is still draining. Recorded before the check that already knows this, a
+   * predecessor settling late overwrote the live session's own verdict with its own.
+   */
+  it('does not let a predecessor settling late write its verdict onto the session that replaced it', async () => {
+    const published: { state?: string; topic?: string }[] = [];
+    let releasePredecessor: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          // Captured before the await. Read after it, this is the *shared* counter, which has moved
+          // on by then, so the predecessor's own commit answered for the replacement's write and
+          // failed with it. That made the test pass against the defect it was written to catch.
+          const write = socWrites;
+          // The predecessor's VOD commit, held open so the reconnect lands inside its drain.
+          if (write === 2) {
+            await new Promise<void>((resolve) => {
+              releasePredecessor = resolve;
+            });
+          }
+          // The replacement's VOD commit, refused, so its own stop is a real `failed`.
+          if (write >= 4) {
+            return null;
+          }
+          return { reference: { toHex: () => `soc${write}` } };
+        },
+      },
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('first'));
+      const predecessorStop = orch.stopStream(id);
+      await waitFor(() => releasePredecessor !== null, SETTLE_CEILING_MS);
+
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('second'));
+      await orch.stopStream(id);
+
+      assert.equal(
+        orch.getStreamStatus(id).state,
+        'failed',
+        'the replacement published no VOD, so its own stop failed',
+      );
+
+      (releasePredecessor as unknown as () => void)();
+      await predecessorStop;
+      // The predecessor's own accounting runs in `finalizeRetiredSession`, which nothing awaits, so
+      // settle rather than poll a counter: the claim is that its verdict never lands on this id.
+      await sleep(50);
+
+      assert.equal(
+        orch.getStreamStatus(id).state,
+        'failed',
+        'a predecessor settling late overwrote the live session’s verdict with a VOD that is not its own',
+      );
+    });
+  });
+
+  it('counts one finalize when a reconnect replaces the session being stopped', async () => {
+    const published: unknown[] = [];
+    let releasePredecessor: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          if (socWrites === 2) {
+            await new Promise<void>((resolve) => {
+              releasePredecessor = resolve;
+            });
+          }
+          return { reference: { toHex: () => `soc${socWrites}` } };
+        },
+      },
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('first'));
+      const predecessorStop = orch.stopStream(id);
+      await waitFor(() => releasePredecessor !== null, SETTLE_CEILING_MS);
+
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+      (releasePredecessor as unknown as () => void)();
+      await predecessorStop;
+      await sleep(30);
+    });
+
+    const vods = published.filter((entry) => (entry as { state?: string }).state === 'vod').length;
+    assert.equal(vods, 1, 'this test is meaningless unless exactly one VOD was published');
+    assert.equal(
+      orch.getMetricsSnapshot().streamsFinalizedTotal,
+      1,
+      'both drains await the same memoized notifyStop, so one finalize was counted twice',
+    );
+  });
+});
+
+describe('StreamOrchestrator status during a handover (gate on PR 52)', () => {
+  const id = 'live/handover';
+
+  /**
+   * `/stream/status` and `/stream/segment` have to agree about whether a stream is draining. Matched
+   * on the id alone, one said draining while the other accepted segments, for as long as the
+   * predecessor's drain ran.
+   */
+  it('answers live for a replacement while its predecessor is still draining', async () => {
+    let releasePredecessor: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          const write = socWrites;
+          if (write === 2) {
+            await new Promise<void>((resolve) => {
+              releasePredecessor = resolve;
+            });
+          }
+          return { reference: { toHex: () => `soc${write}` } };
+        },
+      },
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('first'));
+      const predecessorStop = orch.stopStream(id);
+      await waitFor(() => releasePredecessor !== null, SETTLE_CEILING_MS);
+
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+      const status = orch.getStreamStatus(id);
+      const segment = orch.handleSegment(id, 0, 2, Buffer.from('second'));
+
+      assert.equal(segment.accepted, true, 'this test means nothing unless the replacement is really taking segments');
+      assert.equal(status.state, 'live', 'status said draining about a stream that was accepting segments');
+
+      (releasePredecessor as unknown as () => void)();
+      await predecessorStop;
+    });
+  });
+
+  it('still answers draining for a stop with no replacement behind it', async () => {
+    let releaseDrain: (() => void) | null = null;
+    let socWrites = 0;
+    const orch = makeTestOrchestrator(
+      {},
+      {
+        uploadPayload: async () => {
+          socWrites += 1;
+          const write = socWrites;
+          if (write === 2) {
+            await new Promise<void>((resolve) => {
+              releaseDrain = resolve;
+            });
+          }
+          return { reference: { toHex: () => `soc${write}` } };
+        },
+      },
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream(id, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(id, 0, 2, Buffer.from('only'));
+      const stop = orch.stopStream(id);
+      await waitFor(() => releaseDrain !== null, SETTLE_CEILING_MS);
+
+      assert.equal(
+        orch.getStreamStatus(id).state,
+        'draining',
+        'an ordinary stop in flight must still read as draining',
+      );
+
+      (releaseDrain as unknown as () => void)();
+      await stop;
+    });
+  });
+});
+
+describe('StreamOrchestrator unusable segment durations (gate on PR 52)', () => {
+  /**
+   * The backlog total adds a duration on enqueue and subtracts it when the job ends, so
+   * `Infinity - Infinity` leaves `NaN`, which no later segment clears. `getMetricsSnapshot` folds
+   * every stream through `Math.max`, and `Math.max(x, NaN)` is `NaN`, so one degenerate duration on
+   * one stream turned off the signal for the whole process while `/health` reported nothing wrong.
+   *
+   * The OME parser has screened durations since CON-7. The two paths that take the number from a
+   * caller, the HTTP route and the SRS webhook, never did.
+   */
+  const UNUSABLE: [string, number][] = [
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['NaN', NaN],
+    ['negative', -1],
+    ['longer than an hour', 3601],
+  ];
+
+  for (const [name, duration] of UNUSABLE) {
+    it(`refuses a ${name} duration instead of letting it poison the backlog signal`, async () => {
+      const orch = makeTestOrchestrator({}, { uploadData: neverSettles });
+
+      await withSilencedLogs(async () => {
+        orch.startStream('live/victim', MEDIA_TYPE_VIDEO);
+        orch.startStream('live/poisoned', MEDIA_TYPE_VIDEO);
+        await waitFor(() => orch.getActiveStreamCount() === 2, SETTLE_CEILING_MS);
+
+        for (let index = 0; index < 40; index++) {
+          orch.handleSegment('live/victim', index, 2, Buffer.from('v'));
+        }
+        const backlogBefore = orch.getMetricsSnapshot().queueBacklogSeconds;
+        assert.equal(backlogBefore, 80, 'this test means nothing unless a real backlog is being reported');
+
+        const result = orch.handleSegment('live/poisoned', 0, duration, Buffer.from('p'));
+
+        assert.equal(result.accepted, false, `a ${name} duration was accepted`);
+        assert.equal(
+          orch.getMetricsSnapshot().queueBacklogSeconds,
+          80,
+          `a ${name} duration destroyed the backlog reading for every stream in the process`,
+        );
+      });
+    });
+  }
+
+  it('still accepts an ordinary duration, and zero', async () => {
+    const orch = makeTestOrchestrator({}, { uploadData: neverSettles });
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/normal', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+      assert.equal(orch.handleSegment('live/normal', 0, 2, Buffer.from('a')).accepted, true);
+      assert.equal(orch.handleSegment('live/normal', 1, 0, Buffer.from('b')).accepted, true, 'zero publishes cleanly');
+      assert.equal(orch.getMetricsSnapshot().queueBacklogSeconds, 2);
+    });
+  });
+});
+
+describe('StreamOrchestrator finalize accounting (gate on PR 52)', () => {
+  /**
+   * `streams_finalized_total` documents itself as "Streams whose stop published a VOD", and it
+   * counted every stop that did not throw. A broadcast whose every upload failed reached the
+   * empty-manifest branch and returned normally, so it answered `finalized` byte for byte like a
+   * healthy stop, with the counter agreeing.
+   */
+  it('reports a broadcast that lost every segment as failed, not finalized', async () => {
+    const published: unknown[] = [];
+    const orch = makeTestOrchestrator(
+      {},
+      { uploadData: rejectImmediately },
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/lost', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment('live/lost', 0, 2, Buffer.from('a'));
+      orch.handleSegment('live/lost', 1, 2, Buffer.from('b'));
+      await orch.stopStream('live/lost');
+    });
+
+    assert.equal(published.length, 0, 'this test means nothing unless the catalog really got nothing');
+    assert.equal(orch.getStreamStatus('live/lost').state, 'failed');
+    const metrics = orch.getMetricsSnapshot();
+    assert.equal(metrics.streamsFinalizedTotal, 0, 'a broadcast with no recording counted as a published VOD');
+    assert.equal(metrics.streamsFailedTotal, 1);
+  });
+
+  /**
+   * The other side of the same line, and the reason it is a count of offered segments rather than a
+   * flag. A session nobody sent anything to ends cleanly: there is no recording because there was
+   * nothing to record, so it is neither a finalize nor a failure.
+   */
+  it('treats a stop of a stream that was never fed as neither published nor failed', async () => {
+    const published: unknown[] = [];
+    const orch = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/empty', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      await orch.stopStream('live/empty');
+    });
+
+    assert.equal(orch.getStreamStatus('live/empty').state, 'finalized', 'nothing went wrong, so nothing is reported');
+    const metrics = orch.getMetricsSnapshot();
+    assert.equal(metrics.streamsFinalizedTotal, 0, 'no VOD was published, so nothing counts as one');
+    assert.equal(metrics.streamsFailedTotal, 0);
+  });
+
+  it('counts a stop that really published a VOD', async () => {
+    const published: { state?: string }[] = [];
+    const orch = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/good', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment('live/good', 0, 2, Buffer.from('a'));
+      await orch.stopStream('live/good');
+    });
+
+    assert.equal(published.filter((entry) => entry.state === 'vod').length, 1);
+    assert.equal(orch.getMetricsSnapshot().streamsFinalizedTotal, 1);
   });
 });

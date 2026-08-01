@@ -29,12 +29,15 @@ export const REJECT_UNKNOWN_STREAM = 'unknown_stream' as const;
 export const REJECT_DUPLICATE = 'duplicate' as const;
 /** The stream is finalizing. Distinct from `unknown_stream`: it existed, and its manifest is closed. */
 export const REJECT_DRAINING = 'draining' as const;
+/** The declared duration is not a number a manifest or a running total can hold. */
+export const REJECT_UNUSABLE_DURATION = 'unusable_duration' as const;
 
 export type RejectReason =
   | typeof REJECT_QUEUE_FULL
   | typeof REJECT_UNKNOWN_STREAM
   | typeof REJECT_DUPLICATE
-  | typeof REJECT_DRAINING;
+  | typeof REJECT_DRAINING
+  | typeof REJECT_UNUSABLE_DURATION;
 
 export type SegmentResult = { accepted: true } | { accepted: false; reason: RejectReason };
 
@@ -59,13 +62,17 @@ export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure' as 
 export const HEALTH_REASON_QUEUE_PRESSURE = 'queue_pressure' as const;
 export const HEALTH_REASON_SEGMENT_STALL = 'segment_stall' as const;
 export const HEALTH_REASON_SEGMENT_LOSS = 'segment_loss' as const;
+export const HEALTH_REASON_UNLISTED_STREAM = 'unlisted_stream' as const;
+export const HEALTH_REASON_STATE_NOT_PERSISTED = 'state_not_persisted' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
   | typeof HEALTH_REASON_SEGMENT_UPLOAD_FAILURE
   | typeof HEALTH_REASON_QUEUE_PRESSURE
   | typeof HEALTH_REASON_SEGMENT_STALL
-  | typeof HEALTH_REASON_SEGMENT_LOSS;
+  | typeof HEALTH_REASON_SEGMENT_LOSS
+  | typeof HEALTH_REASON_UNLISTED_STREAM
+  | typeof HEALTH_REASON_STATE_NOT_PERSISTED;
 
 export interface HealthSignals {
   activeStreams: number;
@@ -90,9 +97,64 @@ export interface HealthSignals {
    * one behind it in the same pass.
    */
   msSinceSegmentLoss: number | null;
+  /**
+   * How long the longest-waiting live stream has been absent from the catalog, or `null` while every
+   * one of them is listed. The catalog entry is the only thing that makes a broadcast discoverable,
+   * so this is a stream publishing every segment on time that no viewer can find.
+   *
+   * On the wall clock rather than the orchestrator's injected one, because the uploader that owns the
+   * instant has no clock seam. Nothing in the policy compares it against a faked time.
+   */
+  msSinceCatalogAnnounceFailed: number | null;
+  /**
+   * How long this service has been unable to write the state it needs to survive a restart, across
+   * the recovery store and the catalog index, or `null` while every write is landing. Both write into
+   * `STATE_DIR`, so one number covers them.
+   *
+   * Nothing is wrong with the running process while this is set, which is what made it invisible: the
+   * damage is done by the next restart, which resumes a stream from stale segments or a catalog feed
+   * from an index readers have already passed.
+   */
+  msSinceStatePersistFailed: number | null;
+  /**
+   * Playing time still waiting to upload for the worst stream, in seconds, which is how far behind
+   * live a viewer of it is.
+   *
+   * `queuePressure` is a ratio against `MAX_QUEUE_SIZE`, and that ceiling has no relationship to how
+   * stale a playlist a viewer will tolerate: a 39 deep backlog reported `low` at roughly 78 seconds
+   * behind live. This is the number the policy can actually judge. See OBS-9.
+   */
+  queueBacklogSeconds: number;
 }
 
 export interface HealthReport {
   status: HealthStatus;
   reasons: HealthReason[];
+}
+
+export const STREAM_LIFECYCLE_LIVE = 'live' as const;
+export const STREAM_LIFECYCLE_DRAINING = 'draining' as const;
+export const STREAM_LIFECYCLE_FINALIZED = 'finalized' as const;
+export const STREAM_LIFECYCLE_FAILED = 'failed' as const;
+/** Never registered, or settled long enough ago that its outcome has been swept. */
+export const STREAM_LIFECYCLE_UNKNOWN = 'unknown' as const;
+
+export type StreamLifecycle =
+  | typeof STREAM_LIFECYCLE_LIVE
+  | typeof STREAM_LIFECYCLE_DRAINING
+  | typeof STREAM_LIFECYCLE_FINALIZED
+  | typeof STREAM_LIFECYCLE_FAILED
+  | typeof STREAM_LIFECYCLE_UNKNOWN;
+
+/**
+ * What became of a stream, for a caller that was answered `202` by `POST /stream/stop` and needs to
+ * find out whether the VOD it asked for exists.
+ */
+export interface StreamStatusReport {
+  streamId: string;
+  state: StreamLifecycle;
+  /** Why the finalize did not complete. Present only for `failed`. */
+  reason?: string;
+  /** When the stop settled, epoch milliseconds. Absent while the stream is live or draining. */
+  settledAt?: number;
 }

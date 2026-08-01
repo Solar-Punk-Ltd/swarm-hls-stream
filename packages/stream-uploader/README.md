@@ -49,13 +49,13 @@ The API server starts on port 3000 (default).
 
 **Required:**
 
-| Variable            | Description                                                                            |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `BEE_URL`           | Bee node API URL                                                                       |
-| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                  |
-| `STREAM_KEY`        | Private key (hex) for signing feeds                                                    |
-| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                      |
-| `API_AUTH_TOKEN`    | Bearer token for the `/stream/*` routes, minimum 32 characters. `openssl rand -hex 32` |
+| Variable            | Description                                                                                    |
+| ------------------- | ---------------------------------------------------------------------------------------------- |
+| `BEE_URL`           | Bee node API URL                                                                               |
+| `STAMP`             | Postage stamp ID (`pnpm stamp:setup`)                                                          |
+| `STREAM_KEY`        | Private key (hex) for signing feeds                                                            |
+| `STREAM_LIST_TOPIC` | Feed topic for the stream catalog                                                              |
+| `API_AUTH_TOKEN`    | Bearer token for `/stream/*` and `GET /metrics`, minimum 32 characters. `openssl rand -hex 32` |
 
 **Optional:**
 
@@ -78,33 +78,99 @@ Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live 
 
 Engine-independent HTTP interface for pushing segments directly.
 
-| Endpoint               | Method                               | Description                                |
-| ---------------------- | ------------------------------------ | ------------------------------------------ |
-| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                      |
-| `POST /stream/segment` | Raw body + headers                   | Push a segment                             |
-| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream                               |
-| `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
+| Endpoint               | Method                               | Description                                       |
+| ---------------------- | ------------------------------------ | ------------------------------------------------- |
+| `POST /stream/start`   | JSON body: `{ streamId, mediatype }` | Register a new stream                             |
+| `POST /stream/segment` | Raw body + headers                   | Push a segment. `400` on an unusable `x-duration` |
+| `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream, answered `202`                      |
+| `GET /stream/status`   | Query: `?streamId=<id>`              | What became of a stream                           |
+| `GET /metrics`         | —                                    | Prometheus exposition                             |
+| `GET /health`          | —                                    | Service health, `200` ok or `503` degraded        |
 
-All three `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, it accepts no input and it spends nothing. No compose healthcheck consumes it today.
+All four `/stream/*` routes and `GET /metrics` require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that accepts no input and spends nothing, and both the `stream-uploader` compose healthcheck and `deploy/scripts/health.sh` read it unauthenticated.
 
-The `/engines/*` webhook routes are **not** behind this gate. OME admission carries its own HMAC signature. The two SRS routes carry no credential at all, and `POST /engines/srs/hls` reaches the same stamp-spending path `/stream/segment` does, so on a default `ENGINE=srs` deployment an anonymous caller can still cause an upload. That is the open half of SEC-1, tracked as S1.2.
+The `/engines/*` webhook routes are **not** behind this gate, because each carries its own. OME admission is verified by HMAC signature, and the two SRS routes by `SRS_WEBHOOK_TOKEN` in the hook URL, which is the only channel SRS 6 offers. Both fail closed on an empty secret rather than disabling the check. This paragraph described `POST /engines/srs/hls` as reachable by an anonymous caller until S1.2 closed it, and the gate on this pull request measured every shape of both routes answering 401 with the orchestrator untouched.
+
+**Something reads `/health`.** The `stream-uploader` service declares a compose healthcheck that polls
+it every 30 seconds and treats the `503` of a degraded service as a failure, so `docker ps` shows
+`(unhealthy)` after three consecutive ones. Before that, every `503` this endpoint could raise was a
+value in a response body nobody requested.
+
+It reports and does not act, on purpose. Compose does not restart a container for failing its
+healthcheck, and nothing declares `depends_on: condition: service_healthy`. Restarting on degraded
+would be the wrong response anyway: most reasons describe media already lost or state already
+unwritten, and a restart drops every live broadcast to re-run a recovery that changes none of it.
+
+**Metrics.** `GET /metrics` serves Prometheus text exposition. These are process-lifetime totals and
+they deliberately outlive the streams they count, which is the one thing `/health` structurally cannot
+do: `/health` describes the streams registered right now, so at the moment a live session is wrongly
+killed it answers `ok` with `activeStreams: 0`.
+
+| Metric                                      | Type    | Meaning                                                   |
+| ------------------------------------------- | ------- | --------------------------------------------------------- |
+| `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                      |
+| `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone   |
+| `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin    |
+| `swarm_hls_manifest_publish_failures_total` | counter | Live manifest publishes that failed                       |
+| `swarm_hls_streams_finalized_total`         | counter | Stops that published a VOD                                |
+| `swarm_hls_streams_failed_total`            | counter | Stops that did not. Those broadcasts have no recording    |
+| `swarm_hls_last_segment_timestamp_seconds`  | gauge   | Unix time of the newest segment that landed, 0 while none |
+| `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing           |
+| `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream            |
+| `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream            |
+
+Unlike `/health`, `/metrics` is behind the bearer gate, and the honest reason is narrower than it first
+looks: `/health` already discloses `activeStreams`, `queuePressure` and `msSinceStreamActivity` to anyone
+who asks, so the gate is really protecting the six process-lifetime counters, which say how many
+broadcasts have run and how many were lost. Point a scraper at it
+with an `authorization` credential:
+
+```yaml
+# `stream-uploader:3000` is the default only. `API_PORT` sets both sides of the compose port map,
+# and `deploy.sh --portSlot` shifts it, so a second instance listens on 10010 rather than 3000.
+scrape_configs:
+  - job_name: swarm-hls-stream
+    authorization:
+      credentials: <API_AUTH_TOKEN>
+    static_configs:
+      - targets: ['stream-uploader:3000']
+```
+
+**Stop is asynchronous.** `POST /stream/stop` answers `202` with `{ ok, accepted, streamId, statusUrl }`
+and drains in the background, because a drain has five minutes to publish its VOD and no media server
+will hold a webhook open that long. The outcome is read from `GET /stream/status?streamId=<id>`, which
+answers one of:
+
+| `state`     | Meaning                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------ |
+| `live`      | Registered and accepting segments                                                          |
+| `draining`  | Stopping, the VOD has not settled yet                                                      |
+| `finalized` | The VOD manifest was committed and the catalog entry published                             |
+| `failed`    | The finalize did not complete, with a `reason`. There is no VOD, and no retry is scheduled |
+
+A stream the service has never seen, or one whose stop settled more than fifteen minutes ago, answers
+`404` rather than a state, so a caller polling a mistyped id is not told its broadcast is fine.
 
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
 `reasons` array:
 
-| Reason                   | Meaning                                                                                                                                                                                                                          |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `segment_upload_failure` | A segment reached the uploader but its upload retry window was spent, so that data is gone                                                                                                                                       |
-| `segment_loss`           | The engine could not obtain a segment from its origin at all, so it never reached the uploader. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it |
-| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                             |
-| `queue_pressure`         | A segment queue above 80% of `MAX_QUEUE_SIZE`                                                                                                                                                                                    |
-| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                        |
+| Reason                   | Meaning                                                                                                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `segment_upload_failure` | A segment reached the uploader but its upload retry window was spent, so that data is gone                                                                                                                                           |
+| `segment_loss`           | The engine could not obtain a segment from its origin at all, so it never reached the uploader. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it     |
+| `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                                 |
+| `queue_pressure`         | Either a segment queue above 80% of `MAX_QUEUE_SIZE`, where the next segments start being refused, or a backlog holding more than `SEGMENT_STALL_MS` of playing time, which is how far behind live a viewer is                       |
+| `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                            |
+| `unlisted_stream`        | A live stream is absent from the catalog, so no viewer can find it. Reported from the first failed announce, with no threshold, because `StreamCatalog` has already spent its own 10 second retry window by then                     |
+| `state_not_persisted`    | A write into `STATE_DIR` is failing, so the next restart resumes a stream from stale segments or the catalog feed from an index readers have already passed. Nothing is wrong with the running process, which is why it needs saying |
 
 `segment_stall` is measured per stream and reported for the worst one, so a busy stream does not mask a dead
 one. A draining stream and a stream awaiting a post-crash reconnect are both excluded, because neither is
 expected to be sending. The body also carries `activeStreams`, `staleManifestStreams`,
-`maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`
-and `engines`.
+`maxConsecutiveManifestFailures`, `maxConsecutiveSegmentFailures`, `queuePressure`, `msSinceStreamActivity`,
+`msSinceSegmentLoss`, `msSinceCatalogAnnounceFailed`, `msSinceStatePersistFailed`, `queueBacklogSeconds`
+and `engines`. `queueBacklogSeconds` is the only field that says which of `queue_pressure`'s two triggers
+fired.
 
 **Segment headers:**
 
@@ -202,6 +268,11 @@ curl -X POST http://localhost:3000/stream/stop \
   -H "Authorization: Bearer $API_AUTH_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"streamId": "test/mystream"}'
+
+# The stop is accepted, not completed. Poll for what became of it.
+curl -G http://localhost:3000/stream/status \
+  -H "Authorization: Bearer $API_AUTH_TOKEN" \
+  --data-urlencode 'streamId=test/mystream'
 ```
 
 ## Core Components

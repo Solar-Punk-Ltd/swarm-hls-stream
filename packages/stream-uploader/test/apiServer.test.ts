@@ -13,6 +13,8 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_STATE_NOT_PERSISTED,
+  HEALTH_REASON_UNLISTED_STREAM,
   MEDIA_TYPE_VIDEO,
   REJECT_DRAINING,
   REJECT_UNKNOWN_STREAM,
@@ -23,6 +25,7 @@ import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
 import { FakeClock } from './helpers/fakeClock.js';
 import {
   FakeUploads,
+  makeFakeCatalog,
   makeFakeRecoveryStore,
   makeRecoveredState,
   makeTestOrchestrator,
@@ -95,6 +98,9 @@ describe('api server over http (S0.7 test layer)', () => {
         'engines',
         'maxConsecutiveManifestFailures',
         'maxConsecutiveSegmentFailures',
+        'msSinceCatalogAnnounceFailed',
+        'msSinceStatePersistFailed',
+        'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',
         'queuePressure',
@@ -150,6 +156,143 @@ describe('api server over http (S0.7 test layer)', () => {
 
     assert.equal(status, 404);
     assert.deepEqual(body, { ok: false, error: 'Unknown stream: live/ghost', statusCode: 404 });
+  });
+});
+
+describe('POST /stream/segment duration validation (gate on PR 52)', () => {
+  const servers: ApiTestServer[] = [];
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  /**
+   * `parseFloat('Infinity')` is `Infinity` and `isNaN(Infinity)` is false, so the route's own guard
+   * waved it through. It then reached `#EXTINF` verbatim, buying an unplayable playlist with postage,
+   * and latched the backlog gauge to NaN for every stream in the process.
+   */
+  it('answers 400 for a duration no manifest and no running total can hold', async () => {
+    const api = await startTestApi(makeTestOrchestrator());
+    servers.push(api);
+
+    await api.request('/stream/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ streamId: STREAM_ID, mediatype: MEDIA_TYPE_VIDEO }),
+    });
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    for (const value of ['Infinity', '-Infinity', '1e999', '-1']) {
+      const { status } = await api.request('/stream/segment', {
+        method: 'POST',
+        headers: {
+          'content-type': 'video/mp2t',
+          'x-stream-id': STREAM_ID,
+          'x-segment-index': '0',
+          'x-duration': value,
+        },
+        body: Buffer.from('seg'),
+      });
+
+      assert.equal(status, 400, `x-duration: ${value} was accepted`);
+    }
+
+    const { body } = await api.request('/metrics');
+    assert.ok(
+      String(body).includes('swarm_hls_queue_backlog_seconds 0'),
+      `the backlog gauge was poisoned by a refused segment: ${String(body).match(/queue_backlog_seconds.*/)?.[0]}`,
+    );
+  });
+});
+
+describe('POST /stream/stop outcome (S2.5, OBS-3)', () => {
+  const servers: ApiTestServer[] = [];
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  async function start(...args: Parameters<typeof startTestApi>): Promise<ApiTestServer> {
+    const server = await startTestApi(...args);
+    servers.push(server);
+    return server;
+  }
+
+  function stop(api: ApiTestServer, streamId = STREAM_ID) {
+    return api.request('/stream/stop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ streamId }),
+    });
+  }
+
+  function status(api: ApiTestServer, streamId = STREAM_ID) {
+    return api.request(`/stream/status?streamId=${encodeURIComponent(streamId)}`);
+  }
+
+  it('accepts the stop with 202 and names where the outcome will be', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    const { status: code, body } = await stop(api);
+
+    assert.equal(code, 202, 'a stop is accepted, not completed, because the drain outruns any webhook');
+    assert.equal((body as { statusUrl?: string }).statusUrl, '/stream/status');
+  });
+
+  /**
+   * The whole of OBS-3, read the way a caller would. The finalize cannot publish its VOD, and before
+   * this the caller was told `ok`: `drainUploader` caught its own failure and returned normally, so
+   * the rejection the route watches for never arrived either.
+   */
+  it('reports a finalize that never published, where it used to answer ok', async () => {
+    const api = await start(makeTestOrchestrator({}, { uploadPayload: rejectImmediately }));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+    await stop(api);
+
+    const { status: code, body } = await api.requestUntil(
+      `/stream/status?streamId=${encodeURIComponent(STREAM_ID)}`,
+      (received) => (received as { state?: string }).state !== 'draining',
+    );
+
+    assert.equal(code, 200);
+    assert.equal((body as { state?: string }).state, 'failed');
+    assert.ok((body as { reason?: string }).reason, 'a failed stop with no reason is not actionable');
+  });
+
+  it('reports a stop that published as finalized', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+    await stop(api);
+
+    const { body } = await api.requestUntil(
+      `/stream/status?streamId=${encodeURIComponent(STREAM_ID)}`,
+      (received) => (received as { state?: string }).state !== 'draining',
+    );
+
+    assert.equal((body as { state?: string }).state, 'finalized');
+  });
+
+  it('answers 404 for a stream it never saw, rather than a state', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    const { status: code } = await status(api, 'live/never');
+
+    assert.equal(code, 404, 'a caller polling a typo must not be told its broadcast is fine');
+  });
+
+  it('rejects a status request with no streamId', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    const { status: code } = await api.request('/stream/status');
+
+    assert.equal(code, 400);
   });
 });
 
@@ -293,6 +436,70 @@ describe('GET /health status (S2.1)', () => {
     assert.equal(status, 503);
     assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
     assert.deepEqual((body as HealthBody).reasons, [HEALTH_REASON_STALE_MANIFEST]);
+  });
+
+  /**
+   * The whole path, not the policy function: a real orchestrator, a real uploader and a catalog that
+   * refuses the write, read over HTTP. The media path is perfect here, every segment lands in Swarm
+   * and the live manifest publishes, and the broadcast is still unwatchable because nothing lists it.
+   * That combination used to answer `200 ok`.
+   */
+  it('reports degraded and 503 when a live stream never reaches the catalog (CON-3)', async () => {
+    const refusingCatalog = makeFakeCatalog({
+      addStream: async () => {
+        throw new Error('catalog feed write refused');
+      },
+    });
+    const api = await start(makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), refusingCatalog));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).reasons?.includes(HEALTH_REASON_UNLISTED_STREAM) === true,
+    );
+
+    assert.equal(status, 503);
+    assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
+    assert.deepEqual(
+      (body as HealthBody).reasons,
+      [HEALTH_REASON_UNLISTED_STREAM],
+      'the media path is healthy, so being unlisted has to be its own reason rather than riding on another',
+    );
+  });
+
+  /**
+   * S2.6's acceptance criterion, read over HTTP rather than through `deriveHealthStatus`. Everything
+   * about the running process is fine and stays fine, which is exactly why this was invisible: the
+   * segment uploads, the manifest publishes, the catalog accepts it, and the only thing that has
+   * happened is that a crash would now resume from state older than reality.
+   */
+  it('reports degraded and 503 when a stream cannot persist its recovery state (OBS-4)', async () => {
+    const refusingStore = makeFakeRecoveryStore({
+      save: () => {
+        throw new Error('ENOSPC: no space left on device');
+      },
+    });
+    const api = await start(makeTestOrchestrator({}, {}, refusingStore));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).reasons?.includes(HEALTH_REASON_STATE_NOT_PERSISTED) === true,
+    );
+
+    assert.equal(status, 503);
+    assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
+    assert.deepEqual(
+      (body as HealthBody).reasons,
+      [HEALTH_REASON_STATE_NOT_PERSISTED],
+      'nothing else is wrong, so a swallowed persist has to raise this on its own or stay invisible',
+    );
   });
 
   it('reports degraded and 503 when accepted segments are not reaching swarm', async () => {

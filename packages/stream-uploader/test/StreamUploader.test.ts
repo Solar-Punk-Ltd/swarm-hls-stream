@@ -54,7 +54,7 @@ function newUploader(
     'stamp',
     'stream-test',
     MEDIA_TYPE_VIDEO,
-    opts.restoreState as never,
+    { restoreState: opts.restoreState as never },
   );
 }
 
@@ -272,11 +272,11 @@ describe('StreamUploader finalization (CON-25)', () => {
         },
       }),
     } as unknown as Bee;
-    const catalog = {
+    const catalog = makeFakeCatalog({
       addStream: async (entry: { state: string }) => {
         published.push(entry);
       },
-    } as unknown as StreamCatalog;
+    });
 
     const uploader = new StreamUploader(
       bee,
@@ -309,5 +309,156 @@ describe('StreamUploader finalization (CON-25)', () => {
       [0, 1],
       'the second finalize committed another VOD manifest at the next index, paid for and identical',
     );
+  });
+});
+
+describe('StreamUploader catalog announce backoff (CON-3)', () => {
+  function makeCatalog(attempts: unknown[], shouldFail: () => boolean): StreamCatalog {
+    return makeFakeCatalog({
+      addStream: async (entry: unknown) => {
+        attempts.push(entry);
+        if (shouldFail()) {
+          throw new Error('catalog feed write refused');
+        }
+      },
+    });
+  }
+
+  function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs: number): StreamUploader {
+    return new StreamUploader(
+      makeBee({}),
+      '',
+      catalog,
+      makeFakeRecoveryStore(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+      { catalogAnnounceRetryMs },
+    );
+  }
+
+  async function publishSegments(uploader: StreamUploader, count: number): Promise<void> {
+    for (let index = 0; index < count; index++) {
+      uploader.handleSegment(index, 2, Buffer.from(`seg${index}`));
+      await drain(uploader);
+    }
+  }
+
+  /**
+   * A failed announce left `isFirstManifestReady` false, so every later manifest publish tried again:
+   * a feed read, a feed write and the postage for it once per segment, for as long as the catalog was
+   * down, with nothing surfaced.
+   */
+  it('attempts the catalog announce once per retry window, not once per segment', async () => {
+    const attempts: unknown[] = [];
+    const uploader = newAnnouncingUploader(
+      makeCatalog(attempts, () => true),
+      60_000,
+    );
+
+    await publishSegments(uploader, 5);
+
+    assert.equal(attempts.length, 1, `five segments cost ${attempts.length} paid catalog writes against a dead feed`);
+  });
+
+  /**
+   * The other half, and the one that matters more: the catalog entry is the only thing that makes a
+   * live broadcast discoverable, so an announce that gives up leaves the stream running and unlistable
+   * for its whole duration. Suppressing the retry is a worse outcome than the cost it was suppressing.
+   */
+  it('keeps retrying once the window has elapsed, so a recovered catalog still lists the stream', async () => {
+    const attempts: unknown[] = [];
+    let catalogIsDown = true;
+    const uploader = newAnnouncingUploader(
+      makeCatalog(attempts, () => catalogIsDown),
+      0,
+    );
+
+    await publishSegments(uploader, 2);
+    assert.equal(attempts.length, 2, 'a zero window must not suppress anything');
+
+    catalogIsDown = false;
+    await publishSegments(uploader, 1);
+
+    assert.equal(attempts.length, 3, 'the announce never landed after the catalog came back');
+    assert.equal(uploader.getMsSinceCatalogAnnounceFailed(), null, 'a listed stream still reads as unlisted');
+  });
+
+  it('stops announcing once the catalog accepts it', async () => {
+    const attempts: unknown[] = [];
+    const uploader = newAnnouncingUploader(
+      makeCatalog(attempts, () => false),
+      0,
+    );
+
+    await publishSegments(uploader, 4);
+
+    assert.equal(attempts.length, 1, 'a listed stream re-announced itself on every publish');
+  });
+
+  /**
+   * An age rather than a count, because the retry window and the segment cadence are unrelated, so a
+   * count of failures says nothing about how long a viewer has been unable to find the broadcast.
+   */
+  it('reports how long the stream has been live and unlisted', async () => {
+    const attempts: unknown[] = [];
+    const uploader = newAnnouncingUploader(
+      makeCatalog(attempts, () => true),
+      60_000,
+    );
+
+    assert.equal(uploader.getMsSinceCatalogAnnounceFailed(), null, 'nothing has failed yet');
+
+    await publishSegments(uploader, 1);
+
+    const age = uploader.getMsSinceCatalogAnnounceFailed();
+    assert.ok(age !== null && age >= 0, `a live unlisted stream must be reportable, got ${age}`);
+  });
+});
+
+describe('StreamUploader recovery persist failures (OBS-4)', () => {
+  function newUploaderWithStore(recoveryStore: RecoveryStore): StreamUploader {
+    return new StreamUploader(
+      makeBee({}),
+      '',
+      makeFakeCatalog(),
+      recoveryStore,
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+  }
+
+  /**
+   * A swallowed persist means recovery loads state older than reality, so a crash re-uploads or drops
+   * everything written since the last save that landed. Nothing outside the log said it had happened.
+   */
+  it('reports how long state has been failing to persist', async () => {
+    let saveFails = true;
+    const uploader = newUploaderWithStore(
+      makeFakeRecoveryStore({
+        save: () => {
+          if (saveFails) {
+            throw new Error('ENOSPC: no space left on device');
+          }
+        },
+      }),
+    );
+
+    assert.equal(uploader.getMsSinceStatePersistFailed(), null, 'nothing has been written yet');
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    const age = uploader.getMsSinceStatePersistFailed();
+    assert.ok(age !== null && age >= 0, `a stream whose state is not on disk must be reportable, got ${age}`);
+
+    saveFails = false;
+    uploader.handleSegment(1, 2, Buffer.from('seg1'));
+    await drain(uploader);
+
+    assert.equal(uploader.getMsSinceStatePersistFailed(), null, 'a save that landed must clear the signal');
   });
 });

@@ -42,17 +42,28 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
   } as unknown as Bee;
 }
 
-export function makeFakeCatalog(): StreamCatalog {
-  return { addStream: async () => {} } as unknown as StreamCatalog;
+/**
+ * Every method the orchestrator and the uploader call on the catalog, so a stub cannot go stale by
+ * omitting one. Cast through `unknown`, so a method the callers start using is not a compile error
+ * anywhere: it is a runtime failure in whichever tests happen to reach that line. That has now
+ * happened three times in this repository, twice on the orchestrator stub and once here, which is
+ * why the shape lives in one place and every stub takes overrides rather than rebuilding it.
+ */
+export function makeFakeCatalog(overrides: Record<string, unknown> = {}): StreamCatalog {
+  return {
+    addStream: async () => {},
+    getMsSinceIndexSaveFailed: () => null,
+    ...overrides,
+  } as unknown as StreamCatalog;
 }
 
 /** A catalog that appends every published entry, for asserting that a VOD actually landed. */
 export function makeRecordingCatalog(published: unknown[]): StreamCatalog {
-  return {
+  return makeFakeCatalog({
     addStream: async (entry: unknown) => {
       published.push(entry);
     },
-  } as unknown as StreamCatalog;
+  });
 }
 
 export function makeFakeRecoveryStore(overrides: Partial<Record<keyof RecoveryStore, unknown>> = {}): RecoveryStore {

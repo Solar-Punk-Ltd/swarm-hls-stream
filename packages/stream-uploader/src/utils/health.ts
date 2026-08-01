@@ -6,6 +6,8 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_STATE_NOT_PERSISTED,
+  HEALTH_REASON_UNLISTED_STREAM,
   HealthReason,
   HealthReport,
   HealthSignals,
@@ -31,6 +33,8 @@ export const MANIFEST_FAILURE_THRESHOLD = 3;
  */
 export const SEGMENT_FAILURE_THRESHOLD = 1;
 
+const MS_PER_SECOND = 1_000;
+
 /**
  * The whole degradation policy, kept in one pure function so every threshold is assertable without
  * a running server or a clock.
@@ -46,7 +50,12 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
     reasons.push(HEALTH_REASON_SEGMENT_UPLOAD_FAILURE);
   }
 
-  if (signals.queuePressure === PRESSURE_HIGH) {
+  // Two triggers for one reason, because they answer different questions. The ratio says the queue is
+  // near the ceiling where `handleSegment` starts refusing segments outright. The backlog says how
+  // far behind live the stream already is, judged against the same window a silence is judged against,
+  // since a viewer cannot tell a playlist that stopped from one that is a minute stale.
+  const isBacklogged = signals.queueBacklogSeconds * MS_PER_SECOND > segmentStallMs;
+  if (signals.queuePressure === PRESSURE_HIGH || isBacklogged) {
     reasons.push(HEALTH_REASON_QUEUE_PRESSURE);
   }
 
@@ -55,6 +64,20 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   const hasRecentLoss = signals.msSinceSegmentLoss !== null && signals.msSinceSegmentLoss <= segmentStallMs;
   if (hasRecentLoss) {
     reasons.push(HEALTH_REASON_SEGMENT_LOSS);
+  }
+
+  // No threshold, unlike the manifest counter, because a failure that reaches this signal has already
+  // survived `StreamCatalog`'s own 10 second retry window: there is no hiccup left to ride out, and
+  // the state it reports is a broadcast that is running and that no viewer can find.
+  if (signals.msSinceCatalogAnnounceFailed !== null) {
+    reasons.push(HEALTH_REASON_UNLISTED_STREAM);
+  }
+
+  // No threshold either, and for a different reason from the one above: nothing is wrong with the
+  // running process while this is set, so there is no failure to ride out. The damage is entirely in
+  // the future, and it arrives whole at the next restart.
+  if (signals.msSinceStatePersistFailed !== null) {
+    reasons.push(HEALTH_REASON_STATE_NOT_PERSISTED);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;
