@@ -158,8 +158,10 @@ clean_target() {
     # Run the teardown with stderr visible so the user actually sees what was removed.
     # `|| true` lets us continue to the safety-net sweep below even when compose has
     # nothing to do (or the env/config drifted since the deploy).
-    # shellcheck disable=SC2086
-    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles $down_flags || true
+    # SC2046 alongside SC2086: `env_file_flag` emits two words or none, and the splitting is the
+    # point. Quoting it would send compose an empty argument when the profile has no env file.
+    # shellcheck disable=SC2086,SC2046
+    docker compose $project_flag $compose_files $(env_file_flag) $profiles $down_flags || true
 
     # Safety net: nuke any leftover containers labelled with this compose project,
     # in case config.json or the env file has drifted since the deploy and `down`

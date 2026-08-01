@@ -4,26 +4,8 @@ import { nodeWallets } from './commands/node-wallets.js';
 import { stampBuy } from './commands/stamp-buy.js';
 import { stampCheck } from './commands/stamp-check.js';
 import { stampSetup } from './commands/stamp-setup.js';
+import { parseArgs, ParsedArgs, stampArgs } from './lib/args.js';
 import { error } from './lib/output.js';
-import { StampCommandArgs } from './lib/stamp.js';
-
-interface ParsedArgs {
-  command: string;
-  url?: string;
-  immutable?: boolean;
-  assumeYes: boolean;
-  positional: string[];
-}
-
-function stampArgs(a: ParsedArgs): StampCommandArgs {
-  return {
-    url: a.url,
-    amount: a.positional[0],
-    depth: a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
-    immutable: a.immutable,
-    assumeYes: a.assumeYes,
-  };
-}
 
 const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
   'node-status': (a) => nodeStatus(a.url),
@@ -35,30 +17,6 @@ const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
   },
   'stamp-setup': (a) => stampSetup(stampArgs(a)),
 };
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const args = argv.slice(2);
-  const command = args[0];
-  let url: string | undefined;
-  let immutable: boolean | undefined;
-  let assumeYes = false;
-  const positional: string[] = [];
-
-  for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--url' && args[i + 1]) {
-      url = args[i + 1];
-      i++;
-    } else if (args[i] === '--immutable') {
-      immutable = true;
-    } else if (args[i] === '--yes' || args[i] === '-y') {
-      assumeYes = true;
-    } else {
-      positional.push(args[i]);
-    }
-  }
-
-  return { command, url, immutable, assumeYes, positional };
-}
 
 function printUsage(): void {
   console.log('Usage: tsx packages/cli/src/index.ts <command> [--url <bee-url>] [args...]');

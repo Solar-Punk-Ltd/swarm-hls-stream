@@ -67,6 +67,39 @@ describe('load_env does not evaluate .env values (OPS-6)', () => {
     ]);
   });
 
+  // A `.env` key that happens to name one of the library's own variables must not become that
+  // variable. `load_env_file` skips a key that is already set, and an EMPTY ARRAY reads as unset to
+  // `${!key+x}`, so a plain `FILTER_SERVICES=client` line used to claim the array's first element.
+  // `stop.sh` with no arguments then stopped only `client`, or with a name matching nothing, stopped
+  // nothing at all and still printed "All services stopped". In `clean.sh`, which loads the env
+  // before it parses argv, that element reached the unquoted remote heredoc.
+  it('does not let a .env key claim one of the library own array variables', async () => {
+    const sandbox = makeSandbox({
+      envFiles: { '.env': 'STAMP=stamp\nSTREAM_KEY=key\nFILTER_SERVICES=client\nREST_ARGS=client\n' },
+    });
+
+    const run = await sourceLib(sandbox, 'load_env\necho "filter=${#FILTER_SERVICES[@]} rest=${#REST_ARGS[@]}"');
+
+    assert.equal(run.exitCode, 0, `load_env failed: ${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, /filter=0 rest=0/, 'a .env line wrote into an array the library owns');
+  });
+
+  // The same defect at the level that shows the harm. Asserting the array stays empty is necessary
+  // and not sufficient: what matters is that the command the operator gets is the one they asked for.
+  it('stops the whole stack when a .env names the service filter', async () => {
+    const sandbox = makeSandbox({
+      envFiles: { '.env': 'STAMP=stamp\nSTREAM_KEY=key\nFILTER_SERVICES=client\n' },
+    });
+
+    await runScriptOk(sandbox, 'stop.sh', []);
+
+    const down = sandbox.calls().find((call) => / down(\s|$)/.test(call));
+    assert.ok(down, `a .env line suppressed the teardown entirely; calls: ${sandbox.calls().join(' | ')}`);
+    for (const service of ['bee-uploader', 'bee-gateway', 'stream-uploader', 'srs', 'ome', 'client']) {
+      assert.match(down, new RegExp(`--profile ${service}(\\s|$)`), `${service} was dropped by a .env line`);
+    }
+  });
+
   // The function-level proof above cannot see a second evaluation further down the chain. A real
   // script loads the root env, then the engine envs, then resolves ports and prints a topology, and
   // any one of those re-expanding a value would run the command the parser refused to.

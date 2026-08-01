@@ -46,7 +46,13 @@ export async function stampSetup(args: StampCommandArgs = {}, seams: StampSetupS
 
   const target = resolveBeeUploaderTarget();
   const url = urlOverride ?? target.url;
-  const options = resolveStampOptions(amount, depth, immutable);
+  let options: StampOptions;
+  try {
+    options = resolveStampOptions(amount, depth, immutable);
+  } catch (err) {
+    error(err instanceof Error ? err.message : 'Invalid stamp options');
+    return exit(1);
+  }
   const envPath = seams.envPath ?? getEnvPath();
 
   header(`Stamp Setup (${url})`);
@@ -110,11 +116,16 @@ export async function stampSetup(args: StampCommandArgs = {}, seams: StampSetupS
   // caught by this catch and downgraded to "Could not check wallet", and the run bought a stamp
   // anyway. That made the branch untestable through the exit seam and one refactor away from being
   // untrue in production too.
+  // Deliberately before the try below. `quoteStamp` reaches the chain for a price and swallows its
+  // own failure, but the cost it computes is pure arithmetic that can still throw, and inside that
+  // try any throw is reported as "Could not check the wallet balance" — the node blamed for a fault
+  // that is not the node's.
+  const quote = await quoteStamp(bee, options);
+
   let funding: { affordsBatch: boolean; hasGas: boolean; address: string; balance: string; cost: string };
   try {
     const addresses = await bee.getNodeAddresses();
     const wallet = await bee.getWalletBalance();
-    const quote = await quoteStamp(bee, options);
 
     table('Node address', addresses.ethereum.toHex());
     table('BZZ balance', wallet.bzzBalance.toDecimalString());

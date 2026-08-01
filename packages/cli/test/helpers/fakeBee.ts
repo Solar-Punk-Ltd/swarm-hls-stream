@@ -51,8 +51,22 @@ export interface FakeBeeOptions {
  */
 export const TEST_BATCH = { amount: '10000000000', depth: 20 };
 
-/** What TEST_BATCH costs, so a fixture wallet can be put on either side of affording it. */
-export const TEST_BATCH_COST_PLUR = Utils.getStampCost(TEST_BATCH.depth, TEST_BATCH.amount).toPLURBigInt();
+/**
+ * What TEST_BATCH costs, so a fixture wallet can be put on either side of affording it.
+ *
+ * A literal, deliberately, rather than `Utils.getStampCost(TEST_BATCH.depth, TEST_BATCH.amount)`.
+ * Calling the same helper the production code calls made the fixture move with the formula: halving
+ * the quoted cost halved this balance too, so the affordability boundary tests still landed on the
+ * correct side and the whole suite stayed green. `amount * 2 ** depth` is 10000000000 * 2**20.
+ */
+export const TEST_BATCH_COST_PLUR = 10_485_760_000_000_000n;
+
+/** The same number as the CLI renders it, so a test can pin what the operator is shown. */
+export const TEST_BATCH_COST_BZZ = '1.048576';
+
+/** PLUR per chunk per block the fake node reports, and the lifetime that implies for TEST_BATCH. */
+export const TEST_CHAIN_PRICE = 24000;
+export const TEST_BATCH_DURATION = '3 weeks';
 
 export interface FakeBee {
   bee: Bee;
@@ -115,7 +129,7 @@ export function createFakeBee(options: FakeBeeOptions = {}): FakeBee {
       if (options.chainStateError) {
         throw new Error(options.chainStateError);
       }
-      return { chainTip: 1, block: 1, totalAmount: '0', currentPrice: options.currentPrice ?? 24000 };
+      return { chainTip: 1, block: 1, totalAmount: '0', currentPrice: options.currentPrice ?? TEST_CHAIN_PRICE };
     },
 
     getPostageBatches: async () => (options.existingBatches ?? []).map((b) => batch(b.batchID, b.usable)),

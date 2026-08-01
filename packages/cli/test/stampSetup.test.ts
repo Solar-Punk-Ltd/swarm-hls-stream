@@ -7,7 +7,13 @@ import { after, beforeEach, describe, it } from 'node:test';
 
 import { stampSetup, StampSetupSeams } from '../src/commands/stamp-setup.js';
 
-import { TEST_BATCH, TEST_BATCH_COST_PLUR } from './helpers/fakeBee.js';
+import {
+  TEST_BATCH,
+  TEST_BATCH_COST_BZZ,
+  TEST_BATCH_COST_PLUR,
+  TEST_BATCH_DURATION,
+  TEST_CHAIN_PRICE,
+} from './helpers/fakeBee.js';
 
 // Unique per process. A fixed id let the recovery file this suite leaks into the shared temp
 // directory satisfy the next run's assertion, so the entire fallback mechanism could be deleted and
@@ -39,6 +45,9 @@ after(() => {
   }
 });
 
+/** Set by `run` for the duration of a run, so a seam can read the output printed up to its own call. */
+let capture: () => string = () => '';
+
 class ExitCalled extends Error {
   constructor(readonly code: number) {
     super(`exit(${code})`);
@@ -66,7 +75,7 @@ function walletBee({ bzzPlur, xdaiWei = 1n, batches = [] }: WalletBeeOptions = {
       bzzBalance: BZZ.fromPLUR(bzzPlur ?? TEST_BATCH_COST_PLUR * 2n),
       nativeTokenBalance: DAI.fromWei(xdaiWei),
     }),
-    getChainState: async () => ({ chainTip: 1, block: 1, totalAmount: '0', currentPrice: 24000 }),
+    getChainState: async () => ({ chainTip: 1, block: 1, totalAmount: '0', currentPrice: TEST_CHAIN_PRICE }),
     getPostageBatches: async () => batches,
   } as unknown as Bee;
 }
@@ -91,6 +100,9 @@ async function run(
   for (const name of sinks) {
     console[name] = (...args: unknown[]) => void captured.push(args.map(String).join(' '));
   }
+
+  /** Everything printed so far, for a seam that needs to know what was on screen when it ran. */
+  capture = () => captured.join('\n');
 
   let spends = 0;
   let exitCode: number | undefined;
@@ -282,11 +294,30 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
   // Nothing prints the price of what is about to be bought unless it is asserted. The cost is
   // derived rather than looked up, so an operator typing a depth one digit out has only this line
   // between them and a batch costing four times what they meant to spend.
-  it('shows the cost and the lifetime before the spend', async () => {
-    const result = await run({ envPath });
+  it('shows the cost and the lifetime, and shows them before it asks', async () => {
+    let shownWhenAsked = '';
+    const result = await run({
+      envPath,
+      confirm: async () => {
+        shownWhenAsked = capture();
+        return true;
+      },
+    });
 
-    assert.match(result.output, /Cost: [\d.]+ BZZ/);
-    assert.match(result.output, /Lasts for: \S+/);
+    // Asserted against what was on screen AT THE MOMENT OF THE PROMPT, not against the whole run.
+    // Matching the full output cannot tell a quote printed before the question from one printed
+    // after the money is gone, and this test is named for the ordering.
+    assert.match(
+      shownWhenAsked,
+      new RegExp(`Cost: ${TEST_BATCH_COST_BZZ} BZZ`),
+      'the cost was not shown before asking',
+    );
+    assert.match(
+      shownWhenAsked,
+      new RegExp(`Lasts for: ${TEST_BATCH_DURATION}`),
+      'the lifetime was not shown before asking',
+    );
+    assert.equal(result.exitCode, undefined);
   });
 
   it('does not spend when the confirmation is declined', async () => {
@@ -295,6 +326,27 @@ describe('stampSetup, OPS-1: no path loses the batch id after a spend', () => {
     assert.equal(result.spends, 0, 'a declined confirmation still bought a stamp');
     assert.equal(result.exitCode, 1);
     assert.match(result.output, /No money has been spent/);
+  });
+
+  // Nothing guarded the OTHER end of the ordering: the prompt sits after the writability check on
+  // purpose, so nobody is asked to approve a purchase this run was about to refuse anyway. Moving
+  // the ask earlier left the whole suite green.
+  it('does not ask when the batch id could not have been recorded anyway', async () => {
+    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+    chmodSync(envPath, 0o400);
+    let asked = 0;
+
+    const result = await run({
+      envPath,
+      confirm: async () => {
+        asked += 1;
+        return true;
+      },
+    });
+
+    assert.equal(asked, 0, 'the operator was asked to approve a purchase this run then refused');
+    assert.equal(result.spends, 0);
+    assert.equal(result.exitCode, 1);
   });
 
   // The order matters as much as the prompt existing: an approval collected after the money is gone

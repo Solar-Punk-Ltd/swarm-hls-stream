@@ -10,6 +10,14 @@ require_config
 parse_profile_args "$@"
 set -- "${REST_ARGS[@]}"
 
+for arg in "$@"; do
+  add_service_filter "$arg" || {
+    echo "Usage: health.sh [--profile=<name>] [service...]"
+    echo "Services: ${ALL_SERVICES[*]}"
+    exit 1
+  }
+done
+
 load_env
 load_engine_envs
 apply_port_slot
@@ -92,8 +100,10 @@ check_target() {
   compose_files=$(build_compose_files "$DEPLOY_DIR")
   project_flag=$(compose_project_flag)
   if is_local "$target"; then
-    # shellcheck disable=SC2086
-    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles ps --format "    {{.Name}}: {{.Status}}" 2>/dev/null || echo "    (docker compose not available)"
+    # SC2046 alongside SC2086: `env_file_flag` emits two words or none, and the splitting is the
+    # point. Quoting it would send compose an empty argument when the profile has no env file.
+    # shellcheck disable=SC2086,SC2046
+    docker compose $project_flag $compose_files $(env_file_flag) $profiles ps --format "    {{.Name}}: {{.Status}}" 2>/dev/null || echo "    (docker compose not available)"
   else
     local remote_compose_files
     remote_compose_files=$(build_compose_files "$REMOTE_BASE/deploy")
@@ -104,7 +114,8 @@ check_target() {
 print_services
 
 for target in $(get_targets); do
-  services=($(get_services_for_target "$target"))
+  services=($(get_filtered_services_for_target "$target"))
+  [ ${#services[@]} -eq 0 ] && continue
   check_target "$target" "${services[@]}"
 done
 

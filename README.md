@@ -46,6 +46,11 @@ pnpm verify                        # lint, typecheck, test and format check in o
 `pnpm verify` stops at the first failing stage, so a lint error hides later test
 results. CI runs the same four checks as separate jobs and reports all of them.
 
+Two CI jobs are deliberately outside `pnpm verify`, so the local loop needs
+neither a registry nor a docker daemon: `pnpm audit:check` for dependency
+advisories, and `pnpm shellcheck` for the deploy and node shell scripts. Run
+either directly before touching what it covers.
+
 ### Agent hook settings
 
 `.claude/settings.json` is committed, so it applies to everyone working in this
@@ -59,8 +64,8 @@ want the hook back.
 ## CLI
 
 ```bash
-pnpm stamp:setup                   # full workflow: wait for node, buy stamp, write .env
-pnpm stamp:buy [amount] [depth] [--immutable]
+pnpm stamp:setup [--yes]           # full workflow: wait for node, buy stamp, write .env
+pnpm stamp:buy [amount] [depth] [--immutable] [--yes]
 pnpm stamp:check                   # list all stamps
 pnpm node:status                   # health + sync status
 pnpm node:addresses                # ethereum + overlay addresses

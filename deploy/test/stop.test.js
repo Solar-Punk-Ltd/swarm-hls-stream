@@ -122,8 +122,22 @@ describe('stop.sh service filter (OPS-3)', () => {
   it('stops nothing when the named service is disabled on every target', async () => {
     const sandbox = makeSandbox({ config: { services: { srs: 'localhost', ome: false } } });
 
-    await runScriptOk(sandbox, 'stop.sh', ['ome']);
+    const run = await runScriptOk(sandbox, 'stop.sh', ['ome']);
 
     assert.deepEqual(composeCalls(sandbox.calls()), [], 'a disabled service produced a compose call');
+    assert.match(run.stdout, /No services to stop/, 'stopping nothing was reported as stopping everything');
+    assert.doesNotMatch(run.stdout, /All services stopped/);
+  });
+
+  // The same shape for a service that genuinely is running, just not anywhere docker can reach it.
+  // `native` is a documented mode, so an operator naming it is not making a mistake, and telling
+  // them "All services stopped" after touching nothing is the worst available answer.
+  it('says so rather than claiming success when the named service runs natively', async () => {
+    const sandbox = makeSandbox({ config: { services: { srs: 'localhost', 'stream-uploader': 'native' } } });
+
+    const run = await runScriptOk(sandbox, 'stop.sh', ['stream-uploader']);
+
+    assert.deepEqual(sandbox.calls(), [], 'a native service produced a docker call');
+    assert.match(run.stdout, /No services to stop/);
   });
 });

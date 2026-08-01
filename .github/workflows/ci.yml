@@ -119,7 +119,7 @@ jobs:
           docker run --rm -v "$PWD:/mnt" -w /mnt \
             koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
             --severity=style --format=gcc \
-            deploy/scripts/*.sh nodes/*.sh
+            deploy/scripts/*.sh nodes/*.sh engines/*/entrypoint.sh
 
   format:
     name: format

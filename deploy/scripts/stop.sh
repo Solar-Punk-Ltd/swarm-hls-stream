@@ -45,7 +45,11 @@ print_services
 # kept for the unfiltered case, where taking the project's network with it is the actual request.
 compose_stop_flags() {
   if [ ${#FILTER_SERVICES[@]} -gt 0 ]; then
-    echo "stop ${FILTER_SERVICES[*]}"
+    # The TARGET's services, not the whole filter. Handing every host the full list named a service
+    # config.json places elsewhere, and compose stops a service outside the active profiles anyway
+    # (measured on v5.3.1), so a stale container on the host that no longer owns it was stopped
+    # without anyone asking.
+    echo "stop $*"
     return
   fi
   echo "down"
@@ -59,13 +63,15 @@ stop_target() {
   profiles=$(build_profile_flags "${services[@]}")
   compose_files=$(build_compose_files "$DEPLOY_DIR")
   project_flag=$(compose_project_flag)
-  stop_flags=$(compose_stop_flags)
+  stop_flags=$(compose_stop_flags "${services[@]}")
 
   if is_local "$target"; then
     log_info "Stopping local services: ${services[*]}"
     cd "$DEPLOY_DIR"
-    # shellcheck disable=SC2086
-    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles $stop_flags
+    # SC2046 alongside SC2086: `env_file_flag` emits two words or none, and the splitting is the
+    # point. Quoting it would send compose an empty argument when the profile has no env file.
+    # shellcheck disable=SC2086,SC2046
+    docker compose $project_flag $compose_files $(env_file_flag) $profiles $stop_flags
   else
     local remote_compose_files
     remote_compose_files=$(build_compose_files "$REMOTE_BASE/deploy")
@@ -80,13 +86,21 @@ REMOTE_SCRIPT
   log_ok "Stopped on $target"
 }
 
+STOPPED_ANY=false
 for target in $(get_targets); do
   services=($(get_filtered_services_for_target "$target"))
   # A target whose services the filter excluded entirely has nothing to stop, and running compose
   # with an empty service list is how a scoped stop becomes a project-wide one.
   [ ${#services[@]} -eq 0 ] && continue
   stop_target "$target" "${services[@]}"
+  STOPPED_ANY=true
 done
 
 echo ""
-echo "=== All services stopped ==="
+# Naming a service that runs nowhere docker can reach it, "native" or disabled in config.json, used
+# to print the success banner after touching nothing. deploy.sh already says this; stop.sh did not.
+if [ "$STOPPED_ANY" = "false" ]; then
+  log_warn "No services to stop (check config.json and the service filter)"
+else
+  echo "=== All services stopped ==="
+fi

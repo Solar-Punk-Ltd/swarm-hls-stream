@@ -186,22 +186,23 @@ parse_profile_args() {
     exit 1
   fi
 
-  # A named profile's env file is required, and its absence is refused here rather than left to each
-  # script. Falling back to the default `.env` did not merely lose this profile's settings: it
-  # silently adopted the default deployment's ports, STAMP and STREAM_KEY, so `--profile=streamr1`
-  # brought up a second stack fighting the first one for the same port range. Refusing before any
-  # script has acted is what makes "never deploys" true for every entry point rather than only for
-  # the one that happens to call require_env. See OPS-4.
+  # A named profile always points at its OWN env file, present or not. The old fallback to the
+  # default `.env` did not merely lose this profile's settings, it silently adopted the default
+  # deployment's ports, STAMP and STREAM_KEY, so `--profile=streamr1` brought up a second stack
+  # fighting the first one for the same port range. See OPS-4.
+  #
+  # Missing is a warning here and a refusal in `require_env`, which only `deploy.sh` calls, because
+  # the two cases are genuinely different. Deploying without the profile's settings is the harm.
+  # Stopping, cleaning and health-checking need no env at all: those containers are identified by
+  # the compose project name, and refusing here stranded a running stack whose env file had been
+  # deleted, or that was being torn down from a fresh clone of the deploy host.
   if [ "$PROFILE" != "default" ]; then
     ENV_FILE="$ROOT_DIR/.env.$PROFILE"
-    if [ ! -f "$ENV_FILE" ]; then
-      echo -e "${RED}ERROR: $ENV_FILE not found.${NC}" >&2
-      echo "Profile '$PROFILE' requires $ENV_FILE — check the spelling, or create it:" >&2
-      echo "  cp $ROOT_DIR/.env $ENV_FILE" >&2
-      echo "Then change ports / STAMP / STREAM_KEY / data dirs for this profile." >&2
-      exit 1
-    fi
     REMOTE_BASE="~/swarm-hls-stream-$PROFILE"
+    if [ ! -f "$ENV_FILE" ]; then
+      log_warn "Profile '$PROFILE' has no $ENV_FILE, so nothing from it is loaded."
+      log_warn "Create it with: cp $ROOT_DIR/.env.sample $ENV_FILE"
+    fi
   fi
 }
 
@@ -309,6 +310,17 @@ require_config() {
     echo "Copy config.sample.json to config.json and edit it:"
     echo "  cp $DEPLOY_DIR/config.sample.json $CONFIG_FILE"
     exit 1
+  fi
+}
+
+# The `--env-file` flag for compose, omitted when the file is absent.
+#
+# Compose refuses to start at all when pointed at a missing env file, and a teardown does not need
+# one: the containers belong to the compose project, which `-p` names. Without this, requiring a
+# profile's env file would have made a profile whose file was deleted impossible to stop or clean.
+env_file_flag() {
+  if [ -f "$ENV_FILE" ]; then
+    echo "--env-file $ENV_FILE"
   fi
 }
 
@@ -505,35 +517,45 @@ compose_project_flag() {
 # Load KEY=VALUE lines from a file into the current shell. Each value is
 # treated as a DEFAULT — anything already exported by the caller wins.
 load_env_file() {
-  local file="$1"
-  if [ -f "$file" ]; then
+  local _env_file="$1"
+  if [ -f "$_env_file" ]; then
     set -a
-    local line key value
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
+    local _env_line _env_key _env_value
+    while IFS= read -r _env_line || [ -n "$_env_line" ]; do
+      case "$_env_line" in
         ''|\#*) continue ;;
       esac
-      key="${line%%=*}"
-      if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      _env_key="${_env_line%%=*}"
+      if ! [[ "$_env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         continue
       fi
-      if [ -n "${!key+x}" ]; then
+      # `declare -p` rather than `${!key+x}`, because an EMPTY ARRAY reads as unset to the second
+      # one. Every array this library declares up front is empty at this point, so a `.env` line
+      # naming one used to claim its first element: `FILTER_SERVICES=client` in a `.env` made
+      # `stop.sh` with no arguments stop only `client` and still print "All services stopped", and
+      # in `clean.sh`, which loads the env before parsing argv, the same element reached the
+      # unquoted remote heredoc and ran as a command on the deployment host.
+      #
+      # This also covers the readonly constants, which `export` would have failed on rather than
+      # skipped. The locals above are `_env_`-prefixed so a `.env` key cannot collide with them and
+      # be skipped for the wrong reason.
+      if declare -p "$_env_key" &>/dev/null; then
         continue
       fi
       # Take the value literally (no eval — secrets may contain $, !, #, ...).
       # Quoted values run to the closing quote; unquoted values end at an
       # inline comment (whitespace + #, dotenv-style) with whitespace trimmed.
-      value="${line#*=}"
-      case "$value" in
-        \"*) value="${value#\"}"; value="${value%%\"*}" ;;
-        \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+      _env_value="${_env_line#*=}"
+      case "$_env_value" in
+        \"*) _env_value="${_env_value#\"}"; _env_value="${_env_value%%\"*}" ;;
+        \'*) _env_value="${_env_value#\'}"; _env_value="${_env_value%%\'*}" ;;
         *)
-          value="${value%%[[:space:]]\#*}"
-          value="${value%"${value##*[![:space:]]}"}"
+          _env_value="${_env_value%%[[:space:]]\#*}"
+          _env_value="${_env_value%"${_env_value##*[![:space:]]}"}"
           ;;
       esac
-      export "$key=$value"
-    done < "$file"
+      export "$_env_key=$_env_value"
+    done < "$_env_file"
     set +a
   fi
 }

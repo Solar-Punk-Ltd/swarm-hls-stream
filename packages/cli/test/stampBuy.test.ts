@@ -1,4 +1,4 @@
-import { Bee } from '@ethersphere/bee-js';
+import { Bee, BZZ } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,10 +7,16 @@ import { after, beforeEach, describe, it } from 'node:test';
 
 import { stampBuy, StampBuySeams } from '../src/commands/stamp-buy.js';
 
-import { TEST_BATCH } from './helpers/fakeBee.js';
+import {
+  TEST_BATCH,
+  TEST_BATCH_COST_BZZ,
+  TEST_BATCH_COST_PLUR,
+  TEST_BATCH_DURATION,
+  TEST_CHAIN_PRICE,
+} from './helpers/fakeBee.js';
 
 /** Enough for the quote to name a TTL, which is the only thing the buy path asks the chain for. */
-const CHAIN_STATE = { chainTip: 1, block: 1, totalAmount: '0', currentPrice: 24000 };
+const CHAIN_STATE = { chainTip: 1, block: 1, totalAmount: '0', currentPrice: TEST_CHAIN_PRICE };
 
 const BATCH_ID = `${process.pid.toString(16).padStart(8, '0')}`.repeat(8).slice(0, 64);
 const recoveryFiles: string[] = [];
@@ -39,6 +45,9 @@ after(() => {
   }
 });
 
+/** Set by `run` for the duration of a run, so a seam can read the output printed up to its own call. */
+let capture: () => string = () => '';
+
 class ExitCalled extends Error {
   constructor(readonly code: number) {
     super(`exit(${code})`);
@@ -58,6 +67,9 @@ async function run(overrides: StampBuySeams & { buyThrows?: boolean; assumeYes?:
   for (const name of sinks) {
     console[name] = (...args: unknown[]) => void captured.push(args.map(String).join(' '));
   }
+
+  /** Everything printed so far, for a seam that needs to know what was on screen when it ran. */
+  capture = () => captured.join('\n');
 
   let spends = 0;
   let exitCode: number | undefined;
@@ -165,11 +177,30 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
   // The command used to print the amount and depth and buy. Neither says what the purchase costs or
   // how long the batch lasts, and both are derived rather than looked up, so an operator typing a
   // depth one digit out had nothing on screen that would have told them. See OPS-7.
-  it('shows the cost and the lifetime before asking', async () => {
-    const result = await run({ envPath });
+  it('shows the cost and the lifetime, and shows them before it asks', async () => {
+    let shownWhenAsked = '';
+    const result = await run({
+      envPath,
+      confirm: async () => {
+        shownWhenAsked = capture();
+        return true;
+      },
+    });
 
-    assert.match(result.output, /Cost: [\d.]+ BZZ/);
-    assert.match(result.output, /Lasts for: \S+/);
+    // Asserted against what was on screen AT THE MOMENT OF THE PROMPT, not against the whole run.
+    // Matching the full output cannot tell a quote printed before the question from one printed
+    // after the money is gone, and both tests here are named for the ordering.
+    assert.match(
+      shownWhenAsked,
+      new RegExp(`Cost: ${TEST_BATCH_COST_BZZ} BZZ`),
+      'the cost was not shown before asking',
+    );
+    assert.match(
+      shownWhenAsked,
+      new RegExp(`Lasts for: ${TEST_BATCH_DURATION}`),
+      'the lifetime was not shown before asking',
+    );
+    assert.equal(result.exitCode, undefined);
   });
 
   // The order matters as much as the prompt existing: an approval collected after the money is gone
@@ -191,6 +222,81 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
 
     assert.equal(result.exitCode, undefined);
     assert.deepEqual(events, ['ASKED', 'BOUGHT']);
+  });
+
+  // Same ordering on this command: the writability check comes first, so a run that was going to
+  // refuse never asks. And the affordability refusal comes before the prompt for the same reason.
+  it('does not ask when the batch id could not have been recorded anyway', async () => {
+    writeFileSync(envPath, 'STREAM_KEY=aaa\n');
+    chmodSync(envPath, 0o400);
+    let asked = 0;
+
+    const result = await run({
+      envPath,
+      confirm: async () => {
+        asked += 1;
+        return true;
+      },
+    });
+
+    assert.equal(asked, 0, 'the operator was asked to approve a purchase this run then refused');
+    assert.equal(result.spends, 0);
+    assert.equal(result.exitCode, 1);
+  });
+
+  // The affordability refusal `stamp:setup` has, on the command that had no guard at all. Showing a
+  // cost the wallet cannot pay and then asking to confirm it is OPS-5's harm with a prompt in front.
+  it('refuses a batch the wallet cannot pay for, without asking', async () => {
+    let asked = 0;
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getChainState: async () => CHAIN_STATE,
+          getWalletBalance: async () => ({ bzzBalance: BZZ.fromPLUR(1n) }),
+        } as unknown as Bee),
+      confirm: async () => {
+        asked += 1;
+        return true;
+      },
+    });
+
+    assert.equal(asked, 0, 'the operator was asked to approve a batch the node cannot pay for');
+    assert.equal(result.spends, 0);
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /would fail on chain/);
+  });
+
+  it('spends when the wallet can pay', async () => {
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getChainState: async () => CHAIN_STATE,
+          getWalletBalance: async () => ({ bzzBalance: BZZ.fromPLUR(TEST_BATCH_COST_PLUR) }),
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 1, 'a wallet holding exactly the price was refused');
+    assert.equal(result.exitCode, undefined);
+  });
+
+  // A node that cannot report a balance is not a reason to block a command that never promised to
+  // check one. It warns and lets the operator decide, which is different from checking and passing.
+  it('warns but still offers the purchase when the balance cannot be read', async () => {
+    const result = await run({
+      envPath,
+      createBee: () =>
+        ({
+          getChainState: async () => CHAIN_STATE,
+          getWalletBalance: async () => {
+            throw new Error('json-rpc: connection refused');
+          },
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 1);
+    assert.match(result.output, /Could not check the wallet balance/);
   });
 
   it('does not spend when the confirmation is declined', async () => {
@@ -234,7 +340,11 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
     });
 
     assert.equal(result.spends, 1, 'an unreadable chain price blocked a purchase it has no bearing on');
-    assert.match(result.output, /Cost: [\d.]+ BZZ/, 'the cost needs no chain call and must still be shown');
+    assert.match(
+      result.output,
+      new RegExp(`Cost: ${TEST_BATCH_COST_BZZ} BZZ`),
+      'the cost needs no chain call and must still be shown',
+    );
     assert.match(result.output, /connection refused/, 'an unknown lifetime was shown without saying why');
   });
 });

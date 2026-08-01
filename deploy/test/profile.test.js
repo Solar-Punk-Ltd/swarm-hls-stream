@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import { makeSandbox, removeSandboxes, runScript, runScriptOk } from './helpers/sandbox.js';
@@ -29,15 +27,51 @@ describe('unknown --profile (OPS-4)', () => {
   // so `--profile=streamr1` deployed a second copy of the stack reading the first one's ports and
   // secrets. `require_env` has carried the right message for this the whole time and could never
   // reach it, because the file it tests always existed.
-  for (const { script, args } of PROFILE_SCRIPTS) {
-    it(`${script} refuses a profile with no env file, naming the file`, async () => {
-      const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+  it('deploy.sh refuses a profile with no env file, naming the file', async () => {
+    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+
+    const run = await runScript(sandbox, 'deploy.sh', ['--profile=streamr1']);
+
+    assert.notEqual(run.exitCode, 0, 'a profile with no env file was deployed');
+    // `require_env`'s own second line, which no other code path emits. Matching only the filename
+    // would also match the warning below, and for deploy.sh it would match a non-zero exit that came
+    // from somewhere else entirely.
+    assert.match(
+      `${run.stdout}${run.stderr}`,
+      /Profile 'streamr1' requires .*\.env\.streamr1/,
+      'the run failed, but not on the profile guard',
+    );
+    assert.deepEqual(sandbox.calls(), [], `docker was called despite the refusal: ${sandbox.calls().join(' | ')}`);
+  });
+
+  // Deploying without the profile's settings is the harm OPS-4 named. Stopping, cleaning and
+  // health-checking are not: those containers are identified by the compose project name, and an
+  // earlier version of this fix refused there too, which stranded a running stack whose env file had
+  // been deleted with no way to tear it down.
+  for (const { script, args } of ['stop.sh', 'clean.sh', 'health.sh'].map((script) => ({
+    script,
+    args: script === 'clean.sh' ? ['--yes'] : [],
+  }))) {
+    it(`${script} warns about a profile with no env file and still runs`, async () => {
+      const sandbox = makeSandbox({ envFiles: WITH_PROFILE, project: 'streamr1' });
 
       const run = await runScript(sandbox, script, ['--profile=streamr1', ...args]);
 
-      assert.notEqual(run.exitCode, 0, 'a profile with no env file was accepted');
-      assert.match(`${run.stdout}${run.stderr}`, /\.env\.streamr1/, 'the refusal did not name the missing file');
-      assert.deepEqual(sandbox.calls(), [], `docker was called despite the refusal: ${sandbox.calls().join(' | ')}`);
+      assert.equal(run.exitCode, 0, `${script} could not act on a profile whose env file is missing`);
+      assert.match(run.stdout, /has no .*\.env\.streamr1/, 'the missing env file was not mentioned at all');
+      assert.ok(sandbox.calls().length > 0, `${script} reached docker for nothing`);
+    });
+
+    it(`${script} passes no --env-file when the profile has none`, async () => {
+      const sandbox = makeSandbox({ envFiles: WITH_PROFILE, project: 'streamr1' });
+
+      await runScript(sandbox, script, ['--profile=streamr1', ...args]);
+
+      for (const call of sandbox.calls()) {
+        // Compose refuses to start at all when pointed at a file that is not there, so passing the
+        // flag anyway would turn the warning above into a hard failure by another route.
+        assert.doesNotMatch(call, /--env-file/, `compose was pointed at an env file that does not exist: ${call}`);
+      }
     });
   }
 
@@ -76,18 +110,5 @@ describe('unknown --profile (OPS-4)', () => {
     await runScriptOk(sandbox, 'stop.sh', []);
 
     assert.ok(sandbox.calls().length > 0, 'the default profile produced no docker call at all');
-  });
-
-  // The refusal must not be a side effect of something the script already did. `clean.sh` removes
-  // containers and `deploy.sh` writes an override env file, so both have to refuse before that.
-  it('writes no deploy override file when the profile is rejected', async () => {
-    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
-
-    await runScript(sandbox, 'deploy.sh', ['--profile=streamr1']);
-
-    assert.ok(
-      !existsSync(join(sandbox.root, 'deploy', '.env.deploy.streamr1')),
-      'the rejected profile still got an override env file written for it',
-    );
   });
 });

@@ -12,7 +12,11 @@ Uses [@ethersphere/bee-js](https://github.com/ethersphere/bee-js) for all Bee AP
 | ------------------ | ----------------------------------------------------- |
 | `pnpm stamp:setup` | Full workflow: wait for node → buy stamp → write .env |
 | `pnpm stamp:buy`   | Buy a stamp (amount/depth args)                       |
-| `pnpm stamp:check` | List all stamps with status                           |
+
+Both commands that spend show the batch cost and how long it will last, then ask
+to confirm. `--yes` approves without a prompt, and is required for any run with
+no terminal: without one the confirmation is declined rather than assumed.
+| `pnpm stamp:check` | List all stamps with status |
 
 ### Node info
 
@@ -88,7 +92,7 @@ pnpm node:addresses    # shows the ethereum address to fund
 Custom amount and depth:
 
 ```bash
-pnpm stamp:setup -- 6000000000 23
+pnpm stamp:setup -- 6000000000 23 --yes
 ```
 
 ## Project Structure

@@ -786,11 +786,14 @@ file and once with an unquoted expansion added to `stop.sh`.
 
 Two rows were not what they said.
 
-**OPS-6 was wrong when it was written.** It records `_lib.sh:441` as evaluating raw `.env` lines. At
-the audited commit that line is `compose_project_flag`, and `load_env_file` already carried an
-explicit non-evaluating parser with a comment saying so. That is the fifth register row to turn out
-defective on inspection, and the reason every row is checked against the source before it is worked.
-It still earned a commit, because "no eval today" is not "no eval tomorrow".
+**OPS-6 was stale, and the correction written for it was wrong too.** The row records
+`_lib.sh:441` as evaluating raw `.env` lines. At the audited commit that line is
+`compose_project_flag` and the parser was already literal, so it was written up as "wrong when
+written" on a search that stopped at that commit. The claims auditor went further back and found it:
+`eval "$line"` sat in a function named `load_env` at `1364e2e` (2026-07-14), an ancestor of the
+audited commit, removed by `b0c9412` before the audit ran. **A row can be stale in its line number
+and its tense at once, and checking only the commit it names will confirm the wrong conclusion
+confidently.** It still earned a commit, because "no eval today" is not "no eval tomorrow".
 
 **OPS-3's fix is not the one the row implies.** Scoping `stop.sh` by passing the right `--profile`
 flags would have changed nothing: compose ignores `--profile` when choosing what `down` removes,

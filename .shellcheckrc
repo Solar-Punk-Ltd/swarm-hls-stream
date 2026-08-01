@@ -1,4 +1,5 @@
-# ShellCheck configuration for deploy/scripts and nodes.
+# ShellCheck configuration for every tracked shell script: deploy/scripts, nodes, and the two
+# engine container entrypoints.
 #
 # CI runs at --severity=style, so anything not disabled here fails the build. Every entry below is a
 # deliberate exception with its reason, rather than a severity dial turned down until the noise

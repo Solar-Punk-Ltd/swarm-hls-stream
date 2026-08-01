@@ -1,4 +1,4 @@
-import { Bee } from '@ethersphere/bee-js';
+import { Bee, BZZ } from '@ethersphere/bee-js';
 
 import { batchIdRecoveryNotice, reachedEnvFile, recordBatchId, STAMP_ENV_KEY } from '../lib/batch-id-record.js';
 import { createBee } from '../lib/bee-client.js';
@@ -36,7 +36,13 @@ export async function stampBuy(args: StampCommandArgs = {}, seams: StampBuySeams
 
   const target = resolveBeeUploaderTarget();
   const url = urlOverride ?? target.url;
-  const options = resolveStampOptions(amount, depth, immutable);
+  let options: StampOptions;
+  try {
+    options = resolveStampOptions(amount, depth, immutable);
+  } catch (err) {
+    error(err instanceof Error ? err.message : 'Invalid stamp options');
+    return exit(1);
+  }
   const envPath = seams.envPath ?? getEnvPath();
 
   header(`Buy stamp on ${SVC_BEE_UPLOADER} (${url})`);
@@ -66,6 +72,30 @@ export async function stampBuy(args: StampCommandArgs = {}, seams: StampBuySeams
   const quote = await quoteStamp(bee, options);
   printStampQuote(options, quote);
   console.log('');
+
+  // The same affordability refusal `stamp:setup` makes, on the command that has no other guard at
+  // all. Showing a cost the wallet cannot pay and then asking to confirm it is OPS-5's harm with a
+  // prompt in front of it: the operator approves, and the transaction reverts after its gas is gone.
+  // A balance the node cannot report is not a refusal here, because this command never promised to
+  // check one, so it warns and lets the operator decide.
+  //
+  // The refusal is deliberately OUTSIDE the try. Inside it, `exit(1)` throws through the seam and is
+  // caught by this very catch, downgraded to "could not check the balance", and the run carries on to
+  // buy. That is OPS-12's mistake exactly, and the test for this refusal is what caught it here.
+  let balance: BZZ | null = null;
+  try {
+    balance = (await bee.getWalletBalance()).bzzBalance;
+  } catch (err) {
+    warn(`Could not check the wallet balance: ${err instanceof Error ? err.message : 'unknown'}`);
+    warn('Buying anyway if you confirm, but the transaction will fail if the node cannot pay.');
+  }
+
+  if (balance !== null && balance.lt(quote.cost)) {
+    error(`This batch costs ${quote.cost.toSignificantDigits(6)} BZZ`);
+    error(`The node holds ${balance.toSignificantDigits(6)} BZZ, so the purchase would fail on chain`);
+    info('Send BZZ, or buy a smaller batch with a lower depth or amount. No money has been spent.');
+    return exit(1);
+  }
 
   if (!assumeYes && !(await ask('Buy this stamp?'))) {
     info('Aborted. No money has been spent.');
