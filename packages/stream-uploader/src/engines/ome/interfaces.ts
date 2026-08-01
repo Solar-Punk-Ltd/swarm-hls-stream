@@ -46,12 +46,17 @@ export interface PullerOptions {
    */
   onSegmentTimeObserved?: (newest: number | null) => void;
   /**
-   * Called with the delay each poll was armed with, in milliseconds. Injectable only so a test can
-   * read the interval the puller asked for rather than timing the polls it produces. Counting polls
-   * inside a wall-clock window reports the load on the machine instead: the cold-start assertion that
-   * did so failed 13 runs of 64 at 32 concurrent copies. See TEST-34.
+   * Arms the next poll. Injectable only so a test can read the delay the puller polls at rather than
+   * timing the polls it produces, since counting polls inside a wall-clock window reports the load on
+   * the machine instead. See TEST-34.
+   *
+   * The seam is the timer itself rather than a callback reporting the delay beside it, because those
+   * two values can disagree and a test reading the report cannot tell. Flooring the armed delay while
+   * still reporting the requested one left the whole suite green with the puller really polling once
+   * every two seconds, which is a cadence that finalizes a recovering broadcast underneath its own
+   * puller.
    */
-  onPollScheduled?: (delayMs: number) => void;
+  setTimer?: (onFire: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
 }
 
 export interface AppStream {

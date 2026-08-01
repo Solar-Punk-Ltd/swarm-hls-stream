@@ -1611,7 +1611,10 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
         fetcher,
         haltAfterNotFoundMs: OUTLASTS_THIS_TEST_MS,
         slowPollAfterMs: GRACE_MS,
-        onPollScheduled: (delayMs) => scheduledDelaysMs.push(delayMs),
+        setTimer: (onFire, delayMs) => {
+          scheduledDelaysMs.push(delayMs);
+          return setTimeout(onFire, delayMs);
+        },
       },
     ) as unknown as StartablePuller;
 
@@ -1678,7 +1681,10 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
         fetcher,
         haltAfterNotFoundMs: OUTLASTS_THIS_TEST_MS,
         slowPollAfterMs: GRACE_MS,
-        onPollScheduled: (delayMs) => scheduledDelaysMs.push(delayMs),
+        setTimer: (onFire, delayMs) => {
+          scheduledDelaysMs.push(delayMs);
+          return setTimeout(onFire, delayMs);
+        },
       },
     ) as unknown as StartablePuller;
 

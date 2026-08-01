@@ -81,7 +81,7 @@ export class OmeHlsPuller {
 
   private readonly onHalt?: () => void;
   private readonly onSegmentTimeObserved?: (newest: number | null) => void;
-  private readonly onPollScheduled?: (delayMs: number) => void;
+  private readonly setTimer: (onFire: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly fetcher: Fetcher;
   private readonly fetchTimeoutMs: number;
   private readonly haltAfterNotFoundMs: number;
@@ -108,7 +108,7 @@ export class OmeHlsPuller {
     this.slowPollAfterMs = options.slowPollAfterMs ?? DEFAULT_SLOW_POLL_AFTER_MS;
     this.staleBefore = options.staleBefore ?? null;
     this.onSegmentTimeObserved = options.onSegmentTimeObserved;
-    this.onPollScheduled = options.onPollScheduled;
+    this.setTimer = options.setTimer ?? ((onFire, delayMs) => setTimeout(onFire, delayMs));
     const base = hlsBaseUrl.replace(/\/+$/, '');
     this.masterUrl = `${base}/${app}/${stream}/ts:playlist.m3u8`;
   }
@@ -148,7 +148,7 @@ export class OmeHlsPuller {
     if (this.timer) {
       clearTimeout(this.timer);
     }
-    this.timer = setTimeout(() => {
+    this.timer = this.setTimer(() => {
       this.tick().catch((error) => {
         const msg = getErrorMessage(error);
         if (isAbortedRequest(error)) {
@@ -166,9 +166,6 @@ export class OmeHlsPuller {
         this.scheduleNext(this.retryDelayMs);
       });
     }, delayMs);
-    // After the timer is armed rather than on entry, so what is reported is a poll that was really
-    // scheduled and not one a stop had already refused.
-    this.onPollScheduled?.(delayMs);
   }
 
   /**
