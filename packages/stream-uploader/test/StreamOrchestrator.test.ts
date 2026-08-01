@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, REJECT_UNKNOWN_STREAM, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, REJECT_UNKNOWN_STREAM, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -337,7 +337,7 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   // list sees the same broadcast under two entries with nothing to say which is real. See CON-22.
   it('finalizes a stream once when a second stop lands inside the first drain', async () => {
     const id = 'live/stream';
-    const published: { state?: StreamState }[] = [];
+    const published: { state?: StreamStatus }[] = [];
     const orch = makeTestOrchestrator(
       { recoveryTimeout: RECOVERY_TIMEOUT_MS },
       {},
