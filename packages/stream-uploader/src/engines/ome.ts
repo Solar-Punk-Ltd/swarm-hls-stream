@@ -142,28 +142,28 @@ export function createOmeEngine(
   const closedSessionTtlMs = options.closedSessionTtlMs ?? DEFAULT_CLOSED_SESSION_TTL_MS;
   const sessionsByStream = new Map<string, SessionRecord>();
   const sessions: SessionRegistry = {
-    opened: (streamId, key) => {
-      if (key === null) {
+    opened: (streamId, identity) => {
+      if (!carriesAnyIdentity(identity)) {
         // Nothing to match a later closing against, so drop any earlier record rather than leaving a
         // stale one that would reject the closing this session does send.
         sessionsByStream.delete(streamId);
         return;
       }
-      sessionsByStream.set(streamId, { phase: 'live', key });
+      sessionsByStream.set(streamId, { phase: 'live', identity });
     },
-    closed: (streamId, key) => {
-      // The key of the session that actually ended, which is the recorded one whenever there is one:
-      // a closing reaches this line either carrying that same key or carrying none at all, because a
-      // closing carrying a different one was already turned away above.
+    closed: (streamId, identity) => {
+      // The identity of the session that actually ended, which is the recorded one whenever there is
+      // one: a closing reaches this line either carrying that same identity or carrying nothing that
+      // contradicts it, because one that could be shown to be foreign was already turned away above.
       const record = sessionsByStream.get(streamId);
       sessionsByStream.set(streamId, {
         phase: 'closed',
-        key: record?.phase === 'live' ? record.key : key,
+        identity: record?.phase === 'live' ? record.identity : identity,
         closedAt: Date.now(),
       });
     },
     forget: (streamId) => sessionsByStream.delete(streamId),
-    reasonToIgnoreClosing: (streamId, key) => {
+    reasonToIgnoreClosing: (streamId, identity) => {
       const record = sessionsByStream.get(streamId);
       if (!record) {
         return null;
@@ -175,9 +175,7 @@ export function createOmeEngine(
         }
         return 'already-closed';
       }
-      // Strict only with evidence on both sides. Refusing to stop a stream whose identity is unknown
-      // would leak a puller and never produce a VOD, which is worse than what this guards against.
-      return key !== null && record.key !== key ? 'replaced' : null;
+      return isProvablyNotTheLiveSession(record.identity, identity) ? 'replaced' : null;
     },
   };
 
@@ -229,21 +227,39 @@ export function createOmeEngine(
 
 // See https://airensoft.gitbook.io/ovenmediaengine/access-control/admission-webhooks
 /**
- * Identity of one publishing session, from the socket OME reports on every admission.
+ * What one admission says about which publishing session sent it.
  *
- * Measured against a real OvenMediaEngine rather than inferred: a publish, an abrupt kill and a
- * republish produced four admissions, and `client.port` matched its own session's opening and
- * closing while differing between the two sessions. The stream id cannot do this, because both
+ * Two discriminators rather than one, because each covers a case the other cannot. Both were measured
+ * against a real OvenMediaEngine rather than inferred: a publish, an abrupt kill and a republish
+ * produced four admissions carrying both fields. The stream id is not among them, because both
  * sessions carry the same one, which is the whole of CON-21.
  *
- * Null whenever the payload does not carry a whole socket, which is a wider condition than the field
- * being absent. This is parsed from a webhook body, so the declared types are a claim rather than a
- * guarantee: JSON has no `undefined`, so an omitted field arrives as `null`, and a socket already
- * torn down when the closing was sent reports port 0. Each of those says "no identity", and building
- * a key out of one instead turns it into "a different identity", which is what makes the guard below
- * drop a real closing and leave the puller running with nothing to stop it.
+ * Either half is null whenever the payload does not carry it whole, which is wider than the field
+ * being absent. These are parsed from a webhook body, so the declared types are a claim rather than a
+ * guarantee: JSON has no `undefined`, so an omitted field arrives as `null`, a socket already torn
+ * down when the closing was sent reports port 0, and a time that is not a date parses to NaN. Each of
+ * those says "no evidence", and reading one as evidence instead is what makes the guard drop a real
+ * closing and leave the puller running with nothing left to stop it.
  */
-function sessionKey(payload: OmeAdmissionPayload): string | null {
+interface SessionIdentity {
+  /**
+   * `address:port`. Matched its own session's opening and closing and differed between the two
+   * sessions: 44546 for the first, 22138 for the second.
+   */
+  socket: string | null;
+  /**
+   * `request.time` in epoch milliseconds. Monotone across admissions, so it orders two sessions the
+   * socket cannot tell apart, which is any pair where the second reconnects on the port the first
+   * used. See CON-23.
+   */
+  issuedAt: number | null;
+}
+
+function sessionIdentity(payload: OmeAdmissionPayload): SessionIdentity {
+  return { socket: sessionSocket(payload), issuedAt: admissionTime(payload) };
+}
+
+function sessionSocket(payload: OmeAdmissionPayload): string | null {
   const client = payload?.client;
   if (!client) {
     return null;
@@ -252,6 +268,47 @@ function sessionKey(payload: OmeAdmissionPayload): string | null {
   const hasAddress = typeof address === 'string' && address.length > 0;
   const hasPort = typeof port === 'number' && Number.isInteger(port) && port > 0;
   return hasAddress && hasPort ? `${address}:${port}` : null;
+}
+
+function admissionTime(payload: OmeAdmissionPayload): number | null {
+  const time = payload?.request?.time;
+  if (typeof time !== 'string') {
+    return null;
+  }
+  const parsed = Date.parse(time);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function carriesAnyIdentity(identity: SessionIdentity): boolean {
+  return identity.socket !== null || identity.issuedAt !== null;
+}
+
+/**
+ * Whether a `closing` can be shown to have been sent for some session other than the one now live.
+ *
+ * Strict only with evidence on both sides, and on either discriminator alone. Refusing a closing whose
+ * session cannot be identified would leak a puller and never produce a VOD, which is worse than what
+ * this guards against.
+ *
+ * The socket separates sessions that reconnect on a fresh source port, which is the ordinary case, and
+ * says nothing about a publisher that reuses one, which a pinned local port, an SRT rendezvous or a
+ * NAT holding its mapping all produce. The issue time separates any two sessions whose closing was
+ * issued before the live one was admitted, which is the reordering this guards against, and says
+ * nothing about a closing OME issued afterwards. Both times are OME's own, so the comparison never
+ * crosses a clock boundary.
+ */
+function isProvablyNotTheLiveSession(live: SessionIdentity, closing: SessionIdentity): boolean {
+  const differentSocket = live.socket !== null && closing.socket !== null && live.socket !== closing.socket;
+  const issuedBeforeTheLiveSessionOpened =
+    live.issuedAt !== null && closing.issuedAt !== null && closing.issuedAt < live.issuedAt;
+  return differentSocket || issuedBeforeTheLiveSessionOpened;
+}
+
+/** How a session is named in a log line, from whichever discriminators its payload carried. */
+function describeSession(identity: SessionIdentity): string {
+  const named = [identity.socket, identity.issuedAt === null ? null : new Date(identity.issuedAt).toISOString()];
+  const known = named.filter((part): part is string => part !== null);
+  return known.length > 0 ? known.join(' at ') : 'an unidentified session';
 }
 
 /**
@@ -263,26 +320,25 @@ function sessionKey(payload: OmeAdmissionPayload): string | null {
  * second drain of a stream the first one had already retired. See CON-22.
  */
 type SessionRecord =
-  | { phase: 'live'; key: string }
-  /** `key` is null only when nothing was ever recorded for the stream and the closing carried no socket. */
-  | { phase: 'closed'; key: string | null; closedAt: number };
+  | { phase: 'live'; identity: SessionIdentity }
+  | { phase: 'closed'; identity: SessionIdentity; closedAt: number };
 
 /** Why a `closing` must not be acted on. Each spelling states only what the registry established. */
 type IgnoredClosingReason = 'replaced' | 'already-closed';
 
 const IGNORED_CLOSINGS: Record<
   IgnoredClosingReason,
-  { replyReason: string; warn: (streamId: string, key: string | null) => string }
+  { replyReason: string; warn: (streamId: string, identity: SessionIdentity) => string }
 > = {
   // Two admissions for one stream are independent requests against a 3000ms timeout, so a slow
   // `closing` for a dropped session can be processed after an `opening` OME did admit. Acting on it
   // would stop the live puller and VOD-finalize the session that replaced the sender. See CON-21.
   replaced: {
     replyReason: 'ok (closing for a replaced session)',
-    warn: (streamId, key) =>
-      `[OME] Ignoring a closing for ${streamId} from ${
-        key ?? 'an unidentified session'
-      }: the session live on that id is a different one`,
+    warn: (streamId, identity) =>
+      `[OME] Ignoring a closing for ${streamId} from ${describeSession(
+        identity,
+      )}: the session live on that id is a different one`,
   },
   'already-closed': {
     replyReason: 'ok (closing for a session already closed)',
@@ -301,12 +357,12 @@ const DEFAULT_CLOSED_SESSION_TTL_MS = 60_000;
 
 interface SessionRegistry {
   /** Record the session the orchestrator has just accepted, or clear the record when it carries no identity. */
-  opened(streamId: string, key: string | null): void;
+  opened(streamId: string, identity: SessionIdentity): void;
   /** Record that the session holding this stream is gone, so a repeat of its closing is not acted on twice. */
-  closed(streamId: string, key: string | null): void;
+  closed(streamId: string, identity: SessionIdentity): void;
   /** Drop everything known about a stream, for a puller started with no admission behind it. */
   forget(streamId: string): void;
-  reasonToIgnoreClosing(streamId: string, key: string | null): IgnoredClosingReason | null;
+  reasonToIgnoreClosing(streamId: string, identity: SessionIdentity): IgnoredClosingReason | null;
 }
 
 function handleAdmission(
@@ -336,7 +392,7 @@ function handleAdmission(
     }
 
     const streamId = buildStreamId(parsed.app, parsed.stream);
-    const session = sessionKey(payload);
+    const session = sessionIdentity(payload);
 
     if (request.status === 'closing') {
       const ignored = sessions.reasonToIgnoreClosing(streamId, session);

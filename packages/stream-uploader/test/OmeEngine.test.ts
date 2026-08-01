@@ -1241,6 +1241,115 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
   });
 
   /**
+   * CON-23: the socket is not enough on its own. `address:port` compared for equality gives two
+   * sessions one key whenever the second reconnects on the source port the first used, which a pinned
+   * local port, an SRT rendezvous, or a NAT holding its mapping all produce. The guard then goes inert
+   * and CON-21 is back in full, without self-healing, because the live SRT session stays up and no
+   * further admission arrives.
+   *
+   * Both times below are OME's own, so the comparison never touches this host's clock.
+   */
+  describe('two sessions on one socket (CON-23)', () => {
+    const SHARED_SOCKET = { address: '192.168.65.1', port: 44546 };
+    const A_OPENED_AT = '2026-08-01T09:14:02.113+02:00';
+    const A_CLOSED_AT = '2026-08-01T09:14:41.775+02:00';
+    const B_OPENED_AT = '2026-08-01T09:14:44.298+02:00';
+    const B_CLOSED_AT = '2026-08-01T09:15:12.006+02:00';
+
+    it('leaves the live session alone when the closing was issued before that session opened', async () => {
+      const origin = makePollCountingOrigin();
+      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const published: VodEntry[] = [];
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SHARED_SOCKET, A_OPENED_AT);
+      await waitFor(() => origin.polls() > 0, SETTLE_MS);
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SHARED_SOCKET, B_OPENED_AT);
+      const pollsWhenBWasLive = origin.polls();
+      await waitFor(() => origin.polls() > pollsWhenBWasLive, SETTLE_MS);
+
+      const staleReply = await postAdmission(
+        engine,
+        orchestrator,
+        'closing',
+        SECRET,
+        STREAM_URL,
+        SHARED_SOCKET,
+        A_CLOSED_AT,
+      );
+
+      const pollsAfterStaleClosing = origin.polls();
+      await waitFor(() => origin.polls() > pollsAfterStaleClosing, SETTLE_MS);
+      assert.deepEqual(
+        staleReply,
+        { allowed: true, lifetime: 0, reason: 'ok (closing for a replaced session)' },
+        'a closing the socket cannot place, and the clock can, still has to be acknowledged',
+      );
+    });
+
+    it('still stops the live session when its own closing was issued after it opened', async () => {
+      // The strictness has to point one way only. A closing issued after the live session was admitted
+      // is the live session's own, and refusing it would leak the puller and publish no VOD, which is
+      // worse than what the guard protects against.
+      const origin = makePollCountingOrigin();
+      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const published: VodEntry[] = [];
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SHARED_SOCKET, B_OPENED_AT);
+      await waitFor(() => origin.polls() > 0, SETTLE_MS);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SHARED_SOCKET, B_CLOSED_AT);
+
+      await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+      assert.equal(
+        published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+        1,
+        'a closing issued after its own opening is that session’s own and has to finalize it',
+      );
+    });
+
+    it('still stops the live session when the admissions carry no time to order them by', async () => {
+      // The protocol declares `request.time` optional. Reading an absent one as evidence would make
+      // every closing from a transport that omits it look stale.
+      const origin = makePollCountingOrigin();
+      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const published: VodEntry[] = [];
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SHARED_SOCKET);
+      await waitFor(() => origin.polls() > 0, SETTLE_MS);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SHARED_SOCKET);
+
+      await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+      assert.equal(
+        published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+        1,
+        'no time on either side is no evidence, so the closing has to be honoured',
+      );
+    });
+
+    it('still stops the live session when the times are unparseable rather than absent', async () => {
+      // A field that is present and not a date is the same amount of evidence as no field at all, and
+      // `Date.parse` reports it as NaN rather than throwing, which every comparison then reads as false.
+      const origin = makePollCountingOrigin();
+      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const published: VodEntry[] = [];
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SHARED_SOCKET, 'not a timestamp');
+      await waitFor(() => origin.polls() > 0, SETTLE_MS);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SHARED_SOCKET, 'nor is this');
+
+      await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+      assert.equal(
+        published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+        1,
+        'a time that does not parse is an absent time, not an earlier one',
+      );
+    });
+  });
+
+  /**
    * A `client` block that is present but incomplete. Omitting the field is only the tidiest way a
    * payload can carry no identity, and the engine parses these off the wire rather than out of a
    * TypeScript value, so each of these reaches it as readily as a real socket does.
