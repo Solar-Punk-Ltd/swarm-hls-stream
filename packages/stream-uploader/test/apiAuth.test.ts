@@ -14,6 +14,7 @@ interface OrchestratorCalls {
   startStream: unknown[][];
   handleSegment: unknown[][];
   stopStream: unknown[][];
+  getStreamStatus: unknown[][];
 }
 
 /**
@@ -35,7 +36,7 @@ function spyingOrchestrator(calls: OrchestratorCalls) {
 }
 
 function noCalls(): OrchestratorCalls {
-  return { startStream: [], handleSegment: [], stopStream: [] };
+  return { startStream: [], handleSegment: [], stopStream: [], getStreamStatus: [] };
 }
 
 function startBody(): RequestInit {
@@ -59,6 +60,10 @@ function segmentBody(): RequestInit {
   };
 }
 
+function statusQuery(): RequestInit {
+  return { method: 'GET' };
+}
+
 function stopBody(): RequestInit {
   return {
     method: 'POST',
@@ -73,6 +78,15 @@ const ROUTES = [
   // 202 rather than 200 since S2.5: the stop is accepted here and its outcome is read back from
   // `GET /stream/status`, because a drain has five minutes to publish and no webhook waits that long.
   { path: '/stream/stop', init: stopBody, spy: 'stopStream' as const, authenticated: 202 },
+  // S1.1's criterion names the routes it covers, and S2.5 added a fourth. Enumerated here rather
+  // than left to the prefix test below, because that one proves the mount is a prefix mount, not
+  // that this route is under it.
+  {
+    path: '/stream/status?streamId=live%2Fone',
+    init: statusQuery,
+    spy: 'getStreamStatus' as const,
+    authenticated: 200,
+  },
 ];
 
 describe('api auth (S1.1, closes SEC-1)', () => {
