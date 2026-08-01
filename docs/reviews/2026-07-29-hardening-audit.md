@@ -176,6 +176,35 @@ so the table below is short: nearly everything reported was real.
 | **R61** Protocol lens: `interfaces.ts` overclaims that no clock skew can enter the comparison, because a timezone-less date-time is read as host-local.                                     | **True, and corrected in the diff rather than registered.** The wording now names the exception and cites RFC 8216 section 6.3.3. Both sides of the comparison are still parsed on the same host, so a fixed offset cancels, and the lens could not make it fail.                                                                                                                                                                                                                                                                                                                                                                     |
 | **R62** Test-integrity lens: 15 of 59 mutations survived.                                                                                                                                   | **Six of the fifteen are equivalent and the lens proved each one rather than asserting it, which is the standard this gate asks for and has not always got.** The nine real gaps were all acted on: six were `latestProgramDateTime` semantics and the getter is deleted, since the engine now reads its own per-stream record and nothing else called it. Deleting untestable code beats testing it.                                                                                                                                                                                                                                 |
 
+### Rejected by the review gate on PR #46
+
+Six lenses. Unusually few refutations, because five of the six reported against the fix rather than
+against pre-existing code, and a lens reviewing a change written hours earlier is right more often
+than one reviewing code it has to reconstruct. The claims auditor returned **no corrections owed at
+all**, a first, which is the `pnpm gate:facts` block doing what it was built for.
+
+- **R63.** _Mutation, `sessionKey`: `payload?.client` reduced to `payload.client` survives._ Refuted as
+  equivalent. The route is mounted behind `express.json()`, which always yields an object, so
+  `payload` is never nullish where this runs and the optional chain can never be the difference. Kept
+  in the source as a guard against a future caller that is not the router.
+- **R64.** _Mutation, `sessionKey`: forcing `typeof port === 'number'` to true survives._ Refuted as
+  equivalent by construction rather than by coverage. `Number.isInteger` returns false for every
+  non-number, so the following conjunct already rejects everything the removed one would have.
+  Distinguishing it would need a value that is not a number and is an integer, which does not exist.
+- **R65.** _Silent failure: `forget` does not bound the case its own comment names._ The lens raised it
+  and refuted it in the same breath, which is the shape this section wants. The teardowns that skip
+  `forget` (`onHalt`, the recovery-timeout stop, `POST /stream/stop`) leave an entry behind, but any
+  later opening overwrites it and a delayed closing against a leftover key either matches and is
+  honoured or differs on an already-stopped stream. A slow leak of one short string per stream id, and
+  an inaccurate justification, not a behaviour fault.
+
+**One finding of the author's own was refuted by measurement and is worth keeping**, because it was
+published as fact in this document and acted on. The claim that a zero-match mutation run "reads
+exactly like a mutation check that passed" is false. Stryker prints
+`No files found for mutation with the given glob expressions` and then exits 0. The defect is the exit
+code, not silence, and the corrected text says so. A protocol that misdiagnoses its own hole argues
+for the wrong fix.
+
 ## Finding register
 
 ### Security surface (SEC)
