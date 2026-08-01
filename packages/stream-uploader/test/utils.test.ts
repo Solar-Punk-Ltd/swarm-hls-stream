@@ -226,7 +226,11 @@ describe('parseMediaPlaylist', () => {
       // seq 11, not 10. The skipped position is spent either way, because the origin numbers by
       // position: renumbering the rest onto it hands every later segment an index that belongs to
       // other media, and the duplicate filter then swallows real segments as ones already seen.
-      assert.deepEqual(parseMediaPlaylist(text), [{ seq: 11, duration: 2.0, uri: 'good.ts' }]);
+      //
+      // And the survivor carries the break, because the dropped media occupied real time. Without
+      // that the backward date walk treats the two as adjacent and dates the earlier one off a
+      // timeline that is short by however long the dropped segment ran.
+      assert.deepEqual(parseMediaPlaylist(text), [{ seq: 11, duration: 2.0, uri: 'good.ts', discontinuity: true }]);
     });
   }
 
@@ -234,6 +238,40 @@ describe('parseMediaPlaylist', () => {
     const text = ['#EXTM3U', '#EXTINF:0,', 'a.ts'].join('\n');
 
     assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 0, uri: 'a.ts' }]);
+  });
+
+  // Finite is not the same as sane. These publish as `#EXTINF:1e+308,` and a target duration to
+  // match, poison the total the VOD advertises, and drive derived timestamps to an infinity that a
+  // replacement puller then adopts as its handover floor and discards a live broadcast against.
+  it('rejects a duration no clock could mean, not only one that is not a number', () => {
+    const text = ['#EXTM3U', '#EXTINF:1e308,', 'huge.ts', '#EXTINF:2.0,', 'good.ts'].join('\n');
+
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 1, duration: 2.0, uri: 'good.ts', discontinuity: true }]);
+  });
+
+  it('keeps a long but plausible segment', () => {
+    const text = ['#EXTM3U', '#EXTINF:30,', 'a.ts'].join('\n');
+
+    assert.deepEqual(parseMediaPlaylist(text), [{ seq: 0, duration: 30, uri: 'a.ts' }]);
+  });
+
+  // RFC 8216 does not order the two tags. Discarding an anchor the origin wrote for the segment that
+  // follows loses the stamp on exactly that segment, and it is the field the handover floor reads.
+  it('keeps a date the origin wrote for the segment after a discontinuity', () => {
+    const text = [
+      '#EXTM3U',
+      '#EXTINF:2.0,',
+      'a.ts',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-08-01T10:05:00.000Z',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:2.0,',
+      'b.ts',
+    ].join('\n');
+
+    assert.deepEqual(
+      parseMediaPlaylist(text).map((entry) => entry.programDateTime),
+      [undefined, Date.parse('2026-08-01T10:05:00.000Z')],
+    );
   });
 
   // The tag an origin sends when the media after it is not a continuation of the media before it,
