@@ -598,6 +598,74 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     assert.deepEqual(catalogEntries, [], 'and nothing is published as VOD');
     await orch.cleanup();
   });
+
+  // The recovery timer's only input was whether a segment arrived, and after a crash the engine that
+  // would send one is being waited on too. A pull-based engine restarts its puller straight away and
+  // then retries a silent origin for `haltAfterNotFoundMs`, which is 60s by default, the same 60s this
+  // timer runs on. So an OME restart slower than the timer VOD-ed a broadcast whose publisher never
+  // went away, and the puller was mid-retry when it happened. See CON-10.
+  it('defers the recovery finalize for as long as the engine says it is still trying', async () => {
+    const clock = new FakeClock();
+    const catalogEntries: CatalogEntry[] = [];
+    const orch = makeRecoveringOrchestrator(clock, catalogEntries, []);
+
+    await orch.recoverStreams();
+
+    // Four keepalives spanning three times the timeout, which is a puller polling a 404 origin.
+    for (let elapsed = 0; elapsed < RECOVERY_TIMEOUT_60S * 3; elapsed += RECOVERY_TIMEOUT_60S - 1) {
+      assert.equal(orch.keepAlive('live/stream'), true, 'a recovering stream has a finalize to defer');
+      await clock.advance(RECOVERY_TIMEOUT_60S - 1);
+    }
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'a stream the engine is still working on must not be VOD-ed');
+    assert.deepEqual(
+      catalogEntries.map((entry) => entry.state),
+      [],
+      'and nothing is published as VOD while it is deferred',
+    );
+
+    // The deferral is only ever as long as the last keepalive bought. Stopping is what a puller does
+    // when it gives up, and the finalize has to arrive on its own after that, not wait for the halt.
+    await clock.advance(RECOVERY_TIMEOUT_60S);
+    await waitFor(() => orch.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
+    assert.deepEqual(
+      catalogEntries.map((entry) => entry.state),
+      ['vod'],
+      'once the keepalives stop the stream finalizes, or an unreachable origin holds it live forever',
+    );
+  });
+
+  it('does not count a keepalive as stream activity, so a silent origin still stalls', async () => {
+    const clock = new FakeClock();
+    const orch = makeRecoveringOrchestrator(clock, [], []);
+
+    await orch.recoverStreams();
+    orch.startStream('live/stream', MEDIA_TYPE_VIDEO);
+    await clock.advance(5_000);
+    orch.keepAlive('live/stream');
+
+    assert.equal(
+      orch.getMsSinceStreamActivity(),
+      5_000,
+      'a puller retrying an origin that answers nothing is not progress, and must not read as it',
+    );
+    await orch.cleanup();
+  });
+
+  it('reports that a stream with no pending finalize had nothing to defer', async () => {
+    const clock = new FakeClock();
+    const orch = makeRecoveringOrchestrator(clock, [], []);
+
+    orch.startStream('live/stream', MEDIA_TYPE_VIDEO);
+
+    assert.equal(
+      orch.keepAlive('live/stream'),
+      false,
+      'a live stream is not recovering, and a keepalive that silently does nothing reads exactly like one that worked',
+    );
+    assert.equal(orch.keepAlive('live/never-started'), false, 'and a stream nothing registered has nothing to defer');
+    await orch.cleanup();
+  });
 });
 
 describe('StreamOrchestrator segment loss (OBS-11)', () => {

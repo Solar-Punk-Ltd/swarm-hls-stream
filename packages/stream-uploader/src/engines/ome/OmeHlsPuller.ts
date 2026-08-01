@@ -495,7 +495,15 @@ export class OmeHlsPuller {
     const now = Date.now();
     if (this.notFoundSince === null) {
       this.notFoundSince = now;
+      logger.warn(`[OME] ${target} not answering for ${this.streamId}, retrying for up to ${this.haltAfterNotFoundMs}ms`);
     }
+
+    // An origin that is not answering yet is the case a crash-recovered stream is most likely to be in,
+    // because the engine and the uploader come back on their own schedules. Without this the recovery
+    // timer finalized the broadcast as a VOD while this puller was still retrying for it, and the two
+    // windows are the same 60s by default, so an OME restart only had to be marginally slow. The
+    // deferral lasts exactly as long as the retrying below does. See CON-10.
+    this.orchestrator.keepAlive(this.streamId);
 
     if (now - this.notFoundSince > this.haltAfterNotFoundMs) {
       logger.info(`[OME] ${target} gone for ${this.streamId}, halting puller`);

@@ -261,6 +261,34 @@ export class StreamOrchestrator {
     return true;
   }
 
+  /**
+   * Push the pending recovery finalize back, because the engine is still working on this stream.
+   * Answers whether there was one to push, so a caller cannot mistake a no-op for a deferral.
+   *
+   * The timer's only other input is a segment arriving, and after a crash the engine that would send
+   * one is being waited on too. A pull-based engine restarts its puller immediately and then retries a
+   * silent origin for its own patience window, 60s by default, which is the same 60s this timer runs
+   * on. An OME restart slower than that finalized a broadcast whose publisher never went away, with
+   * the puller mid-retry when it happened. See CON-10.
+   *
+   * Each call buys one more `recoveryTimeout`, and nothing renews it but the engine, so the total
+   * deferral is bounded by how long the engine keeps trying. When it gives up it stops the stream
+   * itself, and if it dies instead the timer arrives on its own one timeout later.
+   *
+   * Deliberately not recorded as stream activity. A puller polling an origin that answers nothing is
+   * not making progress, and refreshing the clock here would hide a dead stream behind the retries.
+   */
+  public keepAlive(streamId: string): boolean {
+    const pending = this.recoveryTimers.get(streamId);
+    if (!pending) {
+      return false;
+    }
+
+    pending.cancel();
+    this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
+    return true;
+  }
+
   public async stopStream(streamId: string): Promise<void> {
     // Cancel recovery timer if stopping a recovering stream
     const recoveryTimer = this.recoveryTimers.get(streamId);
@@ -360,16 +388,7 @@ export class StreamOrchestrator {
       const processed = new Set(state.segments.map((s) => s.index));
       this.processedSegments.set(streamId, processed);
 
-      // Set recovery timeout — if engine doesn't reconnect, finalize as VOD
-      const timer = this.clock.setTimer(() => {
-        this.recoveryTimers.delete(streamId);
-        this.logger.info(`[StreamOrchestrator] Recovery timeout for ${streamId}, finalizing as VOD`);
-        void this.stopStream(streamId).catch((error) =>
-          this.errorHandler.handleError(error, `StreamOrchestrator.recoveryTimeout - ${streamId}`),
-        );
-      }, this.config.recoveryTimeout);
-
-      this.recoveryTimers.set(streamId, timer);
+      this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
 
       this.logger.info(
         `[StreamOrchestrator] Recovered stream ${streamId} with ${state.segments.length} segments, ` +
@@ -380,6 +399,17 @@ export class StreamOrchestrator {
     }
 
     return recovered;
+  }
+
+  /** If the engine never reconnects, finalize the recovered stream as a VOD rather than hold it live. */
+  private scheduleRecoveryFinalize(streamId: string): Timer {
+    return this.clock.setTimer(() => {
+      this.recoveryTimers.delete(streamId);
+      this.logger.info(`[StreamOrchestrator] Recovery timeout for ${streamId}, finalizing as VOD`);
+      void this.stopStream(streamId).catch((error) =>
+        this.errorHandler.handleError(error, `StreamOrchestrator.recoveryTimeout - ${streamId}`),
+      );
+    }, this.config.recoveryTimeout);
   }
 
   public getQueuePressure(streamId: string): QueuePressure {
