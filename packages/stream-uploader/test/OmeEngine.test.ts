@@ -929,6 +929,87 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     );
   });
 
+  it('still stops a stream nothing was ever recorded for, even when the closing carries a socket', async () => {
+    // The arm of the guard that reads the recorded side, which no other test reaches: every one of them
+    // has an opening that recorded something. Crash recovery has not. `resumeRecoveredStream` starts a
+    // puller with no admission at all, so a closing arriving afterwards is the first identity the
+    // registry has ever seen for that stream. Judging it foreign for want of anything to compare it
+    // against leaves the recovered puller polling with nothing left that can stop it.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'nothing recorded is no evidence, so a closing that carries an identity still has to be honoured',
+    );
+  });
+
+  it('forgets the recorded socket when a later announce carries none', async () => {
+    // An announce with no socket has to clear the key rather than leave the previous one standing,
+    // because a stale key outlives the session it belonged to and then rejects the closing the current
+    // session does send. Reaching that needs three admissions: only the third, carrying a socket that
+    // does not match the stale one, can tell a cleared registry from an uncleared one.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
+    const pollsWhenUnidentified = origin.polls();
+    await waitFor(() => origin.polls() > pollsWhenUnidentified, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_B);
+
+    // Asserted on the puller rather than on the VOD count, because the second announce retires session
+    // A and publishes its VOD before the closing lands, so a VOD assertion here holds whether the
+    // closing was honoured or dropped. The first version of this test asserted exactly that and
+    // survived the mutation it was written for.
+    const pollsAtClosing = origin.polls();
+    await waitFor(() => origin.polls() > pollsAtClosing, POLL_INTERVAL_MS * 10);
+    assert.equal(
+      origin.polls(),
+      pollsAtClosing,
+      'the socket from two announces ago cannot be what a closing is judged against, so this closing has to stop the puller',
+    );
+  });
+
+  it('tells two sessions apart when they share a port and differ only by address', async () => {
+    // The key is address plus port, but the capture that justified it varied only the port, so the
+    // address half was pinned by nothing. A publisher whose address changes between reconnects, behind
+    // a NAT that reassigns or a proxy hop that moves, is the case that needs it.
+    const SAME_PORT = 44546;
+    const FIRST = { address: '10.0.0.5', port: SAME_PORT };
+    const SECOND = { address: '192.168.65.1', port: SAME_PORT };
+
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, FIRST);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SECOND);
+    const pollsWhenSecondWasLive = origin.polls();
+    await waitFor(() => origin.polls() > pollsWhenSecondWasLive, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, FIRST);
+
+    const pollsAfterStaleClosing = origin.polls();
+    await waitFor(() => origin.polls() > pollsAfterStaleClosing, SETTLE_MS);
+    assert.ok(
+      origin.polls() > pollsAfterStaleClosing,
+      'a closing from the replaced address must not stop the live session that reused its port',
+    );
+  });
+
   it('stops the stream when the opening carried a socket and the closing does not', async () => {
     // The asymmetric case, and the one the no-identity test above cannot reach: there IS a recorded
     // key, and the closing has none to match it with. Judging that as foreign would leave the stream
