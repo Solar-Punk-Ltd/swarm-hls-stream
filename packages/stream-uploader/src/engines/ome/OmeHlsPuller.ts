@@ -495,7 +495,9 @@ export class OmeHlsPuller {
     const now = Date.now();
     if (this.notFoundSince === null) {
       this.notFoundSince = now;
-      logger.warn(`[OME] ${target} not answering for ${this.streamId}, retrying for up to ${this.haltAfterNotFoundMs}ms`);
+      logger.warn(
+        `[OME] ${target} not answering for ${this.streamId}, retrying for up to ${this.haltAfterNotFoundMs}ms`,
+      );
     }
 
     // An origin that is not answering yet is the case a crash-recovered stream is most likely to be in,

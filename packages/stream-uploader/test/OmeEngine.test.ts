@@ -195,7 +195,9 @@ describe('createOmeEngine resumeRecoveredStream over a stale puller (CON-5)', ()
 
     assert.ok(
       delivered.filter((seq) => seq === 0).length > 1,
-      `the resumed stream never pulled anything, so it would be VOD-ed at the recovery timer; delivered: ${delivered.join(', ') || '(none)'}`,
+      `the resumed stream never pulled anything, so it would be VOD-ed at the recovery timer; delivered: ${
+        delivered.join(', ') || '(none)'
+      }`,
     );
   });
 });
