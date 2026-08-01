@@ -76,6 +76,8 @@ export class StreamUploader {
   private catalogAnnounceFailedAt: number | null = null;
   private lastCatalogAnnounceAt: number | null = null;
   private readonly catalogAnnounceRetryMs: number;
+  /** When this stream's state first failed to reach disk and has not since landed. See OBS-4. */
+  private statePersistFailedAt: number | null = null;
 
   private manifestManager: ManifestManager;
 
@@ -391,13 +393,26 @@ export class StreamUploader {
     return this.catalogAnnounceFailedAt === null ? null : Date.now() - this.catalogAnnounceFailedAt;
   }
 
+  /**
+   * How long this stream's state has been failing to reach disk, or null when the last save landed.
+   *
+   * The failure was logged and otherwise swallowed, which made it the quietest way to lose a
+   * broadcast: recovery reads whatever did land, so a crash then re-uploads or drops everything
+   * written since, and until it happens the stream looks perfectly healthy.
+   */
+  public getMsSinceStatePersistFailed(): number | null {
+    return this.statePersistFailedAt === null ? null : Date.now() - this.statePersistFailedAt;
+  }
+
   private persistState(): void {
     if (!this.ownsRecoveryEntry) {
       return;
     }
     try {
       this.recoveryStore.save(this.streamId, this.getStreamState());
+      this.statePersistFailedAt = null;
     } catch (error) {
+      this.statePersistFailedAt ??= Date.now();
       this.logger.error(`Failed to persist state for ${this.streamId}:`, error);
     }
   }

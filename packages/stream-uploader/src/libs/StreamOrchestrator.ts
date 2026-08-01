@@ -507,6 +507,26 @@ export class StreamOrchestrator {
   }
 
   /**
+   * How long this service has been unable to write the state it needs to survive a restart, from the
+   * oldest unresolved failure across both stores. `null` while every write is landing.
+   *
+   * One signal for two stores because it is one fact: they write into the same `STATE_DIR`, so a full
+   * disk, a read-only mount or a permissions change takes out both, and the operator's next move is
+   * the same either way. What follows a restart differs, a stream resuming from stale segments versus
+   * a catalog feed forked at an occupied index, and neither is visible until the restart happens.
+   */
+  public getMsSinceStatePersistFailed(): number | null {
+    let oldest = this.streamCatalog.getMsSinceIndexSaveFailed();
+    for (const uploader of this.activeStreams.values()) {
+      const age = uploader.getMsSinceStatePersistFailed();
+      if (age !== null && (oldest === null || age > oldest)) {
+        oldest = age;
+      }
+    }
+    return oldest;
+  }
+
+  /**
    * How long the longest-waiting live stream has been absent from the catalog, so the worst stream
    * sets the number. `null` while every one of them is listed.
    *
@@ -593,6 +613,7 @@ export class StreamOrchestrator {
       msSinceStreamActivity: this.getMsSinceStreamActivity(),
       msSinceSegmentLoss: this.getMsSinceSegmentLoss(),
       msSinceCatalogAnnounceFailed: this.getMsSinceCatalogAnnounceFailed(),
+      msSinceStatePersistFailed: this.getMsSinceStatePersistFailed(),
     };
   }
 

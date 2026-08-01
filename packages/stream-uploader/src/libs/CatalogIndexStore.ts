@@ -20,8 +20,21 @@ interface PersistedCatalogIndex {
  */
 export class CatalogIndexStore {
   private logger = Logger.getInstance();
+  private saveFailedAt: number | null = null;
 
   constructor(private filePath: string) {}
+
+  /**
+   * How long the persisted index has been failing to update, or null when the last save landed.
+   *
+   * Swallowing this was the quietest possible failure: the running process keeps the right index in
+   * memory, so nothing is wrong until a restart, and then the boot lookup resumes from whatever the
+   * file last held. That is the fork this class exists to prevent, written back into the feed at
+   * indices readers have already passed.
+   */
+  public getMsSinceSaveFailed(): number | null {
+    return this.saveFailedAt === null ? null : Date.now() - this.saveFailedAt;
+  }
 
   public load(owner: string, topicHex: string): FeedIndex | null {
     try {
@@ -46,7 +59,9 @@ export class CatalogIndexStore {
       const data: PersistedCatalogIndex = { owner, topicHex, index: index.toString() };
       fs.writeFileSync(tmpPath, JSON.stringify(data));
       fs.renameSync(tmpPath, this.filePath);
+      this.saveFailedAt = null;
     } catch (error) {
+      this.saveFailedAt ??= Date.now();
       this.logger.error(`[CatalogIndexStore] Failed to save ${this.filePath}:`, error);
     }
   }

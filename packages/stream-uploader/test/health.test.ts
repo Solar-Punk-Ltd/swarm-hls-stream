@@ -9,6 +9,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HealthSignals,
   PRESSURE_HIGH,
@@ -29,6 +30,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     msSinceStreamActivity: 1_000,
     msSinceSegmentLoss: null,
     msSinceCatalogAnnounceFailed: null,
+    msSinceStatePersistFailed: null,
     ...overrides,
   };
 }
@@ -269,5 +271,38 @@ describe('deriveHealthStatus unlisted stream (CON-3)', () => {
     );
 
     assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_SEGMENT_STALL, HEALTH_REASON_UNLISTED_STREAM].sort());
+  });
+});
+
+describe('deriveHealthStatus unpersisted state (OBS-4, OBS-5)', () => {
+  /**
+   * The quietest failure in the service: the running process is perfectly healthy and stays that way,
+   * because it holds the right state in memory. The damage arrives whole at the next restart, as a
+   * stream resuming from stale segments or a catalog feed forked at an index readers have passed.
+   */
+  it('degrades while state is not reaching disk', () => {
+    const report = deriveHealthStatus(signals({ msSinceStatePersistFailed: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_STATE_NOT_PERSISTED]);
+  });
+
+  it('is ok while every write is landing', () => {
+    const report = deriveHealthStatus(signals({ msSinceStatePersistFailed: null }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  it('reports unpersisted state separately from being unlisted', () => {
+    // Both are written by the same process into the same STATE_DIR, and they still say different
+    // things: one is a broadcast nobody can find now, the other a restart that will do the wrong
+    // thing later. Collapsing them would let a fixed catalog imply a healthy disk.
+    const report = deriveHealthStatus(
+      signals({ msSinceStatePersistFailed: 10, msSinceCatalogAnnounceFailed: 10 }),
+      STALL_MS,
+    );
+
+    assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_STATE_NOT_PERSISTED, HEALTH_REASON_UNLISTED_STREAM].sort());
   });
 });

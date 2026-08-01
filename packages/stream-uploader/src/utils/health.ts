@@ -6,6 +6,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   HealthReason,
   HealthReport,
@@ -63,6 +64,13 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   // the state it reports is a broadcast that is running and that no viewer can find.
   if (signals.msSinceCatalogAnnounceFailed !== null) {
     reasons.push(HEALTH_REASON_UNLISTED_STREAM);
+  }
+
+  // No threshold either, and for a different reason from the one above: nothing is wrong with the
+  // running process while this is set, so there is no failure to ride out. The damage is entirely in
+  // the future, and it arrives whole at the next restart.
+  if (signals.msSinceStatePersistFailed !== null) {
+    reasons.push(HEALTH_REASON_STATE_NOT_PERSISTED);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

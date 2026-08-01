@@ -272,11 +272,11 @@ describe('StreamUploader finalization (CON-25)', () => {
         },
       }),
     } as unknown as Bee;
-    const catalog = {
+    const catalog = makeFakeCatalog({
       addStream: async (entry: { state: string }) => {
         published.push(entry);
       },
-    } as unknown as StreamCatalog;
+    });
 
     const uploader = new StreamUploader(
       bee,
@@ -314,14 +314,14 @@ describe('StreamUploader finalization (CON-25)', () => {
 
 describe('StreamUploader catalog announce backoff (CON-3)', () => {
   function makeCatalog(attempts: unknown[], shouldFail: () => boolean): StreamCatalog {
-    return {
+    return makeFakeCatalog({
       addStream: async (entry: unknown) => {
         attempts.push(entry);
         if (shouldFail()) {
           throw new Error('catalog feed write refused');
         }
       },
-    } as unknown as StreamCatalog;
+    });
   }
 
   function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs: number): StreamUploader {
@@ -352,7 +352,10 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
    */
   it('attempts the catalog announce once per retry window, not once per segment', async () => {
     const attempts: unknown[] = [];
-    const uploader = newAnnouncingUploader(makeCatalog(attempts, () => true), 60_000);
+    const uploader = newAnnouncingUploader(
+      makeCatalog(attempts, () => true),
+      60_000,
+    );
 
     await publishSegments(uploader, 5);
 
@@ -400,7 +403,10 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
    */
   it('reports how long the stream has been live and unlisted', async () => {
     const attempts: unknown[] = [];
-    const uploader = newAnnouncingUploader(makeCatalog(attempts, () => true), 60_000);
+    const uploader = newAnnouncingUploader(
+      makeCatalog(attempts, () => true),
+      60_000,
+    );
 
     assert.equal(uploader.getMsSinceCatalogAnnounceFailed(), null, 'nothing has failed yet');
 
@@ -408,5 +414,51 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
 
     const age = uploader.getMsSinceCatalogAnnounceFailed();
     assert.ok(age !== null && age >= 0, `a live unlisted stream must be reportable, got ${age}`);
+  });
+});
+
+describe('StreamUploader recovery persist failures (OBS-4)', () => {
+  function newUploaderWithStore(recoveryStore: RecoveryStore): StreamUploader {
+    return new StreamUploader(
+      makeBee({}),
+      '',
+      makeFakeCatalog(),
+      recoveryStore,
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+  }
+
+  /**
+   * A swallowed persist means recovery loads state older than reality, so a crash re-uploads or drops
+   * everything written since the last save that landed. Nothing outside the log said it had happened.
+   */
+  it('reports how long state has been failing to persist', async () => {
+    let saveFails = true;
+    const uploader = newUploaderWithStore(
+      makeFakeRecoveryStore({
+        save: () => {
+          if (saveFails) {
+            throw new Error('ENOSPC: no space left on device');
+          }
+        },
+      }),
+    );
+
+    assert.equal(uploader.getMsSinceStatePersistFailed(), null, 'nothing has been written yet');
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    const age = uploader.getMsSinceStatePersistFailed();
+    assert.ok(age !== null && age >= 0, `a stream whose state is not on disk must be reportable, got ${age}`);
+
+    saveFails = false;
+    uploader.handleSegment(1, 2, Buffer.from('seg1'));
+    await drain(uploader);
+
+    assert.equal(uploader.getMsSinceStatePersistFailed(), null, 'a save that landed must clear the signal');
   });
 });

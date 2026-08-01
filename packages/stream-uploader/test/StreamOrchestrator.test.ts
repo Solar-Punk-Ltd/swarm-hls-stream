@@ -3,7 +3,6 @@ import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
-import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
   MEDIA_TYPE_VIDEO,
@@ -19,6 +18,7 @@ import {
 import { FakeClock } from './helpers/fakeClock.js';
 import {
   FakeUploads,
+  makeFakeCatalog,
   makeFakeRecoveryStore,
   makeRecordingCatalog,
   makeRecoveredState,
@@ -333,12 +333,17 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('leaves nothing running when a close arrives while the replaced session is finalizing', async () => {
     const id = 'live/stream';
     const finalizing: string[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async () => {
-        finalizing.push('vod');
-        await sleep(60);
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async () => {
+          finalizing.push('vod');
+          await sleep(60);
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
@@ -366,12 +371,17 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
   it('leaves the replacement visible to the stall signal while the outgoing session finalizes', async () => {
     const id = 'live/stream';
     const finalizing: string[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async () => {
-        finalizing.push('vod');
-        await sleep(60);
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async () => {
+          finalizing.push('vod');
+          await sleep(60);
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
@@ -428,16 +438,21 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     const id = 'live/stream';
     const finalizeStarted: string[] = [];
     const published: { state?: StreamStatus; topic?: string }[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async (entry: unknown) => {
-        finalizeStarted.push('vod');
-        // Long enough that the reconnect and its own close both land inside this drain, which is the
-        // whole scenario. A real one has the same shape for as long as a Bee that is answering slowly
-        // holds the VOD commit, up to the drain deadline.
-        await sleep(60);
-        published.push(entry as { state?: StreamStatus; topic?: string });
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: unknown) => {
+          finalizeStarted.push('vod');
+          // Long enough that the reconnect and its own close both land inside this drain, which is the
+          // whole scenario. A real one has the same shape for as long as a Bee that is answering slowly
+          // holds the VOD commit, up to the drain deadline.
+          await sleep(60);
+          published.push(entry as { state?: StreamStatus; topic?: string });
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
@@ -485,14 +500,19 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     const id = 'live/stream';
     const published: unknown[] = [];
     const finalizeStarted: string[] = [];
-    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
-      addStream: async (entry: unknown) => {
-        finalizeStarted.push('vod');
-        // Long enough that the reconnect below lands inside this drain rather than after it.
-        await sleep(60);
-        published.push(entry);
-      },
-    } as unknown as StreamCatalog);
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeFakeCatalog({
+        addStream: async (entry: unknown) => {
+          finalizeStarted.push('vod');
+          // Long enough that the reconnect below lands inside this drain rather than after it.
+          await sleep(60);
+          published.push(entry);
+        },
+      }),
+    );
 
     orch.startStream(id, MEDIA_TYPE_VIDEO);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);

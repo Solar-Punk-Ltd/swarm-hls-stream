@@ -4,7 +4,6 @@ import { after, describe, it } from 'node:test';
 import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
-import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
   HEALTH_DEGRADED,
@@ -14,6 +13,7 @@ import {
   HEALTH_REASON_SEGMENT_STALL,
   HEALTH_REASON_SEGMENT_UPLOAD_FAILURE,
   HEALTH_REASON_STALE_MANIFEST,
+  HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
   MEDIA_TYPE_VIDEO,
   REJECT_DRAINING,
@@ -25,6 +25,7 @@ import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
 import { FakeClock } from './helpers/fakeClock.js';
 import {
   FakeUploads,
+  makeFakeCatalog,
   makeFakeRecoveryStore,
   makeRecoveredState,
   makeTestOrchestrator,
@@ -98,6 +99,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'maxConsecutiveManifestFailures',
         'maxConsecutiveSegmentFailures',
         'msSinceCatalogAnnounceFailed',
+        'msSinceStatePersistFailed',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',
         'queuePressure',
@@ -305,11 +307,11 @@ describe('GET /health status (S2.1)', () => {
    * That combination used to answer `200 ok`.
    */
   it('reports degraded and 503 when a live stream never reaches the catalog (CON-3)', async () => {
-    const refusingCatalog = {
+    const refusingCatalog = makeFakeCatalog({
       addStream: async () => {
         throw new Error('catalog feed write refused');
       },
-    } as unknown as StreamCatalog;
+    });
     const api = await start(makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), refusingCatalog));
 
     await startStream(api);
@@ -327,6 +329,38 @@ describe('GET /health status (S2.1)', () => {
       (body as HealthBody).reasons,
       [HEALTH_REASON_UNLISTED_STREAM],
       'the media path is healthy, so being unlisted has to be its own reason rather than riding on another',
+    );
+  });
+
+  /**
+   * S2.6's acceptance criterion, read over HTTP rather than through `deriveHealthStatus`. Everything
+   * about the running process is fine and stays fine, which is exactly why this was invisible: the
+   * segment uploads, the manifest publishes, the catalog accepts it, and the only thing that has
+   * happened is that a crash would now resume from state older than reality.
+   */
+  it('reports degraded and 503 when a stream cannot persist its recovery state (OBS-4)', async () => {
+    const refusingStore = makeFakeRecoveryStore({
+      save: () => {
+        throw new Error('ENOSPC: no space left on device');
+      },
+    });
+    const api = await start(makeTestOrchestrator({}, {}, refusingStore));
+
+    await startStream(api);
+    await api.requestUntil('/health', hasActiveStreams(1));
+    await postSegment(api, 0);
+
+    const { status, body } = await api.requestUntil(
+      '/health',
+      (received) => (received as HealthBody).reasons?.includes(HEALTH_REASON_STATE_NOT_PERSISTED) === true,
+    );
+
+    assert.equal(status, 503);
+    assert.equal((body as HealthBody).status, HEALTH_DEGRADED);
+    assert.deepEqual(
+      (body as HealthBody).reasons,
+      [HEALTH_REASON_STATE_NOT_PERSISTED],
+      'nothing else is wrong, so a swallowed persist has to raise this on its own or stay invisible',
     );
   });
 

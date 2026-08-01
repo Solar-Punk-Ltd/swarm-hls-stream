@@ -60,6 +60,7 @@ export const HEALTH_REASON_QUEUE_PRESSURE = 'queue_pressure' as const;
 export const HEALTH_REASON_SEGMENT_STALL = 'segment_stall' as const;
 export const HEALTH_REASON_SEGMENT_LOSS = 'segment_loss' as const;
 export const HEALTH_REASON_UNLISTED_STREAM = 'unlisted_stream' as const;
+export const HEALTH_REASON_STATE_NOT_PERSISTED = 'state_not_persisted' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
@@ -67,7 +68,8 @@ export type HealthReason =
   | typeof HEALTH_REASON_QUEUE_PRESSURE
   | typeof HEALTH_REASON_SEGMENT_STALL
   | typeof HEALTH_REASON_SEGMENT_LOSS
-  | typeof HEALTH_REASON_UNLISTED_STREAM;
+  | typeof HEALTH_REASON_UNLISTED_STREAM
+  | typeof HEALTH_REASON_STATE_NOT_PERSISTED;
 
 export interface HealthSignals {
   activeStreams: number;
@@ -101,6 +103,16 @@ export interface HealthSignals {
    * instant has no clock seam. Nothing in the policy compares it against a faked time.
    */
   msSinceCatalogAnnounceFailed: number | null;
+  /**
+   * How long this service has been unable to write the state it needs to survive a restart, across
+   * the recovery store and the catalog index, or `null` while every write is landing. Both write into
+   * `STATE_DIR`, so one number covers them.
+   *
+   * Nothing is wrong with the running process while this is set, which is what made it invisible: the
+   * damage is done by the next restart, which resumes a stream from stale segments or a catalog feed
+   * from an index readers have already passed.
+   */
+  msSinceStatePersistFailed: number | null;
 }
 
 export interface HealthReport {
