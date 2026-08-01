@@ -1308,6 +1308,50 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       );
     });
 
+    it('still stops the live session when only the opening carried a time', async () => {
+      // The asymmetric case, and the one every other test here misses because they set both times or
+      // neither. Mutation found it: turning the second `&&` in the ordering check into `||` makes a
+      // recorded time on its own enough to refuse, so every closing from a transport that omits the
+      // field would be dropped and its puller left polling with nothing able to stop it.
+      const origin = makePollCountingOrigin();
+      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const published: VodEntry[] = [];
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SHARED_SOCKET, B_OPENED_AT);
+      await waitFor(() => origin.polls() > 0, SETTLE_MS);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SHARED_SOCKET);
+
+      await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+      assert.equal(
+        published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+        1,
+        'a time on one side only orders nothing, so the closing has to be honoured',
+      );
+    });
+
+    it('still stops the live session when the closing was issued in the same instant as the opening', async () => {
+      // The boundary. Strictly-before is what says "issued for an earlier session", and equal says
+      // nothing at all, so it has to fall on the act side. Two admissions inside one millisecond is
+      // reachable: OME stamps these itself and a closing can follow an opening immediately when the
+      // publisher is refused.
+      const origin = makePollCountingOrigin();
+      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const published: VodEntry[] = [];
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+      await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SHARED_SOCKET, B_OPENED_AT);
+      await waitFor(() => origin.polls() > 0, SETTLE_MS);
+      await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SHARED_SOCKET, B_OPENED_AT);
+
+      await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+      assert.equal(
+        published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+        1,
+        'an equal time is not an earlier one, so the closing has to be honoured',
+      );
+    });
+
     it('still stops the live session when the admissions carry no time to order them by', async () => {
       // The protocol declares `request.time` optional. Reading an absent one as evidence would make
       // every closing from a transport that omits it look stale.

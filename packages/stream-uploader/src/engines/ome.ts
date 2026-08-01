@@ -151,16 +151,8 @@ export function createOmeEngine(
       }
       sessionsByStream.set(streamId, { phase: 'live', identity });
     },
-    closed: (streamId, identity) => {
-      // The identity of the session that actually ended, which is the recorded one whenever there is
-      // one: a closing reaches this line either carrying that same identity or carrying nothing that
-      // contradicts it, because one that could be shown to be foreign was already turned away above.
-      const record = sessionsByStream.get(streamId);
-      sessionsByStream.set(streamId, {
-        phase: 'closed',
-        identity: record?.phase === 'live' ? record.identity : identity,
-        closedAt: Date.now(),
-      });
+    closed: (streamId) => {
+      sessionsByStream.set(streamId, { phase: 'closed', closedAt: Date.now() });
     },
     forget: (streamId) => sessionsByStream.delete(streamId),
     reasonToIgnoreClosing: (streamId, identity) => {
@@ -321,7 +313,13 @@ function describeSession(identity: SessionIdentity): string {
  */
 type SessionRecord =
   | { phase: 'live'; identity: SessionIdentity }
-  | { phase: 'closed'; identity: SessionIdentity; closedAt: number };
+  /**
+   * Carries no identity, because nothing reads one. A closed record answers "no session holds this
+   * id", which is true of every identity at once, so keeping the departed session's would be a field
+   * that only ever gets written. Mutation found it: replacing the expression that chose which identity
+   * to store survived the suite, and no test could have killed it.
+   */
+  | { phase: 'closed'; closedAt: number };
 
 /** Why a `closing` must not be acted on. Each spelling states only what the registry established. */
 type IgnoredClosingReason = 'replaced' | 'already-closed';
@@ -359,7 +357,7 @@ interface SessionRegistry {
   /** Record the session the orchestrator has just accepted, or clear the record when it carries no identity. */
   opened(streamId: string, identity: SessionIdentity): void;
   /** Record that the session holding this stream is gone, so a repeat of its closing is not acted on twice. */
-  closed(streamId: string, identity: SessionIdentity): void;
+  closed(streamId: string): void;
   /** Drop everything known about a stream, for a puller started with no admission behind it. */
   forget(streamId: string): void;
   reasonToIgnoreClosing(streamId: string, identity: SessionIdentity): IgnoredClosingReason | null;
@@ -405,7 +403,7 @@ function handleAdmission(
       }
 
       logger.info(`[OME] Stream closing: ${streamId}`);
-      sessions.closed(streamId, session);
+      sessions.closed(streamId);
       stopPuller(streamId);
       reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
 
