@@ -63,17 +63,47 @@ describe('listenOnLoopback binds the family it dials (TEST-31)', () => {
   }
 
   /**
+   * Binds, or reports that this platform will not let the conflict exist.
+   *
+   * The hazard needs an OS that allows an IPv6 bind to coexist with an IPv4 bind on the same port,
+   * which is what makes the port look free to one and taken by the other. macOS allows it, which is
+   * where this was measured. Linux, and therefore CI, refuses the second bind outright with
+   * EADDRINUSE, so the two sockets can never both exist and the hazard cannot arise at all.
+   *
+   * Detected by attempting the bind rather than by reading `process.platform`, because the property
+   * that matters is the bind behaviour and not the name of the operating system.
+   */
+  async function listenOrConflictRefused(app: express.Express, port: number, host?: string) {
+    const server = host === undefined ? app.listen(port) : app.listen(port, host);
+    try {
+      await once(server, 'listening');
+      servers.push(server);
+      return server;
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'EADDRINUSE') {
+        throw error;
+      }
+      server.close();
+      return null;
+    }
+  }
+
+  const CONFLICT_REFUSED = 'this platform refuses to bind both families on one port, so the hazard cannot arise here';
+
+  /**
    * The hazard itself. If this stops reproducing, the assertion below it is no longer evidence of
    * anything, so it is asserted rather than assumed: an unqualified `listen` must be reachable on
    * IPv6 and must NOT be the thing answering on IPv4 while a squatter holds that address.
    */
-  it('reproduces the failure that the old unqualified listen allowed', async () => {
+  it('reproduces the failure that the old unqualified listen allowed', async (t) => {
     const port = await reserveFreePort();
     await squatOnIpv4(port);
 
-    const server = makeApp().listen(port);
-    servers.push(server);
-    await once(server, 'listening');
+    const server = await listenOrConflictRefused(makeApp(), port);
+    if (!server) {
+      t.skip(CONFLICT_REFUSED);
+      return;
+    }
 
     assert.equal(
       (server.address() as AddressInfo).address,
@@ -101,15 +131,16 @@ describe('listenOnLoopback binds the family it dials (TEST-31)', () => {
     );
   });
 
-  it('reaches its own server on a port another process holds on IPv4', async () => {
+  it('reaches its own server on a port another process holds on IPv4', async (t) => {
     const port = await reserveFreePort();
     await squatOnIpv4(port);
 
     // Bound the way every helper in this suite now binds, on the exact port the squatter holds.
-    const app = makeApp();
-    const server = app.listen(port, LOOPBACK_HOST);
-    servers.push(server);
-    await once(server, 'listening');
+    const server = await listenOrConflictRefused(makeApp(), port, LOOPBACK_HOST);
+    if (!server) {
+      t.skip(CONFLICT_REFUSED);
+      return;
+    }
 
     const response = await fetch(`http://${LOOPBACK_HOST}:${port}/probe`);
 
