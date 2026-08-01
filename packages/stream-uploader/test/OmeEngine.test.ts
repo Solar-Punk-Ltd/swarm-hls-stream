@@ -44,6 +44,13 @@ async function postAdmission(
    * promises, and `null` is one it can produce for every field.
    */
   client?: { address?: string | null; port?: number | null },
+  /**
+   * `request.time`, which OME issues on every admission as ISO 8601 with an offset. It is the second
+   * discriminator: a session's own closing is issued after its opening, so a closing issued before the
+   * live session was admitted cannot be for it. That is what separates two sessions the socket cannot,
+   * which is any pair that reconnects on the same source port. See CON-23.
+   */
+  requestTime?: string,
 ): Promise<unknown> {
   const app = express();
   // Mirrors the raw-body capture in api/server.ts, which is what the signature is computed over.
@@ -62,7 +69,7 @@ async function postAdmission(
     const { port } = server.address() as AddressInfo;
     const body = JSON.stringify({
       ...(client ? { client } : {}),
-      request: { direction: 'incoming', status, url: streamUrl },
+      request: { direction: 'incoming', status, url: streamUrl, ...(requestTime ? { time: requestTime } : {}) },
     });
     const response = await fetch(`http://127.0.0.1:${port}${engine.prefix}/admission`, {
       method: 'POST',
@@ -866,9 +873,15 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
   const SECRET = 'session-identity-secret';
   const HLS_BASE = 'http://ome:8081';
   const STREAM_URL = 'srt://ome:10080/video/demo';
-  const PLAYLIST_URL = `${HLS_BASE}/video/demo/ts:playlist.m3u8`;
+  const STREAM_ID = 'video/demo';
+  const PLAYLIST_URL = `${HLS_BASE}/${STREAM_ID}/ts:playlist.m3u8`;
   const POLL_INTERVAL_MS = 20;
   const SETTLE_MS = 5_000;
+
+  // What a drain of an already-retired stream leaves behind, from `StreamOrchestrator.performDrain`.
+  // It is the only outward trace of the second stop, because the first one took the puller and the
+  // uploader with it, so nothing else about the process looks different afterwards.
+  const DRAIN_OF_A_RETIRED_STREAM = 'No uploader found for';
 
   // The two sockets the live capture recorded, kept as the real numbers so the fixture cannot drift
   // into a shape OME does not produce.
@@ -1096,6 +1109,135 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       1,
       'a payload with no client cannot be matched, so the closing has to be honoured rather than dropped',
     );
+  });
+
+  /**
+   * CON-22: the guard was armed only while a session was recorded, and the accepted-closing path
+   * deleted the record before doing anything else. From that instant until the next accepted opening
+   * an absent record read as "no evidence", so a repeat of the closing just honoured was acted on
+   * again: a second `stopStream` for a stream the first one had already drained and retired.
+   */
+  it('does not act on a closing twice when OME repeats one it has already been given', async () => {
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    const firstReply = await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+    // Waiting for the VOD is what makes the repeat deterministic: it proves the first drain finished,
+    // so a second one cannot be mistaken for the first still running.
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+    let repeatReply: unknown;
+    try {
+      repeatReply = await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+      // The drain is started without being awaited, so its own warning lands after the reply.
+      await waitAndConfirmNothingHappened(
+        () => !warnings.some((line) => line.includes(DRAIN_OF_A_RETIRED_STREAM)),
+        POLL_INTERVAL_MS * 10,
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepEqual(firstReply, { allowed: true, lifetime: 0, reason: 'ok' }, 'the first closing is the real one');
+    assert.deepEqual(
+      repeatReply,
+      { allowed: true, lifetime: 0, reason: 'ok (closing for a session already closed)' },
+      'OME still needs its acknowledgement for a closing that is dropped, the same as for one that is acted on',
+    );
+    assert.ok(
+      !warnings.some((line) => line.includes(DRAIN_OF_A_RETIRED_STREAM)),
+      `a repeated closing drained the stream a second time; warnings: ${warnings.join(' | ') || '(none)'}`,
+    );
+  });
+
+  it('stops guarding a closed session once its record has expired', async () => {
+    // The record is bounded, because one per stream id ever closed grows without bound where one per
+    // live stream id does not. Past the window a repeat closing is acted on again, which costs a drain
+    // of a stream already retired and is the trade the bound is worth. The window only has to outlive
+    // the one in which a repeat can still arrive, which OME's 3000ms admission timeout bounds.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: SECRET,
+      fetcher: origin.fetcher,
+      closedSessionTtlMs: 0,
+    });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+    // The record has to be older than the window rather than merely at it, and the wait above returns
+    // the instant its condition holds, which can be the same millisecond the record was written.
+    await sleep(POLL_INTERVAL_MS);
+
+    const repeatReply = await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+    assert.deepEqual(
+      repeatReply,
+      { allowed: true, lifetime: 0, reason: 'ok' },
+      'an expired record is no record, so the closing is acted on the way it was before any of this',
+    );
+  });
+
+  it('arms again for the session that opens after a closed one, and stops it when its own closing arrives', async () => {
+    // The other half of CON-22: remembering that a stream was closed must not become a stream that can
+    // never be closed again. The session opening here is a different one on a different socket, which
+    // is the ordinary reconnect.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_B);
+    const pollsWhenBWasLive = origin.polls();
+    await waitFor(() => origin.polls() > pollsWhenBWasLive, SETTLE_MS);
+    const reply = await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_B);
+
+    assert.deepEqual(reply, { allowed: true, lifetime: 0, reason: 'ok' }, 'the second session has to be closable');
+    const pollsAtClosing = origin.polls();
+    await waitAndConfirmNothingHappened(() => origin.polls() === pollsAtClosing, POLL_INTERVAL_MS * 10);
+    assert.equal(origin.polls(), pollsAtClosing, 'the second session’s own closing has to stop its puller');
+  });
+
+  it('leaves a resumed stream closable, whatever the registry held before the crash', async () => {
+    // `resumeRecoveredStream` starts a puller with no admission behind it, so nothing re-records who
+    // holds the stream. A closed record surviving into that puller's lifetime would reject the only
+    // closing that can ever stop it. Recovery runs once at startup against an empty registry today,
+    // so this is a contract on the method rather than a reachable interleaving, and it is here because
+    // the alternative is an argument about call ordering that the next change is free to invalidate.
+    const origin = makePollCountingOrigin();
+    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const published: VodEntry[] = [];
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => origin.polls() > 0, SETTLE_MS);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_A);
+    await waitFor(() => published.some((entry) => entry.state === STREAM_STATUS_VOD), SETTLE_MS);
+
+    orchestrator.startStream(STREAM_ID, 'video');
+    engine.resumeRecoveredStream?.(orchestrator, STREAM_ID);
+    const pollsWhenResumed = origin.polls();
+    await waitFor(() => origin.polls() > pollsWhenResumed, SETTLE_MS);
+
+    const reply = await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, SESSION_B);
+    assert.deepEqual(reply, { allowed: true, lifetime: 0, reason: 'ok' }, 'a resumed stream has to be closable');
+    const pollsAtClosing = origin.polls();
+    await waitAndConfirmNothingHappened(() => origin.polls() === pollsAtClosing, POLL_INTERVAL_MS * 10);
+    assert.equal(origin.polls(), pollsAtClosing, 'the closing for a resumed stream has to stop its puller');
   });
 
   /**

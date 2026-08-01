@@ -139,28 +139,46 @@ export function createOmeEngine(
     }
   };
 
-  const liveSessions = new Map<string, string>();
+  const closedSessionTtlMs = options.closedSessionTtlMs ?? DEFAULT_CLOSED_SESSION_TTL_MS;
+  const sessionsByStream = new Map<string, SessionRecord>();
   const sessions: SessionRegistry = {
-    remember: (streamId, key) => {
+    opened: (streamId, key) => {
       if (key === null) {
-        // Nothing to match a later closing against, so forget any earlier key rather than leaving a
+        // Nothing to match a later closing against, so drop any earlier record rather than leaving a
         // stale one that would reject the closing this session does send.
-        liveSessions.delete(streamId);
+        sessionsByStream.delete(streamId);
         return;
       }
-      liveSessions.set(streamId, key);
+      sessionsByStream.set(streamId, { phase: 'live', key });
     },
-    belongsToReplacedSession: (streamId, key) => {
-      const live = liveSessions.get(streamId);
+    closed: (streamId, key) => {
+      // The key of the session that actually ended, which is the recorded one whenever there is one:
+      // a closing reaches this line either carrying that same key or carrying none at all, because a
+      // closing carrying a different one was already turned away above.
+      const record = sessionsByStream.get(streamId);
+      sessionsByStream.set(streamId, {
+        phase: 'closed',
+        key: record?.phase === 'live' ? record.key : key,
+        closedAt: Date.now(),
+      });
+    },
+    forget: (streamId) => sessionsByStream.delete(streamId),
+    reasonToIgnoreClosing: (streamId, key) => {
+      const record = sessionsByStream.get(streamId);
+      if (!record) {
+        return null;
+      }
+      if (record.phase === 'closed') {
+        if (Date.now() - record.closedAt > closedSessionTtlMs) {
+          sessionsByStream.delete(streamId);
+          return null;
+        }
+        return 'already-closed';
+      }
       // Strict only with evidence on both sides. Refusing to stop a stream whose identity is unknown
       // would leak a puller and never produce a VOD, which is worse than what this guards against.
-      return live !== undefined && key !== null && live !== key;
+      return key !== null && record.key !== key ? 'replaced' : null;
     },
-    // Bounds the map for streams that close and never reopen. It changes no behaviour on its own,
-    // because an accepted opening overwrites the key anyway, so a mutation removing it survives the
-    // suite and no behavioural test can see the difference. Kept for the same reason
-    // OBSERVED_SEGMENT_TIME_TTL_MS exists: holding every stream id ever announced grows without bound.
-    forget: (streamId) => liveSessions.delete(streamId),
   };
 
   return {
@@ -199,6 +217,10 @@ export function createOmeEngine(
         logger.warn(`[OME] Cannot resume recovered stream with unrecognised id: ${streamId}`);
         return;
       }
+      // A resumed puller has no admission behind it, so nothing re-records who holds the stream. Any
+      // record surviving from before would be judged against the closing that is now the only thing
+      // that can stop this puller, and a closed one would reject it outright.
+      sessions.forget(streamId);
       logger.info(`[OME] Resuming HLS pull for recovered stream ${streamId}`);
       startPuller(orchestrator, streamId, app, stream);
     },
@@ -232,12 +254,59 @@ function sessionKey(payload: OmeAdmissionPayload): string | null {
   return hasAddress && hasPort ? `${address}:${port}` : null;
 }
 
-/** Which publishing session currently holds a stream id, so a late closing can be told from a live one. */
+/**
+ * Which publishing session holds a stream id, and whether it still holds it.
+ *
+ * The closed state is the whole point of there being three. An accepted closing used to delete the
+ * record, and an absent record means "no evidence", so from that instant until the next accepted
+ * opening the guard was off: a repeat of the closing just honoured was acted on again and started a
+ * second drain of a stream the first one had already retired. See CON-22.
+ */
+type SessionRecord =
+  | { phase: 'live'; key: string }
+  /** `key` is null only when nothing was ever recorded for the stream and the closing carried no socket. */
+  | { phase: 'closed'; key: string | null; closedAt: number };
+
+/** Why a `closing` must not be acted on. Each spelling states only what the registry established. */
+type IgnoredClosingReason = 'replaced' | 'already-closed';
+
+const IGNORED_CLOSINGS: Record<
+  IgnoredClosingReason,
+  { replyReason: string; warn: (streamId: string, key: string | null) => string }
+> = {
+  // Two admissions for one stream are independent requests against a 3000ms timeout, so a slow
+  // `closing` for a dropped session can be processed after an `opening` OME did admit. Acting on it
+  // would stop the live puller and VOD-finalize the session that replaced the sender. See CON-21.
+  replaced: {
+    replyReason: 'ok (closing for a replaced session)',
+    warn: (streamId, key) =>
+      `[OME] Ignoring a closing for ${streamId} from ${
+        key ?? 'an unidentified session'
+      }: the session live on that id is a different one`,
+  },
+  'already-closed': {
+    replyReason: 'ok (closing for a session already closed)',
+    warn: (streamId) =>
+      `[OME] Ignoring a closing for ${streamId}: its closing has already been acted on and nothing has opened on that id since`,
+  },
+};
+
+/**
+ * How long a closed session stays on record. It only has to outlive the window in which a closing for
+ * it can still arrive, which OME's 3000ms admission timeout bounds, and a record per stream id ever
+ * closed would grow without bound where a record per live stream id does not. A live record never
+ * expires, because a session may broadcast for as long as it likes.
+ */
+const DEFAULT_CLOSED_SESSION_TTL_MS = 60_000;
+
 interface SessionRegistry {
-  remember(streamId: string, key: string | null): void;
-  /** True only when both sides have an identity and they differ, so an unknown identity is never rejected. */
-  belongsToReplacedSession(streamId: string, key: string | null): boolean;
+  /** Record the session the orchestrator has just accepted, or clear the record when it carries no identity. */
+  opened(streamId: string, key: string | null): void;
+  /** Record that the session holding this stream is gone, so a repeat of its closing is not acted on twice. */
+  closed(streamId: string, key: string | null): void;
+  /** Drop everything known about a stream, for a puller started with no admission behind it. */
   forget(streamId: string): void;
+  reasonToIgnoreClosing(streamId: string, key: string | null): IgnoredClosingReason | null;
 }
 
 function handleAdmission(
@@ -270,21 +339,17 @@ function handleAdmission(
     const session = sessionKey(payload);
 
     if (request.status === 'closing') {
-      if (sessions.belongsToReplacedSession(streamId, session)) {
-        // Two admissions for one stream are independent requests against a 3000ms timeout, so a slow
-        // `closing` for a dropped session can be processed after an `opening` OME did admit. Acting on
-        // it would stop the live puller and VOD-finalize the session that replaced the sender. See
-        // CON-21. Answered `allowed` because OME only wants the acknowledgement, and the session this
-        // was sent for is already gone.
-        logger.warn(
-          `[OME] Ignoring a closing for ${streamId} from ${session}: that session has already been replaced and the live one is not it`,
-        );
-        reply(res, { allowed: true, lifetime: 0, reason: 'ok (closing for a replaced session)' });
+      const ignored = sessions.reasonToIgnoreClosing(streamId, session);
+      if (ignored) {
+        // Answered `allowed` because OME only wants the acknowledgement, and the session this was
+        // sent for is gone either way.
+        logger.warn(IGNORED_CLOSINGS[ignored].warn(streamId, session));
+        reply(res, { allowed: true, lifetime: 0, reason: IGNORED_CLOSINGS[ignored].replyReason });
         return;
       }
 
       logger.info(`[OME] Stream closing: ${streamId}`);
-      sessions.forget(streamId);
+      sessions.closed(streamId, session);
       stopPuller(streamId);
       reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
 
@@ -306,7 +371,7 @@ function handleAdmission(
 
     // Recorded only once the orchestrator has taken the stream, so a rejected announce cannot make
     // the live session's own closing look like it came from somewhere else.
-    sessions.remember(streamId, session);
+    sessions.opened(streamId, session);
 
     logger.info(`[OME] Stream opening: ${streamId} (${mediatype})`);
 

@@ -68,6 +68,12 @@ export interface OmeEngineOptions {
   fetchTimeoutMs?: number;
   /** Passed straight to every puller this engine starts. See `PullerOptions.fetcher`. */
   fetcher?: Fetcher;
+  /**
+   * How long the engine remembers that a stream's session closed, so a repeat of that closing is not
+   * acted on a second time. Injectable only so the expiry can be driven at all: at its default the
+   * record outlives any test worth writing. See CON-22.
+   */
+  closedSessionTtlMs?: number;
 }
 
 /**
