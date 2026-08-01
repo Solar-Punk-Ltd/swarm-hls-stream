@@ -283,6 +283,7 @@ describe('SRS webhook gate on the production app', () => {
           maxConsecutiveSegmentFailures: 0,
           msSinceCatalogAnnounceFailed: null,
           msSinceStatePersistFailed: null,
+          queueBacklogSeconds: 0,
           msSinceSegmentLoss: null,
           msSinceStreamActivity: null,
         }),

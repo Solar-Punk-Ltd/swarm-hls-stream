@@ -9,6 +9,7 @@ import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
+import { ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
 
 const SEGMENT_UPLOAD_RETRY_WINDOW_MS = 15_000;
@@ -45,6 +46,8 @@ export interface StreamUploaderOptions {
    * be driven in a test: at its default the sequence takes half a minute of wall clock.
    */
   catalogAnnounceRetryMs?: number;
+  /** Process-lifetime counters this session reports into. Absent in tests that do not read them. */
+  metrics?: ServiceMetrics;
 }
 
 export class StreamUploader {
@@ -78,6 +81,9 @@ export class StreamUploader {
   private readonly catalogAnnounceRetryMs: number;
   /** When this stream's state first failed to reach disk and has not since landed. See OBS-4. */
   private statePersistFailedAt: number | null = null;
+  private readonly metrics?: ServiceMetrics;
+  /** Playing time of everything still queued, in seconds, which is how far behind live this stream is. */
+  private queuedSeconds = 0;
 
   private manifestManager: ManifestManager;
 
@@ -94,6 +100,7 @@ export class StreamUploader {
   ) {
     const { restoreState } = options;
     this.catalogAnnounceRetryMs = options.catalogAnnounceRetryMs ?? CATALOG_ANNOUNCE_RETRY_MS;
+    this.metrics = options.metrics;
     this.bee = bee;
     this.streamSigner = new PrivateKey(streamKey);
     this.streamCatalog = streamCatalog;
@@ -118,31 +125,48 @@ export class StreamUploader {
   }
 
   public handleSegment(segmentIndex: number, duration: number, data: Buffer): void {
+    // Counted when queued and released however the job ends, so a stream whose uploads are failing
+    // reports a backlog that drains rather than one that grows forever.
+    this.queuedSeconds += duration;
     this.segmentQueue.add(async () => {
-      const result = await this.uploadDataToBee(data);
-      if (!result) {
-        // Nothing landed within the retry window; flag the next segment as a discontinuity
-        // so players skip the gap instead of stalling on a silent hole.
-        this.pendingDiscontinuity = true;
-        this.consecutiveSegmentFailures += 1;
-        this.logger.error(
-          `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
-        );
-        this.persistState();
-        return;
+      try {
+        await this.uploadSegment(segmentIndex, duration, data);
+      } finally {
+        this.queuedSeconds -= duration;
       }
-
-      this.consecutiveSegmentFailures = 0;
-      const ref = result.reference.toHex();
-      this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
-      this.pendingDiscontinuity = false;
-      this.isFirstSegmentReady = true;
-
-      this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
-
-      this.uploadLiveManifest();
-      this.persistState();
     });
+  }
+
+  public getQueuedSeconds(): number {
+    return this.queuedSeconds;
+  }
+
+  private async uploadSegment(segmentIndex: number, duration: number, data: Buffer): Promise<void> {
+    const result = await this.uploadDataToBee(data);
+    if (!result) {
+      // Nothing landed within the retry window; flag the next segment as a discontinuity
+      // so players skip the gap instead of stalling on a silent hole.
+      this.pendingDiscontinuity = true;
+      this.consecutiveSegmentFailures += 1;
+      this.logger.error(
+        `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
+      );
+      this.metrics?.recordSegmentDropped();
+      this.persistState();
+      return;
+    }
+
+    this.consecutiveSegmentFailures = 0;
+    const ref = result.reference.toHex();
+    this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
+    this.pendingDiscontinuity = false;
+    this.isFirstSegmentReady = true;
+
+    this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
+
+    this.metrics?.recordSegmentUploaded(Date.now());
+    this.uploadLiveManifest();
+    this.persistState();
   }
 
   /**
@@ -323,6 +347,7 @@ export class StreamUploader {
       const index = await this.commitManifest(manifest);
       if (index === null) {
         this.consecutiveManifestFailures += 1;
+        this.metrics?.recordManifestPublishFailure();
         this.logger.warn(
           `Live manifest for stream ${this.streamId} is stale: ${this.consecutiveManifestFailures} consecutive publish failure(s)`,
         );

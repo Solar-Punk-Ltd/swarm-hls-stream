@@ -84,11 +84,43 @@ Engine-independent HTTP interface for pushing segments directly.
 | `POST /stream/segment` | Raw body + headers                   | Push a segment                             |
 | `POST /stream/stop`    | JSON body: `{ streamId }`            | End a stream, answered `202`               |
 | `GET /stream/status`   | Query: `?streamId=<id>`              | What became of a stream                    |
+| `GET /metrics`         | —                                    | Prometheus exposition                      |
 | `GET /health`          | —                                    | Service health, `200` ok or `503` degraded |
 
-All four `/stream/*` routes require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, it accepts no input and it spends nothing. No compose healthcheck consumes it today.
+All four `/stream/*` routes and `GET /metrics` require `Authorization: Bearer $API_AUTH_TOKEN`, checked in constant time before the body is parsed, so an unauthenticated request neither reaches the orchestrator nor costs the process a buffered body. `GET /health` is deliberately outside the gate: it is a liveness endpoint that `deploy/scripts/health.sh` reads, it accepts no input and it spends nothing. No compose healthcheck consumes it today.
 
 The `/engines/*` webhook routes are **not** behind this gate. OME admission carries its own HMAC signature. The two SRS routes carry no credential at all, and `POST /engines/srs/hls` reaches the same stamp-spending path `/stream/segment` does, so on a default `ENGINE=srs` deployment an anonymous caller can still cause an upload. That is the open half of SEC-1, tracked as S1.2.
+
+**Metrics.** `GET /metrics` serves Prometheus text exposition. These are process-lifetime totals and
+they deliberately outlive the streams they count, which is the one thing `/health` structurally cannot
+do: `/health` describes the streams registered right now, so at the moment a live session is wrongly
+killed it answers `ok` with `activeStreams: 0`.
+
+| Metric                                      | Type    | Meaning                                                   |
+| ------------------------------------------- | ------- | --------------------------------------------------------- |
+| `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                      |
+| `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone   |
+| `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin    |
+| `swarm_hls_manifest_publish_failures_total` | counter | Live manifest publishes that failed                       |
+| `swarm_hls_streams_finalized_total`         | counter | Stops that published a VOD                                |
+| `swarm_hls_streams_failed_total`            | counter | Stops that did not. Those broadcasts have no recording    |
+| `swarm_hls_last_segment_timestamp_seconds`  | gauge   | Unix time of the newest segment that landed, 0 while none |
+| `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing           |
+| `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream            |
+| `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream            |
+
+Unlike `/health`, `/metrics` is behind the bearer gate: it names when the last segment landed and how
+many broadcasts have run, which is more than a liveness probe should give away. Point a scraper at it
+with an `authorization` credential:
+
+```yaml
+scrape_configs:
+  - job_name: swarm-hls-stream
+    authorization:
+      credentials: <API_AUTH_TOKEN>
+    static_configs:
+      - targets: ['stream-uploader:3000']
+```
 
 **Stop is asynchronous.** `POST /stream/stop` answers `202` with `{ ok, accepted, streamId, statusUrl }`
 and drains in the background, because a drain has five minutes to publish its VOD and no media server
@@ -113,7 +145,7 @@ A stream the service has never seen, or one whose stop settled more than fifteen
 | `segment_upload_failure` | A segment reached the uploader but its upload retry window was spent, so that data is gone                                                                                                                                           |
 | `segment_loss`           | The engine could not obtain a segment from its origin at all, so it never reached the uploader. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it     |
 | `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                                 |
-| `queue_pressure`         | A segment queue above 80% of `MAX_QUEUE_SIZE`                                                                                                                                                                                        |
+| `queue_pressure`         | Either a segment queue above 80% of `MAX_QUEUE_SIZE`, where the next segments start being refused, or a backlog holding more than `SEGMENT_STALL_MS` of playing time, which is how far behind live a viewer is                       |
 | `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                            |
 | `unlisted_stream`        | A live stream is absent from the catalog, so no viewer can find it. Reported from the first failed announce, with no threshold, because `StreamCatalog` has already spent its own 10 second retry window by then                     |
 | `state_not_persisted`    | A write into `STATE_DIR` is failing, so the next restart resumes a stream from stale segments or the catalog feed from an index readers have already passed. Nothing is wrong with the running process, which is why it needs saying |

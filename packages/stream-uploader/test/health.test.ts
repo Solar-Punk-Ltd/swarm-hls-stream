@@ -19,6 +19,8 @@ import {
 import { deriveHealthStatus, MANIFEST_FAILURE_THRESHOLD, SEGMENT_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
 const STALL_MS = 30_000;
+/** Named apart from STALL_MS so the backlog cases read as judged against the same window, not a new one. */
+const STALL_MS_FOR_BACKLOG = STALL_MS;
 
 function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
   return {
@@ -31,6 +33,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     msSinceSegmentLoss: null,
     msSinceCatalogAnnounceFailed: null,
     msSinceStatePersistFailed: null,
+    queueBacklogSeconds: 0,
     ...overrides,
   };
 }
@@ -304,5 +307,51 @@ describe('deriveHealthStatus unpersisted state (OBS-4, OBS-5)', () => {
     );
 
     assert.deepEqual(report.reasons.sort(), [HEALTH_REASON_STATE_NOT_PERSISTED, HEALTH_REASON_UNLISTED_STREAM].sort());
+  });
+});
+
+describe('deriveHealthStatus queue backlog (OBS-9)', () => {
+  /**
+   * The measured case from the register: a 39 deep queue against a `MAX_QUEUE_SIZE` of 100 is a ratio
+   * of 0.39, so the pressure band reports `low` and the service reports `ok`, while a viewer is 78
+   * seconds behind live. The ceiling the ratio is measured against has no relationship to how stale a
+   * playlist anybody will sit through, which is why the seconds are what the policy judges.
+   */
+  it('degrades on a backlog the pressure ratio calls low', () => {
+    const report = deriveHealthStatus(
+      signals({ queuePressure: PRESSURE_LOW, queueBacklogSeconds: 78 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_QUEUE_PRESSURE]);
+  });
+
+  it('is ok at the window and degrades one second past it', () => {
+    const atTheWindow = deriveHealthStatus(
+      signals({ queueBacklogSeconds: STALL_MS_FOR_BACKLOG / 1000 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+    const pastIt = deriveHealthStatus(
+      signals({ queueBacklogSeconds: STALL_MS_FOR_BACKLOG / 1000 + 1 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+
+    assert.equal(atTheWindow.status, HEALTH_OK);
+    assert.equal(pastIt.status, HEALTH_DEGRADED);
+  });
+
+  /**
+   * The ratio still has to fire on its own. A queue near `MAX_QUEUE_SIZE` is about to start refusing
+   * segments outright, whatever the playing time behind it, and that is a different failure from
+   * being behind live.
+   */
+  it('still degrades on a full queue holding almost no playing time', () => {
+    const report = deriveHealthStatus(
+      signals({ queuePressure: PRESSURE_HIGH, queueBacklogSeconds: 0 }),
+      STALL_MS_FOR_BACKLOG,
+    );
+
+    assert.deepEqual(report.reasons, [HEALTH_REASON_QUEUE_PRESSURE]);
   });
 });

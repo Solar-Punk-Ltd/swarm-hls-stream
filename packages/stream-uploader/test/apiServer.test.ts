@@ -100,6 +100,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'maxConsecutiveSegmentFailures',
         'msSinceCatalogAnnounceFailed',
         'msSinceStatePersistFailed',
+        'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',
         'queuePressure',

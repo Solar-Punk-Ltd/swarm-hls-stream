@@ -113,6 +113,15 @@ export interface HealthSignals {
    * from an index readers have already passed.
    */
   msSinceStatePersistFailed: number | null;
+  /**
+   * Playing time still waiting to upload for the worst stream, in seconds, which is how far behind
+   * live a viewer of it is.
+   *
+   * `queuePressure` is a ratio against `MAX_QUEUE_SIZE`, and that ceiling has no relationship to how
+   * stale a playlist a viewer will tolerate: a 39 deep backlog reported `low` at roughly 78 seconds
+   * behind live. This is the number the policy can actually judge. See OBS-9.
+   */
+  queueBacklogSeconds: number;
 }
 
 export interface HealthReport {

@@ -67,7 +67,14 @@ export async function startTestApi(
     }
     const response = await fetch(`${origin}${path}`, { ...init, headers: supplied });
     const text = await response.text();
-    return { status: response.status, body: text === '' ? undefined : JSON.parse(text) };
+    if (text === '') {
+      return { status: response.status, body: undefined };
+    }
+    // Parsed by what the server said it sent, rather than by assuming JSON. `/metrics` serves
+    // Prometheus exposition, and parsing that as JSON throws a syntax error that reads like a broken
+    // route instead of a test helper that only knows one content type.
+    const isJson = response.headers.get('content-type')?.includes('json') ?? false;
+    return { status: response.status, body: isJson ? JSON.parse(text) : text };
   }
 
   async function rawRequest(request: string): Promise<number> {

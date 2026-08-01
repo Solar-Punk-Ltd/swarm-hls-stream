@@ -124,6 +124,21 @@ describe('api auth (S1.1, closes SEC-1)', () => {
     });
   }
 
+  /**
+   * Gated where `/health` is not, because it names when the last segment landed and how many
+   * broadcasts have run. `/health` stays open as a liveness endpoint that accepts no input and
+   * spends nothing, and the compose healthcheck reads it.
+   */
+  it('refuses GET /metrics without a token, while /health stays open', async () => {
+    const api = await start(noCalls());
+
+    const metrics = await api.request('/metrics', { headers: NO_AUTH_HEADER });
+    const health = await api.request('/health', { headers: NO_AUTH_HEADER });
+
+    assert.equal(metrics.status, 401);
+    assert.equal(health.status, 200, 'the liveness endpoint must stay reachable by an unauthenticated probe');
+  });
+
   const BAD_TOKENS: { name: string; header: string }[] = [
     { name: 'a wrong token of the same length', header: `Bearer ${'x'.repeat(TEST_AUTH_TOKEN.length)}` },
     { name: 'a token that is a prefix of the real one', header: `Bearer ${TEST_AUTH_TOKEN.slice(0, -1)}` },

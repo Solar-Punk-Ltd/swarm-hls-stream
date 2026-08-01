@@ -33,6 +33,8 @@ export const MANIFEST_FAILURE_THRESHOLD = 3;
  */
 export const SEGMENT_FAILURE_THRESHOLD = 1;
 
+const MS_PER_SECOND = 1_000;
+
 /**
  * The whole degradation policy, kept in one pure function so every threshold is assertable without
  * a running server or a clock.
@@ -48,7 +50,12 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
     reasons.push(HEALTH_REASON_SEGMENT_UPLOAD_FAILURE);
   }
 
-  if (signals.queuePressure === PRESSURE_HIGH) {
+  // Two triggers for one reason, because they answer different questions. The ratio says the queue is
+  // near the ceiling where `handleSegment` starts refusing segments outright. The backlog says how
+  // far behind live the stream already is, judged against the same window a silence is judged against,
+  // since a viewer cannot tell a playlist that stopped from one that is a minute stale.
+  const isBacklogged = signals.queueBacklogSeconds * MS_PER_SECOND > segmentStallMs;
+  if (signals.queuePressure === PRESSURE_HIGH || isBacklogged) {
     reasons.push(HEALTH_REASON_QUEUE_PRESSURE);
   }
 

@@ -25,6 +25,7 @@ import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
+import { MetricsSnapshot, ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
 import { StreamUploader } from './StreamUploader.js';
 
@@ -76,6 +77,8 @@ export class StreamOrchestrator {
   private segmentLossAt = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
   private stopOutcomes = new Map<string, StreamStatusReport>();
+  /** Totals that outlive the streams they describe, which is what `/health` structurally cannot do. */
+  private readonly metrics = new ServiceMetrics();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
@@ -160,8 +163,13 @@ export class StreamOrchestrator {
         this.logger.error(
           `[StreamOrchestrator] The session replaced under ${streamId} was not finalized, so its broadcast has no VOD: ${outcome.reason}`,
         );
+        // Counted here rather than through `recordStopOutcome`, whose map is keyed by stream id and
+        // belongs to the replacement. A total is the only place this loss can survive, since the id
+        // it happened under is live again.
+        this.metrics.recordStreamFailed();
         return;
       }
+      this.metrics.recordStreamFinalized();
       this.logger.info(`[StreamOrchestrator] Finalized the replaced session for ${streamId}`);
     } catch (error) {
       // A backstop rather than the drain's error path, which answers instead of throwing. Nothing
@@ -197,6 +205,7 @@ export class StreamOrchestrator {
       this.config.stamp,
       streamId,
       mediatype,
+      { metrics: this.metrics },
     );
 
     this.activeStreams.set(streamId, uploader);
@@ -311,6 +320,7 @@ export class StreamOrchestrator {
     }
 
     this.segmentLossAt.set(streamId, this.clock.now());
+    this.metrics.recordSegmentsLost(count);
     uploader.handleSegmentLoss(firstIndex, count);
     return true;
   }
@@ -437,6 +447,7 @@ export class StreamOrchestrator {
             isFirstManifestReady: state.isFirstManifestReady,
             pendingDiscontinuity: state.pendingDiscontinuity,
           },
+          metrics: this.metrics,
         },
       );
 
@@ -638,6 +649,31 @@ export class StreamOrchestrator {
   private recordStopOutcome(outcome: StreamStatusReport): void {
     this.sweepStopOutcomes();
     this.stopOutcomes.set(outcome.streamId, outcome);
+    if (outcome.state === STREAM_LIFECYCLE_FAILED) {
+      this.metrics.recordStreamFailed();
+      return;
+    }
+    this.metrics.recordStreamFinalized();
+  }
+
+  /**
+   * Everything `/metrics` reports. The counters outlive their streams, and the three gauges below are
+   * readings taken here, at scrape time, because they can go down and a counter never does.
+   */
+  public getMetricsSnapshot(): MetricsSnapshot {
+    let queueDepth = 0;
+    let queueBacklogSeconds = 0;
+    for (const uploader of this.activeStreams.values()) {
+      queueDepth += uploader.segmentQueue.size;
+      queueBacklogSeconds = Math.max(queueBacklogSeconds, uploader.getQueuedSeconds());
+    }
+
+    return {
+      ...this.metrics.getCounters(),
+      activeStreams: this.activeStreams.size,
+      queueDepth,
+      queueBacklogSeconds,
+    };
   }
 
   /**
@@ -687,6 +723,7 @@ export class StreamOrchestrator {
       msSinceSegmentLoss: this.getMsSinceSegmentLoss(),
       msSinceCatalogAnnounceFailed: this.getMsSinceCatalogAnnounceFailed(),
       msSinceStatePersistFailed: this.getMsSinceStatePersistFailed(),
+      queueBacklogSeconds: this.getMetricsSnapshot().queueBacklogSeconds,
     };
   }
 
@@ -720,7 +757,8 @@ export class StreamOrchestrator {
       return;
     }
 
-    this.recordStopOutcome(await this.drainUploader(streamId, uploader));
+    const outcome = await this.drainUploader(streamId, uploader);
+    this.recordStopOutcome(outcome);
 
     // A re-announce during this drain registers a replacement under the same id, so detaching by id
     // now would unregister a live session that this drain never touched. Every segment after that
