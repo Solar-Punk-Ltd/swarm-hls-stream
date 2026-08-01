@@ -60,7 +60,10 @@ function readEmittedAssets(outDir: string): EmittedAssets {
  * `AbortSignal.timeout` against safari14, parses cleanly and is invisible here. See OBS-2.
  */
 describe('the emitted bundle honours the declared browser target (TEST-22)', () => {
-  let outDir: string;
+  // Undefined until the temp directory exists, because `force` does not cover an undefined path:
+  // `rmSync` rejects the argument before it ever considers whether the target is there, so an
+  // unguarded cleanup would throw ERR_INVALID_ARG_TYPE over whatever really failed.
+  let outDir: string | undefined;
   let emitted: EmittedAssets;
 
   beforeAll(async () => {
@@ -75,7 +78,9 @@ describe('the emitted bundle honours the declared browser target (TEST-22)', () 
   }, BUILD_TIMEOUT_MS);
 
   afterAll(() => {
-    rmSync(outDir, { recursive: true, force: true });
+    if (outDir) {
+      rmSync(outDir, { recursive: true, force: true });
+    }
   });
 
   it('declares the target it does, so the assertions below mean something', async () => {
