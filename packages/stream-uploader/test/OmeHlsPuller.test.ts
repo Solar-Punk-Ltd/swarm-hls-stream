@@ -6,6 +6,8 @@ import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { DEFAULT_FETCH_TIMEOUT_MS, OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
 import { REJECT_QUEUE_FULL, SegmentResult } from '../src/types.js';
 
+import { waitFor } from './helpers/waiting.js';
+
 const MEDIA_PLAYLIST = [
   '#EXTM3U',
   '#EXT-X-VERSION:3',
@@ -275,6 +277,8 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
   });
 
   const FETCH_TIMEOUT_MS = 25;
+  /** Two abort windows plus room for a machine running the whole suite at once. Reached only on a hang. */
+  const ABORT_RECOVERY_CEILING_MS = 4_000;
 
   it('writes a segment off after the documented number of attempts', () => {
     // Every loop above uses the constant, so its value cannot be caught by them: 3 to 5 and 3 to 100
@@ -373,6 +377,7 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
     const originalWarn = console.warn;
     console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
     console.warn = () => {};
+    const mentionsAbort = (line: string) => /abort|timed out|timeout/i.test(line);
 
     const puller = makeDrivablePuller(hangingFetcher([], urls), [], [], {
       fetchTimeoutMs: FETCH_TIMEOUT_MS,
@@ -381,7 +386,11 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
 
     try {
       (puller as unknown as { start(): void }).start();
-      await sleep(FETCH_TIMEOUT_MS * 8);
+      // A ceiling on a hung test, not a measurement of how long this takes. Sleeping the two abort
+      // windows this needs and then asserting made the test a stopwatch on the machine: under a
+      // loaded suite the poll loop's timers are starved, the second tick has not run yet, and a
+      // correct puller reads as one that stopped after the first abort.
+      await waitFor(() => urls.length >= 2 && errors.some(mentionsAbort), ABORT_RECOVERY_CEILING_MS);
       puller.stop();
     } finally {
       console.error = originalError;
@@ -390,7 +399,7 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
 
     assert.ok(urls.length >= 2, `the poll loop kept going after the abort, saw ${urls.length} attempts`);
     assert.ok(
-      errors.some((line) => /abort|timed out|timeout/i.test(line)),
+      errors.some(mentionsAbort),
       `the abort is logged at error level, got ${JSON.stringify(errors.slice(0, 3))}`,
     );
   });
