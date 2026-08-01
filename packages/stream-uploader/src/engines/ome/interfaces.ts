@@ -45,6 +45,13 @@ export interface PullerOptions {
    * copy of the floor with it.
    */
   onSegmentTimeObserved?: (newest: number | null) => void;
+  /**
+   * Called with the delay each poll was armed with, in milliseconds. Injectable only so a test can
+   * read the interval the puller asked for rather than timing the polls it produces. Counting polls
+   * inside a wall-clock window reports the load on the machine instead: the cold-start assertion that
+   * did so failed 13 runs of 64 at 32 concurrent copies. See TEST-34.
+   */
+  onPollScheduled?: (delayMs: number) => void;
 }
 
 export interface AppStream {

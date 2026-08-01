@@ -1472,6 +1472,12 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
   /** A ceiling on a hung poll loop, not a measurement. */
   const POLL_CEILING_MS = 4_000;
 
+  const ORDINARY_INTERVAL_MS = 5;
+  /** How long an unusable origin is retried at the ordinary interval before the puller slows down. */
+  const GRACE_MS = 60;
+  /** A halt window no test here reaches, so the halt cannot end a run that is about the poll rate. */
+  const OUTLASTS_THIS_TEST_MS = 60_000;
+
   function makeCounters() {
     const keptAlive: string[] = [];
     const halts: string[] = [];
@@ -1583,34 +1589,63 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
    * 500ms default. The grace period is the reason this is two-speed rather than immediate: a cold start
    * is a 404, because the puller polls before OME has published the playlist, so the commonest run of
    * failures belongs to a stream that is about to work.
+   *
+   * Both tests below read the interval the puller asked for rather than counting the polls it
+   * produced. Counting them inside a wall-clock window reports the load on the machine: under
+   * contention the timers fire late, fewer polls land, and the assertion fails with
+   * `got 4 polls in the grace` against code that is behaving correctly. Measured at 13 failing runs
+   * of 64 at 32 concurrent copies on 12 cores. See TEST-34, and TEST-15 for the same fix one layer up.
    */
   it('polls a cold-starting origin at the ordinary interval, then slows once it stays unusable', async () => {
-    const polledAt: number[] = [];
-    const fetcher = (async () => {
-      polledAt.push(Date.now());
-      return { ok: false, status: 404, text: async () => '' } as unknown as Response;
-    }) as unknown as Fetcher;
+    const scheduledDelaysMs: number[] = [];
+    const fetcher = (async () => ({ ok: false, status: 404, text: async () => '' } as unknown as Response)) as Fetcher;
 
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, makeOrchestratorStub(), {
-      fetcher,
-      haltAfterNotFoundMs: 60_000,
-      slowPollAfterMs: 60,
-    }) as unknown as StartablePuller;
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      ORDINARY_INTERVAL_MS,
+      makeOrchestratorStub(),
+      {
+        fetcher,
+        haltAfterNotFoundMs: OUTLASTS_THIS_TEST_MS,
+        slowPollAfterMs: GRACE_MS,
+        onPollScheduled: (delayMs) => scheduledDelaysMs.push(delayMs),
+      },
+    ) as unknown as StartablePuller;
 
     await withSilencedLogs(async () => {
       puller.start();
-      await waitFor(() => polledAt.length > 0 && Date.now() - polledAt[0] > 200, POLL_CEILING_MS);
+      // The event itself rather than an elapsed window, so a loaded machine makes this wait longer
+      // and never makes it wrong.
+      await waitFor(() => scheduledDelaysMs.includes(GRACE_MS), POLL_CEILING_MS);
     });
     puller.stop();
 
-    const graceStart = polledAt[0];
-    const duringGrace = polledAt.filter((at) => at - graceStart < 60).length;
-    const afterGrace = polledAt.filter((at) => at - graceStart >= 60).length;
+    const [firstPollDelayMs, ...retryDelaysMs] = scheduledDelaysMs;
+    const slowedAt = retryDelaysMs.indexOf(GRACE_MS);
 
-    assert.ok(duringGrace >= 5, `a cold start must keep its ordinary interval, got ${duringGrace} polls in the grace`);
+    assert.equal(firstPollDelayMs, 0, 'a puller that waits out an interval before its first poll delays every stream');
     assert.ok(
-      afterGrace <= 5,
-      `an origin unusable past the grace must slow down, got ${afterGrace} polls in the ~200ms after it`,
+      slowedAt >= 1,
+      `an origin unusable past the grace must slow down after retrying at the ordinary interval, and the puller asked for ${
+        retryDelaysMs.join(', ') || '(nothing)'
+      }`,
+    );
+    assert.deepEqual(
+      [...new Set(retryDelaysMs.slice(0, slowedAt))],
+      [ORDINARY_INTERVAL_MS],
+      `a cold start must keep its ordinary interval, and the puller asked for ${retryDelaysMs
+        .slice(0, slowedAt)
+        .join(', ')} inside the grace`,
+    );
+    assert.deepEqual(
+      [...new Set(retryDelaysMs.slice(slowedAt))],
+      [GRACE_MS],
+      `an origin still unusable must stay slowed, and the puller asked for ${retryDelaysMs
+        .slice(slowedAt)
+        .join(', ')} after the grace`,
     );
   });
 
@@ -1625,28 +1660,48 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
    */
   it('keeps its ordinary interval while its polls are deferring a recovery finalize', async () => {
     const polledAt: number[] = [];
+    const scheduledDelaysMs: number[] = [];
     const fetcher = (async () => {
       polledAt.push(Date.now());
       return { ok: false, status: 404, text: async () => '' } as unknown as Response;
     }) as unknown as Fetcher;
 
     const orchestrator = makeOrchestratorStub({ keepAlive: () => true });
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, orchestrator, {
-      fetcher,
-      haltAfterNotFoundMs: 60_000,
-      slowPollAfterMs: 60,
-    }) as unknown as StartablePuller;
+    const puller = new OmeHlsPuller(
+      'stream-test',
+      'app',
+      'stream',
+      'http://ome/hls',
+      ORDINARY_INTERVAL_MS,
+      orchestrator,
+      {
+        fetcher,
+        haltAfterNotFoundMs: OUTLASTS_THIS_TEST_MS,
+        slowPollAfterMs: GRACE_MS,
+        onPollScheduled: (delayMs) => scheduledDelaysMs.push(delayMs),
+      },
+    ) as unknown as StartablePuller;
 
     await withSilencedLogs(async () => {
       puller.start();
-      await waitFor(() => polledAt.length > 0 && Date.now() - polledAt[0] > 200, POLL_CEILING_MS);
+      // Waits for a poll that lands past the grace, which is the first one a puller without the
+      // deferral would have slowed. Nothing here counts polls, so contention only lengthens the wait.
+      await waitFor(
+        () => polledAt.length > 0 && polledAt[polledAt.length - 1] - polledAt[0] > GRACE_MS,
+        POLL_CEILING_MS,
+      );
     });
     puller.stop();
 
-    const afterGrace = polledAt.filter((at) => at - polledAt[0] >= 60).length;
-    assert.ok(
-      afterGrace >= 8,
-      `a deferred recovery is renewed once per poll, so slowing to ${afterGrace} polls finalizes it under the puller`,
+    const [, ...retryDelaysMs] = scheduledDelaysMs;
+    const outlastedGraceByMs = polledAt[polledAt.length - 1] - polledAt[0] - GRACE_MS;
+
+    assert.deepEqual(
+      [...new Set(retryDelaysMs)],
+      [ORDINARY_INTERVAL_MS],
+      `a deferred recovery is renewed once per poll, so a puller that slows finalizes it underneath itself, and this one asked for ${retryDelaysMs.join(
+        ', ',
+      )} across an outage ${outlastedGraceByMs}ms past the grace`,
     );
   });
 });
