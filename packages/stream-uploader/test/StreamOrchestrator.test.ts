@@ -1426,3 +1426,62 @@ describe('StreamOrchestrator status during a handover (gate on PR 52)', () => {
     });
   });
 });
+
+describe('StreamOrchestrator unusable segment durations (gate on PR 52)', () => {
+  /**
+   * The backlog total adds a duration on enqueue and subtracts it when the job ends, so
+   * `Infinity - Infinity` leaves `NaN`, which no later segment clears. `getMetricsSnapshot` folds
+   * every stream through `Math.max`, and `Math.max(x, NaN)` is `NaN`, so one degenerate duration on
+   * one stream turned off the signal for the whole process while `/health` reported nothing wrong.
+   *
+   * The OME parser has screened durations since CON-7. The two paths that take the number from a
+   * caller, the HTTP route and the SRS webhook, never did.
+   */
+  const UNUSABLE: [string, number][] = [
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['NaN', NaN],
+    ['negative', -1],
+    ['longer than an hour', 3601],
+  ];
+
+  for (const [name, duration] of UNUSABLE) {
+    it(`refuses a ${name} duration instead of letting it poison the backlog signal`, async () => {
+      const orch = makeTestOrchestrator({}, { uploadData: neverSettles });
+
+      await withSilencedLogs(async () => {
+        orch.startStream('live/victim', MEDIA_TYPE_VIDEO);
+        orch.startStream('live/poisoned', MEDIA_TYPE_VIDEO);
+        await waitFor(() => orch.getActiveStreamCount() === 2, SETTLE_CEILING_MS);
+
+        for (let index = 0; index < 40; index++) {
+          orch.handleSegment('live/victim', index, 2, Buffer.from('v'));
+        }
+        const backlogBefore = orch.getMetricsSnapshot().queueBacklogSeconds;
+        assert.equal(backlogBefore, 80, 'this test means nothing unless a real backlog is being reported');
+
+        const result = orch.handleSegment('live/poisoned', 0, duration, Buffer.from('p'));
+
+        assert.equal(result.accepted, false, `a ${name} duration was accepted`);
+        assert.equal(
+          orch.getMetricsSnapshot().queueBacklogSeconds,
+          80,
+          `a ${name} duration destroyed the backlog reading for every stream in the process`,
+        );
+      });
+    });
+  }
+
+  it('still accepts an ordinary duration, and zero', async () => {
+    const orch = makeTestOrchestrator({}, { uploadData: neverSettles });
+
+    await withSilencedLogs(async () => {
+      orch.startStream('live/normal', MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+      assert.equal(orch.handleSegment('live/normal', 0, 2, Buffer.from('a')).accepted, true);
+      assert.equal(orch.handleSegment('live/normal', 1, 0, Buffer.from('b')).accepted, true, 'zero publishes cleanly');
+      assert.equal(orch.getMetricsSnapshot().queueBacklogSeconds, 2);
+    });
+  });
+});

@@ -29,12 +29,15 @@ export const REJECT_UNKNOWN_STREAM = 'unknown_stream' as const;
 export const REJECT_DUPLICATE = 'duplicate' as const;
 /** The stream is finalizing. Distinct from `unknown_stream`: it existed, and its manifest is closed. */
 export const REJECT_DRAINING = 'draining' as const;
+/** The declared duration is not a number a manifest or a running total can hold. */
+export const REJECT_UNUSABLE_DURATION = 'unusable_duration' as const;
 
 export type RejectReason =
   | typeof REJECT_QUEUE_FULL
   | typeof REJECT_UNKNOWN_STREAM
   | typeof REJECT_DUPLICATE
-  | typeof REJECT_DRAINING;
+  | typeof REJECT_DRAINING
+  | typeof REJECT_UNUSABLE_DURATION;
 
 export type SegmentResult = { accepted: true } | { accepted: false; reason: RejectReason };
 

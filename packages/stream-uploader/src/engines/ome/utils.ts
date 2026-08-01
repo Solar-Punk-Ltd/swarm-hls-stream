@@ -10,6 +10,7 @@ import {
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
+import { isUsableDuration } from '../../utils/segmentDuration.js';
 
 const STREAM_INF_PREFIX = `${HLS_STREAM_INF}:`;
 const MEDIA_SEQUENCE_PREFIX = `${HLS_MEDIA_SEQUENCE}:`;
@@ -44,17 +45,6 @@ export function parseMasterPlaylist(text: string): string {
  * `#EXTINF:1e+308,` and `#EXT-X-TARGETDURATION:1e+308`, poisons the total the VOD advertises, and
  * drives every derived timestamp to an infinity a replacement puller then adopts as its floor.
  */
-const MAX_SEGMENT_SECONDS = 3600;
-
-/**
- * A duration that can go into a manifest. Anything else reaches `#EXTINF` verbatim, and a playlist
- * that says `NaN`, a negative length, or a number no clock could mean is one no player can follow.
- * Zero is degenerate rather than unusable: it publishes cleanly and adds nothing to a total.
- */
-function isUsableDuration(duration: number): boolean {
-  return Number.isFinite(duration) && duration >= 0 && duration <= MAX_SEGMENT_SECONDS;
-}
-
 export function parseMediaPlaylist(text: string): PlaylistEntry[] {
   const lines = text.split(/\r?\n/);
   let mediaSeq = 0;

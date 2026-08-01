@@ -2,7 +2,13 @@ import { Request, Response, Router } from 'express';
 
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
-import { REJECT_DRAINING, REJECT_QUEUE_FULL, REJECT_UNKNOWN_STREAM, STREAM_LIFECYCLE_UNKNOWN } from '../../types.js';
+import {
+  REJECT_DRAINING,
+  REJECT_QUEUE_FULL,
+  REJECT_UNKNOWN_STREAM,
+  REJECT_UNUSABLE_DURATION,
+  STREAM_LIFECYCLE_UNKNOWN,
+} from '../../types.js';
 import { getErrorMessage } from '../../utils/common.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { ApiError } from '../middleware/errorHandler.js';
@@ -62,6 +68,12 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
       // manifest that has been committed. The sender's copy is the only one left, so say so.
       if (result.reason === REJECT_DRAINING) {
         throw new ApiError(409, `Stream is finalizing and accepts no more segments: ${streamId}`);
+      }
+
+      // 400 rather than 409 or 429: no retry of the same request can succeed, because what is wrong
+      // is the value the sender declared.
+      if (result.reason === REJECT_UNUSABLE_DURATION) {
+        throw new ApiError(400, `x-duration is not a usable segment length: ${req.headers['x-duration']}`);
       }
 
       throw new ApiError(500, 'Unexpected error');

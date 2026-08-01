@@ -10,6 +10,7 @@ import {
   REJECT_DRAINING,
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
+  REJECT_UNUSABLE_DURATION,
   SegmentResult,
   STREAM_LIFECYCLE_DRAINING,
   STREAM_LIFECYCLE_FAILED,
@@ -19,6 +20,7 @@ import {
   StreamStatusReport,
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
+import { isUsableDuration } from '../utils/segmentDuration.js';
 
 import { Clock, systemClock, Timer } from './Clock.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -249,6 +251,16 @@ export class StreamOrchestrator {
 
     if (this.isDraining(streamId, uploader)) {
       return { accepted: false, reason: REJECT_DRAINING };
+    }
+
+    // Checked here because this is where the HTTP route, the SRS webhook and the OME puller converge,
+    // and only the puller screened it. A non-finite duration reaches `#EXTINF` verbatim, so it buys
+    // an unplayable playlist with postage, and it destroys the queue's backlog total: the total adds
+    // on enqueue and subtracts when the job ends, `Infinity - Infinity` is `NaN`, and `Math.max`
+    // then spreads that `NaN` across every stream in the process, permanently, with `/health` and
+    // `/metrics` both reporting nothing wrong.
+    if (!isUsableDuration(duration)) {
+      return { accepted: false, reason: REJECT_UNUSABLE_DURATION };
     }
 
     // Segments arriving mean the engine is feeding this stream again. If it was just recovered after

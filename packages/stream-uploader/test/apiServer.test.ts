@@ -159,6 +159,51 @@ describe('api server over http (S0.7 test layer)', () => {
   });
 });
 
+describe('POST /stream/segment duration validation (gate on PR 52)', () => {
+  const servers: ApiTestServer[] = [];
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  /**
+   * `parseFloat('Infinity')` is `Infinity` and `isNaN(Infinity)` is false, so the route's own guard
+   * waved it through. It then reached `#EXTINF` verbatim, buying an unplayable playlist with postage,
+   * and latched the backlog gauge to NaN for every stream in the process.
+   */
+  it('answers 400 for a duration no manifest and no running total can hold', async () => {
+    const api = await startTestApi(makeTestOrchestrator());
+    servers.push(api);
+
+    await api.request('/stream/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ streamId: STREAM_ID, mediatype: MEDIA_TYPE_VIDEO }),
+    });
+    await api.requestUntil('/health', hasActiveStreams(1));
+
+    for (const value of ['Infinity', '-Infinity', '1e999', '-1']) {
+      const { status } = await api.request('/stream/segment', {
+        method: 'POST',
+        headers: {
+          'content-type': 'video/mp2t',
+          'x-stream-id': STREAM_ID,
+          'x-segment-index': '0',
+          'x-duration': value,
+        },
+        body: Buffer.from('seg'),
+      });
+
+      assert.equal(status, 400, `x-duration: ${value} was accepted`);
+    }
+
+    const { body } = await api.request('/metrics');
+    assert.ok(
+      String(body).includes('swarm_hls_queue_backlog_seconds 0'),
+      `the backlog gauge was poisoned by a refused segment: ${String(body).match(/queue_backlog_seconds.*/)?.[0]}`,
+    );
+  });
+});
+
 describe('POST /stream/stop outcome (S2.5, OBS-3)', () => {
   const servers: ApiTestServer[] = [];
   after(async () => {
