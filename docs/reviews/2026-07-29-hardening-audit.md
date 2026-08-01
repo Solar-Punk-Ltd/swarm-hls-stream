@@ -87,6 +87,34 @@ path to the definition of done.
 Sprint order: **S3 next**, then S2 remainder, S1 remainder, S4 remainder, S6, S5 last, which matches
 the QA-runs-last decision already in the handoff.
 
+### Anything that needs live infrastructure is deferred to the end
+
+Owner decision, 2026-08-01: **defer every task whose verification needs a running engine, and do them
+all in one block at the end.** The reasoning is the same one behind the batched cadence. A task that
+needs a live OME, a live Bee or real playback cannot be closed by `pnpm verify`, so it stalls a sprint
+that is otherwise ready to land, and standing one up per task pays the setup cost over and over.
+
+| Deferred                       | What it needs                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------- |
+| **CON-17**                     | a live OME, to establish whether an unannounced media-sequence restart is reachable at all   |
+| **S5.1** latency baseline      | a real end-to-end stream, since the number is the measurement                                |
+| **S5.2** hls.js live retune    | real playback, since a tuning change is only as good as what it does to a real player        |
+| **S6.3** bee-js spike          | a real Bee, if the evidence is to be worth anything                                          |
+| The reconnect/crash/Bee-outage | a real engine, and it is the definition of done's own final clause rather than a sprint task |
+
+**CON-17 is deferred, not archived, and the distinction is its severity.** Its consequence is settled
+and severe: `OmeHlsPuller.ts` holds `segment.seq <= this.lastSeq` with no escape, so an unannounced
+restart discards the new session's media forever while `/health` says `segment_stall` a window later.
+What is unestablished is whether OME can produce that at all. **CON-16's measurement is not evidence
+for it:** that row's own account has `startPuller` returning early on `pullers.has(streamId)`, a branch
+only reached once an admission has arrived, so what was measured is the announced case CON-16 closed.
+Fixing on the strength of the consequence alone has already been tried and reverted once, in `cb34d1b`.
+
+Everything else in the plan is closable with fakes and the injected clock, so it proceeds as normal.
+**Separately and permanently, not part of this deferral: on-chain actions are the owner's.** No stamp is
+ever bought, extended or topped up here, on any network, so S4.6 ships its guard with `FakeBee` behind
+it and the spend itself is never exercised.
+
 ### The queue this replaced
 
 Kept because the rows are still the rows, and because the reasoning below still holds for how to order
