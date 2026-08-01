@@ -158,6 +158,38 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
     );
   }
 
+  it('registers every session before it returns, so a reconnect is addressable in its own tick', async () => {
+    const id = 'live/stream';
+    const published: unknown[] = [];
+    const orch = startedOrchestrator(published, []);
+
+    // Three announces, each fed in the same tick it arrives. CON-1's own account of this race is wrong
+    // and the correction is what this test pins: p-queue 8 runs the first job inside `add()`, so two
+    // announces never did both take the fresh-stream path. The window opens on the second one, which
+    // retires the live session and queues its replacement, and that queued write is deferred. Between
+    // there and the microtask that ran it, `activeStreams` held nothing for a stream mid-broadcast, so
+    // a segment was refused as an unknown stream and a third announce found the id free and started
+    // yet another session over the top of the pending one, which was then never retired or finalized.
+    for (const index of [0, 1, 2]) {
+      assert.equal(orch.startStream(id, MEDIA_TYPE_VIDEO), true, `announce ${index} is accepted`);
+      assert.deepEqual(
+        orch.handleSegment(id, index, 2, Buffer.from(`seg${index}`)),
+        { accepted: true },
+        `the segment after announce ${index} reaches the session that announce just started`,
+      );
+    }
+
+    // Two retirements, so two VODs. A session that is overwritten rather than retired publishes
+    // nothing, which is how the loss shows up.
+    await waitFor(
+      () => published.filter((entry) => (entry as PublishedEntry).state === STREAM_STATUS_VOD).length >= 2,
+      SETTLE_CEILING_MS,
+    );
+
+    assert.equal(orch.getActiveStreamCount(), 1, 'exactly one session holds the id at the end');
+    await orch.cleanup();
+  });
+
   it('accepts a re-announced already-active stream and restarts it instead of rejecting', async () => {
     const id = 'live/stream';
     const published: unknown[] = [];

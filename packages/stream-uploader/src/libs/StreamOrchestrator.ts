@@ -1,5 +1,4 @@
 import { Bee } from '@ethersphere/bee-js';
-import PQueue from 'p-queue';
 
 import {
   HealthSignals,
@@ -45,7 +44,6 @@ export class StreamOrchestrator {
   private drainPromises = new Map<string, { uploader: StreamUploader | undefined; promise: Promise<void> }>();
   private processedSegments = new Map<string, Set<number>>();
   private recoveryTimers = new Map<string, Timer>();
-  private queue = new PQueue({ concurrency: 1 });
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
    * clock so a backwards NTP step cannot make an age negative and hide a stall. Registration counts
@@ -134,24 +132,39 @@ export class StreamOrchestrator {
     }
   }
 
+  /**
+   * Registers the stream before returning, which is the whole of CON-1's fix.
+   *
+   * This used to defer its body into a concurrency-1 `PQueue`, and the race that opened is not the one
+   * CON-1 describes. p-queue 8 runs a synchronous job inside `add()` when a slot is free, so a first
+   * announce did register before returning and a second one did see it. What it could not do is run a
+   * *second* job synchronously: the slot is only released a microtask later. So the window opened on
+   * the re-announce path, which retires the live session and then queues its replacement. Between
+   * those two, `activeStreams` held nothing for a stream mid-broadcast, and the measured consequences
+   * were a segment from a reconnecting broadcaster refused as `unknown_stream`, and a third announce
+   * in that same window finding the id free and starting a session over the top of the pending one,
+   * which was then never retired and never finalized.
+   *
+   * The queue bought nothing to lose. It had one producer, this method, and its job body was entirely
+   * synchronous, as is `StreamUploader`'s constructor: field assignments, a signer, a manifest manager
+   * and a uuid.
+   */
   private spawnUploader(streamId: string, mediatype: MediaType): void {
-    this.queue.add(() => {
-      const uploader = new StreamUploader(
-        this.bee,
-        this.config.manifestBeeUrl,
-        this.streamCatalog,
-        this.recoveryStore,
-        this.config.streamKey,
-        this.config.stamp,
-        streamId,
-        mediatype,
-      );
+    const uploader = new StreamUploader(
+      this.bee,
+      this.config.manifestBeeUrl,
+      this.streamCatalog,
+      this.recoveryStore,
+      this.config.streamKey,
+      this.config.stamp,
+      streamId,
+      mediatype,
+    );
 
-      this.activeStreams.set(streamId, uploader);
-      this.processedSegments.set(streamId, new Set());
-      this.streamActivityAt.set(streamId, this.clock.now());
-      this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
-    });
+    this.activeStreams.set(streamId, uploader);
+    this.processedSegments.set(streamId, new Set());
+    this.streamActivityAt.set(streamId, this.clock.now());
+    this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
 
   public handleSegment(streamId: string, segmentIndex: number, duration: number, data: Buffer): SegmentResult {
@@ -483,15 +496,10 @@ export class StreamOrchestrator {
       }),
     );
 
-    await this.queue.onIdle();
-    this.queue.clear();
-
     this.logger.info('[StreamOrchestrator] Cleanup complete');
   }
 
   private async performDrain(streamId: string): Promise<void> {
-    await this.queue.onIdle();
-
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       this.logger.warn(`[StreamOrchestrator] No uploader found for ${streamId}`);
