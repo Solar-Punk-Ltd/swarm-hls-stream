@@ -68,6 +68,12 @@ export interface OmeEngineOptions {
   fetchTimeoutMs?: number;
   /** Passed straight to every puller this engine starts. See `PullerOptions.fetcher`. */
   fetcher?: Fetcher;
+  /**
+   * How long the engine remembers that a stream's session closed, so a repeat of that closing is not
+   * acted on a second time. Injectable only so the expiry can be driven at all: at its default the
+   * record outlives any test worth writing. See CON-22.
+   */
+  closedSessionTtlMs?: number;
 }
 
 /**
@@ -83,6 +89,13 @@ export interface OmeAdmissionRequest {
   direction: 'incoming' | 'outgoing';
   protocol: string;
   url: string;
+  /**
+   * When OME issued this admission, ISO 8601 with an offset. Declared optional by the protocol and
+   * populated on every admission in the live SRT capture on 2026-08-01. Monotone across admissions,
+   * which is what makes it a session discriminator the socket cannot be: a session's own closing is
+   * issued after its opening, so a closing issued before the live session was admitted was sent for
+   * some earlier one, however the two sockets compare. See CON-23.
+   */
   time?: string;
   new_url?: string;
   status?: 'opening' | 'closing';

@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, REJECT_UNKNOWN_STREAM, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, REJECT_UNKNOWN_STREAM, STREAM_STATUS_VOD, StreamState, StreamStatus } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -326,6 +326,94 @@ describe('StreamOrchestrator re-announce (E: engine restart)', () => {
       null,
       'the live stream is unreadable to the stall signal for as long as the replaced one takes to finalize',
     );
+    await orch.cleanup();
+  });
+
+  // Two stops for one stream, close enough together that the second starts before the first has
+  // finished. Every caller in the engines fires and forgets, and two of them sit next to each other on
+  // the same id: a puller that halts calls this, and the closing OME sends afterwards calls it again.
+  // A second drain finds the uploader still registered, because the first has not retired it yet, and
+  // finalizes it a second time. The stream is not lost, it is published twice, and a viewer reading the
+  // list sees the same broadcast under two entries with nothing to say which is real. See CON-22.
+  it('finalizes a stream once when a second stop lands inside the first drain', async () => {
+    const id = 'live/stream';
+    const published: { state?: StreamStatus }[] = [];
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS },
+      {},
+      makeFakeRecoveryStore(),
+      makeRecordingCatalog(published),
+    );
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('one'));
+
+    await Promise.all([orch.stopStream(id), orch.stopStream(id)]);
+
+    assert.equal(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).length,
+      1,
+      'one broadcast was published as two VODs, because both stops drained the same uploader',
+    );
+    await orch.cleanup();
+  });
+
+  // The other side of coalescing two stops, and the expensive one. A drain in flight belongs to one
+  // uploader, not to the stream id, and those stop being the same thing the moment a reconnect
+  // registers a replacement under that id. Answering the replacement's own stop with the outgoing
+  // session's drain never finalizes the replacement: its catalog entry stays live for a broadcast that
+  // ended, it holds the id in `activeStreams` with no puller, and the stall signal reports it forever.
+  // Only a process restart rescues it, at the recovery timeout, off the recovery store.
+  it('drains the replacement when its own stop lands inside the outgoing session drain', async () => {
+    const id = 'live/stream';
+    const finalizeStarted: string[] = [];
+    const published: { state?: StreamStatus; topic?: string }[] = [];
+    const orch = makeTestOrchestrator({ recoveryTimeout: RECOVERY_TIMEOUT_MS }, {}, makeFakeRecoveryStore(), {
+      addStream: async (entry: unknown) => {
+        finalizeStarted.push('vod');
+        // Long enough that the reconnect and its own close both land inside this drain, which is the
+        // whole scenario. A real one has the same shape for as long as a Bee that is answering slowly
+        // holds the VOD commit, up to the drain deadline.
+        await sleep(60);
+        published.push(entry as { state?: StreamStatus; topic?: string });
+      },
+    } as unknown as StreamCatalog);
+
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('outgoing'));
+
+    // The outgoing session's close. Fire and forget, the way every engine caller sends it.
+    const stoppingOutgoing = orch.stopStream(id);
+    await waitFor(() => finalizeStarted.length > 0);
+
+    // The reconnect, inside that drain, followed by its own close.
+    orch.startStream(id, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1);
+    orch.handleSegment(id, 0, 2, Buffer.from('reconnected'));
+    await orch.stopStream(id);
+    await stoppingOutgoing;
+
+    assert.equal(
+      orch.getActiveStreamCount(),
+      0,
+      'the replacement was answered with the outgoing session’s drain, so nothing ever finalized it',
+    );
+    assert.equal(
+      orch.handleSegment(id, 0, 2, Buffer.from('after')).accepted,
+      false,
+      'a session that was told to stop still accepts segments, which is what an undrained uploader looks like from outside',
+    );
+    // Counted by feed topic rather than by entry, because the outgoing session is finalized twice here
+    // for a reason that predates this and is not what the test is about: a re-announce inside a drain
+    // runs `finalizeRetiredSession` alongside the `performDrain` already in flight. Each uploader owns
+    // its own topic, and the real catalog keys on `(owner, topic)`, so the duplicate replaces rather
+    // than adds and only the distinct count says whether both broadcasts were actually published.
+    const vodTopics = new Set(
+      published.filter((entry) => entry.state === STREAM_STATUS_VOD).map((entry) => entry.topic),
+    );
+    assert.equal(vodTopics.size, 2, 'two broadcasts ended and only one of them was ever published');
     await orch.cleanup();
   });
 
