@@ -542,16 +542,25 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     for (let attempt = 0; attempt < 5; attempt++) {
       await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
     }
+    assert.equal(health.backoffRemainingMs(hexTopic), 30_000, 'the run never reached the cap, so this proves less');
 
     manager.clear(hexTopic);
     stubFetch(() => feedHead(START_INDEX));
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
 
-    requested.length = 0;
+    // Read here, before any follow-up runs. The version of this that failed review closed on a
+    // request count taken after a follow-up that would itself have cleared the hold, against a fake
+    // clock the injected delay advances, so a hold merely waited out read as zero too and the poll
+    // went out either way. Nothing about it could fail for the reason its own name gives.
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE, 'the recovered gateway was still reported as unreachable');
+    assert.equal(health.backoffRemainingMs(hexTopic), 0, 'the remounted player was still being held off');
+
+    // And the next failure starts the schedule over rather than resuming at the cap.
+    stubFetch(gatewayDown);
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     await settle();
 
-    assert.equal(requested.length, 1, 'the follow-up poll after a recovered gateway was still being held off');
+    assert.equal(health.backoffRemainingMs(hexTopic), 2_000, 'the recovery did not reset the backoff schedule');
   });
 
   it('clears the signal when the stream comes back already finished', async () => {
