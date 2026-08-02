@@ -75,9 +75,17 @@ describe('FeedStateOverlay', () => {
 });
 
 /**
- * The seam a rendering test would cover. Nothing in this package can mount a React tree, so what is
- * checked instead is the wiring that the review of the first attempt found missing, which is more
- * specific than "the overlay exists".
+ * The seam a rendering test would cover, and the weakest thing in this file.
+ *
+ * Nothing in this package can mount a React tree, so the wiring is checked against the component's
+ * source text. That is falsifiable in the wrong direction and it is worth writing down which way:
+ * a prettier-style rewrap of the matched line turns these red without any behaviour changing, while
+ * `hls.config.liveSyncDuration = 3` after construction, or wrapping the overlay in a flag so it
+ * never shows, leaves them green. The subscribe pattern below is pinned end to end rather than
+ * across a wildcard, which closes the two regressions that used to fit inside the gap: dropping the
+ * `return` so the cleanup never unsubscribes, and subscribing a listener that reports a constant.
+ * The remaining two need a DOM, and until there is one these tests cost more in false alarms than
+ * they buy. See the register row filed with this round.
  */
 describe('the player component is wired to it', () => {
   const source = readFileSync(PLAYER_SOURCE, 'utf8');
@@ -92,6 +100,9 @@ describe('the player component is wired to it', () => {
    * causes a restart, so it would be dropped exactly when the outage it describes is under way.
    */
   it('subscribes on the topic alone, not on anything a restart changes', () => {
-    assert.match(source, /manifestFetcher\.feedHealth\.subscribe\([\s\S]{0,120}?\}, \[topicString\]\);/);
+    assert.match(
+      source,
+      /return manifestFetcher\.feedHealth\.subscribe\(hexTopic, setFeedState\);\s*\}, \[topicString\]\);/,
+    );
   });
 });
