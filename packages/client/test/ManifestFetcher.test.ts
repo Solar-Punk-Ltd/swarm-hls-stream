@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
 import {
-  ManifestFetcher,
-  ManifestStateManager,
+  FEED_STATE_LIVE,
+  FEED_STATE_RECONNECTING,
+  FeedHealthTracker,
+  type FeedState,
   UNSERVED_SLOT_POLL_LIMIT,
-} from '../src/components/SwarmHlsPlayer/ManifestManagement';
+} from '../src/components/SwarmHlsPlayer/feedState';
+import { ManifestFetcher, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement';
 import { makeFeedIdentifier } from '../src/utils/bee';
 
 const BEE_URL = 'http://bee.test';
@@ -297,5 +300,198 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     await pollUnservedSlot();
 
     assert.equal(reported.length, 1, 'the polls after the reset were not counted, so the silence above proved nothing');
+  });
+});
+
+/**
+ * The backoff and the feed-state signal were first built entirely inside `handleFollowupFetch`, and
+ * `handleInitialFetch` is the path taken after every mount and after every self-restart, because the
+ * player's effect cleanup clears the topic. A fatal network error is what triggers a restart, so the
+ * one path the mechanism never touched was the one an outage guarantees a visit to.
+ */
+describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () => {
+  let fetcher: ManifestFetcher;
+  let health: FeedHealthTracker;
+  let waited: number[];
+  let requested: string[];
+
+  beforeEach(() => {
+    manager.clear(hexTopic);
+    let clockMs = 0;
+    health = new FeedHealthTracker(() => clockMs);
+    waited = [];
+    requested = [];
+    fetcher = new ManifestFetcher(manager, health, async (ms) => {
+      waited.push(ms);
+      clockMs += ms;
+    });
+    fetcher.beeUrl = BEE_URL;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realConsoleError;
+  });
+
+  function stubFetch(respond: (url: string) => Response): void {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      return respond(url);
+    };
+  }
+
+  const gatewayDown = () => new Response('bad gateway', { status: 502 });
+
+  /** What the feed endpoint answers on the initial path, index header and all. */
+  function feedHead(index: bigint, lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:2', '#EXTINF:2,', `seg-${index}.ts`]) {
+    return new Response(lines.join('\n'), { headers: { 'Swarm-Feed-Index': index.toString(16) } });
+  }
+
+  function seedFollowupState(): void {
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
+  }
+
+  it('says the feed is reconnecting when the first fetch of a mount cannot reach the gateway', async () => {
+    stubFetch(gatewayDown);
+
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+
+    assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
+  });
+
+  // The root cause, stated as a test. The restart discards the topic, and the state describing why
+  // it restarted has to survive that or a viewer sees the overlay flicker off exactly when the
+  // outage is at its worst.
+  it('keeps saying so across the restart that the outage itself causes', async () => {
+    stubFetch(gatewayDown);
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+
+    manager.clear(hexTopic);
+    const seen: FeedState[] = [];
+    health.subscribe(hexTopic, (state) => seen.push(state));
+
+    assert.deepEqual(seen, [FEED_STATE_RECONNECTING], 'the remounted player was told the feed was fine');
+  });
+
+  // Exact waits, not "some wait happened". The version of this that failed review asserted a request
+  // count under a ceiling, which a backoff slow enough to make the player useless satisfies better.
+  it('waits out a lengthening backoff on the path a restart takes', async () => {
+    stubFetch(gatewayDown);
+
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+
+    assert.deepEqual(waited, [2_000, 4_000], 'the first attempt should not wait, and the rest should double');
+  });
+
+  it('stops holding the gateway off the moment it answers', async () => {
+    stubFetch(gatewayDown);
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+
+    stubFetch(() => feedHead(START_INDEX));
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    assert.deepEqual(waited, [2_000]);
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
+    assert.equal(health.backoffRemainingMs(hexTopic), 0);
+  });
+
+  /**
+   * The failure this shape produced before. A run of failures left a backoff behind that only a
+   * successful follow-up cleared, and after a remount there are no follow-ups until the initial
+   * fetch has set an index, so the first thing the player did on a recovered gateway was sit out
+   * the remains of a thirty second hold with nothing said.
+   */
+  it('does not hold a remounted player off a gateway that has already answered it', async () => {
+    stubFetch(gatewayDown);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+    }
+
+    manager.clear(hexTopic);
+    stubFetch(() => feedHead(START_INDEX));
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    requested.length = 0;
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+
+    assert.equal(requested.length, 1, 'the follow-up poll after a recovered gateway was still being held off');
+  });
+
+  it('clears the signal when the stream comes back already finished', async () => {
+    stubFetch(gatewayDown);
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+
+    const finished = ['#EXTM3U', '#EXT-X-TARGETDURATION:2', '#EXTINF:2,', 'seg-5.ts', '#EXT-X-ENDLIST'];
+    stubFetch(() => feedHead(START_INDEX, finished));
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    // A finalised manifest sets no index, so this topic stays on the initial path for the rest of
+    // the session. Anything that only cleared the signal from the follow-up path never runs again.
+    assert.equal(manager.getIndex(hexTopic), null, 'the fixture no longer strands the topic, so this proves less');
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
+  });
+
+  it('holds off the poll cadence when the gateway fails mid-stream', async () => {
+    seedFollowupState();
+    console.error = () => {};
+    stubFetch(gatewayDown);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+
+    assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
+    assert.equal(health.backoffRemainingMs(hexTopic), 2_000);
+
+    requested.length = 0;
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+
+    assert.deepEqual(requested, [], 'the next poll went out while the gateway was still being held off');
+  });
+
+  // The opposite case wearing the same status code. A viewer who has caught up with the publisher
+  // gets one of these on nearly every poll and has to keep asking at full cadence.
+  it('does not hold anything off over a slot the publisher has not written yet', async () => {
+    seedFollowupState();
+    stubFetch(() => new Response('not found', { status: 404 }));
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+
+    assert.equal(health.backoffRemainingMs(hexTopic), 0);
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
+
+    requested.length = 0;
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+
+    assert.equal(requested.length, 1, 'a caught-up viewer stopped polling and would never see the next segment');
+  });
+
+  /**
+   * The feed-state writes used to sit outside the generation guard that protects the index three
+   * lines below them, so a response issued before a teardown could report the gateway as answering
+   * for a topic whose replacement had already found it was not.
+   */
+  it('does not let a response that outlived its topic say the gateway is answering', async () => {
+    seedFollowupState();
+    const gate = deferred<void>();
+    globalThis.fetch = async () => {
+      await gate.promise;
+      return new Response(manifestForIndex(START_INDEX + 1n));
+    };
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    manager.clear(hexTopic);
+    health.recordGatewayFailure(hexTopic);
+    gate.resolve();
+    await settle();
+
+    assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
   });
 });
