@@ -246,24 +246,79 @@ describe('taking over a stream id that is already being published', () => {
     await orch.cleanup();
   });
 
-  /**
-   * A recovered stream is one this process restored after its own restart, so nothing on record says
-   * who was broadcasting it. That first announce cannot be judged and is not. What must not follow is
-   * that the stream stays claimable for the rest of its life: the session that resumed it becomes the
-   * incumbent, so the announce after it is judged like any other.
-   */
-  it('makes the session that resumed a recovered stream the incumbent', async () => {
-    const clock = new FakeClock();
+  function makeRecoveringHarness(clock: FakeClock): Harness {
     const published: PublishedEntry[] = [];
+    const saved: StreamState[] = [];
     const orch = makeTestOrchestrator(
       { segmentStallMs: STALL_MS, recoveryTimeout: 60_000, clock },
       {},
       makeFakeRecoveryStore({
         listActive: () => [toRecoveryFileId(STREAM_ID)],
         load: () => makeRecoveredState(STREAM_ID),
+        save: (_streamId: string, state: StreamState) => saved.push(state),
       }),
       makeRecordingCatalog(published as unknown[]),
     );
+    return { orch, published, saved };
+  }
+
+  /**
+   * The path production actually takes, and the one the first version of this file did not.
+   *
+   * A recovered stream is resumed by **segments**, not by an announce: OME's `resumeRecoveredStream`
+   * restarts the puller with no admission behind it, and SRS's publish session never closed, so
+   * neither engine calls `startStream` again. Nothing therefore records who owns it, and reading an
+   * absent record as "nobody owns this" left the guard off for the whole remaining broadcast.
+   *
+   * Three separate lenses of the PR #65 gate found this, each from a different question.
+   */
+  it('refuses a stranger against a recovered stream that resumed by segments', async () => {
+    const clock = new FakeClock();
+    const harness = makeRecoveringHarness(clock);
+    const { orch } = harness;
+
+    await orch.recoverStreams();
+    assert.equal(orch.getActiveStreamCount(), 1, 'the recovered stream is waiting for its engine');
+
+    // Segments, and no announce. This is what cancels the recovery timer in production.
+    await publishOneSegment(harness, 99);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      false,
+      'an owner nobody recorded is unknown, not absent, and a live recovered stream is not free',
+    );
+    assert.equal(orch.getMetricsSnapshot().takeoversRefusedTotal, 1);
+
+    await orch.cleanup();
+  });
+
+  /**
+   * The cost of the rule above, stated so it cannot be lost. Nothing can identify the owner of a
+   * recovered stream, so the real broadcaster reconnecting to one is a stranger by every test here
+   * and waits out the stall window like any other. That is bounded and it only follows a restart.
+   */
+  it('lets a recovered stream be reclaimed once it stops being fed', async () => {
+    const clock = new FakeClock();
+    const harness = makeRecoveringHarness(clock);
+    const { orch } = harness;
+
+    await orch.recoverStreams();
+    await publishOneSegment(harness, 99);
+    await clock.advance(STALL_MS + 1);
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+
+    await orch.cleanup();
+  });
+
+  /**
+   * And once an announce does reach a recovered stream, that session becomes the incumbent, so the
+   * announce after it is judged against a real address rather than against the unknown-owner rule.
+   */
+  it('makes the session that resumed a recovered stream the incumbent', async () => {
+    const clock = new FakeClock();
+    const { orch } = makeRecoveringHarness(clock);
 
     await orch.recoverStreams();
     assert.equal(orch.getActiveStreamCount(), 1, 'the recovered stream is waiting for its engine');
@@ -271,7 +326,7 @@ describe('taking over a stream id that is already being published', () => {
     assert.equal(
       orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }),
       true,
-      'the announce that resumes a recovered stream has nothing to be judged against',
+      'a recovered stream nothing has fed yet is inside no stall window',
     );
     assert.equal(
       orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),

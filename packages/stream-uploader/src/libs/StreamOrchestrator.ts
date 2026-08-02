@@ -192,21 +192,32 @@ export class StreamOrchestrator {
    *
    * The stall window is the escape hatch, and it is what keeps a refusal from being permanent. A
    * broadcaster whose address changed between sessions is a stranger by the test above, and without
-   * this they could never retake their own id. `segmentStallMs` is reused rather than joined by a
-   * second threshold, so the answer to "is anything still publishing here" is the same one `/health`
-   * gives.
+   * this they could never retake their own id.
+   *
+   * **No record at all is not the same as a record naming nobody**, and reading them alike left the
+   * guard off for the whole life of every recovered stream. A stream this process restored after its
+   * own restart has no claimant and cannot get one from an announce: both engines resume it by
+   * delivering segments, OME because `resumeRecoveredStream` restarts the puller with no admission
+   * behind it and SRS because its publish session never closed, so no `startStream` call ever
+   * follows. Three lenses of the PR #65 gate reached this independently. So an absent record means
+   * the owner is *unknown*, and an unknown owner is protected by the stall window rather than
+   * yielded to anyone who asks. `POST /stream/start` is the other case and it is genuinely different:
+   * it records `ANONYMOUS_CLAIMANT`, which is a positive statement that the caller named nobody.
    *
    * What it does not stop: an attacker who shares the victim's address. Same host, same NAT and the
    * same VPN egress all produce that, and so does a proof run entirely on loopback. Closing that needs
-   * the publisher to authenticate to the engine, which is a different piece of work.
+   * the publisher to authenticate to the engine, which is a different piece of work. Nor does it stop
+   * a squatter who claims an id *first* and keeps feeding it: this guard is symmetric, so it protects
+   * whoever is already there. `POST /stream/stop` is the operator's override, and SEC-28 is the fix.
    */
   private mayTakeOver(streamId: string, claimant: StreamClaimant): boolean {
     const incumbent = this.streamClaimants.get(streamId);
+    if (incumbent === undefined) {
+      return this.hasStalled(streamId);
+    }
+
     const provablyDifferent =
-      incumbent !== undefined &&
-      incumbent.address !== null &&
-      claimant.address !== null &&
-      incumbent.address !== claimant.address;
+      incumbent.address !== null && claimant.address !== null && incumbent.address !== claimant.address;
 
     return !provablyDifferent || this.hasStalled(streamId);
   }
