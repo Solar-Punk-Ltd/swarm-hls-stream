@@ -47,6 +47,20 @@ describe('splitting one segment across the pipeline', () => {
     assert.equal(latencySplit(INSTANTS, NO_SKEW).totalMs, 5_600);
   });
 
+  /**
+   * A run costs a real broadcast and real postage, so a question asked of its artifact afterwards
+   * should not need another one. Everything else on the split is a duration, and durations alone
+   * cannot say when the run happened, how long it lasted, or where a segment sat in the uploader's
+   * log. The PR #64 gate's question about the drift estimate needed exactly that and could only be
+   * answered by back-computing the run span out of a derived figure.
+   */
+  it('carries the instants it was derived from, so the artifact keeps its own inputs', () => {
+    const { instants } = latencySplit(INSTANTS, NO_SKEW);
+
+    assert.deepEqual(instants, INSTANTS);
+    assert.equal(instants.fetchedAtMs - instants.capturedAtMs, latencySplit(INSTANTS, NO_SKEW).totalMs);
+  });
+
   it('charges the first frame for its own segment closing', () => {
     assert.equal(hopMs(HOP_SEGMENT), 2_000);
   });

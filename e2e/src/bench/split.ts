@@ -70,6 +70,16 @@ export interface Hop {
 }
 
 export interface LatencySplit {
+  /**
+   * The instants everything below was derived from, carried so the artifact keeps its own inputs.
+   *
+   * A run costs a real broadcast and real postage, so a question asked of it afterwards should not
+   * need another one. Without this the JSON holds durations only, every absolute instant is gone, and
+   * even the run's own elapsed span has to be back-computed out of a derived figure. That is how the
+   * PR #64 gate's question about the drift estimate had to be answered, which is the argument for
+   * this field.
+   */
+  instants: SegmentInstants;
   /** Capture to fetch, on one clock. The figure a later sprint is measured against. */
   totalMs: number;
   hops: readonly Hop[];
@@ -142,6 +152,7 @@ export function latencySplit(instants: SegmentInstants, skew: ClockSkew): Latenc
   const totalMs = instants.fetchedAtMs - instants.capturedAtMs;
 
   return {
+    instants,
     totalMs,
     hops,
     playerBufferMs,
