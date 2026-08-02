@@ -611,7 +611,11 @@ require_safe_data_dir() {
     return 0
   fi
 
-  if ! [[ "$value" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  # A leading `-` is excluded separately from the rest of the set, because a path is an argument
+  # before it is a path: `mkdir -p -weird` reads it as options and dies with `illegal option -- w`,
+  # naming neither the variable nor the value. `--` is not the fix, since BSD `chmod` does not accept
+  # it and the same line runs on the operator's macOS machine. `./-weird` is still allowed.
+  if ! [[ "$value" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]]; then
     log_error "$name is not a usable data directory: $value"
     echo "  Allowed characters: letters, digits, and . _ - /" >&2
     exit 1

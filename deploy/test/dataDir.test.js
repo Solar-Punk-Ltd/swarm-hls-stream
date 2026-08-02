@@ -102,6 +102,22 @@ describe('bee data dir from .env (SEC-21)', () => {
     );
   });
 
+  // A path is an argument before it is a path. This one passed the character check, then reached
+  // `mkdir -p -weird` on the far side and died with `illegal option -- w`, naming neither the
+  // variable nor the value. It also split the two hosts: the local branch still succeeded, because
+  // `local_data_dir` prefixes the deploy directory and the leading dash stops being leading.
+  it('refuses a value that a command would read as its own options', async () => {
+    const { run } = deployBeeNode(envWith('BEE_UPLOADER_DATA_DIR=-rf'));
+    const finished = await run;
+
+    assert.notEqual(finished.exitCode, 0, 'a data dir that starts with a dash was accepted');
+    assert.match(
+      `${finished.stdout}${finished.stderr}`,
+      /BEE_UPLOADER_DATA_DIR is not a usable data directory/,
+      'the run failed somewhere downstream instead of on the guard, which is the defect',
+    );
+  });
+
   // The gateway had its own copy of the same seven lines, so a fix applied to the uploader alone
   // would have left half the defect in place and every test above still green.
   it('guards the gateway variable as well as the uploader one', async () => {
