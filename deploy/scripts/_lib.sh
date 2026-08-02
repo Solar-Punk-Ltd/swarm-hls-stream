@@ -571,8 +571,23 @@ load_env() {
 #
 # POSIX single-quoting (close the quote, escape, reopen) rather than bash's `printf %q`, because the
 # shell on the other side is whatever login shell the deployment account has.
+#
+# The replacement is built in a variable on purpose, and the two shorter spellings are both wrong on
+# bash 3.2, which is what `#!/bin/bash` resolves to on macOS. Measured on 3.2.57 against 5.x:
+#
+#   ${1//\'/\'\\\'\'}       needs a second round of backslash removal that 3.2 does not do. Emits an
+#                           unbalanced word, so the receiving shell dies on `unexpected EOF`.
+#   ${1//\'/"'\\''"}        looks like the fix, and fails silently instead of loudly: no syntax
+#                           error, and 80 of 180 sampled inputs parse back to the wrong bytes.
+#
+# The first is the one that is dangerous rather than merely wrong. A value ending in a backslash eats
+# the wrapper's own closing quote, which rebalances the word and leaves a substitution before it
+# outside every quote, so the receiving shell runs it. Found by brute force on 3.2, none on 5.x.
+#
+# The form below round-trips every one of those inputs byte for byte on both versions.
 shell_quote() {
-  printf "'%s'" "${1//\'/\'\\\'\'}"
+  local escaped_quote="'\\''"
+  printf "'%s'" "${1//\'/$escaped_quote}"
 }
 
 # --- Bee data dirs ---
@@ -688,11 +703,14 @@ engine_env_overrides_text() {
       if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         continue
       fi
-      # Single-quote the value (escaping embedded quotes) — the override file is
-      # both `source`d and parsed by compose, and secrets may contain $, !, #, ...
-      value="${!key:-}"
-      value="${value//\'/\'\\\'\'}"
-      out+="${key}='${value}'\n"
+      # Single-quote the value — the override file is both `source`d and parsed by compose, and
+      # secrets may contain $, !, #, ... Through `shell_quote` rather than repeating the escape,
+      # because the copy that used to live here was the same expression that is wrong on bash 3.2:
+      # an engine env value containing an apostrophe wrote an unbalanced line, and the `source` of
+      # it at the two sites below then failed with `unexpected EOF` under `set -e`, aborting the
+      # deploy on a syntax error naming a temp file.
+      value=$(shell_quote "${!key:-}")
+      out+="${key}=${value}\n"
     done < "$file"
   done
   printf '%s' "$out"
