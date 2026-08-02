@@ -27,6 +27,10 @@ export function buildExtinf(duration: number): string {
 /**
  * The duration an `#EXTINF` line carries, or `null` when the line is not one or its value is not a
  * number. Segment durations are fractional seconds, so this is not an integer parse.
+ *
+ * `parseFloat` stops at the first character it cannot use, so `#EXTINF:6abc,` reads as 6 and
+ * `#EXTINF:0x10,` reads as 0. The second is the one that matters, because a real zero-length segment
+ * and an unparseable one become indistinguishable. See CON-30.
  */
 export function segmentDuration(extinf: string): number | null {
   if (!extinf.startsWith(`${HLS_EXTINF}:`)) {
@@ -39,10 +43,18 @@ export function segmentDuration(extinf: string): number | null {
 /**
  * Split a playlist into its headers and its segments.
  *
- * Header lines are the ones before the first segment or discontinuity. Everything after that is
- * either a segment pair (`#EXTINF` followed by a URI) or a tag this parser does not model, which is
- * dropped rather than guessed at. `#EXT-X-ENDLIST` sets `isFinalized` wherever it appears, since a
- * finished recording is the one fact a reader must not miss.
+ * Header lines are the ones before the first segment or discontinuity. `#EXT-X-ENDLIST` sets
+ * `isFinalized` wherever it appears, since a finished recording is the one fact a reader must not
+ * miss.
+ *
+ * **This reads the playlists this project produces, not RFC 8216 in general**, and the difference is
+ * worth stating because the function now lives in a shared package where it looks more general than
+ * it is. It requires the media URI on the line immediately after its `#EXTINF`, so anything RFC 8216
+ * permits in between takes the segment with it rather than only itself: a blank line, a comment, or
+ * an `#EXT-X-BYTERANGE`, which §4.3.2.2 requires to sit exactly there. A byte-range playlist
+ * therefore parses to zero segments. `ManifestManager` writes neither, which is why this has been
+ * correct in practice, and it is carried over unchanged from the client rather than introduced here.
+ * See CON-30.
  */
 export function parseManifest(text: string): ParsedManifest {
   const lines = text.trim().split('\n');
