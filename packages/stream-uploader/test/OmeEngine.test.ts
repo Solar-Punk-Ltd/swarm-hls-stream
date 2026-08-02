@@ -57,6 +57,23 @@ async function postAdmission(
    */
   requestTime?: string,
 ): Promise<unknown> {
+  return postAdmissionBody(engine, orchestrator, secret, {
+    ...(client ? { client } : {}),
+    request: { direction: 'incoming', status, url: streamUrl, ...(requestTime ? { time: requestTime } : {}) },
+  });
+}
+
+/**
+ * The transport half of `postAdmission`, for the payload shapes its parameters cannot express. Signs
+ * whatever it is given, so a test can send a direction, a url or a request field OME would never
+ * pair together and still reach the handler rather than the signature check.
+ */
+async function postAdmissionBody(
+  engine: EnginePlugin,
+  orchestrator: StreamOrchestrator,
+  secret: string,
+  payload: unknown,
+): Promise<unknown> {
   const app = express();
   // Mirrors the raw-body capture in api/server.ts, which is what the signature is computed over.
   app.use(
@@ -70,10 +87,7 @@ async function postAdmission(
 
   const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    const body = JSON.stringify({
-      ...(client ? { client } : {}),
-      request: { direction: 'incoming', status, url: streamUrl, ...(requestTime ? { time: requestTime } : {}) },
-    });
+    const body = JSON.stringify(payload);
     const response = await fetch(`${baseUrl}${engine.prefix}/admission`, {
       method: 'POST',
       headers: {
@@ -1535,6 +1549,127 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
         1,
         'half a socket is an absent identity, not a different one, so this closing has to be honoured',
       );
+    });
+  }
+});
+
+/**
+ * TEST-25: nothing asserted the admission webhook's allow-or-deny decision, so the ingest gate could
+ * be inverted and the suite stayed green. Hand-verified when it was filed: flipping the
+ * orchestrator-rejected reply to `allowed: true` left 294 of 294 passing.
+ *
+ * The consequence of that one flip is the reason this is a HIGH and not a coverage nit. When the
+ * orchestrator refuses a stream, OME is told the publish is allowed, so the broadcaster sees a
+ * healthy connection and goes live while every segment is dropped. Neither side is told anything.
+ *
+ * `reply` is the only thing OME reads. Every other assertion in this file is about what the process
+ * did afterwards, which is why an inverted decision was invisible to all of them: a denied publish
+ * that starts no puller looks exactly like an allowed one whose origin never answered.
+ */
+describe('createOmeEngine admission decision (TEST-25)', () => {
+  const SECRET = 'admission-decision-secret';
+  const HLS_BASE = 'http://ome:8081';
+  const POLL_INTERVAL_MS = 20;
+  const STREAM_URL = 'srt://ome:10080/video/demo';
+
+  /** An origin that answers nothing, so no test here depends on a puller making progress. */
+  const silentOrigin = (async () =>
+    ({ ok: false, status: 404, text: async () => '' } as Response)) as unknown as Fetcher;
+
+  function makeEngine(failOpen = false): EnginePlugin {
+    return createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      admissionSecret: SECRET,
+      fetcher: silentOrigin,
+      failOpen,
+    });
+  }
+
+  it('allows an opening the orchestrator accepts', async () => {
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore());
+
+    const reply = await postAdmission(makeEngine(), orchestrator, 'opening', SECRET, STREAM_URL);
+
+    assert.deepEqual(reply, { allowed: true, lifetime: 0, reason: 'ok' }, 'a denied opening is a broadcast refused');
+    await orchestrator.cleanup();
+  });
+
+  // The flip that was hand-verified as invisible. It needs a fake orchestrator because
+  // `StreamOrchestrator.startStream` returns true on all three of its paths, so `!accepted` is
+  // unreachable against the real one. See TEST-29.
+  it('denies an opening the orchestrator refuses, rather than telling OME to let it publish', async () => {
+    const orchestrator = makeFakeOrchestrator({ startStream: () => false });
+
+    const reply = await postAdmission(makeEngine(), orchestrator, 'opening', SECRET, STREAM_URL);
+
+    assert.deepEqual(
+      reply,
+      { allowed: false, reason: 'orchestrator rejected' },
+      'allowing here puts a broadcaster live into a pipeline that drops every segment, silently',
+    );
+  });
+
+  it('allows the closing of the session that is live', async () => {
+    const engine = makeEngine();
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore());
+    const session = { address: '192.168.65.1', port: 44546 };
+
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, session);
+    const reply = await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, session);
+
+    assert.deepEqual(
+      reply,
+      { allowed: true, lifetime: 0, reason: 'ok' },
+      'OME only wants the acknowledgement, and refusing it leaves the session unclosed on its side',
+    );
+    await orchestrator.cleanup();
+  });
+
+  // Only what `new URL` refuses reaches this reply. A well-formed url carrying too few path
+  // segments does not, which is SEC-25 rather than something this test should assert.
+  it('denies a url it cannot parse into an app and a stream', async () => {
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore());
+
+    const reply = await postAdmission(makeEngine(), orchestrator, 'opening', SECRET, 'not a url at all');
+
+    assert.deepEqual(reply, { allowed: false, reason: 'invalid url' });
+    await orchestrator.cleanup();
+  });
+
+  it('allows an outgoing session untouched, since this hook governs ingest only', async () => {
+    const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore());
+
+    const reply = await postAdmissionBody(makeEngine(), orchestrator, SECRET, {
+      request: { direction: 'outgoing', status: 'opening', url: STREAM_URL },
+    });
+
+    assert.deepEqual(
+      reply,
+      { allowed: true, lifetime: 0, reason: 'ignored (not incoming)' },
+      'denying here would refuse every playback session OME hands this hook',
+    );
+    await orchestrator.cleanup();
+  });
+
+  /**
+   * The two halves of the fail-open switch, which is the one place where the same failure has to
+   * produce opposite decisions. An operator sets it to choose between a broadcast lost to a bug in
+   * this handler and a broadcast admitted while the handler is broken, and neither answer is safe
+   * enough to be the only one.
+   */
+  for (const [failOpen, expected] of [
+    [false, { allowed: false, reason: 'handler error' }],
+    [true, { allowed: true, reason: 'handler error (fail-open)' }],
+  ] as const) {
+    it(`answers ${JSON.stringify(expected.allowed)} when the handler throws and failOpen is ${failOpen}`, async () => {
+      const orchestrator = makeFakeOrchestrator({
+        startStream: () => {
+          throw new Error('orchestrator exploded');
+        },
+      });
+
+      const reply = await postAdmission(makeEngine(failOpen), orchestrator, 'opening', SECRET, STREAM_URL);
+
+      assert.deepEqual(reply, expected);
     });
   }
 });
