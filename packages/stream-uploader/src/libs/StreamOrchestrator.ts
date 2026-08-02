@@ -19,6 +19,7 @@ import {
   STREAM_LIFECYCLE_FINALIZED,
   STREAM_LIFECYCLE_LIVE,
   STREAM_LIFECYCLE_UNKNOWN,
+  StreamState,
   StreamStatusReport,
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
@@ -449,58 +450,70 @@ export class StreamOrchestrator {
         continue;
       }
 
-      // RecoveryStore names files by a slash-sanitized id (live/stream → live_stream); the real
-      // streamId lives inside the state. Key the live maps by the real id so incoming segments
-      // (handleSegment looks up the real id) actually match this recovered stream — otherwise the
-      // recovery timer can never be cancelled and the stream is always VOD-ed at the timeout.
-      const streamId = state.streamId;
-
-      const uploader = new StreamUploader(
-        this.bee,
-        this.config.manifestBeeUrl,
-        this.streamCatalog,
-        this.recoveryStore,
-        this.config.streamKey,
-        this.config.stamp,
-        state.streamId,
-        state.mediatype,
-        {
-          restoreState: {
-            streamRawTopic: state.streamRawTopic,
-            socIndex: state.socIndex,
-            segments: state.segments,
-            hlsHeaders: state.hlsHeaders,
-            isFirstSegmentReady: state.isFirstSegmentReady,
-            isFirstManifestReady: state.isFirstManifestReady,
-            pendingDiscontinuity: state.pendingDiscontinuity,
-          },
-          metrics: this.metrics,
-        },
-      );
-
-      this.activeStreams.set(streamId, uploader);
-      this.streamActivityAt.set(streamId, this.clock.now());
-
-      // Rebuilt from the restored manifest, and bounded the same way a live stream's is. The oldest
-      // indexes of a long broadcast are dropped, which costs nothing: what a resumed puller can
-      // re-deliver is whatever the origin still has in its playlist window, never the whole stream.
-      const processed = this.newDuplicateFilter();
-      for (const segment of state.segments) {
-        processed.add(segment.index);
+      // One entry that cannot be rebuilt costs one broadcast, not every broadcast behind it in the
+      // list. Anything thrown here used to escape the loop, so the remaining entries were never
+      // read at all while staying on disk still reporting as active.
+      try {
+        recovered.push(this.recoverStream(state));
+      } catch (error) {
+        this.errorHandler.handleError(error, `StreamOrchestrator.recoverStreams - ${state.streamId}`);
       }
-      this.processedSegments.set(streamId, processed);
-
-      this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
-
-      this.logger.info(
-        `[StreamOrchestrator] Recovered stream ${streamId} with ${state.segments.length} segments, ` +
-          `waiting ${this.config.recoveryTimeout}ms for engine reconnect`,
-      );
-
-      recovered.push(streamId);
     }
 
     return recovered;
+  }
+
+  /** Rebuild one stream from its persisted state, register it as live, and return its id. */
+  private recoverStream(state: StreamState): string {
+    // RecoveryStore names files by a slash-sanitized id (live/stream → live_stream); the real
+    // streamId lives inside the state. Key the live maps by the real id so incoming segments
+    // (handleSegment looks up the real id) actually match this recovered stream — otherwise the
+    // recovery timer can never be cancelled and the stream is always VOD-ed at the timeout.
+    const streamId = state.streamId;
+
+    const uploader = new StreamUploader(
+      this.bee,
+      this.config.manifestBeeUrl,
+      this.streamCatalog,
+      this.recoveryStore,
+      this.config.streamKey,
+      this.config.stamp,
+      state.streamId,
+      state.mediatype,
+      {
+        restoreState: {
+          streamRawTopic: state.streamRawTopic,
+          socIndex: state.socIndex,
+          segments: state.segments,
+          hlsHeaders: state.hlsHeaders,
+          isFirstSegmentReady: state.isFirstSegmentReady,
+          isFirstManifestReady: state.isFirstManifestReady,
+          pendingDiscontinuity: state.pendingDiscontinuity,
+        },
+        metrics: this.metrics,
+      },
+    );
+
+    this.activeStreams.set(streamId, uploader);
+    this.streamActivityAt.set(streamId, this.clock.now());
+
+    // Rebuilt from the restored manifest, and bounded the same way a live stream's is. The oldest
+    // indexes of a long broadcast are dropped, which costs nothing: what a resumed puller can
+    // re-deliver is whatever the origin still has in its playlist window, never the whole stream.
+    const processed = this.newDuplicateFilter();
+    for (const segment of state.segments) {
+      processed.add(segment.index);
+    }
+    this.processedSegments.set(streamId, processed);
+
+    this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
+
+    this.logger.info(
+      `[StreamOrchestrator] Recovered stream ${streamId} with ${state.segments.length} segments, ` +
+        `waiting ${this.config.recoveryTimeout}ms for engine reconnect`,
+    );
+
+    return streamId;
   }
 
   /** If the engine never reconnects, finalize the recovered stream as a VOD rather than hold it live. */

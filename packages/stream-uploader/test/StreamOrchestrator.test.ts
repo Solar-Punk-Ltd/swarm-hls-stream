@@ -104,6 +104,29 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
     await orch.cleanup();
   });
 
+  // Every entry was rebuilt inside one bare loop, so anything thrown while restoring a stream
+  // escaped `recoverStreams` entirely and the entries behind it were never read. They stay on disk
+  // still reporting as active, so nothing retries them and nothing says a broadcast was dropped.
+  it('recovers the streams behind an entry that cannot be rebuilt', async () => {
+    const broken = 'live/broken';
+    const healthy = 'live/healthy';
+    // A persisted entry whose segment list did not survive the disk. Corrupt in a way the loop body
+    // hits after the uploader is already constructed, so the isolation has to cover the whole
+    // rebuild rather than only the constructor.
+    const corrupt = { ...makeRecoveredState(broken), segments: null } as unknown as StreamState;
+    const orch = makeOrchestrator(
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(broken), toRecoveryFileId(healthy)],
+        load: (fileId: string) => (fileId === toRecoveryFileId(broken) ? corrupt : makeRecoveredState(healthy)),
+      }),
+    );
+
+    const recovered = await orch.recoverStreams();
+
+    assert.deepEqual(recovered, [healthy], 'one unrecoverable entry took the streams behind it down with it');
+    await orch.cleanup();
+  });
+
   it('returns the ids of the streams it recovered so pull-based engines can resume them', async () => {
     const id = 'video/stream';
     const orch = makeOrchestrator(
