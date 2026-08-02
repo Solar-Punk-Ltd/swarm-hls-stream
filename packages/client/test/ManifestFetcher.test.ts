@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, it } from 'vitest';
 import {
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
+  FEED_STATE_STALLED,
   FeedHealthTracker,
   type FeedState,
   UNSERVED_SLOT_POLL_LIMIT,
@@ -352,6 +353,52 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
   }
+
+  /** Polls a feed whose gateway answers but has nothing in the slot, until the run is called stalled. */
+  async function pollUntilStalled(): Promise<void> {
+    console.error = () => {};
+    stubFetch(() => new Response('not found', { status: 404 }));
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
+      await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+      await settle(UNSERVED_POLL_TICKS);
+    }
+  }
+
+  /**
+   * The initial path is where a restart lands, and the feed endpoint answers with the publisher's
+   * last update, so it answers exactly the same for a broadcast that stopped an hour ago. Clearing
+   * the unserved run there erased the stall the player had already spent thirty polls establishing,
+   * on a picture that is still frozen, and left it to be earned again from zero.
+   */
+  it('does not erase a stall it has already reported, when the player restarts into it', async () => {
+    seedFollowupState();
+    await pollUntilStalled();
+    assert.equal(
+      health.state(hexTopic),
+      FEED_STATE_STALLED,
+      'the fixture never reached a stall, so this proves nothing',
+    );
+
+    manager.clear(hexTopic);
+    stubFetch(() => feedHead(START_INDEX));
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    assert.equal(health.state(hexTopic), FEED_STATE_STALLED, 'the restart reported the frozen feed as healthy');
+  });
+
+  // The other half. Reaching the gateway does have to end a run of failures, or the backoff outlives
+  // the outage that set it.
+  it('does clear a run of failures when the restart reaches the gateway again', async () => {
+    stubFetch(gatewayDown);
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+    assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
+
+    stubFetch(() => feedHead(START_INDEX));
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
+    assert.equal(health.backoffRemainingMs(hexTopic), 0);
+  });
 
   it('says the feed is reconnecting when the first fetch of a mount cannot reach the gateway', async () => {
     stubFetch(gatewayDown);

@@ -236,7 +236,10 @@ export class ManifestFetcher {
       this.feedHealth.recordGatewayFailure(hexTopic);
       throw error;
     }
-    this.feedHealth.recordGatewayResponse(hexTopic);
+    // Reachable rather than served. This endpoint answers with the publisher's last update, so it
+    // answers the same for a live broadcast and one that stopped an hour ago, and treating it as a
+    // served slot would erase an unserved run on the one path every restart takes.
+    this.feedHealth.recordGatewayReachable(hexTopic);
 
     const parsed = parseManifest(res.text);
     const shouldContinue = this.stateManager.updateManifest(

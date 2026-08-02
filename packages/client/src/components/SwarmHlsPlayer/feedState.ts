@@ -157,7 +157,21 @@ export class FeedHealthTracker {
     });
   }
 
-  /** The gateway answered. Forgets both runs, since a single success ends either one. */
+  /**
+   * The gateway is reachable, whether or not it had the thing that was asked for.
+   *
+   * Deliberately narrower than {@link recordGatewayResponse}, and the distinction is the whole of
+   * why both exist. Reaching the gateway says nothing about whether the feed is advancing: the feed
+   * endpoint answers with the publisher's last update, so it answers identically for a broadcast in
+   * progress and one that stopped an hour ago. Anything that clears the unserved run on the strength
+   * of reaching the gateway erases a stall the player has already reported, and the path that would
+   * do it is the one every restart takes.
+   */
+  recordGatewayReachable(topicId: string): void {
+    this.update(topicId, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
+  }
+
+  /** A slot was served. Forgets both runs, since serving one ends either. */
   recordGatewayResponse(topicId: string): void {
     this.update(topicId, () => null);
   }
