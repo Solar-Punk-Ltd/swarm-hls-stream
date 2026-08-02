@@ -2,7 +2,11 @@ import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
-import { ManifestFetcher, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement';
+import {
+  ManifestFetcher,
+  ManifestStateManager,
+  UNSERVED_SLOT_POLL_LIMIT,
+} from '../src/components/SwarmHlsPlayer/ManifestManagement';
 import { makeFeedIdentifier } from '../src/utils/bee';
 
 const BEE_URL = 'http://bee.test';
@@ -51,11 +55,19 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
  * callbacks need a handful of ticks, and a defect that needed more than fifty is not the one here.
  * Verified the other way round, which is the part that matters: on 37d1cba these tests fail.
  */
-async function settle(): Promise<void> {
-  for (let tick = 0; tick < 50; tick++) {
+async function settle(ticks = 50): Promise<void> {
+  for (let tick = 0; tick < ticks; tick++) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
+
+/**
+ * A shorter budget for the polls that 404, which never reach the serialising queue. Used only in the
+ * loops long enough that the full budget would outrun the test timeout, and safe there because both
+ * of those tests end on an assertion that a report fired, which cannot happen unless every poll in
+ * the loop was counted.
+ */
+const UNSERVED_POLL_TICKS = 8;
 
 const manager = ManifestStateManager.getInstance();
 const realFetch = globalThis.fetch;
@@ -214,5 +226,76 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
       START_INDEX + 1n,
       'the topic stayed marked in flight after a failure, so the player stopped following the feed',
     );
+  });
+
+  /** One poll of a feed that answers nothing for the slot the player is waiting on. */
+  async function pollUnservedSlot(): Promise<void> {
+    const gate = deferred<void>();
+    stubFetch(gate.promise, () => new Response('not found', { status: 404 }));
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    gate.resolve();
+    await settle(UNSERVED_POLL_TICKS);
+  }
+
+  /** One poll that the publisher does answer, which is what a run of unserved polls has to forget. */
+  async function pollServedSlot(): Promise<void> {
+    const gate = deferred<void>();
+    stubFetch(gate.promise);
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    gate.resolve();
+    await settle();
+  }
+
+  // The previous test pins that one unserved slot is silent, which is the ordinary case for a viewer
+  // who has caught up. On its own that assertion is equally satisfied by never reporting at all, and
+  // never reporting is what this branch shipped: a slot no gateway will serve strands the feed there
+  // for good, while later slots exist and every signal the player emits still says fine.
+  it('reports a feed that has sat on an unserved slot for too many polls', async () => {
+    const reported: string[] = [];
+    console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
+
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT - 1; poll++) {
+      await pollUnservedSlot();
+    }
+    assert.deepEqual(reported, [], 'a viewer who has merely caught up with the publisher was told something is wrong');
+
+    await pollUnservedSlot();
+
+    assert.equal(reported.length, 1, `expected exactly one report, got ${reported.length}: ${reported.join(' | ')}`);
+    assert.match(
+      reported[0],
+      new RegExp(`has not advanced past slot ${START_INDEX + 1n} in ${UNSERVED_SLOT_POLL_LIMIT} polls`),
+      `the report does not name the stuck slot: ${reported[0]}`,
+    );
+
+    await pollUnservedSlot();
+    assert.equal(reported.length, 1, 'the report repeats on every poll after the threshold');
+  });
+
+  // The run has to be a run. A feed that answers slowly but does answer must never reach the report,
+  // however long the session lasts.
+  //
+  // The last two steps are what make the silence meaningful. Two runs of `LIMIT - 1` add up to well
+  // past the threshold, so staying quiet through them means the served slot reset the count. And one
+  // further unserved poll must then report, which can only happen if all `LIMIT - 1` polls before it
+  // were counted, so the same assertion also rules out the reading where nothing counted at all.
+  it('forgets the run once a slot is served', async () => {
+    const reported: string[] = [];
+    console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
+
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT - 1; poll++) {
+      await pollUnservedSlot();
+    }
+    await pollServedSlot();
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT - 1; poll++) {
+      await pollUnservedSlot();
+    }
+
+    assert.deepEqual(reported, [], 'a feed that is still advancing was reported as stalled');
+    assert.equal(manager.getIndex(hexTopic)!.toBigInt(), START_INDEX + 1n, 'the served slot did not advance the feed');
+
+    await pollUnservedSlot();
+
+    assert.equal(reported.length, 1, 'the polls after the reset were not counted, so the silence above proved nothing');
   });
 });

@@ -38,6 +38,14 @@ const manifestQueue = new Pqueue({ concurrency: 1 });
  */
 const SLOT_NOT_WRITTEN_YET = 404;
 
+/**
+ * How many consecutive polls may sit on an unserved slot before one is reported. hls.js reloads a
+ * live playlist about once per target duration, which is 2 seconds here, so this is roughly a minute
+ * of a feed that is not advancing. Low enough to reach a viewer while they are still watching, high
+ * enough that a viewer who has merely caught up with the publisher stays quiet.
+ */
+export const UNSERVED_SLOT_POLL_LIMIT = 30;
+
 /** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
 class ManifestFetchError extends Error {
   constructor(path: string, readonly status: number) {
@@ -181,6 +189,9 @@ export class ManifestFetcher {
   /** Topics with a follow-up fetch outstanding. Keyed by hex topic, since each feed advances alone. */
   private readonly inFlight = new Set<string>();
 
+  /** Consecutive polls each topic has spent on a slot nothing has served. Cleared when one arrives. */
+  private readonly unservedSlotPolls = new Map<string, number>();
+
   constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {}
 
   get beeUrl(): string {
@@ -238,8 +249,9 @@ export class ManifestFetcher {
 
       this.inFlight.add(hexTopic);
       this.fetchResource(`soc/${owner}/${targetId}`)
-        .then((res) =>
-          manifestQueue.add(() => {
+        .then((res) => {
+          this.unservedSlotPolls.delete(hexTopic);
+          return manifestQueue.add(() => {
             // Nothing cancels this request. `SwarmHlsPlayer`'s effect cleanup calls
             // `ManifestStateManager.clear(topic)` and then `hls.destroy()`, on unmount and on every
             // `restartTrigger` bump, which is the recovery path for a fatal player error and so
@@ -262,12 +274,14 @@ export class ManifestFetcher {
             if (shouldContinue) {
               this.stateManager.setIndex(hexTopic, targetIndex);
             }
-          }),
-        )
+          });
+        })
         .catch((error) => {
-          if (!(error instanceof ManifestFetchError && error.status === SLOT_NOT_WRITTEN_YET)) {
-            console.error('Error fetching follow-up manifest:', error);
+          if (error instanceof ManifestFetchError && error.status === SLOT_NOT_WRITTEN_YET) {
+            this.reportStalledFeed(hexTopic, targetIndex);
+            return;
           }
+          console.error('Error fetching follow-up manifest:', error);
         })
         // Released only once the state update has run, since the queue's promise is what the chain
         // above resolves on. Releasing at response time would cost a duplicate request rather than a
@@ -281,6 +295,28 @@ export class ManifestFetcher {
     }
 
     return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+  }
+
+  /**
+   * A single unserved slot is the ordinary case and says nothing. A long run of them is a different
+   * event wearing the same status code: a chunk that never synced, a lapsed stamp, or a gateway that
+   * will not serve this slot. The feed is then stuck there for good while later slots exist, and the
+   * only symptom that reaches anyone is the buffer running dry, which the player reports as a media
+   * error rather than a feed one.
+   *
+   * Run length is the axis, because the status code is not one. Reported once per run, since the
+   * poll that reports it is followed by another a target duration later.
+   */
+  private reportStalledFeed(hexTopic: string, slot: FeedIndex): void {
+    const polls = (this.unservedSlotPolls.get(hexTopic) ?? 0) + 1;
+    this.unservedSlotPolls.set(hexTopic, polls);
+
+    if (polls === UNSERVED_SLOT_POLL_LIMIT) {
+      console.error(
+        `Feed ${hexTopic} has not advanced past slot ${slot.toBigInt()} in ${polls} polls. ` +
+          'The publisher may have stopped, or this gateway may not hold that slot.',
+      );
+    }
   }
 
   private async fetchResource(path: string): Promise<TimedResponse> {
