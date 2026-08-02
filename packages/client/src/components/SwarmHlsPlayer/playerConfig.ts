@@ -40,9 +40,9 @@ export const LIVE_MAX_LATENCY_DURATION_S = 2 * LIVE_SYNC_DURATION_S;
  * without the viewer hearing that it happened.
  *
  * hls.js gates this on `lowLatencyMode` in the same condition, so the two have to stay together.
- * That flag defaults to true and is deliberately not set here. R7 in the finding register refuses
- * to set it for exactly that reason: setting a flag to the value it already has states an intent
- * the code cannot keep, since a future default is not this repository's to choose.
+ * That flag defaults to true and is deliberately not set here, which is what R7 in the finding
+ * register decided and the whole of its reason. Reading the two as unrelated is what would make
+ * someone override the flag to false and kill this silently, so R7's own note carries the gate.
  */
 export const MAX_LIVE_SYNC_PLAYBACK_RATE = 1.1;
 
