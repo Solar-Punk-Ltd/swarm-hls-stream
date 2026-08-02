@@ -311,6 +311,99 @@ describe('taking over a stream id that is already being published', () => {
     await orch.cleanup();
   });
 
+  /**
+   * The stamp a session is registered with has to come from the injected clock, and "it is written"
+   * is not the same assertion as "it is written in the right units". Deleting the write fails the
+   * boundary test above; writing `Date.now()` instead did not, because every other stall test
+   * overwrites the stamp with a segment before reading it.
+   *
+   * `systemClock.now()` is `performance.now()`, so the two differ by about 1.77e12. A stream
+   * registered on the wall clock is never stalled by an injected one, and on the real clock the sign
+   * runs the other way: a publisher that announces and then dies before its first segment would hold
+   * the id against everyone for the life of the process.
+   */
+  it('measures a session that has sent nothing from the clock it was registered on', async () => {
+    const clock = new FakeClock();
+    const { orch } = makeHarness(clock);
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+    await clock.advance(STALL_MS + 1);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      true,
+      'a session that announced and then sent nothing must age out on the injected clock',
+    );
+
+    await orch.cleanup();
+  });
+
+  /**
+   * Which claimant an accepted takeover records. Every other test here stops at the boolean, so
+   * recording the *outgoing* session's claimant instead of the newcomer's survived the whole suite:
+   * after any takeover the guard would protect the publisher who had just left, refusing the new
+   * owner's next reconnect for a full window and letting the displaced one walk back in.
+   */
+  it('records the session that won a takeover, not the one it replaced', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    // Setup, not the assertion: the stranger only gets in because the incumbent went quiet.
+    await clock.advance(STALL_MS + 1);
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 1);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }),
+      false,
+      'the session that was displaced must not still be the one the guard protects',
+    );
+
+    await orch.cleanup();
+  });
+
+  /**
+   * A replacement registered under an id its predecessor was stopped on is live, and is protected.
+   *
+   * The sharper case is deliberately **not** claimed by this title: `hasStalled` matches the drain by
+   * uploader identity rather than by stream id, which only matters while a predecessor's drain is
+   * still in flight under an id a replacement already holds. Matching by id would call that live
+   * replacement draining and hand it to anyone for up to `DRAIN_TIMEOUT_MS`. Replacing
+   * `isDraining(streamId, uploader)` with `drainPromises.has(streamId)` still passes everything here,
+   * and it is left uncovered rather than covered in name only: the drain settles through these fakes
+   * before the assertion whatever is done to the upload, so the window cannot be held open from a
+   * test at this level. `isDraining`'s own doc is the argument for the identity match.
+   */
+  it('protects a replacement registered under an id its predecessor was stopped on', async () => {
+    const harness = makeHarness();
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    void orch.stopStream(STREAM_ID);
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 1);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      false,
+      'the replacement is live and being fed, whatever its predecessor is doing under the same id',
+    );
+
+    await orch.cleanup();
+  });
+
   function makeRecoveringHarness(clock: FakeClock): Harness {
     const published: PublishedEntry[] = [];
     const saved: StreamState[] = [];
