@@ -99,6 +99,28 @@ jobs:
       - name: Dependency advisories
         run: pnpm audit:check
 
+  shell:
+    name: shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned by digest rather than by tag. ShellCheck is pre-installed on the
+      # GitHub runner image and `stable` is a moving tag, so either of those
+      # would let a version bump land new findings in a pull request that never
+      # touched a shell script. This is the exact 0.11.0 image the baseline in
+      # .shellcheckrc was argued against.
+      #
+      # --severity=style is the strictest level, which is the point: the
+      # exceptions live in .shellcheckrc where each one carries its reason, so a
+      # finding that is not on that list fails here.
+      - name: ShellCheck
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
+            --severity=style --format=gcc \
+            deploy/scripts/*.sh nodes/*.sh engines/*/entrypoint.sh
+
   format:
     name: format
     runs-on: ubuntu-latest

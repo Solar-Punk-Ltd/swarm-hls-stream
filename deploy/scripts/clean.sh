@@ -45,7 +45,6 @@ apply_port_slot
 REMOVE_VOLUMES=false
 REMOVE_ALL=false
 ASSUME_YES=false
-FILTER_SERVICES=()
 
 for arg in "$@"; do
   case "$arg" in
@@ -65,17 +64,10 @@ for arg in "$@"; do
       exit 1
       ;;
     *)
-      # Validate service name
-      valid=false
-      for svc in "${ALL_SERVICES[@]}"; do
-        [ "$arg" = "$svc" ] && valid=true && break
-      done
-      if [ "$valid" = "false" ]; then
-        log_error "Unknown service: $arg"
+      add_service_filter "$arg" || {
         usage
         exit 1
-      fi
-      FILTER_SERVICES+=("$arg")
+      }
       ;;
   esac
 done
@@ -91,28 +83,6 @@ if [ "$REMOVE_VOLUMES" = "true" ] && [ ${#FILTER_SERVICES[@]} -gt 0 ]; then
   echo "  or remove that one volume by hand with 'docker volume rm'."
   exit 1
 fi
-
-# --- Filter helpers ---
-
-is_in_filter() {
-  local svc="$1"
-  if [ ${#FILTER_SERVICES[@]} -eq 0 ]; then
-    return 0
-  fi
-  for f in "${FILTER_SERVICES[@]}"; do
-    [ "$f" = "$svc" ] && return 0
-  done
-  return 1
-}
-
-get_filtered_services_for_target() {
-  local target="$1"
-  for svc in $(get_services_for_target "$target"); do
-    if is_in_filter "$svc"; then
-      echo "$svc"
-    fi
-  done
-}
 
 # --- Clean ---
 
@@ -188,8 +158,10 @@ clean_target() {
     # Run the teardown with stderr visible so the user actually sees what was removed.
     # `|| true` lets us continue to the safety-net sweep below even when compose has
     # nothing to do (or the env/config drifted since the deploy).
-    # shellcheck disable=SC2086
-    docker compose $project_flag $compose_files --env-file "$ENV_FILE" $profiles $down_flags || true
+    # SC2046 alongside SC2086: `env_file_flag` emits two words or none, and the splitting is the
+    # point. Quoting it would send compose an empty argument when the profile has no env file.
+    # shellcheck disable=SC2086,SC2046
+    docker compose $project_flag $compose_files $(env_file_flag) $profiles $down_flags || true
 
     # Safety net: nuke any leftover containers labelled with this compose project,
     # in case config.json or the env file has drifted since the deploy and `down`

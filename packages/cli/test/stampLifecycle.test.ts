@@ -8,7 +8,7 @@ import { stampSetup } from '../src/commands/stamp-setup.js';
 import { buyStamp } from '../src/lib/stamp.js';
 import { waitForNode, waitForStamp } from '../src/lib/wait.js';
 
-import { createFakeBee } from './helpers/fakeBee.js';
+import { createFakeBee, TEST_BATCH } from './helpers/fakeBee.js';
 
 // Fast enough to run in milliseconds, structured exactly like the real 3s poll over a 5 minute
 // window. Only the clock is compressed.
@@ -101,6 +101,7 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
   function realSeams(fake: ReturnType<typeof createFakeBee>) {
     return {
       createBee: () => fake.bee,
+      confirm: async () => true,
       buyStamp,
       waitForNode: (bee: Parameters<typeof waitForNode>[0]) => waitForNode(bee, TIMEOUT_MS, POLL_MS),
       waitForStamp: (bee: Parameters<typeof waitForStamp>[0], id: string) => waitForStamp(bee, id, TIMEOUT_MS, POLL_MS),
@@ -114,7 +115,7 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
   it('buys once and records the id, through the full not-found then unusable then usable sequence', async () => {
     const fake = createFakeBee({ notFoundPolls: 3, unusablePolls: 3 });
 
-    await silence(() => stampSetup(undefined, undefined, undefined, undefined, realSeams(fake)));
+    await silence(() => stampSetup({ ...TEST_BATCH }, realSeams(fake)));
 
     assert.equal(fake.purchaseCount(), 1, 'exactly one batch may be bought');
     assert.match(readFileSync(envPath, 'utf-8'), new RegExp(`^STAMP=${fake.purchased()}$`, 'm'));
@@ -138,10 +139,13 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
     await assert.rejects(
       () =>
         silence(() =>
-          stampSetup(undefined, undefined, undefined, undefined, {
-            ...realSeams(fake),
-            waitForStamp: (bee, id: string) => waitForStamp(bee, id, 50, POLL_MS),
-          }),
+          stampSetup(
+            { ...TEST_BATCH },
+            {
+              ...realSeams(fake),
+              waitForStamp: (bee, id: string) => waitForStamp(bee, id, 50, POLL_MS),
+            },
+          ),
         ),
       /exit\(1\)/,
     );
@@ -159,10 +163,7 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
     // here would poison the operator's config.
     const fake = createFakeBee({ purchaseError: 'insufficient funds for gas * price + value' });
 
-    await assert.rejects(
-      () => silence(() => stampSetup(undefined, undefined, undefined, undefined, realSeams(fake))),
-      /exit\(1\)/,
-    );
+    await assert.rejects(() => silence(() => stampSetup({ ...TEST_BATCH }, realSeams(fake))), /exit\(1\)/);
 
     assert.equal(fake.purchaseCount(), 1, 'the failure must be the purchase itself, not an earlier refusal');
     assert.equal(existsSync(envPath), false, 'a failed transaction must leave no STAMP behind');
@@ -172,7 +173,7 @@ describe('stamp:setup end to end, real purchase and wait helpers, faked network 
     const existing = 'ee'.repeat(32);
     const fake = createFakeBee({ existingBatches: [{ batchID: existing, usable: true }] });
 
-    await silence(() => stampSetup(undefined, undefined, undefined, undefined, realSeams(fake)));
+    await silence(() => stampSetup({ ...TEST_BATCH }, realSeams(fake)));
 
     assert.equal(fake.purchaseCount(), 0, 'a usable batch already exists, buying another wastes money');
     assert.match(readFileSync(envPath, 'utf-8'), new RegExp(`^STAMP=${existing}$`, 'm'));

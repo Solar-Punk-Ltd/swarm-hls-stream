@@ -4,14 +4,8 @@ import { nodeWallets } from './commands/node-wallets.js';
 import { stampBuy } from './commands/stamp-buy.js';
 import { stampCheck } from './commands/stamp-check.js';
 import { stampSetup } from './commands/stamp-setup.js';
+import { parseArgs, ParsedArgs, stampArgs } from './lib/args.js';
 import { error } from './lib/output.js';
-
-interface ParsedArgs {
-  command: string;
-  url?: string;
-  immutable?: boolean;
-  positional: string[];
-}
 
 const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
   'node-status': (a) => nodeStatus(a.url),
@@ -19,32 +13,10 @@ const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
   'node-wallets': (a) => nodeWallets(a.url),
   'stamp-check': (a) => stampCheck(a.url),
   'stamp-buy': async (a) => {
-    await stampBuy(a.url, a.positional[0], a.positional[1] ? parseInt(a.positional[1], 10) : undefined, a.immutable);
+    await stampBuy(stampArgs(a));
   },
-  'stamp-setup': (a) =>
-    stampSetup(a.url, a.positional[0], a.positional[1] ? parseInt(a.positional[1], 10) : undefined, a.immutable),
+  'stamp-setup': (a) => stampSetup(stampArgs(a)),
 };
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const args = argv.slice(2);
-  const command = args[0];
-  let url: string | undefined;
-  let immutable: boolean | undefined;
-  const positional: string[] = [];
-
-  for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--url' && args[i + 1]) {
-      url = args[i + 1];
-      i++;
-    } else if (args[i] === '--immutable') {
-      immutable = true;
-    } else {
-      positional.push(args[i]);
-    }
-  }
-
-  return { command, url, immutable, positional };
-}
 
 function printUsage(): void {
   console.log('Usage: tsx packages/cli/src/index.ts <command> [--url <bee-url>] [args...]');
@@ -54,12 +26,13 @@ function printUsage(): void {
   console.log('  node-addresses    Ethereum + overlay addresses');
   console.log('  node-wallets      Wallet balances (BZZ + xDAI)');
   console.log('  stamp-check       List all stamps with status');
-  console.log('  stamp-buy         Buy a stamp [amount] [depth] [--immutable]');
-  console.log('  stamp-setup       Full workflow: wait → buy → write .env [--immutable]');
+  console.log('  stamp-buy         Buy a stamp [amount] [depth] [--immutable] [--yes]');
+  console.log('  stamp-setup       Full workflow: wait → buy → write .env [--immutable] [--yes]');
   console.log('');
   console.log('Options:');
   console.log('  --url <url>       Override bee node URL (auto-detected from config.json)');
   console.log('  --immutable       Create immutable stamp (default: mutable)');
+  console.log('  --yes, -y         Skip the confirmation before an on-chain spend');
 }
 
 async function main(): Promise<void> {

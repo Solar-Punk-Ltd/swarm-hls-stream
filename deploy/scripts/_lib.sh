@@ -19,9 +19,12 @@ readonly TARGET_NATIVE="native"
 readonly TARGET_DISABLED="disabled"
 
 # --- Paths ---
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
-readonly ROOT_DIR="$(dirname "$DEPLOY_DIR")"
+# Assigned before `readonly` rather than with it: `readonly X=$(...)` takes the exit status of the
+# `readonly`, not of the command substitution, so a failing `cd` would go unnoticed. (SC2155)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
+ROOT_DIR="$(dirname "$DEPLOY_DIR")"
+readonly SCRIPT_DIR DEPLOY_DIR ROOT_DIR
 readonly CONFIG_FILE="$DEPLOY_DIR/config.json"
 readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
 
@@ -29,8 +32,8 @@ readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
 # Set by parse_profile_args; defaults to "default".
 # - PROFILE         logical name, used as docker compose project name
 # - ENV_FILE        $ROOT_DIR/.env for default; $ROOT_DIR/.env.<profile> otherwise.
-#                   The non-default file is REQUIRED — require_env errors if it is missing
-#                   so a typo in --profile= doesn't silently deploy the wrong stack.
+#                   The non-default file is REQUIRED — parse_profile_args errors if it is
+#                   missing so a typo in --profile= doesn't silently deploy the wrong stack.
 # - REMOTE_BASE     ~/swarm-hls-stream for default, ~/swarm-hls-stream-<profile> otherwise
 # - PORT_SLOT       integer slot id (0-999). 0 = no slot, env values win.
 #                   For slot N>=1, every host-mapped port becomes default + N*10,
@@ -183,11 +186,23 @@ parse_profile_args() {
     exit 1
   fi
 
+  # A named profile always points at its OWN env file, present or not. The old fallback to the
+  # default `.env` did not merely lose this profile's settings, it silently adopted the default
+  # deployment's ports, STAMP and STREAM_KEY, so `--profile=streamr1` brought up a second stack
+  # fighting the first one for the same port range. See OPS-4.
+  #
+  # Missing is a warning here and a refusal in `require_env`, which only `deploy.sh` calls, because
+  # the two cases are genuinely different. Deploying without the profile's settings is the harm.
+  # Stopping, cleaning and health-checking need no env at all: those containers are identified by
+  # the compose project name, and refusing here stranded a running stack whose env file had been
+  # deleted, or that was being torn down from a fresh clone of the deploy host.
   if [ "$PROFILE" != "default" ]; then
-    if [ -f "$ROOT_DIR/.env.$PROFILE" ]; then
-      ENV_FILE="$ROOT_DIR/.env.$PROFILE"
-    fi
+    ENV_FILE="$ROOT_DIR/.env.$PROFILE"
     REMOTE_BASE="~/swarm-hls-stream-$PROFILE"
+    if [ ! -f "$ENV_FILE" ]; then
+      log_warn "Profile '$PROFILE' has no $ENV_FILE, so nothing from it is loaded."
+      log_warn "Create it with: cp $ROOT_DIR/.env.sample $ENV_FILE"
+    fi
   fi
 }
 
@@ -295,6 +310,17 @@ require_config() {
     echo "Copy config.sample.json to config.json and edit it:"
     echo "  cp $DEPLOY_DIR/config.sample.json $CONFIG_FILE"
     exit 1
+  fi
+}
+
+# The `--env-file` flag for compose, omitted when the file is absent.
+#
+# Compose refuses to start at all when pointed at a missing env file, and a teardown does not need
+# one: the containers belong to the compose project, which `-p` names. Without this, requiring a
+# profile's env file would have made a profile whose file was deleted impossible to stop or clean.
+env_file_flag() {
+  if [ -f "$ENV_FILE" ]; then
+    echo "--env-file $ENV_FILE"
   fi
 }
 
@@ -416,6 +442,49 @@ get_services_for_target() {
   done
 }
 
+# --- Service filter ---
+
+# Services named on the command line. Empty means the operator asked about the whole target, which
+# is not the same as asking about nothing: every consumer treats empty as "all", so a filter that
+# failed to populate widens the command rather than narrowing it.
+FILTER_SERVICES=()
+
+# Append one argv entry to FILTER_SERVICES, or report an unknown service name and return 1 so the
+# caller can print its own usage before exiting. Compose reads an unknown `--profile` as "select no
+# services" and exits 0, so a typo that reached it would report success while the service the
+# operator named kept running. See OPS-3.
+add_service_filter() {
+  local arg="$1" svc
+  for svc in "${ALL_SERVICES[@]}"; do
+    if [ "$arg" = "$svc" ]; then
+      FILTER_SERVICES+=("$arg")
+      return 0
+    fi
+  done
+  log_error "Unknown service: $arg"
+  return 1
+}
+
+is_in_filter() {
+  local svc="$1" f
+  if [ ${#FILTER_SERVICES[@]} -eq 0 ]; then
+    return 0
+  fi
+  for f in "${FILTER_SERVICES[@]}"; do
+    [ "$f" = "$svc" ] && return 0
+  done
+  return 1
+}
+
+get_filtered_services_for_target() {
+  local target="$1" svc
+  for svc in $(get_services_for_target "$target"); do
+    if is_in_filter "$svc"; then
+      echo "$svc"
+    fi
+  done
+}
+
 # Build --profile flags for a list of services.
 build_profile_flags() {
   local flags=""
@@ -448,35 +517,45 @@ compose_project_flag() {
 # Load KEY=VALUE lines from a file into the current shell. Each value is
 # treated as a DEFAULT — anything already exported by the caller wins.
 load_env_file() {
-  local file="$1"
-  if [ -f "$file" ]; then
+  local _env_file="$1"
+  if [ -f "$_env_file" ]; then
     set -a
-    local line key value
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
+    local _env_line _env_key _env_value
+    while IFS= read -r _env_line || [ -n "$_env_line" ]; do
+      case "$_env_line" in
         ''|\#*) continue ;;
       esac
-      key="${line%%=*}"
-      if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      _env_key="${_env_line%%=*}"
+      if ! [[ "$_env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         continue
       fi
-      if [ -n "${!key+x}" ]; then
+      # `declare -p` rather than `${!key+x}`, because an EMPTY ARRAY reads as unset to the second
+      # one. Every array this library declares up front is empty at this point, so a `.env` line
+      # naming one used to claim its first element: `FILTER_SERVICES=client` in a `.env` made
+      # `stop.sh` with no arguments stop only `client` and still print "All services stopped", and
+      # in `clean.sh`, which loads the env before parsing argv, the same element reached the
+      # unquoted remote heredoc and ran as a command on the deployment host.
+      #
+      # This also covers the readonly constants, which `export` would have failed on rather than
+      # skipped. The locals above are `_env_`-prefixed so a `.env` key cannot collide with them and
+      # be skipped for the wrong reason.
+      if declare -p "$_env_key" &>/dev/null; then
         continue
       fi
       # Take the value literally (no eval — secrets may contain $, !, #, ...).
       # Quoted values run to the closing quote; unquoted values end at an
       # inline comment (whitespace + #, dotenv-style) with whitespace trimmed.
-      value="${line#*=}"
-      case "$value" in
-        \"*) value="${value#\"}"; value="${value%%\"*}" ;;
-        \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+      _env_value="${_env_line#*=}"
+      case "$_env_value" in
+        \"*) _env_value="${_env_value#\"}"; _env_value="${_env_value%%\"*}" ;;
+        \'*) _env_value="${_env_value#\'}"; _env_value="${_env_value%%\'*}" ;;
         *)
-          value="${value%%[[:space:]]\#*}"
-          value="${value%"${value##*[![:space:]]}"}"
+          _env_value="${_env_value%%[[:space:]]\#*}"
+          _env_value="${_env_value%"${_env_value##*[![:space:]]}"}"
           ;;
       esac
-      export "$key=$value"
-    done < "$file"
+      export "$_env_key=$_env_value"
+    done < "$_env_file"
     set +a
   fi
 }

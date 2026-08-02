@@ -165,15 +165,18 @@ clean.sh --yes                           # skip the confirmation prompt (for scr
 ### stop.sh / health.sh
 
 ```bash
-stop.sh   [--profile=<name>]    # stop all containers across all targets
-health.sh [--profile=<name>]    # check service health across all targets
+stop.sh   [--profile=<name>] [service...]   # stop containers; all of them if none is named
+health.sh [--profile=<name>]                # check service health across all targets
 ```
+
+Both commands take the same service names as `clean.sh`, and both spend money is
+not involved: `stop.sh` stops, it does not remove volumes.
 
 ### Node & stamp CLI
 
 ```bash
-pnpm stamp:setup                 # full workflow: wait for node -> buy stamp -> write .env
-pnpm stamp:buy [amount] [depth] [--immutable]
+pnpm stamp:setup [--yes]         # full workflow: wait for node -> buy stamp -> write .env
+pnpm stamp:buy [amount] [depth] [--immutable] [--yes]
 pnpm stamp:check                 # list all stamps
 pnpm node:status                 # health + sync status
 pnpm node:addresses              # ethereum + overlay addresses

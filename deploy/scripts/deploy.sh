@@ -58,23 +58,13 @@ apply_port_slot
 
 # --- Parse service filter ---
 
-FILTER_SERVICES=()
-if [ $# -gt 0 ]; then
-  for arg in "$@"; do
-    local_valid=false
-    for svc in "${ALL_SERVICES[@]}"; do
-      if [ "$arg" = "$svc" ]; then
-        local_valid=true
-        break
-      fi
-    done
-    if [ "$local_valid" = "false" ]; then
-      log_error "Unknown service: $arg"
-      usage
-      exit 1
-    fi
-    FILTER_SERVICES+=("$arg")
-  done
+for arg in "$@"; do
+  add_service_filter "$arg" || {
+    usage
+    exit 1
+  }
+done
+if [ ${#FILTER_SERVICES[@]} -gt 0 ]; then
   log_info "Deploying selected services: ${FILTER_SERVICES[*]}"
 fi
 
@@ -84,30 +74,6 @@ if [ ${#FILTER_SERVICES[@]} -eq 0 ]; then
 fi
 
 print_services
-
-# --- Service filter helpers ---
-
-# Check if a service is in the filter (or no filter = all pass)
-is_in_filter() {
-  local svc="$1"
-  if [ ${#FILTER_SERVICES[@]} -eq 0 ]; then
-    return 0
-  fi
-  for f in "${FILTER_SERVICES[@]}"; do
-    [ "$f" = "$svc" ] && return 0
-  done
-  return 1
-}
-
-# Get filtered services for a target
-get_filtered_services_for_target() {
-  local target="$1"
-  for svc in $(get_services_for_target "$target"); do
-    if is_in_filter "$svc"; then
-      echo "$svc"
-    fi
-  done
-}
 
 # --- STAMP guard ---
 
