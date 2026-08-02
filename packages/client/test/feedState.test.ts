@@ -177,6 +177,41 @@ describe('FeedHealthTracker states', () => {
     assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_LIVE]);
   });
 
+  /**
+   * The direction the sibling test below does not cover, and the one that was wrong: a failure
+   * followed by answered polls, rather than answered polls followed by a failure.
+   *
+   * An unserved slot is the gateway answering. Carrying the failure count through it pinned the
+   * topic to `reconnecting` from one earlier flake until the publisher wrote again, so `stalled` was
+   * unreachable for exactly the case it was written for, a publisher that has stopped for good.
+   */
+  it('lets an answered poll end a run of failures, whatever the answer carried', () => {
+    const { tracker, clock, seen, watch } = makeTracker();
+    watch();
+
+    tracker.recordGatewayFailure(TOPIC);
+    clock.advance(2_000);
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
+      tracker.recordUnservedSlot(TOPIC);
+    }
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
+    assert.equal(tracker.backoffRemainingMs(TOPIC), 0, 'a gateway answering every poll was still being held off');
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_RECONNECTING, FEED_STATE_LIVE, FEED_STATE_STALLED]);
+  });
+
+  // And the backoff restarts from the base rather than resuming a run the gateway already broke.
+  it('starts the next backoff over after the gateway has answered in between', () => {
+    const { tracker, clock } = makeTracker();
+
+    tracker.recordGatewayFailure(TOPIC);
+    clock.advance(2_000);
+    tracker.recordUnservedSlot(TOPIC);
+    tracker.recordGatewayFailure(TOPIC);
+
+    assert.equal(tracker.backoffRemainingMs(TOPIC), 2_000);
+  });
+
   it('reports a gateway that stopped answering mid-stall as the reconnection it is', () => {
     const { tracker } = makeTracker();
 

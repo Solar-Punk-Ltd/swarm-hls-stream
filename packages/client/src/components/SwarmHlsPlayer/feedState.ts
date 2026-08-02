@@ -178,7 +178,12 @@ export class FeedHealthTracker {
 
   /**
    * The gateway answered, for a slot it had nothing in. The ordinary case for a viewer who has
-   * caught up with the publisher, and the reason this does not touch the backoff.
+   * caught up with the publisher, and the reason this does not set a backoff.
+   *
+   * It does clear one. An answer is an answer whatever it carries, so this ends a run of failures
+   * exactly as {@link recordGatewayReachable} does. Carrying the failure count through instead left
+   * a single earlier flake pinning the topic to `reconnecting` for as long as the publisher stayed
+   * quiet, which is precisely when `stalled` is the thing worth saying.
    *
    * @returns The length of the run this poll extends.
    */
@@ -186,7 +191,7 @@ export class FeedHealthTracker {
     let polls = 0;
     this.update(topicId, (health) => {
       polls = health.unservedSlotPolls + 1;
-      return { ...health, unservedSlotPolls: polls };
+      return { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: polls };
     });
     return polls;
   }
