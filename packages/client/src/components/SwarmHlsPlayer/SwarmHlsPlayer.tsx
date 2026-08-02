@@ -4,9 +4,11 @@ import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
 import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
 
+import { FeedStateOverlay } from './overlays/feed/FeedStateOverlay';
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
 import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
-import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
+import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './CustomManifestLoader';
+import { FEED_STATE_LIVE, FeedState } from './feedState';
 import { attachLivePlaybackRateGuard } from './livePlaybackRate';
 import { ManifestStateManager } from './ManifestManagement';
 import { buildPlayerConfig } from './playerConfig';
@@ -21,6 +23,16 @@ interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   enableQoeOverlay?: boolean;
 }
 
+/** The key both the manifest state and the feed state are held under. Null if the name is unusable. */
+function toHexTopic(topicString: string): string | null {
+  try {
+    return Topic.fromString(topicString).toString();
+  } catch (error) {
+    console.warn('Not a usable topic name:', topicString, error);
+    return null;
+  }
+}
+
 export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   owner,
   topicString,
@@ -32,7 +44,20 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
 }) => {
   const [restartTrigger, setRestartTrigger] = useState(0);
   const [metrics, setMetrics] = useState<QoeMetrics>(initialMetrics);
+  const [feedState, setFeedState] = useState<FeedState>(FEED_STATE_LIVE);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Deliberately not part of the effect below, which reruns on every restart. A fatal network error
+  // is what causes a restart, so a subscription torn down and rebuilt with the player would be
+  // dropped at exactly the moment it has something to say. The tracker replays on subscribe, so a
+  // mount that lands in the middle of an outage still hears about it.
+  useEffect(() => {
+    const hexTopic = toHexTopic(topicString);
+    if (!hexTopic) {
+      return;
+    }
+    return manifestFetcher.feedHealth.subscribe(hexTopic, setFeedState);
+  }, [topicString]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -115,15 +140,12 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       detachRateGuard?.();
 
       if (hls) {
-        try {
-          const topic = Topic.fromString(topicString);
-          ManifestStateManager.getInstance().clear(topic.toString());
-        } catch (error) {
-          console.warn('Failed to clear manifest state for topic:', topicString, error);
-        } finally {
-          hls.destroy();
-          hls = null;
+        const hexTopic = toHexTopic(topicString);
+        if (hexTopic) {
+          ManifestStateManager.getInstance().clear(hexTopic);
         }
+        hls.destroy();
+        hls = null;
       }
     };
   }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString]);
@@ -143,6 +165,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   return (
     <div className="swarm-hls-player-wrapper">
       {videoEl}
+      <FeedStateOverlay state={feedState} />
       {enableQoeOverlay && <QoeOverlay metrics={metrics} />}
     </div>
   );
