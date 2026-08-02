@@ -4,8 +4,9 @@ import { describe, it } from 'node:test';
 import {
   type BenchRun,
   type DiscardedSegment,
+  type LatencyTrend,
+  latencyTrend,
   medianSample,
-  paceDriftMsPerMinute,
   renderReport,
   type SegmentSample,
 } from '../src/bench/report.js';
@@ -30,7 +31,7 @@ function sampleWithTotal(index: number, totalMs: number): SegmentSample {
 
 function runWith(
   samples: readonly SegmentSample[],
-  paceDriftMsPerMinute: number | null = 4,
+  trend: LatencyTrend | null = { msPerMinute: 4, scatterMsPerMinute: 40 },
   discarded: readonly DiscardedSegment[] = [],
 ): BenchRun {
   return {
@@ -40,7 +41,7 @@ function runWith(
     knobs: DEFAULT_KNOBS,
     samples,
     discarded,
-    paceDriftMsPerMinute,
+    trend,
   };
 }
 
@@ -84,40 +85,75 @@ describe('choosing what a run reports', () => {
   });
 });
 
-describe('measuring the publisher against its own clock', () => {
+describe('measuring how far a run moved while it was being taken', () => {
+  /** Fetch instants a minute apart, and the capture instants `latencies` implies for them. */
+  function seriesWithLatencies(latenciesMs: readonly number[]): [number[], number[]] {
+    const stepMs = 60_000 / (latenciesMs.length - 1);
+    const wallMs = latenciesMs.map((_, index) => BENCH_T0 + index * stepMs);
+    return [wallMs, wallMs.map((wall, index) => wall - latenciesMs[index])];
+  }
+
+  it('reports no movement when every sample measured the same latency', () => {
+    assert.deepEqual(latencyTrend(...seriesWithLatencies([5_000, 5_000, 5_000])), {
+      msPerMinute: 0,
+      scatterMsPerMinute: 0,
+    });
+  });
+
+  it('reports latency shrinking across the run as positive', () => {
+    assert.equal(latencyTrend(...seriesWithLatencies([5_600, 5_000]))?.msPerMinute, 600);
+  });
+
+  it('reports latency growing across the run as negative', () => {
+    assert.equal(latencyTrend(...seriesWithLatencies([5_000, 5_300]))?.msPerMinute, -300);
+  });
+
   /**
-   * The bias nothing else in the pipeline can reveal. The encoder anchors on the first frame's wall
-   * clock and then advances at the nominal frame rate, so if those two rates differ every latency in
-   * the run is wrong by the accumulated difference, in the direction of looking better than it was.
+   * The defect this replaced. The old figure was these two ends and nothing else, published as the
+   * publisher's clock drift: on the first real run it read +589ms per minute, and swapping which
+   * segment happened to land last turned that into -980. A middle sample wider than either end
+   * contributes nothing to the trend and everything to whether the trend means anything.
    */
-  it('reports no drift when media time and wall time advanced together', () => {
-    const captured = [BENCH_T0, BENCH_T0 + 60_000];
-    const media = [0, 60_000];
+  it('scatters across every sample, not only the two the trend is taken from', () => {
+    const trend = latencyTrend(...seriesWithLatencies([5_100, 9_000, 5_000]));
 
-    assert.equal(paceDriftMsPerMinute(captured, media), 0);
+    assert.equal(trend?.msPerMinute, 100);
+    assert.equal(trend?.scatterMsPerMinute, 4_000);
   });
 
-  it('reports media running fast as a positive drift per minute', () => {
-    const captured = [BENCH_T0, BENCH_T0 + 60_000];
-    const media = [0, 60_600];
+  /**
+   * True for every possible run, because the trend is the difference between two latencies and both
+   * of them are inside the scatter. Asserted rather than left as a comment, so that anyone tempted to
+   * write "resolvable when the trend exceeds its scatter" finds out here that no run can reach it.
+   */
+  it('never produces a trend its own scatter does not cover', () => {
+    for (const latencies of [
+      [5_000, 5_000],
+      [9_000, 5_000],
+      [5_000, 9_000],
+      [5_100, 9_000, 5_000],
+      [1, 2, 3, 4],
+    ]) {
+      const trend = latencyTrend(...seriesWithLatencies(latencies));
 
-    assert.equal(paceDriftMsPerMinute(captured, media), 600);
+      assert.ok(trend);
+      assert.ok(
+        Math.abs(trend.msPerMinute) <= trend.scatterMsPerMinute,
+        `latencies ${latencies.join('/')} gave trend ${trend.msPerMinute} outside scatter ${trend.scatterMsPerMinute}`,
+      );
+    }
   });
 
-  it('reports media running slow as a negative drift', () => {
-    assert.equal(paceDriftMsPerMinute([BENCH_T0, BENCH_T0 + 120_000], [0, 119_400]), -300);
+  it('declines to report a trend from a single sample', () => {
+    assert.equal(latencyTrend([BENCH_T0], [0]), null);
   });
 
-  it('declines to report drift from a single sample', () => {
-    assert.equal(paceDriftMsPerMinute([BENCH_T0], [0]), null);
+  it('declines to report a trend across no elapsed time, rather than dividing by zero', () => {
+    assert.equal(latencyTrend([BENCH_T0, BENCH_T0], [0, 2_000]), null);
   });
 
-  it('declines to report drift across no elapsed time, rather than dividing by zero', () => {
-    assert.equal(paceDriftMsPerMinute([BENCH_T0, BENCH_T0], [0, 2_000]), null);
-  });
-
-  it('declines to report drift from mismatched series', () => {
-    assert.equal(paceDriftMsPerMinute([BENCH_T0, BENCH_T0 + 60_000], [0]), null);
+  it('declines to report a trend from mismatched series', () => {
+    assert.equal(latencyTrend([BENCH_T0, BENCH_T0 + 60_000], [0]), null);
   });
 });
 
@@ -141,7 +177,7 @@ describe('the report an operator reads', () => {
    */
   it('names the segments that were paid for and produced no reading', () => {
     const report = renderReport(
-      runWith(samples, 4, [{ ref: 'abc123def456789', reason: 'no video packets in the segment' }]),
+      runWith(samples, null, [{ ref: 'abc123def456789', reason: 'no video packets in the segment' }]),
     );
 
     assert.match(report, /1 segment\(s\) reached the bench and could not be read/);
@@ -198,8 +234,20 @@ describe('the report an operator reads', () => {
     assert.doesNotMatch(report, /0\.00s/);
   });
 
-  it('says when drift was not measurable instead of reporting it as none', () => {
+  it('says when the trend was not measurable instead of reporting it as none', () => {
     assert.match(renderReport(runWith(samples, null)), /not measured/);
+  });
+
+  /**
+   * The scatter has to travel with the figure, or a reader takes a number the run cannot support.
+   * The report must also not claim which of the three causes it is, because the two series it has
+   * cannot tell them apart at any sample count.
+   */
+  it('prints the trend with the scatter that covers it, and names no cause for it', () => {
+    const report = renderReport(runWith(samples, { msPerMinute: 589, scatterMsPerMinute: 3_199 }));
+
+    assert.match(report, /moved \+589ms per minute, inside a scatter of 3199ms per minute/);
+    assert.match(report, /cannot say whether/);
   });
 
   /**

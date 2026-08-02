@@ -22,7 +22,7 @@ import { sleep, waitFor } from '../harness/wait.js';
 import { measureClockSkew } from './clockSkew.js';
 import { fetchFeedManifest, fetchSegment, segmentRefFromUri } from './gateway.js';
 import { probeFirstVideoFrame } from './probe.js';
-import { type BenchRun, type DiscardedSegment, paceDriftMsPerMinute, type SegmentSample } from './report.js';
+import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
 import { latencySplit, type SegmentInstants } from './split.js';
 import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from './timeline.js';
 import { latencyMsFromPts } from './wallclock.js';
@@ -85,7 +85,7 @@ export async function measureLatency(options: RunOptions): Promise<BenchRun> {
     knobs,
     samples,
     discarded,
-    paceDriftMsPerMinute: paceDriftMsPerMinute(
+    trend: latencyTrend(
       pending.map((sample) => sample.fetchedAtMs),
       pending.map((sample) => sample.capturedAtMs),
     ),

@@ -40,16 +40,41 @@ export interface BenchRun {
    * thin result and a broken pipeline, and only this field can tell them apart afterwards.
    */
   discarded: readonly DiscardedSegment[];
+  /** How the run's own latency moved while it was being taken, or null with too few samples. */
+  trend: LatencyTrend | null;
+}
+
+/**
+ * How far the measured latency moved across a run, against how far it scattered while doing so.
+ *
+ * Both scaled to a minute of run so two runs of different lengths can be compared.
+ *
+ * **`Math.abs(msPerMinute) <= scatterMsPerMinute` holds for every possible run**, because the trend
+ * is the first sample's latency minus the last and both of those are inside the scatter. Nothing here
+ * branches on that comparison, and nothing downstream should: a report saying the trend is resolvable
+ * when it exceeds its scatter would be printing a branch no run can reach.
+ */
+export interface LatencyTrend {
   /**
-   * How far the publisher's media clock drifted from wall clock, in ms per minute, or null when
-   * fewer than two samples made it measurable.
+   * Milliseconds per minute of run, positive when later samples measured **less** latency than
+   * earlier ones.
    *
-   * The encoder anchors its timeline at the first frame's wall clock and then advances at the nominal
-   * frame rate, so a long publish accumulates the difference between those two rates. Measured rather
-   * than assumed: it is a direct bias on every latency in the run, and the only honest way to say it
-   * is small is to have looked.
+   * This was called `paceDriftMsPerMinute` and described as the publisher's media clock running
+   * against wall clock. It cannot be that, and the name was the defect the PR #64 gate found. The
+   * bench recovers each capture instant from the media timestamp, so the only thing separating the
+   * span of capture instants from the span of fetch instants is how much the latency itself changed
+   * between the first sample and the last. Pace drift would produce exactly this signal, and so would
+   * a pipeline that simply got faster, and so would the ordinary scatter of five samples.
    */
-  paceDriftMsPerMinute: number | null;
+  msPerMinute: number;
+  /**
+   * The widest the trend could have come out at, had different samples landed at the ends.
+   *
+   * Taken across every sample rather than the two the trend uses, which is what makes it a bound
+   * rather than a restatement. On the first real run it was 3199ms per minute against a trend of
+   * 589, and swapping which segment landed last turned that trend into -980.
+   */
+  scatterMsPerMinute: number;
 }
 
 function medianIndex(count: number): number {
@@ -69,32 +94,30 @@ function seconds(ms: number): string {
 }
 
 /**
- * How fast the publisher's media clock ran against the real one, in ms gained per minute.
+ * How much the measured latency moved across a run, and how far it scattered while doing so.
  *
- * The encoder anchors its timeline on the first frame's wall clock and then advances at the nominal
- * frame rate. Those two rates are close but not identical, and the difference accumulates over a run
- * as a bias on every latency in it.
- *
- * Measured by comparing two series taken across the same samples: `wallMs`, instants the bench read
- * off its own clock, and `mediaMs`, instants recovered from the segments' timestamps. In a run with
- * no drift they advance together.
- *
- * **It cannot separate drift from a latency trend**, and that is worth knowing rather than hiding: a
- * run whose latency grew by a second between the first sample and the last reports that as drift too.
- * Either reading is a reason to distrust the run as a baseline, which is why one number carries both.
+ * Taken from two series across the same samples: `wallMs`, instants the bench read off its own clock
+ * when it fetched, and `mediaMs`, capture instants recovered from the segments' own timestamps. Their
+ * difference at each sample is that sample's latency, so this reduces to what the run's latency did
+ * to itself, which is the only thing these two series can say.
  *
  * Returns null rather than a confident figure when there is nothing to measure across.
  */
-export function paceDriftMsPerMinute(wallMs: readonly number[], mediaMs: readonly number[]): number | null {
+export function latencyTrend(wallMs: readonly number[], mediaMs: readonly number[]): LatencyTrend | null {
   if (wallMs.length < 2 || wallMs.length !== mediaMs.length) {
     return null;
   }
-  const wallSpanMs = wallMs[wallMs.length - 1] - wallMs[0];
-  const mediaSpanMs = mediaMs[mediaMs.length - 1] - mediaMs[0];
-  if (wallSpanMs <= 0) {
+  const spanMs = wallMs[wallMs.length - 1] - wallMs[0];
+  if (spanMs <= 0) {
     return null;
   }
-  return ((mediaSpanMs - wallSpanMs) / wallSpanMs) * 60_000;
+  const perMinute = (ms: number): number => (ms / spanMs) * 60_000;
+  const latencies = wallMs.map((wall, index) => wall - mediaMs[index]);
+
+  return {
+    msPerMinute: perMinute(latencies[0] - latencies[latencies.length - 1]),
+    scatterMsPerMinute: perMinute(Math.max(...latencies) - Math.min(...latencies)),
+  };
 }
 
 /**
@@ -135,6 +158,26 @@ function impossibleHopGuidance(run: BenchRun): string[] {
       'pairing move the hop alone. The capture instant is shared with the total and moves both by the ' +
       'same amount, so a total is only safe once the capture instant is cleared.',
   ];
+}
+
+/**
+ * The trend line, always printed with the scatter beside it and never as a conclusion.
+ *
+ * Unconditional on purpose. `Math.abs(msPerMinute) <= scatterMsPerMinute` for every run, so a
+ * sentence that only appears when the trend clears its scatter is a sentence no run ever prints.
+ */
+function trendLine(trend: LatencyTrend | null): string {
+  if (trend === null) {
+    return '- latency trend across the run: **not measured**, which needs two samples spanning some time.';
+  }
+  return (
+    `- latency across the run moved ${trend.msPerMinute >= 0 ? '+' : ''}${Math.round(trend.msPerMinute)}ms per ` +
+    `minute, inside a scatter of ${Math.round(trend.scatterMsPerMinute)}ms per minute. Positive means later ` +
+    'segments measured less latency than earlier ones. The figure is the first sample minus the last, so the ' +
+    'scatter always covers it, and one run cannot say whether the movement is the pipeline changing speed, the ' +
+    "publisher's media clock running against wall clock, or which two segments happened to land at the ends. " +
+    'Read it as a reason to distrust a single run as a baseline rather than as a measurement of any of the three.'
+  );
 }
 
 function knobLine(knobs: PublishKnobs): string {
@@ -196,17 +239,7 @@ export function renderReport(run: BenchRun): string {
     lines.push(`| ${sample.index} | \`${sample.ref.slice(0, 12)}\` | ${seconds(sample.split.totalMs)} |`);
   }
 
-  const drift = run.paceDriftMsPerMinute;
-  lines.push(
-    '',
-    '## Self-checks',
-    '',
-    drift === null
-      ? '- publisher pace drift: **not measured**, which needs two samples spanning some time.'
-      : `- publisher pace drift: ${drift >= 0 ? '+' : ''}${Math.round(drift)}ms per minute of media. ` +
-          'This is a direct bias on every total above, in the direction of reporting less latency than ' +
-          'there was when it is positive.',
-  );
+  lines.push('', '## Self-checks', '', trendLine(run.trend));
 
   const impossible = run.samples.flatMap((sample) =>
     impossibleHops(sample.split).map(
