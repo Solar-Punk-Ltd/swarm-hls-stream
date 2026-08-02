@@ -7,6 +7,7 @@ import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
 import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
 import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
+import { attachLivePlaybackRateGuard } from './livePlaybackRate';
 import { ManifestStateManager } from './ManifestManagement';
 import { buildPlayerConfig } from './playerConfig';
 
@@ -105,11 +106,13 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     }
 
     const detachQoe = enableQoeOverlay ? attachQoeTracking(video, hls, setMetrics) : null;
+    const detachRateGuard = hls ? attachLivePlaybackRateGuard(video, hls) : null;
 
     return () => {
       video.removeEventListener('pause', onHlsPause);
       video.removeEventListener('play', onHlsPlay);
       detachQoe?.();
+      detachRateGuard?.();
 
       if (hls) {
         try {

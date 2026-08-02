@@ -17,9 +17,34 @@ export const LIVE_SYNC_DURATION_S = 10;
  * The latency at which hls.js stops trying to recover gradually and seeks to the live edge instead.
  *
  * hls.js refuses a value at or below {@link LIVE_SYNC_DURATION_S}, throwing from the constructor, so
- * every mount of the player depends on the two staying ordered.
+ * every mount of the player depends on the two staying ordered. The upper bound is the one that is
+ * easy to get wrong, because nothing enforces it: hls.js only nudges the playback rate while the
+ * drift is under `min(this, targetLatency + targetduration)` past the target, and only seeks once it
+ * is past this. Set this higher than twice {@link LIVE_SYNC_DURATION_S} and the two stop meeting, so
+ * a viewer between the end of catch-up and the start of the seek is left drifting with neither
+ * running. At twice the target the ranges meet whatever the playlist's target duration turns out to
+ * be, which is not a number this side of the system chooses.
  */
-export const LIVE_MAX_LATENCY_DURATION_S = 30;
+export const LIVE_MAX_LATENCY_DURATION_S = 2 * LIVE_SYNC_DURATION_S;
+
+/**
+ * The fastest playback rate used to catch up after drifting behind the target.
+ *
+ * hls.js reads exactly 1, its default, as "never adapt", so without this a second lost to a slow
+ * fetch or a rebuffer is kept for the rest of the session and latency only ever grows, until it
+ * crosses {@link LIVE_MAX_LATENCY_DURATION_S} and the viewer is jumped forward instead. That was
+ * LAT-2.
+ *
+ * 1.1 rather than the 1.5 the low-latency presets use. Browsers pitch-correct transparently to
+ * around 1.1 and audibly past it, and 10% recovers a two second overshoot inside twenty seconds
+ * without the viewer hearing that it happened.
+ *
+ * hls.js gates this on `lowLatencyMode` in the same condition, so the two have to stay together.
+ * That flag defaults to true and is deliberately not set here. R7 in the finding register refuses
+ * to set it for exactly that reason: setting a flag to the value it already has states an intent
+ * the code cannot keep, since a future default is not this repository's to choose.
+ */
+export const MAX_LIVE_SYNC_PLAYBACK_RATE = 1.1;
 
 /**
  * Everything the player tells hls.js that is not a loader.
@@ -31,6 +56,7 @@ export const LIVE_MAX_LATENCY_DURATION_S = 30;
 export const HLS_TUNING = {
   liveSyncDuration: LIVE_SYNC_DURATION_S,
   liveMaxLatencyDuration: LIVE_MAX_LATENCY_DURATION_S,
+  maxLiveSyncPlaybackRate: MAX_LIVE_SYNC_PLAYBACK_RATE,
   maxBufferLength: 60,
   maxMaxBufferLength: 120,
   maxBufferSize: 60 * MB,
