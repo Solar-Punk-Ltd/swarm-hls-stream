@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 const DEPLOY_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const ROOT_DIR = dirname(DEPLOY_DIR);
 
 /**
  * Containers the stubbed `docker` reports, one per compose service. The ids carry their service so
@@ -27,6 +28,9 @@ const SERVICE_LABEL = 'com.docker.compose.service';
 
 /** Where `clean.sh` puts a deployment on a remote host, as `_lib.sh` hardcodes it. */
 const REMOTE_DIR = 'swarm-hls-stream';
+
+/** The one implementation of "create a bee data dir", which `deploy.sh` runs on either host. */
+const INIT_NODE = 'init-node.sh';
 
 const ALL_LOCAL = {
   services: {
@@ -77,35 +81,50 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   const deploy = join(root, 'deploy');
   cpSync(join(DEPLOY_DIR, 'scripts'), join(deploy, 'scripts'), { recursive: true });
   cpSync(join(DEPLOY_DIR, 'docker-compose.yml'), join(deploy, 'docker-compose.yml'));
+  cpSync(join(ROOT_DIR, 'nodes', INIT_NODE), join(root, 'nodes', INIT_NODE));
   writeFileSync(join(deploy, 'config.json'), JSON.stringify(config, null, 2));
   for (const [name, contents] of Object.entries(envFiles)) {
     writeFileSync(join(root, name), contents);
   }
 
-  // Stands in for the remote host's filesystem. `ssh` runs the script it is handed with HOME pointed
-  // here, so the deployment-exists guard in that script passes and the sweep under it actually runs.
+  // Stands in for the remote host's filesystem. `ssh` runs what it is handed with HOME pointed here,
+  // so the deployment-exists guard in that script passes and the sweep under it actually runs.
+  //
+  // Seeded with what `sync_to_remote` would have left, because `rsync` is stubbed out: a remote
+  // deploy expects `deploy/` and the node init script to be there before it runs anything.
   const remoteHome = join(root, 'remote-home');
-  mkdirSync(join(remoteHome, REMOTE_DIR, 'deploy'), { recursive: true });
+  const remoteBase = join(remoteHome, REMOTE_DIR);
+  mkdirSync(join(remoteBase, 'deploy'), { recursive: true });
+  cpSync(join(DEPLOY_DIR, 'scripts'), join(remoteBase, 'deploy', 'scripts'), { recursive: true });
+  cpSync(join(ROOT_DIR, 'nodes', INIT_NODE), join(remoteBase, 'nodes', INIT_NODE));
 
   const binDir = join(root, 'bin');
   mkdirSync(binDir);
   const localJournal = join(root, 'docker-argv');
   const remoteJournal = join(root, 'docker-argv-remote');
+  const sshJournal = join(root, 'ssh-argv');
   writeFileSync(localJournal, '');
   writeFileSync(remoteJournal, '');
+  writeFileSync(sshJournal, '');
 
   writeNodeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
-  writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, join(root, 'ssh-argv')));
+  writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, sshJournal));
+  writeStub(join(binDir, 'rsync'), '#!/bin/sh\nexit 0\n');
 
   return {
     root,
     binDir,
+    remoteHome,
     /** Path to one of the real deploy scripts, copied into this sandbox. */
     scriptPath: (name) => join(deploy, 'scripts', name),
     /** Every `docker` invocation made on this host, in order, one argv per entry. */
     calls: () => readLines(localJournal),
     /** Every `docker` invocation made by the script `ssh` carried to the remote host. */
     remoteCalls: () => readLines(remoteJournal),
+    /** Every `ssh` invocation, as the single string the far side's login shell would receive. */
+    sshCommands: () => readLines(sshJournal),
+    /** Whether a path exists on the stand-in remote host, relative to its home directory. */
+    remoteHas: (relative) => existsSync(join(remoteHome, relative)),
   };
 }
 
@@ -223,15 +242,32 @@ for (const container of inventory) {
 }
 
 /**
- * Runs the script it is handed instead of only recording it, with HOME inside the sandbox so the
- * remote path executes for real. Recording the text alone would let the remote sweep drift from the
- * local one while a substring assertion still passed.
+ * Runs what it is handed instead of only recording it, with HOME inside the sandbox so the remote
+ * path executes for real. Recording the text alone would let the remote sweep drift from the local
+ * one while a substring assertion still passed.
+ *
+ * `bash -c "$*"` is not a shortcut, it is the fidelity that makes SEC-21 visible. Real ssh joins its
+ * remaining arguments into one string and hands it to the far side's LOGIN SHELL, which word-splits
+ * and evaluates it — which is why an unquoted interpolation into an ssh command line is a command
+ * injection rather than a quoting nit. A stub that exec'd an argv would model something ssh does not
+ * do and would report the injection as safe. The `bash -s` callers keep working through the same
+ * line: stdin is inherited, so their heredoc still reaches the shell they asked for.
  */
 function sshStub(remoteHome, remoteJournal, argvJournal) {
   return `#!/bin/bash
+# Drop ssh's own options and then the target, leaving exactly the string the far side would get.
+# \`-t\` is not hypothetical: clean.sh uses it, and treating it as the target would hand the login
+# shell a command starting with the hostname.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -*) shift ;;
+    *) shift; break ;;
+  esac
+done
 printf '%s\\n' "$*" >> ${JSON.stringify(argvJournal)}
-SCRIPT=$(cat)
-HOME=${JSON.stringify(remoteHome)} DOCKER_STUB_JOURNAL=${JSON.stringify(remoteJournal)} bash -s <<<"$SCRIPT"
+[ $# -eq 0 ] && exit 0
+export HOME=${JSON.stringify(remoteHome)} DOCKER_STUB_JOURNAL=${JSON.stringify(remoteJournal)}
+bash -c "$*"
 `;
 }
 
