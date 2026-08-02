@@ -234,7 +234,10 @@ describe('logger configuration from the environment (ARCH-4)', () => {
 
     assert.equal(lines.length, 1);
     assert.match(lines[0], /"verbose" is not a log level/);
-    assert.match(lines[0], /silent/, 'the message must list the levels that would have worked');
+    // The separator as well as the names. Joined with nothing, the list reads
+    // "debugloginfowarnerrorsilent", which still contains every level and would satisfy a looser
+    // assertion while being unreadable to the operator it is written for.
+    assert.match(lines[0], /debug, log, info, warn, error, silent/, 'the levels must be listed readably');
   });
 
   // At `error`, and not at the level being configured: the one message saying the setting was

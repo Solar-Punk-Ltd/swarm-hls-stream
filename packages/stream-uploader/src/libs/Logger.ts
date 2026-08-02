@@ -105,10 +105,6 @@ export class Logger {
     return previous;
   }
 
-  public getLevel(): LogThreshold {
-    return this.options.level;
-  }
-
   private formatMessage(level: LogLevel, ...args: any[]): string {
     return formatLine(this.options.format, level, args.map(renderArg).join(' '), new Date().toISOString());
   }

@@ -43,6 +43,15 @@ describe('announce readiness transitions (ARCH-3)', () => {
   it('refuses to announce a stream that has uploaded no segment', () => {
     assert.throws(() => onCatalogAnnounced(READINESS_PENDING), IllegalReadinessTransition);
   });
+
+  // The name and the message are what an operator reads in the log, and `assert.throws` against the
+  // class checks neither: emptying both left the suite green.
+  it('names itself and says which transition was refused', () => {
+    assert.throws(() => onCatalogAnnounced(READINESS_PENDING), {
+      name: 'IllegalReadinessTransition',
+      message: /catalog announce while pending/,
+    });
+  });
 });
 
 describe('announce readiness gate (ARCH-3)', () => {
