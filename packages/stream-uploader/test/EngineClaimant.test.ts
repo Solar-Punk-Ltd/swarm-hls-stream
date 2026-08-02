@@ -21,7 +21,8 @@ import { createSrsEngine } from '../src/engines/srs.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_VIDEO } from '../src/types.js';
 
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { startTestApi } from './helpers/apiTestServer.js';
+import { makeFakeRecoveryStore, makeRecoveredState, makeTestOrchestrator, toRecoveryFileId } from './helpers/fakes.js';
 import { listenOnLoopback } from './helpers/loopbackServer.js';
 import { waitFor } from './helpers/waiting.js';
 
@@ -145,16 +146,69 @@ describe('the address each engine hands to the takeover guard', () => {
    * The control route is the third caller and it must keep working. It holds the service token, so it
    * is inside the trust boundary and names nobody deliberately, which the guard reads as no evidence
    * rather than as a stranger.
+   *
+   * Driven over the real app rather than by calling `startStream` directly. The direct call leans on
+   * the default parameter and leaves the route's own argument list unobserved, so a route that began
+   * passing `req.ip` would go unnoticed and would refuse the operator over their own proxy's address.
    */
   it('the control route still starts a stream over a live one, naming nobody', async () => {
     const orchestrator = makeTestOrchestrator();
+    const api = await startTestApi(orchestrator);
     try {
       assert.equal(orchestrator.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
       await liveStreamFedOnce(orchestrator);
 
-      assert.equal(orchestrator.startStream(STREAM_ID, MEDIA_TYPE_VIDEO), true);
+      const response = await api.request('/stream/start', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamId: STREAM_ID, mediatype: MEDIA_TYPE_VIDEO }),
+      });
+
+      assert.equal(response.status, 200);
       assert.equal(orchestrator.getMetricsSnapshot().takeoversRefusedTotal, 0);
     } finally {
+      await api.close();
+      await orchestrator.cleanup();
+    }
+  });
+
+  /**
+   * And when it *is* refused, it must say so. `startStream` returned `true` on every path until this
+   * guard landed, so the route discarding its answer was correct by accident and stopped being so
+   * without changing. An operator was told `200 {ok:true}` while nothing had started, which is the
+   * worst shape a refusal can take: the caller holds the service token and is the one person who
+   * could have acted on it.
+   *
+   * A recovered stream is what makes the refusal reachable from this route at all. Its owner is
+   * unknown rather than absent, so even an announce naming nobody is judged against the stall window,
+   * and this route names nobody by design. That is the same shape the gate's lens demonstrated.
+   */
+  it('the control route reports a refusal instead of answering ok', async () => {
+    const orchestrator = makeTestOrchestrator(
+      { recoveryTimeout: 60_000 },
+      {},
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(STREAM_ID)],
+        load: () => makeRecoveredState(STREAM_ID),
+      }),
+    );
+    const api = await startTestApi(orchestrator);
+    try {
+      await orchestrator.recoverStreams();
+      // Segments, not an announce, which is how both engines resume a recovered stream and what
+      // leaves its owner unknown.
+      await liveStreamFedOnce(orchestrator);
+
+      const response = await api.request('/stream/start', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamId: STREAM_ID, mediatype: MEDIA_TYPE_VIDEO }),
+      });
+
+      assert.equal(response.status, 409, 'a refused start must not be answered ok');
+      assert.equal(orchestrator.getMetricsSnapshot().takeoversRefusedTotal, 1);
+    } finally {
+      await api.close();
       await orchestrator.cleanup();
     }
   });
