@@ -107,12 +107,12 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
   // Every entry was rebuilt inside one bare loop, so anything thrown while restoring a stream
   // escaped `recoverStreams` entirely and the entries behind it were never read. They stay on disk
   // still reporting as active, so nothing retries them and nothing says a broadcast was dropped.
-  it('recovers the streams behind an entry that cannot be rebuilt', async () => {
+  //
+  // A persisted entry whose segment list did not survive the disk. This one throws inside the
+  // `StreamUploader` constructor, by way of `ManifestManager.restoreState`.
+  it('recovers the streams behind an entry whose construction throws', async () => {
     const broken = 'live/broken';
     const healthy = 'live/healthy';
-    // A persisted entry whose segment list did not survive the disk. Corrupt in a way the loop body
-    // hits after the uploader is already constructed, so the isolation has to cover the whole
-    // rebuild rather than only the constructor.
     const corrupt = { ...makeRecoveredState(broken), segments: null } as unknown as StreamState;
     const orch = makeOrchestrator(
       makeFakeRecoveryStore({
@@ -127,13 +127,48 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
     await orch.cleanup();
   });
 
+  // The half the test above does not reach, and the reason it needs its own case: every throw an
+  // ordinary corrupt entry produces happens inside the constructor, so narrowing the isolation to
+  // just that call left all 58 tests green. The failure is injected at `scheduleRecoveryFinalize`,
+  // which runs after the uploader exists and after two of the four maps have been written.
+  it('recovers the streams behind an entry that throws after its uploader is built', async () => {
+    const broken = 'live/late-failure';
+    const healthy = 'live/healthy';
+    const clock = new FakeClock();
+    const realSetTimer = clock.setTimer.bind(clock);
+    clock.setTimer = ((fn: () => void, ms: number) => {
+      if (orch.getActiveStreamCount() > 0 && !seenFirstTimer) {
+        seenFirstTimer = true;
+        throw new Error('timer registration failed');
+      }
+      return realSetTimer(fn, ms);
+    }) as typeof clock.setTimer;
+    let seenFirstTimer = false;
+
+    const orch = makeOrchestrator(
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(broken), toRecoveryFileId(healthy)],
+        load: (fileId: string) =>
+          fileId === toRecoveryFileId(broken) ? makeRecoveredState(broken) : makeRecoveredState(healthy),
+      }),
+      clock,
+    );
+
+    const recovered = await orch.recoverStreams();
+
+    assert.deepEqual(recovered, [healthy], 'a throw after construction took the stream behind it down with it');
+    await orch.cleanup();
+  });
+
   // ARCH-3, end to end. An entry claiming the catalog announce happened before the first segment
   // cannot come from any live sequence. Restored as-is it passed every gate quietly and was never
-  // published, so the broadcast ran correctly and no viewer could find it. Now it is refused, and
-  // the refusal costs only that stream because the loop isolates each entry.
-  it('refuses a recovery entry that announced before its first segment, and recovers the rest', async () => {
+  // published, so the broadcast ran correctly and no viewer could find it.
+  //
+  // It is recovered rather than refused, and that is the second version of this fix. Refusing meant
+  // the stream was never registered, so nothing finalized it as a VOD at the recovery timeout, its
+  // catalog entry said `live` forever, and the file failed identically on every restart.
+  it('recovers a stream whose entry announced before its first segment, rather than stranding it', async () => {
     const impossible = 'live/impossible';
-    const healthy = 'live/healthy';
     const corrupt: StreamState = {
       ...makeRecoveredState(impossible),
       isFirstSegmentReady: false,
@@ -141,14 +176,15 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
     };
     const orch = makeOrchestrator(
       makeFakeRecoveryStore({
-        listActive: () => [toRecoveryFileId(impossible), toRecoveryFileId(healthy)],
-        load: (fileId: string) => (fileId === toRecoveryFileId(impossible) ? corrupt : makeRecoveredState(healthy)),
+        listActive: () => [toRecoveryFileId(impossible)],
+        load: () => corrupt,
       }),
     );
 
     const recovered = await orch.recoverStreams();
 
-    assert.deepEqual(recovered, [healthy], 'an unannounceable stream was restored as if it were fine');
+    assert.deepEqual(recovered, [impossible], 'the entry was stranded instead of recovered and cleaned up');
+    assert.equal(orch.getActiveStreamCount(), 1, 'a repaired stream must be live so its timeout can finalize it');
     await orch.cleanup();
   });
 
