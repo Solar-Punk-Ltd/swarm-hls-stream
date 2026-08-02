@@ -564,6 +564,63 @@ load_env() {
   load_env_file "$ENV_FILE"
 }
 
+# --- Shell quoting ---
+
+# Wrap a value so another shell reads it as a single literal word, for the strings that have to
+# survive a trip through one: an `ssh` command line, or a file the far side will `source`.
+#
+# POSIX single-quoting (close the quote, escape, reopen) rather than bash's `printf %q`, because the
+# shell on the other side is whatever login shell the deployment account has.
+shell_quote() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+# --- Bee data dirs ---
+
+readonly DEFAULT_BEE_UPLOADER_DATA_DIR="./data/bee-uploader"
+readonly DEFAULT_BEE_GATEWAY_DATA_DIR="./data/bee-gateway"
+
+# Refuse a bee data dir that the operator's `.env` cannot be trusted to have meant.
+#
+# The value is quoted everywhere it reaches a shell, and that is what stops it being read as code.
+# This is the part quoting cannot do: the path is handed to `mkdir -p` and `chmod -R 777` on the
+# deployment host, and `deploy/../..` is that host's home directory however carefully it is quoted.
+# The allowed character set is what a docker bind mount source and a shell can both carry without
+# ambiguity, so a value rejected here would not have worked as a data directory either. See SEC-21.
+#
+# Unset is fine. The defaults above are literals in this repository, not operator input.
+require_safe_data_dir() {
+  local name="$1"
+  local value="${!name:-}"
+  if [ -z "$value" ]; then
+    return 0
+  fi
+
+  if ! [[ "$value" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    log_error "$name is not a usable data directory: $value"
+    echo "  Allowed characters: letters, digits, and . _ - /" >&2
+    exit 1
+  fi
+
+  case "/$value/" in
+    */../*)
+      log_error "$name walks out of the deployment directory: $value"
+      echo "  The path is created and chmodded on the deployment host, so '..' is refused." >&2
+      exit 1
+      ;;
+  esac
+}
+
+# The data dir as a path on the machine that will hold it. A relative value is relative to `deploy/`,
+# which is where docker compose resolves the same value's bind mount from, so the directory this
+# creates and the one the container mounts are the same one. An absolute value is taken as given.
+local_data_dir() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$DEPLOY_DIR" "$1" ;;
+  esac
+}
+
 # --- Engine env (per-profile) ---
 # Engine-specific options live in engines/<engine>/.env. Like the root env,
 # a named profile gets its own copy: engines/<engine>/.env.<profile>.

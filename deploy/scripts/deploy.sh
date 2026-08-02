@@ -245,49 +245,39 @@ resolve_ome_hls_url() {
 
 # --- Init bee data dirs ---
 
-local_data_dir() {
-  case "$1" in
-    /*) printf '%s' "$1" ;;
-    *) printf '%s/%s' "$DEPLOY_DIR" "$1" ;;
-  esac
-}
-
 init_bee_dirs() {
   local target="$1"
   shift
   local services=("$@")
 
+  local svc data_dir
   for svc in "${services[@]}"; do
-    if [ "$svc" = "$SVC_BEE_UPLOADER" ]; then
-      local data_dir="${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}"
-      if is_local "$target"; then
-        "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
-      else
-        # Skip if already initialized (password file exists)
-        ssh "$target" "if [ -f $REMOTE_BASE/deploy/$data_dir/password ]; then \
-          echo 'Node already initialized: $data_dir'; \
-        else \
-          mkdir -p $REMOTE_BASE/deploy/$data_dir && \
-          head -c 32 /dev/urandom | base64 | head -c 32 > $REMOTE_BASE/deploy/$data_dir/password && \
-          chmod -R 777 $REMOTE_BASE/deploy/$data_dir && \
-          echo 'Node data dir ready: $data_dir'; \
-        fi"
-      fi
-    fi
-    if [ "$svc" = "$SVC_BEE_GATEWAY" ]; then
-      local data_dir="${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}"
-      if is_local "$target"; then
-        "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
-      else
-        ssh "$target" "if [ -f $REMOTE_BASE/deploy/$data_dir/password ]; then \
-          echo 'Node already initialized: $data_dir'; \
-        else \
-          mkdir -p $REMOTE_BASE/deploy/$data_dir && \
-          head -c 32 /dev/urandom | base64 | head -c 32 > $REMOTE_BASE/deploy/$data_dir/password && \
-          chmod -R 777 $REMOTE_BASE/deploy/$data_dir && \
-          echo 'Node data dir ready: $data_dir'; \
-        fi"
-      fi
+    case "$svc" in
+      "$SVC_BEE_UPLOADER")
+        require_safe_data_dir BEE_UPLOADER_DATA_DIR
+        data_dir="${BEE_UPLOADER_DATA_DIR:-$DEFAULT_BEE_UPLOADER_DATA_DIR}"
+        ;;
+      "$SVC_BEE_GATEWAY")
+        require_safe_data_dir BEE_GATEWAY_DATA_DIR
+        data_dir="${BEE_GATEWAY_DATA_DIR:-$DEFAULT_BEE_GATEWAY_DATA_DIR}"
+        ;;
+      *) continue ;;
+    esac
+
+    if is_local "$target"; then
+      "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "$data_dir")"
+    else
+      # One implementation of "create a bee data dir", run on whichever host will hold it, rather
+      # than a copy of init-node.sh inlined here that has to be kept in step by hand. `cd deploy`
+      # first so a relative value resolves against the same directory it does locally.
+      #
+      # The data dir is quoted for the remote shell and not interpolated raw. `ssh` hands its
+      # command to the far side's LOGIN SHELL, which word-splits and evaluates it, so a `.env` line
+      # reading `BEE_UPLOADER_DATA_DIR=./data/bee; touch /tmp/x; echo` used to run on the
+      # deployment host. `.env.sample` is tracked and `setup.sh` appends new sample keys into an
+      # existing `.env`, so that line reaches every operator without touching a shell script. SEC-21.
+      # shellcheck disable=SC2029  # REMOTE_BASE holds an unexpanded `~` the far side must expand.
+      ssh "$target" "cd $REMOTE_BASE/deploy && bash ../nodes/init-node.sh $(shell_quote "$data_dir")"
     fi
   done
 }
