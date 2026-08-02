@@ -19,7 +19,7 @@ The plugin registers engine-specific HTTP routes on the uploader's server. No se
 ## How It Works
 
 1. The transcoding server (e.g., SRS) receives a stream and produces HLS segments on disk
-2. The server sends webhooks to the stream-uploader at `/engines/<name>/` routes
+2. The server sends webhooks to the stream-uploader under `/engines/<name>/`, at paths the engine chooses: `/engines/srs/streams` and `/engines/srs/hls` for SRS, `/engines/ome/admission` for OME. Only the prefix is generic
 3. The engine plugin reads segments from disk and passes them to the upload pipeline
 4. The uploader handles everything else (Swarm upload, manifests, feed management)
 

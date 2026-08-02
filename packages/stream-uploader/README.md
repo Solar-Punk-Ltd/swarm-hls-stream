@@ -208,9 +208,9 @@ Currently supported: **SRS** (SRT/RTMP to HLS) and **OME** (OvenMediaEngine, LLH
 
 When `ENGINE=ome`, webhook endpoints are mounted:
 
-| Endpoint             | Description                  |
-| -------------------- | ---------------------------- |
-| `POST /engines/ome/` | Handles `admission` webhooks |
+| Endpoint                      | Description                           |
+| ----------------------------- | ------------------------------------- |
+| `POST /engines/ome/admission` | Publish start and stop, HMAC-verified |
 
 1. **Ingest** — broadcaster pushes SRT into OvenMediaEngine, which transcodes and publishes LLHLS.
 2. **Admission** — OME calls the `/engines/ome/admission` webhook on publish start/stop; the uploader verifies the HMAC signature and starts/stops the stream.
