@@ -307,8 +307,14 @@ function sshStub(remoteHome, remoteJournal, argvJournal) {
 # Drop ssh's own options and then the target, leaving exactly the string the far side would get.
 # \`-t\` is not hypothetical: clean.sh uses it, and treating it as the target would hand the login
 # shell a command starting with the hostname.
+#
+# The options that take a separate value have to consume it, or the value becomes the target and the
+# real target becomes the first word of the command. Nothing in the tree passes one today. The list
+# is here because the day someone adds \`-o ConnectTimeout=5\` to health.sh, the wrong behaviour is
+# a silently different command rather than a failure.
 while [ $# -gt 0 ]; do
   case "$1" in
+    -[bcDEeFIiJLlmOopQRSWw]) shift 2 ;;
     -*) shift ;;
     *) shift; break ;;
   esac
