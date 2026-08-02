@@ -71,12 +71,25 @@ export function segmentByRef(timeline: UploadTimeline, ref: string): UploadedSeg
 }
 
 /**
- * The first manifest published at or after `atMs`, which is the one that first carried that segment.
+ * The first manifest published at or after `atMs`. **A lower bound on when that segment became
+ * publishable, not the instant itself.**
  *
- * `uploadLiveManifest` coalesces while a publish is in flight, so this manifest may also carry the
- * segments that landed during it. That does not disturb the reading: the question is when the
- * segment first became publishable, and the first publish after its upload is that instant however
- * many other segments rode along.
+ * An earlier version of this called it the manifest that first carried the segment, and said that
+ * coalescing only meant extra segments might ride along. The real risk runs the other way, and it is
+ * provable from the uploader rather than from this log: `StreamUploader.uploadLiveManifest` calls
+ * `buildLiveManifest()` and then awaits `commitManifest`, and the log line follows the commit. So a
+ * publish already in flight when a segment lands completes after that segment's upload while naming
+ * only what existed when it was built. This function returns that publish, and the one that actually
+ * carries the segment is the next.
+ *
+ * The window is the duration of a feed write against the segment cadence, which the first real run
+ * measured at 208ms against 2s, so roughly one segment in ten is exposed.
+ *
+ * What that costs is bounded and is not the total. `manifestPublishedAtMs` enters the split once
+ * positively and once negatively, in `manifestPublish` and in `feedPropagation`, so attributing it a
+ * publish early moves time from the second row into the first and leaves their sum, and every total,
+ * exactly where it was. Read those two rows as one number. Closing this properly needs the uploader
+ * to say which segments a manifest carried, which is a change to the uploader and not to the bench.
  */
 export function firstManifestAtOrAfter(timeline: UploadTimeline, atMs: number): PublishedManifest | undefined {
   return timeline.manifests.find((manifest) => manifest.atMs >= atMs);

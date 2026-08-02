@@ -140,6 +140,37 @@ describe('splitting one segment across the pipeline', () => {
  * be bounded by how well two machines agree on the time, which is routinely worse than the seconds
  * S5.2 is trying to detect.
  */
+/**
+ * The bench attributes a segment to the first manifest publish logged at or after its upload, and
+ * that can be one publish early: the uploader builds a manifest and then awaits the feed write, so a
+ * publish in flight when a segment lands completes afterwards while naming only what preceded it.
+ * See `firstManifestAtOrAfter`.
+ *
+ * What survives is asserted here rather than argued in a comment, because it is the same shape as the
+ * skew argument below and the same thing makes it true: the instant enters the split once positively
+ * and once negatively.
+ */
+describe('what a manifest attributed one publish early can and cannot spoil', () => {
+  const attributedEarly: SegmentInstants = { ...INSTANTS, manifestPublishedAtMs: INSTANTS.uploadedAtMs + 100 };
+
+  it('moves time out of feed propagation and into the publish row', () => {
+    assert.equal(hopMs(HOP_MANIFEST_PUBLISH, attributedEarly), 100);
+    assert.equal(hopMs(HOP_MANIFEST_PUBLISH), 600);
+    assert.equal(hopMs(HOP_FEED_PROPAGATION, attributedEarly) - hopMs(HOP_FEED_PROPAGATION), 500);
+  });
+
+  it('leaves the two rows summing to what they summed to before', () => {
+    const pairMs = (instants: SegmentInstants) =>
+      hopMs(HOP_MANIFEST_PUBLISH, instants) + hopMs(HOP_FEED_PROPAGATION, instants);
+
+    assert.equal(pairMs(attributedEarly), pairMs(INSTANTS));
+  });
+
+  it('cannot move the total, which never sees that instant', () => {
+    assert.equal(latencySplit(attributedEarly, NO_SKEW).totalMs, latencySplit(INSTANTS, NO_SKEW).totalMs);
+  });
+});
+
 describe('what a wrong clock skew can and cannot spoil', () => {
   for (const offsetMs of [-5_000, -250, 0, 250, 5_000]) {
     it(`leaves the total untouched at a skew of ${offsetMs}ms`, () => {

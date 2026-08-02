@@ -258,6 +258,18 @@ describe('the report an operator reads', () => {
     assert.match(report, /cancels in the total/);
   });
 
+  /**
+   * The split's other attributed boundary, and the one nothing in the table marks. A reader taking
+   * `manifestPublish` on its own can be reading a feed write that had already started when the
+   * segment landed.
+   */
+  it('says the manifest boundary is attributed by time, so those two rows read as one', () => {
+    const report = renderReport(runWith(samples));
+
+    assert.match(report, /attributed to the first publish\s+logged after the upload/);
+    assert.match(report, /as one number/);
+  });
+
   it('says outright when a run measured nothing, rather than printing a zero', () => {
     const report = renderReport(runWith([]));
 

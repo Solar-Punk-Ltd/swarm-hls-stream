@@ -255,6 +255,12 @@ export function renderReport(run: BenchRun): string {
       `${Math.round(median.split.skew.uncertaintyMs)}ms. That skew moves time between those two rows ` +
       'and cancels in the total, so it cannot move the headline figure.',
     '',
+    'The boundary between `manifestPublish` and `feedPropagation` is attributed to the first publish ' +
+      'logged after the upload, which can be one publish early: the uploader builds a manifest and then ' +
+      'awaits the feed write, so a publish already in flight when a segment lands completes afterwards ' +
+      'without naming it. That moves time between those two rows the same way skew does, and leaves ' +
+      'their sum, so read `manifestPublish` and `feedPropagation` as one number.',
+    '',
     '## Every sample',
     '',
     '| segment | ref | total |',
