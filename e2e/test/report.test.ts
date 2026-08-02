@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   type BenchRun,
+  type DiscardedSegment,
   medianSample,
   paceDriftMsPerMinute,
   renderReport,
@@ -27,13 +28,18 @@ function sampleWithTotal(index: number, totalMs: number): SegmentSample {
   return { index, ref: `ref${index}`.padEnd(16, '0'), split: latencySplit(instants, SKEW) };
 }
 
-function runWith(samples: readonly SegmentSample[], paceDriftMsPerMinute: number | null = 4): BenchRun {
+function runWith(
+  samples: readonly SegmentSample[],
+  paceDriftMsPerMinute: number | null = 4,
+  discarded: readonly DiscardedSegment[] = [],
+): BenchRun {
   return {
     measuredAt: '2026-08-02T20:00:00.000Z',
     engine: 'srs',
     profile: 'default',
     knobs: DEFAULT_KNOBS,
     samples,
+    discarded,
     paceDriftMsPerMinute,
   };
 }
@@ -126,6 +132,21 @@ describe('the report an operator reads', () => {
     // 15.80s: the total is anchored on a segment's first frame and the buffer is measured back from
     // the live edge, which is its last, so adding the two counts one segment twice.
     assert.match(report, /behind live\*\* \| \*\*13\.80s\*\*/);
+  });
+
+  /**
+   * A run that measured one segment and dropped four looks exactly like a run that asked for one,
+   * and the difference is a broken pipeline against a thin result. Each drop also cost a broadcast
+   * and real postage, so it is not free to leave out.
+   */
+  it('names the segments that were paid for and produced no reading', () => {
+    const report = renderReport(
+      runWith(samples, 4, [{ ref: 'abc123def456789', reason: 'no video packets in the segment' }]),
+    );
+
+    assert.match(report, /1 segment\(s\) reached the bench and could not be read/);
+    assert.match(report, /abc123def456/);
+    assert.match(report, /no video packets in the segment/);
   });
 
   it('names the configuration it measured, so a comparison cannot be made across different setups', () => {

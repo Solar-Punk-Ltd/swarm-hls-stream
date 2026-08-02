@@ -22,7 +22,7 @@ import { sleep, waitFor } from '../harness/wait.js';
 import { measureClockSkew } from './clockSkew.js';
 import { fetchFeedManifest, fetchSegment, segmentRefFromUri } from './gateway.js';
 import { probeFirstVideoFrame } from './probe.js';
-import { type BenchRun, paceDriftMsPerMinute, type SegmentSample } from './report.js';
+import { type BenchRun, type DiscardedSegment, paceDriftMsPerMinute, type SegmentSample } from './report.js';
 import { latencySplit, type SegmentInstants } from './split.js';
 import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from './timeline.js';
 import { latencyMsFromPts } from './wallclock.js';
@@ -66,10 +66,11 @@ export async function measureLatency(options: RunOptions): Promise<BenchRun> {
 
   const publisher = startWallclockPublisher(cfg, knobs);
   let pending: PendingSample[] = [];
+  let discarded: DiscardedSegment[] = [];
   try {
     const stream = await waitForAnnouncement(host, uploader, sinceIso, publisher.stderr);
     const topicHex = Topic.fromString(stream.topic).toString();
-    pending = await collectSamples(options, stream.owner, topicHex, publisher.startedAtMs);
+    ({ collected: pending, discarded } = await collectSamples(options, stream.owner, topicHex, publisher.startedAtMs));
   } finally {
     await publisher.stop();
   }
@@ -83,6 +84,7 @@ export async function measureLatency(options: RunOptions): Promise<BenchRun> {
     profile: cfg.profile,
     knobs,
     samples,
+    discarded,
     paceDriftMsPerMinute: paceDriftMsPerMinute(
       pending.map((sample) => sample.fetchedAtMs),
       pending.map((sample) => sample.capturedAtMs),
@@ -153,17 +155,14 @@ async function collectSamples(
   owner: string,
   topicHex: string,
   publishStartedAtMs: number,
-): Promise<PendingSample[]> {
+): Promise<{ collected: PendingSample[]; discarded: DiscardedSegment[] }> {
   const { gatewayUrl, samples: wanted, pollIntervalMs } = options;
   const collected: PendingSample[] = [];
+  const discarded: DiscardedSegment[] = [];
   const seen = new Set<string>();
   const deadline = Date.now() + SEGMENT_TIMEOUT_MS * wanted;
 
-  while (collected.length < wanted) {
-    if (Date.now() > deadline) {
-      throw new Error(`only ${collected.length} of ${wanted} segments became visible before the run timed out`);
-    }
-
+  while (collected.length < wanted && Date.now() <= deadline) {
     const manifest = await fetchFeedManifest(gatewayUrl, owner, topicHex);
     const newest = parseManifest(manifest.body).segments.at(-1);
     const ref = newest ? segmentRefFromUri(newest.uri) : null;
@@ -173,25 +172,49 @@ async function collectSamples(
     }
     seen.add(ref);
 
-    const durationS = segmentDuration(newest.extinf);
-    if (durationS === null) {
-      throw new Error(`the manifest entry for ${ref} carries an unreadable duration: ${newest.extinf}`);
+    // One unreadable segment loses that segment and nothing else. Every sample here cost a real
+    // broadcast and real postage, so throwing would discard the ones that already worked, and it
+    // would also make `UnusableTimestampsError` unreachable: that error exists so a run can report a
+    // segment as unmeasurable instead of crashing, and a caller that never catches it cannot.
+    try {
+      collected.push(await measureOne(gatewayUrl, newest, ref, manifest.atMs, publishStartedAtMs));
+    } catch (error) {
+      discarded.push({ ref, reason: error instanceof Error ? error.message : String(error) });
     }
-
-    const segment = await fetchSegment(gatewayUrl, ref);
-    const frame = await probeSegmentBytes(segment.body, ref);
-    const latencyMs = latencyMsFromPts(frame, { publishStartedAtMs, observedAtMs: segment.atMs });
-
-    collected.push({
-      ref,
-      segmentDurationS: durationS,
-      capturedAtMs: segment.atMs - latencyMs,
-      visibleAtMs: manifest.atMs,
-      fetchedAtMs: segment.atMs,
-    });
   }
 
-  return collected;
+  return { collected, discarded };
+}
+
+/**
+ * One manifest entry carried end to end into a reading.
+ *
+ * Separate from the polling loop so that everything which can fail for a single segment sits inside
+ * one `try` at the call site, and so that adding a step here cannot accidentally escape it.
+ */
+async function measureOne(
+  gatewayUrl: string,
+  newest: { uri: string; extinf: string },
+  ref: string,
+  visibleAtMs: number,
+  publishStartedAtMs: number,
+): Promise<PendingSample> {
+  const durationS = segmentDuration(newest.extinf);
+  if (durationS === null) {
+    throw new Error(`the manifest entry carries an unreadable duration: ${newest.extinf}`);
+  }
+
+  const segment = await fetchSegment(gatewayUrl, ref);
+  const frame = await probeSegmentBytes(segment.body, ref);
+  const latencyMs = latencyMsFromPts(frame, { publishStartedAtMs, observedAtMs: segment.atMs });
+
+  return {
+    ref,
+    segmentDurationS: durationS,
+    capturedAtMs: segment.atMs - latencyMs,
+    visibleAtMs,
+    fetchedAtMs: segment.atMs,
+  };
 }
 
 /** ffprobe reads a path, so the fetched bytes go to a temp file that is removed either way. */

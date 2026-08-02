@@ -19,6 +19,12 @@ export interface SegmentSample {
   split: LatencySplit;
 }
 
+/** A segment that reached the bench but could not be turned into a reading, and why. */
+export interface DiscardedSegment {
+  ref: string;
+  reason: string;
+}
+
 export interface BenchRun {
   /** ISO instant the run finished, for the register row that cites it. */
   measuredAt: string;
@@ -26,6 +32,14 @@ export interface BenchRun {
   profile: string;
   knobs: PublishKnobs;
   samples: readonly SegmentSample[];
+  /**
+   * Segments that were paid for and then dropped.
+   *
+   * Carried into the report rather than logged, because a run that measured one segment and silently
+   * dropped four looks exactly like a run that asked for one. The count is the difference between a
+   * thin result and a broken pipeline, and only this field can tell them apart afterwards.
+   */
+  discarded: readonly DiscardedSegment[];
   /**
    * How far the publisher's media clock drifted from wall clock, in ms per minute, or null when
    * fewer than two samples made it measurable.
@@ -166,6 +180,14 @@ export function renderReport(run: BenchRun): string {
       '- **hops that cannot be true**, meaning an input is wrong rather than a pipeline that is fast:',
       ...impossible.map((line) => `  - ${line}`),
       '  The totals are unaffected; the skew estimate or the log pairing is what to distrust.',
+    );
+  }
+
+  if (run.discarded.length > 0) {
+    lines.push(
+      `- **${run.discarded.length} segment(s) reached the bench and could not be read**, so they cost a ` +
+        'broadcast and produced no reading. A thin run and a broken pipeline look identical without this list:',
+      ...run.discarded.map((drop) => `  - \`${drop.ref.slice(0, 12)}\`: ${drop.reason}`),
     );
   }
 
