@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -76,6 +76,29 @@ describe('bee data dir from .env (SEC-21)', () => {
       `${finished.stdout}${finished.stderr}`,
       /BEE_UPLOADER_DATA_DIR walks out of the deployment directory/,
       'the run failed, but not on the data dir guard',
+    );
+  });
+
+  // The character check refuses `../..` and accepts `/home/deploy/.ssh`, which is the same directory
+  // by a different spelling with a larger blast radius: `chmod -R 777` on it makes the private key
+  // and `authorized_keys` world readable, and sshd then refuses to authenticate against them. No
+  // charset can separate a path this deployment owns from one it does not, because `.`, `/etc` and a
+  // home directory all look like ordinary paths. The host holding the directory can, and does.
+  it('refuses a directory that already belongs to something else', async () => {
+    const occupied = mkdtempSync(join(tmpdir(), 'deploy-occupied-'));
+    markerDirs.push(occupied);
+    const theirs = join(occupied, 'authorized_keys');
+    writeFileSync(theirs, 'ssh-ed25519 AAAA\n', { mode: 0o600 });
+
+    const { run } = deployBeeNode(envWith(`BEE_UPLOADER_DATA_DIR=${occupied}`));
+    const finished = await run;
+
+    assert.notEqual(finished.exitCode, 0, 'a populated directory was accepted as a bee data dir');
+    assert.equal(existsSync(join(occupied, 'password')), false, 'a bee password file was dropped into it');
+    assert.equal(
+      statSync(theirs).mode & 0o777,
+      0o600,
+      'the permissions of a file that was already there were widened, which is what chmod -R 777 does',
     );
   });
 
