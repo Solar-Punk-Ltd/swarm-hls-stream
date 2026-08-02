@@ -48,8 +48,34 @@ describe('parseAppStream', () => {
     assert.throws(() => parseAppStream('srt://host:10080?streamid=srt://host:10080/video'), /no app\/stream pair/);
   });
 
+  /**
+   * Its own distinct text, not the shared `Could not parse app/stream` prefix. When the SEC-25
+   * errors reused that prefix, this assertion stopped discriminating: deleting the URL-parse throw
+   * entirely and letting `parts` fall through as `[]` left 111 tests green, because the no-pair
+   * branch raised a message this regex also matched.
+   */
   it('throws when the URL is not parseable', () => {
-    assert.throws(() => parseAppStream('not a url'), /Could not parse app\/stream/);
+    assert.throws(() => parseAppStream('not a url'), /unparseable/);
+  });
+
+  /**
+   * The security half of SEC-25, and a strictly larger hole than the emptiness check beside it.
+   * `srt:` is not a special scheme, so `new URL` keeps a backslash in `pathname` verbatim. The name
+   * below therefore reached `OmeHlsPuller`, which interpolates it into an `http:` URL, where the
+   * WHATWG parser reads `\` as `/` and resolves the dot segments, pointing the puller at
+   * `/video/victim/ts:playlist.m3u8` and mirroring another broadcaster's stream.
+   */
+  it('throws when a name would resolve to a path it does not look like', () => {
+    assert.throws(() => parseAppStream(String.raw`srt://ome:10080/video/pwn\..\..\video\victim`), /unusable/);
+    assert.throws(() => parseAppStream(String.raw`srt://ome:10080/vid\..\other/demo`), /unusable/);
+  });
+
+  // Every id the engine mints has to be one the operator can name back to /stream/stop. Before
+  // SEC-25 these parsed, were admitted, and were then refused by `streamIdSchema`.
+  it('throws on names the request schema would refuse, so no stream is started that cannot be stopped', () => {
+    for (const name of ['-leading-dash', 'a b', 'dem%6f', '.hidden']) {
+      assert.throws(() => parseAppStream(`srt://ome:10080/video/${name}`), /unusable/, `accepted ${name}`);
+    }
   });
 });
 

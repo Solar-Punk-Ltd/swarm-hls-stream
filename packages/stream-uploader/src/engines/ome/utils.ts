@@ -8,6 +8,7 @@ import {
   HLS_STREAM_INF,
 } from '../../utils/hlsTags.js';
 import { isUsableDuration } from '../../utils/segmentDuration.js';
+import { isStreamIdSegment } from '../../utils/streamId.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
@@ -206,11 +207,19 @@ export function parseStreamId(streamId: string): AppStream {
 /**
  * The app and stream a publish URL names, from its path or from an SRT `streamid`.
  *
- * Throws on anything that does not yield both. It used to return them as-is, which typed as
- * `AppStream` but was not one: `srt://ome:10080/video` produced `{ app: 'video', stream: undefined }`
- * and its only caller built the stream id `video/undefined` from it, admitted the publish, and
- * started a puller against a playlist path no origin serves. Two malformed publishes landed on the
- * same id, so either broadcaster's closing stopped the other's session. See SEC-25.
+ * Throws unless both are present and both are usable as a name. It used to return them as-is, which
+ * typed as `AppStream` but was not one: `srt://ome:10080/video` produced
+ * `{ app: 'video', stream: undefined }` and its only caller built the stream id `video/undefined`
+ * from it and admitted the publish.
+ *
+ * **The character check is the security half and it is not a tightening of the emptiness check.**
+ * `srt:` is not a special scheme, so `new URL` leaves a backslash in `pathname` verbatim. The name
+ * `pwn\..\..\video\victim` therefore reached `OmeHlsPuller`, which interpolates it into an `http:`
+ * URL, where the WHATWG parser reads `\` as `/` and resolves the dot segments. The puller was
+ * pointed at `/video/victim/ts:playlist.m3u8`, and mirrored another broadcaster's live segments into
+ * Swarm on the operator's postage under a second catalog entry, without stopping. It also could not
+ * be stopped by hand, because `streamIdSchema` refuses that id, so the operator's own control path
+ * could not name the stream the engine had created. See SEC-25.
  */
 export function parseAppStream(url: string): AppStream {
   let parts: string[] = [];
@@ -227,14 +236,18 @@ export function parseAppStream(url: string): AppStream {
     }
   } catch (e) {
     const errorMsg = getErrorMessage(e);
-    logger.error(`[OME] Could not parse app/stream from URL: ${url} (${errorMsg})`);
-    throw new Error(`Could not parse app/stream from URL: ${url} (${errorMsg})`);
+    logger.error(`[OME] URL is not parseable: ${url} (${errorMsg})`);
+    throw new Error(`Could not parse app/stream from URL: ${url} (unparseable: ${errorMsg})`);
   }
 
   const [app, stream] = parts;
   if (!app || !stream) {
     logger.error(`[OME] URL names no app/stream pair: ${url}`);
     throw new Error(`Could not parse app/stream from URL: ${url} (no app/stream pair)`);
+  }
+  if (!isStreamIdSegment(app) || !isStreamIdSegment(stream)) {
+    logger.error(`[OME] URL names an unusable app/stream: ${url}`);
+    throw new Error(`Could not parse app/stream from URL: ${url} (unusable app/stream name)`);
   }
 
   return { app, stream };
