@@ -882,3 +882,44 @@ untracked file stashed nothing, and the `pop` that followed restored an unrelate
 abandoned weeks ago, conflicting two register files. It reported the new test passing without the
 guard, which was false. Nothing was lost. **Back up the file and use `git checkout HEAD --`, never
 `git stash`, for a control run.**
+
+### The gate found two defects that made the branch unshippable
+
+Recorded because both were invisible to `pnpm verify`, which was green throughout.
+
+**The uploader production image could not build at all.** `npm install --omit=dev` parses the whole
+manifest before it applies the flag and rejects pnpm's `workspace:` protocol outright, dev block or
+not. Nothing in CI builds an image (OPS-17), and the uploader's own suite runs under `tsx` against
+the workspace symlink rather than the compiled copy that ships, so the first report would have been a
+failed deploy.
+
+**`LOG_LEVEL` in the root `.env` was silently ignored.** `Logger` snapshots `process.env` when its
+singleton is built, at module scope, and `dotenv.config()` had not run yet. Compose was fine because
+it injects real environment variables, so this failed on exactly the path `.env.sample` and the
+uploader README point at.
+
+The pattern under both: **I verified the half that worked.** The vendored package does resolve at
+runtime, which I measured in an isolated tree, and I never ran the `npm install` that happens before
+it, then wrote a comment asserting the half I had not tested.
+
+### And one where the strict answer was the wrong one
+
+The first ARCH-3 fix refused a recovery entry whose persisted readiness could not have been reached
+legally. Refusing meant the stream was never registered, so nothing finalized it as a VOD at the
+recovery timeout, its catalog entry said `live` forever, and the file failed identically on every
+restart. **The buggy path it replaced at least reached that cleanup.** It repairs and warns now. Ask
+what the old code did _after_ the failure, not only what it got wrong.
+
+### Mutation, and a refutation of my own claim
+
+Scoped to the seven changed uploader source files: `Found 7 of 322`, 639 mutants, **406 killed, 60
+timed out, 173 survived, score 72.93**, concurrency 4 on 12 cores, 26m43s. The three files this
+sprint wrote score **100.00, 96.00 and 91.89**. The survivors are almost all pre-existing, in
+`StreamOrchestrator` and `StreamUploader`.
+
+I discarded a first run claiming contamination and **that claim was wrong**, recorded as R63: my
+hand-check applied a different mutation from Stryker's, and Stryker's is provably equivalent. The
+clean re-run returned an identical score and an identical survivor count. The hazard behind the claim
+is still worth knowing, because nothing else records it: **Stryker's sandbox symlinks `node_modules`
+back to the live tree**, so in a pnpm workspace a package like `packages/shared` is read live rather
+than from the sandbox copy.
