@@ -14,10 +14,7 @@ export const READINESS_PENDING = 'pending' as const;
 export const READINESS_SEGMENT_READY = 'segment-ready' as const;
 export const READINESS_ANNOUNCED = 'announced' as const;
 
-export type AnnounceReadiness =
-  | typeof READINESS_PENDING
-  | typeof READINESS_SEGMENT_READY
-  | typeof READINESS_ANNOUNCED;
+export type AnnounceReadiness = typeof READINESS_PENDING | typeof READINESS_SEGMENT_READY | typeof READINESS_ANNOUNCED;
 
 /** The persisted shape, unchanged, so a recovery entry written by an older build still loads. */
 export interface PersistedReadiness {
