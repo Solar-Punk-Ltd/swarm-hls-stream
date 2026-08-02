@@ -91,11 +91,13 @@ echo ""
 log_info "Initializing local bee data directories"
 
 if is_local "$bee_uploader_target"; then
-  "$ROOT_DIR/nodes/init-node.sh" "$DEPLOY_DIR/${BEE_UPLOADER_DATA_DIR:-./data/bee-uploader}"
+  require_safe_data_dir BEE_UPLOADER_DATA_DIR
+  "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "${BEE_UPLOADER_DATA_DIR:-$DEFAULT_BEE_UPLOADER_DATA_DIR}")"
 fi
 
 if is_enabled "$bee_gateway_target" && is_local "$bee_gateway_target"; then
-  "$ROOT_DIR/nodes/init-node.sh" "$DEPLOY_DIR/${BEE_GATEWAY_DATA_DIR:-./data/bee-gateway}"
+  require_safe_data_dir BEE_GATEWAY_DATA_DIR
+  "$ROOT_DIR/nodes/init-node.sh" "$(local_data_dir "${BEE_GATEWAY_DATA_DIR:-$DEFAULT_BEE_GATEWAY_DATA_DIR}")"
 fi
 
 # 6. Build packages

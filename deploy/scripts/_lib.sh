@@ -564,6 +564,91 @@ load_env() {
   load_env_file "$ENV_FILE"
 }
 
+# --- Shell quoting ---
+
+# Wrap a value so another shell reads it as a single literal word, for the strings that have to
+# survive a trip through one: an `ssh` command line, or a file the far side will `source`.
+#
+# POSIX single-quoting (close the quote, escape, reopen) rather than bash's `printf %q`, because the
+# shell on the other side is whatever login shell the deployment account has.
+#
+# The replacement is built in a variable on purpose, and the two shorter spellings are both wrong on
+# bash 3.2, which is what `#!/bin/bash` resolves to on macOS. Measured on 3.2.57 against 5.x:
+#
+#   ${1//\'/\'\\\'\'}       needs a second round of backslash removal that 3.2 does not do. Emits an
+#                           unbalanced word, so the receiving shell dies on `unexpected EOF`.
+#   ${1//\'/"'\\''"}        looks like the fix, and fails silently instead of loudly: no syntax
+#                           error, and 80 of 180 sampled inputs parse back to the wrong bytes.
+#
+# The first is the one that is dangerous rather than merely wrong. A value ending in a backslash eats
+# the wrapper's own closing quote, which rebalances the word and leaves a substitution before it
+# outside every quote, so the receiving shell runs it. Found by brute force on 3.2, none on 5.x.
+#
+# The form below round-trips every one of those inputs byte for byte on both versions.
+shell_quote() {
+  local escaped_quote="'\\''"
+  printf "'%s'" "${1//\'/$escaped_quote}"
+}
+
+# --- Bee data dirs ---
+
+readonly DEFAULT_BEE_UPLOADER_DATA_DIR="./data/bee-uploader"
+readonly DEFAULT_BEE_GATEWAY_DATA_DIR="./data/bee-gateway"
+
+# Refuse a bee data dir that the operator's `.env` cannot be trusted to have meant.
+#
+# This character check is the layer that carries the safety, not `shell_quote`, and it is worth being
+# exact about that: the value reaches an `ssh` command line, `shell_quote` wraps it, and the quoting
+# was itself wrong on bash 3.2 until this branch fixed it. Two layers only look like two when both
+# work, so this one is written to hold on its own.
+#
+# It is not sufficient by itself either. The path is handed to `mkdir -p` and `chmod -R 777` on the
+# deployment host, and no character set separates a directory this deployment owns from one it does
+# not: `../..`, `.`, `/etc` and a home directory are all ordinary-looking paths. `..` is refused here
+# because it is cheap to name, and the rest is refused by `nodes/init-node.sh`, on the host that
+# holds the directory and can actually tell. See SEC-21.
+#
+# The set is narrower than what a docker bind mount source accepts, so this does refuse values that
+# used to work: a local deploy took `data/two words` and no longer does. That is a deliberate trade
+# and not a free one.
+#
+# Unset is fine. The defaults above are literals in this repository, not operator input.
+require_safe_data_dir() {
+  local name="$1"
+  local value="${!name:-}"
+  if [ -z "$value" ]; then
+    return 0
+  fi
+
+  # A leading `-` is excluded separately from the rest of the set, because a path is an argument
+  # before it is a path: `mkdir -p -weird` reads it as options and dies with `illegal option -- w`,
+  # naming neither the variable nor the value. `--` is not the fix, since BSD `chmod` does not accept
+  # it and the same line runs on the operator's macOS machine. `./-weird` is still allowed.
+  if ! [[ "$value" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]]; then
+    log_error "$name is not a usable data directory: $value"
+    echo "  Allowed characters: letters, digits, and . _ - / and not a leading -"
+    exit 1
+  fi
+
+  case "/$value/" in
+    */../*)
+      log_error "$name walks out of the deployment directory: $value"
+      echo "  The path is created and chmodded on the deployment host, so '..' is refused."
+      exit 1
+      ;;
+  esac
+}
+
+# The data dir as a path on the machine that will hold it. A relative value is relative to `deploy/`,
+# which is where docker compose resolves the same value's bind mount from, so the directory this
+# creates and the one the container mounts are the same one. An absolute value is taken as given.
+local_data_dir() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$DEPLOY_DIR" "$1" ;;
+  esac
+}
+
 # --- Engine env (per-profile) ---
 # Engine-specific options live in engines/<engine>/.env. Like the root env,
 # a named profile gets its own copy: engines/<engine>/.env.<profile>.
@@ -631,11 +716,14 @@ engine_env_overrides_text() {
       if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         continue
       fi
-      # Single-quote the value (escaping embedded quotes) — the override file is
-      # both `source`d and parsed by compose, and secrets may contain $, !, #, ...
-      value="${!key:-}"
-      value="${value//\'/\'\\\'\'}"
-      out+="${key}='${value}'\n"
+      # Single-quote the value — the override file is both `source`d and parsed by compose, and
+      # secrets may contain $, !, #, ... Through `shell_quote` rather than repeating the escape,
+      # because the copy that used to live here was the same expression that is wrong on bash 3.2:
+      # an engine env value containing an apostrophe wrote an unbalanced line, and the `source` of
+      # it at the two sites below then failed with `unexpected EOF` under `set -e`, aborting the
+      # deploy on a syntax error naming a temp file.
+      value=$(shell_quote "${!key:-}")
+      out+="${key}=${value}\n"
     done < "$file"
   done
   printf '%s' "$out"
