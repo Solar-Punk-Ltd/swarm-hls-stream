@@ -18,7 +18,26 @@ export const STREAM_ID_SEGMENT = '[A-Za-z0-9][A-Za-z0-9._-]*';
 
 const STREAM_ID_SEGMENT_RE = new RegExp(`^${STREAM_ID_SEGMENT}$`);
 
+/**
+ * Long enough for the deepest `app/stream` an engine builds, short enough that the value cannot be
+ * used as storage. It bounds a key, not a name: a stream id is retained per stream in several maps,
+ * and the rate limiter added in S1.6 keys on the one arriving in `x-stream-id`.
+ */
+export const MAX_STREAM_ID_LENGTH = 128;
+
 /** Whether one path component is usable as an `app` or a `stream` name. */
 export function isStreamIdSegment(value: string): boolean {
   return STREAM_ID_SEGMENT_RE.test(value);
+}
+
+/**
+ * Whether a whole `app/stream` id is one every consumer of it will accept.
+ *
+ * The length is checked here and not per segment because that is where the bound belongs and where
+ * `streamIdSchema` applies it. Checking only the character class left an engine able to mint a
+ * 406-character id that the schema then refused, which is the same defect as an illegal character:
+ * the operator cannot name the stream back to `POST /stream/stop`.
+ */
+export function isUsableStreamId(id: string): boolean {
+  return id.length <= MAX_STREAM_ID_LENGTH && id.split('/').every(isStreamIdSegment);
 }

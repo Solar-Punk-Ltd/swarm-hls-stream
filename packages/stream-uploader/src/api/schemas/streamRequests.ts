@@ -2,14 +2,7 @@ import { z } from 'zod';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO } from '../../types.js';
 import { isUsableDuration } from '../../utils/segmentDuration.js';
-import { STREAM_ID_SEGMENT } from '../../utils/streamId.js';
-
-/**
- * Long enough for the deepest `app/stream` an engine builds, short enough that the value cannot be
- * used as storage. It bounds a key, not a name: a stream id is retained per stream in several maps,
- * and the rate limiter added in S1.6 keys on the one arriving in `x-stream-id`.
- */
-export const MAX_STREAM_ID_LENGTH = 128;
+import { MAX_STREAM_ID_LENGTH, STREAM_ID_SEGMENT } from '../../utils/streamId.js';
 
 /**
  * Slash-separated {@link STREAM_ID_SEGMENT}s.

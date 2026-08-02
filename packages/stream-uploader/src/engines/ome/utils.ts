@@ -8,7 +8,7 @@ import {
   HLS_STREAM_INF,
 } from '../../utils/hlsTags.js';
 import { isUsableDuration } from '../../utils/segmentDuration.js';
-import { isStreamIdSegment } from '../../utils/streamId.js';
+import { isUsableStreamId } from '../../utils/streamId.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
@@ -245,7 +245,7 @@ export function parseAppStream(url: string): AppStream {
     logger.error(`[OME] URL names no app/stream pair: ${url}`);
     throw new Error(`Could not parse app/stream from URL: ${url} (no app/stream pair)`);
   }
-  if (!isStreamIdSegment(app) || !isStreamIdSegment(stream)) {
+  if (!isUsableStreamId(buildStreamId(app, stream))) {
     logger.error(`[OME] URL names an unusable app/stream: ${url}`);
     throw new Error(`Could not parse app/stream from URL: ${url} (unusable app/stream name)`);
   }

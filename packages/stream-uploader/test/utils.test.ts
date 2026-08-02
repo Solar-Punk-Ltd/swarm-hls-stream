@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { streamIdSchema } from '../src/api/schemas/streamRequests.js';
 import { isMasterPlaylist, parseAppStream, parseMasterPlaylist, parseMediaPlaylist } from '../src/engines/ome/utils.js';
 
 describe('parseAppStream', () => {
@@ -71,10 +72,22 @@ describe('parseAppStream', () => {
   });
 
   // Every id the engine mints has to be one the operator can name back to /stream/stop. Before
-  // SEC-25 these parsed, were admitted, and were then refused by `streamIdSchema`.
+  // SEC-25 these parsed, were admitted, and were then refused by `streamIdSchema`. Asserted against
+  // that schema rather than against a list of my own, so the two cannot drift apart.
   it('throws on names the request schema would refuse, so no stream is started that cannot be stopped', () => {
-    for (const name of ['-leading-dash', 'a b', 'dem%6f', '.hidden']) {
-      assert.throws(() => parseAppStream(`srt://ome:10080/video/${name}`), /unusable/, `accepted ${name}`);
+    for (const name of ['-leading-dash', 'a b', 'dem%6f', '.hidden', 'a'.repeat(400)]) {
+      const url = `srt://ome:10080/video/${name}`;
+      assert.equal(streamIdSchema.safeParse(`video/${name}`).success, false, `the premise is wrong for ${name}`);
+      assert.throws(() => parseAppStream(url), /unusable/, `parseAppStream minted an unstoppable id for ${name}`);
+    }
+  });
+
+  // The other half of the same rule: everything the schema accepts still parses. A guard that
+  // refused real broadcasters would be worse than the hole it closes.
+  it('still accepts every name the request schema accepts', () => {
+    for (const name of ['demo', 'a', 'A9', 'z_0.1-2', 'x'.repeat(120)]) {
+      assert.equal(streamIdSchema.safeParse(`video/${name}`).success, true, `the premise is wrong for ${name}`);
+      assert.deepEqual(parseAppStream(`srt://ome:10080/video/${name}`), { app: 'video', stream: name });
     }
   });
 });
