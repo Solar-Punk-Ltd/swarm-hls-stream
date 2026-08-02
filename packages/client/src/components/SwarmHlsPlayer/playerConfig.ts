@@ -7,9 +7,14 @@ const MB = 1024 * 1024;
  *
  * Every segment here is fetched from Swarm rather than from an origin next to the viewer, so the
  * budget covers a feed lookup plus a chunk download, not one HTTP round trip. Lowering it is the
- * largest client-side latency lever there is, and it is not being lowered yet: nothing in this
- * repository can currently measure glass-to-glass latency, so a smaller number here would trade
- * away rebuffering headroom for an improvement nobody could show. That instrument is LAT-1.
+ * largest client-side latency lever there is, and it is still not being lowered: a smaller number
+ * here trades rebuffering headroom for an improvement, and there is not yet a measurement to weigh
+ * that against.
+ *
+ * The instrument now exists — `pnpm bench:latency`, LAT-1 — but it has not been run against a
+ * deployment, so there is no baseline. What has to come first is a run showing how much of a
+ * viewer's delay is this buffer rather than the pipeline in front of it, since only the second kind
+ * of headroom is safe to give away.
  */
 export const LIVE_SYNC_DURATION_S = 10;
 
