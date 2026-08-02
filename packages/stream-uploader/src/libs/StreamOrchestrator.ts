@@ -77,6 +77,19 @@ interface RetainedStopOutcome {
   recordedAt: number;
 }
 
+/** How a claimant is named in a log line, so an announce that named nobody does not read as `null`. */
+function describeClaimant(claimant: StreamClaimant): string {
+  return claimant.address ?? 'an unnamed publisher';
+}
+
+/** The same for the session being protected, which may be one nothing ever recorded. See `mayTakeOver`. */
+function describeIncumbent(incumbent: StreamClaimant | undefined): string {
+  if (incumbent === undefined) {
+    return 'a session this process recovered, whose publisher it cannot name,';
+  }
+  return incumbent.address ?? 'a session that named no publisher';
+}
+
 export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
   /**
@@ -96,10 +109,23 @@ export class StreamOrchestrator {
   private streamActivityAt = new Map<string, number>();
   /**
    * Per stream, who announced the session currently holding it, so a later announce can be compared
-   * against the incumbent. Written and cleared alongside `activeStreams`, so an entry here means a
-   * live session and its absence means the id is free.
+   * against the incumbent.
+   *
+   * An entry means a live session. **Its absence does not mean the id is free**, which is what the
+   * guard used to read it as: `recoverStream` registers a live stream and writes no claimant, and
+   * both engines resume such a stream by delivering segments rather than by announcing, so nothing
+   * ever fills it in. Absent means the owner is unknown. See `mayTakeOver`.
    */
   private streamClaimants = new Map<string, StreamClaimant>();
+  /**
+   * Per stream, the monotonic reading at which a segment last *arrived*, whatever verdict it got.
+   *
+   * Distinct from `streamActivityAt`, which records a segment accepted for upload and is what
+   * `/health` reports on. This one answers "is a publisher still there", which stays true through a
+   * full queue and through a window of duplicates, and the takeover guard needs that question rather
+   * than the other. See `hasStalled`.
+   */
+  private streamIngestAt = new Map<string, number>();
   /** Per stream, the monotonic reading of the most recent segment the engine could not deliver. */
   private segmentLossAt = new Map<string, number>();
   /** What became of each recently stopped stream, so a caller answered 202 can find out. See OBS-3. */
@@ -140,8 +166,9 @@ export class StreamOrchestrator {
       // Not judged, and it cannot be: a recovered stream is one this process restored after its own
       // restart, so whoever announced the broadcast originally was never recorded here and there is
       // nothing to compare against. What this does is make the session that resumed it the incumbent,
-      // so the announce after this one is judged. The window where anyone may claim a recovered
-      // stream is therefore the first announce it receives, and not every announce until it ends.
+      // so the announce after this one is judged against a real address instead of against the
+      // unknown-owner rule in `mayTakeOver`. Reaching here at all is the uncommon case: an engine
+      // that resumed the stream with segments never calls this method again.
       this.streamClaimants.set(streamId, claimant);
       this.logger.info(`[StreamOrchestrator] Resumed recovering stream: ${streamId}`);
       return true;
@@ -152,8 +179,9 @@ export class StreamOrchestrator {
       if (!this.mayTakeOver(streamId, claimant)) {
         this.metrics.recordTakeoverRefused();
         this.logger.warn(
-          `[StreamOrchestrator] Refused an announce for ${streamId} from ${claimant.address}: ` +
-            `${this.streamClaimants.get(streamId)?.address} is publishing on it and has fed it within the stall window`,
+          `[StreamOrchestrator] Refused an announce for ${streamId} from ${describeClaimant(claimant)}: ` +
+            `${describeIncumbent(this.streamClaimants.get(streamId))} is publishing on it and something has fed ` +
+            'it within the stall window',
         );
         return false;
       }
@@ -222,13 +250,30 @@ export class StreamOrchestrator {
     return !provablyDifferent || this.hasStalled(streamId);
   }
 
-  /** Whether nothing has fed this stream for longer than the window `/health` calls a stall. */
+  /**
+   * Whether nothing has been publishing into this stream for longer than the stall window.
+   *
+   * Deliberately **not** `streamActivityAt`, which is what `/health` reads and which this used to
+   * read too. That one records a segment *accepted for upload*, and it sits below the duplicate and
+   * queue-full returns in `handleSegment`, so it stops advancing while the publisher is still
+   * connected and still sending: a backlogged queue, or a replaced puller re-serving the origin's
+   * window, both freeze it for as long as they last. Under the old reading a stranger who simply
+   * retried was admitted at exactly the moment the incumbent's upload path was degraded, which is
+   * the worst moment for it. The two questions differ in the other direction too, since
+   * `getMsSinceStreamActivity` excludes draining streams and this must not.
+   *
+   * A draining session has already stopped, so it is not holding the id whatever its timestamps say.
+   * `handleSegment` answers `draining` one method away, and the refusal used to contradict it.
+   */
   private hasStalled(streamId: string): boolean {
-    const activityAt = this.streamActivityAt.get(streamId);
-    // No reading means no evidence the incumbent is alive, and `spawnUploader` writes one for every
-    // session it starts, so this is unreachable for a stream that has one. Allowing rather than
-    // refusing keeps the whole guard failing open.
-    return activityAt === undefined || this.clock.now() - activityAt > this.config.segmentStallMs;
+    const uploader = this.activeStreams.get(streamId);
+    if (uploader !== undefined && this.isDraining(streamId, uploader)) {
+      return true;
+    }
+    const ingestAt = this.streamIngestAt.get(streamId);
+    // No reading means nothing has arrived since the session was registered, and `spawnUploader`
+    // writes one for every session it starts, so this is unreachable for a stream that has one.
+    return ingestAt === undefined || this.clock.now() - ingestAt > this.config.segmentStallMs;
   }
 
   /**
@@ -239,6 +284,7 @@ export class StreamOrchestrator {
     this.activeStreams.delete(streamId);
     this.processedSegments.delete(streamId);
     this.streamActivityAt.delete(streamId);
+    this.streamIngestAt.delete(streamId);
     this.streamClaimants.delete(streamId);
   }
 
@@ -308,6 +354,7 @@ export class StreamOrchestrator {
     this.activeStreams.set(streamId, uploader);
     this.processedSegments.set(streamId, this.newDuplicateFilter());
     this.streamActivityAt.set(streamId, this.clock.now());
+    this.streamIngestAt.set(streamId, this.clock.now());
     this.streamClaimants.set(streamId, claimant);
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
@@ -344,6 +391,10 @@ export class StreamOrchestrator {
     if (!uploader) {
       return { accepted: false, reason: REJECT_UNKNOWN_STREAM };
     }
+
+    // Recorded before every rejection below, because a segment arriving is evidence about the
+    // publisher and the rejections below are verdicts about the payload. See `hasStalled`.
+    this.streamIngestAt.set(streamId, this.clock.now());
 
     if (this.isDraining(streamId, uploader)) {
       return { accepted: false, reason: REJECT_DRAINING };
@@ -576,6 +627,7 @@ export class StreamOrchestrator {
 
     this.activeStreams.set(streamId, uploader);
     this.streamActivityAt.set(streamId, this.clock.now());
+    this.streamIngestAt.set(streamId, this.clock.now());
 
     // Rebuilt from the restored manifest, and bounded the same way a live stream's is. The oldest
     // indexes of a long broadcast are dropped, which costs nothing: what a resumed puller can

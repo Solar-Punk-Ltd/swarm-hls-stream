@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
+import { MEDIA_TYPE_VIDEO, REJECT_DRAINING, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -134,9 +134,10 @@ describe('taking over a stream id that is already being published', () => {
   /**
    * The escape hatch, and the reason the refusal above is conditional. A broadcaster whose address
    * changed between sessions, which a mobile network or a re-issued lease both produce, would
-   * otherwise be locked out of their own id until someone stopped it by hand. The service already has
-   * a definition of a stream that is not producing, `segmentStallMs`, and this reuses it rather than
-   * introducing a second one that could disagree with `/health`.
+   * otherwise be locked out of their own id until someone stopped it by hand. The window is
+   * `segmentStallMs`, shared with `/health`, but it is applied to a different reading: see
+   * `hasStalled` for why "a publisher is still there" and "segments are still being uploaded" are
+   * not the same question.
    */
   it('lets any address take over once the stream has been stalled for longer than the stall window', async () => {
     const clock = new FakeClock();
@@ -243,6 +244,70 @@ describe('taking over a stream id that is already being published', () => {
     assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: null }), true);
     await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
 
+    await orch.cleanup();
+  });
+
+  /**
+   * The window has to measure whether a publisher is still there, and a segment being *refused* is
+   * still a publisher being there. `handleSegment` returns early for a duplicate and for a full
+   * queue, both above the point where progress is recorded, so a broadcaster whose uploads are
+   * backlogged or whose puller is re-serving the origin's window looks idle while still connected.
+   * That is the worst possible moment to hand their id to whoever retries next, and it needs no
+   * timing precision from the attacker: they retry, and the service's own degradation lets them in.
+   */
+  it('keeps the id with a publisher whose segments are arriving but being refused', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    // Well past the window, with a duplicate arriving inside every one of its spans. A duplicate is
+    // answered `accepted` and records no progress, which is exactly the shape the old reading missed.
+    for (let elapsed = 0; elapsed < STALL_MS * 3; elapsed += STALL_MS / 2) {
+      await clock.advance(STALL_MS / 2);
+      assert.deepEqual(orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('again')), { accepted: true });
+    }
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      false,
+      'segments still arriving means the publisher is still there, whatever the uploader did with them',
+    );
+
+    await orch.cleanup();
+  });
+
+  /**
+   * The other direction, and the one that locked out a legitimate broadcaster. A draining session
+   * has already stopped: `handleSegment` answers `draining` to anything it sends. Judging a takeover
+   * against its last accepted segment refused the reconnecting broadcaster for up to the whole
+   * window, while the object one method away agreed the session was over.
+   */
+  it('lets a new address take an id whose session is already draining', async () => {
+    const harness = makeHarness();
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    const draining = orch.stopStream(STREAM_ID);
+    assert.deepEqual(
+      orch.handleSegment(STREAM_ID, 1, 2, Buffer.from('late')),
+      { accepted: false, reason: REJECT_DRAINING },
+      'the session has to actually be draining for this test to mean anything',
+    );
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      true,
+      'a session that has stopped is not holding the id, whatever its last accepted segment says',
+    );
+
+    await draining;
     await orch.cleanup();
   });
 
