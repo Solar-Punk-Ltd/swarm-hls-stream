@@ -124,7 +124,18 @@ export class StreamUploader {
     if (restoreState) {
       this.streamRawTopic = restoreState.streamRawTopic;
       this.socIndex = restoreState.socIndex;
-      this.readiness = readinessFromPersisted(restoreState);
+      const restored = readinessFromPersisted(restoreState);
+      this.readiness = restored.readiness;
+      if (restored.repairedFrom) {
+        // Loud, because this pair cannot be produced by any live sequence, so the entry on disk was
+        // corrupted or hand-edited and whoever owns the deployment should know. Repaired rather than
+        // refused: see the note on `readinessFromPersisted`.
+        this.logger.warn(
+          `[StreamUploader] Recovery entry for ${streamId} claims the catalog announce happened ` +
+            'before its first segment, which is not reachable. Treating the stream as not yet ' +
+            'announced so it is published rather than left invisible.',
+        );
+      }
       this.pendingDiscontinuity = restoreState.pendingDiscontinuity ?? false;
       this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
       this.logger.info(`[StreamUploader] Restored stream ${streamId} at SOC index ${this.socIndex}`);

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  CorruptReadinessState,
   IllegalReadinessTransition,
   needsCatalogAnnounce,
   onCatalogAnnounced,
@@ -57,7 +56,10 @@ describe('announce readiness gate (ARCH-3)', () => {
 describe('announce readiness persistence (ARCH-3)', () => {
   for (const readiness of [READINESS_PENDING, READINESS_SEGMENT_READY, READINESS_ANNOUNCED] as const) {
     it(`round-trips ${readiness} through the persisted shape`, () => {
-      assert.equal(readinessFromPersisted(readinessToPersisted(readiness)), readiness);
+      const restored = readinessFromPersisted(readinessToPersisted(readiness));
+
+      assert.equal(restored.readiness, readiness);
+      assert.equal(restored.repairedFrom, undefined, 'a legal state was reported as needing repair');
     });
   }
 
@@ -81,32 +83,39 @@ describe('announce readiness persistence (ARCH-3)', () => {
 
   it('reads the three combinations an older build could have written', () => {
     assert.equal(
-      readinessFromPersisted({ isFirstSegmentReady: false, isFirstManifestReady: false }),
+      readinessFromPersisted({ isFirstSegmentReady: false, isFirstManifestReady: false }).readiness,
       READINESS_PENDING,
     );
     assert.equal(
-      readinessFromPersisted({ isFirstSegmentReady: true, isFirstManifestReady: false }),
+      readinessFromPersisted({ isFirstSegmentReady: true, isFirstManifestReady: false }).readiness,
       READINESS_SEGMENT_READY,
     );
     assert.equal(
-      readinessFromPersisted({ isFirstSegmentReady: true, isFirstManifestReady: true }),
+      readinessFromPersisted({ isFirstSegmentReady: true, isFirstManifestReady: true }).readiness,
       READINESS_ANNOUNCED,
     );
   });
 
   // The whole reason the two booleans became one value. This combination cannot be reached by any
-  // live sequence, and a stream restored into it would pass every gate silently while never being
+  // live sequence, and a stream restored into it passes every gate silently while never being
   // published: `needsCatalogAnnounce` reads false, so `announceToCatalog` is never called.
-  it('rejects a persisted entry claiming it announced before its first segment', () => {
-    assert.throws(
-      () => readinessFromPersisted({ isFirstSegmentReady: false, isFirstManifestReady: true }),
-      CorruptReadinessState,
-    );
+  const IMPOSSIBLE = { isFirstSegmentReady: false, isFirstManifestReady: true };
+
+  it('repairs a persisted entry claiming it announced before its first segment', () => {
+    const restored = readinessFromPersisted(IMPOSSIBLE);
+
+    assert.equal(restored.readiness, READINESS_SEGMENT_READY);
+    assert.equal(needsCatalogAnnounce(restored.readiness), true, 'the repaired stream still owes an announce');
   });
 
-  it('names both flags in the rejection, so the entry on disk can be identified', () => {
-    assert.throws(() => readinessFromPersisted({ isFirstSegmentReady: false, isFirstManifestReady: true }), {
-      message: /isFirstSegmentReady=false/,
-    });
+  it('reports what it repaired, so the entry on disk can be identified', () => {
+    assert.deepEqual(readinessFromPersisted(IMPOSSIBLE).repairedFrom, IMPOSSIBLE);
+  });
+
+  // Refusing the entry was the first version of this and was strictly worse than the bug it was
+  // added for: an unregistered stream is never finalized as a VOD at the recovery timeout, so its
+  // catalog entry says `live` forever and the file fails identically on every restart.
+  it('does not throw, because a refused entry is never cleaned up', () => {
+    assert.doesNotThrow(() => readinessFromPersisted(IMPOSSIBLE));
   });
 });

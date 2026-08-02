@@ -29,16 +29,11 @@ export class IllegalReadinessTransition extends Error {
   }
 }
 
-export class CorruptReadinessState extends Error {
-  constructor(persisted: PersistedReadiness) {
-    super(
-      'Restored state claims the catalog announce happened before the first segment did ' +
-        `(isFirstSegmentReady=${persisted.isFirstSegmentReady}, ` +
-        `isFirstManifestReady=${persisted.isFirstManifestReady}). ` +
-        'A stream restored this way would never announce and never be discoverable.',
-    );
-    this.name = 'CorruptReadinessState';
-  }
+/** What a restore produced, and whether the persisted pair had to be repaired to get there. */
+export interface RestoredReadiness {
+  readiness: AnnounceReadiness;
+  /** The unreachable pair that was read, when one was. Absent on a normal restore. */
+  repairedFrom?: PersistedReadiness;
 }
 
 /**
@@ -69,20 +64,27 @@ export function onCatalogAnnounced(from: AnnounceReadiness): AnnounceReadiness {
 }
 
 /**
- * Read a persisted entry, rejecting the combination that cannot have been reached legally.
+ * Read a persisted entry, repairing the combination that cannot have been reached legally.
  *
- * Callers restore inside `StreamOrchestrator.recoverStream`, whose loop isolates one entry from the
- * rest, so a throw here loses the one broadcast whose state is unusable rather than every broadcast
- * behind it in the list.
+ * **Repairs rather than throws, and the first version of this got that wrong.** Refusing the entry
+ * looked like the strict, safe answer and was strictly worse than the bug it was added for: the
+ * broadcast was no longer registered, so nothing finalized it as a VOD at the recovery timeout, its
+ * catalog entry went on saying `live` forever, and the file stayed on disk failing identically on
+ * every restart. The old code, for all that it never announced, did at least reach that cleanup.
+ *
+ * `SEGMENT_READY` is the repair because it is the assumption whose two failure modes are not
+ * comparable. Assuming the announce happened when it did not leaves the broadcast undiscoverable for
+ * its whole duration. Assuming it did not when it did costs one extra `addStream`, which overwrites
+ * an entry with the same content.
  */
-export function readinessFromPersisted(persisted: PersistedReadiness): AnnounceReadiness {
+export function readinessFromPersisted(persisted: PersistedReadiness): RestoredReadiness {
   if (persisted.isFirstManifestReady && !persisted.isFirstSegmentReady) {
-    throw new CorruptReadinessState(persisted);
+    return { readiness: READINESS_SEGMENT_READY, repairedFrom: persisted };
   }
   if (persisted.isFirstManifestReady) {
-    return READINESS_ANNOUNCED;
+    return { readiness: READINESS_ANNOUNCED };
   }
-  return persisted.isFirstSegmentReady ? READINESS_SEGMENT_READY : READINESS_PENDING;
+  return { readiness: persisted.isFirstSegmentReady ? READINESS_SEGMENT_READY : READINESS_PENDING };
 }
 
 /** The persisted shape for a state, so the recovery file keeps the format older builds wrote. */
