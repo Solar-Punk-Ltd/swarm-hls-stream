@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { containerName, type E2EConfig } from '../config.js';
+import type { FfmpegExit } from '../harness/ffmpegProcess.js';
 import { type Host, waitForIdle } from '../harness/host.js';
 import { announcedLiveStreams } from '../harness/logwatch.js';
 import { sleep, waitFor } from '../harness/wait.js';
@@ -26,7 +27,7 @@ import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample 
 import { latencySplit, type SegmentInstants } from './split.js';
 import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from './timeline.js';
 import { latencyMsFromPts } from './wallclock.js';
-import { type PublishKnobs, startWallclockPublisher } from './wallclockPublisher.js';
+import { type PublishKnobs, startWallclockPublisher, type WallclockPublisher } from './wallclockPublisher.js';
 
 /** How long to wait for the uploader to announce the stream this run just started publishing. */
 const ANNOUNCE_TIMEOUT_MS = 90_000;
@@ -68,7 +69,7 @@ export async function measureLatency(options: RunOptions): Promise<BenchRun> {
   let pending: PendingSample[] = [];
   let discarded: DiscardedSegment[] = [];
   try {
-    const stream = await waitForAnnouncement(host, uploader, sinceIso, publisher.stderr);
+    const stream = await waitForAnnouncement(host, uploader, sinceIso, publisher);
     const topicHex = Topic.fromString(stream.topic).toString();
     ({ collected: pending, discarded } = await collectSamples(options, stream.owner, topicHex, publisher.startedAtMs));
   } finally {
@@ -125,22 +126,43 @@ function toSample(
   return { index: uploaded.index, ref: pending.ref, split: latencySplit(instants, skew) };
 }
 
-async function waitForAnnouncement(host: Host, uploader: string, sinceIso: string, publisherStderr: () => string) {
+/**
+ * Wait for the uploader to announce the stream this run just started publishing.
+ *
+ * Checks whether the publisher is still alive on every poll, rather than only at the deadline. A
+ * publisher that failed to spawn or died on its arguments is knowable in the first two seconds, and
+ * without this the run spends the full ninety waiting for something that can no longer happen, then
+ * reports a timeout when what it had was an encoder that never started.
+ */
+async function waitForAnnouncement(host: Host, uploader: string, sinceIso: string, publisher: WallclockPublisher) {
+  const ffmpegSaid = () => publisher.stderr().trim().slice(0, 300) || '(nothing)';
   let announced: ReturnType<typeof announcedLiveStreams>[number] | undefined;
   await waitFor(
     async () => {
+      const exit = publisher.exit();
+      if (exit) {
+        throw new Error(
+          `the publisher exited (${describeExit(exit)}) before the uploader announced a live stream, so ` +
+            `nothing was ever ingested. ffmpeg said: ${ffmpegSaid()}`,
+        );
+      }
       announced = announcedLiveStreams(await host.logsSince(uploader, sinceIso)).at(-1);
       return announced !== undefined;
     },
     {
       timeoutMs: ANNOUNCE_TIMEOUT_MS,
       intervalMs: 2_000,
-      label: `the uploader announcing a live stream. ffmpeg said: ${
-        publisherStderr().trim().slice(0, 300) || '(nothing)'
-      }`,
+      label: `the uploader announcing a live stream. ffmpeg said: ${ffmpegSaid()}`,
     },
   );
   return announced!;
+}
+
+function describeExit(exit: FfmpegExit): string {
+  if (exit.signal !== null) {
+    return `on ${exit.signal}`;
+  }
+  return exit.code === null ? 'without ever starting' : `with status ${exit.code}`;
 }
 
 /**
