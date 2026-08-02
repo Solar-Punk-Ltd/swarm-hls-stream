@@ -108,23 +108,26 @@ they deliberately outlive the streams they count, which is the one thing `/healt
 do: `/health` describes the streams registered right now, so at the moment a live session is wrongly
 killed it answers `ok` with `activeStreams: 0`.
 
-| Metric                                      | Type    | Meaning                                                   |
-| ------------------------------------------- | ------- | --------------------------------------------------------- |
-| `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                      |
-| `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone   |
-| `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin    |
-| `swarm_hls_manifest_publish_failures_total` | counter | Live manifest publishes that failed                       |
-| `swarm_hls_streams_finalized_total`         | counter | Stops that published a VOD                                |
-| `swarm_hls_streams_failed_total`            | counter | Stops that did not. Those broadcasts have no recording    |
-| `swarm_hls_last_segment_timestamp_seconds`  | gauge   | Unix time of the newest segment that landed, 0 while none |
-| `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing           |
-| `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream            |
-| `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream            |
+| Metric                                      | Type    | Meaning                                                     |
+| ------------------------------------------- | ------- | ----------------------------------------------------------- |
+| `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                        |
+| `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone     |
+| `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin      |
+| `swarm_hls_segments_skipped_total`          | counter | Segments discarded on purpose at a puller handover          |
+| `swarm_hls_auth_rejections_total`           | counter | Requests refused by a credential gate                       |
+| `swarm_hls_takeovers_refused_total`         | counter | Announces refused because a live session still holds the id |
+| `swarm_hls_manifest_publish_failures_total` | counter | Live manifest publishes that failed                         |
+| `swarm_hls_streams_finalized_total`         | counter | Stops that published a VOD                                  |
+| `swarm_hls_streams_failed_total`            | counter | Stops that did not. Those broadcasts have no recording      |
+| `swarm_hls_last_segment_timestamp_seconds`  | gauge   | Unix time of the newest segment that landed, 0 while none   |
+| `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing             |
+| `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream              |
+| `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream              |
 
 Unlike `/health`, `/metrics` is behind the bearer gate, and the honest reason is narrower than it first
 looks: `/health` already discloses `activeStreams`, `queuePressure` and `msSinceStreamActivity` to anyone
-who asks, so the gate is really protecting the six process-lifetime counters, which say how many
-broadcasts have run and how many were lost. Point a scraper at it
+who asks, so the gate is really protecting the nine process-lifetime counters, which say how many
+broadcasts have run, how many were lost, and how many requests this deployment turned away. Point a scraper at it
 with an `authorization` credential:
 
 ```yaml

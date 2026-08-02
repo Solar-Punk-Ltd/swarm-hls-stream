@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { MEDIA_TYPE_VIDEO } from '../src/types.js';
 import { renderPrometheusMetrics } from '../src/utils/metricsFormat.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
-import { makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
+import { makeMetricsSnapshot, makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
 
 const STREAM_ID = 'live/one';
 const SETTLE_CEILING_MS = 4_000;
@@ -22,6 +24,30 @@ function parseExposition(body: string): Map<string, number> {
   }
   return samples;
 }
+
+/**
+ * Every metric the README's table names, which is the list an operator builds their dashboard from.
+ *
+ * Read out of the file rather than duplicated here, because a copy of the list in a test is a third
+ * place to forget. The table had drifted twice before this existed: `segments_skipped_total` and
+ * `auth_rejections_total` were both exposed and both undocumented.
+ */
+function documentedMetricNames(): string[] {
+  const readme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
+  return [...readme.matchAll(/^\| `(swarm_hls_[a-z0-9_]+)`/gm)].map((match) => match[1]);
+}
+
+describe("the README's metric table", () => {
+  /**
+   * A metric nobody documented is one nobody alerts on, and a documented one that no longer exists is
+   * a dashboard panel that reads empty and looks like a healthy service.
+   */
+  it('names exactly the metrics `/metrics` serves', () => {
+    const served = [...parseExposition(renderPrometheusMetrics(makeMetricsSnapshot())).keys()];
+
+    assert.deepEqual(documentedMetricNames().sort(), served.sort());
+  });
+});
 
 describe('metrics exposition format', () => {
   const SNAPSHOT = {
