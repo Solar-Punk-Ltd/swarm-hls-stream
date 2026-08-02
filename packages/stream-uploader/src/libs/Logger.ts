@@ -21,6 +21,20 @@ function renderArg(arg: unknown): string {
   return typeof arg === 'object' && arg !== null ? JSON.stringify(arg) : String(arg);
 }
 
+/**
+ * One formatted line, in whichever format is configured.
+ *
+ * Standalone rather than a method, because `loggerOptionsFromEnv` has to emit its rejection before
+ * any `Logger` exists, and emitting it raw meant the one line explaining why the level was ignored
+ * was the one line a JSON collector could not parse.
+ */
+export function formatLine(format: LogFormat, level: LogLevel, message: string, timestamp: string): string {
+  if (format === LOG_FORMAT_JSON) {
+    return JSON.stringify({ ts: timestamp, level, msg: message });
+  }
+  return `[${timestamp}] [${level.toUpperCase()}] - ${message}`;
+}
+
 /** Where a formatted line goes. Replaceable so a test can read what was written without a spy on console. */
 export type LogSink = (level: LogLevel, line: string) => void;
 
@@ -54,8 +68,13 @@ export function loggerOptionsFromEnv(env: NodeJS.ProcessEnv, sink: LogSink = CON
   if (!isLogThreshold(normalized)) {
     sink(
       'error',
-      `[LOG_LEVEL] "${requested}" is not a log level, using "${DEFAULT_LOG_LEVEL}". ` +
-        `Expected one of: ${logThresholds().join(', ')}`,
+      formatLine(
+        format,
+        'error',
+        `[LOG_LEVEL] "${requested}" is not a log level, using "${DEFAULT_LOG_LEVEL}". ` +
+          `Expected one of: ${logThresholds().join(', ')}`,
+        new Date().toISOString(),
+      ),
     );
     return { level: DEFAULT_LOG_LEVEL, format, sink };
   }
@@ -91,13 +110,7 @@ export class Logger {
   }
 
   private formatMessage(level: LogLevel, ...args: any[]): string {
-    const timestamp = new Date().toISOString();
-    const message = args.map(renderArg).join(' ');
-
-    if (this.options.format === LOG_FORMAT_JSON) {
-      return JSON.stringify({ ts: timestamp, level, msg: message });
-    }
-    return `[${timestamp}] [${level.toUpperCase()}] - ${message}`;
+    return formatLine(this.options.format, level, args.map(renderArg).join(' '), new Date().toISOString());
   }
 
   private write(level: LogLevel, args: any[]): void {

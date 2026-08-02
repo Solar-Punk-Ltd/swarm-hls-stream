@@ -96,12 +96,30 @@ describe('LOG_LEVEL suppression (ARCH-4)', () => {
   });
 
   // The suppressed call must not reach the formatter either, or a level nobody prints still costs a
-  // timestamp and a JSON.stringify per segment.
+  // timestamp and a JSON.stringify per segment. Asserting an empty sink cannot show that, because
+  // the sink is empty whether the drop happens before or after formatting: the argument below throws
+  // if anything renders it, so only the ordering satisfies this.
   it('does not format a line it is going to drop', () => {
+    const refusesToRender = {
+      toJSON() {
+        throw new Error('the formatter ran for a line that was going to be dropped');
+      },
+    };
+
     withLogger({ level: LOG_LEVEL_ERROR }, (lines) => {
-      Logger.getInstance().info('expensive', { a: 1 });
+      Logger.getInstance().info('expensive', refusesToRender);
 
       assert.deepEqual(lines, []);
+    });
+  });
+
+  it('does format a line it is going to keep, so the test above is not vacuous', () => {
+    const rendered = { toJSON: () => 'rendered' };
+
+    withLogger({ level: LOG_LEVEL_DEBUG }, (lines) => {
+      Logger.getInstance().error('kept', rendered);
+
+      assert.match(lines[0], /rendered/);
     });
   });
 });
@@ -152,8 +170,49 @@ describe('logger configuration from the environment (ARCH-4)', () => {
     assert.equal(loggerOptionsFromEnv({ LOG_LEVEL: '  WARN ' }, noop).level, LOG_LEVEL_WARN);
   });
 
+  // The level alone cannot tell "unset" from "rejected then defaulted": both give the default. The
+  // warning is the only difference, so the sink has to be captured rather than discarded, or an
+  // operator using compose's `${LOG_LEVEL:-}` starts every run with a spurious rejection.
   it('treats an empty LOG_LEVEL as unset, since compose supplies several vars as ${VAR:-}', () => {
-    assert.equal(loggerOptionsFromEnv({ LOG_LEVEL: '' }, noop).level, DEFAULT_LOG_LEVEL);
+    const lines: string[] = [];
+
+    const options = loggerOptionsFromEnv({ LOG_LEVEL: '' }, (_level, line) => lines.push(line));
+
+    assert.equal(options.level, DEFAULT_LOG_LEVEL);
+    assert.deepEqual(lines, [], 'an empty value was reported as a bad level rather than treated as unset');
+  });
+
+  // Three lenses found this independently. `in` walks the prototype chain, so these passed
+  // validation, then `RANK[level]` compared a number against a function and every comparison was
+  // false for NaN. The service went silent at every level including error, and the message that
+  // would have explained it was suppressed by the same fault.
+  for (const inherited of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+    it(`rejects LOG_LEVEL=${inherited}, an inherited property rather than a level`, () => {
+      const lines: string[] = [];
+
+      const options = loggerOptionsFromEnv({ LOG_LEVEL: inherited }, (_level, line) => lines.push(line));
+
+      assert.equal(options.level, DEFAULT_LOG_LEVEL, `${inherited} was accepted as a threshold`);
+      assert.equal(lines.length, 1, 'the rejection was not reported');
+    });
+  }
+
+  it('still admits an error at every threshold it accepts', () => {
+    for (const threshold of [LOG_LEVEL_DEBUG, LOG_LEVEL_LOG, LOG_LEVEL_INFO, LOG_LEVEL_WARN, LOG_LEVEL_ERROR]) {
+      assert.equal(admits(threshold, LOG_LEVEL_ERROR), true, `${threshold} silenced errors`);
+    }
+  });
+
+  // The rejection is emitted before any Logger exists, so it used to bypass the formatter entirely
+  // and put one unparseable line into a stream .env.sample promises is one JSON object per line.
+  it('formats the rejection as json when LOG_FORMAT asks for json', () => {
+    const lines: string[] = [];
+
+    loggerOptionsFromEnv({ LOG_LEVEL: 'verbose', LOG_FORMAT: 'json' }, (_level, line) => lines.push(line));
+
+    const parsed = JSON.parse(lines[0]);
+    assert.equal(parsed.level, LOG_LEVEL_ERROR);
+    assert.match(parsed.msg, /"verbose" is not a log level/);
   });
 
   it('selects json only for the exact value, so a typo does not silently change the format', () => {

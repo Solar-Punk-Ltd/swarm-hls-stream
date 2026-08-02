@@ -46,8 +46,19 @@ const RANK: Record<LogThreshold, number> = {
  */
 export const DEFAULT_LOG_LEVEL: LogThreshold = LOG_LEVEL_DEBUG;
 
+/**
+ * An own-property check rather than `in`, because `in` walks the prototype chain.
+ *
+ * `LOG_LEVEL=constructor` (or `__proto__`, `toString`, `valueOf`) passed the `in` test, `RANK[level]`
+ * then compared a number against a function, and every comparison is false for `NaN`. So the service
+ * went **completely silent, including at `error`**, and the "not a log level" message that would
+ * have explained it was suppressed by the same fault. The failure concealed its own cause.
+ *
+ * `hasOwnProperty.call` rather than `Object.hasOwn`, which needs an ES2022 lib and this package
+ * targets ES2020. Moving the target is a decision for a change that says so.
+ */
 export function isLogThreshold(value: string): value is LogThreshold {
-  return value in RANK;
+  return Object.prototype.hasOwnProperty.call(RANK, value);
 }
 
 export function admits(threshold: LogThreshold, level: LogLevel): boolean {
