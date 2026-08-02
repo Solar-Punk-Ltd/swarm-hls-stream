@@ -1624,8 +1624,6 @@ describe('createOmeEngine admission decision (TEST-25)', () => {
     await orchestrator.cleanup();
   });
 
-  // Only what `new URL` refuses reaches this reply. A well-formed url carrying too few path
-  // segments does not, which is SEC-25 rather than something this test should assert.
   it('denies a url it cannot parse into an app and a stream', async () => {
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore());
 
@@ -1634,6 +1632,23 @@ describe('createOmeEngine admission decision (TEST-25)', () => {
     assert.deepEqual(reply, { allowed: false, reason: 'invalid url' });
     await orchestrator.cleanup();
   });
+
+  /**
+   * SEC-25. These parse as URLs and used to admit, under the stream ids `undefined/undefined` and
+   * `video/undefined`. Both are collision points: every publish missing a stream name shared one,
+   * so one broadcaster's closing ended another's session.
+   */
+  for (const url of ['srt://ome:10080', 'srt://ome:10080/video', 'srt://ome:10080?streamid=srt://ome:10080/video']) {
+    it(`denies ${url}, which parses as a url but names no stream`, async () => {
+      const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore());
+
+      const reply = await postAdmission(makeEngine(), orchestrator, 'opening', SECRET, url);
+
+      assert.deepEqual(reply, { allowed: false, reason: 'invalid url' });
+      assert.equal(orchestrator.getActiveStreamCount(), 0, 'a denied publish must leave no stream registered');
+      await orchestrator.cleanup();
+    });
+  }
 
   it('allows an outgoing session untouched, since this hook governs ingest only', async () => {
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore());

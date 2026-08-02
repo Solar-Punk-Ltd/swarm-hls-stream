@@ -203,6 +203,15 @@ export function parseStreamId(streamId: string): AppStream {
   return { app, stream: rest.join('/') };
 }
 
+/**
+ * The app and stream a publish URL names, from its path or from an SRT `streamid`.
+ *
+ * Throws on anything that does not yield both. It used to return them as-is, which typed as
+ * `AppStream` but was not one: `srt://ome:10080/video` produced `{ app: 'video', stream: undefined }`
+ * and its only caller built the stream id `video/undefined` from it, admitted the publish, and
+ * started a puller against a playlist path no origin serves. Two malformed publishes landed on the
+ * same id, so either broadcaster's closing stopped the other's session. See SEC-25.
+ */
 export function parseAppStream(url: string): AppStream {
   let parts: string[] = [];
 
@@ -222,5 +231,11 @@ export function parseAppStream(url: string): AppStream {
     throw new Error(`Could not parse app/stream from URL: ${url} (${errorMsg})`);
   }
 
-  return { app: parts[0], stream: parts[1] };
+  const [app, stream] = parts;
+  if (!app || !stream) {
+    logger.error(`[OME] URL names no app/stream pair: ${url}`);
+    throw new Error(`Could not parse app/stream from URL: ${url} (no app/stream pair)`);
+  }
+
+  return { app, stream };
 }

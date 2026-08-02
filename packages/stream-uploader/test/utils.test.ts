@@ -33,16 +33,19 @@ describe('parseAppStream', () => {
     });
   });
 
-  it('returns undefined fields when the URL has no app/stream and no streamid', () => {
-    assert.deepEqual(parseAppStream('srt://127.0.0.1:10080'), { app: undefined, stream: undefined });
-    assert.deepEqual(parseAppStream('srt://127.0.0.1:10080/video'), { app: 'video', stream: undefined });
+  /**
+   * These returned `{ app: 'video', stream: undefined }` and similar until SEC-25. That satisfied
+   * the `AppStream` type without being one, and `handleAdmission` went straight on to build the
+   * stream id `video/undefined` and admit the publish. Every such URL collapsed onto one of two
+   * ids, so one broadcaster's closing ended another's session.
+   */
+  it('throws when the URL names no app/stream pair and carries no streamid', () => {
+    assert.throws(() => parseAppStream('srt://127.0.0.1:10080'), /no app\/stream pair/);
+    assert.throws(() => parseAppStream('srt://127.0.0.1:10080/video'), /no app\/stream pair/);
   });
 
-  it('returns undefined fields when the streamid has no app/stream', () => {
-    assert.deepEqual(parseAppStream('srt://host:10080?streamid=srt://host:10080/video'), {
-      app: 'video',
-      stream: undefined,
-    });
+  it('throws when the streamid names no app/stream pair', () => {
+    assert.throws(() => parseAppStream('srt://host:10080?streamid=srt://host:10080/video'), /no app\/stream pair/);
   });
 
   it('throws when the URL is not parseable', () => {
