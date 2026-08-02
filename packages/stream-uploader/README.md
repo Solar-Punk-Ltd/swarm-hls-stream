@@ -124,6 +124,27 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream              |
 | `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream              |
 
+**Who may take a stream id that is already live.** An announce for an id a live session holds is
+refused when both publisher addresses are known and different and something is still publishing into
+it. Everything else is allowed, because not every engine reports a publisher address and a missing
+field must not take a broadcaster off the air. A stream nothing has published into for
+`SEGMENT_STALL_MS` can be claimed by anyone, which is what stops a refusal being permanent.
+
+Two consequences worth knowing before you deploy it.
+
+The guard is symmetric, so **it protects whoever got there first**. Someone who claims a stream id
+before your broadcaster does, and keeps feeding it, holds it: your broadcaster is refused for as long
+as that continues. `POST /stream/stop` on the id is the operator override, and it is authenticated.
+The complete answer is a publish credential the broadcaster presents to the engine, which neither
+engine is configured for here.
+
+An attacker who publishes from the same address as your broadcaster is not distinguished from them.
+The same host, the same NAT and one shared VPN egress all produce that.
+
+`swarm_hls_takeovers_refused_total` counts every refusal, and it **cannot tell those cases apart**:
+an attack and a locked-out broadcaster produce the identical count. Read it as a reason to check who
+holds the stream, not as a verdict.
+
 Unlike `/health`, `/metrics` is behind the bearer gate, and the honest reason is narrower than it first
 looks: `/health` already discloses `activeStreams`, `queuePressure` and `msSinceStreamActivity` to anyone
 who asks, so the gate is really protecting the nine process-lifetime counters, which say how many

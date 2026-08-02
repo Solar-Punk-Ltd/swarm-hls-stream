@@ -77,8 +77,12 @@ export class ServiceMetrics {
    *
    * Counted because the refusal is otherwise a log line, and it is the one control here that takes a
    * broadcaster off the air on evidence that can be wrong: two publishers behind one egress address
-   * look like one, and one publisher whose address changed looks like two. A rising total is how an
-   * operator sees that before the broadcaster reports it. See SEC-26.
+   * look like one, and one publisher whose address changed looks like two.
+   *
+   * **It cannot say which of those it is counting.** An attack and a legitimate broadcaster being
+   * locked out of their own id produce the identical count, so this is a prompt to go and look at who
+   * holds the stream, not a verdict. `POST /stream/stop` is what frees an id held by the wrong
+   * session. See SEC-26 and SEC-28.
    */
   public recordTakeoverRefused(): void {
     this.takeoversRefused += 1;
