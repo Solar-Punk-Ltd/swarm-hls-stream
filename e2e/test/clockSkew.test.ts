@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { parseRemoteEpochMs, skewFrom, tightestSkew } from '../src/bench/clockSkew.js';
+import type { ClockSkew } from '../src/bench/split.js';
 
 const LOCAL_BEFORE = 1_785_677_886_000;
 
@@ -36,6 +37,37 @@ describe('estimating the skew between two clocks', () => {
 
   it('refuses to choose from nothing rather than returning a zero skew', () => {
     assert.throws(() => tightestSkew([]), /no clock skew samples/);
+  });
+
+  /**
+   * `Date.now()` is not monotonic, so an NTP step between the two readings that bound an exchange
+   * produces a round trip of negative length. Ranked by uncertainty ascending, that exchange sorts
+   * first: the more corrupt the reading, the tighter it looks, and it is also the one whose offset is
+   * the midpoint of two instants straddling the step.
+   */
+  it('drops an exchange whose clock stepped, rather than ranking it as the tightest', () => {
+    const stepped: ClockSkew = { offsetMs: -40_000, uncertaintyMs: -1_500 };
+    const usable: ClockSkew = { offsetMs: 184, uncertaintyMs: 200 };
+
+    assert.equal(tightestSkew([stepped, usable]), usable);
+    assert.equal(tightestSkew([usable, stepped]), usable);
+  });
+
+  it('keeps an exchange that came back inside the clock resolution', () => {
+    const instant: ClockSkew = { offsetMs: 184, uncertaintyMs: 0 };
+
+    assert.equal(tightestSkew([{ offsetMs: 184, uncertaintyMs: 12 }, instant]), instant);
+  });
+
+  it('refuses to estimate at all when every exchange stepped', () => {
+    assert.throws(
+      () =>
+        tightestSkew([
+          { offsetMs: 1, uncertaintyMs: -1 },
+          { offsetMs: 2, uncertaintyMs: -9 },
+        ]),
+      /negative round trip/,
+    );
   });
 });
 

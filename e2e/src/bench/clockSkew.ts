@@ -36,12 +36,30 @@ export function skewFrom(localBeforeMs: number, remoteMs: number, localAfterMs: 
   };
 }
 
-/** The tightest of several exchanges, which is the one whose round trip left least room to be wrong. */
+/**
+ * The tightest usable exchange, which is the one whose round trip left least room to be wrong.
+ *
+ * An exchange is unusable when its round trip came out negative, which `Date.now()` permits: it is
+ * not monotonic, so a clock step between the two readings that bound one exchange produces a round
+ * trip of less than no time. Both of that exchange's numbers are then meaningless, the offset as well,
+ * since it is the midpoint of two instants straddling the step.
+ *
+ * Dropped rather than ranked, because ranking by uncertainty ascending selects it. The further the
+ * clock stepped, the more negative the round trip, and the tighter the exchange looks. That put the
+ * one reading known to be broken in front of four good ones.
+ */
 export function tightestSkew(samples: readonly ClockSkew[]): ClockSkew {
   if (samples.length === 0) {
     throw new Error('no clock skew samples to choose from');
   }
-  return [...samples].sort((a, b) => a.uncertaintyMs - b.uncertaintyMs)[0];
+  const usable = samples.filter((sample) => sample.uncertaintyMs >= 0);
+  if (usable.length === 0) {
+    throw new Error(
+      `all ${samples.length} clock skew exchanges came back with a negative round trip, so the bench's ` +
+        'own clock stepped during every one of them and none of their offsets means anything.',
+    );
+  }
+  return [...usable].sort((a, b) => a.uncertaintyMs - b.uncertaintyMs)[0];
 }
 
 export function parseRemoteEpochMs(stdout: string): number {
