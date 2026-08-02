@@ -96,7 +96,6 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   const remoteBase = join(remoteHome, REMOTE_DIR);
   mkdirSync(join(remoteBase, 'deploy'), { recursive: true });
   cpSync(join(DEPLOY_DIR, 'scripts'), join(remoteBase, 'deploy', 'scripts'), { recursive: true });
-  cpSync(join(ROOT_DIR, 'nodes', INIT_NODE), join(remoteBase, 'nodes', INIT_NODE));
 
   const binDir = join(root, 'bin');
   mkdirSync(binDir);
@@ -109,7 +108,13 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
 
   writeNodeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
   writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, sshJournal));
-  writeStub(join(binDir, 'rsync'), '#!/bin/sh\nexit 0\n');
+  writeNodeStub(join(binDir, 'rsync'), rsyncStub(remoteHome));
+  // The ssh stub runs the command string it is handed, which `clean.sh --all` uses to reach
+  // `sudo rm -rf`. Before that change the string was discarded and no privileged command could
+  // escape; now one can, and this docstring's promise that nothing here may reach a live stack is
+  // only true with a `sudo` on PATH that confers nothing. Without it the suite either prompts for a
+  // password with no TTY or, on a machine with a cached timestamp, runs the removal as root.
+  writeStub(join(binDir, 'sudo'), '#!/bin/sh\nexec "$@"\n');
 
   return {
     root,
@@ -253,6 +258,50 @@ for (const container of inventory) {
  * do and would report the injection as safe. The `bash -s` callers keep working through the same
  * line: stdin is inherited, so their heredoc still reaches the shell they asked for.
  */
+/**
+ * Copies, rather than reporting success and doing nothing.
+ *
+ * A stub that only exits 0 makes every file the remote path depends on someone else's problem, and
+ * the sandbox then has to pre-seed them. That hides the dependency: `deploy.sh` runs
+ * `nodes/init-node.sh` on the far side and is the only thing that puts it there, and with both the
+ * seed and a no-op rsync in place, deleting that line left the whole suite green while a first
+ * deploy to a fresh host would abort at exit 127.
+ *
+ * Faithful enough for the four call sites in `sync_to_remote` and no further: trailing slashes carry
+ * rsync's copy-the-contents meaning, `--exclude` consumes its value so it is not mistaken for a
+ * source, and a source that does not exist is skipped rather than throwing, because the uploader's
+ * `dist/` is not built in these tests.
+ */
+function rsyncStub(remoteHome) {
+  return `const fs = require('fs');
+const path = require('path');
+
+const argv = process.argv.slice(2);
+const positional = [];
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--exclude') { i++; continue; }
+  if (argv[i].startsWith('-')) continue;
+  positional.push(argv[i]);
+}
+
+const destination = positional.pop() || '';
+const colon = destination.indexOf(':');
+if (colon === -1) process.exit(0);
+
+let target = destination.slice(colon + 1);
+if (target.startsWith('~/')) target = path.join(${JSON.stringify(remoteHome)}, target.slice(2));
+const targetIsDirectory = target.endsWith('/');
+
+for (const source of positional) {
+  if (!fs.existsSync(source)) continue;
+  const sourceIsContents = source.endsWith('/');
+  const to = sourceIsContents || !targetIsDirectory ? target : path.join(target, path.basename(source));
+  fs.mkdirSync(sourceIsContents || targetIsDirectory ? target : path.dirname(target), { recursive: true });
+  fs.cpSync(source, to, { recursive: true });
+}
+`;
+}
+
 function sshStub(remoteHome, remoteJournal, argvJournal) {
   return `#!/bin/bash
 # Drop ssh's own options and then the target, leaving exactly the string the far side would get.
