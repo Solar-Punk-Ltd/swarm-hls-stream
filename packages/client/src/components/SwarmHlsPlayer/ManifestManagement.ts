@@ -32,6 +32,20 @@ interface TopicState {
 
 const manifestQueue = new Pqueue({ concurrency: 1 });
 
+/**
+ * A feed slot the publisher has not written yet, which is what a viewer who has caught up sees on
+ * nearly every poll. Ordinary, so it is not logged as a failure and the next poll asks again.
+ */
+const SLOT_NOT_WRITTEN_YET = 404;
+
+/** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
+class ManifestFetchError extends Error {
+  constructor(path: string, readonly status: number) {
+    super(`Failed to fetch: ${path}`);
+    this.name = 'ManifestFetchError';
+  }
+}
+
 export class ManifestStateManager {
   private static instance: ManifestStateManager;
   private topics: Map<string, TopicState> = new Map();
@@ -164,6 +178,9 @@ export class ManifestStateManager {
 export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
 
+  /** Topics with a follow-up fetch outstanding. Keyed by hex topic, since each feed advances alone. */
+  private readonly inFlight = new Set<string>();
+
   constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {}
 
   get beeUrl(): string {
@@ -203,41 +220,60 @@ export class ManifestFetcher {
   }
 
   private async handleFollowupFetch(owner: string, topic: Topic): Promise<string> {
-    const nextId = this.generateNextId(topic);
     const hexTopic = topic.toString();
 
-    this.fetchResource(`soc/${owner}/${nextId}`)
-      .then((res) => {
-        manifestQueue.add(async () => {
-          const parsed = parseManifest(res.text);
-          const shouldContinue = this.stateManager.updateManifest(
-            hexTopic,
-            parsed.headers,
-            parsed.segments,
-            parsed.isFinalized,
-          );
-          if (shouldContinue) {
-            const index = this.stateManager.getIndex(hexTopic)!;
-            this.stateManager.setIndex(hexTopic, index.next());
+    // One outstanding follow-up per topic. This method is fire and forget by design: it returns the
+    // already serialised state at once and leaves the fetch running, so hls.js schedules its next
+    // level reload on the ordinary cadence while the previous fetch is still open. See CON-29.
+    if (!this.inFlight.has(hexTopic)) {
+      // Pinned here rather than read again in the callback. Two callbacks that each advance from
+      // whatever index they find advance twice for one slot fetched, and the slot in between is
+      // never requested at all, so its segments never reach the viewer. The second callback used to
+      // reach that line rather than stopping short, because `updateManifest` answers `true` to a
+      // duplicate parse, where "nothing new, keep polling" and "this slot was consumed" are the same
+      // value read two ways.
+      const targetIndex = this.stateManager.getIndex(hexTopic)!.next();
+      const targetId = makeFeedIdentifier(topic, targetIndex).toString();
+
+      this.inFlight.add(hexTopic);
+      this.fetchResource(`soc/${owner}/${targetId}`)
+        .then((res) =>
+          manifestQueue.add(() => {
+            const parsed = parseManifest(res.text);
+            const shouldContinue = this.stateManager.updateManifest(
+              hexTopic,
+              parsed.headers,
+              parsed.segments,
+              parsed.isFinalized,
+            );
+            if (shouldContinue) {
+              this.stateManager.setIndex(hexTopic, targetIndex);
+            }
+          }),
+        )
+        .catch((error) => {
+          if (!(error instanceof ManifestFetchError && error.status === SLOT_NOT_WRITTEN_YET)) {
+            console.error('Error fetching follow-up manifest:', error);
           }
+        })
+        // Released only once the state update has run, since the queue's promise is what the chain
+        // above resolves on. Clearing at response time would let the next poll race the update it is
+        // supposed to read. It has to be released on the failure path too, or one poll that outran
+        // the publisher would end the broadcast for this viewer, and a caught-up viewer gets a 404
+        // on nearly every poll. That comes from sitting after the `catch` rather than from
+        // `finally`, which by then has no rejection left to see.
+        .finally(() => {
+          this.inFlight.delete(hexTopic);
         });
-      })
-      .catch((error) => {
-        console.error('Error fetching follow-up:', error);
-      });
+    }
 
     return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
-  }
-
-  private generateNextId(topic: Topic): string {
-    const currentIndex = this.stateManager.getIndex(topic.toString())!;
-    return makeFeedIdentifier(topic, currentIndex.next()).toString();
   }
 
   private async fetchResource(path: string): Promise<TimedResponse> {
     const response = await fetchWithTimeout(`${this._beeUrl}/${path}`);
     if (!response.ok) {
-      throw new Error(`Failed to fetch: ${path}`);
+      throw new ManifestFetchError(path, response.status);
     }
     return response;
   }
