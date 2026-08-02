@@ -400,6 +400,43 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     assert.equal(health.backoffRemainingMs(hexTopic), 0);
   });
 
+  /**
+   * A 200 that is not a playlist this player can read is not the gateway being healthy. Handing the
+   * empty serialisation to hls.js is a fatal parse error, which restarts the player straight back
+   * into this method, and a gateway recorded as healthy imposes no backoff on that loop and says
+   * nothing to the viewer, so it spins on a black picture for as long as the tab is open.
+   */
+  for (const [name, body] of [
+    ['a captive portal answering 200 with html', '<html><body>Sign in to continue</body></html>'],
+    ['a playlist that parses to no segments at all', '#EXTM3U\n#EXT-X-TARGETDURATION:2'],
+  ] as const) {
+    it(`refuses ${name}, instead of handing hls.js an empty manifest`, async () => {
+      stubFetch(() => new Response(body, { headers: { 'Swarm-Feed-Index': START_INDEX.toString(16) } }));
+      const seen: FeedState[] = [];
+      health.subscribe(hexTopic, (state) => seen.push(state));
+
+      // Twice, because the second attempt is the one that can flicker: calling the gateway healthy
+      // before finding out whether its answer is usable takes an already-reconnecting topic back to
+      // live and then straight to reconnecting again, once per attempt, for the whole outage.
+      await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+      await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
+
+      assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
+      assert.equal(health.backoffRemainingMs(hexTopic), 4_000, 'nothing held the restart loop off');
+      assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_RECONNECTING], 'the overlay flickered between attempts');
+    });
+  }
+
+  // The same shape one step earlier. A response the player cannot take an index from is a response
+  // it cannot use, and it used to escape after the state had already been set back to live.
+  it('refuses a 200 that omits the feed index header', async () => {
+    stubFetch(() => new Response(manifestForIndex(START_INDEX)));
+
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`), /Missing feed index header/);
+
+    assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
+  });
+
   it('says the feed is reconnecting when the first fetch of a mount cannot reach the gateway', async () => {
     stubFetch(gatewayDown);
 

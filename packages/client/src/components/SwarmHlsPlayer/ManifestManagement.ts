@@ -226,33 +226,45 @@ export class ManifestFetcher {
       await this.delay(backoffMs);
     }
 
-    let res: TimedResponse;
+    // Every status counts as a failure here, 404 included. On the follow-up path a 404 means the
+    // publisher has not written the next slot yet, which is ordinary; this request asks for the
+    // feed's head, so nothing being there is the gateway having no answer at all.
+    //
+    // So does anything else that stops this call producing a playlist. The alternative is worse than
+    // it looks: an empty manifest reaches hls.js as a fatal parse error, which restarts the player
+    // straight back into this method, and a gateway recorded as healthy imposes no backoff on that
+    // loop and says nothing to the viewer. A 200 carrying a captive portal's HTML does exactly that.
+    const path = `feeds/${owner}/${hexTopic}`;
     try {
-      res = await this.fetchResource(`feeds/${owner}/${hexTopic}`);
+      const res = await this.fetchResource(path);
+      const parsed = parseManifest(res.text);
+      const shouldContinue = this.stateManager.updateManifest(
+        hexTopic,
+        parsed.headers,
+        parsed.segments,
+        parsed.isFinalized,
+      );
+
+      // Checked before the index is committed, not after. An index is what routes the next poll to
+      // the follow-up path, so committing one for a response that yielded no playlist strands the
+      // topic there, answering every poll with the same empty string and never asking the head again.
+      const manifest = this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+      if (!manifest) {
+        throw new ManifestFetchError(path, res.status);
+      }
+      if (shouldContinue) {
+        this.stateManager.setIndex(hexTopic, this.extractIndex(res));
+      }
+
+      // Reachable rather than served. This endpoint answers with the publisher's last update, so it
+      // answers the same for a live broadcast and one that stopped an hour ago, and treating it as a
+      // served slot would erase an unserved run on the one path every restart takes.
+      this.feedHealth.recordGatewayReachable(hexTopic);
+      return manifest;
     } catch (error) {
-      // Every status counts here, 404 included. On the follow-up path a 404 means the publisher has
-      // not written the next slot yet, which is ordinary; this request asks for the feed's head, so
-      // nothing being there is the gateway having no answer at all.
       this.feedHealth.recordGatewayFailure(hexTopic);
       throw error;
     }
-    // Reachable rather than served. This endpoint answers with the publisher's last update, so it
-    // answers the same for a live broadcast and one that stopped an hour ago, and treating it as a
-    // served slot would erase an unserved run on the one path every restart takes.
-    this.feedHealth.recordGatewayReachable(hexTopic);
-
-    const parsed = parseManifest(res.text);
-    const shouldContinue = this.stateManager.updateManifest(
-      hexTopic,
-      parsed.headers,
-      parsed.segments,
-      parsed.isFinalized,
-    );
-    if (shouldContinue) {
-      this.stateManager.setIndex(hexTopic, this.extractIndex(res));
-    }
-
-    return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
   }
 
   private async handleFollowupFetch(owner: string, topic: Topic): Promise<string> {
