@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
-import { MAX_STREAM_ID_LENGTH } from '../src/api/schemas/streamRequests.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, STREAM_STATUS_LIVE } from '../src/types.js';
+import { MAX_STREAM_ID_LENGTH } from '../src/utils/streamId.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
 import { makeRecordingCatalog, makeTestOrchestrator } from './helpers/fakes.js';

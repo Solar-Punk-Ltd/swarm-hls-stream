@@ -2,24 +2,19 @@ import { z } from 'zod';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO } from '../../types.js';
 import { isUsableDuration } from '../../utils/segmentDuration.js';
+import { MAX_STREAM_ID_LENGTH, STREAM_ID_SEGMENT } from '../../utils/streamId.js';
 
 /**
- * Long enough for the deepest `app/stream` an engine builds, short enough that the value cannot be
- * used as storage. It bounds a key, not a name: a stream id is retained per stream in several maps,
- * and the rate limiter added in S1.6 keys on the one arriving in `x-stream-id`.
- */
-export const MAX_STREAM_ID_LENGTH = 128;
-
-/**
- * Slash-separated segments of `[A-Za-z0-9._-]`, each beginning with an alphanumeric.
+ * Slash-separated {@link STREAM_ID_SEGMENT}s.
  *
- * The shape is what the engines already produce (`buildStreamId` joins an app and a stream with a
- * slash), so restricting to it costs nothing a real broadcaster sends. Requiring an alphanumeric
- * first character is what does the security work: it makes `..` unrepresentable as a segment, so a
- * traversal cannot be spelled at all rather than being sanitized away later, and it rejects the
- * leading, trailing and doubled slashes that make two spellings of one id.
+ * This used to claim the shape "is what the engines already produce … so restricting to it costs
+ * nothing a real broadcaster sends". That was false in the direction that matters: `parseAppStream`
+ * would produce names this refuses, so a stream the engine had started could not be named to
+ * `POST /stream/stop`, `/stream/status` or the `x-stream-id` header, and the per-stream rate limit
+ * keyed on that header never saw it. The premise is now enforced rather than asserted, by building
+ * both ends out of the same segment rule. See SEC-25.
  */
-const STREAM_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
+const STREAM_ID_PATTERN = new RegExp(`^${STREAM_ID_SEGMENT}(?:\\/${STREAM_ID_SEGMENT})*$`);
 
 /**
  * Every message in this file is written here rather than taken from the validator's defaults, and

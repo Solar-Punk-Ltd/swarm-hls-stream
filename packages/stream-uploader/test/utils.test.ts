@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { streamIdSchema } from '../src/api/schemas/streamRequests.js';
 import { isMasterPlaylist, parseAppStream, parseMasterPlaylist, parseMediaPlaylist } from '../src/engines/ome/utils.js';
 
 describe('parseAppStream', () => {
@@ -33,20 +34,61 @@ describe('parseAppStream', () => {
     });
   });
 
-  it('returns undefined fields when the URL has no app/stream and no streamid', () => {
-    assert.deepEqual(parseAppStream('srt://127.0.0.1:10080'), { app: undefined, stream: undefined });
-    assert.deepEqual(parseAppStream('srt://127.0.0.1:10080/video'), { app: 'video', stream: undefined });
+  /**
+   * These returned `{ app: 'video', stream: undefined }` and similar until SEC-25. That satisfied
+   * the `AppStream` type without being one, and `handleAdmission` went straight on to build the
+   * stream id `video/undefined` and admit the publish. Every such URL collapsed onto one of two
+   * ids, so one broadcaster's closing ended another's session.
+   */
+  it('throws when the URL names no app/stream pair and carries no streamid', () => {
+    assert.throws(() => parseAppStream('srt://127.0.0.1:10080'), /no app\/stream pair/);
+    assert.throws(() => parseAppStream('srt://127.0.0.1:10080/video'), /no app\/stream pair/);
   });
 
-  it('returns undefined fields when the streamid has no app/stream', () => {
-    assert.deepEqual(parseAppStream('srt://host:10080?streamid=srt://host:10080/video'), {
-      app: 'video',
-      stream: undefined,
-    });
+  it('throws when the streamid names no app/stream pair', () => {
+    assert.throws(() => parseAppStream('srt://host:10080?streamid=srt://host:10080/video'), /no app\/stream pair/);
   });
 
+  /**
+   * Its own distinct text, not the shared `Could not parse app/stream` prefix. When the SEC-25
+   * errors reused that prefix, this assertion stopped discriminating: deleting the URL-parse throw
+   * entirely and letting `parts` fall through as `[]` left 111 tests green, because the no-pair
+   * branch raised a message this regex also matched.
+   */
   it('throws when the URL is not parseable', () => {
-    assert.throws(() => parseAppStream('not a url'), /Could not parse app\/stream/);
+    assert.throws(() => parseAppStream('not a url'), /unparseable/);
+  });
+
+  /**
+   * The security half of SEC-25, and a strictly larger hole than the emptiness check beside it.
+   * `srt:` is not a special scheme, so `new URL` keeps a backslash in `pathname` verbatim. The name
+   * below therefore reached `OmeHlsPuller`, which interpolates it into an `http:` URL, where the
+   * WHATWG parser reads `\` as `/` and resolves the dot segments, pointing the puller at
+   * `/video/victim/ts:playlist.m3u8` and mirroring another broadcaster's stream.
+   */
+  it('throws when a name would resolve to a path it does not look like', () => {
+    assert.throws(() => parseAppStream(String.raw`srt://ome:10080/video/pwn\..\..\video\victim`), /unusable/);
+    assert.throws(() => parseAppStream(String.raw`srt://ome:10080/vid\..\other/demo`), /unusable/);
+  });
+
+  // Every id the engine mints has to be one the operator can name back to /stream/stop. Before
+  // SEC-25 these parsed, were admitted, and were then refused by `streamIdSchema`. Asserted against
+  // that schema rather than against a list of my own, so the two cannot drift apart.
+  it('throws on names the request schema would refuse, so no stream is started that cannot be stopped', () => {
+    for (const name of ['-leading-dash', 'a b', 'dem%6f', '.hidden', 'a'.repeat(400)]) {
+      const url = `srt://ome:10080/video/${name}`;
+      assert.equal(streamIdSchema.safeParse(`video/${name}`).success, false, `the premise is wrong for ${name}`);
+      assert.throws(() => parseAppStream(url), /unusable/, `parseAppStream minted an unstoppable id for ${name}`);
+    }
+  });
+
+  // The other half of the same rule: everything the schema accepts still parses. A guard that
+  // refused real broadcasters would be worse than the hole it closes.
+  it('still accepts every name the request schema accepts', () => {
+    for (const name of ['demo', 'a', 'A9', 'z_0.1-2', 'x'.repeat(120)]) {
+      assert.equal(streamIdSchema.safeParse(`video/${name}`).success, true, `the premise is wrong for ${name}`);
+      assert.deepEqual(parseAppStream(`srt://ome:10080/video/${name}`), { app: 'video', stream: name });
+    }
   });
 });
 

@@ -10,6 +10,7 @@ import {
   REJECT_DRAINING,
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
+  STREAM_LIFECYCLE_DRAINING,
   STREAM_LIFECYCLE_FINALIZED,
   STREAM_LIFECYCLE_UNKNOWN,
   STREAM_STATUS_VOD,
@@ -101,6 +102,58 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
       1,
       'segments resuming must cancel the recovery timer so the stream is not VOD-ed mid-broadcast',
     );
+    await orch.cleanup();
+  });
+
+  /**
+   * The other side of the test above, and the one nothing pinned. The finalize timer deletes its own
+   * `recoveryTimers` entry before it calls `stopStream`, so the cancel branch that test exercises is
+   * unreachable once the timeout has fired. What stops a late segment from being taken anyway is the
+   * `isDraining` guard, which is set synchronously in the same turn, leaving no window between the
+   * two for `handleSegment` to run in.
+   *
+   * Recorded as CON-12, whose measured damage was a segment uploaded and stamp-paid into a manifest
+   * already committed, a live manifest published above the VOD's index, and a recovery file
+   * resurrected after `notifyStop` removed it. None of that reproduces now: the guard added for
+   * CON-22 closed it as a side effect. This test is here because nothing else states that the
+   * recovery-timeout path depends on that guard, so removing it would reopen CON-12 silently.
+   */
+  it('refuses a segment that arrives while the recovery timeout is finalizing, rather than taking it', async () => {
+    const id = 'live/stream';
+    const clock = new FakeClock();
+    let releaseVod: () => void = () => {};
+    const vodPublishing = new Promise<void>((resolve) => {
+      releaseVod = resolve;
+    });
+
+    const orch = makeTestOrchestrator(
+      { recoveryTimeout: RECOVERY_TIMEOUT_MS, clock },
+      // Holds the VOD manifest publish open, which is what keeps the drain running long enough for a
+      // segment to land inside it. Without this the finalize completes in the same turn and the
+      // window under test never exists.
+      {
+        uploadPayload: async (index: number) => {
+          await vodPublishing;
+          return { reference: { toHex: () => `soc${index}` } };
+        },
+      },
+      makeFakeRecoveryStore({ listActive: () => [toRecoveryFileId(id)], load: () => makeRecoveredState(id) }),
+    );
+
+    await orch.recoverStreams();
+    await clock.advance(RECOVERY_TIMEOUT_MS);
+    await waitFor(() => orch.getStreamStatus(id).state === STREAM_LIFECYCLE_DRAINING, SETTLE_CEILING_MS);
+
+    const late = orch.handleSegment(id, 42, 2, Buffer.from('late-seg'));
+
+    assert.deepEqual(
+      late,
+      { accepted: false, reason: REJECT_DRAINING },
+      'a segment taken here is paid for and published into a manifest that is already sealed',
+    );
+
+    releaseVod();
+    await waitFor(() => orch.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
     await orch.cleanup();
   });
 
