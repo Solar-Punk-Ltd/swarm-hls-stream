@@ -64,13 +64,35 @@ export function parseVars(stdout: string): Record<string, ShellVar> {
   return vars;
 }
 
-/** Read the named shell variables after running `setup`, with `_lib.sh` sourced. */
+/**
+ * Read the named shell variables after running `setup`, with `_lib.sh` sourced.
+ *
+ * Throws when the child did not report on every name it was asked about, rather than handing back a
+ * partial map. Those two outcomes are indistinguishable downstream and they mean opposite things: a
+ * variable the shell reports as unset is evidence about the shell, and a variable the shell never
+ * reported on is evidence about nothing.
+ *
+ * Not hypothetical. During the review of this change a lens measured 8, 8 and 9 failures for three
+ * mutations that reproduce at 1, 0 and 1, and the entire inflation was one run in which all nine
+ * `PORT_VARS` came back absent. Every comparison in that block failed at once and read as a mirror
+ * divergence, which is the single conclusion these tests exist to draw and the one thing an
+ * environment failure must never be able to fake. Root cause is still unknown, so this cannot
+ * prevent it. It makes it announce itself instead of being reported as a defect in the deploy.
+ */
 export function readVars(
   setup: string,
   names: readonly string[],
   ...args: readonly string[]
 ): Record<string, ShellVar> {
-  return parseVars(inLib([setup, ...names.map(emitVar)].join('\n'), ...args));
+  const vars = parseVars(inLib([setup, ...names.map(emitVar)].join('\n'), ...args));
+  const missing = names.filter((name) => !(name in vars));
+  if (missing.length > 0) {
+    throw new Error(
+      `the shell child reported on ${Object.keys(vars).length} of ${names.length} variables, ` +
+        `missing: ${missing.join(', ')}. This is an environment failure, not a mirror divergence.`,
+    );
+  }
+  return vars;
 }
 
 /** Shell assignment lines for a fixture environment, for use as the `setup` of `readVars`. */

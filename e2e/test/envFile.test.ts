@@ -148,3 +148,28 @@ describe('processEnv', () => {
     assert.deepEqual(processEnv({ A: '1', B: undefined, C: '' }), { A: '1', C: '' });
   });
 });
+
+describe('the shell helper distinguishes an environment failure from a divergence', () => {
+  /**
+   * `readVars` must not hand back a partial map. A variable the shell reports as unset is evidence
+   * about the shell; a variable it never reported on is evidence about nothing, and downstream the
+   * two are indistinguishable.
+   *
+   * Measured during this change's review: a lens saw 8, 8 and 9 failures for three mutations that
+   * reproduce at 1, 0 and 1, and the whole inflation was one run where all nine `PORT_VARS` came
+   * back absent. Every comparison failed at once and read as a mirror divergence, which is the one
+   * conclusion these tests exist to draw.
+   */
+  it('throws when the child reports on fewer variables than it was asked about', () => {
+    assert.throws(
+      // `exit 0` before any variable is emitted stands in for a child that produced nothing.
+      () => readVars('exit 0', ['API_PORT', 'CLIENT_PORT']),
+      /environment failure, not a mirror divergence/,
+    );
+  });
+
+  it('does not throw when the child reports every variable, set or not', () => {
+    const vars = readVars('UNSET_ON_PURPOSE_XYZ=; unset UNSET_ON_PURPOSE_XYZ', ['UNSET_ON_PURPOSE_XYZ']);
+    assert.equal(vars.UNSET_ON_PURPOSE_XYZ.isSet, false, 'an unset variable is a real answer and must survive');
+  });
+});
