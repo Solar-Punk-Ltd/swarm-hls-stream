@@ -92,8 +92,10 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
 
     const ev = await events();
     assert.ok(
-      ev.discontinuitiesArmed.length >= 1,
-      `a crash outage (> 15s window) must arm at least one discontinuity; armed: ${ev.discontinuitiesArmed.join(',')}`,
+      ev.discontinuitiesArmed >= 1,
+      `a crash outage (> 15s window) must arm at least one discontinuity; armed: ${
+        ev.discontinuitiesArmed
+      } (upload-failure segments: ${ev.discontinuitySegments.join(',')})`,
     );
     assert.ok(
       !isContiguous(ev.uploadedSegments),

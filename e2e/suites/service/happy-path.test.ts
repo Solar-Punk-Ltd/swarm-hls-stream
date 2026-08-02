@@ -51,9 +51,11 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
       `happy-path segment indices must be gapless; got: ${ev.uploadedSegments.join(',')}`,
     );
     assert.equal(
-      ev.discontinuitiesArmed.length,
+      ev.discontinuitiesArmed,
       0,
-      `no fault → no discontinuity should be armed; armed: ${ev.discontinuitiesArmed.join(',')}`,
+      `no fault → no discontinuity should be armed; armed: ${
+        ev.discontinuitiesArmed
+      } (upload-failure segments: ${ev.discontinuitySegments.join(',')})`,
     );
     assert.ok(
       ev.manifestSocIndices.length >= 2,

@@ -22,14 +22,41 @@
 
 export interface UploaderEvents {
   uploadedSegments: number[];
-  discontinuitiesArmed: number[];
+  /**
+   * How many discontinuities were armed, by any of the three paths.
+   *
+   * A count rather than a list of indices, because two of the three paths name no segment. The
+   * scenarios that care read `.length`, and the one that wants an index reads
+   * `discontinuitySegments`.
+   */
+  discontinuitiesArmed: number;
+  /** Segment indices from the upload-failure path, the only one that reports an index. */
+  discontinuitySegments: number[];
   manifestSocIndices: number[];
   staleWarnings: number;
   retries: number;
 }
 
 const RE_UPLOADED = /Segment (\d+) uploaded/g;
-const RE_DISCONTINUITY = /Failed to upload segment (\d+)[^\n]*marking a discontinuity/g;
+/**
+ * All three ways the uploader arms a discontinuity, not just the upload failure.
+ *
+ * `StreamUploader` sets `pendingDiscontinuity` from three call sites, each with its own message:
+ * the retry window being spent (`Failed to upload segment N …`), `handleSegmentLoss`
+ * (`… never reached the uploader, marking a discontinuity`), and `markDiscontinuity`
+ * (`Origin declared a discontinuity …, marking the next segment`). Only the first carries a segment
+ * index, which is why this counts occurrences rather than capturing one.
+ *
+ * Anchoring on the upload failure alone matched one of the three. Both misses are OME-only, and the
+ * `markDiscontinuity` one is the dangerous shape: the segment carrying the marker IS accepted and
+ * uploaded, so it leaves no hole in the indices and `isContiguous` is not a backstop either. Four
+ * scenarios assert `discontinuitiesArmed.length === 0` in the general wording "must not arm a
+ * discontinuity", and on OME none of them could observe two of the three ways one gets armed.
+ */
+const RE_DISCONTINUITY = /marking a discontinuity|marking the next segment/g;
+
+/** The upload-failure path is the only one naming a segment, and scenario B asserts on that index. */
+const RE_DISCONTINUITY_SEGMENT = /Failed to upload segment (\d+)[^\n]*marking a discontinuity/g;
 const RE_MANIFEST = /Manifest uploaded at SOC index (\d+)/g;
 const RE_STALE = /is stale: \d+ consecutive/g;
 const RE_RETRY = /Retrying in ~/g;
@@ -91,7 +118,8 @@ export function parseUploaderLog(text: string): UploaderEvents {
   const messages = messageText(text);
   return {
     uploadedSegments: captureNumbers(messages, RE_UPLOADED),
-    discontinuitiesArmed: captureNumbers(messages, RE_DISCONTINUITY),
+    discontinuitiesArmed: countMatches(messages, RE_DISCONTINUITY),
+    discontinuitySegments: captureNumbers(messages, RE_DISCONTINUITY_SEGMENT),
     manifestSocIndices: captureNumbers(messages, RE_MANIFEST),
     staleWarnings: countMatches(messages, RE_STALE),
     retries: countMatches(messages, RE_RETRY),

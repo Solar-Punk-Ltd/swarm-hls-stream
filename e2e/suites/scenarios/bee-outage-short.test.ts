@@ -75,11 +75,11 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
 
     const events = parseUploaderLog(await host.logsSince(uploader, startedAt));
     assert.equal(
-      events.discontinuitiesArmed.length,
+      events.discontinuitiesArmed,
       0,
-      `an ${
-        OUTAGE_MS / 1000
-      }s outage (< 15s window) must not arm a discontinuity; armed: ${events.discontinuitiesArmed.join(',')}`,
+      `an ${OUTAGE_MS / 1000}s outage (< 15s window) must not arm a discontinuity; armed: ${
+        events.discontinuitiesArmed
+      } (upload-failure segments: ${events.discontinuitySegments.join(',')})`,
     );
     assert.ok(
       isContiguous(events.uploadedSegments),

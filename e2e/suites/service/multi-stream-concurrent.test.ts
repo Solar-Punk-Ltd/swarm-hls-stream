@@ -54,7 +54,14 @@ describe('service — two concurrent streams upload independently', () => {
     assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
     feed = await discoverCatalogFeed(host, cfg);
     await waitForIdle(host, cfg);
-    baselineTopics = new Set((await safeFetch()).map((e) => e.topic));
+    // Deliberately NOT the swallowing `safeFetch`. A failed read here yields an empty baseline, and
+    // an empty baseline makes every entry look new — including the previous scenario's, which is
+    // still `live` on the gateway because these suites run serially and that catalog lags by
+    // minutes. The wait below would then latch onto a stream this test never published. The read
+    // carries an 8s deadline while these tests budget 300s for the gateway, so it timing out is the
+    // ordinary case rather than an exotic one. On the polls `safeFetch` stays, because there "not
+    // ready yet" is a real answer.
+    baselineTopics = new Set((await fetchCatalog(host, cfg, feed)).map((e) => e.topic));
     startedAt = await host.nowIso();
     first = startPublisher(cfg);
     second = startPublisher(cfg, { streamPath: secondStreamPath });
@@ -88,11 +95,10 @@ describe('service — two concurrent streams upload independently', () => {
 
     const duringConcurrency = parseUploaderLog(await host.logsSince(uploader, startedAt));
     assert.equal(
-      duringConcurrency.discontinuitiesArmed.length,
+      duringConcurrency.discontinuitiesArmed,
       0,
-      `concurrent streams (no fault) must not arm a discontinuity; armed: ${duringConcurrency.discontinuitiesArmed.join(
-        ',',
-      )}`,
+      `concurrent streams (no fault) must not arm a discontinuity; armed: ${duringConcurrency.discontinuitiesArmed}` +
+        ` (upload-failure segments: ${duringConcurrency.discontinuitySegments.join(',')})`,
     );
 
     await first.stop();

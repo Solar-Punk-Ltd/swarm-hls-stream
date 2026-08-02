@@ -70,9 +70,11 @@ describe('G — gateway (viewer-side) outage: uploads unaffected', () => {
       'segments must keep uploading WHILE the gateway is down (upload path is independent)',
     );
     assert.equal(
-      events.discontinuitiesArmed.length,
+      events.discontinuitiesArmed,
       0,
-      `a viewer-side outage must not arm a discontinuity; armed: ${events.discontinuitiesArmed.join(',')}`,
+      `a viewer-side outage must not arm a discontinuity; armed: ${
+        events.discontinuitiesArmed
+      } (upload-failure segments: ${events.discontinuitySegments.join(',')})`,
     );
     assert.ok(
       isContiguous(events.uploadedSegments),

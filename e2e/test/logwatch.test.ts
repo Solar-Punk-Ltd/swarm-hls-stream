@@ -43,6 +43,14 @@ const UPLOADED = (index: number) => `Segment ${index} uploaded: bzz://a1b2c3`;
 const MANIFEST = (index: number) => `Manifest uploaded at SOC index ${index}`;
 const DISCONTINUITY = (index: number) =>
   `Failed to upload segment ${index} for stream stream-7 within the retry window; marking a discontinuity`;
+/** `handleSegmentLoss`, count 1. Arms a discontinuity and names no index the harness can capture. */
+const SEGMENT_LOST = (index: number) =>
+  `Segment ${index} for stream stream-7 never reached the uploader, marking a discontinuity`;
+/** `handleSegmentLoss`, count > 1. */
+const SEGMENTS_LOST = (count: number, index: number) =>
+  `${count} segments from index ${index} for stream stream-7 never reached the uploader, marking a discontinuity`;
+/** `markDiscontinuity`. Ordinary rather than an error: the origin declared it and nothing was lost. */
+const ORIGIN_DISCONTINUITY = 'Origin declared a discontinuity for stream stream-7, marking the next segment';
 const STALE = (count: number) => `Live manifest for stream stream-7 is stale: ${count} consecutive publish failure(s)`;
 const RETRY = 'Retrying in ~1840ms (attempt 2). Error: connect ECONNREFUSED';
 
@@ -66,8 +74,9 @@ describe('parseUploaderLog reads the text format', () => {
     assert.deepEqual(parseUploaderLog(log).manifestSocIndices, [11, 12]);
   });
 
-  it('captures the segment a discontinuity was armed for', () => {
-    assert.deepEqual(parseUploaderLog(log).discontinuitiesArmed, [2]);
+  it('counts the discontinuity and captures the segment it names', () => {
+    assert.equal(parseUploaderLog(log).discontinuitiesArmed, 1);
+    assert.deepEqual(parseUploaderLog(log).discontinuitySegments, [2]);
   });
 
   it('counts stale warnings and retries', () => {
@@ -79,7 +88,8 @@ describe('parseUploaderLog reads the text format', () => {
   it('reports nothing rather than throwing on an empty log', () => {
     assert.deepEqual(parseUploaderLog(''), {
       uploadedSegments: [],
-      discontinuitiesArmed: [],
+      discontinuitiesArmed: 0,
+      discontinuitySegments: [],
       manifestSocIndices: [],
       staleWarnings: 0,
       retries: 0,
@@ -90,6 +100,11 @@ describe('parseUploaderLog reads the text format', () => {
   // that landed, or scenario B's gap would read as a clean run.
   it('does not count a failed segment as uploaded', () => {
     assert.deepEqual(parseUploaderLog(textLine('error', DISCONTINUITY(9))).uploadedSegments, []);
+  });
+
+  // The inverse of the arming patterns: an ordinary upload must not read as a discontinuity.
+  it('arms nothing on a clean run', () => {
+    assert.equal(parseUploaderLog(textLine('log', UPLOADED(0))).discontinuitiesArmed, 0);
   });
 });
 
@@ -107,10 +122,54 @@ describe('parseUploaderLog reads the json format', () => {
     assert.deepEqual(parseUploaderLog(log), {
       uploadedSegments: [0],
       manifestSocIndices: [4],
-      discontinuitiesArmed: [1],
+      discontinuitiesArmed: 1,
+      discontinuitySegments: [1],
       staleWarnings: 1,
       retries: 1,
     });
+  });
+});
+
+describe('every path that arms a discontinuity is counted', () => {
+  /**
+   * `StreamUploader` arms `pendingDiscontinuity` from three call sites and only one of them says
+   * "Failed to upload segment". Anchoring on that one matched a third of them, and both misses are
+   * reachable only through the OME puller — an engine this harness supports as a first-class
+   * target. Four scenarios assert `discontinuitiesArmed === 0` in the general wording "must not arm
+   * a discontinuity", so on OME each of them was asserting something it could not observe.
+   */
+  for (const [name, line] of [
+    ['the upload retry window being spent', DISCONTINUITY(2)],
+    ['a single segment never reaching the uploader', SEGMENT_LOST(2)],
+    ['several segments never reaching the uploader', SEGMENTS_LOST(3, 2)],
+    ['the origin declaring one', ORIGIN_DISCONTINUITY],
+  ] as const) {
+    it(`counts ${name}`, () => {
+      assert.equal(parseUploaderLog(textLine('error', line)).discontinuitiesArmed, 1);
+    });
+  }
+
+  /**
+   * The dangerous one, stated as its own case. The segment carrying an origin-declared marker IS
+   * accepted and uploaded, so it leaves no hole in the indices and `isContiguous` is not a backstop
+   * either. If the count misses it, nothing else in the suite can see it.
+   */
+  it('sees an origin-declared discontinuity that leaves the segment run gapless', () => {
+    const log = [
+      textLine('log', UPLOADED(0)),
+      textLine('info', ORIGIN_DISCONTINUITY),
+      textLine('log', UPLOADED(1)),
+    ].join('\n');
+    const events = parseUploaderLog(log);
+
+    assert.equal(events.discontinuitiesArmed, 1, 'an origin-declared discontinuity must be counted');
+    assert.equal(isContiguous(events.uploadedSegments), true, 'and it leaves no gap, which is why the count is needed');
+  });
+
+  it('reports no index for the two paths that name none', () => {
+    const log = [textLine('error', SEGMENT_LOST(2)), textLine('info', ORIGIN_DISCONTINUITY)].join('\n');
+    assert.equal(parseUploaderLog(log).discontinuitiesArmed, 2);
+    assert.deepEqual(parseUploaderLog(log).discontinuitySegments, []);
   });
 });
 
