@@ -5,7 +5,12 @@ WORKDIR /app
 COPY packages/stream-uploader/package.json .
 COPY packages/stream-uploader/dist/ ./dist/
 
-# Install production dependencies only
-RUN npm install --omit=dev
+# `npm pkg delete devDependencies` first, because npm parses the whole manifest before it honours
+# `--omit=dev` and it does not understand pnpm's `workspace:` protocol outside a workspace. The
+# uploader dev-depends on @swarm-hls-stream/shared, so without this line the build dies here with
+# EUNSUPPORTEDPROTOCOL. Deleting the block is semantically free: --omit=dev was going to skip every
+# entry in it anyway, and the one that ships is already compiled into dist/node_modules by
+# scripts/vendor-shared.mjs.
+RUN npm pkg delete devDependencies && npm install --omit=dev
 
 CMD ["node", "dist/index.js"]

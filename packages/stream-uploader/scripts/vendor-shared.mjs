@@ -8,8 +8,11 @@
  * from `dist/index.js` and from `dist/utils/env.js` alike, and it rides into the image inside the
  * `dist/` copy that is already there.
  *
- * Shared is therefore a devDependency of the uploader: `--omit=dev` skips it, which is correct,
- * because by then it is vendored rather than resolved.
+ * Shared is therefore a devDependency of the uploader, because by then it is vendored rather than
+ * resolved. **That is not enough on its own.** `--omit=dev` does not save the build: npm parses the
+ * whole manifest before it applies the flag and rejects the `workspace:` protocol outright with
+ * EUNSUPPORTEDPROTOCOL, dev block or not. `Dockerfile.uploader` deletes `devDependencies` before
+ * installing for exactly that reason, and `deploy/test/uploaderImage.test.js` holds the two together.
  *
  * The alternative was bundling, which is rejected for one specific reason: `src/utils/env.ts`
  * resolves the repository root by walking four levels up from its own compiled location, so
