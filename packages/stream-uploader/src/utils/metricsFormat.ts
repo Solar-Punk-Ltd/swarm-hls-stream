@@ -55,6 +55,12 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.authRejectionsTotal,
     },
     {
+      name: 'takeovers_refused_total',
+      type: 'counter',
+      help: 'Announces refused because another publisher holds that stream id and is still feeding it. Rising with no attack means a broadcaster is being locked out of their own id.',
+      value: snapshot.takeoversRefusedTotal,
+    },
+    {
       name: 'manifest_publish_failures_total',
       type: 'counter',
       help: 'Live manifest publishes that failed. Retried at the same index when the next segment arrives.',
