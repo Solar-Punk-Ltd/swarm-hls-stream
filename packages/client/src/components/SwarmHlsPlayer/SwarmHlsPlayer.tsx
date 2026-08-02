@@ -140,12 +140,18 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       detachRateGuard?.();
 
       if (hls) {
-        const hexTopic = toHexTopic(topicString);
-        if (hexTopic) {
-          ManifestStateManager.getInstance().clear(hexTopic);
+        // The destroy runs whatever the clear does. Losing it leaks the loaders and the media
+        // attachment of every player the page has ever mounted, and a cleanup that throws takes the
+        // rest of React's cleanup with it, so this is not a guarantee to drop for tidiness.
+        try {
+          const hexTopic = toHexTopic(topicString);
+          if (hexTopic) {
+            ManifestStateManager.getInstance().clear(hexTopic);
+          }
+        } finally {
+          hls.destroy();
+          hls = null;
         }
-        hls.destroy();
-        hls = null;
       }
     };
   }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString]);

@@ -15,8 +15,10 @@ export type FeedStateListener = (state: FeedState) => void;
  * How long to wait before asking a failing gateway again, after its first failure. Doubles per
  * consecutive failure up to {@link MANIFEST_RETRY_CAP_MS}.
  *
- * One target duration, so the first retry lands on the poll it would have landed on anyway and a
- * single flake costs nothing. Only a run of failures actually slows the polling down.
+ * One target duration, so a single flake costs at most one poll cycle rather than a visible pause.
+ * The deadline is stamped when the request failed, not when it was issued, so a request that spent
+ * time before failing pushes the next poll that much further inside the window. Only a run of
+ * failures actually slows the polling down.
  */
 export const MANIFEST_RETRY_BASE_MS = 2_000;
 
