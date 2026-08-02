@@ -20,10 +20,13 @@ export const LIVE_SYNC_DURATION_S = 10;
  * every mount of the player depends on the two staying ordered. The upper bound is the one that is
  * easy to get wrong, because nothing enforces it: hls.js only nudges the playback rate while the
  * drift is under `min(this, targetLatency + targetduration)` past the target, and only seeks once it
- * is past this. Set this higher than twice {@link LIVE_SYNC_DURATION_S} and the two stop meeting, so
- * a viewer between the end of catch-up and the start of the seek is left drifting with neither
- * running. At twice the target the ranges meet whatever the playlist's target duration turns out to
- * be, which is not a number this side of the system chooses.
+ * is past this. Set it high enough and the two stop meeting, leaving a viewer between the end of
+ * catch-up and the start of the seek with neither running, which is what 10 and 30 did between 22
+ * and 30 seconds of latency. At twice the target the ranges meet for **every** target duration, and
+ * that is the reason for the bound: the target duration is whatever the uploader's segment length
+ * makes it, not a number this side chooses. Larger values are not all broken, since a long enough
+ * target duration closes the gap on its own, but which ones are safe then depends on a number this
+ * side does not control.
  */
 export const LIVE_MAX_LATENCY_DURATION_S = 2 * LIVE_SYNC_DURATION_S;
 
