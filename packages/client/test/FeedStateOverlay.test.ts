@@ -1,4 +1,5 @@
 import { isValidElement, type ReactElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -50,6 +51,19 @@ describe('FeedStateOverlay', () => {
 
     assert.notEqual(stalled, '');
     assert.notEqual(stalled, textOf(render(FEED_STATE_RECONNECTING)));
+  });
+
+  /**
+   * The class names are the whole styling contract. `FeedStateOverlay.scss` keys the absolute
+   * positioning, the backdrop, the colour and the pulsing dot off these two, so renaming either
+   * renders the message as unstyled text in the document flow, in the exact situation the overlay
+   * exists for. Nothing asserted them, and `renderToStaticMarkup` needs no DOM.
+   */
+  it('keeps the class names its stylesheet is written against', () => {
+    const html = renderToStaticMarkup(render(FEED_STATE_RECONNECTING));
+
+    assert.match(html, /class="swarm-hls-feed-state"/);
+    assert.match(html, /class="swarm-hls-feed-state__dot"/);
   });
 
   it('announces itself to a screen reader without stealing focus', () => {
