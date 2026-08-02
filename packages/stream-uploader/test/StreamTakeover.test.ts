@@ -211,12 +211,18 @@ describe('taking over a stream id that is already being published', () => {
    * operands and each has its own null check, so dropping either one leaves the other test passing:
    * with only the incumbent's check gone, `null !== BROADCASTER` reads as proof of a stranger, and
    * this is the only test that reaches it.
+   *
+   * The incumbent takes the default rather than an explicit `{ address: null }`, which is the shape
+   * `POST /stream/start` produces. That also puts `ANONYMOUS_CLAIMANT`'s own contents under test:
+   * mutation found that replacing it with `{}` survived the whole suite, because `undefined` compares
+   * equal to `undefined` and every other test here has it on both sides of the comparison. Against a
+   * named newcomer it does not, and an operator-started stream would refuse the broadcaster.
    */
   it('allows a takeover when only the newcomer was named', async () => {
     const harness = makeHarness();
     const { orch, published } = harness;
 
-    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: null }), true);
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO), true);
     await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
     await publishOneSegment(harness, 0);
 
