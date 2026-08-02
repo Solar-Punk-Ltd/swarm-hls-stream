@@ -199,7 +199,9 @@ export class FeedHealthTracker {
   /** Forget a topic, or all of them. */
   clear(topicId?: string): void {
     if (topicId === undefined) {
+      const forgotten = [...this.topics.keys()];
       this.topics.clear();
+      this.publishAll(forgotten);
       return;
     }
     this.update(topicId, () => null);
@@ -224,12 +226,27 @@ export class FeedHealthTracker {
   }
 
   private evictOverflow(): void {
+    const evicted: string[] = [];
     while (this.topics.size > TRACKED_TOPIC_LIMIT) {
       const oldest = this.topics.keys().next();
       if (oldest.done) {
-        return;
+        break;
       }
       this.topics.delete(oldest.value);
+      evicted.push(oldest.value);
+    }
+    this.publishAll(evicted);
+  }
+
+  /**
+   * Say that these topics are back to live, because forgetting one is a state change like any other.
+   *
+   * Published after the map has finished changing rather than inside the loop, so that a listener
+   * which records against this tracker cannot resize the map halfway through a scan of it.
+   */
+  private publishAll(topicIds: string[]): void {
+    for (const topicId of topicIds) {
+      this.publish(topicId, FEED_STATE_LIVE);
     }
   }
 

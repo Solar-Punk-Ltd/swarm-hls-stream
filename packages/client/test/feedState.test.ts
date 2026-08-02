@@ -299,6 +299,31 @@ describe('FeedHealthTracker bounds', () => {
     assert.equal(tracker.state(`topic-${TRACKED_TOPIC_LIMIT}`), FEED_STATE_RECONNECTING);
   });
 
+  // Forgetting a topic changes what the tracker reports about it, so a subscriber that is not told
+  // renders "Reconnecting" for the rest of the session while the tracker considers it healthy.
+  it('tells a subscriber when its topic is the one evicted', () => {
+    const { tracker } = makeTracker();
+    const seen: FeedState[] = [];
+    tracker.recordGatewayFailure('topic-0');
+    tracker.subscribe('topic-0', (state) => seen.push(state));
+
+    for (let i = 1; i <= TRACKED_TOPIC_LIMIT; i++) {
+      tracker.recordGatewayFailure(`topic-${i}`);
+    }
+
+    assert.deepEqual(seen, [FEED_STATE_RECONNECTING, FEED_STATE_LIVE]);
+  });
+
+  it('tells every subscriber when the whole tracker is cleared', () => {
+    const { tracker, seen, watch } = makeTracker();
+    tracker.recordGatewayFailure(TOPIC);
+    watch();
+
+    tracker.clear();
+
+    assert.deepEqual(seen, [FEED_STATE_RECONNECTING, FEED_STATE_LIVE]);
+  });
+
   it('keeps a topic that is still failing ahead of ones that failed before it', () => {
     const { tracker } = makeTracker();
 
