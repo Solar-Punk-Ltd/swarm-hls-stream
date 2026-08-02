@@ -44,6 +44,20 @@ describe('FeedHealthTracker backoff schedule', () => {
     assert.deepEqual([1, 2, 3, 4, 5, 6, 20].map(backoffDelayMs), [2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
   });
 
+  /**
+   * The sibling constant, pinned the same way and for the same reason. Every test that exercises the
+   * unserved run loops `UNSERVED_SLOT_POLL_LIMIT` times against an implementation that compares
+   * against `UNSERVED_SLOT_POLL_LIMIT`, so the constant was only ever compared to itself: raising it
+   * to 600 left all 18 tests here green, and 600 polls is ten minutes of a dead feed before a viewer
+   * is told anything.
+   *
+   * hls.js reloads an unchanged live playlist at about half its target duration, so at the two second
+   * segments this system produces, 30 polls is roughly half a minute of a feed that is not advancing.
+   */
+  it('waits about half a minute of unserved polls before calling a feed stalled', () => {
+    assert.equal(UNSERVED_SLOT_POLL_LIMIT, 30);
+  });
+
   it('counts the wait down against its own clock', () => {
     const { tracker, clock } = makeTracker();
 
