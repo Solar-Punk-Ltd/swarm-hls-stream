@@ -97,6 +97,46 @@ export function paceDriftMsPerMinute(wallMs: readonly number[], mediaMs: readonl
   return ((mediaSpanMs - wallSpanMs) / wallSpanMs) * 60_000;
 }
 
+/**
+ * What to distrust when a hop came out negative, decided from the run's own numbers.
+ *
+ * The previous version of this named the skew estimate first and asserted that the totals were
+ * unaffected. Both were wrong in the way that matters: it recommended a suspect its own printed
+ * uncertainty had already ruled out, and it gave an unconditional reassurance for a conditional fact.
+ *
+ * Skew only reaches the two hops in `HOPS_CROSSING_CLOCKS`, and it moves them by exactly the error in
+ * `offsetMs`. So a negative cross-clock hop is explicable by skew only if closing it needs a
+ * correction inside `uncertaintyMs`, which is a question the numbers answer rather than a judgement.
+ *
+ * The totals claim is conditional because `totalMs` and the `upload` hop share `capturedAtMs`. An
+ * error in the segment duration or in the log pairing moves the hop alone and leaves every total
+ * standing; an error in the recovered capture instant moves both, one for one.
+ */
+function impossibleHopGuidance(run: BenchRun): string[] {
+  const worstShortfallMs = Math.max(
+    ...run.samples.flatMap((sample) =>
+      impossibleHops(sample.split)
+        .filter((hop) => HOPS_CROSSING_CLOCKS.includes(hop.name))
+        .map((hop) => -hop.ms),
+    ),
+    0,
+  );
+  const uncertaintyMs = run.samples[0]?.split.skew.uncertaintyMs ?? 0;
+  const skewCouldExplainIt = worstShortfallMs > 0 && worstShortfallMs <= uncertaintyMs;
+
+  return [
+    skewCouldExplainIt
+      ? `  The skew estimate can account for this: closing the widest gap needs ${Math.round(worstShortfallMs)}ms, ` +
+        `inside the +/-${Math.round(uncertaintyMs)}ms this run measured.`
+      : `  **Not the skew estimate.** Closing the widest gap needs ${Math.round(worstShortfallMs)}ms of ` +
+        `correction, outside the +/-${Math.round(uncertaintyMs)}ms this run measured, so the remaining ` +
+        'candidates are the segment duration, the log pairing, and the recovered capture instant.',
+    '  Whether the totals survive depends on which of those it is. The segment duration and the log ' +
+      'pairing move the hop alone. The capture instant is shared with the total and moves both by the ' +
+      'same amount, so a total is only safe once the capture instant is cleared.',
+  ];
+}
+
 function knobLine(knobs: PublishKnobs): string {
   return `${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`;
 }
@@ -179,7 +219,7 @@ export function renderReport(run: BenchRun): string {
     lines.push(
       '- **hops that cannot be true**, meaning an input is wrong rather than a pipeline that is fast:',
       ...impossible.map((line) => `  - ${line}`),
-      '  The totals are unaffected; the skew estimate or the log pairing is what to distrust.',
+      ...impossibleHopGuidance(run),
     );
   }
 

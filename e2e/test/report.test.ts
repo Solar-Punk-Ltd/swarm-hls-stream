@@ -149,6 +149,32 @@ describe('the report an operator reads', () => {
     assert.match(report, /no video packets in the segment/);
   });
 
+  /**
+   * The guidance has to be decided from the run's own numbers, not asserted. Naming skew as the
+   * suspect when the run's own uncertainty cannot cover the gap sends the reader at the one cause
+   * already excluded, which is what the previous version did.
+   */
+  it('refuses to blame the skew estimate for a gap the skew estimate cannot cover', () => {
+    // Uploaded 500ms before the segment it belongs to could have closed, which is 500ms of correction
+    // against a skew this run bounded at 8ms.
+    const impossible: SegmentInstants = {
+      capturedAtMs: BENCH_T0,
+      segmentDurationS: 2,
+      uploadedAtMs: BENCH_T0 + 1_500 + SKEW.offsetMs,
+      manifestPublishedAtMs: BENCH_T0 + 4_000 + SKEW.offsetMs,
+      visibleAtMs: BENCH_T0 + 5_200,
+      fetchedAtMs: BENCH_T0 + 5_800,
+    };
+    const sample: SegmentSample = { index: 9, ref: 'ref9'.padEnd(16, '0'), split: latencySplit(impossible, SKEW) };
+    const upload = sample.split.hops.find((hop) => hop.name === 'upload');
+    assert.ok(upload && upload.ms < -SKEW.uncertaintyMs, 'fixture must produce a gap wider than the uncertainty');
+
+    const report = renderReport(runWith([sample]));
+
+    assert.match(report, /\*\*Not the skew estimate\.\*\*/);
+    assert.doesNotMatch(report, /The totals are unaffected/);
+  });
+
   it('names the configuration it measured, so a comparison cannot be made across different setups', () => {
     const report = renderReport(runWith(samples));
 
