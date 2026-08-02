@@ -96,6 +96,36 @@ const PUBLIC_HOST_RE = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+)$/;
 /** `<app>/<name>`, the only shape either engine's ingest accepts. */
 const STREAM_PATH_RE = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/;
 
+/**
+ * The two knobs that cannot come from an env file, because they choose which env file is read.
+ *
+ * `E2E_PROFILE` selects the root and engine files, so honouring it from inside one of them is
+ * circular, and letting a file decide which file is trusted is a hole worth keeping shut. The port
+ * slot rides along with it: the pair names one deployment and splitting where they may be set makes
+ * a half-applied target, which is the worse failure.
+ */
+const PROCESS_ENV_ONLY = ['E2E_PROFILE', 'E2E_PORT_SLOT'] as const;
+
+/**
+ * Refuse an env file that sets one of them, rather than ignoring it.
+ *
+ * Ignoring is what this did first, and it was silent in the one direction that matters. The
+ * neighbouring `E2E_SSH_TARGET` and `E2E_PUBLIC_HOST` ARE read from these files, so an operator who
+ * puts all four in `.env` gets a suite that reaches the right host and then targets the wrong
+ * deployment on it: `e2e:smoke` passes end to end, and `e2e:run` stops and kills the containers of
+ * whatever is running under the default profile while the profile they named is never touched.
+ */
+function requireNotSetInFile(bag: EnvBag, path: string): void {
+  const present = PROCESS_ENV_ONLY.filter((name) => name in bag);
+  if (present.length > 0) {
+    throw new Error(
+      `${present.join(' and ')} cannot be set in ${path}, because ${PROCESS_ENV_ONLY[0]} is what ` +
+        'chooses that file. Pass them in the environment instead, for example: ' +
+        `${present.map((name) => `${name}=<value>`).join(' ')} pnpm e2e:smoke`,
+    );
+  }
+}
+
 function env(bag: EnvBag, name: string, fallback: string): string {
   const value = bag[name];
   return value === undefined || value === '' ? fallback : value;
@@ -155,11 +185,14 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
   // This is the order deploy.sh runs in for the same reason.
   const rootPath = rootEnvPath(profile, rootDir);
   const rootEnv = readEnvFile(rootPath);
+  requireNotSetInFile(rootEnv, rootPath);
   const withRoot = layerEnv(shell, rootEnv);
   const engine = requireOneOf('E2E_ENGINE', env(withRoot, 'E2E_ENGINE', env(withRoot, 'ENGINE', 'srs')), ENGINES);
 
   const enginePath = engineEnvPath(engine, profile, rootDir);
-  const resolved = layerEnv(withRoot, readEnvFile(enginePath));
+  const engineEnv = readEnvFile(enginePath);
+  requireNotSetInFile(engineEnv, enginePath);
+  const resolved = layerEnv(withRoot, engineEnv);
 
   const ports = Object.fromEntries(
     Object.entries(PORT_SOURCES).map(([key, name]) => [key, resolvePort(name, portSlot, resolved)]),

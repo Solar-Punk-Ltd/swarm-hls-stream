@@ -203,6 +203,28 @@ describe('refusals', () => {
     }
   });
 
+  /**
+   * The one guard with no refusal test, and the only one whose value reaches a remote shell as
+   * genuine command interpolation: it flows to `engine.ts`, then `engine-restart` calls
+   * `host.restart(mediaContainer)`, which builds `docker restart ${container}` and hands the whole
+   * string to the far side's login shell. `E2E_SSH_TARGET` is an argv element, so its risk is
+   * option confusion; this one is the injection.
+   */
+  it('refuses an ome container name that would reach the remote shell as syntax', () => {
+    for (const name of ['ome; touch /tmp/pwned', 'ome $(id)', 'ome`id`', 'ome|id', 'ome name', '-rf']) {
+      assert.throws(
+        () => loadConfig({ env: { E2E_OME_CONTAINER: name }, rootDir: rootDir() }),
+        /E2E_OME_CONTAINER/,
+        `${JSON.stringify(name)} was accepted as a container name`,
+      );
+    }
+  });
+
+  it('accepts an ordinary ome container name', () => {
+    const cfg = loadConfig({ env: { E2E_OME_CONTAINER: 'ome' }, rootDir: rootDir() });
+    assert.equal(cfg.omeContainer, 'ome');
+  });
+
   it('refuses a public host that is not an address', () => {
     assert.throws(
       () => loadConfig({ env: { E2E_PUBLIC_HOST: 'http://example.com' }, rootDir: rootDir() }),
@@ -215,6 +237,59 @@ describe('refusals', () => {
       loadConfig({ env: { E2E_PUBLIC_HOST: '[2001:db8::1]' }, rootDir: rootDir() }).publicHost,
       '[2001:db8::1]',
     );
+  });
+});
+
+describe('the two knobs an env file may not set', () => {
+  /**
+   * `E2E_PROFILE` chooses which env file is read, so honouring it from inside one is circular, and
+   * the port slot rides with it because the pair names one deployment.
+   *
+   * Ignoring them silently was the defect. `E2E_SSH_TARGET` and `E2E_PUBLIC_HOST` ARE read from
+   * these files, so an operator putting all four in `.env` got a suite that reached the right host
+   * and then targeted the wrong deployment on it: smoke passed end to end, and `e2e:run` went on to
+   * stop and kill whatever was running under the default profile while the one they named was never
+   * touched.
+   */
+  for (const key of ['E2E_PROFILE', 'E2E_PORT_SLOT']) {
+    it(`refuses ${key} in the root env file rather than ignoring it`, () => {
+      const rootDir = fixtureRoot({ root: `${key}=whatever\n` });
+      assert.throws(() => loadConfig({ env: {}, rootDir }), new RegExp(`${key} cannot be set in`));
+    });
+
+    it(`refuses ${key} in the engine env file too`, () => {
+      const rootDir = fixtureRoot({ engines: { srs: `${key}=whatever\n` } });
+      assert.throws(() => loadConfig({ env: {}, rootDir }), new RegExp(`${key} cannot be set in`));
+    });
+  }
+
+  it('names the file and how to pass it instead', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_PROFILE=streamer1\n' });
+    assert.throws(
+      () => loadConfig({ env: {}, rootDir }),
+      (error: Error) => {
+        assert.match(error.message, /\.env/, 'the message must name the file');
+        assert.match(error.message, /pnpm e2e:smoke/, 'and how to pass it instead');
+        return true;
+      },
+    );
+  });
+
+  // Still honoured from the environment, which is the supported way to name a deployment.
+  it('honours both from the process environment', () => {
+    const rootDir = fixtureRoot({ profiles: { streamer1: '' } });
+    const cfg = loadConfig({ env: { E2E_PROFILE: 'streamer1', E2E_PORT_SLOT: '2' }, rootDir });
+    assert.equal(cfg.profile, 'streamer1');
+    assert.equal(cfg.portSlot, 2);
+  });
+
+  // The neighbours that ARE read from a file must keep working, or this guard has traded one
+  // surprise for another.
+  it('still reads the other E2E vars from the root env file', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_SSH_TARGET=streamhost\nE2E_PUBLIC_HOST=203.0.113.10\n' });
+    const cfg = loadConfig({ env: {}, rootDir });
+    assert.equal(cfg.sshTarget, 'streamhost');
+    assert.equal(cfg.publicHost, '203.0.113.10');
   });
 });
 
