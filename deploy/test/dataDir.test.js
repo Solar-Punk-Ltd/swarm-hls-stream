@@ -40,8 +40,9 @@ describe('bee data dir from .env (SEC-21)', () => {
   // and evaluates it. The value arrives from the root `.env`, and `.env.sample` is tracked while
   // `setup.sh` appends new sample keys into an existing `.env` — so a single line in a commit that
   // touches no shell script used to run a command on every operator's deployment host. Measured on
-  // the unfixed tree: the payload below executed twice, and `deploy.sh` reported success for the
-  // step. `load_env` is genuinely inert and OPS-6 proves that, which is a different claim.
+  // the unfixed tree, three runs of three: the payload below executed FOUR times, once per unquoted
+  // expansion of the value in the block that used to live here, and `deploy.sh` reported success for
+  // the step. `load_env` is genuinely inert and OPS-6 proves that, which is a different claim.
   it('refuses a value carrying a command instead of running it on the deployment host', async () => {
     const marker = payloadMarker();
 

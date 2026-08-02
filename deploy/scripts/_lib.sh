@@ -597,11 +597,20 @@ readonly DEFAULT_BEE_GATEWAY_DATA_DIR="./data/bee-gateway"
 
 # Refuse a bee data dir that the operator's `.env` cannot be trusted to have meant.
 #
-# The value is quoted everywhere it reaches a shell, and that is what stops it being read as code.
-# This is the part quoting cannot do: the path is handed to `mkdir -p` and `chmod -R 777` on the
-# deployment host, and `deploy/../..` is that host's home directory however carefully it is quoted.
-# The allowed character set is what a docker bind mount source and a shell can both carry without
-# ambiguity, so a value rejected here would not have worked as a data directory either. See SEC-21.
+# This character check is the layer that carries the safety, not `shell_quote`, and it is worth being
+# exact about that: the value reaches an `ssh` command line, `shell_quote` wraps it, and the quoting
+# was itself wrong on bash 3.2 until this branch fixed it. Two layers only look like two when both
+# work, so this one is written to hold on its own.
+#
+# It is not sufficient by itself either. The path is handed to `mkdir -p` and `chmod -R 777` on the
+# deployment host, and no character set separates a directory this deployment owns from one it does
+# not: `../..`, `.`, `/etc` and a home directory are all ordinary-looking paths. `..` is refused here
+# because it is cheap to name, and the rest is refused by `nodes/init-node.sh`, on the host that
+# holds the directory and can actually tell. See SEC-21.
+#
+# The set is narrower than what a docker bind mount source accepts, so this does refuse values that
+# used to work: a local deploy took `data/two words` and no longer does. That is a deliberate trade
+# and not a free one.
 #
 # Unset is fine. The defaults above are literals in this repository, not operator input.
 require_safe_data_dir() {
@@ -617,14 +626,14 @@ require_safe_data_dir() {
   # it and the same line runs on the operator's macOS machine. `./-weird` is still allowed.
   if ! [[ "$value" =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]]; then
     log_error "$name is not a usable data directory: $value"
-    echo "  Allowed characters: letters, digits, and . _ - /" >&2
+    echo "  Allowed characters: letters, digits, and . _ - / and not a leading -"
     exit 1
   fi
 
   case "/$value/" in
     */../*)
       log_error "$name walks out of the deployment directory: $value"
-      echo "  The path is created and chmodded on the deployment host, so '..' is refused." >&2
+      echo "  The path is created and chmodded on the deployment host, so '..' is refused."
       exit 1
       ;;
   esac
