@@ -822,3 +822,63 @@ OPS-2 came to have three sweeps to fix instead of one.
 strictest level, and every exception is a named code with its reason next to it. The image is pinned
 by digest: ShellCheck ships on the GitHub runner and `stable` is a moving tag, so either would let a
 version bump land new findings in a pull request that never touched a shell script.
+
+## Sprint 6 exit, 2026-08-02
+
+**S6.1, S6.2, S6.4 and S6.5, closing ARCH-1, ARCH-3, ARCH-4 and DOC-2 through DOC-5.** Eleven
+commits on `feat/s6-work`, branched from `58ee867`. `pnpm verify` exit 0: uploader **528**, shared
+**30** (new package), cli 82, deploy 44, gate-facts 49, audit-gate 38, client 31.
+
+**S6.3, the bee-js upgrade spike, is not done and is not startable here.** It needs a real Bee, so it
+belongs to the live-engine block with CON-17, S5.1, S5.2 and the reconnect/crash/Bee-outage run.
+
+### The deployment decided the architecture, twice
+
+`packages/shared` had to be consumable by a Vite bundle and by a Node service whose production image
+copies `dist/` and runs `npm install --omit=dev` against one manifest. That image cannot resolve a
+`workspace:*` dependency at all: npm does not understand the protocol and nothing here is published.
+The package is therefore source-only for the toolchain, and the uploader's build compiles it into
+`dist/node_modules`, where node's resolution walk finds it, as a **devDependency** so `--omit=dev`
+correctly skips what is by then vendored.
+
+**Bundling was the obvious alternative and is wrong for a reason worth remembering.**
+`src/utils/env.ts` finds the repository root by counting four directories up from its own compiled
+location. Collapsing `dist/utils/env.js` into `dist/index.js` moves that root, silently, and the
+`.env` it reads with it. Filed as OPS-16, which is a tripwire on the build shape rather than a
+defect: the count is right from source and right for the local `dist`, and lands on `/` in the
+image, where compose supplies the environment anyway.
+
+### Three rows were not what they said, in three different ways
+
+**ARCH-3 was half stale and half imprecise.** The `StreamLifecycle` state machine it asks for already
+existed and the orchestrator already used it, added by the sprint 3 CON work after the row was filed.
+Three of the six fields it counts are not lifecycle at all. Underneath the imprecision was something
+sharper: the announce readiness is two booleans holding three legal states, so a fourth is
+representable, and `restoreState` assigns both from a persisted entry unvalidated. A stream restored
+into it is never published, and nothing logs, because from the code's point of view there is nothing
+left to do.
+
+**DOC-6 was false, and false when written rather than gone stale.** All three `STAMP_*` variables are
+read by `resolveStampOptions`, they were present at the audit's own base commit `f146588`, and
+`git log -S` traces the line to the initial commit. This is the opposite failure to OPS-6, which was
+accurate the day it was filed. One grep would have settled it.
+
+**DOC-5's two remaining items were never mismatches.** They are the native-dev samples against the
+containerized defaults, and both samples say so in their own comments. The OME one promises that
+`deploy.sh` auto-resolves the value in Docker, and that promise was checked rather than trusted,
+because a sample promising an override that does not exist ships `localhost:8081` into a container.
+`deploy.sh:407` does write it.
+
+### Two verification failures, both mine, both caught
+
+**A control run that could not fail.** The `Dockerfile.client` fix was "verified" by simulating the
+image's COPY set and watching `pnpm install --frozen-lockfile` exit 0. Run again without the fix, it
+also exited 0: pnpm links a filtered workspace dependency whether or not the directory was copied,
+leaves a dangling symlink, and reports success. The real break is two layers later, as TS2307 at
+`vite build`. **After a check passes, run it against the unfixed state.**
+
+**A control run that lied.** Proving the ARCH-3 guard, `git stash push` with a pathspec naming an
+untracked file stashed nothing, and the `pop` that followed restored an unrelated stash from a branch
+abandoned weeks ago, conflicting two register files. It reported the new test passing without the
+guard, which was false. Nothing was lost. **Back up the file and use `git checkout HEAD --`, never
+`git stash`, for a control run.**
