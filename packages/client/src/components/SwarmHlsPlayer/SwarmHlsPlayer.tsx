@@ -8,6 +8,7 @@ import { QoeOverlay } from './overlays/qoe/QoeOverlay';
 import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
 import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
 import { ManifestStateManager } from './ManifestManagement';
+import { buildPlayerConfig } from './playerConfig';
 
 import './SwarmHlsPlayer.scss';
 
@@ -48,16 +49,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     };
 
     if (Hls.isSupported()) {
-      hls = new Hls({
-        pLoader: CustomManifestLoader,
-        fLoader: CustomFragmentLoader,
-        liveSyncDuration: 10,
-        liveMaxLatencyDuration: 30,
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
-        maxBufferSize: 60 * 1024 * 1024, // 60MB
-        maxBufferHole: 1,
-      });
+      hls = new Hls(buildPlayerConfig({ pLoader: CustomManifestLoader, fLoader: CustomFragmentLoader }));
 
       const restartStream = () => {
         console.warn('Restarting stream due to manifest parsing error.');
