@@ -315,7 +315,7 @@ describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
     assert.deepEqual(uploader.getStreamState().segments, [], 'and the segment is dropped rather than held');
   });
 
-  it('retries a live manifest publish that fails with a retryable status, and clears the stale flag', async () => {
+  it('retries a live manifest publish that fails with a retryable status', async () => {
     const feedControl = countingControl(failFirst(1, transientError));
     const uploader = newUploader({}, { feedControl });
 
@@ -323,12 +323,38 @@ describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
     await drain(uploader);
 
     assert.equal(feedControl.attempts, 2, 'the SOC write has to be attempted again');
+    assert.equal(uploader.getStreamState().socIndex, 0, 'and the feed advanced, so a reader can find it');
+  });
+
+  /**
+   * The stale flag needs a publish that actually fails, which a retried one never is: the retry
+   * swallows the transient error before the uploader sees it, so the counter is still at its
+   * initial 0 and an assertion that it is 0 cannot fail. An earlier version of the test above
+   * carried exactly that assertion, and deleting `consecutiveManifestFailures = 0` from the success
+   * path left all 561 tests green.
+   *
+   * So the reset is driven the only way it can be: fail permanently until the flag is set, then
+   * succeed, and watch it go back down.
+   */
+  it('clears the stale-manifest flag once a publish finally succeeds', async () => {
+    const feedControl = countingControl(failFirst(2, () => permanentError()));
+    const uploader = newUploader({}, { feedControl });
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+    uploader.handleSegment(1, 2, Buffer.from('seg1'));
+    await drain(uploader);
+
+    assert.equal(uploader.getConsecutiveManifestFailures(), 2, 'two refused publishes have to be a stale manifest');
+
+    uploader.handleSegment(2, 2, Buffer.from('seg2'));
+    await drain(uploader);
+
     assert.equal(
       uploader.getConsecutiveManifestFailures(),
       0,
-      'a publish that succeeded on its retry is not a stale manifest',
+      'a manifest that published is not stale, and /health reports this counter',
     );
-    assert.equal(uploader.getStreamState().socIndex, 0, 'and the feed advanced, so a reader can find it');
   });
 });
 
