@@ -10,7 +10,7 @@ import {
   type FeedState,
   UNSERVED_SLOT_POLL_LIMIT,
 } from '../src/components/SwarmHlsPlayer/feedState';
-import { ManifestFetcher, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement';
+import { ManifestFetcher, ManifestStateManager, waitMs } from '../src/components/SwarmHlsPlayer/ManifestManagement';
 import { makeFeedIdentifier } from '../src/utils/bee';
 
 const BEE_URL = 'http://bee.test';
@@ -310,6 +310,32 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
  * player's effect cleanup clears the topic. A fatal network error is what triggers a restart, so the
  * one path the mechanism never touched was the one an outage guarantees a visit to.
  */
+/**
+ * Every backoff test below injects its own delay and asserts a test-owned array, which proves the
+ * fetcher asks for the right wait and nothing about whether the shipped wait waits. Production is
+ * `new ManifestFetcher()` with all defaults, and a default that returned immediately put a page of
+ * players back on a down gateway at full cadence with the whole suite green.
+ *
+ * A lower bound rather than a window, because that is the clock assertion that survives contention.
+ */
+describe('the wait the fetcher ships with', () => {
+  it('actually waits', async () => {
+    const startedAt = performance.now();
+
+    await waitMs(20);
+
+    assert.ok(performance.now() - startedAt >= 20, 'the shipped delay returned early or not at all');
+  });
+
+  it('waits longer when it is asked for longer', async () => {
+    const startedAt = performance.now();
+
+    await waitMs(60);
+
+    assert.ok(performance.now() - startedAt >= 60, 'the shipped delay ignores its argument');
+  });
+});
+
 describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () => {
   let fetcher: ManifestFetcher;
   let health: FeedHealthTracker;

@@ -40,6 +40,17 @@ const manifestQueue = new Pqueue({ concurrency: 1 });
  */
 const SLOT_NOT_WRITTEN_YET = 404;
 
+/**
+ * The wait the fetcher ships with, named so that something can run it.
+ *
+ * As an inline default parameter it was the one code path every backoff test injected over, so a
+ * default that returned immediately left the whole suite green while a page of players hammered a
+ * gateway that was already down.
+ */
+export function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
 class ManifestFetchError extends Error {
   constructor(path: string, readonly status: number) {
@@ -205,7 +216,7 @@ export class ManifestFetcher {
     /** Shared with whatever renders the state, so both halves see one reading. */
     readonly feedHealth: FeedHealthTracker = new FeedHealthTracker(),
     /** Injected only by tests, so a backoff is asserted rather than waited out. */
-    private readonly delay: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    private readonly delay: (ms: number) => Promise<void> = waitMs,
   ) {}
 
   get beeUrl(): string {
