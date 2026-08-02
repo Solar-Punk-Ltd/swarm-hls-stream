@@ -7,7 +7,6 @@ import { describe, it } from 'vitest';
 
 import {
   buildPlayerConfig,
-  HLS_TUNING,
   LIVE_MAX_LATENCY_DURATION_S,
   LIVE_SYNC_DURATION_S,
 } from '../src/components/SwarmHlsPlayer/playerConfig';
@@ -17,6 +16,18 @@ const PLAYER_SOURCE = join(CLIENT_ROOT, 'src/components/SwarmHlsPlayer/SwarmHlsP
 
 /** Loaders of the right shape, so a config can be built without importing the real ones. */
 const NO_LOADERS = { pLoader: undefined, fLoader: undefined };
+
+/**
+ * What `buildPlayerConfig` returns, with the loaders taken back off, which is the tuning the player
+ * is actually constructed with.
+ *
+ * Not `HLS_TUNING`. That is the constant this module builds from, and reading it here left the one
+ * step between the constant and the player untested: a `buildPlayerConfig` that stopped spreading
+ * the tuning shipped every value on the hls.js default, `maxLiveSyncPlaybackRate` back at exactly 1
+ * and the catch-up silently gone, with all 102 tests green. hls.js does not throw on a config that
+ * merely omits these keys, so `new Hls(...)` did not catch it either.
+ */
+const { pLoader: _pLoader, fLoader: _fLoader, ...SHIPPED_TUNING } = buildPlayerConfig(NO_LOADERS);
 
 /**
  * The numbers that decide how the stream feels, asserted as the values that ship rather than
@@ -30,7 +41,7 @@ const NO_LOADERS = { pLoader: undefined, fLoader: undefined };
 describe('SwarmHlsPlayer hls.js tuning', () => {
   it('ships the numbers it means to', () => {
     assert.deepEqual(
-      { ...HLS_TUNING },
+      { ...SHIPPED_TUNING },
       {
         liveSyncDuration: 10,
         liveMaxLatencyDuration: 20,
@@ -49,13 +60,13 @@ describe('SwarmHlsPlayer hls.js tuning', () => {
       1,
       'the default this overrides has moved, so the reading behind LAT-2 needs taking again',
     );
-    assert.ok(HLS_TUNING.maxLiveSyncPlaybackRate > 1);
+    assert.ok(SHIPPED_TUNING.maxLiveSyncPlaybackRate! > 1);
   });
 
   // Past roughly 1.1 browsers stop pitch-correcting transparently, and a viewer hearing the recovery
   // is worse than the couple of seconds it recovers.
   it('keeps the catch-up rate inaudible', () => {
-    assert.ok(HLS_TUNING.maxLiveSyncPlaybackRate <= 1.1);
+    assert.ok(SHIPPED_TUNING.maxLiveSyncPlaybackRate! <= 1.1);
   });
 
   /**
@@ -69,14 +80,14 @@ describe('SwarmHlsPlayer hls.js tuning', () => {
    */
   describe('catch-up and the live-edge seek meet, whatever the playlist target duration is', () => {
     /** `LatencyController.onTimeupdate`, dist/hls.js:33541: the latency at which nudging stops. */
-    function catchUpCeilingS(config: typeof HLS_TUNING, targetDurationS: number): number {
-      const targetLatencyS = config.liveSyncDuration;
-      return targetLatencyS + Math.min(config.liveMaxLatencyDuration, targetLatencyS + targetDurationS);
+    function catchUpCeilingS(config: typeof SHIPPED_TUNING, targetDurationS: number): number {
+      const targetLatencyS = config.liveSyncDuration!;
+      return targetLatencyS + Math.min(config.liveMaxLatencyDuration!, targetLatencyS + targetDurationS);
     }
 
     /** `StreamController.synchronizeToLiveEdge`, dist/hls.js:34895: the latency at which it seeks. */
-    function seekThresholdS(config: typeof HLS_TUNING): number {
-      return config.liveMaxLatencyDuration;
+    function seekThresholdS(config: typeof SHIPPED_TUNING): number {
+      return config.liveMaxLatencyDuration!;
     }
 
     // This side of the system does not choose the target duration: it is whatever the uploader's
@@ -86,15 +97,15 @@ describe('SwarmHlsPlayer hls.js tuning', () => {
     for (const targetDurationS of TARGET_DURATIONS_S) {
       it(`leaves no dead band at a ${targetDurationS}s target duration`, () => {
         assert.ok(
-          seekThresholdS(HLS_TUNING) <= catchUpCeilingS(HLS_TUNING, targetDurationS),
-          `catch-up stops at ${catchUpCeilingS(HLS_TUNING, targetDurationS)}s of latency and the seek only ` +
-            `fires past ${seekThresholdS(HLS_TUNING)}s, so a viewer in between gets neither`,
+          seekThresholdS(SHIPPED_TUNING) <= catchUpCeilingS(SHIPPED_TUNING, targetDurationS),
+          `catch-up stops at ${catchUpCeilingS(SHIPPED_TUNING, targetDurationS)}s of latency and the seek only ` +
+            `fires past ${seekThresholdS(SHIPPED_TUNING)}s, so a viewer in between gets neither`,
         );
       });
     }
 
     it('is a check the previous ceiling of 30s fails, so the ones above are not vacuous', () => {
-      const previous = { ...HLS_TUNING, liveMaxLatencyDuration: 30 };
+      const previous = { ...SHIPPED_TUNING, liveMaxLatencyDuration: 30 };
 
       assert.ok(seekThresholdS(previous) > catchUpCeilingS(previous, 2));
     });
@@ -119,8 +130,8 @@ describe('SwarmHlsPlayer hls.js tuning', () => {
   });
 
   it('holds a buffer deeper than the latency it tolerates, so a seek is not into empty buffer', () => {
-    assert.ok(HLS_TUNING.maxBufferLength >= LIVE_MAX_LATENCY_DURATION_S);
-    assert.ok(HLS_TUNING.maxMaxBufferLength >= HLS_TUNING.maxBufferLength);
+    assert.ok(SHIPPED_TUNING.maxBufferLength! >= LIVE_MAX_LATENCY_DURATION_S);
+    assert.ok(SHIPPED_TUNING.maxMaxBufferLength! >= SHIPPED_TUNING.maxBufferLength!);
   });
 
   it('carries the loaders through, since a config without them fetches from an origin that is not there', () => {
@@ -144,7 +155,7 @@ describe('SwarmHlsPlayer hls.js tuning', () => {
       assert.match(source, /new Hls\(buildPlayerConfig\(/);
     });
 
-    for (const key of Object.keys(HLS_TUNING)) {
+    for (const key of Object.keys(SHIPPED_TUNING)) {
       it(`does not set ${key} of its own`, () => {
         assert.doesNotMatch(source, new RegExp(`\\b${key}\\s*:`));
       });
