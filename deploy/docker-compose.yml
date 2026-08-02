@@ -85,6 +85,10 @@ services:
       OME_FETCH_TIMEOUT_MS: ${OME_FETCH_TIMEOUT_MS:-10000}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
       OME_ADMISSION_FAIL_OPEN: ${OME_ADMISSION_FAIL_OPEN:-false}
+      # This block enumerates rather than inherits, so a variable absent here is one the container
+      # never sees however carefully an operator sets it in .env.
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      LOG_FORMAT: ${LOG_FORMAT:-}
     # Something finally reads /health. Every 503 it can raise was a value in a response body nobody
     # requested: there was no healthcheck here, health.sh is human-run, and `restart: unless-stopped`
     # cannot act on a degraded service because the process does not exit. See OBS-17.

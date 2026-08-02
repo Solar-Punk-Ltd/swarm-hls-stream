@@ -21,13 +21,18 @@ ENV VITE_READER_BEE_URL=$VITE_READER_BEE_URL \
 
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
-# Workspace lockfile + just the client package manifest first, for layer caching.
+# Workspace lockfile + just the package manifests first, for layer caching. The trailing "..." in
+# the filter below means "and its workspace dependencies", so the shared manifest has to be here
+# too or the install resolves a link target that does not exist.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/client/package.json packages/client/
+COPY packages/shared/package.json packages/shared/
 
 RUN pnpm install --frozen-lockfile --filter "@swarm-hls-stream/client..."
 
-# Now the client source — separate layer so manifest-only changes don't bust install.
+# Now the sources — separate layer so manifest-only changes don't bust install. Shared is consumed
+# as TypeScript, with no build of its own, so vite compiles it as part of the client bundle.
+COPY packages/shared packages/shared
 COPY packages/client packages/client
 
 RUN pnpm --filter @swarm-hls-stream/client build

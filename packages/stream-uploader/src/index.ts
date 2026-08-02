@@ -1,6 +1,15 @@
 import { Bee } from '@ethersphere/bee-js';
 import path from 'path';
 
+// Side-effect import, and it must stay ahead of every other local import. `utils/env.js` runs
+// `dotenv.config()` at module scope, and anything that reads `process.env` while being imported gets
+// whatever the real environment held before the `.env` file was applied. `Logger` did exactly that,
+// through `utils/common.js`, so `LOG_LEVEL` in the root `.env` was read too late and ignored, with
+// no way for an operator to tell. `simple-import-sort` places side-effect imports ahead of the
+// relative groups, so the ordering this depends on is the one the linter already enforces, and
+// `test/envLoadOrder.test.ts` fails if it stops holding.
+import './utils/env.js';
+
 import { ApiServerHandle, startApiServer } from './api/server.js';
 import { engineRegistry } from './engines/registry.js';
 import { EnginePlugin } from './engines/types.js';

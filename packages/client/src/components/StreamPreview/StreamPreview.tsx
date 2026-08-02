@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Topic } from '@ethersphere/bee-js';
+import {
+  HLS_ENDLIST,
+  HLS_M3U,
+  HLS_MEDIA_SEQUENCE_ZERO,
+  HLS_PLAYLIST_TYPE_VOD,
+  HLS_TARGET_DURATION,
+  HLS_VERSION,
+} from '@swarm-hls-stream/shared';
 import Hls, { Events } from 'hls.js';
 import Pqueue from 'p-queue';
 
@@ -26,6 +34,9 @@ interface StreamPreviewProps {
   mediatype: MediaType;
   title: string;
 }
+
+/** The preview plays one segment, so the target duration only has to be at least that long. */
+const PREVIEW_TARGET_DURATION_SECONDS = 10;
 
 export const StreamPreview = ({ owner, topic, state, duration, mediatype, title }: StreamPreviewProps) => {
   const navigate = useNavigate();
@@ -59,15 +70,18 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title 
         const segUrl =
           seg.uri.startsWith('http') || seg.uri.startsWith('/bytes/') ? seg.uri : `${gatewayUrl}/bytes/${seg.uri}`;
 
+        // Spelled from the shared constants rather than by hand. These six literals were the last
+        // place a tag rename could pass every type check and every test and still leave the preview
+        // player asking for a playlist no decoder accepts. See ARCH-1.
         const miniManifest = [
-          '#EXTM3U',
-          '#EXT-X-VERSION:3',
-          '#EXT-X-TARGETDURATION:10',
-          '#EXT-X-PLAYLIST-TYPE:VOD',
-          '#EXT-X-MEDIA-SEQUENCE:0',
+          HLS_M3U,
+          `${HLS_VERSION}:3`,
+          `${HLS_TARGET_DURATION}:${PREVIEW_TARGET_DURATION_SECONDS}`,
+          HLS_PLAYLIST_TYPE_VOD,
+          HLS_MEDIA_SEQUENCE_ZERO,
           seg.extinf,
           segUrl,
-          '#EXT-X-ENDLIST',
+          HLS_ENDLIST,
         ].join('\n');
 
         const blob = new Blob([miniManifest], { type: 'application/vnd.apple.mpegurl' });

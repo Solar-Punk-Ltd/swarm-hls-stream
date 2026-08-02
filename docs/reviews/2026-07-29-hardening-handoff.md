@@ -822,3 +822,104 @@ OPS-2 came to have three sweeps to fix instead of one.
 strictest level, and every exception is a named code with its reason next to it. The image is pinned
 by digest: ShellCheck ships on the GitHub runner and `stable` is a moving tag, so either would let a
 version bump land new findings in a pull request that never touched a shell script.
+
+## Sprint 6 exit, 2026-08-02
+
+**S6.1, S6.2, S6.4 and S6.5, closing ARCH-1, ARCH-3, ARCH-4 and DOC-2 through DOC-5.** Eleven
+commits on `feat/s6-work`, branched from `58ee867`. `pnpm verify` exit 0: uploader **528**, shared
+**30** (new package), cli 82, deploy 44, gate-facts 49, audit-gate 38, client 31.
+
+**S6.3, the bee-js upgrade spike, is not done and is not startable here.** It needs a real Bee, so it
+belongs to the live-engine block with CON-17, S5.1, S5.2 and the reconnect/crash/Bee-outage run.
+
+### The deployment decided the architecture, twice
+
+`packages/shared` had to be consumable by a Vite bundle and by a Node service whose production image
+copies `dist/` and runs `npm install --omit=dev` against one manifest. That image cannot resolve a
+`workspace:*` dependency at all: npm does not understand the protocol and nothing here is published.
+The package is therefore source-only for the toolchain, and the uploader's build compiles it into
+`dist/node_modules`, where node's resolution walk finds it, as a **devDependency** so `--omit=dev`
+correctly skips what is by then vendored.
+
+**Bundling was the obvious alternative and is wrong for a reason worth remembering.**
+`src/utils/env.ts` finds the repository root by counting four directories up from its own compiled
+location. Collapsing `dist/utils/env.js` into `dist/index.js` moves that root, silently, and the
+`.env` it reads with it. Filed as OPS-16, which is a tripwire on the build shape rather than a
+defect: the count is right from source and right for the local `dist`, and lands on `/` in the
+image, where compose supplies the environment anyway.
+
+### Three rows were not what they said, in three different ways
+
+**ARCH-3 was half stale and half imprecise.** The `StreamLifecycle` state machine it asks for already
+existed and the orchestrator already used it, added by the sprint 3 CON work after the row was filed.
+Three of the six fields it counts are not lifecycle at all. Underneath the imprecision was something
+sharper: the announce readiness is two booleans holding three legal states, so a fourth is
+representable, and `restoreState` assigns both from a persisted entry unvalidated. A stream restored
+into it is never published, and nothing logs, because from the code's point of view there is nothing
+left to do.
+
+**DOC-6 was false, and false when written rather than gone stale.** All three `STAMP_*` variables are
+read by `resolveStampOptions`, they were present at the audit's own base commit `f146588`, and
+`git log -S` traces the line to the initial commit. This is the opposite failure to OPS-6, which was
+accurate the day it was filed. One grep would have settled it.
+
+**DOC-5's two remaining items were never mismatches.** They are the native-dev samples against the
+containerized defaults, and both samples say so in their own comments. The OME one promises that
+`deploy.sh` auto-resolves the value in Docker, and that promise was checked rather than trusted,
+because a sample promising an override that does not exist ships `localhost:8081` into a container.
+`deploy.sh:407` does write it.
+
+### Two verification failures, both mine, both caught
+
+**A control run that could not fail.** The `Dockerfile.client` fix was "verified" by simulating the
+image's COPY set and watching `pnpm install --frozen-lockfile` exit 0. Run again without the fix, it
+also exited 0: pnpm links a filtered workspace dependency whether or not the directory was copied,
+leaves a dangling symlink, and reports success. The real break is two layers later, as TS2307 at
+`vite build`. **After a check passes, run it against the unfixed state.**
+
+**A control run that lied.** Proving the ARCH-3 guard, `git stash push` with a pathspec naming an
+untracked file stashed nothing, and the `pop` that followed restored an unrelated stash from a branch
+abandoned weeks ago, conflicting two register files. It reported the new test passing without the
+guard, which was false. Nothing was lost. **Back up the file and use `git checkout HEAD --`, never
+`git stash`, for a control run.**
+
+### The gate found two defects that made the branch unshippable
+
+Recorded because both were invisible to `pnpm verify`, which was green throughout.
+
+**The uploader production image could not build at all.** `npm install --omit=dev` parses the whole
+manifest before it applies the flag and rejects pnpm's `workspace:` protocol outright, dev block or
+not. Nothing in CI builds an image (OPS-17), and the uploader's own suite runs under `tsx` against
+the workspace symlink rather than the compiled copy that ships, so the first report would have been a
+failed deploy.
+
+**`LOG_LEVEL` in the root `.env` was silently ignored.** `Logger` snapshots `process.env` when its
+singleton is built, at module scope, and `dotenv.config()` had not run yet. Compose was fine because
+it injects real environment variables, so this failed on exactly the path `.env.sample` and the
+uploader README point at.
+
+The pattern under both: **I verified the half that worked.** The vendored package does resolve at
+runtime, which I measured in an isolated tree, and I never ran the `npm install` that happens before
+it, then wrote a comment asserting the half I had not tested.
+
+### And one where the strict answer was the wrong one
+
+The first ARCH-3 fix refused a recovery entry whose persisted readiness could not have been reached
+legally. Refusing meant the stream was never registered, so nothing finalized it as a VOD at the
+recovery timeout, its catalog entry said `live` forever, and the file failed identically on every
+restart. **The buggy path it replaced at least reached that cleanup.** It repairs and warns now. Ask
+what the old code did _after_ the failure, not only what it got wrong.
+
+### Mutation, and a refutation of my own claim
+
+Scoped to the seven changed uploader source files: `Found 7 of 322`, 639 mutants, **406 killed, 60
+timed out, 173 survived, score 72.93**, concurrency 4 on 12 cores, 26m43s. The three files this
+sprint wrote score **100.00, 96.00 and 91.89**. The survivors are almost all pre-existing, in
+`StreamOrchestrator` and `StreamUploader`.
+
+I discarded a first run claiming contamination and **that claim was wrong**, recorded as R63: my
+hand-check applied a different mutation from Stryker's, and Stryker's is provably equivalent. The
+clean re-run returned an identical score and an identical survivor count. The hazard behind the claim
+is still worth knowing, because nothing else records it: **Stryker's sandbox symlinks `node_modules`
+back to the live tree**, so in a pnpm workspace a package like `packages/shared` is read live rather
+than from the sandbox copy.

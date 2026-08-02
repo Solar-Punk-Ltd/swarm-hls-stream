@@ -59,16 +59,18 @@ The API server starts on port 3000 (default).
 
 **Optional:**
 
-| Variable               | Default   | Description                                                         |
-| ---------------------- | --------- | ------------------------------------------------------------------- |
-| `MANIFEST_ACCESS_URL`  | _(empty)_ | Base URL for segment refs in manifests                              |
-| `API_PORT`             | `3000`    | HTTP API port                                                       |
-| `STATE_DIR`            | `./state` | Directory for crash recovery state                                  |
-| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                      |
-| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                         |
-| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                        |
-| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most |
-| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                       |
+| Variable               | Default   | Description                                                                                              |
+| ---------------------- | --------- | -------------------------------------------------------------------------------------------------------- |
+| `MANIFEST_ACCESS_URL`  | _(empty)_ | Base URL for segment refs in manifests                                                                   |
+| `API_PORT`             | `3000`    | HTTP API port                                                                                            |
+| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                       |
+| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                           |
+| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                              |
+| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                             |
+| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                      |
+| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                            |
+| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event |
+| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format               |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
@@ -208,9 +210,9 @@ Currently supported: **SRS** (SRT/RTMP to HLS) and **OME** (OvenMediaEngine, LLH
 
 When `ENGINE=ome`, webhook endpoints are mounted:
 
-| Endpoint             | Description                  |
-| -------------------- | ---------------------------- |
-| `POST /engines/ome/` | Handles `admission` webhooks |
+| Endpoint                      | Description                           |
+| ----------------------------- | ------------------------------------- |
+| `POST /engines/ome/admission` | Publish start and stop, HMAC-verified |
 
 1. **Ingest** — broadcaster pushes SRT into OvenMediaEngine, which transcodes and publishes LLHLS.
 2. **Admission** — OME calls the `/engines/ome/admission` webhook on publish start/stop; the uploader verifies the HMAC signature and starts/stops the stream.

@@ -105,17 +105,19 @@ A profile is a deployment instance — same topology (from `config.json`), separ
 
 `--portSlot=<N>` (integer 1-999) **shifts** every port var the deploy knows about by `N*10`. Each service occupies a unique last digit in the base table (0-8), so two profiles can never collide on a port. When the flag is given it is **authoritative** — any port values in `.env.<profile>` are ignored, so what you see in the topology block is exactly what compose maps. Drop the flag (or pass `--portSlot=0`) to fall back to env-file values.
 
-| Var                   | Default | `--portSlot=1` | `--portSlot=2` | `--portSlot=999` |
-| --------------------- | ------: | -------------: | -------------: | ---------------: |
-| API_PORT              |   10000 |          10010 |          10020 |            19990 |
-| SRS_SRT_PORT          |   10001 |          10011 |          10021 |            19991 |
-| SRS_RTMP_PORT         |   10002 |          10012 |          10022 |            19992 |
-| SRS_HTTP_PORT         |   10003 |          10013 |          10023 |            19993 |
-| CLIENT_PORT           |   10004 |          10014 |          10024 |            19994 |
-| BEE_UPLOADER_API_PORT |   10005 |          10015 |          10025 |            19995 |
-| BEE_UPLOADER_P2P_PORT |   10006 |          10016 |          10026 |            19996 |
-| BEE_GATEWAY_API_PORT  |   10007 |          10017 |          10027 |            19997 |
-| BEE_GATEWAY_P2P_PORT  |   10008 |          10018 |          10028 |            19998 |
+| Var                   |  Base | `--portSlot=1` | `--portSlot=2` | `--portSlot=999` |
+| --------------------- | ----: | -------------: | -------------: | ---------------: |
+| API_PORT              | 10000 |          10010 |          10020 |            19990 |
+| SRS_SRT_PORT          | 10001 |          10011 |          10021 |            19991 |
+| SRS_RTMP_PORT         | 10002 |          10012 |          10022 |            19992 |
+| SRS_HTTP_PORT         | 10003 |          10013 |          10023 |            19993 |
+| CLIENT_PORT           | 10004 |          10014 |          10024 |            19994 |
+| BEE_UPLOADER_API_PORT | 10005 |          10015 |          10025 |            19995 |
+| BEE_UPLOADER_P2P_PORT | 10006 |          10016 |          10026 |            19996 |
+| BEE_GATEWAY_API_PORT  | 10007 |          10017 |          10027 |            19997 |
+| BEE_GATEWAY_P2P_PORT  | 10008 |          10018 |          10028 |            19998 |
+
+The **Base** column is the slot arithmetic's starting point, not what you get with no flag. Without `--portSlot`, values already set in the env files win and only the unset ones fall back to this column, so the SRS ports in a stock local setup are `SRS_SRT_PORT=10080` from `engines/srs/.env.sample` and `SRS_RTMP_PORT=1935` / `SRS_HTTP_PORT=8080` from the compose file's own defaults, not 10001 through 10003.
 
 `SRS_ADAPTER_PORT` is auto-mirrored to whatever `API_PORT` resolves to, so SRS webhooks always reach the right uploader.
 

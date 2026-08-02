@@ -1,11 +1,12 @@
+import { buildExtinf } from '@swarm-hls-stream/shared';
+
 import { SegmentEntry } from '../types.js';
 import {
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
-  HLS_EXTINF,
   HLS_M3U,
   HLS_MEDIA_SEQUENCE,
-  HLS_PLAYLIST_TYPE,
+  HLS_PLAYLIST_TYPE_VOD,
   HLS_TARGET_DURATION,
   HLS_VERSION,
 } from '../utils/hlsTags.js';
@@ -57,7 +58,7 @@ export class ManifestManager {
       if (seg.discontinuity) {
         lines.push(HLS_DISCONTINUITY);
       }
-      lines.push(`${HLS_EXTINF}:${seg.duration},`);
+      lines.push(buildExtinf(seg.duration));
       lines.push(this.buildSegmentUri(seg.ref));
     }
 
@@ -72,7 +73,7 @@ export class ManifestManager {
     const lines = [
       ...this.hlsHeaders,
       `${HLS_TARGET_DURATION}:${this.targetDuration}`,
-      `${HLS_PLAYLIST_TYPE}:VOD`,
+      HLS_PLAYLIST_TYPE_VOD,
       `${HLS_MEDIA_SEQUENCE}:0`,
       '',
     ];
@@ -81,7 +82,7 @@ export class ManifestManager {
       if (seg.discontinuity) {
         lines.push(HLS_DISCONTINUITY);
       }
-      lines.push(`${HLS_EXTINF}:${seg.duration},`);
+      lines.push(buildExtinf(seg.duration));
       lines.push(this.buildSegmentUri(seg.ref));
     }
 

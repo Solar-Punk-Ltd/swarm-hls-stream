@@ -1,7 +1,16 @@
-export const STREAM_STATUS_LIVE = 'live' as const;
-export const STREAM_STATUS_VOD = 'vod' as const;
+// One definition, in the shared package, because the client reads the same catalog entries this
+// writes and the two used to carry their own copies of these literals. Re-exported here rather than
+// imported at every call site so the move stays invisible to the rest of the package. See ARCH-1.
+export {
+  MEDIA_TYPE_AUDIO,
+  MEDIA_TYPE_VIDEO,
+  type MediaType,
+  STREAM_STATUS_LIVE,
+  STREAM_STATUS_VOD,
+  type StreamStatus,
+} from '@swarm-hls-stream/shared';
 
-export type StreamStatus = typeof STREAM_STATUS_LIVE | typeof STREAM_STATUS_VOD;
+import type { MediaType } from '@swarm-hls-stream/shared';
 
 export interface StreamState {
   streamId: string;
@@ -40,11 +49,6 @@ export type RejectReason =
   | typeof REJECT_UNUSABLE_DURATION;
 
 export type SegmentResult = { accepted: true } | { accepted: false; reason: RejectReason };
-
-export const MEDIA_TYPE_AUDIO = 'audio' as const;
-export const MEDIA_TYPE_VIDEO = 'video' as const;
-
-export type MediaType = typeof MEDIA_TYPE_AUDIO | typeof MEDIA_TYPE_VIDEO;
 
 export const PRESSURE_LOW = 'low' as const;
 export const PRESSURE_MEDIUM = 'medium' as const;

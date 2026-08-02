@@ -1,15 +1,24 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
+import {
+  HLS_DISCONTINUITY,
+  HLS_ENDLIST,
+  HLS_MEDIA_SEQUENCE,
+  HLS_MEDIA_SEQUENCE_ZERO,
+  HLS_PLAYLIST_TYPE,
+  HLS_PLAYLIST_TYPE_EVENT,
+  parseManifest,
+  type Segment,
+} from '@swarm-hls-stream/shared';
 import Pqueue from 'p-queue';
 
 import { makeFeedIdentifier } from '@/utils/bee';
 import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 
-export interface Segment {
-  extinf: string;
-  uri: string;
-  discontinuity?: boolean;
-}
+// The parser and the segment shape now live beside the tags the uploader builds with, so the two
+// halves of the manifest contract cannot drift apart. Re-exported because the player's own modules
+// and tests import them from here. See ARCH-1.
+export { parseManifest, type Segment };
 
 interface TopicState {
   index: FeedIndex | null;
@@ -21,56 +30,7 @@ interface TopicState {
   cachedManifest: string;
 }
 
-const HLS_ENDLIST = '#EXT-X-ENDLIST';
-const HLS_DISCONTINUITY = '#EXT-X-DISCONTINUITY';
-const HLS_EXTINF = '#EXTINF';
-const HLS_PLAYLIST_TYPE = '#EXT-X-PLAYLIST-TYPE';
-const HLS_PLAYLIST_TYPE_EVENT = '#EXT-X-PLAYLIST-TYPE:EVENT';
-const HLS_MEDIA_SEQUENCE = '#EXT-X-MEDIA-SEQUENCE';
-const HLS_MEDIA_SEQUENCE_ZERO = '#EXT-X-MEDIA-SEQUENCE:0';
-
 const manifestQueue = new Pqueue({ concurrency: 1 });
-
-export function parseManifest(text: string): { headers: string[]; segments: Segment[]; isFinalized: boolean } {
-  const lines = text.trim().split('\n');
-  const headers: string[] = [];
-  const segments: Segment[] = [];
-  let isFinalized = false;
-  let headersDone = false;
-  let pendingDiscontinuity = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-
-    if (line === HLS_ENDLIST) {
-      isFinalized = true;
-      continue;
-    }
-
-    if (line === HLS_DISCONTINUITY) {
-      headersDone = true;
-      pendingDiscontinuity = true;
-      continue;
-    }
-
-    if (line.startsWith(HLS_EXTINF)) {
-      headersDone = true;
-      const uri = lines[i + 1]?.trim();
-      if (uri && !uri.startsWith('#')) {
-        segments.push({ extinf: line, uri, discontinuity: pendingDiscontinuity });
-        i++;
-      }
-      pendingDiscontinuity = false;
-      continue;
-    }
-
-    if (!headersDone && line) {
-      headers.push(line);
-    }
-  }
-
-  return { headers, segments, isFinalized };
-}
 
 export class ManifestStateManager {
   private static instance: ManifestStateManager;
