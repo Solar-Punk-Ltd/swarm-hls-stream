@@ -42,7 +42,7 @@
           }
         ],
         "playerBufferMs": 10000,
-        "viewerLatencyMs": 16563.57763671875,
+        "viewerLatencyMs": 13413.57763671875,
         "skew": {
           "offsetMs": 184,
           "uncertaintyMs": 200
@@ -82,7 +82,7 @@
           }
         ],
         "playerBufferMs": 10000,
-        "viewerLatencyMs": 14367.57763671875,
+        "viewerLatencyMs": 11637.57763671875,
         "skew": {
           "offsetMs": 184,
           "uncertaintyMs": 200
@@ -122,7 +122,7 @@
           }
         ],
         "playerBufferMs": 10000,
-        "viewerLatencyMs": 17601.57763671875,
+        "viewerLatencyMs": 14441.57763671875,
         "skew": {
           "offsetMs": 184,
           "uncertaintyMs": 200
@@ -162,7 +162,7 @@
           }
         ],
         "playerBufferMs": 10000,
-        "viewerLatencyMs": 14211.57763671875,
+        "viewerLatencyMs": 12171.57763671875,
         "skew": {
           "offsetMs": 184,
           "uncertaintyMs": 200
@@ -202,7 +202,7 @@
           }
         ],
         "playerBufferMs": 10000,
-        "viewerLatencyMs": 15939.57763671875,
+        "viewerLatencyMs": 13299.57763671875,
         "skew": {
           "offsetMs": 184,
           "uncertaintyMs": 200

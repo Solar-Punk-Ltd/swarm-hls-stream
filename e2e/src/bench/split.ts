@@ -73,9 +73,20 @@ export interface LatencySplit {
   /** Capture to fetch, on one clock. The figure a later sprint is measured against. */
   totalMs: number;
   hops: readonly Hop[];
-  /** The configured player buffer, added to the total for what a viewer experiences. Not measured. */
+  /** The configured player buffer, which a viewer's position is set back from the live edge by. Not measured. */
   playerBufferMs: number;
-  /** Total plus the player buffer: how far behind live a viewer of this stream sits. */
+  /**
+   * How far behind live a viewer of this stream sits.
+   *
+   * NOT total plus the buffer, which double-counts a segment. `totalMs` is anchored on the segment's
+   * **first** frame, while a player's buffer is measured back from the live **edge**, and the edge is
+   * that same segment's last frame. So one segment duration is inside both terms and has to come out
+   * of one of them.
+   *
+   * The degenerate case is what pins it: a pipeline that made a segment fetchable the instant it
+   * closed has `totalMs === segmentMs`, and a viewer of it sits exactly `playerBufferMs` behind live,
+   * because that is what `liveSyncDuration` means. Adding the two would report a segment more.
+   */
   viewerLatencyMs: number;
   skew: ClockSkew;
 }
@@ -134,7 +145,7 @@ export function latencySplit(instants: SegmentInstants, skew: ClockSkew): Latenc
     totalMs,
     hops,
     playerBufferMs,
-    viewerLatencyMs: totalMs + playerBufferMs,
+    viewerLatencyMs: totalMs - segmentMs + playerBufferMs,
     skew,
   };
 }

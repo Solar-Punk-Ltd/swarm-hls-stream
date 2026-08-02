@@ -81,11 +81,43 @@ describe('splitting one segment across the pipeline', () => {
     );
   });
 
-  it('adds the configured player buffer to reach what a viewer experiences', () => {
+  it('sets a viewer back from the live edge, not from the frame the total is anchored on', () => {
     const split = latencySplit(INSTANTS, NO_SKEW);
 
     assert.equal(split.playerBufferMs, LIVE_SYNC_DURATION_S * 1_000);
-    assert.equal(split.viewerLatencyMs, split.totalMs + split.playerBufferMs);
+    // Stated as the instants it is built from rather than as `totalMs +/- something`. Restating the
+    // implementation is what let the previous version of this test pass while the figure it checked
+    // was a whole segment too large.
+    const segmentMs = INSTANTS.segmentDurationS * 1_000;
+    const liveEdgeAtMs = INSTANTS.capturedAtMs + segmentMs;
+    assert.equal(split.viewerLatencyMs, INSTANTS.fetchedAtMs - (liveEdgeAtMs - split.playerBufferMs));
+  });
+
+  /**
+   * The case that decides the formula, and the one the old assertion could not see.
+   *
+   * A pipeline that made a segment fetchable the instant it closed has nothing left to measure, so a
+   * viewer of it sits exactly `liveSyncDuration` behind live, because that is the definition of
+   * `liveSyncDuration`. Anything that adds the total to the buffer reports a segment more than that.
+   */
+  it('reports exactly the buffer when the pipeline costs nothing beyond closing the segment', () => {
+    const segmentDurationS = 2;
+    const capturedAtMs = 1_000_000;
+    const closedAtMs = capturedAtMs + segmentDurationS * 1_000;
+    const instantlyFetchable: SegmentInstants = {
+      ...INSTANTS,
+      segmentDurationS,
+      capturedAtMs,
+      uploadedAtMs: closedAtMs,
+      manifestPublishedAtMs: closedAtMs,
+      visibleAtMs: closedAtMs,
+      fetchedAtMs: closedAtMs,
+    };
+
+    const split = latencySplit(instantlyFetchable, NO_SKEW);
+
+    assert.equal(split.totalMs, segmentDurationS * 1_000);
+    assert.equal(split.viewerLatencyMs, split.playerBufferMs);
   });
 });
 

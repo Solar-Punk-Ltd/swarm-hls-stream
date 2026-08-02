@@ -122,7 +122,10 @@ describe('the report an operator reads', () => {
     const report = renderReport(runWith(samples));
 
     assert.match(report, /capture to fetchable \| \*\*5\.80s\*\*/);
-    assert.match(report, /behind live\*\* \| \*\*15\.80s\*\*/);
+    // 5.80s total, less the 2s segment already inside the buffer's reach, plus the 10s buffer. Not
+    // 15.80s: the total is anchored on a segment's first frame and the buffer is measured back from
+    // the live edge, which is its last, so adding the two counts one segment twice.
+    assert.match(report, /behind live\*\* \| \*\*13\.80s\*\*/);
   });
 
   it('names the configuration it measured, so a comparison cannot be made across different setups', () => {
