@@ -12,15 +12,22 @@ const CATCH_UP_OFF = 1;
  * The two objects the guard sits between: a media element that reports a rate and emits
  * `ratechange`, and the live `hls.config` the latency controller reads on every tick.
  */
-function makeGuardedPlayer() {
+function makeGuardedPlayer(rateAlreadyOnTheElement = 1) {
   const listeners = new Set<() => void>();
   const media = {
-    playbackRate: 1,
+    playbackRate: rateAlreadyOnTheElement,
     addEventListener: (type: string, listener: () => void) => {
       assert.equal(type, 'ratechange', `the guard listened for ${type}, which no rate change emits`);
       listeners.add(listener);
     },
-    removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+    // Keyed on the type, as a real element is. A double that removes whatever it is handed reports a
+    // guard that unsubscribed from the wrong event as safe, when in fact it stays attached for the
+    // life of the page and writes into the config of a destroyed player on every rate change.
+    removeEventListener: (type: string, listener: () => void) => {
+      if (type === 'ratechange') {
+        listeners.delete(listener);
+      }
+    },
   };
   const hls = { config: { maxLiveSyncPlaybackRate: MAX_LIVE_SYNC_PLAYBACK_RATE } };
 
@@ -69,6 +76,25 @@ describe('the live catch-up does not take the viewer speed control away (LAT-2)'
       assert.equal(player.catchUpRate(), MAX_LIVE_SYNC_PLAYBACK_RATE);
     });
   }
+
+  /**
+   * The restart case, and the one a listener alone cannot cover. `restartStream` builds a fresh
+   * player, so `hls.config` comes back with catch-up on, against the same `<video>` node the viewer
+   * already set to their own speed. No `ratechange` fires, because nothing changed, and hls.js drags
+   * the rate back to 1 on its next timeupdate. A fatal network error is what triggers a restart, so
+   * this happens on exactly the streams the catch-up was added for.
+   */
+  it('stands down for a speed the element was already carrying when it attached', () => {
+    const player = makeGuardedPlayer(1.5);
+
+    assert.equal(player.catchUpRate(), CATCH_UP_OFF, 'a restart handed the viewer chosen speed back to hls.js');
+  });
+
+  it('leaves catch-up on when it attaches to an element at ordinary speed', () => {
+    const player = makeGuardedPlayer();
+
+    assert.equal(player.catchUpRate(), MAX_LIVE_SYNC_PLAYBACK_RATE);
+  });
 
   // Standing down permanently would be a second way to lose the feature, and a quieter one: latency
   // would grow again for the rest of the session with nothing to show it had.

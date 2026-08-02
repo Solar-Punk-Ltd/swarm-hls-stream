@@ -37,6 +37,11 @@ export function attachLivePlaybackRateGuard(media: HTMLMediaElement, hls: Hls): 
     hls.config.maxLiveSyncPlaybackRate = isCatchUpRate(media.playbackRate) ? MAX_LIVE_SYNC_PLAYBACK_RATE : CATCH_UP_OFF;
   };
 
+  // Read once at attach, not only on the next change. A restart builds a fresh player with catch-up
+  // back on, against the same media element the viewer already set to their own speed, and no
+  // `ratechange` fires because nothing changed. Waiting for one hands the rate straight back to
+  // hls.js on every restart, which is the defect this whole module exists to prevent.
+  onRateChange();
   media.addEventListener('ratechange', onRateChange);
   return () => {
     media.removeEventListener('ratechange', onRateChange);
