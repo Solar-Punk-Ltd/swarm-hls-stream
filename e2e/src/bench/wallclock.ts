@@ -9,10 +9,14 @@
  * ~26.5 hours, so what arrives at the far end is the epoch **modulo that period**, not the epoch.
  *
  * Measured against ffmpeg 7.1.1 rather than assumed. A publish whose process started at epoch
- * 1785677886.564 came back with a first pts of 1923644272 ticks; 1785677886.564 x 90000 mod 2^33 is
- * 1923509041 ticks, leaving 135231 ticks, or 1.503s, which is what that build spends between spawning
- * and encoding its first frame. Running the same publish through ffmpeg's own HLS muxer, the closest
- * local stand-in for what a media engine does to the stream, preserved it.
+ * 1785677886.564 came back with a first pts of 1923644272 ticks. 1785677886564 x 90 mod 2^33 is
+ * 1923509032 ticks, leaving 135240 ticks, or 1.5027s, which is what that build spends between
+ * spawning and encoding its first frame. Running the same publish through ffmpeg's own HLS muxer, the
+ * closest local stand-in for what a media engine does to the stream, preserved it.
+ *
+ * Those two integers are asserted in `wallclock.test.ts`, because the previous pair here were each
+ * nine ticks out and nothing noticed: the only test over them rounded to the millisecond, and at that
+ * resolution a wrong anchor and a right one agree.
  *
  * ## What this cannot see, and why the caller must bound it
  *

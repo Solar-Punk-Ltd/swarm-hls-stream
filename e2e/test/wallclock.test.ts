@@ -44,6 +44,18 @@ describe('reading a wall-clock instant back out of an MPEG-TS timestamp', () => 
     assert.equal(Math.round(capturedAtMs), REAL_PUBLISH_START_MS + REAL_STARTUP_MS);
   });
 
+  /**
+   * The two integers the module header cites, put somewhere that runs. The header had them nine ticks
+   * out apiece, and the assertion above could not catch that because it rounds to the millisecond:
+   * 135231 ticks and 135240 ticks are 1502.567ms and 1502.667ms, and both round to the 1503 it wants.
+   */
+  it('folds the anchor exactly where the module header says it does', () => {
+    const anchorTicks = (REAL_PUBLISH_START_MS * (MPEGTS_TIMESCALE / 1_000)) % MPEGTS_WRAP_TICKS;
+
+    assert.equal(anchorTicks, 1_923_509_032);
+    assert.equal(REAL_FIRST_PTS - anchorTicks, 135_240);
+  });
+
   it('measures the latency as the gap between capture and fetch', () => {
     const capturedAtMs = REAL_PUBLISH_START_MS + REAL_STARTUP_MS;
     const observedAtMs = capturedAtMs + 8_400;
