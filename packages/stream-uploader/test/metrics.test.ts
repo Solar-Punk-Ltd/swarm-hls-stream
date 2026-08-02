@@ -32,9 +32,19 @@ function parseExposition(body: string): Map<string, number> {
  * place to forget. The table had drifted twice before this existed: `segments_skipped_total` and
  * `auth_rejections_total` were both exposed and both undocumented.
  */
-function documentedMetricNames(): string[] {
+function documentedMetrics(): string[] {
   const readme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
-  return [...readme.matchAll(/^\| `(swarm_hls_[a-z0-9_]+)`/gm)].map((match) => match[1]);
+  return [...readme.matchAll(/^\| `(swarm_hls_[a-z0-9_]+)` *\| *(counter|gauge) /gm)].map(
+    (match) => `${match[1]} ${match[2]}`,
+  );
+}
+
+/** `name type` for every metric the renderer emits, which is the same shape the table is read as. */
+function servedMetrics(): string[] {
+  const body = renderPrometheusMetrics(makeMetricsSnapshot());
+  return [...body.matchAll(/^# TYPE (swarm_hls_[a-z0-9_]+) (counter|gauge)$/gm)].map(
+    (match) => `${match[1]} ${match[2]}`,
+  );
 }
 
 describe("the README's metric table", () => {
@@ -42,10 +52,10 @@ describe("the README's metric table", () => {
    * A metric nobody documented is one nobody alerts on, and a documented one that no longer exists is
    * a dashboard panel that reads empty and looks like a healthy service.
    */
-  it('names exactly the metrics `/metrics` serves', () => {
-    const served = [...parseExposition(renderPrometheusMetrics(makeMetricsSnapshot())).keys()];
-
-    assert.deepEqual(documentedMetricNames().sort(), served.sort());
+  it('names exactly the metrics `/metrics` serves, with the right type on each', () => {
+    // The type matters as much as the name: an operator who reads `counter` off this table writes
+    // `rate(...)` over a gauge and gets a number that means nothing, and nothing else compares them.
+    assert.deepEqual(documentedMetrics().sort(), servedMetrics().sort());
   });
 });
 
