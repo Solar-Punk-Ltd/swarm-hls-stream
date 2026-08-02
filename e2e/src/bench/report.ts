@@ -180,6 +180,31 @@ function trendLine(trend: LatencyTrend | null): string {
   );
 }
 
+/**
+ * The warning that belongs next to the headline rather than only under it.
+ *
+ * The median is one sample chosen from several, and the self-checks below can be flagging that very
+ * sample. On the first real run they were: the median was segment 24, segment 24's upload hop was
+ * negative, and both facts were printed without either naming the other. A reader who stopped at the
+ * table above had nothing telling them the warning was about the numbers they had just read.
+ *
+ * It states no verdict on the total. Whether the total survives an impossible hop depends on which
+ * input is wrong, which `impossibleHopGuidance` works through with the run's own numbers.
+ */
+function medianFlaggedNotice(median: SegmentSample): string[] {
+  const flagged = impossibleHops(median.split);
+  if (flagged.length === 0) {
+    return [];
+  }
+  return [
+    '',
+    `**The segment this split comes from is flagged below**, for ${flagged
+      .map((hop) => `\`${hop.name}\` at ${Math.round(hop.ms)}ms`)
+      .join(' and ')}. The self-checks say what that does and does not cost, and the rows below should ` +
+      'not be read without them.',
+  ];
+}
+
 function knobLine(knobs: PublishKnobs): string {
   return `${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`;
 }
@@ -201,7 +226,7 @@ export function renderReport(run: BenchRun): string {
     `# Latency run — ${run.measuredAt}`,
     '',
     `engine \`${run.engine}\`, profile \`${run.profile}\`, publishing ${knobLine(run.knobs)}`,
-    `${run.samples.length} segment(s) measured; the split below is the median one, whole.`,
+    `${run.samples.length} segment(s) measured. The split below is segment ${median.index}, the median one, whole.`,
     '',
     '## What a viewer experiences',
     '',
@@ -210,6 +235,7 @@ export function renderReport(run: BenchRun): string {
     `| capture to fetchable | **${seconds(median.split.totalMs)}** |`,
     `| player buffer, configured | ${seconds(median.split.playerBufferMs)} |`,
     `| **behind live** | **${seconds(median.split.viewerLatencyMs)}** |`,
+    ...medianFlaggedNotice(median),
     '',
     '## Where it went',
     '',

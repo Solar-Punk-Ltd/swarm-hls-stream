@@ -211,6 +211,37 @@ describe('the report an operator reads', () => {
     assert.doesNotMatch(report, /The totals are unaffected/);
   });
 
+  it('names which segment the split came from, so it can be found in the sample list', () => {
+    const report = renderReport(runWith(samples));
+
+    assert.match(report, /segment 3, the median one/);
+    assert.doesNotMatch(report, /is flagged below/);
+  });
+
+  /**
+   * Two facts about one segment, in two sections, with nothing connecting them. On the first real run
+   * the median was segment 24 and segment 24's upload hop was negative, so the report led with a split
+   * it went on to call impossible, and never said they were the same segment. A reader who stopped at
+   * the headline table had no way to know the self-checks were about it.
+   */
+  it('says at the headline when the sample it split is one the self-checks flag', () => {
+    const impossible: SegmentInstants = {
+      capturedAtMs: BENCH_T0,
+      segmentDurationS: 2,
+      uploadedAtMs: BENCH_T0 + 1_500 + SKEW.offsetMs,
+      manifestPublishedAtMs: BENCH_T0 + 4_000 + SKEW.offsetMs,
+      visibleAtMs: BENCH_T0 + 5_200,
+      fetchedAtMs: BENCH_T0 + 5_800,
+    };
+    const sample: SegmentSample = { index: 24, ref: 'ref24'.padEnd(16, '0'), split: latencySplit(impossible, SKEW) };
+
+    const report = renderReport(runWith([sample]));
+
+    assert.match(report, /segment 24, the median one/);
+    assert.match(report, /is flagged below/);
+    assert.match(report, /upload/);
+  });
+
   it('names the configuration it measured, so a comparison cannot be made across different setups', () => {
     const report = renderReport(runWith(samples));
 
