@@ -94,11 +94,17 @@ function gopFrames(knobs: PublishKnobs): number {
  * nothing to stderr, and stays alive. Whether it latches a usable reference instead is a startup race
  * between the two input threads, so the failure is intermittent, which is what makes it dangerous.
  *
- * Measured, because one sample cannot see an intermittent fault. Over five runs each at a 12s cap:
- * `-re` on both inputs produced segments 2 times out of 5, and the `realtime` filters 5 out of 5 with
- * the first segment at 2.1s to 2.3s every time. An earlier revision of this file chose between `-re`
- * placements off a single eight-second sample that counted total segments, which measures startup
- * jitter and cannot see a recipe that fails half the time.
+ * Measured, because one sample cannot see an intermittent fault, and **the fault is load-sensitive**,
+ * which fits a race that contention decides. At 1-minute load averages around 8 to 13 the `-re` form
+ * produced segments in 2 of 5 runs and then 3 of 6, while this recipe was 5 of 5 and 6 of 6 including
+ * a run at load 13.3. Re-measured on an idle machine at load 4.1, both forms went 5 of 5.
+ *
+ * The claim is therefore not that `-re` never works. It is that `-re` stops producing segments when
+ * the machine is busy and this recipe does not, and a latency instrument that goes blind under
+ * contention is blind exactly when the measurement is worth taking. `pnpm bench:recipe` re-runs the
+ * comparison, and an earlier revision of this file chose between `-re` placements off a single
+ * eight-second sample that counted total segments, which measures startup jitter and cannot see any
+ * of this.
  *
  * `-output_ts_offset` with ordinary `-re` pacing is the other recipe that runs 5 out of 5, and it is
  * rejected on accuracy rather than reliability: the offset has to be read from the bench clock at

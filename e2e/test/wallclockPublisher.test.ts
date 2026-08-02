@@ -54,10 +54,11 @@ describe('the flags that make the stream measurable', () => {
    * `-re` is not merely redundant here, it is incompatible with the stamping above. It sizes each
    * sleep by comparing the packet's timestamp against its own elapsed run time, and
    * `-use_wallclock_as_timestamps` gives it an absolute epoch value, so it can conclude it is decades
-   * ahead and sleep effectively forever. Measured on 2026-08-03, five runs each at a 12s cap: `-re`
-   * on both inputs produced segments 2 times out of 5 and the filters 5 out of 5, then 6 of 6 through
-   * `checkInstrumentLocally`. The failure costs nothing to miss in review, because a stalled publish
-   * writes nothing to stderr, stays alive, and sits at 0.0% CPU.
+   * ahead and sleep effectively forever. The failure costs nothing to miss in review, because a
+   * stalled publish writes nothing to stderr, stays alive, and sits at 0.0% CPU.
+   *
+   * The rate is load-sensitive and therefore lives in `pnpm bench:recipe` rather than here: a test
+   * that tried to assert it would be measuring the machine it runs on. This asserts only the rule.
    */
   it('paces both streams without -re, which the wall-clock stamps make unusable', () => {
     assert.equal(count(ARGS, '-re'), 0);
