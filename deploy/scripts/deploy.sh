@@ -296,7 +296,7 @@ sync_to_remote() {
   log_info "Syncing files to $target"
 
   # Ensure remote directory structure exists
-  ssh "$target" "mkdir -p $REMOTE_BASE/deploy/scripts $REMOTE_BASE/engines/srs $REMOTE_BASE/engines/ome $REMOTE_BASE/packages/stream-uploader $REMOTE_BASE/nodes"
+  ssh "$target" "mkdir -p $REMOTE_BASE/deploy/scripts $REMOTE_BASE/engines/srs $REMOTE_BASE/engines/ome $REMOTE_BASE/packages/stream-uploader $REMOTE_BASE/packages/shared $REMOTE_BASE/nodes"
 
   # Always sync compose, Dockerfiles, nginx template, scripts
   rsync -az --delete \
@@ -356,6 +356,17 @@ sync_to_remote() {
       --exclude 'node_modules' --exclude 'dist' --exclude '.tsbuildinfo' \
       "$ROOT_DIR/packages/client/" \
       "$target:$REMOTE_BASE/packages/client/"
+
+    # The client consumes `@swarm-hls-stream/shared` as TypeScript and vite compiles it into the
+    # bundle, so `Dockerfile.client` COPYs the package twice: its manifest for the install layer, and
+    # its sources for the build. Neither is reachable unless it is synced, and the failure is a build
+    # that never starts — `failed to compute cache key: "/packages/shared": not found` — rather than
+    # anything the deploy itself reports. The uploader needs no equivalent: `vendor-shared.mjs`
+    # compiles the same package into its `dist/node_modules`, which rides along in the dist sync.
+    rsync -az --delete \
+      --exclude 'node_modules' --exclude 'dist' --exclude '.tsbuildinfo' \
+      "$ROOT_DIR/packages/shared/" \
+      "$target:$REMOTE_BASE/packages/shared/"
 
     rsync -az \
       "$ROOT_DIR/package.json" \
