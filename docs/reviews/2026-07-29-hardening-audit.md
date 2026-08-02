@@ -464,9 +464,19 @@ touching it. **The S3 gate on 2026-08-01 is the first sprint exit this project h
 cleared the only open row. **An open row here fails the sprint exit gate**, which is enumerated in
 [the handoff](./2026-07-29-hardening-handoff.md) as its single home.
 
-| PR  | Lens           | Surface | Deferred on | Cleared by                                    |
-| --- | -------------- | ------- | ----------- | --------------------------------------------- |
-| #47 | Test integrity | `tests` | `3ac0540`   | **closed at the S3 gate, PR #51, 2026-08-01** |
+| PR  | Lens            | Surface                        | Deferred on | Cleared by                                    |
+| --- | --------------- | ------------------------------ | ----------- | --------------------------------------------- |
+| #47 | Test integrity  | `tests`                        | `3ac0540`   | **closed at the S3 gate, PR #51, 2026-08-01** |
+| #62 | Mutation triage | `packages/stream-uploader/src` | `347c35f`   | **open**                                      |
+
+**The #62 row was owed and is filed late.** Its posted result said the ledger row would follow and no
+row was written, which is the failure this table exists to make visible and instead demonstrated on
+itself. The run did not defer: 1134 mutants, 664 killed, 148 timed out, 322 survived, score 71.60%,
+and those numbers are in the PR #62 result. What deferred is the triage of the 322, because the branch
+was rewritten in response to the same gate and survivors of a head that no longer exists would produce
+findings against code that has changed. `StreamCatalog.ts` at 47.22% with zero timeouts is the file to
+start from. **PR #63 does not clear it**, because it touches `packages/client` and the surface here is
+the uploader's source.
 
 **What clearing it produced**, since a row cleared by assertion is not cleared: 109 mutations over the
 S3 diff, 82 killed, 27 survivors triaged to nine findings, of which four were HIGH. The sharpest is
