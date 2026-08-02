@@ -232,13 +232,26 @@ export class ManifestFetcher {
       // reach that line rather than stopping short, because `updateManifest` answers `true` to a
       // duplicate parse, where "nothing new, keep polling" and "this slot was consumed" are the same
       // value read two ways.
-      const targetIndex = this.stateManager.getIndex(hexTopic)!.next();
+      const fromIndex = this.stateManager.getIndex(hexTopic)!;
+      const targetIndex = fromIndex.next();
       const targetId = makeFeedIdentifier(topic, targetIndex).toString();
 
       this.inFlight.add(hexTopic);
       this.fetchResource(`soc/${owner}/${targetId}`)
         .then((res) =>
           manifestQueue.add(() => {
+            // Nothing cancels this request. `SwarmHlsPlayer`'s effect cleanup calls
+            // `ManifestStateManager.clear(topic)` and then `hls.destroy()`, on unmount and on every
+            // `restartTrigger` bump, which is the recovery path for a fatal player error and so
+            // fires exactly when a fetch is already slow. A response that lands after that would
+            // otherwise recreate the topic it was issued against and stamp a pre-teardown index on
+            // it, and an index that exists is what routes the next mount into this method instead
+            // of `handleInitialFetch`, the only path that resyncs to the live head. So the write
+            // only applies to the state it was computed from.
+            if (this.stateManager.getIndex(hexTopic)?.toBigInt() !== fromIndex.toBigInt()) {
+              return;
+            }
+
             const parsed = parseManifest(res.text);
             const shouldContinue = this.stateManager.updateManifest(
               hexTopic,
@@ -257,11 +270,11 @@ export class ManifestFetcher {
           }
         })
         // Released only once the state update has run, since the queue's promise is what the chain
-        // above resolves on. Clearing at response time would let the next poll race the update it is
-        // supposed to read. It has to be released on the failure path too, or one poll that outran
-        // the publisher would end the broadcast for this viewer, and a caught-up viewer gets a 404
-        // on nearly every poll. That comes from sitting after the `catch` rather than from
-        // `finally`, which by then has no rejection left to see.
+        // above resolves on. Releasing at response time would cost a duplicate request rather than a
+        // wrong index, because the index is pinned. It has to be released on the failure path too,
+        // or one poll that outran the publisher would end the broadcast for this viewer, and a
+        // caught-up viewer gets a 404 on nearly every poll. That comes from sitting after the
+        // `catch` rather than from `finally`, which by then has no rejection left to see.
         .finally(() => {
           this.inFlight.delete(hexTopic);
         });

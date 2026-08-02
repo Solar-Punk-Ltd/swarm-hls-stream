@@ -10,6 +10,9 @@ const OWNER = '0x1111111111111111111111111111111111111111';
 const TOPIC_NAME = 'con29';
 const START_INDEX = 5n;
 
+/** Where a restart's `handleInitialFetch` re-anchors, far enough ahead that a rewind is unmistakable. */
+const RESYNCED_INDEX = 40n;
+
 /** How far ahead the fixture can answer, which is more slots than any test here consumes. */
 const LAST_SEEDED_INDEX = 12n;
 
@@ -142,6 +145,46 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
 
     assert.deepEqual(requested, [afterFirst + 1n], `the later poll asked for ${requested} rather than the next slot`);
     assert.equal(manager.getIndex(hexTopic)!.toBigInt(), afterFirst + 1n, 'the later poll did not advance the feed');
+  });
+
+  // `SwarmHlsPlayer`'s effect cleanup clears the topic and destroys the player, and nothing cancels
+  // a follow-up already in flight. Pinning the target index fixed the skip above and, on its own,
+  // made this case worse than it was: the late callback recreated the topic at its pre-teardown
+  // index, and an index that exists routes the next mount into the follow-up branch, so the player
+  // resumed however far behind it had been rather than resyncing to the live head. On the base
+  // commit the callback's `getIndex(...)!` threw instead, which left the index null and was
+  // accidentally protective.
+  it('does not write its index into the state that replaced the one it read', async () => {
+    const gate = deferred<void>();
+    stubFetch(gate.promise);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    manager.clear(hexTopic);
+    gate.resolve();
+    await settle();
+
+    assert.equal(manager.getIndex(hexTopic), null, 'a torn-down topic was resurrected at a stale index');
+    assert.equal(manager.serialize(hexTopic, `${BEE_URL}/bytes`), '', 'segments were appended to a cleared topic');
+  });
+
+  // The same defect in the other order: the player restarts and resyncs to the live head before the
+  // abandoned fetch lands. Both orderings happen, and only this one moves the index backwards.
+  it('does not rewind the feed when a restart has already resynced ahead of it', async () => {
+    const gate = deferred<void>();
+    stubFetch(gate.promise);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    manager.clear(hexTopic);
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-40.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(RESYNCED_INDEX));
+    gate.resolve();
+    await settle();
+
+    assert.equal(
+      manager.getIndex(hexTopic)!.toBigInt(),
+      RESYNCED_INDEX,
+      'a stale callback dragged the feed back behind the live head, where it advances one slot per poll',
+    );
   });
 
   // A 404 is the ordinary case, not an error: it means the publisher has not written the slot yet.
