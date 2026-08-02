@@ -150,12 +150,14 @@ export function renderReport(run: BenchRun): string {
     drift === null
       ? '- publisher pace drift: **not measured**, which needs two samples spanning some time.'
       : `- publisher pace drift: ${drift >= 0 ? '+' : ''}${Math.round(drift)}ms per minute of media. ` +
-        'This is a direct bias on every total above, in the direction of reporting less latency than ' +
-        'there was when it is positive.',
+          'This is a direct bias on every total above, in the direction of reporting less latency than ' +
+          'there was when it is positive.',
   );
 
   const impossible = run.samples.flatMap((sample) =>
-    impossibleHops(sample.split).map((hop) => `segment ${sample.index}: ${hop.name} came out at ${Math.round(hop.ms)}ms`),
+    impossibleHops(sample.split).map(
+      (hop) => `segment ${sample.index}: ${hop.name} came out at ${Math.round(hop.ms)}ms`,
+    ),
   );
   if (impossible.length === 0) {
     lines.push('- no hop came out negative, so no stage is recorded as finishing before the one feeding it.');

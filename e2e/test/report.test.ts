@@ -46,7 +46,12 @@ describe('choosing what a run reports', () => {
   });
 
   it('picks the lower of the two middles from an even count, rather than inventing one between them', () => {
-    const samples = [sampleWithTotal(1, 9_000), sampleWithTotal(2, 5_600), sampleWithTotal(3, 7_000), sampleWithTotal(4, 8_000)];
+    const samples = [
+      sampleWithTotal(1, 9_000),
+      sampleWithTotal(2, 5_600),
+      sampleWithTotal(3, 7_000),
+      sampleWithTotal(4, 8_000),
+    ];
 
     assert.equal(medianSample(samples)?.index, 3);
   });

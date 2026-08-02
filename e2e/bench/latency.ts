@@ -59,7 +59,9 @@ async function main(): Promise<void> {
   const gatewayUrl = process.env.BENCH_GATEWAY_URL ?? `http://${cfg.publicHost}:${cfg.ports.beeGatewayApi}`;
 
   console.log(`bench: engine ${cfg.engine}, profile ${cfg.profile}, gateway ${gatewayUrl}`);
-  console.log(`bench: publishing ${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`);
+  console.log(
+    `bench: publishing ${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`,
+  );
 
   console.log('bench: checking the instrument locally, which spends nothing...');
   const check = await checkInstrumentLocally(knobs);

@@ -25,7 +25,7 @@
 
 import type { E2EConfig } from '../config.js';
 import { srtIngestUrl } from '../harness/engine.js';
-import { type FfmpegProcess,startFfmpeg } from '../harness/ffmpegProcess.js';
+import { type FfmpegProcess, startFfmpeg } from '../harness/ffmpegProcess.js';
 
 /**
  * The knobs a run varies, and the reason each one is a latency lever.

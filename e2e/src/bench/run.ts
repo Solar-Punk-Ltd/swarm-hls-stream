@@ -123,12 +123,7 @@ function toSample(
   return { index: uploaded.index, ref: pending.ref, split: latencySplit(instants, skew) };
 }
 
-async function waitForAnnouncement(
-  host: Host,
-  uploader: string,
-  sinceIso: string,
-  publisherStderr: () => string,
-) {
+async function waitForAnnouncement(host: Host, uploader: string, sinceIso: string, publisherStderr: () => string) {
   let announced: ReturnType<typeof announcedLiveStreams>[number] | undefined;
   await waitFor(
     async () => {
@@ -138,7 +133,9 @@ async function waitForAnnouncement(
     {
       timeoutMs: ANNOUNCE_TIMEOUT_MS,
       intervalMs: 2_000,
-      label: `the uploader announcing a live stream. ffmpeg said: ${publisherStderr().trim().slice(0, 300) || '(nothing)'}`,
+      label: `the uploader announcing a live stream. ffmpeg said: ${
+        publisherStderr().trim().slice(0, 300) || '(nothing)'
+      }`,
     },
   );
   return announced!;

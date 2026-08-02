@@ -73,7 +73,11 @@ describe('reading a wall-clock instant back out of an MPEG-TS timestamp', () => 
 
   it('leaves a container that cannot wrap alone', () => {
     const capturedAtMs = REAL_PUBLISH_START_MS + REAL_STARTUP_MS;
-    const frame: FramePts = { pts: (capturedAtMs / 1_000) * MPEGTS_TIMESCALE, timescale: MPEGTS_TIMESCALE, wrapTicks: null };
+    const frame: FramePts = {
+      pts: (capturedAtMs / 1_000) * MPEGTS_TIMESCALE,
+      timescale: MPEGTS_TIMESCALE,
+      wrapTicks: null,
+    };
 
     const latencyMs = latencyMsFromPts(frame, windowFrom(REAL_PUBLISH_START_MS, capturedAtMs + 4_000));
 
@@ -118,7 +122,10 @@ describe('refusing a reading the pipeline cannot have produced', () => {
     // Stamped a minute before the publisher started, so it cannot be this run's media.
     const frame: FramePts = { ...TS_FRAME, pts: ptsForInstant(REAL_PUBLISH_START_MS - 60_000) };
 
-    assert.throws(() => latencyMsFromPts(frame, windowFrom(REAL_PUBLISH_START_MS, observedAtMs)), UnusableTimestampsError);
+    assert.throws(
+      () => latencyMsFromPts(frame, windowFrom(REAL_PUBLISH_START_MS, observedAtMs)),
+      UnusableTimestampsError,
+    );
   });
 
   /**
@@ -128,9 +135,16 @@ describe('refusing a reading the pipeline cannot have produced', () => {
    */
   it('rejects a frame stamped after it was fetched', () => {
     const observedAtMs = REAL_PUBLISH_START_MS + 20_000;
-    const frame: FramePts = { pts: ((observedAtMs + 5_000) / 1_000) * MPEGTS_TIMESCALE, timescale: MPEGTS_TIMESCALE, wrapTicks: null };
+    const frame: FramePts = {
+      pts: ((observedAtMs + 5_000) / 1_000) * MPEGTS_TIMESCALE,
+      timescale: MPEGTS_TIMESCALE,
+      wrapTicks: null,
+    };
 
-    assert.throws(() => latencyMsFromPts(frame, windowFrom(REAL_PUBLISH_START_MS, observedAtMs)), UnusableTimestampsError);
+    assert.throws(
+      () => latencyMsFromPts(frame, windowFrom(REAL_PUBLISH_START_MS, observedAtMs)),
+      UnusableTimestampsError,
+    );
   });
 
   it('carries the implied latency on the error, so a report can say how wrong it was', () => {

@@ -3,11 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import {
-  LIVE_SYNC_DURATION_EXPORT,
-  LIVE_SYNC_DURATION_S,
-  PLAYER_CONFIG_PATH,
-} from '../src/bench/clientTuning.js';
+import { LIVE_SYNC_DURATION_EXPORT, LIVE_SYNC_DURATION_S, PLAYER_CONFIG_PATH } from '../src/bench/clientTuning.js';
 import { ROOT_DIR } from '../src/config.js';
 
 /**

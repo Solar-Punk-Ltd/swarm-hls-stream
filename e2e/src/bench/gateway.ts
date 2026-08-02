@@ -104,6 +104,9 @@ export async function requireGatewayReachable(gatewayUrl: string): Promise<void>
     throw new GatewayUnreachableError(gatewayUrl, (error as Error).message);
   }
   if (!body.includes('status')) {
-    throw new GatewayUnreachableError(gatewayUrl, `/health answered something that is not a bee node: ${body.slice(0, 80)}`);
+    throw new GatewayUnreachableError(
+      gatewayUrl,
+      `/health answered something that is not a bee node: ${body.slice(0, 80)}`,
+    );
   }
 }

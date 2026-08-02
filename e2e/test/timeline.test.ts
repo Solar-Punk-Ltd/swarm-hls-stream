@@ -100,9 +100,10 @@ describe('reading when the uploader did each thing', () => {
 
 describe('reading the instant off a log line', () => {
   it('drops a line carrying no timestamp of its own rather than dating it from a neighbour', () => {
-    const withContinuation = ['[2026-08-02T19:38:00.000Z] [ERROR] - Upload failed', '    at uploadDataToBee (foo.js:1)'].join(
-      '\n',
-    );
+    const withContinuation = [
+      '[2026-08-02T19:38:00.000Z] [ERROR] - Upload failed',
+      '    at uploadDataToBee (foo.js:1)',
+    ].join('\n');
 
     assert.deepEqual(
       timestampedMessages(withContinuation).map((line) => line.message),
@@ -118,13 +119,17 @@ describe('reading the instant off a log line', () => {
     const embedded =
       '[2026-08-02T19:38:00.000Z] [INFO] - Adding stream to list: {"title":"02/08/2026","topic":"abc","state":"live"}';
 
-    assert.equal(timestampedMessages(embedded)[0].message, 'Adding stream to list: {"title":"02/08/2026","topic":"abc","state":"live"}');
+    assert.equal(
+      timestampedMessages(embedded)[0].message,
+      'Adding stream to list: {"title":"02/08/2026","topic":"abc","state":"live"}',
+    );
   });
 
   it('survives the truncated final line of a docker logs tail', () => {
-    const truncated = ['{"ts":"2026-08-02T19:38:00.000Z","level":"log","msg":"Segment 1 uploaded: aa"}', '{"ts":"2026-08'].join(
-      '\n',
-    );
+    const truncated = [
+      '{"ts":"2026-08-02T19:38:00.000Z","level":"log","msg":"Segment 1 uploaded: aa"}',
+      '{"ts":"2026-08',
+    ].join('\n');
 
     assert.equal(timestampedMessages(truncated).length, 1);
   });
