@@ -51,6 +51,7 @@ class ManifestFetchError extends Error {
 export class ManifestStateManager {
   private static instance: ManifestStateManager;
   private topics: Map<string, TopicState> = new Map();
+  private generations: Map<string, number> = new Map();
 
   private constructor() {}
 
@@ -142,10 +143,26 @@ export class ManifestStateManager {
     }
   }
 
+  /**
+   * How many times this topic has been torn down.
+   *
+   * The one thing about a topic that has to outlive the topic, so that a fetch issued before a
+   * teardown can tell that it was. The follow-up path can compare feed indices instead, because it
+   * pins one before it starts; the initial path has no index yet by definition, and after a teardown
+   * a resurrected topic and a genuinely new one are otherwise identical.
+   */
+  generation(topicId: string): number {
+    return this.generations.get(topicId) ?? 0;
+  }
+
   clear(topicId?: string): void {
     if (topicId) {
       this.topics.delete(topicId);
+      this.generations.set(topicId, this.generation(topicId) + 1);
     } else {
+      for (const id of this.topics.keys()) {
+        this.generations.set(id, this.generation(id) + 1);
+      }
       this.topics.clear();
     }
   }
@@ -235,8 +252,20 @@ export class ManifestFetcher {
     // straight back into this method, and a gateway recorded as healthy imposes no backoff on that
     // loop and says nothing to the viewer. A 200 carrying a captive portal's HTML does exactly that.
     const path = `feeds/${owner}/${hexTopic}`;
+    const generation = this.stateManager.generation(hexTopic);
     try {
       const res = await this.fetchResource(path);
+
+      // The follow-up path pins an index and refuses to write across a teardown. This path has no
+      // index to pin, so it pins the generation instead, and it needs the guard more: the wait above
+      // can hold it open for the whole backoff, and the outage that sets that backoff is what drives
+      // the restart that tears the topic down. Writing anyway recreates the cleared topic at a
+      // pre-teardown head, and an index that exists is what routes the next mount into the follow-up
+      // path, which never resyncs to the live edge.
+      if (this.stateManager.generation(hexTopic) !== generation) {
+        throw new Error(`Topic ${hexTopic} was torn down while its first fetch was in flight`);
+      }
+
       const parsed = parseManifest(res.text);
       const shouldContinue = this.stateManager.updateManifest(
         hexTopic,

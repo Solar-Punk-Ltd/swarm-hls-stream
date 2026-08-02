@@ -437,6 +437,28 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
   });
 
+  /**
+   * The mirror of the two follow-up teardown tests above, on the path that had no guard at all. The
+   * wait this branch added holds the initial fetch open for the whole backoff, and the outage that
+   * sets that backoff is what drives the restart that tears the topic down, so the window and the
+   * event that fires into it are now the same event.
+   */
+  it('does not resurrect a topic that was torn down while its first fetch was in flight', async () => {
+    const gate = deferred<void>();
+    globalThis.fetch = async () => {
+      await gate.promise;
+      return feedHead(START_INDEX);
+    };
+
+    const pending = fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    manager.clear(hexTopic);
+    gate.resolve();
+
+    await assert.rejects(pending, /torn down/);
+    assert.equal(manager.getIndex(hexTopic), null, 'a torn-down topic was resurrected at a pre-teardown index');
+    assert.equal(manager.serialize(hexTopic, `${BEE_URL}/bytes`), '', 'segments were appended to a cleared topic');
+  });
+
   it('says the feed is reconnecting when the first fetch of a mount cannot reach the gateway', async () => {
     stubFetch(gatewayDown);
 
