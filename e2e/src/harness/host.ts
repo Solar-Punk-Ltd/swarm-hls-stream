@@ -15,7 +15,24 @@ const DEFAULT_RUN_TIMEOUT_MS = 30_000;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 /** ssh transport failure (couldn't connect / connection dropped) — distinct from a remote command's own exit code. */
 const SSH_TRANSPORT_EXIT = 255;
-const CONTROL_PATH = '/tmp/e2e-cm-%h-%p';
+
+/**
+ * Where the shared ssh master socket lives.
+ *
+ * Under `~/.ssh` rather than `/tmp`, and keyed with `%C` rather than `%h-%p`, both for the reason
+ * `ssh_config(5)` gives: a control path should be in a directory no other user can write to, and
+ * should distinguish the remote user as well as the host and port.
+ *
+ * `/tmp/e2e-cm-%h-%p` was neither. `/tmp` is world-writable and the name was guessable from a
+ * documented default, so any local user with a different uid could pre-create a listening socket
+ * there and be dialed first: the client tries an existing master at that path before it even
+ * resolves the target host, and performs no ownership check on the socket it connects to. The
+ * squatter then supplies stdout, stderr and the exit status of every command, so the whole
+ * fault-injection suite reports green with no container ever stopped, and the chequebook preflight
+ * can be made to report a deposit that never happened. Demonstrated end to end against this code by
+ * the security lens with a responder speaking the ssh multiplexing protocol.
+ */
+const CONTROL_PATH = '~/.ssh/e2e-cm-%C';
 
 export interface RunResult {
   stdout: string;

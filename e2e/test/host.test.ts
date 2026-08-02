@@ -33,7 +33,7 @@ interface Sandbox {
  * A stub `ssh` that exits with `exitCodes[n]` on its n-th call (the last repeating), records its
  * own argv, and prints the remote command it was handed.
  */
-function stubSsh(exitCodes: readonly number[]): Sandbox {
+function stubSsh(exitCodes: readonly number[], stdout?: string): Sandbox {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-ssh-'));
   sandboxes.push(dir);
   const journal = join(dir, 'invocations');
@@ -50,7 +50,9 @@ function stubSsh(exitCodes: readonly number[]): Sandbox {
     'index=$n',
     '[ "$index" -ge "${#codes[@]}" ] && index=$(( ${#codes[@]} - 1 ))',
     'code="${codes[$index]}"',
-    '[ "$code" -eq 0 ] && printf \'%s\' "${*: -1}"',
+    stdout === undefined
+      ? '[ "$code" -eq 0 ] && printf \'%s\' "${*: -1}"'
+      : `[ "$code" -eq 0 ] && printf '%s' ${JSON.stringify(stdout)}`,
     'exit "$code"',
   ].join('\n');
 
@@ -111,6 +113,14 @@ describe('Host.run ssh arguments', () => {
 
     const argv = sandbox.invocations()[0];
     assert.match(argv, /ControlMaster=auto/, 'poll loops would otherwise open a handshake each time');
+    // Without ControlPath the default is `none` and ControlMaster=auto is inert, so leaving this
+    // unasserted let the whole multiplexing claim be deleted with the suite still green.
+    assert.match(argv, /ControlPath=\S+/, 'ControlMaster=auto does nothing without a ControlPath');
+    // Not /tmp, and keyed per connection. A world-writable, guessable socket path can be squatted by
+    // another local user, who is then dialed before the host is even resolved and supplies the
+    // stdout, stderr and exit status of every command the suite runs.
+    assert.doesNotMatch(argv, /ControlPath=\/tmp\//, 'the control socket must not sit in a world-writable directory');
+    assert.match(argv, /ControlPath=[^ ]*%C/, 'the socket name must distinguish user, host and port');
     assert.match(argv, /ControlPersist=30s/);
     assert.match(argv, /ConnectTimeout=10/);
     assert.match(argv, /stub-target docker ps$/, 'the target must precede the remote command');
@@ -124,11 +134,34 @@ describe('Host.run ssh arguments', () => {
 });
 
 describe('Host container controls', () => {
-  // `isRunning` has to answer false rather than throw for a container that is not there: the crash
-  // scenario polls it while the container is genuinely absent, between the kill and the start.
+  /**
+   * Both answers have to be reachable, which they were not.
+   *
+   * The stub used to echo its own last argument, so `isRunning`'s stdout was always the `docker
+   * inspect` command string and could never equal `true`. `false` was the only outcome the test
+   * could see, and replacing the whole method body with `return false` left the suite green. That
+   * matters in one direction: `uploader-crash-recovery` waits on `!isRunning(uploader)` before it
+   * believes it crashed the container, and a method stuck on false satisfies that instantly, so the
+   * scenario proceeds against an uploader that never went down.
+   */
+  it('reports a running container as running', async () => {
+    stubSsh([0], 'true');
+    assert.equal(await new Host('stub-target').isRunning('c1'), true);
+  });
+
+  // `docker inspect` on an absent container is answered by the `|| echo missing` fallback, and the
+  // crash scenario polls this while the container is genuinely gone, between the kill and the start.
   it('reports a missing container as not running', async () => {
-    stubSsh([0]);
+    stubSsh([0], 'missing');
     assert.equal(await new Host('stub-target').isRunning('nope'), false);
+  });
+
+  // Anything that is not exactly `true` means not running, including an empty or truncated read.
+  it('does not read a partial answer as running', async () => {
+    for (const answer of ['', 'tru', 'TRUE', 'false']) {
+      stubSsh([0], answer);
+      assert.equal(await new Host('stub-target').isRunning('c1'), false, `"${answer}" read as running`);
+    }
   });
 
   for (const [method, expected] of [
