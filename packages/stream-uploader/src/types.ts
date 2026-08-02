@@ -33,6 +33,30 @@ export interface SegmentEntry {
   discontinuity?: boolean;
 }
 
+/**
+ * Who announced a stream, as far as the path that took the announce could tell.
+ *
+ * The address alone, deliberately, and not the `address:port` socket the OME admission guard matches
+ * on. The two are asking different questions of the same field: that guard has to tell one *session*
+ * from another, and a reconnecting publisher always arrives on a fresh source port, so the port is
+ * exactly what it needs. This one has to tell one *publisher* from another, and the port changes for
+ * the legitimate broadcaster too, so including it would make every reconnect look like a stranger.
+ */
+export interface StreamClaimant {
+  /**
+   * The publisher's address as the engine reported it, or `null` when the announce did not carry one.
+   *
+   * Null is wider than the field being absent, in the same way `SessionIdentity`'s halves are: this
+   * is parsed from a webhook body, so an omitted field arrives as `null` and an empty string is not
+   * an address. Each of those says "no evidence", and no evidence must not read as evidence of a
+   * stranger.
+   */
+  address: string | null;
+}
+
+/** An announce that named nobody, which every guard here has to treat as no evidence rather than as proof. */
+export const ANONYMOUS_CLAIMANT: StreamClaimant = { address: null };
+
 export const REJECT_QUEUE_FULL = 'queue_full' as const;
 export const REJECT_UNKNOWN_STREAM = 'unknown_stream' as const;
 export const REJECT_DUPLICATE = 'duplicate' as const;

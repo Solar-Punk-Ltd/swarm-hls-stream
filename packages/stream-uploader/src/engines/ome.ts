@@ -262,14 +262,22 @@ function sessionIdentity(payload: OmeAdmissionPayload): SessionIdentity {
 }
 
 function sessionSocket(payload: OmeAdmissionPayload): string | null {
-  const client = payload?.client;
-  if (!client) {
-    return null;
-  }
-  const { address, port } = client;
-  const hasAddress = typeof address === 'string' && address.length > 0;
+  const address = publisherAddress(payload);
+  const port = payload?.client?.port;
   const hasPort = typeof port === 'number' && Number.isInteger(port) && port > 0;
-  return hasAddress && hasPort ? `${address}:${port}` : null;
+  return address !== null && hasPort ? `${address}:${port}` : null;
+}
+
+/**
+ * The publisher's address, for `StreamClaimant`.
+ *
+ * `client.address` and not `client.real_ip`. The first is the peer OME is actually talking to, and the
+ * second is whatever a proxy in front of it claimed, which is a header on the paths that populate it.
+ * A guard that decides who may take a live stream id has to read the one an attacker cannot set.
+ */
+function publisherAddress(payload: OmeAdmissionPayload): string | null {
+  const address = payload?.client?.address;
+  return typeof address === 'string' && address.length > 0 ? address : null;
 }
 
 function admissionTime(payload: OmeAdmissionPayload): number | null {
@@ -426,9 +434,12 @@ function handleAdmission(
 
     // status === 'opening' (or absent — treat as opening)
     const mediatype = resolveMediaType(parsed.app);
-    const accepted = orchestrator.startStream(streamId, mediatype);
+    const accepted = orchestrator.startStream(streamId, mediatype, { address: publisherAddress(payload) });
 
     if (!accepted) {
+      // Deliberately the same wording as every other refusal. The caller here is the one case that
+      // may be an attacker probing a stream id they do not hold, and a reason naming the incumbent
+      // would tell them whether the id is live and when it goes quiet.
       reply(res, { allowed: false, reason: 'orchestrator rejected' });
       return;
     }

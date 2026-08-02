@@ -39,6 +39,15 @@ interface SrsStreamPayload {
   action: SrsStreamAction;
   app: string;
   stream: string;
+  /**
+   * The publisher's address, which SRS names `ip` in its `on_publish` body.
+   *
+   * Optional, and screened rather than trusted, for two reasons. It is a claim about the webhook body
+   * rather than a fact, like every other field parsed here. And it has not been observed on this
+   * deployment's SRS build the way OME's `client.address` was captured live on 2026-08-01, so a build
+   * that omits it has to mean "no evidence" and not "a different publisher".
+   */
+  ip?: string;
 }
 
 interface SrsHlsPayload {
@@ -56,6 +65,11 @@ function srsResponse(res: Response, code: number): void {
 
 function buildStreamId(app: string, stream: string): string {
   return `${app}/${stream}`;
+}
+
+/** The publisher's address, for `StreamClaimant`, or null when the webhook did not carry one whole. */
+function publisherAddress(payload: SrsStreamPayload): string | null {
+  return typeof payload?.ip === 'string' && payload.ip.length > 0 ? payload.ip : null;
 }
 
 export function createSrsEngineFromEnv(): EnginePlugin {
@@ -159,7 +173,7 @@ function handleStreams(req: Request, res: Response, streamOrchestrator: StreamOr
     const mediatype = resolveMediaType(payload.app);
     logger.info(`[SRS] Stream published: ${streamId} (${mediatype})`);
 
-    const accepted = streamOrchestrator.startStream(streamId, mediatype);
+    const accepted = streamOrchestrator.startStream(streamId, mediatype, { address: publisherAddress(payload) });
     srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
   } catch (error) {
     const msg = getErrorMessage(error);
