@@ -5,6 +5,15 @@ import PQueue from 'p-queue';
 import { MediaType, SegmentEntry, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamState } from '../types.js';
 import { retryUntilDeadlineAsync } from '../utils/common.js';
 
+import {
+  AnnounceReadiness,
+  needsCatalogAnnounce,
+  onCatalogAnnounced,
+  onFirstSegmentUploaded,
+  READINESS_PENDING,
+  readinessFromPersisted,
+  readinessToPersisted,
+} from './AnnounceReadiness.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
@@ -65,8 +74,7 @@ export class StreamUploader {
   private stamp: string;
   private socIndex: number | null = null;
   private mediatype: MediaType;
-  private isFirstSegmentReady = false;
-  private isFirstManifestReady = false;
+  private readiness: AnnounceReadiness = READINESS_PENDING;
   private liveManifestQueued = false;
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
@@ -116,8 +124,7 @@ export class StreamUploader {
     if (restoreState) {
       this.streamRawTopic = restoreState.streamRawTopic;
       this.socIndex = restoreState.socIndex;
-      this.isFirstSegmentReady = restoreState.isFirstSegmentReady;
-      this.isFirstManifestReady = restoreState.isFirstManifestReady;
+      this.readiness = readinessFromPersisted(restoreState);
       this.pendingDiscontinuity = restoreState.pendingDiscontinuity ?? false;
       this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
       this.logger.info(`[StreamUploader] Restored stream ${streamId} at SOC index ${this.socIndex}`);
@@ -163,7 +170,7 @@ export class StreamUploader {
     const ref = result.reference.toHex();
     this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
     this.pendingDiscontinuity = false;
-    this.isFirstSegmentReady = true;
+    this.readiness = onFirstSegmentUploaded(this.readiness);
 
     this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
 
@@ -323,8 +330,7 @@ export class StreamUploader {
       socIndex: this.socIndex,
       segments: manifestState.segments,
       hlsHeaders: manifestState.hlsHeaders,
-      isFirstSegmentReady: this.isFirstSegmentReady,
-      isFirstManifestReady: this.isFirstManifestReady,
+      ...readinessToPersisted(this.readiness),
       pendingDiscontinuity: this.pendingDiscontinuity,
       liveManifestStale: this.hasStaleLiveManifest(),
       updatedAt: Date.now(),
@@ -387,7 +393,7 @@ export class StreamUploader {
 
     this.socIndex = nextIndex;
 
-    if (this.isFirstSegmentReady && !this.isFirstManifestReady) {
+    if (needsCatalogAnnounce(this.readiness)) {
       this.persistState();
       await this.announceToCatalog();
     }
@@ -400,7 +406,7 @@ export class StreamUploader {
   /**
    * Publish this stream to the catalog, at most once per `CATALOG_ANNOUNCE_RETRY_MS`.
    *
-   * The rate limit is the whole point: a failure left `isFirstManifestReady` false, and every later
+   * The rate limit is the whole point: a failure left the stream short of `announced`, and every later
    * manifest publish then re-attempted, so a catalog that was down cost a paid feed write per segment
    * and nothing said so. Giving up instead would be worse, since the entry is the only thing that
    * makes a live broadcast discoverable, so this keeps trying at a rate set by the viewer rather than
@@ -415,7 +421,7 @@ export class StreamUploader {
     this.lastCatalogAnnounceAt = now;
     try {
       await this.notifyStart();
-      this.isFirstManifestReady = true;
+      this.readiness = onCatalogAnnounced(this.readiness);
       this.catalogAnnounceFailedAt = null;
     } catch (error) {
       this.catalogAnnounceFailedAt ??= now;

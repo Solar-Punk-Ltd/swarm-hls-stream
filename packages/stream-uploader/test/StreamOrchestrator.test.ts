@@ -127,6 +127,31 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
     await orch.cleanup();
   });
 
+  // ARCH-3, end to end. An entry claiming the catalog announce happened before the first segment
+  // cannot come from any live sequence. Restored as-is it passed every gate quietly and was never
+  // published, so the broadcast ran correctly and no viewer could find it. Now it is refused, and
+  // the refusal costs only that stream because the loop isolates each entry.
+  it('refuses a recovery entry that announced before its first segment, and recovers the rest', async () => {
+    const impossible = 'live/impossible';
+    const healthy = 'live/healthy';
+    const corrupt: StreamState = {
+      ...makeRecoveredState(impossible),
+      isFirstSegmentReady: false,
+      isFirstManifestReady: true,
+    };
+    const orch = makeOrchestrator(
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(impossible), toRecoveryFileId(healthy)],
+        load: (fileId: string) => (fileId === toRecoveryFileId(impossible) ? corrupt : makeRecoveredState(healthy)),
+      }),
+    );
+
+    const recovered = await orch.recoverStreams();
+
+    assert.deepEqual(recovered, [healthy], 'an unannounceable stream was restored as if it were fine');
+    await orch.cleanup();
+  });
+
   it('returns the ids of the streams it recovered so pull-based engines can resume them', async () => {
     const id = 'video/stream';
     const orch = makeOrchestrator(
