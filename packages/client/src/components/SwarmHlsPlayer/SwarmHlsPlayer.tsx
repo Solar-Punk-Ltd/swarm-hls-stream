@@ -4,10 +4,14 @@ import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
 import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
 
+import { FeedStateOverlay } from './overlays/feed/FeedStateOverlay';
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
 import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
-import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
+import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './CustomManifestLoader';
+import { FEED_STATE_LIVE, FeedState } from './feedState';
+import { attachLivePlaybackRateGuard } from './livePlaybackRate';
 import { ManifestStateManager } from './ManifestManagement';
+import { buildPlayerConfig } from './playerConfig';
 
 import './SwarmHlsPlayer.scss';
 
@@ -17,6 +21,16 @@ interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   topicString: string;
   mediaType: MediaType;
   enableQoeOverlay?: boolean;
+}
+
+/** The key both the manifest state and the feed state are held under. Null if the name is unusable. */
+function toHexTopic(topicString: string): string | null {
+  try {
+    return Topic.fromString(topicString).toString();
+  } catch (error) {
+    console.warn('Not a usable topic name:', topicString, error);
+    return null;
+  }
 }
 
 export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
@@ -30,7 +44,20 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
 }) => {
   const [restartTrigger, setRestartTrigger] = useState(0);
   const [metrics, setMetrics] = useState<QoeMetrics>(initialMetrics);
+  const [feedState, setFeedState] = useState<FeedState>(FEED_STATE_LIVE);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Deliberately not part of the effect below, which reruns on every restart. A fatal network error
+  // is what causes a restart, so a subscription torn down and rebuilt with the player would be
+  // dropped at exactly the moment it has something to say. The tracker replays on subscribe, so a
+  // mount that lands in the middle of an outage still hears about it.
+  useEffect(() => {
+    const hexTopic = toHexTopic(topicString);
+    if (!hexTopic) {
+      return;
+    }
+    return manifestFetcher.feedHealth.subscribe(hexTopic, setFeedState);
+  }, [topicString]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -48,16 +75,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     };
 
     if (Hls.isSupported()) {
-      hls = new Hls({
-        pLoader: CustomManifestLoader,
-        fLoader: CustomFragmentLoader,
-        liveSyncDuration: 10,
-        liveMaxLatencyDuration: 30,
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
-        maxBufferSize: 60 * 1024 * 1024, // 60MB
-        maxBufferHole: 1,
-      });
+      hls = new Hls(buildPlayerConfig({ pLoader: CustomManifestLoader, fLoader: CustomFragmentLoader }));
 
       const restartStream = () => {
         console.warn('Restarting stream due to manifest parsing error.');
@@ -113,18 +131,23 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     }
 
     const detachQoe = enableQoeOverlay ? attachQoeTracking(video, hls, setMetrics) : null;
+    const detachRateGuard = hls ? attachLivePlaybackRateGuard(video, hls) : null;
 
     return () => {
       video.removeEventListener('pause', onHlsPause);
       video.removeEventListener('play', onHlsPlay);
       detachQoe?.();
+      detachRateGuard?.();
 
       if (hls) {
+        // The destroy runs whatever the clear does. Losing it leaks the loaders and the media
+        // attachment of every player the page has ever mounted, and a cleanup that throws takes the
+        // rest of React's cleanup with it, so this is not a guarantee to drop for tidiness.
         try {
-          const topic = Topic.fromString(topicString);
-          ManifestStateManager.getInstance().clear(topic.toString());
-        } catch (error) {
-          console.warn('Failed to clear manifest state for topic:', topicString, error);
+          const hexTopic = toHexTopic(topicString);
+          if (hexTopic) {
+            ManifestStateManager.getInstance().clear(hexTopic);
+          }
         } finally {
           hls.destroy();
           hls = null;
@@ -148,6 +171,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   return (
     <div className="swarm-hls-player-wrapper">
       {videoEl}
+      <FeedStateOverlay state={feedState} />
       {enableQoeOverlay && <QoeOverlay metrics={metrics} />}
     </div>
   );

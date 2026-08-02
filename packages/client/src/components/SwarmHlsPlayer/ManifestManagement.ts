@@ -15,6 +15,8 @@ import { makeFeedIdentifier } from '@/utils/bee';
 import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 
+import { FeedHealthTracker, UNSERVED_SLOT_POLL_LIMIT } from './feedState';
+
 // The parser and the segment shape now live beside the tags the uploader builds with, so the two
 // halves of the manifest contract cannot drift apart. Re-exported because the player's own modules
 // and tests import them from here. See ARCH-1.
@@ -39,12 +41,15 @@ const manifestQueue = new Pqueue({ concurrency: 1 });
 const SLOT_NOT_WRITTEN_YET = 404;
 
 /**
- * How many consecutive polls may sit on an unserved slot before one is reported. hls.js reloads a
- * live playlist about once per target duration, which is 2 seconds here, so this is roughly a minute
- * of a feed that is not advancing. Low enough to reach a viewer while they are still watching, high
- * enough that a viewer who has merely caught up with the publisher stays quiet.
+ * The wait the fetcher ships with, named so that something can run it.
+ *
+ * As an inline default parameter it was the one code path every backoff test injected over, so a
+ * default that returned immediately left the whole suite green while a page of players hammered a
+ * gateway that was already down.
  */
-export const UNSERVED_SLOT_POLL_LIMIT = 30;
+export function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
 class ManifestFetchError extends Error {
@@ -57,6 +62,7 @@ class ManifestFetchError extends Error {
 export class ManifestStateManager {
   private static instance: ManifestStateManager;
   private topics: Map<string, TopicState> = new Map();
+  private generations: Map<string, number> = new Map();
 
   private constructor() {}
 
@@ -148,10 +154,26 @@ export class ManifestStateManager {
     }
   }
 
+  /**
+   * How many times this topic has been torn down.
+   *
+   * The one thing about a topic that has to outlive the topic, so that a fetch issued before a
+   * teardown can tell that it was. The follow-up path can compare feed indices instead, because it
+   * pins one before it starts; the initial path has no index yet by definition, and after a teardown
+   * a resurrected topic and a genuinely new one are otherwise identical.
+   */
+  generation(topicId: string): number {
+    return this.generations.get(topicId) ?? 0;
+  }
+
   clear(topicId?: string): void {
     if (topicId) {
       this.topics.delete(topicId);
+      this.generations.set(topicId, this.generation(topicId) + 1);
     } else {
+      for (const id of this.topics.keys()) {
+        this.generations.set(id, this.generation(id) + 1);
+      }
       this.topics.clear();
     }
   }
@@ -189,10 +211,13 @@ export class ManifestFetcher {
   /** Topics with a follow-up fetch outstanding. Keyed by hex topic, since each feed advances alone. */
   private readonly inFlight = new Set<string>();
 
-  /** Consecutive polls each topic has spent on a slot nothing has served. Cleared when one arrives. */
-  private readonly unservedSlotPolls = new Map<string, number>();
-
-  constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {}
+  constructor(
+    private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance(),
+    /** Shared with whatever renders the state, so both halves see one reading. */
+    readonly feedHealth: FeedHealthTracker = new FeedHealthTracker(),
+    /** Injected only by tests, so a backoff is asserted rather than waited out. */
+    private readonly delay: (ms: number) => Promise<void> = waitMs,
+  ) {}
 
   get beeUrl(): string {
     return this._beeUrl;
@@ -212,22 +237,74 @@ export class ManifestFetcher {
     return this.handleFollowupFetch(owner, topic);
   }
 
+  /**
+   * The path every mount takes, and every restart with it, since the player's effect cleanup clears
+   * the topic. A gateway outage causes a fatal error, a fatal error causes a restart, so this is
+   * where an outage is most likely to be met, not the follow-up path it was first guarded on.
+   *
+   * The backoff is waited out rather than skipped. This method is awaited by the loader and there is
+   * no serialised state to answer with in its place, and an empty manifest is a fatal parse error
+   * that restarts the player straight back into here. Taking longer is what actually slows it down.
+   */
   private async handleInitialFetch(owner: string, topic: Topic): Promise<string> {
     const hexTopic = topic.toString();
-    const res = await this.fetchResource(`feeds/${owner}/${hexTopic}`);
-    const parsed = parseManifest(res.text);
 
-    const shouldContinue = this.stateManager.updateManifest(
-      hexTopic,
-      parsed.headers,
-      parsed.segments,
-      parsed.isFinalized,
-    );
-    if (shouldContinue) {
-      this.stateManager.setIndex(hexTopic, this.extractIndex(res));
+    const backoffMs = this.feedHealth.backoffRemainingMs(hexTopic);
+    if (backoffMs > 0) {
+      await this.delay(backoffMs);
     }
 
-    return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+    // Every status counts as a failure here, 404 included. On the follow-up path a 404 means the
+    // publisher has not written the next slot yet, which is ordinary; this request asks for the
+    // feed's head, so nothing being there is the gateway having no answer at all.
+    //
+    // So does anything else that stops this call producing a playlist. The alternative is worse than
+    // it looks: an empty manifest reaches hls.js as a fatal parse error, which restarts the player
+    // straight back into this method, and a gateway recorded as healthy imposes no backoff on that
+    // loop and says nothing to the viewer. A 200 carrying a captive portal's HTML does exactly that.
+    const path = `feeds/${owner}/${hexTopic}`;
+    const generation = this.stateManager.generation(hexTopic);
+    try {
+      const res = await this.fetchResource(path);
+
+      // The follow-up path pins an index and refuses to write across a teardown. This path has no
+      // index to pin, so it pins the generation instead, and it needs the guard more: the wait above
+      // can hold it open for the whole backoff, and the outage that sets that backoff is what drives
+      // the restart that tears the topic down. Writing anyway recreates the cleared topic at a
+      // pre-teardown head, and an index that exists is what routes the next mount into the follow-up
+      // path, which never resyncs to the live edge.
+      if (this.stateManager.generation(hexTopic) !== generation) {
+        throw new Error(`Topic ${hexTopic} was torn down while its first fetch was in flight`);
+      }
+
+      const parsed = parseManifest(res.text);
+      const shouldContinue = this.stateManager.updateManifest(
+        hexTopic,
+        parsed.headers,
+        parsed.segments,
+        parsed.isFinalized,
+      );
+
+      // Checked before the index is committed, not after. An index is what routes the next poll to
+      // the follow-up path, so committing one for a response that yielded no playlist strands the
+      // topic there, answering every poll with the same empty string and never asking the head again.
+      const manifest = this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+      if (!manifest) {
+        throw new ManifestFetchError(path, res.status);
+      }
+      if (shouldContinue) {
+        this.stateManager.setIndex(hexTopic, this.extractIndex(res));
+      }
+
+      // Reachable rather than served. This endpoint answers with the publisher's last update, so it
+      // answers the same for a live broadcast and one that stopped an hour ago, and treating it as a
+      // served slot would erase an unserved run on the one path every restart takes.
+      this.feedHealth.recordGatewayReachable(hexTopic);
+      return manifest;
+    } catch (error) {
+      this.feedHealth.recordGatewayFailure(hexTopic);
+      throw error;
+    }
   }
 
   private async handleFollowupFetch(owner: string, topic: Topic): Promise<string> {
@@ -236,7 +313,7 @@ export class ManifestFetcher {
     // One outstanding follow-up per topic. This method is fire and forget by design: it returns the
     // already serialised state at once and leaves the fetch running, so hls.js schedules its next
     // level reload on the ordinary cadence while the previous fetch is still open. See CON-29.
-    if (!this.inFlight.has(hexTopic)) {
+    if (!this.inFlight.has(hexTopic) && this.feedHealth.backoffRemainingMs(hexTopic) === 0) {
       // Pinned here rather than read again in the callback. Two callbacks that each advance from
       // whatever index they find advance twice for one slot fetched, and the slot in between is
       // never requested at all, so its segments never reach the viewer. The second callback used to
@@ -250,7 +327,6 @@ export class ManifestFetcher {
       this.inFlight.add(hexTopic);
       this.fetchResource(`soc/${owner}/${targetId}`)
         .then((res) => {
-          this.unservedSlotPolls.delete(hexTopic);
           return manifestQueue.add(() => {
             // Nothing cancels this request. `SwarmHlsPlayer`'s effect cleanup calls
             // `ManifestStateManager.clear(topic)` and then `hls.destroy()`, on unmount and on every
@@ -263,6 +339,11 @@ export class ManifestFetcher {
             if (this.stateManager.getIndex(hexTopic)?.toBigInt() !== fromIndex.toBigInt()) {
               return;
             }
+
+            // Inside the guard, unlike the failure below. A response that outlived its topic says
+            // the gateway was answering before a teardown this fetch is older than, and the mount
+            // that replaced it has its own initial fetch to say whether it still is.
+            this.feedHealth.recordGatewayResponse(hexTopic);
 
             const parsed = parseManifest(res.text);
             const shouldContinue = this.stateManager.updateManifest(
@@ -281,6 +362,11 @@ export class ManifestFetcher {
             this.reportStalledFeed(hexTopic, targetIndex);
             return;
           }
+          // Deliberately outside the generation guard the success path sits inside. A gateway that
+          // did not answer is a fact about the gateway rather than about the topic generation, and
+          // it is the fact worth keeping across the teardown, because the restart that discards the
+          // topic is itself what a fatal network error triggers.
+          this.feedHealth.recordGatewayFailure(hexTopic);
           console.error('Error fetching follow-up manifest:', error);
         })
         // Released only once the state update has run, since the queue's promise is what the chain
@@ -304,12 +390,13 @@ export class ManifestFetcher {
    * only symptom that reaches anyone is the buffer running dry, which the player reports as a media
    * error rather than a feed one.
    *
-   * Run length is the axis, because the status code is not one. Reported once per run, since the
-   * poll that reports it is followed by another a target duration later.
+   * Run length is the axis, because the status code is not one. The run is not backed off, because a
+   * viewer who has merely caught up with the publisher sees one of these on nearly every poll and
+   * has to keep asking at full cadence to see the next segment the moment it lands. Reported once
+   * per run, since the poll that reports it is followed by another a target duration later.
    */
   private reportStalledFeed(hexTopic: string, slot: FeedIndex): void {
-    const polls = (this.unservedSlotPolls.get(hexTopic) ?? 0) + 1;
-    this.unservedSlotPolls.set(hexTopic, polls);
+    const polls = this.feedHealth.recordUnservedSlot(hexTopic);
 
     if (polls === UNSERVED_SLOT_POLL_LIMIT) {
       console.error(
