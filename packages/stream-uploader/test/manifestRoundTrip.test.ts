@@ -1,4 +1,10 @@
-import { parseManifest, segmentDuration } from '@swarm-hls-stream/shared';
+import {
+  HLS_MEDIA_SEQUENCE,
+  HLS_PLAYLIST_TYPE_VOD,
+  HLS_TARGET_DURATION,
+  parseManifest,
+  segmentDuration,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -103,6 +109,54 @@ describe('manifest round trip (ARCH-1)', () => {
       many.slice(-10).map((s) => `${BEE_URL}/${s.ref}`),
       'the live window did not round-trip as its last ten segments',
     );
+  });
+
+  // Every header the builder writes was discarded by the round trip: setting TARGETDURATION to 0,
+  // forcing the media sequence to 0, and flipping PLAYLIST_TYPE from VOD to EVENT each left the whole
+  // suite green. The segment list is only half of what a player reads.
+  it('carries the target duration, rounded up to whole seconds', () => {
+    const parsed = parseManifest(managerWith(SEGMENTS).buildLiveManifest());
+
+    // 4.002 is the longest segment, and #EXT-X-TARGETDURATION is an integer that must not be less
+    // than any segment's duration, so it rounds up rather than to nearest.
+    assert.ok(
+      parsed.headers.includes(`${HLS_TARGET_DURATION}:5`),
+      `target duration missing or wrong: ${JSON.stringify(parsed.headers)}`,
+    );
+  });
+
+  it('carries a media sequence of 0 while the stream fits in the live window', () => {
+    const parsed = parseManifest(managerWith(SEGMENTS).buildLiveManifest());
+
+    assert.ok(
+      parsed.headers.includes(`${HLS_MEDIA_SEQUENCE}:0`),
+      `media sequence missing or wrong: ${JSON.stringify(parsed.headers)}`,
+    );
+  });
+
+  // The one assertion that needs the window to have slid. A media sequence stuck at 0 tells a player
+  // the tenth segment is the first, so a viewer joining late replays from the wrong point.
+  it('advances the media sequence once the stream outgrows the live window', () => {
+    const many = Array.from({ length: 14 }, (_, index) => ({ index, duration: 4, ref: `ref-${index}` }));
+
+    const parsed = parseManifest(managerWith(many).buildLiveManifest());
+
+    assert.ok(
+      parsed.headers.includes(`${HLS_MEDIA_SEQUENCE}:4`),
+      `14 segments in a window of 10 must start at 4: ${JSON.stringify(parsed.headers)}`,
+    );
+  });
+
+  it('marks a VOD manifest as VOD and a live one not at all', () => {
+    const manager = managerWith(SEGMENTS);
+
+    assert.ok(
+      parseManifest(manager.buildVODManifest()).headers.includes(HLS_PLAYLIST_TYPE_VOD),
+      'a finished recording did not declare itself VOD',
+    );
+    for (const header of parseManifest(manager.buildLiveManifest()).headers) {
+      assert.doesNotMatch(header, /^#EXT-X-PLAYLIST-TYPE/, 'a running broadcast declared a playlist type');
+    }
   });
 
   it('carries the headers through as header lines rather than segments', () => {
