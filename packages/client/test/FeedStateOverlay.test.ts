@@ -1,3 +1,4 @@
+import { isValidElement, type ReactElement } from 'react';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -8,6 +9,7 @@ import {
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FEED_STATE_STALLED,
+  type FeedState,
 } from '../src/components/SwarmHlsPlayer/feedState';
 import { FeedStateOverlay } from '../src/components/SwarmHlsPlayer/overlays/feed/FeedStateOverlay';
 
@@ -15,18 +17,25 @@ const CLIENT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PLAYER_SOURCE = join(CLIENT_ROOT, 'src/components/SwarmHlsPlayer/SwarmHlsPlayer.tsx');
 
 /** The overlay's own output, which a function component returns without needing anything to mount. */
-function render(state: Parameters<typeof FeedStateOverlay>[0]['state']) {
-  return FeedStateOverlay({ state });
+function render(state: FeedState): ReactElement {
+  const rendered = FeedStateOverlay({ state });
+  if (!isValidElement(rendered)) {
+    throw new Error(`the overlay rendered nothing at all for ${state}`);
+  }
+  return rendered;
 }
 
-function textOf(element: ReturnType<typeof render>): string {
-  const children = (element?.props as { children?: unknown[] })?.children ?? [];
-  return children.filter((child) => typeof child === 'string').join('');
+function propsOf(element: ReactElement): { role?: string; 'aria-live'?: string; children?: unknown[] } {
+  return element.props;
+}
+
+function textOf(element: ReactElement): string {
+  return (propsOf(element).children ?? []).filter((child) => typeof child === 'string').join('');
 }
 
 describe('FeedStateOverlay', () => {
   it('shows nothing while the feed is live, which is nearly all of the time', () => {
-    assert.equal(render(FEED_STATE_LIVE), null);
+    assert.equal(FeedStateOverlay({ state: FEED_STATE_LIVE }), null);
   });
 
   it('says the player is reconnecting when the gateway is not answering', () => {
@@ -44,7 +53,7 @@ describe('FeedStateOverlay', () => {
   });
 
   it('announces itself to a screen reader without stealing focus', () => {
-    const props = render(FEED_STATE_RECONNECTING)?.props as { role?: string; 'aria-live'?: string };
+    const props = propsOf(render(FEED_STATE_RECONNECTING));
 
     assert.equal(props.role, 'status');
     assert.equal(props['aria-live'], 'polite');
