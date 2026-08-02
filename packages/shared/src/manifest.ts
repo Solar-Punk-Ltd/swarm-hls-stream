@@ -19,9 +19,25 @@ export interface ParsedManifest {
   isFinalized: boolean;
 }
 
-/** The `#EXTINF:<duration>,` line for a segment, the one spelling both packages write. */
+/**
+ * Decimal places kept in an `#EXTINF` duration.
+ *
+ * Six is past the precision any encoder emits and short of where JavaScript starts writing
+ * exponents, which is the whole point of fixing it at all.
+ */
+const EXTINF_DECIMALS = 6;
+
+/**
+ * The `#EXTINF:<duration>,` line for a segment, the one spelling both packages write.
+ *
+ * Formatted rather than interpolated, because `String(0.0000001)` is `"1e-7"` and RFC 8216 does not
+ * allow exponent notation. hls.js reads such a line with `/(\d*(?:\.\d+)?)/`, which captures the `1`
+ * and plays the segment as **one second** instead of a ten-millionth of one. The uploader accepts
+ * that duration today: `isUsableDuration` only asks for a finite number in `[0, 3600]`.
+ */
 export function buildExtinf(duration: number): string {
-  return `${HLS_EXTINF}:${duration},`;
+  const fixed = duration.toFixed(EXTINF_DECIMALS).replace(/\.?0+$/, '');
+  return `${HLS_EXTINF}:${fixed || '0'},`;
 }
 
 /**

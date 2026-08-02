@@ -29,6 +29,22 @@ describe('segmentDuration', () => {
   it('round-trips what buildExtinf writes', () => {
     assert.equal(segmentDuration(buildExtinf(4.002)), 4.002);
   });
+
+  // `String(0.0000001)` is `"1e-7"`, which RFC 8216 does not allow. hls.js reads that line with a
+  // regex that captures the leading `1`, so the player treats the segment as one second rather than
+  // a ten-millionth of one. The uploader accepts the duration: `isUsableDuration` asks only for a
+  // finite number in [0, 3600].
+  it('never writes a duration in exponent notation', () => {
+    for (const duration of [0.0000001, 1e-323, 0.0000005]) {
+      assert.doesNotMatch(buildExtinf(duration), /e-/, `${duration} reached the playlist as an exponent`);
+    }
+  });
+
+  it('keeps the precision an encoder actually emits', () => {
+    assert.equal(buildExtinf(4.002), '#EXTINF:4.002,');
+    assert.equal(buildExtinf(3.5), '#EXTINF:3.5,');
+    assert.equal(buildExtinf(4), '#EXTINF:4,');
+  });
 });
 
 describe('parseManifest', () => {

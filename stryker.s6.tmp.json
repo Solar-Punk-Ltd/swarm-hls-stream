@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "pnpm",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "./node_modules/.bin/tsx --test --test-force-exit packages/stream-uploader/test/*.test.ts"
+  },
+  "coverageAnalysis": "off",
+  "mutate": [
+    "packages/stream-uploader/src/types.ts",
+    "packages/stream-uploader/src/utils/hlsTags.ts",
+    "packages/stream-uploader/src/libs/AnnounceReadiness.ts",
+    "packages/stream-uploader/src/libs/Logger.ts",
+    "packages/stream-uploader/src/libs/logLevels.ts",
+    "packages/stream-uploader/src/libs/StreamOrchestrator.ts",
+    "packages/stream-uploader/src/libs/StreamUploader.ts"
+  ],
+  "reporters": [
+    "clear-text",
+    "progress-append-only",
+    "json"
+  ],
+  "jsonReporter": {
+    "fileName": "reports/mutation/s6-scoped.json"
+  },
+  "clearTextReporter": {
+    "allowColor": false,
+    "maxTestsToLog": 0
+  },
+  "concurrency": 4,
+  "timeoutMS": 30000,
+  "timeoutFactor": 2,
+  "disableTypeChecks": true,
+  "tempDirName": ".stryker-tmp"
+}
