@@ -210,9 +210,15 @@ function announcedLiveEntries(text: string): Partial<AnnouncedStream>[] {
  * catalog, which trails the uploader by minutes and can surface a stale topic from a prior stream.
  */
 export function announcedLiveTopics(text: string): string[] {
-  return announcedLiveEntries(text)
-    .map((entry) => entry.topic)
-    .filter((topic): topic is string => topic !== undefined);
+  return (
+    announcedLiveEntries(text)
+      .map((entry) => entry.topic)
+      // Checked against the runtime type, not against `undefined`, because these entries come out of
+      // `JSON.parse` and the shape they are cast to is a claim about the uploader rather than a fact
+      // about the string. A predicate narrowing to `string` has to earn it, or `null` reaches a caller
+      // wearing a type that says it cannot be there.
+      .filter((topic): topic is string => typeof topic === 'string' && topic !== '')
+  );
 }
 
 /**

@@ -202,6 +202,21 @@ describe('announcedLiveTopics', () => {
   it('returns nothing when no stream was announced', () => {
     assert.deepEqual(announcedLiveTopics(textLine('log', UPLOADED(0))), []);
   });
+
+  /**
+   * Both of these were excluded by a truthiness guard until this branch extracted the shared parse
+   * and replaced it with `!== undefined`. The entries come out of `JSON.parse` on a log line, so the
+   * `Partial<AnnouncedStream>` the parse is cast to is a claim rather than a fact, and a predicate
+   * reading `topic is string` was signing for a `null`. What a caller then builds is a feed location
+   * naming the topic "null", which fetches nothing and reads as the publisher never having started.
+   */
+  it('drops an announcement whose topic is empty or null, rather than typing it as a string', () => {
+    const rawTopicLine = (topicJson: string) =>
+      textLine('log', `Adding stream to list: {"owner":"0xabc","topic":${topicJson},"state":"live"}`);
+    const log = [rawTopicLine('null'), rawTopicLine('""'), rawTopicLine('"topic-real"')].join('\n');
+
+    assert.deepEqual(announcedLiveTopics(log), ['topic-real']);
+  });
 });
 
 describe('messageText', () => {
