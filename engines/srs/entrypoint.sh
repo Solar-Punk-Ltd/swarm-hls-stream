@@ -26,6 +26,17 @@ sed -i "s/SRS_ADAPTER_HOST_PLACEHOLDER/${SRS_ADAPTER_HOST:-stream-uploader}/g" "
 sed -i "s/SRS_WEBHOOK_TOKEN_PLACEHOLDER/${SRS_WEBHOOK_TOKEN}/g" "$CONF"
 sed -i "s/SRS_ADAPTER_PORT_PLACEHOLDER/${SRS_ADAPTER_PORT:-3000}/g" "$CONF"
 
+# The ports SRS itself binds, which are not the same question as the ports compose publishes.
+#
+# Under `COMPOSE_NETWORK=host` docker discards the published-port mapping entirely and the container
+# binds the host directly, so a config that hard-codes these makes `--portSlot` a no-op for this
+# service: the deploy prints the shifted ports while SRS listens on the originals, and a second
+# profile on the same host dies with `SocketBind ... Address already in use` on 8080. Defaults are
+# the values that were hard-coded here, so a deployment that sets none of them is unchanged.
+sed -i "s/RTMP_PORT_PLACEHOLDER/${SRS_RTMP_PORT:-1935}/g" "$CONF"
+sed -i "s/HTTP_PORT_PLACEHOLDER/${SRS_HTTP_PORT:-8080}/g" "$CONF"
+sed -i "s/SRT_PORT_PLACEHOLDER/${SRS_SRT_PORT:-10080}/g" "$CONF"
+
 # Ensure HLS output directories exist with open permissions
 # These are shared with the uploader container which needs read + delete access
 mkdir -p ./objs/nginx/html/video

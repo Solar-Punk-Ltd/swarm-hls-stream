@@ -154,10 +154,13 @@ services:
     profiles: ['srs']
     restart: unless-stopped
     logging: *default-logging
+    # Same port on both sides, because the entrypoint now binds SRS to these values rather than to
+    # the fixed ones its config used to carry. Mapping a shifted host port onto a fixed container
+    # port would leave the mapping pointing at nothing.
     ports:
-      - '${SRS_SRT_PORT:-10080}:10080/udp'
-      - '${SRS_RTMP_PORT:-1935}:1935'
-      - '${SRS_HTTP_PORT:-8080}:8080'
+      - '${SRS_SRT_PORT:-10080}:${SRS_SRT_PORT:-10080}/udp'
+      - '${SRS_RTMP_PORT:-1935}:${SRS_RTMP_PORT:-1935}'
+      - '${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
@@ -170,6 +173,12 @@ services:
       SRS_WEBHOOK_TOKEN: ${SRS_WEBHOOK_TOKEN:-}
       SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}
       SRS_ADAPTER_PORT: ${API_PORT:-3000}
+      # Read by the entrypoint to write SRS's own `listen` directives. Without these in the
+      # container's environment the substitution falls back to the defaults and host networking
+      # ignores the slot, which is the failure this pair exists to prevent.
+      SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
+      SRS_HTTP_PORT: ${SRS_HTTP_PORT:-8080}
+      SRS_SRT_PORT: ${SRS_SRT_PORT:-10080}
 
   # --- OvenMediaEngine ---
 
