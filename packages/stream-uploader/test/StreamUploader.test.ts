@@ -14,11 +14,32 @@ const TEST_STREAM_KEY = '0'.repeat(63) + '1';
 
 const permanentError = () => Object.assign(new Error('402 payment required'), { status: 402 });
 
+/** A status in `RETRYABLE_HTTP_STATUSES`, so the write is expected to be attempted again. */
+const transientError = () => Object.assign(new Error('503 service unavailable'), { status: 503 });
+
 interface SegmentUploadControl {
   fail?: () => Error | null;
 }
 
-function makeBee(segmentControl: SegmentUploadControl, feedWriteFails = false): Bee {
+/** Fails the first `times` calls with `error` and succeeds from then on. */
+function failFirst(times: number, error: () => Error): () => Error | null {
+  let remaining = times;
+  return () => (remaining-- > 0 ? error() : null);
+}
+
+/** Counts the calls a control saw, which is what tells one attempt apart from a retried one. */
+function countingControl(fail: () => Error | null): SegmentUploadControl & { attempts: number } {
+  const control = {
+    attempts: 0,
+    fail: () => {
+      control.attempts++;
+      return fail();
+    },
+  };
+  return control;
+}
+
+function makeBee(segmentControl: SegmentUploadControl, feedControl: SegmentUploadControl = {}): Bee {
   let refCounter = 0;
   const bee = {
     uploadData: async () => {
@@ -31,8 +52,9 @@ function makeBee(segmentControl: SegmentUploadControl, feedWriteFails = false): 
     },
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => {
-        if (feedWriteFails) {
-          throw permanentError();
+        const err = feedControl.fail?.();
+        if (err) {
+          throw err;
         }
         return { reference: { toHex: () => `soc${opts.index}` } };
       },
@@ -43,10 +65,11 @@ function makeBee(segmentControl: SegmentUploadControl, feedWriteFails = false): 
 
 function newUploader(
   segmentControl: SegmentUploadControl = {},
-  opts: { restoreState?: unknown; feedWriteFails?: boolean } = {},
+  opts: { restoreState?: unknown; feedWriteFails?: boolean; feedControl?: SegmentUploadControl } = {},
 ): StreamUploader {
+  const feedControl = opts.feedControl ?? (opts.feedWriteFails ? { fail: permanentError } : {});
   return new StreamUploader(
-    makeBee(segmentControl, opts.feedWriteFails),
+    makeBee(segmentControl, feedControl),
     '',
     makeFakeCatalog(),
     makeFakeRecoveryStore(),
@@ -248,6 +271,64 @@ describe('StreamUploader live manifest failure surfacing', () => {
     assert.equal(state.liveManifestStale, true);
     // The segment itself uploaded fine — only the manifest (SOC feed) write failed.
     assert.equal(state.segments.length, 1);
+  });
+});
+
+/**
+ * `retryUntilDeadlineAsync` and `isRetryableError` had direct unit tests in `common.test.ts` and
+ * nothing else. Measured rather than assumed: replacing the retry loop's body with a bare rethrow
+ * left every one of the other 27 uploader test files green, including this one, because every
+ * induced failure here was a 402 chosen to keep the tests fast. So the helpers were proven, and
+ * their two callers' dependence on them was not.
+ *
+ * TEST-1 recorded this as "the Bee mock always succeeds", which is no longer true: this file builds
+ * a 402, `OmeHlsPuller.test.ts` a 503, `StreamCatalog.test.ts` a real `BeeResponseError`. The
+ * conclusion held anyway, for a different reason.
+ *
+ * One retry costs one real backoff sleep, 175-350ms, which is why these fail once rather than
+ * repeatedly.
+ */
+describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
+  it('retries a segment upload that fails with a retryable status, and keeps the segment', async () => {
+    const control = countingControl(failFirst(1, transientError));
+    const uploader = newUploader(control);
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    assert.equal(control.attempts, 2, 'a 503 has to be attempted again, not dropped on the first answer');
+    assert.deepEqual(
+      uploader.getStreamState().segments.map((s) => s.index),
+      [0],
+      'the segment survived the flake, so nothing downstream sees a gap',
+    );
+  });
+
+  it('does not retry a segment upload that fails with a permanent status', async () => {
+    const control = countingControl(() => permanentError());
+    const uploader = newUploader(control);
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    assert.equal(control.attempts, 1, 'a 402 means the stamp is exhausted, so retrying only burns the window');
+    assert.deepEqual(uploader.getStreamState().segments, [], 'and the segment is dropped rather than held');
+  });
+
+  it('retries a live manifest publish that fails with a retryable status, and clears the stale flag', async () => {
+    const feedControl = countingControl(failFirst(1, transientError));
+    const uploader = newUploader({}, { feedControl });
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    assert.equal(feedControl.attempts, 2, 'the SOC write has to be attempted again');
+    assert.equal(
+      uploader.getConsecutiveManifestFailures(),
+      0,
+      'a publish that succeeded on its retry is not a stale manifest',
+    );
+    assert.equal(uploader.getStreamState().socIndex, 0, 'and the feed advanced, so a reader can find it');
   });
 });
 

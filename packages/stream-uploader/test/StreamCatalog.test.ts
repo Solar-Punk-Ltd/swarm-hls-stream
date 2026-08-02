@@ -26,6 +26,8 @@ interface CapturedWrite {
 interface CatalogBeeOptions {
   lookupIndex?: bigint;
   lookupFails404?: boolean;
+  /** Called before each feed write. Returning an error throws it instead of recording the write. */
+  writeFails?: () => Error | null;
 }
 
 function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): Bee {
@@ -44,6 +46,10 @@ function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): 
     }),
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, _data: unknown, writeOpts: CapturedWrite) => {
+        const err = opts.writeFails?.();
+        if (err) {
+          throw err;
+        }
         writes.push(writeOpts);
         return { reference: { toHex: () => 'ref' } };
       },
@@ -82,6 +88,54 @@ describe('StreamCatalog Swarm write options', () => {
 
     assert.equal(writes.length, 1);
     assert.equal(writes[0].deferred, true);
+  });
+});
+
+/**
+ * The catalog announce is the write that decides whether a broadcast is discoverable at all, and it
+ * is the one write here with no fallback: a segment that never lands is one missing segment, a
+ * catalog entry that never lands is a stream nobody can find. Its retry was covered only by
+ * `common.test.ts` testing the helper in isolation. See TEST-1.
+ */
+describe('StreamCatalog survives a transient Bee failure (TEST-1)', () => {
+  it('retries a feed write that fails with a retryable status', async () => {
+    const writes: CapturedWrite[] = [];
+    let attempts = 0;
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, {
+        lookupFails404: true,
+        writeFails: () => (attempts++ === 0 ? Object.assign(new Error('503 unavailable'), { status: 503 }) : null),
+      }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+
+    await catalog.addStream(liveEntry());
+
+    assert.equal(attempts, 2, 'a 503 from a busy node has to be attempted again');
+    assert.equal(writes.length, 1, 'and the entry reaches the feed, so the stream is discoverable');
+  });
+
+  it('gives up on a feed write that fails with a permanent status, rather than burning the window', async () => {
+    const writes: CapturedWrite[] = [];
+    let attempts = 0;
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, {
+        lookupFails404: true,
+        writeFails: () => {
+          attempts++;
+          return Object.assign(new Error('402 payment required'), { status: 402 });
+        },
+      }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+
+    await assert.rejects(catalog.addStream(liveEntry()), /402/);
+    assert.equal(attempts, 1, 'an exhausted stamp does not become usable by asking again');
+    assert.equal(writes.length, 0);
   });
 });
 
