@@ -70,7 +70,7 @@ describe('bee data dir from .env (SEC-21)', () => {
     const { sandbox, run } = deployBeeNode(envWith('BEE_UPLOADER_DATA_DIR=../..'));
     const finished = await run;
 
-    assert.equal(sandbox.remoteHas('password'), false, "a bee password file was written to the remote home directory");
+    assert.equal(sandbox.remoteHas('password'), false, 'a bee password file was written to the remote home directory');
     assert.notEqual(finished.exitCode, 0, 'a data dir above the deployment directory was accepted');
     assert.match(
       `${finished.stdout}${finished.stderr}`,
@@ -84,10 +84,7 @@ describe('bee data dir from .env (SEC-21)', () => {
   it('guards the gateway variable as well as the uploader one', async () => {
     const marker = payloadMarker();
 
-    const { run } = deployBeeNode(
-      envWith(`BEE_GATEWAY_DATA_DIR=./data/bee; touch ${marker}; echo`),
-      'bee-gateway',
-    );
+    const { run } = deployBeeNode(envWith(`BEE_GATEWAY_DATA_DIR=./data/bee; touch ${marker}; echo`), 'bee-gateway');
     const finished = await run;
 
     assert.equal(existsSync(marker), false, 'the .env value executed on the deployment host');
