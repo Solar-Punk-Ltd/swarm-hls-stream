@@ -584,6 +584,35 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
    * lines below them, so a response issued before a teardown could report the gateway as answering
    * for a topic whose replacement had already found it was not.
    */
+  /**
+   * The other half of that asymmetry, which the source comment is emphatic about and nothing
+   * asserted. Wrapping the failure record in the same generation guard the success path sits inside
+   * left the whole suite green, and it would undo the branch's root cause: a fatal network error is
+   * what tears the topic down, so guarding the failure discards the report of the very outage that
+   * caused the teardown.
+   */
+  it('keeps a gateway failure that arrives after its topic was torn down', async () => {
+    seedFollowupState();
+    console.error = () => {};
+    const gate = deferred<void>();
+    globalThis.fetch = async () => {
+      await gate.promise;
+      return gatewayDown();
+    };
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    manager.clear(hexTopic);
+    gate.resolve();
+    await settle();
+
+    assert.equal(
+      health.state(hexTopic),
+      FEED_STATE_RECONNECTING,
+      'the outage that caused the teardown went unreported',
+    );
+    assert.equal(health.backoffRemainingMs(hexTopic), 2_000);
+  });
+
   it('does not let a response that outlived its topic say the gateway is answering', async () => {
     seedFollowupState();
     const gate = deferred<void>();
