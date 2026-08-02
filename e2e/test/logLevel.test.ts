@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 
 import { ROOT_DIR } from '../src/config.js';
 import {
+  DEFAULT_LOG_LEVEL,
   droppedParsedLines,
   effectiveLogLevel,
   isLogThreshold,
@@ -100,15 +101,64 @@ describe('effectiveLogLevel', () => {
     assert.equal(effectiveLogLevel('warn'), 'warn');
   });
 
+  /**
+   * The bug this arm exists for, and it defeated the entire guard.
+   *
+   * `loggerOptionsFromEnv` normalizes with `.trim().toLowerCase()` BEFORE testing the value, so
+   * `INFO` is a real level to the uploader. Comparing the raw string sent every differently-cased
+   * spelling down the fallback and onto `debug`, the one answer for which `logLevelProblem` returns
+   * null. So the guard reported "readable" for exactly the deployments it was written to catch, and
+   * `SILENT` was the worst of them: nothing printed at all, guard green.
+   */
+  for (const [raw, expected] of [
+    ['INFO', 'info'],
+    ['Info', 'info'],
+    ['iNfO', 'info'],
+    [' info', 'info'],
+    ['info ', 'info'],
+    ['\tinfo\n', 'info'],
+    ['WARN', 'warn'],
+    ['ERROR', 'error'],
+    ['SILENT', 'silent'],
+    ['DEBUG', 'debug'],
+  ] as const) {
+    it(`normalizes ${JSON.stringify(raw)} to ${expected}, as the uploader does`, () => {
+      assert.equal(effectiveLogLevel(raw), expected);
+    });
+  }
+
+  // The consequence, asserted directly rather than left to be inferred from the mapping above.
+  it('reports a problem for a quiet level however it was spelled', () => {
+    for (const raw of ['INFO', ' info', 'SILENT', 'WARN']) {
+      assert.notEqual(logLevelProblem(effectiveLogLevel(raw)), null, `${JSON.stringify(raw)} passed the guard`);
+    }
+  });
+
   // Both of these land on the uploader's own default, so treating either as a problem would fail
   // the guard against a deployment that prints everything the suite needs.
   it('falls back to the default when unset', () => {
-    assert.equal(effectiveLogLevel(undefined), REQUIRED_LOG_LEVEL);
+    assert.equal(effectiveLogLevel(undefined), DEFAULT_LOG_LEVEL);
   });
 
   it('falls back to the default for a value that is not a level, as the uploader does', () => {
-    assert.equal(effectiveLogLevel('verbose'), REQUIRED_LOG_LEVEL);
-    assert.equal(effectiveLogLevel(''), REQUIRED_LOG_LEVEL);
+    assert.equal(effectiveLogLevel('verbose'), DEFAULT_LOG_LEVEL);
+    assert.equal(effectiveLogLevel(''), DEFAULT_LOG_LEVEL);
+  });
+
+  /**
+   * Read out of the uploader's source rather than compared against our own constant.
+   *
+   * The previous version asserted `effectiveLogLevel(undefined)` against `REQUIRED_LOG_LEVEL`, the
+   * same value the implementation returns, so both sides moved together and changing the uploader's
+   * `DEFAULT_LOG_LEVEL` to `info` left all 169 tests green. A deployment with no `LOG_LEVEL` set
+   * would then really run at `info`, the per-segment lines would vanish, and the guard would still
+   * say null.
+   */
+  it('mirrors the default the uploader actually falls back to', () => {
+    const source = readFileSync(join(UPLOADER_SRC, 'libs', 'logLevels.ts'), 'utf8');
+    const declared = source.match(/^export const DEFAULT_LOG_LEVEL: LogThreshold = LOG_LEVEL_([A-Z]+);/m);
+    assert.ok(declared, 'could not find DEFAULT_LOG_LEVEL in the uploader source');
+    assert.equal(DEFAULT_LOG_LEVEL, declared[1].toLowerCase(), 'the uploader default moved and this mirror did not');
   });
 });
 
@@ -149,9 +199,15 @@ describe('isLogThreshold', () => {
     }
   });
 
-  // The uploader's own version had to stop using `in` for this: `constructor` and `__proto__` walk
-  // the prototype chain and passed, after which the service went silent at every level including
-  // error. A membership test on a literal list cannot inherit that, and this pins it.
+  /**
+   * This pins the e2e mirror, not the uploader.
+   *
+   * The uploader's own version had to stop using `in` for exactly this: `constructor` and
+   * `__proto__` walk the prototype chain and passed, after which the service went silent at every
+   * level including error. Reverting that fix upstream leaves this test green, because the body
+   * only exercises `LOG_THRESHOLDS.includes`, which structurally cannot inherit. Kept because the
+   * mirror could be rewritten into an object lookup and reintroduce the class here.
+   */
   it('rejects inherited property names', () => {
     for (const value of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
       assert.equal(isLogThreshold(value), false, `${value} was accepted as a log level`);

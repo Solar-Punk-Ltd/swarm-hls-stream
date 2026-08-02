@@ -3,9 +3,13 @@
  *
  * Every upload-side assertion in the suite is parsed out of the stream-uploader's own log, which
  * makes the deployment's `LOG_LEVEL` a silent precondition of the whole suite. It is not a
- * hypothetical one: `.env.sample` recommends `info` to drop the per-segment line for every live
- * stream, and at `info` the segment counter never advances, so each scenario spends its full
- * `waitFor` budget and then fails with a label that blames the publisher.
+ * hypothetical one: `.env.sample` documents `info` as the level that drops the per-segment line for
+ * every live stream, which is the reason an operator reaches for it. At `info` the segment counter
+ * never advances, so each scenario spends its full `waitFor` budget and then fails with a label
+ * that blames the publisher.
+ *
+ * The sample itself ships `LOG_LEVEL=debug`. An earlier version of this comment said the sample
+ * "recommends" `info`, which overstated it and was corrected by the gate.
  *
  * The per-line levels below are a mirror of the uploader's own call sites, not an import: e2e must
  * not reach past a package boundary into another package's internals. `test/logLevel.test.ts` reads
@@ -94,14 +98,38 @@ export const PARSED_LINES: readonly ParsedLine[] = [
 export const REQUIRED_LOG_LEVEL: LogThreshold = 'debug';
 
 /**
+ * The uploader's own fallback for an unset or unrecognised `LOG_LEVEL`, mirrored from
+ * `DEFAULT_LOG_LEVEL` in its `logLevels.ts`.
+ *
+ * Deliberately a separate constant from `REQUIRED_LOG_LEVEL` even though the two hold the same
+ * value today. Folding them together is what let the uploader's default move without any test
+ * noticing: `effectiveLogLevel(undefined)` was asserted against the same constant the
+ * implementation returned, so both sides moved together and the assertion could never fail.
+ * `test/logLevel.test.ts` now reads the uploader's value out of its source and compares.
+ */
+export const DEFAULT_LOG_LEVEL: LogThreshold = 'debug';
+
+/**
  * The level a deployment is really running at, given whatever `LOG_LEVEL` holds.
  *
- * Mirrors what `Logger` does with the value: unset falls back to the default, and a value that is
- * not a level is reported once and then ignored, which also lands on the default. Treating either
- * as a problem here would fail the guard on a deployment that prints everything the suite needs.
+ * Mirrors what `Logger` does with the value, **including the normalisation**, which is the part
+ * this originally got wrong. `loggerOptionsFromEnv` does `requested.trim().toLowerCase()` before it
+ * tests the value, so `INFO` is a level to the uploader and only a genuinely unrecognisable value
+ * falls back to the default. Comparing the raw string instead sent every differently-cased spelling
+ * down the fallback and onto `debug`, which is the one answer that makes `logLevelProblem` return
+ * null. `LOG_LEVEL=SILENT` was the worst of them: the uploader printed nothing at all and the guard
+ * reported the deployment readable.
+ *
+ * Unset and unrecognised still land on the default, because that is what the uploader does with
+ * them, and treating either as a problem would fail the guard on a deployment that prints
+ * everything the suite needs.
  */
 export function effectiveLogLevel(raw: string | undefined): LogThreshold {
-  return raw !== undefined && isLogThreshold(raw) ? raw : REQUIRED_LOG_LEVEL;
+  if (raw === undefined) {
+    return DEFAULT_LOG_LEVEL;
+  }
+  const normalized = raw.trim().toLowerCase();
+  return isLogThreshold(normalized) ? normalized : DEFAULT_LOG_LEVEL;
 }
 
 /** The lines a deployment at `threshold` does not print, in the order they appear above. */
