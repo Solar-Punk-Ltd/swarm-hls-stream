@@ -16,9 +16,9 @@
  *
  * The wall clock anchors the **first** frame. After that the encoder emits at the nominal frame rate,
  * measured: three consecutive two-second segments came back exactly 180000 ticks apart at 90kHz, not
- * at whatever the wall clock had done in between. Under `-re` the two coincide, because `-re` paces
- * the input at that same nominal rate, so media time and wall time advance together and the anchor
- * stays true. What that costs is a slow accumulation of pacing drift over a long publish, which is
+ * at whatever the wall clock had done in between. The `realtime` filters make the two coincide, by
+ * pacing the graph at that same nominal rate, so media time and wall time advance together and the
+ * anchor stays true. What that costs is a slow accumulation of pacing drift over a long publish, which is
  * why a run is minutes rather than hours, and why `bench/latency.ts` reports the drift it measured
  * instead of assuming it away.
  */
@@ -85,13 +85,32 @@ function gopFrames(knobs: PublishKnobs): number {
  * both inputs: stamping only the video leaves the audio starting at zero, and a muxer handed two
  * timelines an epoch apart cannot interleave them. Measured, not reasoned — stamping the video alone
  * produced one segment in eight seconds where stamping both produced five.
+ *
+ * Real-time pacing comes from the `realtime` filters and NOT from `-re`, which cannot be combined
+ * with the stamping above. `-re` decides how long to sleep before each packet by comparing that
+ * packet's timestamp against its own elapsed run time, and `-use_wallclock_as_timestamps` hands it an
+ * absolute epoch value. When it takes that literally it concludes it is decades ahead of schedule and
+ * sleeps effectively forever: the process sits at 0.0% CPU in state S, emits no segment at all, exits
+ * nothing to stderr, and stays alive. Whether it latches a usable reference instead is a startup race
+ * between the two input threads, so the failure is intermittent, which is what makes it dangerous.
+ *
+ * Measured, because one sample cannot see an intermittent fault. Over five runs each at a 12s cap:
+ * `-re` on both inputs produced segments 2 times out of 5, and the `realtime` filters 5 out of 5 with
+ * the first segment at 2.1s to 2.3s every time. An earlier revision of this file chose between `-re`
+ * placements off a single eight-second sample that counted total segments, which measures startup
+ * jitter and cannot see a recipe that fails half the time.
+ *
+ * `-output_ts_offset` with ordinary `-re` pacing is the other recipe that runs 5 out of 5, and it is
+ * rejected on accuracy rather than reliability: the offset has to be read from the bench clock at
+ * spawn, while ffmpeg's first frame appears about 1.45s later, so every capture instant would be
+ * reported that much too early and every latency figure inflated by the same amount. Stamping at
+ * demux time has no such bias, which is the property being protected here.
  */
 export function wallclockEncodeArgs(knobs: PublishKnobs): string[] {
   return [
     '-hide_banner',
     '-loglevel',
     'error',
-    '-re',
     '-use_wallclock_as_timestamps',
     '1',
     '-f',
@@ -104,6 +123,14 @@ export function wallclockEncodeArgs(knobs: PublishKnobs): string[] {
     'lavfi',
     '-i',
     'sine=frequency=440:sample_rate=48000',
+    // Paces each stream at wall-clock rate from inside the filter graph, where the decision is made
+    // on the gap between consecutive frames rather than on their absolute value. Both streams need
+    // it: an unpaced `sine` runs thousands of seconds of media time ahead of the video it has to
+    // interleave with.
+    '-vf',
+    'realtime',
+    '-af',
+    'arealtime',
     '-c:v',
     'libx264',
     '-preset',

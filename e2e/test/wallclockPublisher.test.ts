@@ -47,13 +47,22 @@ describe('the flags that make the stream measurable', () => {
   });
 
   /**
-   * Paced on the first input only. Measured: `-re` on both inputs produced three segments in eight
-   * seconds against five with it on the video alone. Unpaced, the encoder would push media faster
-   * than real time and the measured latency would be meaningless.
+   * Unpaced, the encoder pushes media faster than real time and every latency figure is meaningless,
+   * so both streams have to be paced. The filters do it rather than `-re`, and this asserts the pair:
+   * pacing present, `-re` absent.
+   *
+   * `-re` is not merely redundant here, it is incompatible with the stamping above. It sizes each
+   * sleep by comparing the packet's timestamp against its own elapsed run time, and
+   * `-use_wallclock_as_timestamps` gives it an absolute epoch value, so it can conclude it is decades
+   * ahead and sleep effectively forever. Measured on 2026-08-03, five runs each at a 12s cap: `-re`
+   * on both inputs produced segments 2 times out of 5 and the filters 5 out of 5, then 6 of 6 through
+   * `checkInstrumentLocally`. The failure costs nothing to miss in review, because a stalled publish
+   * writes nothing to stderr, stays alive, and sits at 0.0% CPU.
    */
-  it('paces the publish in real time, on one input', () => {
-    assert.equal(count(ARGS, '-re'), 1);
-    assert.ok(ARGS.indexOf('-re') < ARGS.indexOf('-i'));
+  it('paces both streams without -re, which the wall-clock stamps make unusable', () => {
+    assert.equal(count(ARGS, '-re'), 0);
+    assert.equal(valueAfter(ARGS, '-vf'), 'realtime');
+    assert.equal(valueAfter(ARGS, '-af'), 'arealtime');
   });
 
   /**
