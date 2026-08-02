@@ -210,5 +210,9 @@
       }
     }
   ],
-  "paceDriftMsPerMinute": 588.9014722536807
+  "discarded": [],
+  "trend": {
+    "msPerMinute": 588.9014722536807,
+    "scatterMsPerMinute": 3199.3204983012456
+  }
 }
