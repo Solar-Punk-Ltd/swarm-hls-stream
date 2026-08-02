@@ -147,6 +147,23 @@ describe('refusing a reading the pipeline cannot have produced', () => {
     );
   });
 
+  /**
+   * The one reading the two physical bounds cannot reject by themselves, because every comparison
+   * against `NaN` is false, so `latencyMs < 0` and `latencyMs > elapsedMs` are both false at once.
+   * A tick rate of zero produces exactly this. Returned rather than thrown, it is not merely a wrong
+   * number: `impossibleHops` would not flag it either, for the same reason, and the median sort it
+   * lands in compares against it and comes out in an arbitrary order.
+   */
+  it('rejects a reading that is not a finite number, which the bounds alone cannot', () => {
+    const observedAtMs = REAL_PUBLISH_START_MS + 20_000;
+    const noTickRate: FramePts = { ...TS_FRAME, timescale: 0 };
+
+    assert.throws(
+      () => latencyMsFromPts(noTickRate, windowFrom(REAL_PUBLISH_START_MS, observedAtMs)),
+      UnusableTimestampsError,
+    );
+  });
+
   it('carries the implied latency on the error, so a report can say how wrong it was', () => {
     const rebased: FramePts = { ...TS_FRAME, pts: 4 * MPEGTS_TIMESCALE };
     const observedAtMs = REAL_PUBLISH_START_MS + 20_000;

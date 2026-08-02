@@ -105,6 +105,22 @@ export function latencyMsFromPts(frame: FramePts, window: CaptureWindow): number
   const latencyMs = window.observedAtMs - capturedAtMs;
   const elapsedMs = window.observedAtMs - window.publishStartedAtMs;
 
+  // Checked before the bounds because the bounds cannot check it: every comparison against `NaN` is
+  // false, so a `NaN` latency satisfies neither `< 0` nor `> elapsedMs` and would be returned as a
+  // reading. It reaches here from a tick rate of zero, which divides a timestamp into infinity. The
+  // damage would not stop at one wrong figure either, since `impossibleHops` compares the same way
+  // and would not flag it, and the median sort would order the run around a value nothing orders.
+  if (!Number.isFinite(latencyMs)) {
+    throw new UnusableTimestampsError(
+      "the segment's first frame implies a capture instant that is not a finite number, so either " +
+        'its timestamp or the tick rate it is counted in is unusable. This is a broken reading ' +
+        'rather than a surprising one, and it is refused here so that it cannot be reported as a ' +
+        'latency that no later check would question.',
+      latencyMs,
+      window,
+    );
+  }
+
   if (latencyMs < 0 || latencyMs > elapsedMs) {
     throw new UnusableTimestampsError(
       `the segment's first frame implies it was captured ${describeOffset(latencyMs, elapsedMs)}, ` +

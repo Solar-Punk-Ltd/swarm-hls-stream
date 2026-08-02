@@ -171,6 +171,21 @@ describe('refusing output that only looks like a measurement', () => {
   });
 
   /**
+   * Each of these passes the rational shape and none yields a rate a timestamp can be divided by:
+   * `1/0` gives zero ticks per second, `0/90000` gives infinity, `0/0` gives `NaN`. A pts divided by
+   * any of them reaches `wallclock.ts` as a non-finite number, where the physical bounds cannot
+   * reject it, because every comparison against `NaN` is false. So it has to be refused here, while
+   * it is still a string the error can name.
+   */
+  it('refuses a time_base that parses but yields no usable tick rate', () => {
+    for (const timeBase of ['1/0', '0/90000', '0/0']) {
+      const noRate = TS_SEGMENT.split('"time_base": "1/90000"').join(`"time_base": "${timeBase}"`);
+
+      assert.throws(() => parseProbedFrame(noRate, 'ref abc123'), /no usable tick rate/, `time_base "${timeBase}"`);
+    }
+  });
+
+  /**
    * Without `format_name` there is no way to know whether the timestamps wrap, and guessing either
    * way is a silent factor error rather than a visible failure.
    */

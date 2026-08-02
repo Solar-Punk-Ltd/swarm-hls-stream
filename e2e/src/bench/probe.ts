@@ -97,10 +97,14 @@ export function parseProbedFrame(json: string, source: string): FramePts {
   if (!rational) {
     fail(source, `time_base "${timeBase}" is not a rational this can read`);
   }
-  const numerator = Number(rational[1]);
-  const denominator = Number(rational[2]);
-  if (numerator === 0) {
-    fail(source, `time_base "${timeBase}" has a zero numerator, so the tick rate is undefined`);
+  // time_base is seconds per tick; the caller wants ticks per second.
+  const timescale = Number(rational[2]) / Number(rational[1]);
+  // Checked on the computed rate rather than on either side of it, because both sides can be zero
+  // and they fail differently: `0/90000` gives infinity, `1/0` gives zero, `0/0` gives NaN. Only the
+  // first of those is obviously wrong at a glance, and a rate of zero divides a timestamp into a
+  // non-finite number that the physical bounds in `wallclock.ts` cannot reject.
+  if (!Number.isFinite(timescale) || timescale <= 0) {
+    fail(source, `time_base "${timeBase}" gives no usable tick rate, working out to ${timescale} ticks per second`);
   }
 
   const formatName = output.format?.format_name;
@@ -109,8 +113,7 @@ export function parseProbedFrame(json: string, source: string): FramePts {
   }
 
   return {
-    // time_base is seconds per tick; the caller wants ticks per second.
-    timescale: denominator / numerator,
+    timescale,
     pts,
     wrapTicks: formatName.split(',').includes(MPEGTS_FORMAT_NAME) ? MPEGTS_WRAP_TICKS : null,
   };
