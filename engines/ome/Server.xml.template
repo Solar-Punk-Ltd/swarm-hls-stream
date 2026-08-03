@@ -11,12 +11,12 @@
     <Bind>
         <Providers>
             <SRT>
-                <Port>10080</Port>
+                <Port>OME_SRT_PORT_PLACEHOLDER</Port>
             </SRT>
         </Providers>
         <Publishers>
             <HLS>
-                <Port>8081</Port>
+                <Port>OME_HLS_PORT_PLACEHOLDER</Port>
             </HLS>
         </Publishers>
     </Bind>
