@@ -189,6 +189,11 @@ function handleStreams(
   streamOrchestrator: StreamOrchestrator,
   publishKeySecret: string,
 ): void {
+  // Read before the try, so the catch below can tell a publish from anything else. A handler error on
+  // a publish has to refuse when a secret is configured, and the action is the only thing that says
+  // which kind of webhook was being handled.
+  const action = (req.body as SrsStreamPayload | undefined)?.action;
+
   try {
     const payload = req.body as SrsStreamPayload;
     const streamId = buildStreamId(payload.app, payload.stream);
@@ -228,6 +233,18 @@ function handleStreams(
   } catch (error) {
     const msg = getErrorMessage(error);
     logger.error(`[SRS] Stream handler error: ${msg}`);
+    // A publish that threw before it could be screened is a publish that was never authenticated, and
+    // answering SRS_ACCEPT admits it. `publishKeyFromParam` can throw for a `param` that is not a
+    // string, which a real SRS never sends but a caller holding the webhook token can, and this catch
+    // is wide enough to swallow anything a later change puts on the credential path. OME's equivalent
+    // catch already honours `failOpen` and defaults to refusing, so this is the asymmetric half.
+    //
+    // Only when a secret is configured: without one nothing is authenticated anyway, and refusing
+    // here would change the behaviour of a deployment that never opted in.
+    if (publishKeySecret && action === SRS_ACTION_PUBLISH) {
+      srsResponse(res, SRS_REJECT);
+      return;
+    }
     srsResponse(res, SRS_ACCEPT);
   }
 }

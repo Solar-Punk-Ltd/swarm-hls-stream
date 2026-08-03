@@ -369,6 +369,40 @@ describe('the publish key SRS reads out of an on_publish', () => {
   });
 
   /**
+   * A publish that threw before it could be screened was never authenticated, and the handler's
+   * catch-all answered `SRS_ACCEPT`, which tells SRS to admit the publisher.
+   *
+   * `publishKeyFromParam` throws for a `param` that is not a string, because `URLSearchParams` rejects
+   * anything that is not a string or a list of pairs. A real SRS always sends a string, so this is not
+   * reachable through a genuine engine, but the catch is wide enough to swallow anything a later
+   * change puts on the credential path, and OME's equivalent already defaults to refusing. This is the
+   * asymmetric half.
+   */
+  it('refuses a publish whose param cannot be parsed at all', async () => {
+    const orchestrator = makeTestOrchestrator();
+    const app = express();
+    const engine = createSrsEngine('/srv/media', { webhookToken: SRS_TOKEN, publishKeySecret: PUBLISH_SECRET });
+    app.use(express.json());
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+
+    try {
+      const response = await fetch(`${baseUrl}${engine.prefix}/streams?token=${SRS_TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        // A shape `URLSearchParams` refuses, which is what makes the extractor throw.
+        body: JSON.stringify({ action: 'on_publish', app: APP, stream: STREAM, param: [['a', 'b', 'c']] }),
+      });
+
+      assert.equal(await response.json(), 1, 'a publish that could not be screened must not be admitted');
+      assert.equal(orchestrator.getActiveStreamCount(), 0);
+    } finally {
+      server.close();
+      await orchestrator.cleanup();
+    }
+  });
+
+  /**
    * An unpublish is not a publish and must not be screened as one. SRS sends it for a session it
    * already accepted, and the webhook itself is authenticated by the token, so requiring a key here
    * would only strand the streams whose broadcaster disconnected: the unpublish would be refused, the
