@@ -11,7 +11,8 @@
     "test:e2e": "tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' 'suites/scenarios/*.test.ts' 'suites/service/*.test.ts'",
     "test:e2e:smoke": "tsx --test 'suites/smoke/*.test.ts'",
     "bench:latency": "tsx bench/latency.ts",
-    "bench:recipe": "tsx bench/recipeReliability.ts"
+    "bench:recipe": "tsx bench/recipeReliability.ts",
+    "bench:sweep-report": "tsx bench/sweep.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",

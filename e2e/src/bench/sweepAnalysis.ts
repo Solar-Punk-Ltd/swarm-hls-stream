@@ -1,0 +1,104 @@
+/**
+ * Reading a set of runs as a grid, and answering the one question the bench could never answer alone:
+ * how small the player's live buffer can be.
+ *
+ * `playerConfig.ts` carries `LIVE_SYNC_DURATION_S = 10` and its own note says why it had not been
+ * cut: the per-hop split was unusable, and five samples is not a spread. LAT-9 closed the first, and
+ * a sweep closes the second, so the number is finally answerable from data instead of from caution.
+ */
+
+/** One measured segment, reduced to the two quantities the buffer question needs. */
+export interface BufferSample {
+  totalMs: number;
+  segmentMs: number;
+}
+
+/**
+ * The smallest live buffer that would not have stalled on these samples.
+ *
+ * Derived rather than guessed. A player holding playback `B` behind the live edge needs segment `i`'s
+ * media by the wall-clock instant its own playback reaches the end of it. Playing at 1x from some
+ * start `(t0, m0)`, that instant is `t0 + (mediaEnd[i] - m0)`, and the segment is fetchable at
+ * `fetchedAtMs[i]`. Writing `k = t0 - m0`, which is the latency playback actually runs at, no stall
+ * requires `k >= fetchedAtMs[i] - mediaEnd[i]` for every segment.
+ *
+ * `mediaEnd[i]` is `capturedAtMs[i] + segmentMs`, so that bound is exactly `totalMs - segmentMs`, the
+ * same term `viewerLatencyMs` subtracts. The live edge is the newest segment's **last** frame while
+ * the total is anchored on its **first**, which is why the segment comes out and not in.
+ *
+ * **This is a lower bound over what was observed, not a safe setting.** A slower segment than any
+ * here stalls a player configured at exactly this. Add `pollIntervalMs` for the cadence a real client
+ * asks at, and a margin, which `recommendBufferMs` does.
+ */
+export function minimumSafeBufferMs(samples: readonly BufferSample[]): number {
+  if (samples.length === 0) {
+    throw new Error('no samples, so nothing bounds the buffer');
+  }
+  return Math.max(...samples.map((sample) => sample.totalMs - sample.segmentMs));
+}
+
+export interface BufferRecommendation {
+  /** The largest edge-to-fetchable delay observed, which is the hard floor. */
+  observedFloorMs: number;
+  /** That floor plus the client's poll cadence and a margin. */
+  recommendedMs: number;
+  /** How many samples the floor was taken across, since a floor over few samples is a weak one. */
+  samples: number;
+  /** The margin applied, carried so a reader can re-derive the recommendation. */
+  marginMs: number;
+}
+
+/**
+ * A buffer to actually configure, from the observed floor.
+ *
+ * The margin is one segment rather than a percentage. What the buffer absorbs is a segment arriving
+ * later than any that was measured, and the natural unit of "one late arrival" is a segment: a
+ * percentage would shrink the allowance exactly where segments are short and arrivals are most
+ * frequent.
+ *
+ * `pollIntervalMs` is added because the floor is when a segment became fetchable, while a player
+ * learns of it on its next poll, so a client asking every `pollIntervalMs` can be that much later
+ * than the instant measured here.
+ */
+export function recommendBufferMs(
+  samples: readonly BufferSample[],
+  pollIntervalMs: number,
+  segmentMs: number,
+): BufferRecommendation {
+  const observedFloorMs = minimumSafeBufferMs(samples);
+  const marginMs = segmentMs;
+  return {
+    observedFloorMs,
+    recommendedMs: observedFloorMs + pollIntervalMs + marginMs,
+    samples: samples.length,
+    marginMs,
+  };
+}
+
+/** Every run taken at one setting, collapsed into the row a grid prints. */
+export interface GridRow {
+  label: string;
+  runs: number;
+  samples: number;
+  medianTotalMs: number;
+  minTotalMs: number;
+  maxTotalMs: number;
+  /** Median of each hop across every sample at this setting. */
+  hopMs: Record<string, number>;
+  /**
+   * Median absolute clock skew across the runs, which is the only thing the artifact records that
+   * says where the publisher ran. On the deployment host it measured 3ms and from a workstation
+   * 157ms, so a row mixing the two is comparing two networks rather than two settings.
+   */
+  skewMs: number;
+  /** What a viewer would sit behind live here, at the buffer this setting can support. */
+  buffer: BufferRecommendation;
+}
+
+export function median(values: readonly number[]): number {
+  if (values.length === 0) {
+    throw new Error('no values to take a median of');
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)];
+}
