@@ -60,6 +60,20 @@ PROFILES=(
   "hd-one:1920x1080:6000:30:1.0:1.0:15"
   "hd-two:1920x1080:6000:30:2.0:2.0:30"
   "hd-max:1920x1080:9000:30:1.0:1.0:15"
+  # The segment axis at 1080p, which the first pass only sampled at 0.5, 1.0 and 2.0. `hd-quarter`
+  # and `live-quarter` go below the shortest segment ever measured: at 30fps a quarter-second GOP is
+  # a keyframe every 7.5 frames, so this is as much a question about what that costs in picture
+  # quality per bit as about latency, and 240 segments a minute is the hardest the uploader has been
+  # asked to work.
+  "hd-quarter:1920x1080:6000:30:0.25:0.25:3.75"
+  "hd-onehalf:1920x1080:6000:30:1.5:1.5:22.5"
+  "hd-three:1920x1080:6000:30:3.0:3.0:45"
+  "hd-four:1920x1080:6000:30:4.0:4.0:60"
+  "live-quarter:1280x720:2500:30:0.25:0.25:3.75"
+  # 480p only ever ran at half a second, so nothing says whether the cheap picture follows the same
+  # curve as the expensive one or a flatter one.
+  "sd-one:854x480:1200:30:1.0:1.0:15"
+  "sd-two:854x480:1200:30:2.0:2.0:30"
 )
 
 # Rewrites only its own lines, so the engine's webhook token is never read, printed or moved.
@@ -95,7 +109,8 @@ echo "bench-profiles: ${#PROFILES[@]} profile(s), ${RUNS} run(s) each, logging t
 setup_flag=""
 for row in "${PROFILES[@]}"; do
   IFS=: read -r name size kbps fps gop fragment window <<< "${row}"
-  if [ -n "${ONLY}" ] && [ "${ONLY}" != "${name}" ]; then
+  # Comma-separated, matched whole, so `--only hd-one` never also selects `hd-onehalf`.
+  if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then
     continue
   fi
 
@@ -107,6 +122,15 @@ for row in "${PROFILES[@]}"; do
   # other profile on the host is touched.
   "${REPO_ROOT}/deploy/scripts/deploy.sh" --profile="${PROFILE}" --portSlot="${PORT_SLOT}" srs \
     >> "${SWEEP_LOG}" 2>&1
+
+  # A recreated container is reported running before its SRT socket is bound, and the first run after
+  # a redeploy publishes into nothing and times out. That cost a run of `hd-half` on 2026-08-03, and
+  # it is the same gap as OBS-20 seen from the other side.
+  if ! "${REPO_ROOT}/deploy/scripts/wait-for-ingest.sh" \
+    --profile="${PROFILE}" --portSlot="${PORT_SLOT}" --timeout=90 >> "${SWEEP_LOG}" 2>&1; then
+    echo "    ingest never came up for ${name}, skipping the profile" | tee -a "${SWEEP_LOG}"
+    continue
+  fi
 
   for run in $(seq 1 "${RUNS}"); do
     echo "--- ${name} run ${run}/${RUNS} ---" | tee -a "${SWEEP_LOG}"
