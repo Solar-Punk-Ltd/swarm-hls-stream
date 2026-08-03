@@ -81,17 +81,18 @@ freshness, which is why every other signal is clean.
 
 ### Segment length mitigates and does not cure
 
-| | 0.5s segments (2 feed writes/sec) | 2.0s segments (0.5 writes/sec) |
-| --- | --- | --- |
-| freezes over 15s, in 8 minutes | 7 | 6 |
-| **period between freezes** | **63, 65, 64, 64, 66, 63s** | **60, 67, 63, 63, 61s** |
-| freeze length, median | 47.4s | 33.3s |
-| index jump on release | 96 | 17 |
-| **frozen share of the broadcast** | **70%** | **42%** |
+| | 0.5s segments | 1.0s segments | 2.0s segments |
+| --- | ---: | ---: | ---: |
+| feed writes per second | 2 | 1 | 0.5 |
+| freezes over 15s | 7 | 5 | 6 |
+| **period between freezes** | **63, 65, 64, 64, 66, 63s** | **80, 48, 80, 62s** | **60, 67, 63, 63, 61s** |
+| freeze length, median | 47.4s | 36.8s | 33.3s |
+| index jump on release | 96 | 30 to 51 | 17 |
+| **frozen share of the broadcast** | **70%** | **55%** | **42%** |
 
-The period is the same at both write rates, so the cycle is driven by elapsed time. What the write
-rate changes is how far the reader falls behind while frozen, and 96 against 17 is exactly the rate
-ratio. **No operating profile escapes this.**
+The period is the same across a fourfold range of write rate, so the cycle is driven by elapsed time.
+What the write rate changes is how far the reader falls behind while frozen, and 96 against 30 against
+17 tracks the rate. **No operating profile escapes this.**
 
 ### It is not the lookup, it is retrievability at the reading node
 
