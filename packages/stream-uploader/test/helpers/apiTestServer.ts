@@ -24,6 +24,49 @@ export const TEST_AUTH_TOKEN = 'test-token-0123456789abcdef0123456789abcdef';
  */
 export const NO_AUTH_HEADER = { authorization: 'none' };
 
+/**
+ * Sends a hand-written request to `port` and resolves the status code from the response's first line.
+ *
+ * **Accumulates until that line is complete, which is the whole point of it existing.** This used to
+ * read a single `data` event and run the status regex over that chunk. A `data` event is not a
+ * message boundary: TCP may split a response anywhere, so a response arriving as `HTTP/1.1 40` then
+ * `1 Unauthorized` missed the regex and the helper returned `NaN`, failing whatever asserted `401`.
+ * That is why `srsWebhookAuth.test.ts` failed once under a full `pnpm verify` and passed in
+ * isolation: load changes where the chunk boundaries land, and nothing else about the test. See
+ * TEST-53.
+ *
+ * Exported so it can be pointed at a server that splits on purpose, which a test using the real app
+ * cannot make it do.
+ */
+export async function readStatusCode(port: number, request: string): Promise<number> {
+  const socket = net.connect(port, LOOPBACK_HOST);
+  try {
+    await once(socket, 'connect');
+    socket.write(request);
+    // A bounded wait, so a body parser that sits in front of the gate and waits for a body that
+    // never comes fails this test rather than hanging the run with no tally to read.
+    socket.setTimeout(RAW_RESPONSE_TIMEOUT_MS, () => socket.destroy(new Error('no response')));
+
+    let buffered = '';
+    for await (const chunk of socket) {
+      buffered += String(chunk);
+      const lineEnd = buffered.indexOf('\r\n');
+      if (lineEnd === -1) {
+        continue;
+      }
+      const statusLine = buffered.slice(0, lineEnd);
+      const status = /^HTTP\/1\.\d (\d{3})/.exec(statusLine);
+      if (!status) {
+        throw new Error(`not an HTTP status line: ${JSON.stringify(statusLine)}`);
+      }
+      return Number(status[1]);
+    }
+    throw new Error(`connection closed before a status line arrived: ${JSON.stringify(buffered.slice(0, 80))}`);
+  } finally {
+    socket.destroy();
+  }
+}
+
 export interface ApiResponse {
   status: number;
   body: unknown;
@@ -85,18 +128,7 @@ export async function startTestApi(
   }
 
   async function rawRequest(request: string): Promise<number> {
-    const socket = net.connect(port, LOOPBACK_HOST);
-    try {
-      await once(socket, 'connect');
-      socket.write(request);
-      // A bounded wait, so a body parser that sits in front of the gate and waits for a body that
-      // never comes fails this test rather than hanging the run with no tally to read.
-      socket.setTimeout(RAW_RESPONSE_TIMEOUT_MS, () => socket.destroy(new Error('no response')));
-      const [chunk] = (await once(socket, 'data')) as [Buffer];
-      return Number(/^HTTP\/1\.\d (\d{3})/.exec(chunk.toString())?.[1]);
-    } finally {
-      socket.destroy();
-    }
+    return readStatusCode(port, request);
   }
 
   return {

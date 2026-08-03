@@ -317,14 +317,33 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
  * players back on a down gateway at full cadence with the whole suite green.
  *
  * A lower bound rather than a window, because that is the clock assertion that survives contention.
+ *
+ * **Contention was never what broke these, and the lower bound was never the problem.** Both used to
+ * assert `elapsed >= requested` exactly, and one failed under a full `pnpm verify` and then passed
+ * three times in isolation, which reads like load and is not: contention only makes elapsed longer.
+ * `setTimeout` schedules on libuv's clock and this measures with `performance.now()`, and the two
+ * disagree slightly. Measured over 4000 runs on this machine, `setTimeout(20)` returned in under
+ * 20ms by `performance.now()` **1.18% of the time**, worst case 0.87ms early. Two assertions per
+ * run is roughly a 2% chance of a red `pnpm verify` on a branch with nothing wrong with it.
+ *
+ * So the bound carries the slack that granularity needs and nothing more. It still separates every
+ * defect worth naming, because those are a wait that returns immediately and a wait that ignores its
+ * argument, and both are off by tens of milliseconds rather than by one. See TEST-53.
  */
+
+/** Measured worst-case early return is 0.87ms, so this is a shade over 2x that and still tiny. */
+const TIMER_GRANULARITY_MS = 2;
+
 describe('the wait the fetcher ships with', () => {
   it('actually waits', async () => {
     const startedAt = performance.now();
 
     await waitMs(20);
 
-    assert.ok(performance.now() - startedAt >= 20, 'the shipped delay returned early or not at all');
+    assert.ok(
+      performance.now() - startedAt >= 20 - TIMER_GRANULARITY_MS,
+      'the shipped delay returned early or not at all',
+    );
   });
 
   it('waits longer when it is asked for longer', async () => {
@@ -332,7 +351,7 @@ describe('the wait the fetcher ships with', () => {
 
     await waitMs(60);
 
-    assert.ok(performance.now() - startedAt >= 60, 'the shipped delay ignores its argument');
+    assert.ok(performance.now() - startedAt >= 60 - TIMER_GRANULARITY_MS, 'the shipped delay ignores its argument');
   });
 });
 
