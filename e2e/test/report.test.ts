@@ -382,6 +382,21 @@ describe('reporting the manifest against the bytes', () => {
     assert.match(report, /capture to fetchable/, 'the split itself still reports');
   });
 
+  /**
+   * The line first said the gap "moves no other number in this report", which was the true half of a
+   * false pair: nothing derives from the declared figure, and everything but the total derives from
+   * the measured one. So a wide gap is evidence against the measurement too, and that direction is
+   * the dangerous one. A span measured too small grows the `upload` hop instead of making it
+   * negative, and a negative `upload` hop is the entire symptom LAT-9 was opened on.
+   */
+  it('does not blame the engine for a gap that is evidence against the measurement too', () => {
+    const report = renderReport(runWith([declaring(1, 3.15)]));
+
+    assert.match(report, /says one of the two is wrong and not which/);
+    assert.match(report, /grows the `upload` hop rather than making it negative/);
+    assert.doesNotMatch(report, /moves no other number/);
+  });
+
   it('carries both durations and the packet count into the sample table', () => {
     const report = renderReport(runWith([declaring(7, 3.15)]));
 

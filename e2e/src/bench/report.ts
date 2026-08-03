@@ -236,8 +236,18 @@ function declaredGapMs(sample: SegmentSample): number {
  * misreported. One run cannot separate them, so a line that only appeared past some threshold would be
  * stating a judgement the numbers do not support.
  *
- * The split is measured from the bytes now, so whatever this says moves nothing else in the report.
- * That is the point of it being a self-check rather than a figure.
+ * **It is evidence about both figures, not only the engine's.** The gap is declared minus measured,
+ * and the measured term is the one the split runs on, so a disagreement says one of the two is wrong
+ * without saying which. Reporting it as the engine's error would be the same shape of mistake the
+ * `paceDriftMsPerMinute` name was: naming one cause for a signal that has more than one.
+ *
+ * Which matters here more than it looks, because the two are not symmetric in what they cost.
+ * `totalMs` is `fetchedAtMs - capturedAtMs` and never moves, and the hops sum to it whatever the span
+ * is, so `impossibleHops` prints its all-clear either way. What a too-small measured span does instead
+ * is grow the `upload` hop, and that hop coming out negative is the whole reason LAT-9 was opened.
+ * Measured on the real run's own instants: a 2.64s span gives -240ms, 2.0s gives +400ms, and a
+ * truncated 0.067s gives +2333ms. **So a mis-measured span makes LAT-9's symptom look resolved**, and
+ * this line is the only thing in the report that would show it.
  */
 function declaredDurationLine(run: BenchRun): string {
   const compared = run.samples.filter((sample) => sample.declaredDurationS !== null);
@@ -255,9 +265,14 @@ function declaredDurationLine(run: BenchRun): string {
     `${seconds((worst.declaredDurationS ?? 0) * 1_000)} for ${seconds(
       worst.split.instants.segmentDurationS * 1_000,
     )} ` +
-    'of media. Nothing above is derived from the declared figure, so this measures how well the engine ' +
-    'reports itself and moves no other number in this report. It cannot say whether an engine that ' +
-    'disagrees is segmenting unevenly or misreporting even segments, which needs a second run at another GOP.'
+    'of media. **Read this before the `upload` hop.** The gap is the declared figure minus the ' +
+    'measured one, so it says one of the two is wrong and not which. Nothing above derives from the ' +
+    'declared figure, but everything except `capture to fetchable` derives from the measured one, and ' +
+    'a measured span that came out too small grows the `upload` hop rather than making it negative. ' +
+    'A run where that hop is finally non-negative and this gap is wide has not settled anything. ' +
+    'Separating an engine that segments unevenly from one that misreports even segments needs a ' +
+    'second run at another GOP. Separating either of those from a short measurement needs the packet ' +
+    'counts in the table above.'
   );
 }
 
