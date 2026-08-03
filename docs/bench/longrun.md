@@ -113,6 +113,26 @@ returning 404 in 199ms throughout, and then 68 indices became readable in 18.9 s
 On a settled feed those same explicit reads take 270-500ms against 2955ms for `latest`, so the lookup
 is slower and is not the freeze.
 
+### And it is single-owner chunks specifically, not chunks in general
+
+The segments themselves reach the gateway almost immediately. Each sampled segment's reference was
+taken from the uploader's own `Segment N uploaded: <ref>` line and `/bytes/<ref>` polled on the
+**gateway** node until it answered 200:
+
+| | segments (ordinary content chunks) | feed updates (single-owner chunks) |
+| --- | ---: | ---: |
+| time from written to servable by the gateway | **0.8s mean, 3s worst** | **30 to 45s** |
+| samples | 13 across 2.5 minutes, spanning two freeze cycles | 18 freezes across 20 minutes |
+
+**A viewer's node holds essentially all of the video within seconds and cannot learn that it exists**,
+because the only thing announcing it is a chunk that takes half a minute to arrive. That is much
+narrower than "chunk retrieval is slow", and it is what to report upstream: ordinary chunks are fine
+on the same pair of nodes, in the same windows, at the same time.
+
+It also reopens one design lead, stated as a lead and not a recommendation: anything that carried
+segment references to a viewer by a route other than the SOC feed would restore liveness, because the
+bytes are already there.
+
 **So: a feed update is not retrievable from the gateway node for 30 to 45 seconds after it is
 written, and then a batch becomes retrievable at once.** Both nodes run bee 2.8.1 on one host in one
 compose project with identical topology (134 peers, depth 9, reachability Private), so it is not

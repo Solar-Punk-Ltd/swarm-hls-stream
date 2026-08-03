@@ -32,6 +32,10 @@ feed write rate, still froze 42% of the time with a **60-67 second period** agai
 segment only shrinks how far the reader falls behind while frozen, which is a smaller frozen fraction
 and not an escape.
 
+**It is single-owner chunks specifically.** The segments reach the gateway in 0.8s mean and 3s worst,
+measured from the uploader's own upload line; the feed update that names them takes 30 to 45s. A
+viewer's node holds the video within seconds and cannot learn it exists.
+
 **It is retrievability at the reading node, not the lookup.** Asking for an explicit feed index is
 blocked exactly as asking for the latest is, so a client tracking its own position cannot walk past
 it. Polling both bee nodes for the same feed, on the same host, in
