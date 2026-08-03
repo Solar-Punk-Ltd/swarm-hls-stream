@@ -696,6 +696,63 @@ describe('taking over a stream id with a proven publish key', () => {
   });
 
   /**
+   * The mirror of SEC-26's own draining test, one field along, and the case the proven-incumbent
+   * branch got wrong by returning before anything asked whether the session was still there.
+   *
+   * A drained session has already stopped. `handleSegment` answers `draining` to anything it sends,
+   * and `hasStalled`'s doc records that judging a takeover against a stopped session was a defect
+   * once already. Proving a key is a claim to the id while you hold it, not after you let it go, and
+   * the refusal printed "no amount of waiting will free it" while waiting for the drain was exactly
+   * what would free it. In production this is `POST /stream/stop` followed by a reconnect, refused
+   * for up to `DRAIN_TIMEOUT_MS`.
+   */
+  it('lets a new address take an id whose proven session is already draining', async () => {
+    const harness = makeHarness();
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    const draining = orch.stopStream(STREAM_ID);
+    assert.deepEqual(
+      orch.handleSegment(STREAM_ID, 1, 2, Buffer.from('late')),
+      { accepted: false, reason: REJECT_DRAINING },
+      'the session has to actually be draining for this test to mean anything',
+    );
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      true,
+      'a session that has stopped is not holding the id, whatever key it proved',
+    );
+
+    await draining;
+    await orch.cleanup();
+  });
+
+  /**
+   * And the drain is the only thing that gets through. A proven incumbent that is merely quiet still
+   * holds the id, which is the whole point of the branch, so both sides are pinned: a build that
+   * softened the refusal with `hasStalled` rather than with the drain would pass the test above and
+   * fail this one.
+   */
+  it('still refuses an unproven announce against a proven incumbent that is only quiet', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+    await clock.advance(STALL_MS * 10);
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }), false);
+
+    await orch.cleanup();
+  });
+
+  /**
    * The refusal has to name the reason that produced it, and there are now two. The old line credited
    * every refusal to the stall window, which is false of a proven incumbent and false in the most
    * misleading direction: an operator reading it would go looking for a publisher that stopped

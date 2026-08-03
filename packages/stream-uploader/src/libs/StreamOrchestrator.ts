@@ -274,12 +274,18 @@ export class StreamOrchestrator {
     if (incumbent === undefined) {
       return this.hasStalled(streamId) ? null : 'still-publishing';
     }
-    // Not softened by the stall window, deliberately, where every other refusal here is. The window
-    // exists so an owner nobody can identify is not locked out of their own id forever, and an
+    // Not softened by the stall **window**, deliberately, where every other refusal here is. The
+    // window exists so an owner nobody can identify is not locked out of their own id forever, and an
     // incumbent who proved the key has an owner who can be identified. Leaving the window in would
     // hand a proven stream to whoever waits `segmentStallMs` and asks, which is the whole attack.
+    //
+    // A **drain** is a different question and it does get through, because a drained session has
+    // already stopped: `handleSegment` answers `draining` to anything it sends. `hasStalled`'s own
+    // doc records that judging a takeover against a stopped session was a defect once already, and
+    // returning here before consulting it reinstated exactly that contradiction one field along, for
+    // up to `DRAIN_TIMEOUT_MS`. Proving a key is not a claim to hold the id after letting it go.
     if (incumbent.isAuthenticated) {
-      return 'proven-incumbent';
+      return this.isDrainingId(streamId) ? null : 'proven-incumbent';
     }
 
     const provablyDifferent =
@@ -304,14 +310,26 @@ export class StreamOrchestrator {
    * `handleSegment` answers `draining` one method away, and the refusal used to contradict it.
    */
   private hasStalled(streamId: string): boolean {
-    const uploader = this.activeStreams.get(streamId);
-    if (uploader !== undefined && this.isDraining(streamId, uploader)) {
+    if (this.isDrainingId(streamId)) {
       return true;
     }
     const ingestAt = this.streamIngestAt.get(streamId);
     // No reading means nothing has arrived since the session was registered, and `spawnUploader`
     // writes one for every session it starts, so this is unreachable for a stream that has one.
     return ingestAt === undefined || this.clock.now() - ingestAt > this.config.segmentStallMs;
+  }
+
+  /**
+   * Whether the session currently registered under this id is draining.
+   *
+   * Matched by uploader identity through {@link isDraining}, not by id, which is the distinction that
+   * keeps a live replacement from being read as draining while its predecessor's drain is still in
+   * flight under the same id. Both callers need exactly that reading, so it is one helper rather than
+   * the same two lines twice.
+   */
+  private isDrainingId(streamId: string): boolean {
+    const uploader = this.activeStreams.get(streamId);
+    return uploader !== undefined && this.isDraining(streamId, uploader);
   }
 
   /**
