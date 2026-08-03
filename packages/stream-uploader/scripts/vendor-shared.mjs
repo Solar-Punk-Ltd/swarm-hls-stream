@@ -19,7 +19,7 @@
  * collapsing `dist/utils/env.js` into `dist/index.js` moves the `.env` it reads without any error.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,17 +38,38 @@ execFileSync(
 
 // Written rather than copied: the source package points `exports` at its `.ts` entry, which is what
 // lets tsx, vitest and tsc consume it without a build step, and node cannot load that.
+//
+// **Derived from the source manifest rather than restated.** This used to hard-code a single `.`
+// entry, so the day `@swarm-hls-stream/shared` gained a `./publishKey` subpath, every check in the
+// repository stayed green and the deployed uploader crash-looped on
+// `ERR_PACKAGE_PATH_NOT_EXPORTED` at its first import. Nothing in `pnpm verify` runs the vendored
+// copy, because everything outside the image resolves the workspace source directly. Reading the
+// real `exports` is what keeps the two from drifting again.
+const sourceManifest = JSON.parse(readFileSync(resolve(sharedRoot, 'package.json'), 'utf8'));
+
+/** `./src/publishKey.ts` as the compiler emits it beside `index.js`: `./publishKey.js`. */
+function compiledPath(sourcePath, extension) {
+  return sourcePath.replace(/^\.\/src\//, './').replace(/\.ts$/, extension);
+}
+
+const exports = Object.fromEntries(
+  Object.entries(sourceManifest.exports).map(([subpath, entry]) => [
+    subpath,
+    { types: compiledPath(entry.types, '.d.ts'), default: compiledPath(entry.default, '.js') },
+  ]),
+);
+
 writeFileSync(
   resolve(vendorDir, 'package.json'),
   `${JSON.stringify(
     {
-      name: '@swarm-hls-stream/shared',
-      version: '0.1.0',
+      name: sourceManifest.name,
+      version: sourceManifest.version,
       private: true,
       type: 'module',
-      main: './index.js',
-      types: './index.d.ts',
-      exports: { '.': { types: './index.d.ts', default: './index.js' } },
+      main: exports['.'].default,
+      types: exports['.'].types,
+      exports,
     },
     null,
     2,
