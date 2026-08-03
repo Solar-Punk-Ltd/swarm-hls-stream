@@ -26,6 +26,17 @@ against a writer doing two per second, so the reader keeps up **on average** and
 freshness. That is precisely why every other signal is clean, and why a run short enough to fit
 between two freezes reports 2.51s capture-to-fetchable.
 
+**No row below escapes it, and the period is why.** The same run at 2.0s segments, a quarter of the
+feed write rate, still froze 42% of the time with a **60-67 second period** against 0.5s segments'
+**63-66 seconds**. The cycle is driven by elapsed time, not by how fast the feed is written. A longer
+segment only shrinks how far the reader falls behind while frozen, which is a smaller frozen fraction
+and not an escape.
+
+**It is the reading node's lookup.** Polling both bee nodes for the same feed, on the same host, in
+one loop during a live publish: the writer's node stalled once for 26s, 11% of the window, while the
+**gateway node a viewer polls stalled four times for 30 to 44s, 64% of the window**, running up to 21
+updates behind. The feed is resolvable the whole time by a node in the same compose project.
+
 **What that does to the tables below.** Each run here samples 5 segments over 8 to 20 seconds, which
 is one tooth of the sawtooth and never the drop. So a viewer does not sit 6.43s behind live at the
 best row. They sit somewhere between that and roughly fifty seconds depending on where in the cycle
