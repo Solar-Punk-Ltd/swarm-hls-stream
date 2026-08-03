@@ -8,6 +8,31 @@ Read [swarm-hls-tuning-results](#) alongside this: it explains why 1.0s and a 6s
 the defaults. This document is the wider question the owner asked, which is not "how low can it go"
 but "what can we choose between".
 
+## ⛔ Read LAT-10 before quoting any number below
+
+**A viewer of this deployment sees the stream freeze for 30 to 48 seconds at a time, and every figure
+in this document is measured in the gaps between those freezes.** Found on 2026-08-03 by the first
+bench that published for longer than a minute. Over 20.1 minutes at 720p with 0.5s segments, the feed
+a player polls named the same newest segment for 29 to 48 seconds on **18 separate occasions, 679 of
+1198 seconds, 57% of the broadcast**.
+
+It is not the broadcast. Inside the longest window the uploader wrote **96 manifests, SOC index 34 to
+129, with no error, warning or retry**, and the run's pacing check reads 0.9991 media seconds per wall
+second with a zero-millisecond hole. It is not the instrument either: `curl`, polling the same feed
+URL with none of this repository's code in the path, reproduces it exactly, on a 63 second period.
+
+Nothing is lost. The gateway's resolved feed index advances 127, 127 and 128 updates per 63 seconds
+against a writer doing two per second, so the reader keeps up **on average** and fails only on
+freshness. That is precisely why every other signal is clean, and why a run short enough to fit
+between two freezes reports 2.51s capture-to-fetchable.
+
+**What that does to the tables below.** Each run here samples 5 segments over 8 to 20 seconds, which
+is one tooth of the sawtooth and never the drop. So a viewer does not sit 6.43s behind live at the
+best row. They sit somewhere between that and roughly fifty seconds depending on where in the cycle
+they arrive, and a player configured with the buffer these rows derive **rebuffers on every cycle**.
+The rows remain a valid comparison *between settings* on the capture-to-fetchable hop, which is what
+they were built for. They are not a statement about what a viewer experiences.
+
 ## Where these numbers come from, and why that matters more than usual
 
 **Every run publishes and fetches from the deployment host.** Publishing the same stream from a
