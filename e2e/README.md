@@ -115,10 +115,18 @@ other LAT row asks for an improvement, and Sprint 5 grades them against a baseli
 first.
 
 **How the picture is timed.** ffmpeg publishes with `-use_wallclock_as_timestamps 1 -copyts`, so each
-frame carries the bench machine's clock, and the segment fetched at the far end is probed with
-ffprobe for the timestamp of its first frame. No OCR, no burnt-in clock, nothing to read off a
+frame carries the bench machine's clock, and the segment fetched at the far end is handed to ffprobe
+for the timestamps of every video packet in it. No OCR, no burnt-in clock, nothing to read off a
 picture. MPEG-TS stores those timestamps in 33 bits at 90kHz and wraps every ~26.5 hours, which
 `src/bench/wallclock.ts` folds back.
+
+**How much media a segment holds is measured, not read.** The earliest of those timestamps anchors
+the capture instant. The span between the widest and the narrowest, plus one median inter-packet gap
+for the final frame that no timestamp measures, is what the segment actually holds. That figure used
+to come from the manifest's `#EXTINF`, which is the engine's claim about a segment rather than the
+segment, and it reaches three places: the `segment` hop, the start of `upload`, and the viewer figure.
+See LAT-9. The report prints the declared duration beside the measured one, so a run still says
+whether the engine reports itself correctly, it just no longer depends on the answer.
 
 **Both ends are timed by this machine.** The publisher runs here and the gateway is fetched from here,
 over HTTP rather than through ssh, so no clock skew enters the total. That is also the path a real
@@ -129,7 +137,10 @@ publishing first and failing after.
 **It checks itself before it spends anything.** The first thing a run does is publish to a local file,
 probe it, and recover the capture instants — the whole chain, offline, in about fifteen seconds. If
 the recipe has stopped carrying the clock, or ffprobe has changed what it prints, that fails there,
-for free, instead of producing a number that becomes a baseline.
+for free, instead of producing a number that becomes a baseline. It also checks the spans against
+something the spans never touched: consecutive segments are contiguous, so each one's measured media
+has to reach exactly as far as the next one's first frame. Checking them against the segment duration
+the check was configured with would compare the instrument to its own input.
 
 **What it refuses to guess.** A media engine may rebase timestamps when it repackages. If it does, the
 arithmetic still yields a plausible-looking number, so the reading is bounded by the two things that
