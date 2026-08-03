@@ -93,7 +93,7 @@ The period is the same at both write rates, so the cycle is driven by elapsed ti
 rate changes is how far the reader falls behind while frozen, and 96 against 17 is exactly the rate
 ratio. **No operating profile escapes this.**
 
-### It is the reading node's lookup
+### It is not the lookup, it is retrievability at the reading node
 
 Both bee nodes polled for the same feed, on the same host, in one loop, during a live publish:
 
@@ -102,9 +102,22 @@ Both bee nodes polled for the same feed, on the same host, in one loop, during a
 | `bee-uploader`, which wrote the feed | 1 | 11% | 26s |
 | `bee-gateway`, which is what a viewer polls | 4 | **64%** | 44s |
 
-The gateway ran up to 21 updates behind the writer's node. The feed is resolvable throughout by a node
-in the same compose project. The writer's node is not immune either, which rules out a simple
-local-storage explanation and points at the lookup rather than at chunk availability.
+The gateway ran up to 21 updates behind the writer's node, which resolves the feed throughout.
+
+**The obvious mitigation was tried, and it refuted the lookup explanation.** If the fault were the
+"find latest" search, a client tracking its own position and asking for index N+1 explicitly would
+walk past it. Measured against a live publish, the explicit read is blocked exactly as `latest` is:
+both sat on index 14 for 32 seconds while the writer was far past it, `download({index: 15})`
+returning 404 in 199ms throughout, and then 68 indices became readable in 18.9 seconds at 278ms each.
+On a settled feed those same explicit reads take 270-500ms against 2955ms for `latest`, so the lookup
+is slower and is not the freeze.
+
+**So: a feed update is not retrievable from the gateway node for 30 to 45 seconds after it is
+written, and then a batch becomes retrievable at once.** Both nodes run bee 2.8.1 on one host in one
+compose project with identical topology (134 peers, depth 9, reachability Private), so it is not
+connectivity between them. The writer serves the update immediately because it holds it. The question
+is chunk push and retrieval, not feed resolution, and this kills the one mitigation this repository
+could have shipped on its own.
 
 ## What this changes about choosing a setting
 

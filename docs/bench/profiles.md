@@ -32,7 +32,9 @@ feed write rate, still froze 42% of the time with a **60-67 second period** agai
 segment only shrinks how far the reader falls behind while frozen, which is a smaller frozen fraction
 and not an escape.
 
-**It is the reading node's lookup.** Polling both bee nodes for the same feed, on the same host, in
+**It is retrievability at the reading node, not the lookup.** Asking for an explicit feed index is
+blocked exactly as asking for the latest is, so a client tracking its own position cannot walk past
+it. Polling both bee nodes for the same feed, on the same host, in
 one loop during a live publish: the writer's node stalled once for 26s, 11% of the window, while the
 **gateway node a viewer polls stalled four times for 30 to 44s, 64% of the window**, running up to 21
 updates behind. The feed is resolvable the whole time by a node in the same compose project.
