@@ -7,6 +7,7 @@ import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, required } from '../utils/env.js';
+import { assertUsablePublishKeySecret, hasValidPublishKey, publishKeyFromParam } from '../utils/publishKey.js';
 
 import { assertUsableWebhookToken, hasValidWebhookToken, redactWebhookToken } from './srs/webhookToken.js';
 import { EnginePlugin } from './types.js';
@@ -16,6 +17,17 @@ const logger = Logger.getInstance();
 export interface SrsEngineOptions {
   /** Shared secret SRS carries in its hook URL. Empty rejects every webhook, it does not disable the check. */
   webhookToken?: string;
+  /**
+   * Master secret every stream's publish key is derived from. See SEC-28.
+   *
+   * Empty **disables** publisher authentication, which is the opposite of what `webhookToken` does
+   * with the same value, and the difference is deliberate. That token is between two services an
+   * operator configures together, so an empty one is a misconfiguration. This one is between the
+   * deployment and its broadcasters, who have to be issued keys before any of them can publish, so
+   * defaulting it on would take every existing broadcaster off the air the moment the service was
+   * upgraded.
+   */
+  publishKeySecret?: string;
 }
 
 // SRS webhook response codes
@@ -48,6 +60,14 @@ interface SrsStreamPayload {
    * that omits it has to mean "no evidence" and not "a different publisher".
    */
   ip?: string;
+  /**
+   * The publish URL's query string, which is where a broadcaster's publish key travels. See SEC-28.
+   *
+   * Measured on 2026-08-03 against `ossrs/srs:6`, the image this deployment pins: it arrives as
+   * `?key=...`, **leading question mark included**, on `on_publish` and again on `on_unpublish`.
+   * Optional for the same reason `ip` is: a build that omits it has to mean "presented nothing".
+   */
+  param?: string;
 }
 
 interface SrsHlsPayload {
@@ -75,7 +95,8 @@ function publisherAddress(payload: SrsStreamPayload): string | null {
 export function createSrsEngineFromEnv(): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
   const webhookToken = required('SRS_WEBHOOK_TOKEN');
-  const engine = createSrsEngine(mediaPath, { webhookToken });
+  const publishKeySecret = optional('PUBLISH_KEY_SECRET', '');
+  const engine = createSrsEngine(mediaPath, { webhookToken, publishKeySecret });
   // After construction, not before. `required` covers a missing or empty value, but the charset and
   // length checks live inside createSrsEngine, so logging first announced a successfully loaded
   // engine and then threw for a token that was merely too short.
@@ -110,6 +131,18 @@ function createWebhookGate(webhookToken: string): RequestHandler {
 
 export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions = {}): EnginePlugin {
   const webhookToken = options.webhookToken ?? '';
+  const publishKeySecret = options.publishKeySecret ?? '';
+  if (publishKeySecret) {
+    assertUsablePublishKeySecret(publishKeySecret);
+  } else {
+    // Not an error, but it is the one control that separates a broadcaster from anyone who knows the
+    // stream name, and the stream name is in every HLS URL. Silence here would leave an operator
+    // believing SEC-28 applies to a deployment where it does not.
+    logger.warn(
+      '[SRS] No PUBLISH_KEY_SECRET configured, so publishers are not authenticated and stream ownership ' +
+        'is judged only by the address SRS reports. See SEC-28.',
+    );
+  }
   if (webhookToken) {
     assertUsableWebhookToken(webhookToken);
   } else {
@@ -133,7 +166,7 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
       router.use(createWebhookGate(webhookToken));
 
       router.post('/streams', (req: Request, res: Response) => {
-        handleStreams(req, res, streamOrchestrator);
+        handleStreams(req, res, streamOrchestrator, publishKeySecret);
       });
 
       router.post('/hls', (req: Request, res: Response) => {
@@ -149,7 +182,12 @@ function resolveMediaType(app: string): MediaType {
   return app === MEDIA_TYPE_AUDIO ? MEDIA_TYPE_AUDIO : MEDIA_TYPE_VIDEO;
 }
 
-function handleStreams(req: Request, res: Response, streamOrchestrator: StreamOrchestrator): void {
+function handleStreams(
+  req: Request,
+  res: Response,
+  streamOrchestrator: StreamOrchestrator,
+  publishKeySecret: string,
+): void {
   try {
     const payload = req.body as SrsStreamPayload;
     const streamId = buildStreamId(payload.app, payload.stream);
@@ -170,10 +208,21 @@ function handleStreams(req: Request, res: Response, streamOrchestrator: StreamOr
       return;
     }
 
+    const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromParam(payload.param));
+    if (publishKeySecret && !isAuthenticated) {
+      // The key itself is never logged, and neither is `param`, which is where it lives.
+      logger.warn(`[SRS] Rejected a publish of ${streamId} with a missing or invalid publish key`);
+      srsResponse(res, SRS_REJECT);
+      return;
+    }
+
     const mediatype = resolveMediaType(payload.app);
     logger.info(`[SRS] Stream published: ${streamId} (${mediatype})`);
 
-    const accepted = streamOrchestrator.startStream(streamId, mediatype, { address: publisherAddress(payload) });
+    const accepted = streamOrchestrator.startStream(streamId, mediatype, {
+      address: publisherAddress(payload),
+      isAuthenticated,
+    });
     srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
   } catch (error) {
     const msg = getErrorMessage(error);

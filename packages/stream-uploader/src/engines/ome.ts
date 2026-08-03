@@ -5,6 +5,7 @@ import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, optionalBool, optionalInt, required } from '../utils/env.js';
 import { HLS_PROGRAM_DATE_TIME } from '../utils/hlsTags.js';
+import { assertUsablePublishKeySecret, hasValidPublishKey, publishKeyFromUrl } from '../utils/publishKey.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
 import { AppStream, OmeAdmissionPayload, OmeEngineOptions, OmeEngineSeams } from './ome/interfaces.js';
@@ -29,6 +30,7 @@ export function createOmeEngineFromEnv(seams: OmeEngineSeams = {}): EnginePlugin
   );
   return createOmeEngine(hlsBaseUrl, pollIntervalMs, {
     admissionSecret: required('OME_ADMISSION_SECRET'),
+    publishKeySecret: optional('PUBLISH_KEY_SECRET', ''),
     failOpen: optionalBool('OME_ADMISSION_FAIL_OPEN', false),
     fetchTimeoutMs,
     fetcher: seams.fetcher,
@@ -72,6 +74,10 @@ export function createOmeEngine(
   const pullers = new Map<string, OmeHlsPuller>();
   const observedSegmentTimes = new Map<string, ObservedSegmentTime>();
   const admissionSecret = options.admissionSecret ?? '';
+  const publishKeySecret = options.publishKeySecret ?? '';
+  if (publishKeySecret) {
+    assertUsablePublishKeySecret(publishKeySecret);
+  }
   const failOpen = options.failOpen ?? false;
   const fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const fetcher = options.fetcher;
@@ -194,6 +200,15 @@ export function createOmeEngine(
       if (!admissionSecret) {
         logger.warn('[OME] No admission secret configured, every admission request will be rejected');
       }
+      if (!publishKeySecret) {
+        // The signature above authenticates OME, and says nothing about who is publishing into it.
+        // Without this an operator has no way to tell a deployment where SEC-28 applies from one
+        // where ownership is still decided by the address alone.
+        logger.warn(
+          '[OME] No PUBLISH_KEY_SECRET configured, so publishers are not authenticated and stream ownership ' +
+            'is judged only by the address OME reports. See SEC-28.',
+        );
+      }
 
       router.post('/admission', (req: Request, res: Response) => {
         if (!verifyAdmissionSignature(req, admissionSecret)) {
@@ -202,7 +217,7 @@ export function createOmeEngine(
           reply(res, { allowed: false, reason: 'invalid signature' });
           return;
         }
-        handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen, sessions);
+        handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen, sessions, publishKeySecret);
       });
 
       return router;
@@ -389,6 +404,7 @@ function handleAdmission(
   stopPuller: StopPuller,
   failOpen: boolean,
   sessions: SessionRegistry,
+  publishKeySecret: string,
 ): void {
   try {
     const payload = req.body as OmeAdmissionPayload;
@@ -433,8 +449,23 @@ function handleAdmission(
     }
 
     // status === 'opening' (or absent — treat as opening)
+    const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromUrl(request.url));
+    if (publishKeySecret && !isAuthenticated) {
+      // Named as its own refusal rather than folded into the one below, and this is the opposite
+      // choice from the one made there. That reason is deliberately uninformative because it would
+      // otherwise tell a prober whether the id is live and when it goes quiet. This one is reachable
+      // identically whether the id is live, idle or has never existed, so it discloses nothing about
+      // the deployment, and the broadcaster who typed their key wrong is the likeliest caller.
+      logger.warn(`[OME] Rejected an admission for ${streamId} with a missing or invalid publish key`);
+      reply(res, { allowed: false, reason: 'invalid publish key' });
+      return;
+    }
+
     const mediatype = resolveMediaType(parsed.app);
-    const accepted = orchestrator.startStream(streamId, mediatype, { address: publisherAddress(payload) });
+    const accepted = orchestrator.startStream(streamId, mediatype, {
+      address: publisherAddress(payload),
+      isAuthenticated,
+    });
 
     if (!accepted) {
       // Deliberately the same wording as every other refusal. The caller here is the one case that
