@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  captureInstantMs,
   type CaptureWindow,
   type FramePts,
   impliedCaptureInstantMs,
@@ -208,5 +209,33 @@ describe('refusing a reading the pipeline cannot have produced', () => {
 
     assert.equal(latencyMsFromPts(TS_FRAME, atTheBound), observedAtMs - capturedAtMs);
     assert.throws(() => latencyMsFromPts(TS_FRAME, justPast), UnusableTimestampsError);
+  });
+});
+
+/**
+ * The last step of the conversion, which is the one that had no test and could not get one while it
+ * was an expression inside `measureOne`.
+ *
+ * The publisher's timeline is measured to run about 1.4s ahead of wall clock, so a frame stamped X
+ * was captured at `X - lead`. Two runs were published before that was known, and both reported that
+ * much less latency than they had measured, with every `upload` hop negative as a result.
+ */
+describe('correcting a capture instant for a publisher that runs ahead', () => {
+  const OBSERVED_AT = 1_785_677_886_564;
+  const LATENCY_MS = 6_000;
+  const LEAD_MS = 1_393;
+
+  it('moves the capture instant earlier by the lead, so the measured latency grows', () => {
+    const uncorrected = captureInstantMs(OBSERVED_AT, LATENCY_MS, 0);
+
+    const corrected = captureInstantMs(OBSERVED_AT, LATENCY_MS, LEAD_MS);
+
+    assert.equal(uncorrected - corrected, LEAD_MS);
+    assert.equal(OBSERVED_AT - corrected, LATENCY_MS + LEAD_MS);
+  });
+
+  /** A publisher that keeps time needs no correction, which is what a zero lead has to mean. */
+  it('changes nothing when the publisher keeps time', () => {
+    assert.equal(captureInstantMs(OBSERVED_AT, LATENCY_MS, 0), OBSERVED_AT - LATENCY_MS);
   });
 });

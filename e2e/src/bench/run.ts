@@ -26,7 +26,7 @@ import { probeSegment } from './probe.js';
 import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
 import { latencySplit, type SegmentInstants } from './split.js';
 import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from './timeline.js';
-import { latencyMsFromPts } from './wallclock.js';
+import { captureInstantMs, latencyMsFromPts } from './wallclock.js';
 import { type PublishKnobs, startWallclockPublisher, type WallclockPublisher } from './wallclockPublisher.js';
 
 /** How long to wait for the uploader to announce the stream this run just started publishing. */
@@ -44,6 +44,14 @@ export interface RunOptions {
   samples: number;
   /** How often to ask the feed for a new manifest, standing in for the client's own poll. */
   pollIntervalMs: number;
+  /**
+   * How far the publisher's timestamps run ahead of wall clock, from this run's own self-check.
+   *
+   * Required rather than defaulted to zero. A default would let a caller that forgot it produce a
+   * report that looks complete and reads 1.4 seconds fast, which is the failure this whole quantity
+   * exists to end. See `measureMediaTimelineLead`.
+   */
+  mediaTimelineLeadMs: number;
 }
 
 /** Everything one segment contributed, before the uploader's log is read to fill in the middle. */
@@ -89,6 +97,7 @@ export async function measureLatency(options: RunOptions): Promise<BenchRun> {
     knobs,
     samples,
     discarded,
+    mediaTimelineLeadMs: options.mediaTimelineLeadMs,
     trend: latencyTrend(
       pending.map((sample) => sample.fetchedAtMs),
       pending.map((sample) => sample.capturedAtMs),
@@ -208,7 +217,9 @@ async function collectSamples(
     // would also make `UnusableTimestampsError` unreachable: that error exists so a run can report a
     // segment as unmeasurable instead of crashing, and a caller that never catches it cannot.
     try {
-      collected.push(await measureOne(gatewayUrl, newest, ref, manifest.atMs, publishStartedAtMs));
+      collected.push(
+        await measureOne(gatewayUrl, newest, ref, manifest.atMs, publishStartedAtMs, options.mediaTimelineLeadMs),
+      );
     } catch (error) {
       discarded.push({ ref, reason: error instanceof Error ? error.message : String(error) });
     }
@@ -229,6 +240,7 @@ async function measureOne(
   ref: string,
   visibleAtMs: number,
   publishStartedAtMs: number,
+  mediaTimelineLeadMs: number,
 ): Promise<PendingSample> {
   const segment = await fetchSegment(gatewayUrl, ref);
   const probed = await probeSegmentBytes(segment.body, ref);
@@ -242,7 +254,7 @@ async function measureOne(
     // comparison in the report and not the sample, and a segment that was paid for still yields one.
     declaredDurationS: segmentDuration(newest.extinf),
     videoPacketCount: probed.videoPacketCount,
-    capturedAtMs: segment.atMs - latencyMs,
+    capturedAtMs: captureInstantMs(segment.atMs, latencyMs, mediaTimelineLeadMs),
     visibleAtMs,
     fetchedAtMs: segment.atMs,
   };

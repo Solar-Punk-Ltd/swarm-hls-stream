@@ -56,6 +56,15 @@ export interface BenchRun {
   discarded: readonly DiscardedSegment[];
   /** How the run's own latency moved while it was being taken, or null with too few samples. */
   trend: LatencyTrend | null;
+  /**
+   * How much was taken off every capture instant, because the publisher's timestamps run that far
+   * ahead of wall clock. See `measureMediaTimelineLead`.
+   *
+   * In the artifact rather than only in the console, because the runs of 2026-08-02 and 2026-08-03
+   * were taken without it and read 1.4s fast. A reader comparing an old report against a new one has
+   * no other way to tell which of the two they are holding.
+   */
+  mediaTimelineLeadMs: number;
 }
 
 /**
@@ -308,6 +317,31 @@ function knobLine(knobs: PublishKnobs): string {
   return `${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`;
 }
 
+/**
+ * What the media-timeline correction did to this run, in the terms a reader compares runs in.
+ *
+ * Spelled out with the direction, because the sign is the part that is easy to get backwards: the
+ * timestamps run ahead, so the picture was taken *earlier* than they claim, so removing the lead
+ * makes the measured latency **larger**. A reader comparing against the uncorrected runs of
+ * 2026-08-02 and 2026-08-03 has to add this to their headline figures, not subtract it.
+ */
+function leadLine(run: BenchRun): string {
+  if (run.mediaTimelineLeadMs === 0) {
+    return (
+      "- **no correction was applied for the publisher's timestamps running ahead of wall clock.** Every " +
+      'figure here is therefore a lower bound on the real latency, and the `upload` hop a lower bound on ' +
+      'its real value.'
+    );
+  }
+  return (
+    `- the publisher's timestamps run ${Math.round(run.mediaTimelineLeadMs)}ms ahead of wall clock, measured ` +
+    'locally before this run started, and that much has been taken off every capture instant. It reaches ' +
+    '`capture to fetchable`, `behind live` and the `upload` hop, and no other row. Runs taken before this ' +
+    'correction existed report that much *less* latency than they measured, because a timestamp that runs ' +
+    'ahead makes the picture look newer than it is.'
+  );
+}
+
 export function renderReport(run: BenchRun): string {
   const median = medianSample(run.samples);
   if (!median) {
@@ -386,7 +420,7 @@ export function renderReport(run: BenchRun): string {
     );
   }
 
-  lines.push('', '## Self-checks', '', trendLine(run.trend), declaredDurationLine(run));
+  lines.push('', '## Self-checks', '', trendLine(run.trend), declaredDurationLine(run), leadLine(run));
 
   const impossible = run.samples.flatMap((sample) =>
     impossibleHops(sample.split).map(

@@ -13,7 +13,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -69,6 +69,10 @@ export interface SelfCheckResult {
   captureOffsetsMs: number[];
   /** Media each segment holds, measured from its own packets. Reported so a check can be read, not just passed. */
   mediaSpansMs: number[];
+  /** How far the publisher's timestamps run ahead of wall clock. See `measureMediaTimelineLead`. */
+  mediaTimelineLeadMs: number;
+  /** Widest departure from that median across the check's segments, so the estimate can be read as tight or loose. */
+  leadSpreadMs: number;
 }
 
 /**
@@ -82,6 +86,8 @@ export interface ProbedCheckSegment {
   capturedAtMs: number;
   mediaSpanMs: number;
   frameDurationMs: number;
+  /** Wall clock when the muxer last wrote the segment, so when the media it holds had really been captured. */
+  closedAtMs: number;
 }
 
 function fail(why: string): never {
@@ -147,6 +153,7 @@ async function runCheck(knobs: PublishKnobs, dir: string): Promise<SelfCheckResu
 
   const probed: ProbedCheckSegment[] = [];
   for (const segment of segments) {
+    const closedAtMs = (await stat(join(dir, segment))).mtimeMs;
     const { firstFrame, mediaSpanS, frameDurationS } = await probeSegment(join(dir, segment), segment);
     const observedAtMs = Date.now();
     // Throws `UnusableTimestampsError` if the recipe stopped carrying the clock, which is the whole
@@ -157,19 +164,85 @@ async function runCheck(knobs: PublishKnobs, dir: string): Promise<SelfCheckResu
       capturedAtMs: observedAtMs - latencyMs,
       mediaSpanMs: mediaSpanS * 1_000,
       frameDurationMs: frameDurationS * 1_000,
+      closedAtMs,
     });
   }
 
   const capturedAtMs = probed.map((segment) => segment.capturedAtMs);
   requirePacedAndOrdered(capturedAtMs);
   requireSpansMeetEndToEnd(probed);
+  const { leadMs, spreadMs } = measureMediaTimelineLead(probed);
 
   return {
     segmentsProbed: segments.length,
     startupDelayMs: capturedAtMs[0] - startedAtMs,
     captureOffsetsMs: capturedAtMs.map((at) => at - capturedAtMs[0]),
     mediaSpansMs: probed.map((segment) => segment.mediaSpanMs),
+    mediaTimelineLeadMs: leadMs,
+    leadSpreadMs: spreadMs,
   };
+}
+
+/**
+ * The widest a lead estimate may vary across the check's segments before it is refused.
+ *
+ * Measured rather than chosen: across 44 consecutive segments of a 90-second local publish the
+ * estimate held to within 2ms, and it held to the same 1393/1394ms at 640x360, at 1280x720, at 60fps
+ * and at a 4-second GOP. So a spread wider than this is not the quantity being noisy, it is the
+ * publish having done something else, and an estimate taken from it would shift every figure in the
+ * report by however wrong it was.
+ */
+const MAX_LEAD_SPREAD_MS = 250;
+
+/**
+ * How far the publisher's timestamps run ahead of the wall clock they claim to be.
+ *
+ * `-use_wallclock_as_timestamps 1` anchors the first frame to the wall clock, and everything
+ * downstream reads a segment's timestamps as when its picture was taken. Measured on 2026-08-03,
+ * that is false by a constant: ffmpeg emits roughly 1.4 seconds of media faster than real time while
+ * it starts up, the encoder's output timeline advances at the nominal rate regardless, and the two
+ * never resync. From then on the timeline tracks wall clock exactly — media/wall came back 1.00000
+ * over 86 seconds — while sitting permanently ahead of it.
+ *
+ * A frame stamped X was therefore captured at `X - lead`, which is what this returns, and every
+ * capture instant in the run has to have it taken off. Left in, it makes `capture to fetchable`
+ * report 1.4s less latency than the pipeline really has, and it drives the `upload` hop negative,
+ * because that hop is bounded below by `capturedAtMs + span` and nothing else moves with it. Both
+ * were visible in the runs of 2026-08-02 and 2026-08-03, where all ten `upload` readings were
+ * negative and adding this quantity back makes every one of them positive.
+ *
+ * ## Why nothing else here could see it
+ *
+ * `requireSpansMeetEndToEnd` and `requirePacedAndOrdered` are both statements *inside* the media
+ * timeline. Shift that timeline by any constant, or scale it, and consecutive spans still meet
+ * exactly and capture instants stay ordered and paced. The only way to catch this is to compare
+ * against an instant the timeline never touched, which is what `closedAtMs` is: the wall clock when
+ * the muxer had actually written the media, on this machine, with no engine and no network in it.
+ *
+ * ## What it slightly understates
+ *
+ * The muxer writes a segment's last packet some small time after receiving it, and that delay sits
+ * inside `closedAtMs`, so the figure here is the lead minus that delay plus one frame. The
+ * independent control puts the same quantity at about 1492ms by comparing the newest timestamp on
+ * disk against the instant the publisher was told to stop, which involves no muxer at all. The two
+ * bracket the truth within ~100ms, and the report says which one it applied.
+ */
+export function measureMediaTimelineLead(probed: readonly ProbedCheckSegment[]): { leadMs: number; spreadMs: number } {
+  const leads = probed.map((segment) => segment.capturedAtMs + segment.mediaSpanMs - segment.closedAtMs);
+  const sorted = [...leads].sort((a, b) => a - b);
+  const leadMs = sorted[Math.floor((sorted.length - 1) / 2)];
+  const spreadMs = Math.max(...leads.map((lead) => Math.abs(lead - leadMs)));
+
+  if (spreadMs > MAX_LEAD_SPREAD_MS) {
+    fail(
+      `the publisher's timestamps run between ${Math.round(sorted[0])}ms and ` +
+        `${Math.round(sorted[sorted.length - 1])}ms ahead of wall clock across ${leads.length} segment(s), a ` +
+        `spread of ${Math.round(spreadMs)}ms. This quantity is taken off every capture instant the run ` +
+        'measures, so an estimate this loose would move every latency in the report by however wrong it is',
+    );
+  }
+
+  return { leadMs, spreadMs };
 }
 
 /**

@@ -44,6 +44,7 @@ function runWith(
   samples: readonly SegmentSample[],
   trend: LatencyTrend | null = { msPerMinute: 4, scatterMsPerMinute: 40 },
   discarded: readonly DiscardedSegment[] = [],
+  mediaTimelineLeadMs = 1_393,
 ): BenchRun {
   return {
     measuredAt: '2026-08-02T20:00:00.000Z',
@@ -53,6 +54,7 @@ function runWith(
     samples,
     discarded,
     trend,
+    mediaTimelineLeadMs,
   };
 }
 

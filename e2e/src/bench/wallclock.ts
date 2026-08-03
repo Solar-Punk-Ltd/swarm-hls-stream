@@ -140,6 +140,24 @@ export function latencyMsFromPts(frame: FramePts, window: CaptureWindow): number
   return latencyMs;
 }
 
+/**
+ * When a segment's picture was really taken, which is the last step of the conversion above.
+ *
+ * `latencyMsFromPts` answers how far behind the *publisher's timeline* a frame arrived, and that
+ * timeline is not wall clock: it is measured to run a fixed distance ahead of it, because ffmpeg
+ * emits about 1.4s of media faster than real time as it starts and the output timeline never
+ * resyncs. See `measureMediaTimelineLead`, which is where the quantity comes from.
+ *
+ * A function rather than an expression at the one call site, so the correction can be asserted. Left
+ * inline it was a term nothing could see the absence of: drop it and every test in the repository
+ * still passes, while every latency in every report quietly reads 1.4 seconds fast.
+ *
+ * @param leadMs how far the publisher's timeline runs ahead of wall clock. Zero for a publisher that keeps time.
+ */
+export function captureInstantMs(observedAtMs: number, latencyMs: number, leadMs: number): number {
+  return observedAtMs - latencyMs - leadMs;
+}
+
 function describeOffset(latencyMs: number, elapsedMs: number): string {
   if (latencyMs < 0) {
     return `${(-latencyMs / 1_000).toFixed(1)}s after it was fetched`;
