@@ -10,7 +10,22 @@
 source "$(cd "$(dirname "$0")" && pwd)/_lib.sh"
 
 usage() {
-  echo "Usage: publish-key.sh [--profile=<name>] <app/stream>"
+  echo "Usage: publish-key.sh [flags] <app/stream>"
+  echo
+  # Every flag parse_profile_args consumes, because it consumes them whether or not they are
+  # documented, and an undocumented one is worse than a rejected one: --portSlot=4 silently changed
+  # the printed port, and the two-word spellings swallow the stream id and leave the usage text with
+  # no hint of why. See TEST-54.
+  echo "  --profile=<name>      which .env.<name> and engines/*/.env.<name> to read"
+  echo "  --portSlot=<0-999>    shifts every host port, so the printed URLs follow the deployment"
+  echo "  --host=<target>       overrides the deploy target"
+  echo "  --feed-owner=<hex>    override, unused here and consumed anyway"
+  echo "  --feed-topic=<hex>    override, unused here and consumed anyway"
+  echo "  --private-key=<hex>   override, unused here and consumed anyway"
+  echo "  --stamp-id=<hex>      override, unused here and consumed anyway"
+  echo
+  echo "  Each flag also takes a two-word form, which consumes the next argument: write"
+  echo "  --profile=live rather than --profile live unless the stream id follows both."
   echo
   echo "  Prints the publish key for one stream id, derived from PUBLISH_KEY_SECRET."
   echo "  The key is per stream: it proves nothing about any other, so it is safe to hand"
@@ -57,9 +72,17 @@ for segment in "${STREAM_ID%%/*}" "${STREAM_ID#*/}"; do
   fi
 done
 
-require_config
+# Deliberately not `require_config` and `load_engine_envs`, which is what made this script unusable
+# on a remote deploy target: those need `config.json` to decide which engines are enabled, and
+# `deploy.sh` does not ship it. Nothing here needs that decision. The engine env files are read if
+# they are present, purely to resolve the ports the URLs below print, and the compose fallbacks
+# stand in when they are not. See OPS-29.
+#
+# `require_jq` is absent for the same reason rather than by omission: with `get_target` gone, no
+# function on this path runs jq. TEST-54 asked for the guard the other operator scripts carry, and
+# the dependency it guards is no longer here.
 load_env
-load_engine_envs
+load_engine_envs_present
 apply_port_slot
 
 if [ -z "${PUBLISH_KEY_SECRET:-}" ]; then

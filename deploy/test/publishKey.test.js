@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -220,6 +221,68 @@ describe('the publish URLs publish-key.sh hands an operator', () => {
       const result = runScript({ PUBLISH_KEY_SECRET: SECRET }, good);
 
       assert.equal(result.status, 0, `"${good}" must be accepted: ${result.stderr}`);
+    }
+  });
+});
+
+/**
+ * OPS-29 and TEST-54. Two LOW rows filed by PR #67's config lens, both about this script being run
+ * somewhere other than a developer's checkout.
+ *
+ * A remote deploy target has `deploy/scripts/`, the compose files, the Dockerfiles and `.env`, and
+ * neither `config.json` nor `config.sample.json`: `deploy.sh`'s rsync list does not carry them. The
+ * script called `require_config` before reading the secret, so on the one machine an operator is
+ * most likely to be issuing keys from it aborted, telling them to copy a file that is also not
+ * there. Reproduced below against a tree built to look like a target rather than by stubbing the
+ * check, because the check was not the defect: needing it was.
+ */
+describe('publish-key.sh where an operator actually runs it', () => {
+  /** A remote target's layout: what deploy.sh ships, and nothing it does not. */
+  function targetTree() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-key-target-'));
+    fs.mkdirSync(path.join(root, 'deploy', 'scripts'), { recursive: true });
+    for (const name of fs.readdirSync(path.join(here, '..', 'scripts'))) {
+      fs.copyFileSync(path.join(here, '..', 'scripts', name), path.join(root, 'deploy', 'scripts', name));
+    }
+    fs.writeFileSync(path.join(root, '.env'), 'API_PORT=3000\n');
+    return root;
+  }
+
+  it('issues a key on a target that has no config.json, which is every target', () => {
+    const root = targetTree();
+    try {
+      const result = spawnSync('bash', [path.join(root, 'deploy', 'scripts', 'publish-key.sh'), 'video/demo'], {
+        encoding: 'utf-8',
+        timeout: DERIVE_TIMEOUT_MS,
+        env: { ...process.env, PUBLISH_KEY_SECRET: SECRET },
+      });
+
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(result.stdout, new RegExp(GOLDEN[0].key));
+      assert.doesNotMatch(result.stderr, /config\.json/, 'a missing config.json must not reach the operator');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * TEST-54. `parse_profile_args` consumes seven flags and the usage string advertised one, so
+   * `--portSlot=4` silently changed the printed port and the two-word forms swallowed the stream id
+   * with no hint of why. Asserted against the parser's own list rather than a copy, so a flag added
+   * there without being documented here fails.
+   */
+  it('documents every flag it silently consumes', () => {
+    const usage = spawnSync('bash', [SCRIPT], { encoding: 'utf-8', timeout: DERIVE_TIMEOUT_MS });
+    const lib = fs.readFileSync(LIB, 'utf-8');
+    const parser = lib.slice(
+      lib.indexOf('parse_profile_args() {'),
+      lib.indexOf('\n}', lib.indexOf('parse_profile_args() {')),
+    );
+    const consumed = [...parser.matchAll(/^\s+(--[a-zA-Z-]+)[=)]/gm)].map(([, flag]) => flag);
+
+    assert.ok(consumed.length >= 7, `expected the parser to consume several flags, found ${consumed.join(' ')}`);
+    for (const flag of new Set(consumed)) {
+      assert.ok(usage.stdout.includes(flag), `${flag} is consumed but never mentioned in the usage text`);
     }
   });
 });
