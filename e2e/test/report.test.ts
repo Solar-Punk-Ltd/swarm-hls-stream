@@ -397,6 +397,22 @@ describe('reporting the manifest against the bytes', () => {
     assert.doesNotMatch(report, /moves no other number/);
   });
 
+  /**
+   * The count alone did not carry this. Four unreadable entries out of five leave one comparison,
+   * which prints a reassuring 0ms because it is a segment compared against itself, and a manifest the
+   * parser cannot read is a worse fault than any duration mismatch it would have found.
+   */
+  it('names how many samples carried no readable duration, when only some did', () => {
+    const report = renderReport(runWith([declaring(1, 2), declaring(2, null), declaring(3, null)]));
+
+    assert.match(report, /disagree by at most 0ms across 1 sample\(s\)/);
+    assert.match(report, /\*\*2 of 3 carried no readable `#EXTINF`/);
+  });
+
+  it('says nothing about skipped samples when every one was readable', () => {
+    assert.doesNotMatch(renderReport(runWith([declaring(1, 2), declaring(2, 2)])), /carried no readable/);
+  });
+
   it('carries both durations and the packet count into the sample table', () => {
     const report = renderReport(runWith([declaring(7, 3.15)]));
 

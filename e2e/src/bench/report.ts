@@ -259,6 +259,16 @@ function declaredDurationLine(run: BenchRun): string {
   }
 
   const worst = compared.reduce((a, b) => (Math.abs(declaredGapMs(a)) >= Math.abs(declaredGapMs(b)) ? a : b));
+  // Named rather than left to the count, because every figure below is over the readable subset. Four
+  // unreadable entries out of five reduce to one comparison, and one comparison against itself reads
+  // as a reassuring 0ms while the manifest fault it hides is worse than any duration mismatch.
+  const unreadable = run.samples.length - compared.length;
+  const skipped =
+    unreadable === 0
+      ? ''
+      : ` **${unreadable} of ${run.samples.length} carried no readable \`#EXTINF\` and are not in that comparison**, ` +
+        'which is a manifest this cannot read rather than one that disagrees.';
+
   return (
     `- the manifest and the bytes disagree by at most ${Math.round(Math.abs(declaredGapMs(worst)))}ms across ` +
     `${compared.length} sample(s), worst at segment ${worst.index}, where it declared ` +
@@ -272,7 +282,8 @@ function declaredDurationLine(run: BenchRun): string {
     'A run where that hop is finally non-negative and this gap is wide has not settled anything. ' +
     'Separating an engine that segments unevenly from one that misreports even segments needs a ' +
     'second run at another GOP. Separating either of those from a short measurement needs the packet ' +
-    'counts in the table above.'
+    'counts in the table above.' +
+    skipped
   );
 }
 
