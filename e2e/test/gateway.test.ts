@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { GatewayStatusError, isFeedPendingFirstWrite, segmentRefFromUri } from '../src/bench/gateway.js';
+import {
+  GatewayStatusError,
+  isFeedPendingFirstWrite,
+  resolvedFeedIndex,
+  segmentRefFromUri,
+} from '../src/bench/gateway.js';
 
 /**
  * The one status that means "not yet" rather than "wrong".
@@ -84,5 +89,37 @@ describe('taking the reference out of a manifest entry', () => {
 
   it('reports nothing for an empty entry', () => {
     assert.equal(segmentRefFromUri(''), null);
+  });
+});
+
+/**
+ * `Swarm-Feed-Index` is the gateway's answer to "which update did I resolve this feed to", and it is
+ * the difference between knowing a feed stopped advancing and knowing why.
+ *
+ * The 2026-08-03 long run found the feed frozen for 29 to 48 seconds at a time, 57% of a twenty
+ * minute broadcast, while the uploader wrote 96 manifests inside one of those windows with no error.
+ * Comparing manifest bodies says only that nothing changed. The index says what the reader was stuck
+ * on and how far it jumped when it moved, which is the whole shape of the fault.
+ */
+describe('the feed index the gateway resolved to', () => {
+  it('reads the header as the hexadecimal the gateway writes', () => {
+    assert.equal(resolvedFeedIndex(new Headers({ 'swarm-feed-index': '0000000000000966' })), 2_406);
+  });
+
+  it('reads a small index, where hex and decimal would disagree', () => {
+    assert.equal(resolvedFeedIndex(new Headers({ 'swarm-feed-index': '0000000000000022' })), 34);
+  });
+
+  /**
+   * A gateway that does not send it is not a failure to report. Older Bee versions and any proxy in
+   * front of one may drop it, and a run that threw here would lose every latency figure it had over
+   * a diagnostic column.
+   */
+  it('answers null rather than throwing when the gateway does not send it', () => {
+    assert.equal(resolvedFeedIndex(new Headers()), null);
+  });
+
+  it('answers null for a header that is not a number, rather than NaN', () => {
+    assert.equal(resolvedFeedIndex(new Headers({ 'swarm-feed-index': 'not-hex' })), null);
   });
 });

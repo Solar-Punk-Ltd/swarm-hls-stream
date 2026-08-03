@@ -242,7 +242,7 @@ async function collectSamples(
 
     const newest = parseManifest(manifest.body).segments.at(-1);
     const ref = newest ? segmentRefFromUri(newest.uri) : null;
-    feedPolls.push({ atMs: manifest.atMs, newestRef: ref });
+    feedPolls.push({ atMs: manifest.atMs, newestRef: ref, resolvedIndex: manifest.resolvedIndex });
     if (!newest || !ref || seen.has(ref)) {
       await sleep(pollIntervalMs);
       continue;

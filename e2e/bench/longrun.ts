@@ -170,6 +170,13 @@ function stallLines(feed: FeedProgress, bufferMs: number, segmentMs: number, run
           ? '**would have rebuffered there**, since the stall exceeded the buffer plus the segment it was playing.'
           : 'would have played through it.')
       : '- whether a player would have rebuffered cannot be said from this run, for the reason above.',
+    ...(feed.stallSkippedUpdates === null
+      ? ['- the gateway sent no `Swarm-Feed-Index`, so how far behind the reader was is not knowable here.']
+      : [
+          `- when it moved, the gateway's resolved feed index jumped **${feed.stallSkippedUpdates} updates**. ` +
+            'A reader keeping up moves one at a time, so that many were already written and waiting: the ' +
+            'writer did not pause, the reader was behind it.',
+        ]),
   ];
 }
 

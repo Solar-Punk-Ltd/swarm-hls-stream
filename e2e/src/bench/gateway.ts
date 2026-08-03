@@ -99,15 +99,33 @@ export function isFeedPendingFirstWrite(error: unknown, feedSeenBefore: boolean)
   return !feedSeenBefore && error instanceof GatewayStatusError && error.status === 404;
 }
 
+/**
+ * Which feed update the gateway resolved this read to, from its `Swarm-Feed-Index` header.
+ *
+ * The header is hexadecimal and zero-padded, which is worth stating because every index under
+ * sixteen reads as a plausible decimal and the two only diverge later: `0000000000000022` is 34.
+ *
+ * Null rather than an error when the header is absent or unreadable. It is a diagnostic column, and
+ * a run that threw here would trade every latency figure it had for it.
+ */
+export function resolvedFeedIndex(headers: Headers): number | null {
+  const raw = headers.get('swarm-feed-index');
+  if (raw === null || !/^[0-9a-fA-F]+$/.test(raw.trim())) {
+    return null;
+  }
+  return Number.parseInt(raw.trim(), 16);
+}
+
 /** The manifest a viewer's player would load, and when it finished arriving here. */
 export async function fetchFeedManifest(
   gatewayUrl: string,
   owner: string,
   topicHex: string,
-): Promise<TimedFetch<string>> {
+): Promise<TimedFetch<string> & { resolvedIndex: number | null }> {
   const response = await timedFetch(`${gatewayUrl}/feeds/${owner}/${topicHex}`, FEED_TIMEOUT_MS);
+  const resolvedIndex = resolvedFeedIndex(response.headers);
   const body = await response.text();
-  return { body, atMs: Date.now() };
+  return { body, atMs: Date.now(), resolvedIndex };
 }
 
 /**

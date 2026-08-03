@@ -245,7 +245,7 @@ describe('latency bucketed by minute of run', () => {
  */
 describe('whether a gap belongs to the feed or to the bench watching it', () => {
   it('reports a one-poll stall for a feed that advances every time it is asked', () => {
-    const polls = ['a', 'b', 'c', 'd'].map((newestRef, i) => ({ atMs: i * 2_000, newestRef }));
+    const polls = ['a', 'b', 'c', 'd'].map((newestRef, i) => ({ atMs: i * 2_000, newestRef, resolvedIndex: i }));
 
     const progress = feedProgress(polls);
 
@@ -259,13 +259,24 @@ describe('whether a gap belongs to the feed or to the bench watching it', () => 
    * running, so a viewer polling at that cadence saw the stream stop for ten seconds.
    */
   it('blames the feed when many polls in a row name the same segment', () => {
-    const polls = ['a', 'b', 'b', 'b', 'b', 'b', 'c'].map((newestRef, i) => ({ atMs: i * 2_000, newestRef }));
+    // The reader sat on update 1 for five polls and then jumped to 40, so 39 were waiting for it.
+    const indexes = [0, 1, 1, 1, 1, 1, 40];
+    const polls = ['a', 'b', 'b', 'b', 'b', 'b', 'c'].map((newestRef, i) => ({
+      atMs: i * 2_000,
+      newestRef,
+      resolvedIndex: indexes[i],
+    }));
 
     const progress = feedProgress(polls);
 
     assert.equal(progress.stallMs, 10_000);
     assert.equal(progress.stallPolls, 5);
     assert.equal(progress.longestPollGapMs, 2_000);
+    assert.equal(
+      progress.stallSkippedUpdates,
+      39,
+      'a reader keeping up moves one update at a time, and the jump is how far behind it had fallen',
+    );
   });
 
   /**
@@ -275,15 +286,16 @@ describe('whether a gap belongs to the feed or to the bench watching it', () => 
    */
   it('blames itself when a long gap holds only one poll', () => {
     const polls = [
-      { atMs: 0, newestRef: 'a' },
-      { atMs: 2_000, newestRef: 'b' },
-      { atMs: 50_000, newestRef: 'c' },
+      { atMs: 0, newestRef: 'a', resolvedIndex: null },
+      { atMs: 2_000, newestRef: 'b', resolvedIndex: null },
+      { atMs: 50_000, newestRef: 'c', resolvedIndex: null },
     ];
 
     const progress = feedProgress(polls);
 
     assert.equal(progress.stallMs, 48_000);
     assert.equal(progress.stallPolls, 1);
+    assert.equal(progress.stallSkippedUpdates, null, 'a gateway that sent no index cannot be quoted as if it had');
     assert.equal(progress.longestPollGapMs, 48_000);
   });
 
@@ -293,10 +305,10 @@ describe('whether a gap belongs to the feed or to the bench watching it', () => 
    */
   it('does not count the run ending as the last segment stalling', () => {
     const polls = [
-      { atMs: 0, newestRef: 'a' },
-      { atMs: 2_000, newestRef: 'b' },
-      { atMs: 4_000, newestRef: 'b' },
-      { atMs: 90_000, newestRef: 'b' },
+      { atMs: 0, newestRef: 'a', resolvedIndex: null },
+      { atMs: 2_000, newestRef: 'b', resolvedIndex: null },
+      { atMs: 4_000, newestRef: 'b', resolvedIndex: null },
+      { atMs: 90_000, newestRef: 'b', resolvedIndex: null },
     ];
 
     const progress = feedProgress(polls);
@@ -306,6 +318,6 @@ describe('whether a gap belongs to the feed or to the bench watching it', () => 
   });
 
   it('refuses to judge a feed off fewer than two polls', () => {
-    assert.throws(() => feedProgress([{ atMs: 0, newestRef: 'a' }]), /at least two polls/);
+    assert.throws(() => feedProgress([{ atMs: 0, newestRef: 'a', resolvedIndex: null }]), /at least two polls/);
   });
 });

@@ -241,6 +241,13 @@ export interface FeedPoll {
   atMs: number;
   /** The newest segment that manifest named, or null where it named none. */
   newestRef: string | null;
+  /**
+   * The feed update the gateway resolved this read to, or null where it did not say.
+   *
+   * The manifest body says only that nothing changed. This says what the reader was stuck on, and
+   * the jump when it moves says how far behind the writer it had fallen.
+   */
+  resolvedIndex: number | null;
 }
 
 export interface FeedProgress {
@@ -256,6 +263,14 @@ export interface FeedProgress {
   stallPolls: number;
   /** Bench clock, when that segment first appeared. */
   stallStartedAtMs: number;
+  /**
+   * How many feed updates the gateway skipped when it finally moved, or null where it did not report
+   * an index at either end.
+   *
+   * This is what separates a writer that paused from a reader that was behind. A reader keeping up
+   * moves one update at a time; one that jumps ninety-five had ninety-five waiting for it.
+   */
+  stallSkippedUpdates: number | null;
   /**
    * The longest the bench went between two polls, which bounds everything it could have seen.
    *
@@ -288,7 +303,12 @@ export function feedProgress(polls: readonly FeedPoll[]): FeedProgress {
     longestPollGapMs = Math.max(longestPollGapMs, ordered[i].atMs - ordered[i - 1].atMs);
   }
 
-  let best = { stallMs: 0, stallPolls: 0, stallStartedAtMs: ordered[0].atMs };
+  let best: Omit<FeedProgress, 'longestPollGapMs'> = {
+    stallMs: 0,
+    stallPolls: 0,
+    stallStartedAtMs: ordered[0].atMs,
+    stallSkippedUpdates: null,
+  };
   let runStart = 0;
   for (let i = 1; i < ordered.length; i += 1) {
     if (ordered[i].newestRef === ordered[runStart].newestRef) {
@@ -296,7 +316,14 @@ export function feedProgress(polls: readonly FeedPoll[]): FeedProgress {
     }
     const stallMs = ordered[i].atMs - ordered[runStart].atMs;
     if (stallMs > best.stallMs) {
-      best = { stallMs, stallPolls: i - runStart, stallStartedAtMs: ordered[runStart].atMs };
+      const before = ordered[runStart].resolvedIndex;
+      const after = ordered[i].resolvedIndex;
+      best = {
+        stallMs,
+        stallPolls: i - runStart,
+        stallStartedAtMs: ordered[runStart].atMs,
+        stallSkippedUpdates: before === null || after === null ? null : after - before,
+      };
     }
     runStart = i;
   }
