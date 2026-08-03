@@ -858,3 +858,80 @@ describe('the publish key on the path that stops a stream (SEC-29)', () => {
     });
   });
 });
+
+/**
+ * That a publish-key refusal reaches `msSinceAuthRejection`, which is what `/health` judges. See
+ * OBS-15.
+ *
+ * **Measured against the live deployment on 2026-08-03, not argued.** A keyless publish to the
+ * `latbench` stack was refused, the uploader logged it, `activeStreams` stayed 0, and `/health` still
+ * reported `msSinceAuthRejection: null`. So a deployment being probed on the one credential that
+ * separates a broadcaster from anyone who knows the stream name showed nothing at all.
+ *
+ * The cause is that `createAuthRejectionObserver` counts HTTP 401 and only that. OME's *signature*
+ * refusal does set 401 and was therefore covered, which is why OBS-15's own note claims every gate is
+ * covered by observing rather than self-reporting. Both publish-key refusals answer **200** carrying
+ * an engine-protocol body, because that is what the engine's protocol requires of them, so the
+ * observer never sees them. Observing the status code cannot be made to work here, and the refusal
+ * sites report themselves instead.
+ */
+describe('a refused publish key reaches the health signal (OBS-15)', () => {
+  it('OME records a refused opening', async () => {
+    await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
+      assert.equal(orchestrator.getHealthSignals().msSinceAuthRejection, null, 'nothing refused yet');
+
+      await announce(BROADCASTER, '');
+
+      assert.notEqual(
+        orchestrator.getHealthSignals().msSinceAuthRejection,
+        null,
+        'a refused publisher has to be visible on /health',
+      );
+    });
+  });
+
+  it('OME records a refused closing', async () => {
+    await withOme(PUBLISH_SECRET, async ({ announce, close, orchestrator }) => {
+      await announce(BROADCASTER, `?key=${KEY}`);
+      assert.equal(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+
+      await close(BROADCASTER, '');
+
+      assert.notEqual(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+    });
+  });
+
+  it('SRS records a refused publish', async () => {
+    await withSrs(PUBLISH_SECRET, async (announce, orchestrator) => {
+      assert.equal(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+
+      await announce(BROADCASTER, null);
+
+      assert.notEqual(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+    });
+  });
+
+  it('SRS records a refused unpublish', async () => {
+    await withSrs(PUBLISH_SECRET, async (announce, orchestrator, unpublish) => {
+      await announce(BROADCASTER, `?key=${KEY}`);
+      assert.equal(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+
+      await unpublish(BROADCASTER, null);
+
+      assert.notEqual(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+    });
+  });
+
+  /**
+   * The degenerate case. Every assertion above is "not null", which a call that fires on every
+   * webhook would also satisfy, and that would light up `/health` for a working deployment.
+   */
+  it('records nothing when the key is good', async () => {
+    await withSrs(PUBLISH_SECRET, async (announce, orchestrator, unpublish) => {
+      await announce(BROADCASTER, `?key=${KEY}`);
+      await unpublish(BROADCASTER, `?key=${KEY}`);
+
+      assert.equal(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+    });
+  });
+});

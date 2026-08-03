@@ -439,6 +439,8 @@ function handleAdmission(
       // See SEC-29.
       if (publishKeySecret && !hasValidPublishKey(publishKeySecret, streamId, publishKeyFromUrl(request.url))) {
         logger.warn(`[OME] Ignored a closing for ${streamId} with a missing or invalid publish key`);
+        // Reported rather than observed, because this answers 200 and the observer counts 401. See OBS-15.
+        orchestrator.recordAuthRejection();
         reply(res, { allowed: true, lifetime: 0, reason: 'ignored (invalid publish key)' });
         return;
       }
@@ -473,6 +475,10 @@ function handleAdmission(
       // identically whether the id is live, idle or has never existed, so it discloses nothing about
       // the deployment, and the broadcaster who typed their key wrong is the likeliest caller.
       logger.warn(`[OME] Rejected an admission for ${streamId} with a missing or invalid publish key`);
+      // Reported rather than observed. The signature refusal above answers 401 and the observer sees
+      // it; this one answers 200 with an admission verdict, which is what OME's protocol wants, and
+      // was therefore invisible to `/health` on a live deployment. See OBS-15.
+      orchestrator.recordAuthRejection();
       reply(res, { allowed: false, reason: 'invalid publish key' });
       return;
     }
