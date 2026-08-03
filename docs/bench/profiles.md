@@ -113,6 +113,36 @@ of 64.
   different people:** a 1.0 fragment against a broadcaster's 2s GOP gives 2s segments and the
   `live-relaxed` row's latency, not `live`'s.
 - **60fps was not measured at all**, at any resolution.
-- **Nothing above has been played in a browser at these buffers.** The buffer column is a floor over
-  observed arrivals, so the claim is that these samples would not have stalled a player configured
-  that way, not that none ever will. `deploy/scripts/publish-clock.sh` exists to close that.
+
+## The browser attempt, and why the buffer column is still a model
+
+The buffer column is a floor over observed arrivals. The claim it supports is that these samples
+would not have stalled a player configured that way, not that none ever will, and closing that gap
+means watching one. A 420 second stream was published with the host's clock burned into the picture,
+against a client rebuilt so `LIVE_SYNC_DURATION_S = 6` is in the served bundle, verified in the
+JavaScript actually shipped.
+
+**Four things were established, none of which had been observed before:**
+
+- The whole viewer path works in a real browser. Catalog feed, manifest through Swarm, segments
+  through Swarm, decoded at 1280x720 with `readyState` 4.
+- hls.js accepts the shipped config **in a browser**. Until now that was asserted by constructing
+  `new Hls(...)` under Node, where the constructor's checks run and the media pipeline does not.
+- **The 1.1x catch-up is real.** `playbackRate` was observed at 1.1 while the player was behind and
+  back at 1 once it had caught up, which is LAT-2's fix seen rather than argued. Playback advanced
+  1.10 seconds per second of wall clock while recovering.
+- A live stream appeared in the catalog as `LIVE` and was playable within seconds of the publish.
+
+**The steady-state measurement could not be taken, and the reason is the harness rather than the
+product.** The automated browser pane reports `visibilityState: hidden` permanently, and Chromium
+treats a hidden page two ways that each break this. Muted playback is stopped outright, logged as
+`video-only background media was paused to save power`, which is fixable by unmuting at zero volume
+and was. Once playback stalls for any reason the page's timers are throttled to roughly one per
+minute, and hls.js drives its own playlist polling and fragment loading from those timers, so the
+first stall starves the loader and guarantees the next one. The player ended up chasing its own
+download frontier with under a second of buffer, logging `bufferStalledError ... due to low buffer`,
+and drifted 578 seconds behind live. **None of that is a reading about this deployment.**
+
+`deploy/scripts/publish-clock.sh` is the method and it works: one screenshot carried the host clock
+inside the video and the browser clock beside it, both legible. It needs a browser whose page is
+actually visible.
