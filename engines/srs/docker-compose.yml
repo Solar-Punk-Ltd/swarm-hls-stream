@@ -2,7 +2,6 @@ services:
   srs:
     image: ossrs/srs:6
     container_name: srs
-    env_file: ../../.env
     restart: unless-stopped
     entrypoint: ['/bin/bash', '/usr/local/srs/conf/entrypoint.sh']
     volumes:
@@ -13,19 +12,29 @@ services:
     # Same port on both sides, because the entrypoint binds SRS to these values now, so a mapping
     # onto a fixed container port would point at nothing.
     #
-    # The `environment:` block below is what makes that safe, and it is not redundant with
-    # `env_file`. Compose interpolates `${...}` here from the **project's** env file, `.env` beside
-    # this compose file, while `env_file: ../../.env` fills the container from the **root** one.
-    # Those are different files, so without restating the three variables below, the port that gets
-    # published and the port SRS binds resolve from two different places and an operator who sets
-    # either one gets an SRT socket with nothing behind it.
+    # The `environment:` block below is what makes that safe. Compose interpolates `${...}` in both
+    # blocks from the **project's** env file, `.env` beside this compose file, so restating the three
+    # port variables there is what keeps the port that gets published and the port SRS binds resolving
+    # from one place. Without it an operator who sets either one gets an SRT socket with nothing
+    # behind it.
     ports:
       - '${SRS_RTMP_PORT:-1935}:${SRS_RTMP_PORT:-1935}'
       - '1985:1985'
       - '${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
       - '${SRS_SRT_PORT:-10080}:${SRS_SRT_PORT:-10080}/udp'
+    # Enumerated rather than inherited, deliberately. This used to be `env_file: ../../.env`, which
+    # fills the container with **every** root variable, including PUBLISH_KEY_SECRET: the master
+    # secret every stream's publish key derives from, handed to the third-party publisher-facing
+    # image it exists to authenticate publishers against. Anyone who can read that environment mints
+    # a valid key for every stream, and rotating is the only response because there is no per-stream
+    # revocation. See SEC-28.
+    #
+    # This block is the same pattern deploy/docker-compose.yml already uses and says it uses: a
+    # variable absent here is one the container never sees, however carefully an operator sets it.
+    # The list is what this engine's entrypoint actually reads, and nothing else.
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
+      SRS_ADAPTER_HOST: ${SRS_ADAPTER_HOST:-stream-uploader}
       SRS_WEBHOOK_TOKEN: ${SRS_WEBHOOK_TOKEN:-}
       SRS_ADAPTER_PORT: ${SRS_ADAPTER_PORT:-3000}
       # Read by the entrypoint to write SRS's own `listen` directives. Same defaults and the same

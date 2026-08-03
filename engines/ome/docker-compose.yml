@@ -2,7 +2,6 @@ services:
   ome:
     image: airensoft/ovenmediaengine:latest
     container_name: ome
-    env_file: ../../.env
     restart: unless-stopped
     entrypoint: ['/bin/bash', '/opt/ovenmediaengine/conf-template/entrypoint.sh']
     volumes:
@@ -11,7 +10,18 @@ services:
     ports:
       - '${OME_HLS_PORT:-8081}:8081'
       - '${OME_SRT_PORT:-10080}:10080/udp'
+    # Enumerated rather than inherited, deliberately. This used to be `env_file: ../../.env`, which
+    # fills the container with **every** root variable, including PUBLISH_KEY_SECRET: the master
+    # secret every stream's publish key derives from, handed to the third-party publisher-facing
+    # image it exists to authenticate publishers against. Anyone who can read that environment mints
+    # a valid key for every stream, and rotating is the only response because there is no per-stream
+    # revocation. See SEC-28.
+    #
+    # This block is the same pattern deploy/docker-compose.yml already uses and says it uses: a
+    # variable absent here is one the container never sees, however carefully an operator sets it.
+    # The list is what this engine's entrypoint actually reads, and nothing else.
     environment:
+      OME_ADAPTER_HOST: ${OME_ADAPTER_HOST:-stream-uploader}
       OME_ADAPTER_PORT: ${OME_ADAPTER_PORT:-3000}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
     extra_hosts:
