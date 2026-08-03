@@ -29,13 +29,27 @@ require_number() {
 # 2026-08-03, a 2s GOP against a 1.5 fragment produced segments of exactly 2.00s on every sample.
 # Lowering this alone therefore changes nothing until the GOP comes down with it.
 #
-# These were configurable on `main` and this branch hard-coded them back to the defaults, which took
-# the knob away without anything failing. Restored under the same names and defaults, so a deployment
-# setting either is unchanged by the round trip.
-require_number HLS_FRAGMENT "${HLS_FRAGMENT:-1.5}"
-require_number HLS_WINDOW "${HLS_WINDOW:-22.5}"
-sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-1.5}/" "$CONF"
-sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-22.5}/" "$CONF"
+# These were configurable on `main` and this branch hard-coded them back, which took the knob away
+# without anything failing. Restored under main's names.
+#
+# The default is 1.0 rather than main's 1.5, from the sweep of 2026-08-03: 105 samples across four
+# segment durations on the deployment host, where capture to fetchable came out at 1.96s, 2.94s,
+# 5.00s and 9.42s for segments of 0.5s, 1.0s, 2.0s and 4.0s. It is close to linear in the segment,
+# and the segment is not the only term that moves, because a shorter one is less data to write into
+# Swarm and less to pull back.
+#
+# 1.0 rather than the 0.5 that measured best, because segment count is an operational cost as well as
+# a latency lever: per minute of broadcast, 0.5s segments mean four times the uploads and four times
+# the manifest feed writes of the 2.0s this replaces. 1.0 takes most of the latency and doubles that
+# rate rather than quadrupling it. 0.5 is measured, supported, and there for anyone who wants it.
+#
+# `LIVE_SYNC_DURATION_S` in the client is 6 for exactly this default. The two were chosen together:
+# a deployment that raises this has to raise that or it will rebuffer.
+# `HLS_WINDOW` stays at fifteen fragments, which is what 22.5 against 1.5 already was.
+require_number HLS_FRAGMENT "${HLS_FRAGMENT:-1.0}"
+require_number HLS_WINDOW "${HLS_WINDOW:-15}"
+sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-1.0}/" "$CONF"
+sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-15}/" "$CONF"
 
 # How long SRT holds a packet waiting for a retransmission before delivering without it.
 #

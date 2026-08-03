@@ -6,27 +6,50 @@ const MB = 1024 * 1024;
  * How far behind the live edge playback aims to sit, in seconds.
  *
  * Every segment here is fetched from Swarm rather than from an origin next to the viewer, so the
- * budget covers a feed lookup plus a chunk download, not one HTTP round trip. Lowering it is the
- * largest client-side latency lever there is, and it is still not being lowered, but the reason has
- * changed: there is a baseline now, and it does not say this number is free to cut.
- *
- * Measured 2026-08-02 by `pnpm bench:latency` (LAT-1) against a real deployment, SRS at 1280x720 and
- * a 2s GOP: **capture to fetchable was 5.94s median, and a viewer of it sits 13.30s behind live**, so
- * roughly three quarters of what a viewer waits is this constant. That is the split the old note
- * asked for, and taken alone it makes this look like the obvious thing to cut.
+ * budget covers a feed lookup plus a chunk download, not one HTTP round trip. It is the largest
+ * client-side latency lever there is, and it was 10 until 2026-08-03.
  *
  * Behind-live is not the total plus this buffer. The total is anchored on a segment's first frame
  * and the buffer is measured back from the live edge, which is that same segment's last, so adding
  * them counts one segment twice.
  *
- * What stops that being the conclusion is the spread. Across five samples the pipeline ranged from
- * 4.21s to 7.60s, so it varied by 3.4s inside one short run, and a live buffer has to absorb that
- * variance or it converts into rebuffering. Ten seconds against a pipeline with a 3.4s spread is not
- * obviously generous. The number to cut this against is the spread over a long run rather than a
- * median over five segments, and per-hop attribution is not usable yet either, because the run's own
- * breakdown reports an impossible upload hop on every sample (LAT-9).
+ * ## Why it was 10, and why that reasoning expired
+ *
+ * The previous note declined to cut it for two stated reasons: the per-hop split reported an
+ * impossible negative upload hop on every sample (LAT-9), and a spread taken over five samples is
+ * not a spread. Both are now closed. LAT-9 was the publisher's timestamps running 1.4s ahead of wall
+ * clock, and the sweep of 2026-08-03 measured 105 samples over four segment durations, on the
+ * deployment host so that no uplink sat inside the numbers.
+ *
+ * ## What the number is now, and how it was derived
+ *
+ * A player stalls unless its buffer covers the largest edge-to-fetchable delay, which is
+ * `totalMs - segmentMs` per segment. Measured floors, against a 1.0s segment:
+ *
+ * | segment | observed floor | this constant needs to be |
+ * | ------- | -------------- | ------------------------- |
+ * | 0.5s    | 2.46s          | 4.96s                     |
+ * | 1.0s    | 2.88s          | 5.88s                     |
+ * | 2.0s    | 4.45s          | 8.45s                     |
+ * | 4.0s    | 6.72s          | 12.72s                    |
+ *
+ * The right column is the floor plus the client's manifest poll cadence, since a segment is fetchable
+ * before the player has asked for it, plus one segment of margin for an arrival later than any of the
+ * 105 measured. Six seconds is the 1.0s row rounded up, and `HLS_FRAGMENT` now defaults to 1.0 for
+ * exactly that reason: **these two numbers were chosen together and only make sense together.**
+ *
+ * A deployment running longer segments has to raise this or it will rebuffer. That coupling is real
+ * and this side does not control the other half, which is the same limitation
+ * {@link LIVE_MAX_LATENCY_DURATION_S} describes: the target duration is whatever the uploader's
+ * segment length makes it.
+ *
+ * ## What this is not
+ *
+ * A floor over observed samples is not a proof. Nothing here has been played in a real browser at
+ * this setting, so the claim is that 105 measured arrivals would not have stalled a player
+ * configured this way, not that no arrival ever will.
  */
-export const LIVE_SYNC_DURATION_S = 10;
+export const LIVE_SYNC_DURATION_S = 6;
 
 /**
  * The latency at which hls.js stops trying to recover gradually and seeks to the live edge instead.

@@ -43,8 +43,14 @@ describe('SwarmHlsPlayer hls.js tuning', () => {
     assert.deepEqual(
       { ...SHIPPED_TUNING },
       {
-        liveSyncDuration: 10,
-        liveMaxLatencyDuration: 20,
+        // 6 from the sweep of 2026-08-03: 105 samples on the deployment host put the largest
+        // edge-to-fetchable delay at 2.88s against a 1.0s segment, and this is that floor plus the
+        // client's poll cadence plus one segment of margin. It was 10. `HLS_FRAGMENT` defaults to
+        // 1.0 for this exact number, and a deployment running longer segments has to raise both.
+        liveSyncDuration: 6,
+        // Derived as twice the above rather than written, so it moves with it. hls.js throws from
+        // the constructor when this is at or below `liveSyncDuration`.
+        liveMaxLatencyDuration: 12,
         maxLiveSyncPlaybackRate: 1.1,
         maxBufferLength: 60,
         maxMaxBufferLength: 120,

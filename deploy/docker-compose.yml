@@ -187,8 +187,8 @@ services:
       # The latency knobs. `HLS_FRAGMENT` is the segment length a viewer waits a whole one of, and it
       # is the largest lever on this side. `main` passed the first two and this branch stopped, which
       # left the entrypoint substituting defaults into a template that no longer had placeholders.
-      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.5}
-      HLS_WINDOW: ${HLS_WINDOW:-22.5}
+      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.0}
+      HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
 
   # --- OvenMediaEngine ---

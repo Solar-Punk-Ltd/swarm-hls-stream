@@ -84,8 +84,10 @@ describe('the SRS latency knobs', () => {
   it('falls back to the documented defaults when none is set', () => {
     const conf = renderSrsConf({ ...VALID, HLS_FRAGMENT: '', HLS_WINDOW: '', SRT_LATENCY: '' });
 
-    assert.match(conf, /hls_fragment\s+1\.5;/);
-    assert.match(conf, /hls_window\s+22\.5;/);
+    // 1.0 rather than main's 1.5, from the 2026-08-03 sweep. `LIVE_SYNC_DURATION_S` is 6 for this
+    // exact default, so the two move together or a viewer rebuffers.
+    assert.match(conf, /hls_fragment\s+1\.0;/);
+    assert.match(conf, /hls_window\s+15;/);
     assert.match(conf, /latency\s+200;/);
   });
 
