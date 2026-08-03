@@ -212,6 +212,8 @@ function handleStreams(
       if (publishKeySecret && !isAuthenticated) {
         // Neither the key nor `param` is logged, only that one was missing or wrong.
         logger.warn(`[SRS] Ignored an unpublish of ${streamId} with a missing or invalid publish key`);
+        // Reported rather than observed, because this answers 200 and the observer counts 401. See OBS-15.
+        streamOrchestrator.recordAuthRejection();
         return;
       }
 
@@ -232,6 +234,9 @@ function handleStreams(
     if (publishKeySecret && !isAuthenticated) {
       // The key itself is never logged, and neither is `param`, which is where it lives.
       logger.warn(`[SRS] Rejected a publish of ${streamId} with a missing or invalid publish key`);
+      // Reported rather than observed. `SRS_REJECT` rides inside a 200, so the status-code observer
+      // never sees it, and a live deployment refusing keyless publishes reported nothing. See OBS-15.
+      streamOrchestrator.recordAuthRejection();
       srsResponse(res, SRS_REJECT);
       return;
     }

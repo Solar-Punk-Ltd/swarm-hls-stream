@@ -179,9 +179,19 @@ export interface HealthSignals {
    * Age of the most recent request a credential gate refused, across every gate in the process, or
    * `null` while none has been refused.
    *
-   * Every gate is covered by observing the refusal rather than each gate reporting itself, because
-   * OME signs the request body and so refuses inside its router rather than at a mounted gate, which
-   * is the very path `on_publish` arrives on. See OBS-15.
+   * Fed two ways, and it needs both. `createAuthRejectionObserver` watches for HTTP 401, which
+   * covers every gate that answers one, including OME's signature check: that refuses inside its own
+   * router rather than at a mounted gate, which is the very path `on_publish` arrives on, so
+   * observing the response is what reaches it. The publish-key refusals call
+   * `recordAuthRejection` themselves.
+   *
+   * **The self-reporting half is not redundancy, and this said the opposite until it was measured.**
+   * Both engines answer a refused publish key with **200** carrying an engine-protocol body, because
+   * that is what their protocols require: OME wants an admission verdict and SRS reads any non-zero
+   * status as a failure to retry. The observer therefore cannot see them. On a live deployment on
+   * 2026-08-03 a keyless publish was correctly refused and logged while this stayed `null`, so the
+   * one credential separating a broadcaster from anyone who knows the stream name could be probed
+   * with no signal at all. See OBS-15 and SEC-28.
    */
   msSinceAuthRejection: number | null;
   /**
