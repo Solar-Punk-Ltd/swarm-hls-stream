@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { Logger } from '../src/libs/Logger.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_VIDEO, REJECT_DRAINING, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
@@ -513,6 +514,260 @@ describe('taking over a stream id that is already being published', () => {
       orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
       false,
       'a second attempt from the same stranger must be refused for the same reason as the first',
+    );
+
+    await orch.cleanup();
+  });
+});
+
+/**
+ * What a proven publish key changes about the rules above. See SEC-28.
+ *
+ * Every test in the block above judges an announce by the address the engine reported, which is
+ * circumstantial in both directions: it cannot separate two publishers behind one egress, and it
+ * wrongly separates one publisher whose address moved. A key proves the announce came from whoever
+ * was issued that stream, so these are the cases where the answer stops depending on the address at
+ * all.
+ *
+ * The claimants here carry no address on purpose in most cases, so what is under test is the key and
+ * not a second reading of the SEC-26 rule.
+ */
+describe('taking over a stream id with a proven publish key', () => {
+  /**
+   * The case SEC-26 named as its own first residual, and could not fix: an attacker sharing the
+   * victim's egress address is indistinguishable from the victim. Turned around here, it is the
+   * legitimate broadcaster who was indistinguishable from an attacker whenever their address moved,
+   * and who had to wait out the whole stall window to get their own id back.
+   */
+  it('lets the key holder take their id back immediately, from any address', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch, published } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    // No clock advance. The incumbent is being fed right now, which is what refuses every unproven
+    // announce in the block above.
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER, isAuthenticated: true }),
+      true,
+      'a proven key outranks the address test and does not wait for the stall window',
+    );
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+
+    await orch.cleanup();
+  });
+
+  /**
+   * SEC-26's other stated residual. Its guard is symmetric, so it protects whoever arrived first,
+   * which protects a squatter who claims an id and keeps feeding it just as firmly as it protects a
+   * real broadcaster. `POST /stream/stop` was the only answer, and it needs an operator.
+   */
+  it('evicts a squatter who claimed the id first and kept feeding it', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    const squatterTopic = await publishOneSegment(harness, 0);
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+
+    assert.notEqual(
+      await publishOneSegment(harness, 0),
+      squatterTopic,
+      'the owner has to be publishing under a fresh session, not into the squatter uploader',
+    );
+
+    await orch.cleanup();
+  });
+
+  /**
+   * The rule that retires the stall window rather than merely stepping around it. Once an incumbent
+   * has proven the key, going quiet is no longer enough to take their id: an attacker who waits out
+   * `segmentStallMs` gets nothing, because the escape hatch exists for a broadcaster who cannot be
+   * identified and this one can be.
+   *
+   * Asserted past the window on purpose. Without that advance the announce is refused by the SEC-26
+   * rule anyway, and the test would pass against a build that ignores authentication entirely.
+   */
+  it('refuses an unproven announce against a proven incumbent, even long after it went quiet', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    await clock.advance(STALL_MS * 10);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      false,
+      'the stall window is an escape hatch for an unidentifiable owner, not for an identified one',
+    );
+    assert.equal(orch.getMetricsSnapshot().takeoversRefusedTotal, 1, 'the refusal must still be countable');
+
+    await orch.cleanup();
+  });
+
+  /** And the key holder is not locked out by the rule that protects them. */
+  it('lets the key holder back in against a proven incumbent', async () => {
+    const harness = makeHarness();
+    const { orch, published } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER, isAuthenticated: true }),
+      true,
+      'both hold the key for this stream, so they are the same publisher whatever their addresses say',
+    );
+    await waitFor(() => hasFinalized(published), SETTLE_CEILING_MS);
+
+    await orch.cleanup();
+  });
+
+  /**
+   * The recovered-stream case, which is where the stall window cost the most. Nothing on record says
+   * who was broadcasting a stream this process restored after its own restart, so under SEC-26 alone
+   * the real owner reconnecting to it is a stranger and waits out the window like anyone else. A key
+   * answers the question the record cannot.
+   */
+  it('lets the key holder reclaim a recovered stream that is still being fed', async () => {
+    const clock = new FakeClock();
+    const published: PublishedEntry[] = [];
+    const saved: StreamState[] = [];
+    const orch = makeTestOrchestrator(
+      { segmentStallMs: STALL_MS, recoveryTimeout: 60_000, clock },
+      {},
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(STREAM_ID)],
+        load: () => makeRecoveredState(STREAM_ID),
+        save: (_streamId: string, state: StreamState) => saved.push(state),
+      }),
+      makeRecordingCatalog(published as unknown[]),
+    );
+    const harness: Harness = { orch, published, saved };
+
+    await orch.recoverStreams();
+    await publishOneSegment(harness, 99);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }),
+      true,
+      'an owner who can prove the stream is theirs does not have to wait out a window',
+    );
+    assert.equal(orch.getMetricsSnapshot().takeoversRefusedTotal, 0);
+
+    await orch.cleanup();
+  });
+
+  /**
+   * A refused announce must not leave the incumbent looking unproven to the next one. The claimant is
+   * recorded where the session is spawned, so this is the mirror of the SEC-26 test above: it pins
+   * that the *authentication* half survives a refusal too, and not just the address half.
+   */
+  it('keeps the incumbent proven after refusing an announce', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+    await clock.advance(STALL_MS * 10);
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }), false);
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }),
+      false,
+      'the second attempt must be refused for the same reason as the first',
+    );
+
+    await orch.cleanup();
+  });
+
+  /**
+   * The refusal has to name the reason that produced it, and there are now two. The old line credited
+   * every refusal to the stall window, which is false of a proven incumbent and false in the most
+   * misleading direction: an operator reading it would go looking for a publisher that stopped
+   * feeding, when the answer is that the id has an owner who proved it.
+   *
+   * Both spellings are asserted, and each asserts the absence of the other. Only checking the new one
+   * would pass against a build that prints it for every refusal, which is the same defect one level
+   * along.
+   */
+  it('blames the key for a proven incumbent and the stall window for an unproven one', async () => {
+    const lines: string[] = [];
+    const logger = Logger.getInstance();
+    const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+
+    try {
+      const clock = new FakeClock();
+      const harness = makeHarness(clock);
+      const { orch } = harness;
+
+      assert.equal(
+        orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }),
+        true,
+      );
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      await publishOneSegment(harness, 0);
+      await clock.advance(STALL_MS * 10);
+
+      lines.length = 0;
+      assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }), false);
+      const provenRefusal = lines.filter((line) => line.includes('Refused an announce')).join('\n');
+      assert.match(provenRefusal, /proven publish key/);
+      assert.doesNotMatch(provenRefusal, /stall window/, 'nothing about this refusal involved the stall window');
+
+      await orch.cleanup();
+
+      const second = makeHarness(new FakeClock());
+      assert.equal(second.orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER }), true);
+      await waitFor(() => second.orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      await publishOneSegment(second, 0);
+
+      lines.length = 0;
+      assert.equal(second.orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: STRANGER }), false);
+      const unprovenRefusal = lines.filter((line) => line.includes('Refused an announce')).join('\n');
+      assert.match(unprovenRefusal, /stall window/);
+      assert.doesNotMatch(unprovenRefusal, /proven publish key/, 'this incumbent proved nothing');
+
+      await second.orch.cleanup();
+    } finally {
+      logger.configure(previous);
+    }
+  });
+
+  /**
+   * An announce that names nobody is what `POST /stream/start` produces, and it must not read as
+   * proof. `ANONYMOUS_CLAIMANT` is a positive statement that the caller named nobody, so its
+   * authentication half has to be a positive `false` rather than an absent field that some later
+   * reading treats as unknown.
+   */
+  it('does not let an announce naming nobody take a proven id', async () => {
+    const clock = new FakeClock();
+    const harness = makeHarness(clock);
+    const { orch } = harness;
+
+    assert.equal(orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO, { address: BROADCASTER, isAuthenticated: true }), true);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    await publishOneSegment(harness, 0);
+    await clock.advance(STALL_MS * 10);
+
+    assert.equal(
+      orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO),
+      false,
+      'the operator start path is not an override for a stream whose owner proved it',
     );
 
     await orch.cleanup();

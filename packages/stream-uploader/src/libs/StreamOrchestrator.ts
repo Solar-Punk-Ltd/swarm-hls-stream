@@ -82,13 +82,29 @@ function describeClaimant(claimant: StreamClaimant): string {
   return claimant.address ?? 'an unnamed publisher';
 }
 
-/** The same for the session being protected, which may be one nothing ever recorded. See `mayTakeOver`. */
+/** The same for the session being protected, which may be one nothing ever recorded. See `reasonToRefuseTakeover`. */
 function describeIncumbent(incumbent: StreamClaimant | undefined): string {
   if (incumbent === undefined) {
     return 'a session this process recovered, whose publisher it cannot name,';
   }
   return incumbent.address ?? 'a session that named no publisher';
 }
+
+/** Why an announce may not take a live stream id. Each spelling states only what its own branch established. */
+type TakeoverRefusal = 'proven-incumbent' | 'still-publishing';
+
+/**
+ * The two refusals read very differently to whoever is holding the logs, which is why the wording is
+ * chosen by the branch rather than written once beside the return. A single line crediting every
+ * refusal to the stall window sent an operator looking for a publisher that had stopped feeding, when
+ * the answer was that the id has an owner who proved it and going quiet will never free it.
+ */
+const TAKEOVER_REFUSALS: Record<TakeoverRefusal, (incumbent: string) => string> = {
+  'proven-incumbent': (incumbent) =>
+    `${incumbent} holds it with a proven publish key, so no amount of waiting will free it`,
+  'still-publishing': (incumbent) =>
+    `${incumbent} is publishing on it and something has fed it within the stall window`,
+};
 
 export class StreamOrchestrator {
   private activeStreams = new Map<string, StreamUploader>();
@@ -176,12 +192,12 @@ export class StreamOrchestrator {
 
     const stale = this.activeStreams.get(streamId);
     if (stale) {
-      if (!this.mayTakeOver(streamId, claimant)) {
+      const refusal = this.reasonToRefuseTakeover(streamId, claimant);
+      if (refusal) {
         this.metrics.recordTakeoverRefused();
         this.logger.warn(
           `[StreamOrchestrator] Refused an announce for ${streamId} from ${describeClaimant(claimant)}: ` +
-            `${describeIncumbent(this.streamClaimants.get(streamId))} is publishing on it and something has fed ` +
-            'it within the stall window',
+            TAKEOVER_REFUSALS[refusal](describeIncumbent(this.streamClaimants.get(streamId))),
         );
         return false;
       }
@@ -210,7 +226,8 @@ export class StreamOrchestrator {
   }
 
   /**
-   * Whether `claimant` may take a stream id that a live session already holds. See SEC-26.
+   * Why `claimant` may not take a stream id that a live session already holds, or null to allow it.
+   * See SEC-26.
    *
    * Refuses only what it can prove: two addresses, both known and different, over a stream that is
    * still being fed. Everything else is allowed, which is the same rule the OME closing path applies
@@ -232,22 +249,43 @@ export class StreamOrchestrator {
    * yielded to anyone who asks. `POST /stream/start` is the other case and it is genuinely different:
    * it records `ANONYMOUS_CLAIMANT`, which is a positive statement that the caller named nobody.
    *
-   * What it does not stop: an attacker who shares the victim's address. Same host, same NAT and the
-   * same VPN egress all produce that, and so does a proof run entirely on loopback. Closing that needs
-   * the publisher to authenticate to the engine, which is a different piece of work. Nor does it stop
-   * a squatter who claims an id *first* and keeps feeding it: this guard is symmetric, so it protects
-   * whoever is already there. `POST /stream/stop` is the operator's override, and SEC-28 is the fix.
+   * **A proven publish key settles it outright, in both directions, and every rule above is the
+   * fallback for when nobody proved anything.** See SEC-28. That is what retires the two residuals
+   * this used to end on. An attacker sharing the victim's address is no longer indistinguishable from
+   * them, because the address is no longer what is being asked. And a squatter who claimed an id
+   * first is evicted by the owner rather than by an operator, because the symmetry that protected
+   * whoever arrived first only applies while neither can be identified.
+   *
+   * It also retires the stall window for the case that window cost the most. A recovered stream has
+   * no claimant on record and cannot get one, so its real owner reconnecting was a stranger by every
+   * test here and waited the window out. A key answers the question the record could not.
+   *
+   * What it still does not stop: an attacker holding the key. That is the credential's own security,
+   * and the answer to a leak is to rotate the secret, since nothing here can revoke one stream on its
+   * own. Nor does any of this apply when no secret is configured, where no announce is ever
+   * authenticated, both branches below are dead and the behaviour is exactly SEC-26's.
    */
-  private mayTakeOver(streamId: string, claimant: StreamClaimant): boolean {
+  private reasonToRefuseTakeover(streamId: string, claimant: StreamClaimant): TakeoverRefusal | null {
+    if (claimant.isAuthenticated) {
+      return null;
+    }
+
     const incumbent = this.streamClaimants.get(streamId);
     if (incumbent === undefined) {
-      return this.hasStalled(streamId);
+      return this.hasStalled(streamId) ? null : 'still-publishing';
+    }
+    // Not softened by the stall window, deliberately, where every other refusal here is. The window
+    // exists so an owner nobody can identify is not locked out of their own id forever, and an
+    // incumbent who proved the key has an owner who can be identified. Leaving the window in would
+    // hand a proven stream to whoever waits `segmentStallMs` and asks, which is the whole attack.
+    if (incumbent.isAuthenticated) {
+      return 'proven-incumbent';
     }
 
     const provablyDifferent =
       incumbent.address !== null && claimant.address !== null && incumbent.address !== claimant.address;
 
-    return !provablyDifferent || this.hasStalled(streamId);
+    return !provablyDifferent || this.hasStalled(streamId) ? null : 'still-publishing';
   }
 
   /**
