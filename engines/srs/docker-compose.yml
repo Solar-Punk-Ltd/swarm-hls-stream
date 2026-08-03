@@ -7,6 +7,7 @@ services:
     volumes:
       - ./srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
       - ./entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro
+      - ./healthcheck.sh:/usr/local/srs/conf/healthcheck.sh:ro
       # HLS output — shared with the Node app's media directory
       - ${SRS_MEDIA_PATH:-./media}:/usr/local/srs/objs/nginx/html
     # Same port on both sides, because the entrypoint binds SRS to these values now, so a mapping
@@ -42,5 +43,19 @@ services:
       SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
       SRS_HTTP_PORT: ${SRS_HTTP_PORT:-8080}
       SRS_SRT_PORT: ${SRS_SRT_PORT:-10080}
+    # Asks whether a broadcaster could reach this engine, not whether the process is alive. See
+    # OBS-20 and the reasoning in `healthcheck.sh`: SRS ran 44 minutes with a dead SRT listener while
+    # every signal the deployment had said it was fine.
+    #
+    # `start_period` covers the entrypoint templating the config and SRS binding, which is under a
+    # second in practice. `retries: 2` because a UDP listener does not come and go: either the socket
+    # is held or it is not, and a check that needs three tries to believe that is delaying the answer
+    # rather than avoiding a false one.
+    healthcheck:
+      test: ['CMD', 'bash', '/usr/local/srs/conf/healthcheck.sh']
+      interval: 15s
+      timeout: 5s
+      retries: 2
+      start_period: 20s
     extra_hosts:
       - 'host.docker.internal:host-gateway'
