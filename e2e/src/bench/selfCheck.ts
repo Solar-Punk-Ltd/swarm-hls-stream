@@ -71,8 +71,14 @@ export interface SelfCheckResult {
   mediaSpansMs: number[];
 }
 
-/** One probed segment of the local check, holding only what the two checks below compare. */
-interface ProbedCheckSegment {
+/**
+ * One probed segment of the local check, holding only what the two checks below compare.
+ *
+ * Exported with `requireSpansMeetEndToEnd` so that check can be tested at all. Producing this array
+ * needs ffmpeg; checking it is arithmetic over three numbers, which is the same split that took
+ * `segmentSpan.ts` out of `probe.ts`.
+ */
+export interface ProbedCheckSegment {
   capturedAtMs: number;
   mediaSpanMs: number;
   frameDurationMs: number;
@@ -190,7 +196,7 @@ async function runCheck(knobs: PublishKnobs, dir: string): Promise<SelfCheckResu
  *
  * The final segment is excluded, because it was cut by the interrupt and nothing follows it to meet.
  */
-function requireSpansMeetEndToEnd(probed: readonly ProbedCheckSegment[]): void {
+export function requireSpansMeetEndToEnd(probed: readonly ProbedCheckSegment[]): void {
   for (let i = 1; i < probed.length; i++) {
     const previous = probed[i - 1];
     const toNextStartMs = probed[i].capturedAtMs - previous.capturedAtMs;
