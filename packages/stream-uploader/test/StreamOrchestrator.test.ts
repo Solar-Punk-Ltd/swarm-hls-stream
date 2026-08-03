@@ -907,6 +907,57 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
     );
   });
 
+  /**
+   * OBS-19. `segmentLossAt` was written on a loss and deleted nowhere. `getMsSinceSegmentLoss` reads
+   * it for every id in `activeStreams`, so the entry was invisible while the stream was gone and
+   * came back the moment a new session announced on the same id, which is the ordinary case for a
+   * broadcaster reconnecting. `/health` then reads `degraded` with `segment_loss` for a broadcast
+   * that has lost nothing, and the compose healthcheck turns that into `(unhealthy)` on `docker ps`.
+   */
+  it('does not report a dead session’s loss against the stream that replaces it', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeTestOrchestrator({ clock });
+
+    orchestrator.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orchestrator.handleSegmentLoss('live/one', 0, 1);
+    await orchestrator.stopStream('live/one');
+    clock.advance(5_000);
+    orchestrator.startStream('live/one', MEDIA_TYPE_VIDEO);
+
+    assert.equal(
+      orchestrator.getMsSinceSegmentLoss(),
+      null,
+      'the new session has lost nothing, and a loss it inherits reads as degraded on a healthy broadcast',
+    );
+  });
+
+  /**
+   * The other half, and the reason a delete in one place is not enough. Every other per-stream map is
+   * cleared in `retireSession`, so a leak here is only visible by comparison: reporting the count
+   * against a map that is known to be cleared is what makes the assertion about retirement rather
+   * than about an arbitrary size.
+   */
+  it('does not grow one entry per stream that ever reported a loss', async () => {
+    const orchestrator = makeTestOrchestrator();
+
+    for (let i = 0; i < 50; i += 1) {
+      const id = `live/cycle-${i}`;
+      orchestrator.startStream(id, MEDIA_TYPE_VIDEO);
+      orchestrator.handleSegmentLoss(id, 0, 1);
+      await orchestrator.stopStream(id);
+    }
+
+    const maps = orchestrator as unknown as {
+      segmentLossAt: Map<string, number>;
+      streamActivityAt: Map<string, number>;
+    };
+    assert.equal(
+      maps.segmentLossAt.size,
+      maps.streamActivityAt.size,
+      'segmentLossAt outlived every session while streamActivityAt did not, so retirement is skipping it',
+    );
+  });
+
   it('does not count a loss as stream activity, so a stream losing everything still stalls', () => {
     const clock = new FakeClock();
     const orchestrator = makeTestOrchestrator({ clock, segmentStallMs: 1_000 });

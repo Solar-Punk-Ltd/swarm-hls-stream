@@ -346,6 +346,11 @@ export class StreamOrchestrator {
     this.streamActivityAt.delete(streamId);
     this.streamIngestAt.delete(streamId);
     this.streamClaimants.delete(streamId);
+    // OBS-19. Written on a loss and deleted nowhere, so it survived its own session. Invisible while
+    // the id was gone, because `getMsSinceSegmentLoss` only reads ids in `activeStreams`, and back
+    // the moment a broadcaster reconnected under the same id: `/health` then answered `degraded` with
+    // `segment_loss` for a broadcast that had lost nothing.
+    this.segmentLossAt.delete(streamId);
   }
 
   /**
