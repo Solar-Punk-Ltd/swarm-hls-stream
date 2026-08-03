@@ -1,0 +1,269 @@
+{
+  "measuredAt": "2026-08-03T13:05:24.850Z",
+  "engine": "srs",
+  "profile": "latbench",
+  "knobs": {
+    "fps": 30,
+    "gopSeconds": 3,
+    "videoBitrateKbps": 6000,
+    "size": "1920x1080"
+  },
+  "samples": [
+    {
+      "index": 35,
+      "ref": "cf171cd135d8fc1180a3567a80f1230300d2577c267846d8adce64c886aa9395",
+      "split": {
+        "instants": {
+          "capturedAtMs": 1785762299350.7964,
+          "segmentDurationS": 2.999,
+          "uploadedAtMs": 1785762303408,
+          "manifestPublishedAtMs": 1785762304051,
+          "visibleAtMs": 1785762306527,
+          "fetchedAtMs": 1785762306999
+        },
+        "totalMs": 7648.20361328125,
+        "hops": [
+          {
+            "name": "segment",
+            "ms": 2999,
+            "what": "the first frame waiting for its own segment to close at the encoder"
+          },
+          {
+            "name": "upload",
+            "ms": 1053.20361328125,
+            "what": "the uploader noticing the segment, downloading it from the engine, and uploading it to Swarm"
+          },
+          {
+            "name": "manifestPublish",
+            "ms": 643,
+            "what": "the SOC feed write that publishes a manifest naming it"
+          },
+          {
+            "name": "feedPropagation",
+            "ms": 2481,
+            "what": "the manifest reaching the viewer gateway, plus the wait until the next poll asked for it"
+          },
+          {
+            "name": "fetch",
+            "ms": 472,
+            "what": "retrieving the segment payload itself through the gateway"
+          }
+        ],
+        "playerBufferMs": 6000,
+        "viewerLatencyMs": 10649.20361328125,
+        "skew": {
+          "offsetMs": 5,
+          "uncertaintyMs": 6
+        }
+      },
+      "declaredDurationS": 3.01,
+      "videoPacketCount": 90
+    },
+    {
+      "index": 37,
+      "ref": "550ed1ef8534018ffb53d82fc290bf205fc6a0e86b847c6b5ef6f4dedf879abb",
+      "split": {
+        "instants": {
+          "capturedAtMs": 1785762305350.7964,
+          "segmentDurationS": 2.999,
+          "uploadedAtMs": 1785762309380,
+          "manifestPublishedAtMs": 1785762309642,
+          "visibleAtMs": 1785762312945,
+          "fetchedAtMs": 1785762313565
+        },
+        "totalMs": 8214.20361328125,
+        "hops": [
+          {
+            "name": "segment",
+            "ms": 2999,
+            "what": "the first frame waiting for its own segment to close at the encoder"
+          },
+          {
+            "name": "upload",
+            "ms": 1025.20361328125,
+            "what": "the uploader noticing the segment, downloading it from the engine, and uploading it to Swarm"
+          },
+          {
+            "name": "manifestPublish",
+            "ms": 262,
+            "what": "the SOC feed write that publishes a manifest naming it"
+          },
+          {
+            "name": "feedPropagation",
+            "ms": 3308,
+            "what": "the manifest reaching the viewer gateway, plus the wait until the next poll asked for it"
+          },
+          {
+            "name": "fetch",
+            "ms": 620,
+            "what": "retrieving the segment payload itself through the gateway"
+          }
+        ],
+        "playerBufferMs": 6000,
+        "viewerLatencyMs": 11215.20361328125,
+        "skew": {
+          "offsetMs": 5,
+          "uncertaintyMs": 6
+        }
+      },
+      "declaredDurationS": 3,
+      "videoPacketCount": 90
+    },
+    {
+      "index": 38,
+      "ref": "76b4fc7bbce63ecd27177fdc51e3a446b9c8aff0286976af5b8bd09796299f71",
+      "split": {
+        "instants": {
+          "capturedAtMs": 1785762308350.7964,
+          "segmentDurationS": 2.999,
+          "uploadedAtMs": 1785762312354,
+          "manifestPublishedAtMs": 1785762312608,
+          "visibleAtMs": 1785762315445,
+          "fetchedAtMs": 1785762316337
+        },
+        "totalMs": 7986.20361328125,
+        "hops": [
+          {
+            "name": "segment",
+            "ms": 2999,
+            "what": "the first frame waiting for its own segment to close at the encoder"
+          },
+          {
+            "name": "upload",
+            "ms": 999.20361328125,
+            "what": "the uploader noticing the segment, downloading it from the engine, and uploading it to Swarm"
+          },
+          {
+            "name": "manifestPublish",
+            "ms": 254,
+            "what": "the SOC feed write that publishes a manifest naming it"
+          },
+          {
+            "name": "feedPropagation",
+            "ms": 2842,
+            "what": "the manifest reaching the viewer gateway, plus the wait until the next poll asked for it"
+          },
+          {
+            "name": "fetch",
+            "ms": 892,
+            "what": "retrieving the segment payload itself through the gateway"
+          }
+        ],
+        "playerBufferMs": 6000,
+        "viewerLatencyMs": 10987.20361328125,
+        "skew": {
+          "offsetMs": 5,
+          "uncertaintyMs": 6
+        }
+      },
+      "declaredDurationS": 3,
+      "videoPacketCount": 90
+    },
+    {
+      "index": 39,
+      "ref": "cf755d5e137a6dd3e984fcabe1830c834ea2a39ca914cad543e255f1597e2dce",
+      "split": {
+        "instants": {
+          "capturedAtMs": 1785762311350.7964,
+          "segmentDurationS": 2.999,
+          "uploadedAtMs": 1785762315331,
+          "manifestPublishedAtMs": 1785762315587,
+          "visibleAtMs": 1785762319452,
+          "fetchedAtMs": 1785762321037
+        },
+        "totalMs": 9686.20361328125,
+        "hops": [
+          {
+            "name": "segment",
+            "ms": 2999,
+            "what": "the first frame waiting for its own segment to close at the encoder"
+          },
+          {
+            "name": "upload",
+            "ms": 976.20361328125,
+            "what": "the uploader noticing the segment, downloading it from the engine, and uploading it to Swarm"
+          },
+          {
+            "name": "manifestPublish",
+            "ms": 256,
+            "what": "the SOC feed write that publishes a manifest naming it"
+          },
+          {
+            "name": "feedPropagation",
+            "ms": 3870,
+            "what": "the manifest reaching the viewer gateway, plus the wait until the next poll asked for it"
+          },
+          {
+            "name": "fetch",
+            "ms": 1585,
+            "what": "retrieving the segment payload itself through the gateway"
+          }
+        ],
+        "playerBufferMs": 6000,
+        "viewerLatencyMs": 12687.20361328125,
+        "skew": {
+          "offsetMs": 5,
+          "uncertaintyMs": 6
+        }
+      },
+      "declaredDurationS": 3,
+      "videoPacketCount": 90
+    },
+    {
+      "index": 41,
+      "ref": "36571d0fc3cfa195aa6acde0e30f5ae5c83ca7c8c945c2a8b1f083b094c96ca8",
+      "split": {
+        "instants": {
+          "capturedAtMs": 1785762317350.7964,
+          "segmentDurationS": 2.999,
+          "uploadedAtMs": 1785762321276,
+          "manifestPublishedAtMs": 1785762321538,
+          "visibleAtMs": 1785762322979,
+          "fetchedAtMs": 1785762324505
+        },
+        "totalMs": 7154.20361328125,
+        "hops": [
+          {
+            "name": "segment",
+            "ms": 2999,
+            "what": "the first frame waiting for its own segment to close at the encoder"
+          },
+          {
+            "name": "upload",
+            "ms": 921.20361328125,
+            "what": "the uploader noticing the segment, downloading it from the engine, and uploading it to Swarm"
+          },
+          {
+            "name": "manifestPublish",
+            "ms": 262,
+            "what": "the SOC feed write that publishes a manifest naming it"
+          },
+          {
+            "name": "feedPropagation",
+            "ms": 1446,
+            "what": "the manifest reaching the viewer gateway, plus the wait until the next poll asked for it"
+          },
+          {
+            "name": "fetch",
+            "ms": 1526,
+            "what": "retrieving the segment payload itself through the gateway"
+          }
+        ],
+        "playerBufferMs": 6000,
+        "viewerLatencyMs": 10155.20361328125,
+        "skew": {
+          "offsetMs": 5,
+          "uncertaintyMs": 6
+        }
+      },
+      "declaredDurationS": 3,
+      "videoPacketCount": 90
+    }
+  ],
+  "discarded": [],
+  "mediaTimelineLeadMs": 1382.314697265625,
+  "trend": {
+    "msPerMinute": 1693.1337827030732,
+    "scatterMsPerMinute": 8678.167485433565
+  }
+}

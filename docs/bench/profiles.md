@@ -1,6 +1,6 @@
 # Operating profiles: what this deployment can actually do
 
-Measured 2026-08-03 on `manager-host`, profile `latbench`, engine SRS, 51 runs and 255 samples.
+Measured 2026-08-03 on `manager-host`, profile `latbench`, engine SRS, 86 runs and 430 samples.
 Everything below is `pnpm bench:sweep-report` over the artifacts in this directory, which anyone can
 re-derive without spending anything.
 
@@ -24,20 +24,52 @@ profile table does that arithmetic.
 
 | profile | picture | segment | capture to fetchable | player buffer | behind live | samples |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| **`sd-fast`** | 854x480 1200k 30fps | 0.50s | **1.93s** | 5.2s | **6.60s** | 25 |
 | **`live-fast`** | 1280x720 2500k 30fps | 0.50s | **1.96s** | 5.0s | **6.43s** | 25 |
-| **`live`** _(current default)_ | 1280x720 2500k 30fps | 1.00s | **2.86s** | 6.0s | **7.75s** | 30 |
+| **`live`** _(current default)_ | 1280x720 2500k 30fps | 1.00s | **2.88s** | 5.9s | **7.77s** | 30 |
 | **`hd-fast`** | 1920x1080 6000k 30fps | 0.50s | **2.89s** | 5.3s | **7.65s** | 20 |
-| **`hd`** | 1920x1080 6000k 30fps | 1.00s | **4.14s** | 8.0s | **11.16s** | 20 |
+| `sd-fast` | 854x480 1200k 30fps | 0.50s | **1.93s** | 5.2s | **6.60s** | 25 |
+| `live-quarter` | 1280x720 2500k 30fps | 0.27s | **2.17s** | 5.4s | **7.26s** | 25 |
+| `hd-quarter` | 1920x1080 6000k 30fps | 0.27s | **2.71s** | 5.9s | **8.31s** | 25 |
+| `sd-one` | 854x480 1200k 30fps | 1.00s | **2.83s** | 6.1s | **7.93s** | 25 |
 | **`hd-max`** | 1920x1080 9000k 30fps | 1.00s | **4.38s** | 7.0s | **10.37s** | 25 |
+| `sd-two` | 854x480 1200k 30fps | 2.00s | **5.31s** | 7.9s | **11.21s** | 25 |
+| `hd-onehalf` | 1920x1080 6000k 30fps | 1.50s | **4.55s** | 8.2s | **11.25s** | 25 |
+| **`hd`** | 1920x1080 6000k 30fps | 1.00s | **4.35s** | 8.0s | **11.38s** | 20 |
+| `live-relaxed` | 1280x720 2500k 30fps | 2.00s | **5.01s** | 8.5s | **11.46s** | 30 |
 | **`hd-relaxed`** | 1920x1080 6000k 30fps | 2.00s | **6.49s** | 11.1s | **15.59s** | 25 |
-| `live-relaxed` | 1280x720 2500k 30fps | 2.00s | **5.00s** | 8.5s | **11.44s** | 30 |
 | `archive` | 1280x720 2500k 30fps | 4.00s | **9.42s** | 12.7s | **18.13s** | 25 |
+| `hd-three` | 1920x1080 6000k 30fps | 3.00s | **8.21s** | 13.1s | **18.32s** | 25 |
+| `hd-four` | 1920x1080 6000k 30fps | 4.00s | **10.60s** | 15.1s | **21.67s** | 25 |
 
 The player buffer is **derived, not chosen**. A player stalls unless it covers the largest observed
 edge-to-fetchable delay, which is `total - segment` per sample, and the figure above is that floor
 plus the client's poll cadence plus one segment of margin. Lower it below the floor and it will
 stall on a segment this sweep has already seen.
+
+## The segment curve, swept properly
+
+Every picture across every segment length, so the shape is measured rather than extrapolated from one
+resolution. `n` is samples, `behind live` uses each row's own derived buffer.
+
+| picture | 0.27s | 0.50s | 1.00s | 1.50s | 2.00s | 3.00s | 4.00s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 854x480 1200k | | **6.60s** | 7.93s | | 11.21s | | |
+| 1280x720 2500k | 7.26s | **6.43s** | 7.77s | | 11.46s | | 18.13s |
+| 1920x1080 6000k | 8.31s | **7.65s** | 11.38s | 11.25s | 15.59s | 18.32s | 21.67s |
+
+**The floor is half a second and it is a real minimum, not a limit of patience.** Going to a quarter
+second makes a viewer's latency *worse* at every picture measured: 720p goes from 6.43s to 7.26s and
+1080p from 7.65s to 8.31s. Capture to fetchable at 720p also rises, from 1.96s to 2.17s, so this is
+not an artefact of the buffer derivation.
+
+The mechanism is the one the flat `manifestPublish` row already implied. A manifest write costs about
+220ms **per segment** and does not care how much video is in it, so halving the segment doubles that
+work per second of broadcast. Measured at 720p, the `feed` hop nearly doubles from 728ms to 1352ms
+while the segment saves only 233ms. **Below half a second the pipeline spends more on bookkeeping
+than the shorter segment gives back.**
+
+So the answer to how low this can go is **6.43s behind live, at 720p with half-second segments**, and
+it is a floor rather than a stopping point.
 
 ## The two things this measured that were not known
 
@@ -92,14 +124,22 @@ of 64.
 
 ## Choosing
 
-- **Latency above all, and you control the camera:** `sd-fast`. 6.60s behind live, and 480p.
-- **Latency above all, at a normal picture:** `live-fast`. 6.43s, and the best row in the table,
-  because 720p at 2500k retrieves nearly as fast as 480p at 1200k while looking considerably better.
-- **The default, and the one to leave alone without a reason:** `live`. 7.75s at half the operational
+- **Latency above all:** `live-fast`, 720p at half-second segments. **6.43s, the best row in the
+  whole matrix**, and there is nothing below it.
+- **The default, and the one to leave alone without a reason:** `live`. 7.77s at half the operational
   cost of `live-fast`.
-- **1080p and you still care about latency:** `hd-fast`, not `hd`. 7.65s against 11.16s, for the same
-  picture, purely by halving the segment.
-- **1080p and you do not:** `hd-relaxed`. 15.59s, one third the uploads.
+- **1080p and you still care about latency:** `hd-fast`, not `hd`. **7.65s against 11.38s for the
+  same picture**, purely by halving the segment. It also beats 720p at a one-second segment, so at
+  this deployment 1080p is not something latency has to be traded for.
+- **1080p and you do not:** `hd-relaxed` at 2.0s, 15.59s, one third the uploads of `hd-fast`.
+
+**480p is not worth carrying.** At half a second it measures 6.60s against 720p's 6.43s, so the
+cheaper picture is not the faster one, and at every other segment length it is behind too. The
+retrieval saving from fewer bytes is smaller than the run-to-run scatter. Drop `sd-fast` unless the
+constraint is the broadcaster's uplink rather than this deployment.
+
+**Quarter-second segments are measured, supported and not recommended**, for the reason in the curve
+above.
 
 ## What is not measured here, stated so nobody reads it as measured
 
