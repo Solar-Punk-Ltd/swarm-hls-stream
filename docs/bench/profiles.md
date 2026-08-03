@@ -20,6 +20,33 @@ its segment could first be retrieved from the gateway. It is not what a viewer s
 is this number, minus one segment, plus whatever buffer the player holds, and the last column of the
 profile table does that arithmetic.
 
+## ⚠️ These are startup numbers, not steady-state numbers
+
+**Every figure in this document comes from the opening seconds of a fresh broadcast.** A run publishes
+for about 50 seconds and takes 5 samples, and those 5 samples span **8.5 to 20 seconds** of media.
+Settings are repeated 4 to 6 times, so what the numbers are reproducible *across* is independent
+starts, not elapsed time.
+
+**Nothing here has streamed for more than a minute**, so this document cannot answer:
+
+- whether latency drifts upward over an hour,
+- whether a player rebuffers on the tenth minute at a buffer that survived the first,
+- whether stamp or chequebook burn changes the picture over a long broadcast,
+- whether any of it is stable at all past the startup window.
+
+The artifacts carry a `trend.msPerMinute` field and **it should not be read.** Fitting a slope to 5
+points spanning 10 seconds produces values from -8875 to +5481 ms per minute across these runs, and
+the `scatterMsPerMinute` printed beside it is larger than the trend itself in almost every row, which
+is the instrument correctly saying the fit is meaningless at this span.
+
+**The consistency columns are the closest thing here**, and they carry the same caveat. `tail` is the
+worst arrival minus the typical one, so it is what the buffer is actually paying for, and a low tail
+means arrivals clustered **within a ten second window**. On that basis the tightest setting measured
+is 1920x1080 at 6000k with half-second segments, at a 0.36s tail against 1.00s to 2.62s for
+everything else, which is a genuinely surprising result and not one to act on until it has been run
+long. Answering "which setting holds a constant stream" needs a run of tens of minutes sampling every
+segment, which is a different bench and has not been built.
+
 ## The profiles
 
 | profile | picture | segment | capture to fetchable | player buffer | behind live | samples |
