@@ -1,16 +1,22 @@
 /**
- * Reading the first video frame's presentation timestamp out of a downloaded segment, via ffprobe.
+ * Reading a downloaded segment's video timestamps out of ffprobe: when its first frame was shown, and
+ * how much media it holds.
  *
  * Split into a spawn and a pure parser because the parser is where this fails silently. ffprobe exits
  * **0** on a segment that holds no video at all and returns empty arrays, so a reader that reaches
  * straight for `packets[0].pts` gets `undefined`, and arithmetic on it yields `NaN` rather than an
  * error. Measured against ffprobe 7.1.1 on an audio-only MPEG-TS: `{"packets":[],"streams":[]}`,
  * exit 0. Every shape below was captured from the real tool, not written from the documentation.
+ *
+ * The span is measured here rather than read from the manifest's `#EXTINF` because the manifest is
+ * the engine's claim about the segment and the packets are the segment. See LAT-9, and
+ * `segmentSpan.ts` for the two ways the arithmetic over those packets goes quietly wrong.
  */
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { measureSpanTicks } from './segmentSpan.js';
 import { type FramePts, MPEGTS_WRAP_TICKS } from './wallclock.js';
 
 const execFileAsync = promisify(execFile);
@@ -39,9 +45,9 @@ export function probeArgs(path: string): string[] {
     'error',
     '-select_streams',
     'v:0',
-    // Decode only as far as the first packet. A live segment is small, but a VOD manifest's is not.
-    '-read_intervals',
-    '%+#1',
+    // Every video packet, not just the first. This used to stop at one packet, which is all the
+    // capture instant needs, and is why the span had to come from the manifest instead. The cost is
+    // bounded by what the bench fetches: segments named in a live manifest, seconds of media each.
     '-show_entries',
     'packet=pts',
     '-show_entries',
@@ -64,13 +70,48 @@ function fail(source: string, why: string): never {
   throw new Error(`cannot read a presentation timestamp from ${source}: ${why}`);
 }
 
+/** What one downloaded segment's own video packets say about it. */
+export interface ProbedSegment {
+  /**
+   * The earliest frame in presentation order, which is the one the capture instant is recovered from.
+   *
+   * The earliest rather than the first listed. Those coincide on every segment observed here, because
+   * a segment opens on the keyframe that starts its group, but they coincide by a property of how
+   * these engines cut segments rather than by anything the container guarantees, and the listing
+   * order is decode order.
+   */
+  firstFrame: FramePts;
+  /** Seconds of video it holds, measured from those packets rather than declared by a manifest. */
+  mediaSpanS: number;
+  /** Seconds the final frame was credited with, which is the resolution `mediaSpanS` is good to. */
+  frameDurationS: number;
+  /** How many video packets the span was measured across, so a report can say how thin a reading is. */
+  videoPacketCount: number;
+}
+
+/** Every video packet's presentation timestamp, refusing any that ffprobe could not put a number on. */
+function readTimestamps(output: ProbeOutput, source: string): number[] {
+  const packets = output.packets ?? [];
+  if (packets.length === 0) {
+    // The empty-array case, which is what an audio-only segment produces at exit 0.
+    fail(source, 'it holds no video packets, so the media never reached the far end even though the fetch succeeded');
+  }
+
+  return packets.map(({ pts }) => {
+    if (typeof pts !== 'number' || !Number.isFinite(pts)) {
+      fail(source, `one of its video packets has no usable timestamp (pts ${JSON.stringify(pts)})`);
+    }
+    return pts;
+  });
+}
+
 /**
- * The segment's first video frame, as `wallclock.ts` needs it.
+ * The segment's video timestamps, as `wallclock.ts` and `split.ts` need them.
  *
  * @param json stdout of `ffprobe ${probeArgs(path)}`
  * @param source what to name in an error, normally the segment reference
  */
-export function parseProbedFrame(json: string, source: string): FramePts {
+export function parseProbedSegment(json: string, source: string): ProbedSegment {
   let output: ProbeOutput;
   try {
     output = JSON.parse(json) as ProbeOutput;
@@ -78,16 +119,7 @@ export function parseProbedFrame(json: string, source: string): FramePts {
     fail(source, `ffprobe wrote ${json.trim() === '' ? 'nothing' : 'output that is not JSON'}`);
   }
 
-  const pts = output.packets?.[0]?.pts;
-  if (typeof pts !== 'number' || !Number.isFinite(pts)) {
-    // Also the empty-array case, which is what an audio-only segment produces at exit 0.
-    fail(
-      source,
-      pts === undefined
-        ? 'it holds no video packets, so the media never reached the far end even though the fetch succeeded'
-        : `its first video packet has no usable timestamp (pts ${JSON.stringify(pts)})`,
-    );
-  }
+  const timestamps = readTimestamps(output, source);
 
   const timeBase = output.streams?.[0]?.time_base;
   if (typeof timeBase !== 'string') {
@@ -112,15 +144,22 @@ export function parseProbedFrame(json: string, source: string): FramePts {
     fail(source, 'ffprobe reported no format_name, so whether its timestamps wrap is unknown');
   }
 
+  const span = measureSpanTicks(timestamps, source);
+
   return {
-    timescale,
-    pts,
-    wrapTicks: formatName.split(',').includes(MPEGTS_FORMAT_NAME) ? MPEGTS_WRAP_TICKS : null,
+    firstFrame: {
+      timescale,
+      pts: Math.min(...timestamps),
+      wrapTicks: formatName.split(',').includes(MPEGTS_FORMAT_NAME) ? MPEGTS_WRAP_TICKS : null,
+    },
+    mediaSpanS: span.total / timescale,
+    frameDurationS: span.finalFrame / timescale,
+    videoPacketCount: span.packets,
   };
 }
 
 /** Probe a segment already on disk. `source` names it in errors, normally the Swarm reference. */
-export async function probeFirstVideoFrame(path: string, source: string): Promise<FramePts> {
+export async function probeSegment(path: string, source: string): Promise<ProbedSegment> {
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync('ffprobe', probeArgs(path), { timeout: PROBE_TIMEOUT_MS }));
@@ -130,5 +169,5 @@ export async function probeFirstVideoFrame(path: string, source: string): Promis
     const stderr = (error as { stderr?: string }).stderr?.trim();
     fail(source, stderr && stderr !== '' ? stderr : (error as Error).message);
   }
-  return parseProbedFrame(stdout, source);
+  return parseProbedSegment(stdout, source);
 }

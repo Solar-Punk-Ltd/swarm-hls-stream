@@ -10,11 +10,22 @@ import {
   renderReport,
   type SegmentSample,
 } from '../src/bench/report.js';
-import { type ClockSkew, latencySplit, type SegmentInstants } from '../src/bench/split.js';
+import { type ClockSkew, type LatencySplit, latencySplit, type SegmentInstants } from '../src/bench/split.js';
 import { DEFAULT_KNOBS } from '../src/bench/wallclockPublisher.js';
 
 const BENCH_T0 = 1_785_677_886_564;
 const SKEW: ClockSkew = { offsetMs: 120, uncertaintyMs: 8 };
+
+/**
+ * A measured sample around a split.
+ *
+ * `declaredDurationS` defaults to agreeing with the split's own measured duration, which is the case
+ * every test that is not about the comparison wants: a disagreement prints an extra self-check line,
+ * and a fixture that produced one by accident would put it under tests that never asked for it.
+ */
+function sampleOf(index: number, split: LatencySplit, declaredDurationS: number | null = 2): SegmentSample {
+  return { index, ref: `ref${index}`.padEnd(16, '0'), split, declaredDurationS, videoPacketCount: 60 };
+}
 
 /** A sample whose total is `totalMs`, with the slack taken out of the fetch so the rows still sum. */
 function sampleWithTotal(index: number, totalMs: number): SegmentSample {
@@ -26,7 +37,7 @@ function sampleWithTotal(index: number, totalMs: number): SegmentSample {
     visibleAtMs: BENCH_T0 + 5_200,
     fetchedAtMs: BENCH_T0 + totalMs,
   };
-  return { index, ref: `ref${index}`.padEnd(16, '0'), split: latencySplit(instants, SKEW) };
+  return sampleOf(index, latencySplit(instants, SKEW));
 }
 
 function runWith(
@@ -201,7 +212,7 @@ describe('the report an operator reads', () => {
       visibleAtMs: BENCH_T0 + 5_200,
       fetchedAtMs: BENCH_T0 + 5_800,
     };
-    const sample: SegmentSample = { index: 9, ref: 'ref9'.padEnd(16, '0'), split: latencySplit(impossible, SKEW) };
+    const sample = sampleOf(9, latencySplit(impossible, SKEW));
     const upload = sample.split.hops.find((hop) => hop.name === 'upload');
     assert.ok(upload && upload.ms < -SKEW.uncertaintyMs, 'fixture must produce a gap wider than the uncertainty');
 
@@ -233,7 +244,7 @@ describe('the report an operator reads', () => {
       visibleAtMs: BENCH_T0 + 5_200,
       fetchedAtMs: BENCH_T0 + 5_800,
     };
-    const sample: SegmentSample = { index: 24, ref: 'ref24'.padEnd(16, '0'), split: latencySplit(impossible, SKEW) };
+    const sample = sampleOf(24, latencySplit(impossible, SKEW));
 
     const report = renderReport(runWith([sample]));
 

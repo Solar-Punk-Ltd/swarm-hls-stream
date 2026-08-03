@@ -17,6 +17,20 @@ export interface SegmentSample {
   /** Swarm reference, which is what tied the fetched bytes to a line in the uploader's log. */
   ref: string;
   split: LatencySplit;
+  /**
+   * What the manifest declared this segment's duration to be, against the measured span in the split.
+   *
+   * Carried so a run can answer the question LAT-9 was opened on rather than only route around it.
+   * The register recorded SRS announcing 3.15, 2.73, 3.16, 2.04 and 2.64 seconds against a fixed
+   * two-second GOP, and two different faults produce that: an engine whose segmenting really is that
+   * uneven, and an engine that cuts evenly and misreports. Measuring the span from the bytes makes
+   * the split right under either, and only holding both figures says which it was.
+   *
+   * Null where the entry carried no readable `#EXTINF`, which costs the comparison and not the sample.
+   */
+  declaredDurationS: number | null;
+  /** How many video packets the span was measured across, so a thin reading can be seen as thin. */
+  videoPacketCount: number;
 }
 
 /** A segment that reached the bench but could not be turned into a reading, and why. */
