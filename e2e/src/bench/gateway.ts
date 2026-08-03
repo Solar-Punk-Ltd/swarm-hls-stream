@@ -57,12 +57,46 @@ export function segmentRefFromUri(uri: string): string | null {
   return candidate !== undefined && SWARM_REFERENCE_RE.test(candidate) ? candidate : null;
 }
 
+/**
+ * A gateway that answered, with a status the caller did not want.
+ *
+ * Carries the status as a field rather than only in the message, because one of them means something
+ * different from the rest and a caller has to be able to tell without parsing prose.
+ */
+export class GatewayStatusError extends Error {
+  readonly status: number;
+
+  constructor(url: string, status: number) {
+    super(`${url} answered ${status}`);
+    this.name = 'GatewayStatusError';
+    this.status = status;
+  }
+}
+
 async function timedFetch(url: string, timeoutMs: number): Promise<Response> {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) {
-    throw new Error(`${url} answered ${response.status}`);
+    throw new GatewayStatusError(url, response.status);
   }
   return response;
+}
+
+/**
+ * Whether a failed feed read is the feed not existing yet, rather than something being wrong.
+ *
+ * A Swarm feed answers 404 until its first update is written, and the uploader writes that only once
+ * the first segment has closed and been uploaded. The bench begins polling as soon as the publisher
+ * is up, so the first read of any run can land inside that window. Measured on 2026-08-03: four of
+ * five 1080p runs at a one-second GOP died here, on four different feed topics, while the same
+ * settings had run clean an hour earlier. Nothing was wrong with the deployment, and reporting those
+ * runs as the profile being unstable would have been reporting the instrument.
+ *
+ * Once the feed has answered at all, a later 404 is a disappearance rather than a wait, and stays
+ * fatal. Polling through every 404 instead would turn a feed that vanished mid-run into a short run
+ * nobody notices.
+ */
+export function isFeedPendingFirstWrite(error: unknown, feedSeenBefore: boolean): boolean {
+  return !feedSeenBefore && error instanceof GatewayStatusError && error.status === 404;
 }
 
 /** The manifest a viewer's player would load, and when it finished arriving here. */

@@ -21,7 +21,7 @@ import { announcedLiveStreams } from '../harness/logwatch.js';
 import { sleep, waitFor } from '../harness/wait.js';
 
 import { measureClockSkew } from './clockSkew.js';
-import { fetchFeedManifest, fetchSegment, segmentRefFromUri } from './gateway.js';
+import { fetchFeedManifest, fetchSegment, isFeedPendingFirstWrite, segmentRefFromUri } from './gateway.js';
 import { probeSegment } from './probe.js';
 import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
 import { latencySplit, type SegmentInstants } from './split.js';
@@ -202,8 +202,21 @@ async function collectSamples(
   const seen = new Set<string>();
   const deadline = Date.now() + SEGMENT_TIMEOUT_MS * wanted;
 
+  let feedSeen = false;
+
   while (collected.length < wanted && Date.now() <= deadline) {
-    const manifest = await fetchFeedManifest(gatewayUrl, owner, topicHex);
+    let manifest;
+    try {
+      manifest = await fetchFeedManifest(gatewayUrl, owner, topicHex);
+    } catch (error) {
+      if (!isFeedPendingFirstWrite(error, feedSeen)) {
+        throw error;
+      }
+      await sleep(pollIntervalMs);
+      continue;
+    }
+    feedSeen = true;
+
     const newest = parseManifest(manifest.body).segments.at(-1);
     const ref = newest ? segmentRefFromUri(newest.uri) : null;
     if (!newest || !ref || seen.has(ref)) {
@@ -223,6 +236,17 @@ async function collectSamples(
     } catch (error) {
       discarded.push({ ref, reason: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  // Waiting out the first 404 must not turn a feed that never appeared into an empty run, which the
+  // sweep report skips over in silence. A feed the uploader never wrote is a real failure and the
+  // only place left that can say so.
+  if (!feedSeen) {
+    throw new Error(
+      `the feed ${owner}/${topicHex} never appeared at ${gatewayUrl} in ${SEGMENT_TIMEOUT_MS * wanted}ms. ` +
+        'The publisher was accepted, so this is the uploader not writing an update rather than the ' +
+        'broadcast failing: check the uploader log for the manifest publish.',
+    );
   }
 
   return { collected, discarded };

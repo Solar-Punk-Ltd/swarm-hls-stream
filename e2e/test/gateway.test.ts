@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { segmentRefFromUri } from '../src/bench/gateway.js';
+import { GatewayStatusError, isFeedPendingFirstWrite, segmentRefFromUri } from '../src/bench/gateway.js';
+
+/**
+ * The one status that means "not yet" rather than "wrong".
+ *
+ * A Swarm feed answers 404 until its first update is written, and the uploader writes that only after
+ * the first segment has closed and uploaded. The bench starts polling the moment the publisher is up,
+ * so the very first read of a run can land in that window: on 2026-08-03 four of five 1080p runs at a
+ * one-second GOP died there, on four different topics, with the deployment healthy throughout.
+ */
+describe('telling a feed that has not been written yet from one that broke', () => {
+  it('waits out a 404 the first time, because a feed with no updates has nothing to serve', () => {
+    assert.equal(isFeedPendingFirstWrite(new GatewayStatusError('http://gw/feeds/o/t', 404), false), true);
+  });
+
+  /**
+   * The half that keeps the tolerance narrow. Polling through every 404 would turn a feed that
+   * vanished mid-run into a run that quietly collected fewer samples than it was asked for.
+   */
+  it('fails on a 404 once the feed has answered, since that is a disappearance', () => {
+    assert.equal(isFeedPendingFirstWrite(new GatewayStatusError('http://gw/feeds/o/t', 404), true), false);
+  });
+
+  it('fails on any other status, waited for or not', () => {
+    assert.equal(isFeedPendingFirstWrite(new GatewayStatusError('http://gw/feeds/o/t', 500), false), false);
+    assert.equal(isFeedPendingFirstWrite(new GatewayStatusError('http://gw/feeds/o/t', 403), false), false);
+  });
+
+  /** A timeout and a refused connection arrive as plain errors, and neither is a feed saying "not yet". */
+  it('fails on an error that carries no status at all', () => {
+    assert.equal(isFeedPendingFirstWrite(new Error('The operation was aborted due to timeout'), false), false);
+  });
+});
 
 /**
  * The uploader writes absolute segment URIs built from its own bee url, so a manifest entry looks
