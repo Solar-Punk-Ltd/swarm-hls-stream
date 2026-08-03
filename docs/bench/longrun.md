@@ -9,7 +9,8 @@ stay that way", which is a different question and the one an operator picking a 
 
 ## The short answer
 
-**The latency holds still. The feed does not.**
+**The latency holds still. The feed does not, and by the end of the day the reason was our own
+gateway node rather than anything this repository writes.**
 
 Nothing degrades with elapsed time: the fitted latency slope stays inside its own residual on every
 run, and the buffer a player needs does not grow between the first third of a run and the last. That
@@ -17,7 +18,8 @@ was the failure mode this bench was built to look for, and it is not there.
 
 What is there instead is worse, and no short run could have seen it: **the feed a player polls stops
 naming new segments for 30 to 48 seconds at a time, on a 63 second cycle, for 42% to 70% of a
-broadcast.** It is filed as LAT-10 and it is not this repository's code.
+broadcast.** It is filed as LAT-10. A public Swarm gateway serves the same feed smoothly and up to 34
+updates ahead of ours, so it is our reader and not Bee, the network, or the data.
 
 ## Run by run
 
@@ -156,6 +158,31 @@ connectivity between them. The writer serves the update immediately because it h
 is chunk push and retrieval, not feed resolution, and this kills the one mitigation this repository
 could have shipped on its own.
 
+### Probable root cause: our own gateway node cannot pay for bandwidth
+
+A public Swarm gateway was polled for the **same live feed in the same loop** as ours:
+
+| reader | frozen, 251s window | shape |
+| --- | ---: | --- |
+| `latbench-bee-gateway-1`, on the writer's own host | **66%** | plateaus at index 30, 93, 157, 220: gaps of **63, 64, 63** updates at one per second |
+| a public Swarm gateway, across the internet | 22% | no plateau structure, and it ran up to **34 updates ahead of ours** |
+
+So the chunks are in the network promptly and retrievable by a stranger, and it is our reader that
+cannot get them. That rules out Bee in general, the network, and everything this repository writes.
+
+**What is different about that node.** It runs `--swap-enable=false` and `--cache-capacity=0`, has no
+chequebook at all (`/chequebook/balance` answers `405 chain disabled`), and accounts 218 peers whose
+largest debts cluster uniformly at **-9.70M to -9.86M**, just under a round ten million. The uploader
+node runs `--swap-enable=true` with a funded chequebook and does not do this.
+
+**The hypothesis, stated as one:** a node that cannot pay for bandwidth may consume only the free
+allowance, which refreshes on a timer, so it downloads in bursts and is throttled in between. That
+predicts what was measured, including a period independent of write rate and of picture size.
+
+**Two things follow.** The test is to enable swap on the gateway and fund it, which is on-chain. The
+no-cost mitigation already exists: `CLIENT_BEE_GATEWAY_HOST` points viewers at another gateway, and a
+public one demonstrably serves this feed better than ours.
+
 ## What this changes about choosing a setting
 
 **Read `profiles.md` as a comparison between settings on the capture-to-fetchable hop, which is what
@@ -173,5 +200,5 @@ deployment while the feed behaves this way.
 - **Concurrent viewers.** Never measured at all, at any setting. The gateway is one bee node.
 - **Anything past 20 minutes.** The longest broadcast here is 20.1 minutes.
 - **A real broadcaster.** Every run publishes a synthetic test pattern from the deployment host.
-- **Whether LAT-10 is this deployment or Bee.** Reproducing it against a node outside this compose
-  project would separate the two, and has not been done.
+- **Whether funding the gateway fixes LAT-10.** The hypothesis is testable by enabling swap on that
+  node and funding it, which is on-chain and has not been done.
