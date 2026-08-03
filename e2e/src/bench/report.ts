@@ -219,12 +219,28 @@ function medianFlaggedNotice(median: SegmentSample): string[] {
   ];
 }
 
-/** How much longer the manifest said a segment was than it is, in milliseconds. Negative means shorter. */
-function declaredGapMs(sample: SegmentSample): number {
-  if (sample.declaredDurationS === null) {
-    return 0;
-  }
-  return (sample.declaredDurationS - sample.split.instants.segmentDurationS) * 1_000;
+/**
+ * How much longer the manifest said a segment was than it is, in milliseconds. Negative means shorter.
+ *
+ * Takes the declaration separately from the sample rather than reading it back off one, so the null
+ * case cannot arrive here. It used to, guarded by a `return 0` that no input could reach because every
+ * call site works over the already-filtered list, and a zero gap from a segment carrying no
+ * declaration would have been indistinguishable from perfect agreement.
+ */
+function declaredGapMs(declaredDurationS: number, sample: SegmentSample): number {
+  return (declaredDurationS - sample.split.instants.segmentDurationS) * 1_000;
+}
+
+/** A sample whose manifest entry carried a readable duration, which is the only kind that compares. */
+interface DeclaredSample {
+  sample: SegmentSample;
+  declaredDurationS: number;
+}
+
+function declaredSamples(run: BenchRun): DeclaredSample[] {
+  return run.samples.flatMap((sample) =>
+    sample.declaredDurationS === null ? [] : [{ sample, declaredDurationS: sample.declaredDurationS }],
+  );
 }
 
 /**
@@ -250,7 +266,7 @@ function declaredGapMs(sample: SegmentSample): number {
  * this line is the only thing in the report that would show it.
  */
 function declaredDurationLine(run: BenchRun): string {
-  const compared = run.samples.filter((sample) => sample.declaredDurationS !== null);
+  const compared = declaredSamples(run);
   if (compared.length === 0) {
     return (
       '- **no sample carried a readable `#EXTINF`**, so nothing here says whether the engine reports its ' +
@@ -258,7 +274,8 @@ function declaredDurationLine(run: BenchRun): string {
     );
   }
 
-  const worst = compared.reduce((a, b) => (Math.abs(declaredGapMs(a)) >= Math.abs(declaredGapMs(b)) ? a : b));
+  const gapOf = ({ declaredDurationS, sample }: DeclaredSample): number => declaredGapMs(declaredDurationS, sample);
+  const worst = compared.reduce((a, b) => (Math.abs(gapOf(a)) >= Math.abs(gapOf(b)) ? a : b));
   // Named rather than left to the count, because every figure below is over the readable subset. Four
   // unreadable entries out of five reduce to one comparison, and one comparison against itself reads
   // as a reassuring 0ms while the manifest fault it hides is worse than any duration mismatch.
@@ -270,10 +287,10 @@ function declaredDurationLine(run: BenchRun): string {
         'which is a manifest this cannot read rather than one that disagrees.';
 
   return (
-    `- the manifest and the bytes disagree by at most ${Math.round(Math.abs(declaredGapMs(worst)))}ms across ` +
-    `${compared.length} sample(s), worst at segment ${worst.index}, where it declared ` +
-    `${seconds((worst.declaredDurationS ?? 0) * 1_000)} for ${seconds(
-      worst.split.instants.segmentDurationS * 1_000,
+    `- the manifest and the bytes disagree by at most ${Math.round(Math.abs(gapOf(worst)))}ms across ` +
+    `${compared.length} sample(s), worst at segment ${worst.sample.index}, where it declared ` +
+    `${seconds(worst.declaredDurationS * 1_000)} for ${seconds(
+      worst.sample.split.instants.segmentDurationS * 1_000,
     )} ` +
     'of media. **Read this before the `upload` hop.** The gap is the declared figure minus the ' +
     'measured one, so it says one of the two is wrong and not which. Nothing above derives from the ' +
