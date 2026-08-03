@@ -54,12 +54,32 @@ describe('measuring how much media a segment holds, from its own timestamps', ()
    * which is the one frame the timestamps cannot measure and the one this has to estimate well.
    */
   it('takes the frame duration from the median gap, so one wide gap does not stretch it', () => {
-    const withAGap = [0, FRAME_TICKS, 2 * FRAME_TICKS, 20 * FRAME_TICKS];
+    // The wide gap sits in the MIDDLE deliberately. It used to sit at the end, where the middle of the
+    // sorted gaps and the middle of the gaps in time order are the same element, so the sort this test
+    // exists to justify could be deleted with everything still green.
+    const withAGap = [0, FRAME_TICKS, 19 * FRAME_TICKS, 20 * FRAME_TICKS];
 
     const span = measureSpanTicks(withAGap, 'seg1.ts');
 
-    assert.equal(span.finalFrame, FRAME_TICKS, 'the typical gap, not the average of 6.33 frames');
+    assert.equal(span.finalFrame, FRAME_TICKS, 'the typical gap, not the 18 frames sitting in the middle of them');
     assert.equal(span.total, 21 * FRAME_TICKS);
+  });
+
+  /**
+   * With an even number of gaps there is no single middle, and the lower one is taken. The choice is
+   * called deliberate in `segmentSpan.ts`, and until this test no fixture had an even gap count whose
+   * two middles differed, so taking the upper one changed nothing.
+   *
+   * It is the conservative half: the figure is credited to a frame nothing measured, so where the
+   * evidence is split the one that cannot inflate the span is the one to use.
+   */
+  it('takes the lower of the two middles when the gap count is even', () => {
+    const evenGaps = [0, FRAME_TICKS, 2 * FRAME_TICKS, 7 * FRAME_TICKS, 12 * FRAME_TICKS];
+
+    const span = measureSpanTicks(evenGaps, 'seg1.ts');
+
+    assert.equal(span.finalFrame, FRAME_TICKS, 'not the 5 frames the upper middle would credit');
+    assert.equal(span.total, 13 * FRAME_TICKS);
   });
 
   it('is unmoved by the order the timestamps arrive in', () => {
