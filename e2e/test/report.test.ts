@@ -391,6 +391,19 @@ describe('reporting the manifest against the bytes', () => {
   });
 
   /**
+   * Every other fixture here over-declares, so the widest signed gap and the widest absolute gap are
+   * the same sample and the `Math.abs` in the comparison could be dropped with all of them green.
+   * An engine that declares **less** than it ships separates them, and that direction is not
+   * hypothetical: it is what a manifest written before the segment closed would do.
+   */
+  it('finds the widest gap when the engine under-declares, not just when it over-declares', () => {
+    const report = renderReport(runWith([declaring(1, 2.02), declaring(2, 0.5), declaring(3, 1.99)]));
+
+    assert.match(report, /disagree by at most 1500ms across 3 sample\(s\), worst at segment 2/);
+    assert.match(report, /declared 0\.50s for 2\.00s of media/);
+  });
+
+  /**
    * Unconditional, for the reason the trend line is. A run cannot separate an engine that segments
    * unevenly from one that segments evenly and misreports, so a line that appeared only past some
    * threshold would state a judgement these numbers do not carry.
