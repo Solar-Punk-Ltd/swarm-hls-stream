@@ -77,7 +77,18 @@ export function hasValidPublishKey(secret: string, streamId: string, presented: 
  */
 export function publishKeyFromUrl(url: string): string | null {
   try {
-    return usableKey(new URL(url).searchParams.get(PUBLISH_KEY_PARAM));
+    const parsed = new URL(url);
+    const direct = usableKey(parsed.searchParams.get(PUBLISH_KEY_PARAM));
+    if (direct !== null) {
+      return direct;
+    }
+    // The same fallback `parseAppStream` takes, and it has to be the same or the two disagree about
+    // where a credential can live. OME takes an entire publish URL as an SRT `streamid`, which is the
+    // form `publish-key.sh` prints, so a key inside it is a key this announce presented. Reading only
+    // the outer query answered `null` for that shape, which is a refusal rather than a wrong allow,
+    // but it is a refusal of the operator's own documented publish URL.
+    const streamid = parsed.searchParams.get('streamid');
+    return streamid === null ? null : usableKey(new URL(streamid).searchParams.get(PUBLISH_KEY_PARAM));
   } catch {
     return null;
   }

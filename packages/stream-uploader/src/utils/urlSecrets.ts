@@ -26,15 +26,52 @@ const REDACTED_VALUE = 'REDACTED';
  */
 function decodedParamName(rawName: string): string {
   try {
-    return decodeURIComponent(rawName.replace(/\+/g, ' '));
+    return decodeURIComponent(stripUrlWhitespace(rawName).replace(/\+/g, ' '));
   } catch {
     return rawName;
   }
 }
 
+/**
+ * ASCII tab, newline and carriage return, which the WHATWG URL parser removes from its input before
+ * parsing anything.
+ *
+ * That makes `?k\tey=` the parameter `key` to `new URL(...).searchParams`, so it authenticates, while
+ * a matcher that does not strip them sees `k\tey` and leaves the value in the log. The invariant
+ * below is that this must redact at least every URL the check accepts, and it silently stopped
+ * holding when the redactor was generalised from the SRS token to the publish key: the token's gate
+ * is `req.query`, which Express fills without any such stripping, so the old narrower matcher was
+ * correct for the only secret it guarded.
+ */
+function stripUrlWhitespace(value: string): string {
+  return value.replace(/[\t\n\r]/g, '');
+}
+
 function isSecretParam(rawName: string): boolean {
   const name = decodedParamName(rawName).toLowerCase();
   return SECRET_PARAMS.includes(name);
+}
+
+/**
+ * Whether a parameter's *value* is itself a URL carrying a credential.
+ *
+ * OME takes an entire publish URL as an SRT `streamid`, so `?streamid=srt://host/app/stream?key=...`
+ * is one top-level parameter whose value contains the secret. A redactor that only matches top-level
+ * names leaves that whole value intact, and `parseAppStream` supports exactly that shape and names
+ * the URL in all three of its failure paths, which a broadcaster reaches by mistyping their stream.
+ *
+ * Matched on the decoded value so the percent-encoded spelling, which is the one that actually works
+ * against OME, is caught too.
+ */
+function carriesNestedSecret(rawValue: string): boolean {
+  let decoded = rawValue;
+  try {
+    decoded = decodeURIComponent(rawValue.replace(/\+/g, ' '));
+  } catch {
+    // An undecodable value is screened as it arrived, which can only over-redact.
+  }
+  const haystack = stripUrlWhitespace(decoded).toLowerCase();
+  return SECRET_PARAMS.some((param) => haystack.includes(`${param}=`));
 }
 
 /**
@@ -70,7 +107,14 @@ export function redactUrlSecrets(url: string): string {
         return pair;
       }
       const rawName = pair.slice(0, equals);
-      return isSecretParam(rawName) ? `${rawName}=${REDACTED_VALUE}` : pair;
+      if (isSecretParam(rawName)) {
+        return `${rawName}=${REDACTED_VALUE}`;
+      }
+      // A value that is itself a URL carrying a credential, which is how OME's SRT `streamid` arrives.
+      // Redacted whole rather than parsed apart, because what remains after removing the secret is a
+      // stream name the log already prints elsewhere, and a partial parse is one more place to be
+      // wrong about where a credential can hide.
+      return carriesNestedSecret(pair.slice(equals + 1)) ? `${rawName}=${REDACTED_VALUE}` : pair;
     })
     .join('&');
 
