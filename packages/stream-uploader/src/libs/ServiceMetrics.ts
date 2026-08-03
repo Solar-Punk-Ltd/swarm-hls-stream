@@ -73,7 +73,8 @@ export class ServiceMetrics {
   }
 
   /**
-   * An announce refused because another publisher holds that stream id and is still feeding it.
+   * An announce refused because another publisher holds that stream id, either by still feeding it
+   * or by having proved the stream's publish key. See `reasonToRefuseTakeover` for which.
    *
    * Counted because the refusal is otherwise a log line, and it is the one control here that takes a
    * broadcaster off the air on evidence that can be wrong: two publishers behind one egress address

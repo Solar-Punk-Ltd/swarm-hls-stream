@@ -1,14 +1,11 @@
 import { Request } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 
-/**
- * Query parameter carrying the SRS webhook credential.
- *
- * A query parameter rather than a header because SRS offers no other channel: its `http_hooks`
- * directives take a bare URL, with no HMAC over the body and no way to add a header. So the secret
- * travels in the URL, and everything that handles URLs has to know that. See `redactWebhookToken`.
- */
-export const SRS_WEBHOOK_TOKEN_PARAM = 'token';
+import { SRS_WEBHOOK_TOKEN_PARAM } from '../../utils/urlSecrets.js';
+
+// Re-exported because the gate and the parameter name belong together at every call site that uses
+// either, and this is where callers already look for both.
+export { SRS_WEBHOOK_TOKEN_PARAM };
 
 /**
  * Minimum length, matching the API token's. Short enough to guess is short enough to guess whichever
@@ -61,59 +58,4 @@ export function hasValidWebhookToken(req: Request, expectedToken: string): boole
   const a = Buffer.from(presented, 'utf8');
   const b = Buffer.from(expectedToken, 'utf8');
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-const REDACTED_VALUE = 'REDACTED';
-
-/**
- * The parameter name as `req.query` sees it, so the redactor and the gate agree on which parameter
- * carries the credential. Express percent-decodes names before they reach `req.query`, and a `+` in
- * a query component means a space, so `%74oken` and `token` are one parameter to the gate. Matching
- * the raw text instead let a caller authenticate with a spelling the redactor did not recognise.
- */
-function decodedParamName(rawName: string): string {
-  try {
-    return decodeURIComponent(rawName.replace(/\+/g, ' '));
-  } catch {
-    return rawName;
-  }
-}
-
-/**
- * The same URL with the token replaced, for anything that writes a URL somewhere it outlives the
- * request. The secret is in the URL by necessity, so every log line, error message and metric label
- * carrying a URL is a place it leaks.
- *
- * The invariant: this must redact at least every URL the gate accepts. It is deliberately wider,
- * matching the name case-insensitively where `req.query` is case-sensitive, because over-redacting a
- * parameter that could never carry the credential costs nothing.
- *
- * It does not redact a token placed outside the query string, in a path segment for example. Such a
- * request is rejected, so reaching that state means presenting a credential you already hold.
- */
-export function redactWebhookToken(url: string): string {
-  const queryStart = url.indexOf('?');
-  if (queryStart === -1) {
-    return url;
-  }
-
-  const afterQuery = url.slice(queryStart + 1);
-  const hashStart = afterQuery.indexOf('#');
-  const query = hashStart === -1 ? afterQuery : afterQuery.slice(0, hashStart);
-  const fragment = hashStart === -1 ? '' : afterQuery.slice(hashStart);
-
-  const redacted = query
-    .split('&')
-    .map((pair) => {
-      const equals = pair.indexOf('=');
-      if (equals === -1) {
-        return pair;
-      }
-      const rawName = pair.slice(0, equals);
-      const isTokenParam = decodedParamName(rawName).toLowerCase() === SRS_WEBHOOK_TOKEN_PARAM;
-      return isTokenParam ? `${rawName}=${REDACTED_VALUE}` : pair;
-    })
-    .join('&');
-
-  return `${url.slice(0, queryStart)}?${redacted}${fragment}`;
 }

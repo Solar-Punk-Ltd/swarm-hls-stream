@@ -599,6 +599,45 @@ shell_quote() {
   printf "'%s'" "${1//\'/$escaped_quote}"
 }
 
+# --- Publish keys ---
+
+# The publish key for one stream id, derived from the master secret. See SEC-28.
+#
+# Must agree byte for byte with `derivePublishKey` in packages/stream-uploader/src/utils/publishKey.ts,
+# because the service recomputes it and compares. Pinned to one golden vector, asserted here in
+# deploy/test/publishKey.test.js and there in publishKey.test.ts, so either side drifting fails a test.
+#
+# **The secret goes in through the environment and never through argv**, which is the whole reason
+# this is `node` and not the shorter `openssl dgst -hmac "$secret"`. openssl offers no way to take an
+# HMAC key from anywhere but its command line, and a command line is world-readable: any unprivileged
+# local user, or a container sharing the host PID namespace, reads it out of /proc/<pid>/cmdline, and
+# execve auditing captures it deterministically. One master secret is every stream's key forever,
+# since there is no per-stream revocation, so a momentary argv exposure is a permanent compromise.
+#
+# Using node also removes two disagreements the openssl form had with the service. The exit status is
+# the interpreter's rather than the last stage of a four-command pipeline, so a failure is a failure
+# instead of an empty key reported as success. And the length check counts the same units the service
+# counts: bash's `${#var}` is bytes under LC_ALL=C and characters under a UTF-8 locale, neither of
+# which is the UTF-16 code units `String.length` uses, so a non-ASCII secret could pass here and
+# throw at service startup.
+#
+# node is a fair requirement: this runs where the operator's env file is, `deploy.sh` does not ship
+# `config.json` to a remote target so it cannot run there anyway, and every other task in this repo
+# already needs pnpm.
+derive_publish_key() {
+  local stream_id="$1"
+
+  PUBLISH_KEY_SECRET="${PUBLISH_KEY_SECRET:-}" node -e '
+    const { createHmac } = require("node:crypto");
+    const secret = process.env.PUBLISH_KEY_SECRET || "";
+    if (secret.length < 32) {
+      console.error("PUBLISH_KEY_SECRET must be at least 32 characters, which is what the service enforces at startup");
+      process.exit(1);
+    }
+    process.stdout.write(createHmac("sha256", secret).update(process.argv[1], "utf8").digest("hex").slice(0, 32));
+  ' "$stream_id"
+}
+
 # --- Bee data dirs ---
 
 readonly DEFAULT_BEE_UPLOADER_DATA_DIR="./data/bee-uploader"

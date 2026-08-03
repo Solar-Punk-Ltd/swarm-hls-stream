@@ -52,10 +52,30 @@ export interface StreamClaimant {
    * stranger.
    */
   address: string | null;
+  /**
+   * Whether the announce presented the publish key for the stream it named. See SEC-28.
+   *
+   * **Two states, unlike `address`, and that is why this one is optional where that one is not.** An
+   * address distinguishes "no evidence" from "this address", so it needs a null and a value. A key is
+   * either proven or it is not: an announce that presented nothing and an announce that presented the
+   * wrong key are the same announce as far as any guard here is concerned, so there is no third
+   * reading for an absent field to carry.
+   *
+   * Absent therefore means `false`, and that is the safe direction in both roles it appears in. A
+   * newcomer without it is judged by SEC-26's address rule, and an incumbent without it is protected
+   * by SEC-26's address rule. A caller that forgets the field loses SEC-28 and keeps SEC-26, which is
+   * the same fail-open bargain the `claimant` parameter's own default makes, for the same reason:
+   * this must not take a broadcaster off the air over a field nobody filled in.
+   */
+  isAuthenticated?: boolean;
 }
 
-/** An announce that named nobody, which every guard here has to treat as no evidence rather than as proof. */
-export const ANONYMOUS_CLAIMANT: StreamClaimant = { address: null };
+/**
+ * An announce that named nobody, which every guard here has to treat as no evidence rather than as
+ * proof. `isAuthenticated` is spelled out rather than left off, because this constant is the one
+ * place where naming nobody is a positive statement rather than an omission.
+ */
+export const ANONYMOUS_CLAIMANT: StreamClaimant = { address: null, isAuthenticated: false };
 
 export const REJECT_QUEUE_FULL = 'queue_full' as const;
 export const REJECT_UNKNOWN_STREAM = 'unknown_stream' as const;

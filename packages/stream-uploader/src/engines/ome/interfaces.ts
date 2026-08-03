@@ -86,6 +86,16 @@ export interface PlaylistEntry {
 
 export interface OmeEngineOptions {
   admissionSecret?: string;
+  /**
+   * Master secret every stream's publish key is derived from. See SEC-28.
+   *
+   * Empty **disables** publisher authentication, unlike `admissionSecret`, whose empty value rejects
+   * every admission. The two guard different things: that one authenticates OME itself, which an
+   * operator configures on both ends at once, and this one authenticates the broadcaster publishing
+   * into it, who has to be issued a key first. Defaulting it on would take every existing broadcaster
+   * off the air on upgrade.
+   */
+  publishKeySecret?: string;
   failOpen?: boolean;
   /** Passed straight to every puller this engine starts. See `PullerOptions.fetchTimeoutMs`. */
   fetchTimeoutMs?: number;

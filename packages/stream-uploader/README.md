@@ -59,18 +59,19 @@ The API server starts on port 3000 (default).
 
 **Optional:**
 
-| Variable               | Default   | Description                                                                                              |
-| ---------------------- | --------- | -------------------------------------------------------------------------------------------------------- |
-| `MANIFEST_ACCESS_URL`  | _(empty)_ | Base URL for segment refs in manifests                                                                   |
-| `API_PORT`             | `3000`    | HTTP API port                                                                                            |
-| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                       |
-| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                           |
-| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                              |
-| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                             |
-| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                      |
-| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                            |
-| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event |
-| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format               |
+| Variable               | Default   | Description                                                                                                          |
+| ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `PUBLISH_KEY_SECRET`   | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below |
+| `MANIFEST_ACCESS_URL`  | _(empty)_ | Base URL for segment refs in manifests                                                                               |
+| `API_PORT`             | `3000`    | HTTP API port                                                                                                        |
+| `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                                   |
+| `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                       |
+| `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                                          |
+| `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                                         |
+| `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                  |
+| `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                        |
+| `LOG_LEVEL`            | `debug`   | `debug`, `log`, `info`, `warn`, `error` or `silent`. `log` is per segment, `info` is per lifecycle event             |
+| `LOG_FORMAT`           | _(empty)_ | `json` for one `{ts, level, msg}` object per line. Anything else keeps the readable format                           |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
 
@@ -254,7 +255,58 @@ When `ENGINE=srs`, SRS webhook endpoints are mounted:
 
 SRS writes segments to the shared media volume. The uploader reads segments from disk, uploads to Swarm, and deletes the file after upload.
 
+## Publisher Authentication
+
+Without `PUBLISH_KEY_SECRET`, anyone who can reach the engine can publish under any stream name, and
+the name is public because it is in every HLS URL. Ownership of a live stream id is then decided only
+by the address the engine reports, which cannot separate two publishers behind one egress address and
+wrongly separates one publisher whose address moved.
+
+Setting `PUBLISH_KEY_SECRET` turns on a per-stream publish key. It is derived from the secret and the
+stream id, so a broadcaster's key authorises their stream and no other, and a leaked key is one
+compromised broadcast rather than the run of the deployment.
+
+```bash
+# Generate the secret once, put it in the root .env, and redeploy the stream-uploader.
+openssl rand -hex 32
+
+# Then issue a key per stream. It prints the publish URL for both engines.
+./deploy/scripts/publish-key.sh video/demo
+```
+
+**Turning it on refuses every publisher that does not present a key**, so issue the keys before
+setting the secret. With it set, an announce carrying a valid key takes its stream id back
+immediately from any address, and an announce without one can never take a stream whose owner proved
+the key, however long that stream has been quiet.
+
+The key travels as a `key` query parameter, which was measured on `ossrs/srs:6` and
+`airensoft/ovenmediaengine:latest` rather than read off their documentation:
+
+| Publish path | Where the key goes                                                          |
+| ------------ | --------------------------------------------------------------------------- |
+| SRS, RTMP    | `rtmp://<host>:<SRS_RTMP_PORT>/video/demo?key=<key>`                        |
+| SRS, SRT     | `srt://<host>:<SRS_SRT_PORT>?streamid=#!::r=video/demo?key=<key>,m=publish` |
+| OME, SRT     | `srt://<host>:<OME_SRT_PORT>?streamid=<percent-encoded publish url>`        |
+
+**Take the ports from `publish-key.sh` rather than from here.** This repo's own defaults are not 1935
+and 10080: `apply_port_slot` resolves slot 0 to `SRS_RTMP_PORT=10002`, and `engines/ome/.env.sample`
+sets `OME_SRT_PORT=10081`. The script resolves them the same way the deploy does, so what it prints is
+what the deployment is actually listening on.
+
+OME's streamid has to be percent-encoded, because the key sits inside a value that is itself inside a
+query and the publisher's own URL parser otherwise splits on the inner `?`. `publish-key.sh` prints
+the encoded form.
+
+Rotating `PUBLISH_KEY_SECRET` invalidates every key at once. There is no per-stream revocation, which
+is the price of deriving keys instead of storing them.
+
 ## Testing with FFmpeg
+
+> **With `PUBLISH_KEY_SECRET` set these commands are refused**, because publisher authentication
+> applies to them like any other publish. Append the stream's key inside the `r=` value:
+> `streamid=#!::r=video/test?key=<key>,m=publish`, taking the key from
+> `./deploy/scripts/publish-key.sh video/test`. The ports below are the upstream defaults rather than
+> this repo's, for the same reason as the table above.
 
 Video + audio test pattern (requires SRS running with `ENGINE=srs`):
 

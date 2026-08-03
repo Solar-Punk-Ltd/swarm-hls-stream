@@ -1,8 +1,8 @@
 import { NextFunction, Request, RequestHandler, Response } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 
-import { redactWebhookToken } from '../../engines/srs/webhookToken.js';
 import { Logger } from '../../libs/Logger.js';
+import { redactUrlSecrets } from '../../utils/urlSecrets.js';
 
 const logger = Logger.getInstance();
 
@@ -81,9 +81,7 @@ export function createAuthMiddleware(expectedToken: string): RequestHandler {
       // Redacted for the same reason the request log is. These routes take no query parameters
       // today, so nothing legitimate carries the SRS credential here, but this is the second of the
       // two sinks that write a request URL and it is not worth being the one that forgets.
-      logger.warn(
-        `[Auth] Rejected unauthenticated ${req.method} ${redactWebhookToken(req.originalUrl)} from ${req.ip}`,
-      );
+      logger.warn(`[Auth] Rejected unauthenticated ${req.method} ${redactUrlSecrets(req.originalUrl)} from ${req.ip}`);
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
