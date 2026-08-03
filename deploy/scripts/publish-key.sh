@@ -2,10 +2,9 @@
 
 # Print the publish key for one stream, and the publish URL a broadcaster uses with it. See SEC-28.
 #
-# Shell rather than a Node entry point because the secret lives in this host's env file and this host
-# is not required to have Node on it. The derivation has to agree with `utils/publishKey.ts` exactly,
-# so the derivation itself lives in `_lib.sh` as `derive_publish_key`, where a test can call it rather
-# than keeping its own copy of the pipeline.
+# A shell entry point because it reads this host's env file and sits beside the other operator
+# scripts, but the derivation itself is `derive_publish_key` in `_lib.sh`, where a test can call it
+# rather than keeping its own copy, and where the secret is kept out of any command line.
 
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "$0")" && pwd)/_lib.sh"
@@ -51,12 +50,16 @@ EOF
   exit 1
 fi
 
-if [ "${#PUBLISH_KEY_SECRET}" -lt 32 ]; then
-  echo "PUBLISH_KEY_SECRET must be at least 32 characters, which is what the service enforces at startup" >&2
+# Checked rather than trusted. `derive_publish_key` exits non-zero on a secret the service would
+# reject, and printing an empty key with a zero status is the failure that hands an operator a
+# `?key=` nobody can publish with while telling them it worked.
+if ! KEY=$(derive_publish_key "$STREAM_ID"); then
   exit 1
 fi
-
-KEY=$(derive_publish_key "$PUBLISH_KEY_SECRET" "$STREAM_ID")
+if [[ ! "$KEY" =~ ^[a-f0-9]{32}$ ]]; then
+  echo "Derived a publish key that is not 32 hex characters, refusing to print it" >&2
+  exit 1
+fi
 
 APP="${STREAM_ID%%/*}"
 STREAM="${STREAM_ID#*/}"
