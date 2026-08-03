@@ -53,6 +53,9 @@ function runWith(
     knobs: DEFAULT_KNOBS,
     samples,
     discarded,
+    // Empty because nothing this file asserts reads them: the markdown report is about the segments a
+    // run carried, and the polls that carried none are the long run's question.
+    feedPolls: [],
     trend,
     mediaTimelineLeadMs,
   };

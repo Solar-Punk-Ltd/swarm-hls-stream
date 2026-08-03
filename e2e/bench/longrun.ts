@@ -20,8 +20,9 @@ import { join } from 'node:path';
 
 import { requireGatewayReachable } from '../src/bench/gateway.js';
 import {
-  arrivalGaps,
   bufferDemandTrend,
+  type FeedProgress,
+  feedProgress,
   latencyByMinute,
   type LatencyDrift,
   latencyDrift,
@@ -135,6 +136,43 @@ function driftLines(drift: LatencyDrift, runMinutes: number): string[] {
   ];
 }
 
+/**
+ * The longest the feed stood still, and whose seconds those were.
+ *
+ * The 2026-08-03 smoke run went 48 seconds without a new segment and the artifact could not say
+ * whether the feed had stopped or the bench had. It took the uploader's log, which held 154 manifest
+ * writes inside that window, to establish the pipeline never paused. A report that needs a second
+ * instrument to interpret its own gaps will eventually publish one of them as the product, so the
+ * attribution is printed rather than left to a reader.
+ *
+ * The whole discriminator is how many polls saw the same answer. Several means the bench kept asking
+ * and the feed kept standing still, which is what a viewer polling at that cadence would have seen.
+ * One means the bench was not asking, and what the feed did in that window is simply not known.
+ */
+function stallLines(feed: FeedProgress, bufferMs: number, segmentMs: number, runStartedAtMs: number): string[] {
+  const observed = feed.stallPolls >= 2;
+  const atMinute = ((feed.stallStartedAtMs - runStartedAtMs) / 60_000).toFixed(1);
+
+  return [
+    `- the feed named the same newest segment for **${seconds(feed.stallMs)}**, across ${feed.stallPolls} ` +
+      `poll(s), starting ${atMinute} minutes in.`,
+    `- the bench itself went at most ${seconds(feed.longestPollGapMs)} between two polls, against a ` +
+      `${seconds(POLL_INTERVAL_MS)} cadence. Nothing shorter than that is observable here.`,
+    observed
+      ? `- **that stall is the feed's**: the bench asked ${feed.stallPolls} times inside it and got the same ` +
+        'answer every time, so a viewer polling at this cadence saw the stream stop for that long.'
+      : `- **that gap is this instrument's, not the feed's.** Only one poll fell inside it, so the feed may ` +
+        'have advanced any number of times unobserved. Read it as the resolution of the measurement rather ' +
+        'than as a stall.',
+    observed
+      ? `- a player holding ${seconds(bufferMs)} ` +
+        (feed.stallMs > bufferMs + segmentMs
+          ? '**would have rebuffered there**, since the stall exceeded the buffer plus the segment it was playing.'
+          : 'would have played through it.')
+      : '- whether a player would have rebuffered cannot be said from this run, for the reason above.',
+  ];
+}
+
 export function renderLongRun(run: BenchRun, runMinutes: number): string {
   const samples = [...run.samples].sort((a, b) => a.split.instants.fetchedAtMs - b.split.instants.fetchedAtMs);
   if (samples.length < 3) {
@@ -169,7 +207,7 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
   );
   const drift = latencyDrift(timed);
   const demand = bufferDemandTrend(buffered);
-  const gaps = arrivalGaps(timed.map((sample) => sample.fetchedAtMs));
+  const feed = feedProgress(run.feedPolls);
   const segmentMs = median(bufferSamples.map((sample) => sample.segmentMs));
   const buffer = recommendBufferMs(bufferSamples, POLL_INTERVAL_MS, segmentMs);
   const totals = timed.map((sample) => sample.totalMs);
@@ -220,15 +258,7 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
     '',
     '## The longest a viewer waited',
     '',
-    `- typical gap between arrivals: **${seconds(gaps.medianMs)}**, against a ${seconds(POLL_INTERVAL_MS)} poll ` +
-      `and a ${seconds(segmentMs)} segment.`,
-    `- worst gap: **${seconds(gaps.maxMs)}**, ending ${((gaps.worstEndedAtMs - timed[0].fetchedAtMs) / 60_000).toFixed(
-      1,
-    )} ` + 'minutes into the run.',
-    `- a player holding ${seconds(buffer.recommendedMs)} ` +
-      (gaps.maxMs > buffer.recommendedMs + segmentMs
-        ? `**would have rebuffered there**, since the gap exceeded the buffer plus the segment it was playing.`
-        : 'would have played through it.'),
+    ...stallLines(feed, buffer.recommendedMs, segmentMs, timed[0].fetchedAtMs),
     '',
     '## Minute by minute',
     '',

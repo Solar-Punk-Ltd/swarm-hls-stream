@@ -191,36 +191,6 @@ export function bufferDemandTrend(samples: readonly BufferedSample[]): BufferDem
   return { firstThirdMs, lastThirdMs, growthMs: lastThirdMs - firstThirdMs };
 }
 
-export interface ArrivalGaps {
-  medianMs: number;
-  /** The longest the run went without a new segment, which is where a player rebuffers. */
-  maxMs: number;
-  /** Bench-clock instant the longest wait ended, so the log around it can be found. */
-  worstEndedAtMs: number;
-}
-
-/**
- * How long the run waited between one segment arriving and the next.
- *
- * A player stalls on a gap, not on an average, so this is the quantity a rebuffer comes out of and it
- * is invisible in every median the project reports. Measured at the bench's poll cadence rather than
- * the engine's, which makes it a bound on what a client polling that often would have seen.
- */
-export function arrivalGaps(fetchedAtMs: readonly number[]): ArrivalGaps {
-  if (fetchedAtMs.length < 2) {
-    throw new Error('a gap needs at least two arrivals to sit between');
-  }
-  const ordered = [...fetchedAtMs].sort((a, b) => a - b);
-  const gaps = ordered.slice(1).map((instant, index) => ({ ms: instant - ordered[index], endedAtMs: instant }));
-  const worst = gaps.reduce((a, b) => (a.ms >= b.ms ? a : b));
-
-  return {
-    medianMs: median(gaps.map((gap) => gap.ms)),
-    maxMs: worst.ms,
-    worstEndedAtMs: worst.endedAtMs,
-  };
-}
-
 export interface LatencyBucket {
   /** Minutes since the run's first sample. */
   fromMinute: number;
@@ -263,6 +233,75 @@ export function latencyByMinute(samples: readonly TimedSample[]): LatencyBucket[
       maxMs: Math.max(...inMinute),
     };
   });
+}
+
+/** One completed read of the feed a viewer's player polls. */
+export interface FeedPoll {
+  /** Bench clock, when the manifest finished arriving. */
+  atMs: number;
+  /** The newest segment that manifest named, or null where it named none. */
+  newestRef: string | null;
+}
+
+export interface FeedProgress {
+  /** The longest a segment stayed the newest one the feed named. */
+  stallMs: number;
+  /**
+   * How many polls saw it unchanged, which is the whole attribution.
+   *
+   * Several means the bench kept asking and the feed kept giving the same answer, so a viewer polling
+   * at that cadence saw the stream stop. One means the bench itself was not asking, and the feed may
+   * have advanced any number of times unobserved.
+   */
+  stallPolls: number;
+  /** Bench clock, when that segment first appeared. */
+  stallStartedAtMs: number;
+  /**
+   * The longest the bench went between two polls, which bounds everything it could have seen.
+   *
+   * A stall no longer than this is the instrument's, whatever else the numbers suggest.
+   */
+  longestPollGapMs: number;
+}
+
+/**
+ * Whether a gap in new segments belongs to the feed or to the bench watching it.
+ *
+ * The smoke run of 2026-08-03 went 48 seconds without a new segment and the artifact could not say
+ * whose seconds those were. It took the uploader's log, which held 154 manifest writes inside that
+ * window, to establish that the pipeline never stopped. That only worked because the log was still
+ * there, and an instrument that needs a second instrument to interpret its own gaps will eventually
+ * report one of them as the product.
+ *
+ * A trailing run of polls that was never superseded is not counted. The newest segment at the last
+ * poll stays newest because the publisher stopped, and counting it would report every clean run as
+ * stalling at its end.
+ */
+export function feedProgress(polls: readonly FeedPoll[]): FeedProgress {
+  if (polls.length < 2) {
+    throw new Error('attributing a gap needs at least two polls to sit between');
+  }
+  const ordered = [...polls].sort((a, b) => a.atMs - b.atMs);
+
+  let longestPollGapMs = 0;
+  for (let i = 1; i < ordered.length; i += 1) {
+    longestPollGapMs = Math.max(longestPollGapMs, ordered[i].atMs - ordered[i - 1].atMs);
+  }
+
+  let best = { stallMs: 0, stallPolls: 0, stallStartedAtMs: ordered[0].atMs };
+  let runStart = 0;
+  for (let i = 1; i < ordered.length; i += 1) {
+    if (ordered[i].newestRef === ordered[runStart].newestRef) {
+      continue;
+    }
+    const stallMs = ordered[i].atMs - ordered[runStart].atMs;
+    if (stallMs > best.stallMs) {
+      best = { stallMs, stallPolls: i - runStart, stallStartedAtMs: ordered[runStart].atMs };
+    }
+    runStart = i;
+  }
+
+  return { ...best, longestPollGapMs };
 }
 
 function mean(values: readonly number[]): number {

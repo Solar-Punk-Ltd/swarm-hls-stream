@@ -22,6 +22,7 @@ import { sleep, waitFor } from '../harness/wait.js';
 
 import { measureClockSkew } from './clockSkew.js';
 import { fetchFeedManifest, fetchSegment, isFeedPendingFirstWrite, segmentRefFromUri } from './gateway.js';
+import type { FeedPoll } from './longRun.js';
 import { probeSegment } from './probe.js';
 import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
 import { latencySplit, type SegmentInstants } from './split.js';
@@ -87,10 +88,15 @@ export async function measureLatency(options: RunOptions): Promise<BenchRun> {
   const publisher = startWallclockPublisher(cfg, knobs);
   let pending: PendingSample[] = [];
   let discarded: DiscardedSegment[] = [];
+  let feedPolls: FeedPoll[] = [];
   try {
     const stream = await waitForAnnouncement(host, uploader, sinceIso, publisher);
     const topicHex = Topic.fromString(stream.topic).toString();
-    ({ collected: pending, discarded } = await collectSamples(options, stream.owner, topicHex, publisher.startedAtMs));
+    ({
+      collected: pending,
+      discarded,
+      feedPolls,
+    } = await collectSamples(options, stream.owner, topicHex, publisher.startedAtMs));
   } finally {
     await publisher.stop();
   }
@@ -105,6 +111,7 @@ export async function measureLatency(options: RunOptions): Promise<BenchRun> {
     knobs,
     samples,
     discarded,
+    feedPolls,
     mediaTimelineLeadMs: options.mediaTimelineLeadMs,
     trend: latencyTrend(
       pending.map((sample) => sample.fetchedAtMs),
@@ -203,10 +210,14 @@ async function collectSamples(
   owner: string,
   topicHex: string,
   publishStartedAtMs: number,
-): Promise<{ collected: PendingSample[]; discarded: DiscardedSegment[] }> {
+): Promise<{ collected: PendingSample[]; discarded: DiscardedSegment[]; feedPolls: FeedPoll[] }> {
   const { gatewayUrl, samples: wanted, pollIntervalMs } = options;
   const collected: PendingSample[] = [];
   const discarded: DiscardedSegment[] = [];
+  // Every completed read, not only the ones that yielded a sample. A gap in the samples is either
+  // the feed not advancing or this loop not asking, and without the polls that never yielded
+  // anything the two are the same shape. See `feedProgress`.
+  const feedPolls: FeedPoll[] = [];
   const seen = new Set<string>();
   const deadline = Date.now() + (options.collectForMs ?? SEGMENT_TIMEOUT_MS * wanted);
 
@@ -231,6 +242,7 @@ async function collectSamples(
 
     const newest = parseManifest(manifest.body).segments.at(-1);
     const ref = newest ? segmentRefFromUri(newest.uri) : null;
+    feedPolls.push({ atMs: manifest.atMs, newestRef: ref });
     if (!newest || !ref || seen.has(ref)) {
       await sleep(pollIntervalMs);
       continue;
@@ -261,7 +273,7 @@ async function collectSamples(
     );
   }
 
-  return { collected, discarded };
+  return { collected, discarded, feedPolls };
 }
 
 /**

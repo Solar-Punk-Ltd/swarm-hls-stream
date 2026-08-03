@@ -8,6 +8,7 @@
  * measured against a baseline, so the baseline has to be a thing that occurred.
  */
 
+import type { FeedPoll } from './longRun.js';
 import { HOPS_CROSSING_CLOCKS, impossibleHops, type LatencySplit } from './split.js';
 import type { PublishKnobs } from './wallclockPublisher.js';
 
@@ -54,6 +55,14 @@ export interface BenchRun {
    * thin result and a broken pipeline, and only this field can tell them apart afterwards.
    */
   discarded: readonly DiscardedSegment[];
+  /**
+   * Every completed read of the feed, including the ones that named a segment already measured.
+   *
+   * A run's samples cannot say whether a gap between two of them was the feed standing still or this
+   * process not asking, because both produce the same absence. The polls that yielded nothing are
+   * what separate them, and they are only knowable while the run is happening. See `feedProgress`.
+   */
+  feedPolls: readonly FeedPoll[];
   /** How the run's own latency moved while it was being taken, or null with too few samples. */
   trend: LatencyTrend | null;
   /**

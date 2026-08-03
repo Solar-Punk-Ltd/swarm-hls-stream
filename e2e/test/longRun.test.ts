@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { arrivalGaps, bufferDemandTrend, latencyByMinute, latencyDrift, mediaPacing } from '../src/bench/longRun.js';
+import { bufferDemandTrend, feedProgress, latencyByMinute, latencyDrift, mediaPacing } from '../src/bench/longRun.js';
 
 /**
  * A publisher paced by a filter graph anchors wall clock at its first frame and emits at the nominal
@@ -183,27 +183,6 @@ describe('whether the buffer a player needs grows while it watches', () => {
 });
 
 /**
- * The longest a viewer waited for anything new. A player stalls on the gap between arrivals rather
- * than on the average, so this is the quantity a rebuffer comes out of, and it is not visible in any
- * median.
- */
-describe('the gaps between one segment arriving and the next', () => {
-  it('takes the worst gap and the typical one, and says when the worst ended', () => {
-    const fetchedAtMs = [0, 2_000, 4_000, 13_000, 15_000];
-
-    const gaps = arrivalGaps(fetchedAtMs);
-
-    assert.equal(gaps.medianMs, 2_000);
-    assert.equal(gaps.maxMs, 9_000);
-    assert.equal(gaps.worstEndedAtMs, 13_000);
-  });
-
-  it('refuses to report a gap between fewer than two arrivals', () => {
-    assert.throws(() => arrivalGaps([1_000]), /at least two arrivals/);
-  });
-});
-
-/**
  * Drift stated as one slope hides the shape of it. A run that was steady for twenty minutes and then
  * fell apart has the same fitted slope as one that degraded evenly, and only the second is a setting
  * you could compensate for.
@@ -252,5 +231,81 @@ describe('latency bucketed by minute of run', () => {
 
   it('refuses to bucket an empty run', () => {
     assert.throws(() => latencyByMinute([]), /no samples/);
+  });
+});
+
+/**
+ * The 2026-08-03 smoke run went 48 seconds without a new segment, and nothing in the artifact could
+ * say whose 48 seconds they were. The uploader's log settled it afterwards, with 154 manifest writes
+ * inside that window, but only because the log happened to still be there. An instrument that cannot
+ * attribute its own gap reports every one of them as the product.
+ *
+ * Two quantities separate the two. A feed that stopped advancing while the bench kept asking shows
+ * many polls naming the same segment. A bench that stopped asking shows one.
+ */
+describe('whether a gap belongs to the feed or to the bench watching it', () => {
+  it('reports a one-poll stall for a feed that advances every time it is asked', () => {
+    const polls = ['a', 'b', 'c', 'd'].map((newestRef, i) => ({ atMs: i * 2_000, newestRef }));
+
+    const progress = feedProgress(polls);
+
+    assert.equal(progress.stallMs, 2_000);
+    assert.equal(progress.stallPolls, 1);
+    assert.equal(progress.longestPollGapMs, 2_000);
+  });
+
+  /**
+   * The feed's fault. The bench asked every two seconds throughout and got the same answer five times
+   * running, so a viewer polling at that cadence saw the stream stop for ten seconds.
+   */
+  it('blames the feed when many polls in a row name the same segment', () => {
+    const polls = ['a', 'b', 'b', 'b', 'b', 'b', 'c'].map((newestRef, i) => ({ atMs: i * 2_000, newestRef }));
+
+    const progress = feedProgress(polls);
+
+    assert.equal(progress.stallMs, 10_000);
+    assert.equal(progress.stallPolls, 5);
+    assert.equal(progress.longestPollGapMs, 2_000);
+  });
+
+  /**
+   * The bench's fault, and the shape the smoke run actually had. One poll, then nothing for 48
+   * seconds, then a different segment. The feed may have advanced a hundred times in between and this
+   * instrument would never know, which is exactly what `longestPollGapMs` exists to admit.
+   */
+  it('blames itself when a long gap holds only one poll', () => {
+    const polls = [
+      { atMs: 0, newestRef: 'a' },
+      { atMs: 2_000, newestRef: 'b' },
+      { atMs: 50_000, newestRef: 'c' },
+    ];
+
+    const progress = feedProgress(polls);
+
+    assert.equal(progress.stallMs, 48_000);
+    assert.equal(progress.stallPolls, 1);
+    assert.equal(progress.longestPollGapMs, 48_000);
+  });
+
+  /**
+   * The run ending is not a stall. The newest segment at the last poll was never superseded because
+   * the publisher stopped, and counting that would report every clean run as stalling at its end.
+   */
+  it('does not count the run ending as the last segment stalling', () => {
+    const polls = [
+      { atMs: 0, newestRef: 'a' },
+      { atMs: 2_000, newestRef: 'b' },
+      { atMs: 4_000, newestRef: 'b' },
+      { atMs: 90_000, newestRef: 'b' },
+    ];
+
+    const progress = feedProgress(polls);
+
+    assert.equal(progress.stallMs, 2_000);
+    assert.equal(progress.longestPollGapMs, 86_000);
+  });
+
+  it('refuses to judge a feed off fewer than two polls', () => {
+    assert.throws(() => feedProgress([{ atMs: 0, newestRef: 'a' }]), /at least two polls/);
   });
 });
