@@ -91,15 +91,24 @@ export interface FrameDelivery {
 }
 
 /**
- * How much of the published picture actually reached the far end.
+ * Whether a viewer gets the frame rate the publisher was asked for.
  *
- * The latency columns cannot answer this and do not degrade when it goes wrong. A path losing
- * packets produces segments the engine still cuts, still uploads and still serves, on ordinary
- * timings: the 2026-08-03 runs published from a workstation came back with 14 to 24 video frames per
- * two-second segment where the local self-check produced 60, and nothing in the report said so.
+ * Frames present in the segment against `fps x segment`, as a ratio so a half-second row is not
+ * scored against a four-second one and a deliberately lower frame rate is not read as a fault.
  *
- * Expressed as a ratio against `fps x segment` rather than as a raw count, so a row at half-second
- * segments is not scored against a row at four, and a lower frame rate is not read as loss.
+ * **It falls below 1 for two different reasons and does not distinguish them**, which is why it is
+ * named for the symptom. Both were measured on 2026-08-03 and both are invisible to every latency
+ * column, because a thin segment is cut, uploaded and served on entirely ordinary timings:
+ *
+ * - Frames lost in transit. Publishing from a workstation put about 15% of SRT packets on the floor,
+ *   and segments arrived carrying 14 to 24 video frames where 60 were sent.
+ * - Frames never produced. Three 1080p runs at 6000kbps emitted 30 frames over 1.6 to 2.0 seconds,
+ *   so the segment stretched to fit a GOP that took too long to fill and the stream ran at 15 to
+ *   18fps. The manifest agreed with the bytes, and `ffmpeg` alone reaches 76fps at those settings, so
+ *   it was contention on the publish path rather than the encoder's capacity.
+ *
+ * Telling them apart needs the publisher's own frame count, which the bench does not collect. What
+ * this answers is the question a viewer would ask, and a run it flags is worth opening.
  */
 export function frameDelivery(samples: readonly DeliverySample[]): FrameDelivery {
   const ratios = samples.map((sample) => {

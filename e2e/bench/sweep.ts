@@ -163,13 +163,14 @@ async function main(): Promise<void> {
   }
 
   console.log('\n## Whether the setting is one you could leave running\n');
-  console.log('Latency alone ranks a broken path against a working one. A path losing packets still');
-  console.log('produces segments the engine cuts, uploads and serves on ordinary timings: the runs');
-  console.log('published from a workstation carried 14 to 24 video frames per two-second segment where');
-  console.log('60 were sent, and every latency column looked normal. `frames` is what arrived against');
-  console.log('what was published, and `worst` is the single worst segment, because one gap is visible');
-  console.log('and a median absorbs it. `tail` is how far the slowest arrival sat above the typical');
-  console.log('one, which is the part of the buffer that pays for variance rather than for distance.\n');
+  console.log('Latency alone ranks a thin stream alongside a whole one, because a segment missing most');
+  console.log('of its frames is still cut, uploaded and served on entirely ordinary timings. `frames` is');
+  console.log('what the segment carries against `fps x segment`, and it drops for two different reasons');
+  console.log('it cannot tell apart: frames lost in transit, which is what publishing from a workstation');
+  console.log('did at 15% SRT loss, and frames the publisher never produced, which is what three 1080p');
+  console.log('runs did by emitting 30 of them over 1.7s. `worst` is the single worst segment, since one');
+  console.log('gap is visible and a median absorbs it. `tail` is how far the slowest arrival sat above');
+  console.log('the typical one, which is the part of the buffer paying for variance not for distance.\n');
   console.log('| setting | frames | worst | tail | discarded | runs |');
   console.log('| --- | ---: | ---: | ---: | ---: | ---: |');
   for (const row of rows) {
