@@ -345,6 +345,34 @@ describe('the report an operator reads', () => {
 });
 
 /**
+ * The all-discarded run is the one a reader most needs the reasons for, and it was the one shape that
+ * threw them away. The text pointed at the run log, which never carries them: `measureLatency` only
+ * collects them into the run and the runner prints this report.
+ */
+describe('a run that measured nothing', () => {
+  it('lists why each segment was unreadable, rather than pointing at a log without them', () => {
+    const report = renderReport(
+      runWith([], null, [
+        { ref: 'abc123def456789', reason: 'it holds no video packets' },
+        { ref: 'fed987cba654321', reason: 'it holds one video packet' },
+      ]),
+    );
+
+    assert.match(report, /No segment was measured/);
+    assert.match(report, /All 2 segment\(s\) that reached the bench were unreadable/);
+    assert.match(report, /`abc123def456`: it holds no video packets/);
+    assert.match(report, /`fed987cba654`: it holds one video packet/);
+    assert.doesNotMatch(report, /The reason is above this report/);
+  });
+
+  it('says nothing reached the bench when nothing was discarded either', () => {
+    const report = renderReport(runWith([], null, []));
+
+    assert.match(report, /no segment ever reached the bench/);
+  });
+});
+
+/**
  * LAT-9's own question, which the fix routes around rather than answers: the split is measured from
  * the bytes now, so an engine that misreports its segment durations no longer moves any figure, and
  * the only place that misreporting can still be seen is here.

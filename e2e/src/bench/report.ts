@@ -299,8 +299,20 @@ export function renderReport(run: BenchRun): string {
       '',
       `**No segment was measured.** engine ${run.engine}, profile ${run.profile}, ${knobLine(run.knobs)}.`,
       '',
-      'A run with no samples is not a slow pipeline, it is a run that failed. The reason is above this',
-      'report in the run log.',
+      'A run with no samples is not a slow pipeline, it is a run that failed.',
+      '',
+      // This used to send the reader to the run log, which never had them: `measureLatency` only
+      // pushes to `discarded` and the runner prints the report. So the one artifact naming why every
+      // segment was dropped was the JSON beside this file, and the markdown said to look elsewhere.
+      ...(run.discarded.length === 0
+        ? [
+            'Nothing was discarded either, so no segment ever reached the bench. The reason is above this report in the run log.',
+          ]
+        : [
+            `All ${run.discarded.length} segment(s) that reached the bench were unreadable:`,
+            '',
+            ...run.discarded.map((drop) => `- \`${drop.ref.slice(0, 12)}\`: ${drop.reason}`),
+          ]),
     ].join('\n');
   }
 
