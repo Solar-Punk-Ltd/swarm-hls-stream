@@ -282,11 +282,16 @@ the key, however long that stream has been quiet.
 The key travels as a `key` query parameter, which was measured on `ossrs/srs:6` and
 `airensoft/ovenmediaengine:latest` rather than read off their documentation:
 
-| Publish path | Where the key goes                                               |
-| ------------ | ---------------------------------------------------------------- |
-| SRS, RTMP    | `rtmp://host:1935/video/demo?key=<key>`                          |
-| SRS, SRT     | `srt://host:10080?streamid=#!::r=video/demo?key=<key>,m=publish` |
-| OME, SRT     | `srt://host:10080?streamid=<percent-encoded publish url>`        |
+| Publish path | Where the key goes                                                          |
+| ------------ | --------------------------------------------------------------------------- |
+| SRS, RTMP    | `rtmp://<host>:<SRS_RTMP_PORT>/video/demo?key=<key>`                        |
+| SRS, SRT     | `srt://<host>:<SRS_SRT_PORT>?streamid=#!::r=video/demo?key=<key>,m=publish` |
+| OME, SRT     | `srt://<host>:<OME_SRT_PORT>?streamid=<percent-encoded publish url>`        |
+
+**Take the ports from `publish-key.sh` rather than from here.** This repo's own defaults are not 1935
+and 10080: `apply_port_slot` resolves slot 0 to `SRS_RTMP_PORT=10002`, and `engines/ome/.env.sample`
+sets `OME_SRT_PORT=10081`. The script resolves them the same way the deploy does, so what it prints is
+what the deployment is actually listening on.
 
 OME's streamid has to be percent-encoded, because the key sits inside a value that is itself inside a
 query and the publisher's own URL parser otherwise splits on the inner `?`. `publish-key.sh` prints
@@ -296,6 +301,12 @@ Rotating `PUBLISH_KEY_SECRET` invalidates every key at once. There is no per-str
 is the price of deriving keys instead of storing them.
 
 ## Testing with FFmpeg
+
+> **With `PUBLISH_KEY_SECRET` set these commands are refused**, because publisher authentication
+> applies to them like any other publish. Append the stream's key inside the `r=` value:
+> `streamid=#!::r=video/test?key=<key>,m=publish`, taking the key from
+> `./deploy/scripts/publish-key.sh video/test`. The ports below are the upstream defaults rather than
+> this repo's, for the same reason as the table above.
 
 Video + audio test pattern (requires SRS running with `ENGINE=srs`):
 

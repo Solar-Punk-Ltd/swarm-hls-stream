@@ -249,8 +249,12 @@ export class StreamOrchestrator {
    * yielded to anyone who asks. `POST /stream/start` is the other case and it is genuinely different:
    * it records `ANONYMOUS_CLAIMANT`, which is a positive statement that the caller named nobody.
    *
-   * **A proven publish key settles it outright, in both directions, and every rule above is the
-   * fallback for when nobody proved anything.** See SEC-28. That is what retires the two residuals
+   * **A proven publish key settles who may _start_ on this id outright, and every rule above is the
+   * fallback for when nobody proved anything.** It says nothing about who may _stop_ one:
+   * `stopStream` takes a stream id and no claimant, so neither engine's close path consults the key
+   * even though both carry it. An earlier version of this sentence said "in both directions", which
+   * was false. Filed as SEC-29, because giving the stop path a claimant is a design change rather
+   * than a wording fix, and both close paths sit behind an engine credential already. See SEC-28. That is what retires the two residuals
    * this used to end on. An attacker sharing the victim's address is no longer indistinguishable from
    * them, because the address is no longer what is being asked. And a squatter who claimed an id
    * first is evicted by the owner rather than by an operator, because the symmetry that protected
