@@ -1,0 +1,34 @@
+# Runs `pnpm bench:latency` **on the deployment host**, which is the only place it measures the
+# product rather than the path to it.
+#
+# The bench publishes and fetches from one machine on purpose, because that is what keeps the capture
+# instant and the fetch instant on a single clock. Run from a laptop, everything in between is the
+# operator's uplink: measured on 2026-08-03 that cost about 15% of SRT packets, so segments arrived
+# holding 14 to 24 video frames instead of 60, SRS had to wait for an undamaged keyframe, and the
+# `segment` hop came out at 2.83s to 3.13s against a 2s GOP. That one hop was over a third of the
+# reported total and none of it belonged to the product.
+#
+# A container rather than installing node and ffmpeg on the host, so measuring changes nothing about
+# the machine being measured.
+#
+# Needs `--network host` to reach the engine and the gateway over loopback, and the docker socket for
+# the log reads the split is built from. See `deploy/scripts/bench-on-host.sh`.
+FROM node:22-bookworm-slim
+
+# ffmpeg and ffprobe are the instrument. curl is what `Host.curlJson` shells out to, and bash is what
+# `LOCAL_TARGET` runs every command line through.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates bash \
+  && rm -rf /var/lib/apt/lists/*
+
+# The client alone, not the engine: this talks to the host's daemon over the mounted socket. Pinned,
+# and taken from the static tarball because the alternative is adding docker's apt repository to pull
+# one binary.
+ARG DOCKER_CLI_VERSION=27.3.1
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
+  | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
+  && docker --version
+
+RUN corepack enable
+
+WORKDIR /repo
