@@ -55,8 +55,13 @@ ssh "${TARGET}" "cd ${REMOTE_DIR} && docker build -q -f e2e/Dockerfile.bench -t 
 
 # Runs as the invoking user so the installed tree and the written reports do not come back owned by
 # root, and joins the host network so the publisher and the gateway are both reached over loopback.
+#
+# `--group-add` carries the host's docker group in as a supplementary group. Without it the socket is
+# mounted but unreadable, because dropping to the invoking user also drops the group that owns it,
+# and the run fails at the first log read after the self-check has already published.
 DOCKER_RUN="docker run --rm --network host \
   -u \$(id -u):\$(id -g) \
+  --group-add \$(getent group docker | cut -d: -f3) \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v ${REMOTE_DIR}:/repo \
   -e HOME=/tmp \

@@ -29,6 +29,17 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
   | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
   && docker --version
 
-RUN corepack enable
+# Pinned to the version the repository is developed against rather than whatever corepack resolves
+# to. pnpm 11 stopped reading `pnpm.overrides` from package.json, so it reads this workspace's
+# overrides as absent, decides they no longer match the lockfile, and refuses a frozen install
+# outright. Pinning here rather than adding `packageManager` to the root manifest, because the image
+# exists only to run the bench and should not change what anyone else's install resolves.
+#
+# Installed with npm rather than activated with corepack, because corepack resolves against `$HOME`
+# and the container runs as the invoking user with `HOME=/tmp`, so a version activated at build time
+# under root is invisible and corepack silently downloads the latest instead. A global binary does
+# not care who runs it.
+ARG PNPM_VERSION=9.12.0
+RUN npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version
 
 WORKDIR /repo
