@@ -427,6 +427,22 @@ function handleAdmission(
     const session = sessionIdentity(payload);
 
     if (request.status === 'closing') {
+      // Screened before the session guard below rather than after it, which is a disclosure choice
+      // rather than a behavioural one: both orders refuse the same closings, but the guard's reply
+      // reason distinguishes `already-closed` from `replaced`, and answering that to a caller who has
+      // not proved the key hands them a session-state oracle for any id they care to name.
+      //
+      // The one deployment this degrades is an upgrade in progress. A broadcaster who was already
+      // publishing when the secret was turned on has no key in their url, so their closing is ignored
+      // and their stream finalizes at the recovery timeout instead of promptly. Bounded, one-time, and
+      // the alternative is honouring an unproven closing for the whole life of every such session.
+      // See SEC-29.
+      if (publishKeySecret && !hasValidPublishKey(publishKeySecret, streamId, publishKeyFromUrl(request.url))) {
+        logger.warn(`[OME] Ignored a closing for ${streamId} with a missing or invalid publish key`);
+        reply(res, { allowed: true, lifetime: 0, reason: 'ignored (invalid publish key)' });
+        return;
+      }
+
       const ignored = sessions.reasonToIgnoreClosing(streamId, session);
       if (ignored) {
         // Answered `allowed` because OME only wants the acknowledgement, and the session this was
