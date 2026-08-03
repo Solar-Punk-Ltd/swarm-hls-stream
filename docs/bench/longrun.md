@@ -1,6 +1,6 @@
 # Does a setting hold still? The first broadcasts longer than a minute
 
-Measured 2026-08-03 on `manager-host`, profile `latbench`, engine SRS. Five continuous broadcasts of 5
+Measured 2026-08-03 on `manager-host`, profile `latbench`, engine SRS. Seven continuous broadcasts of 5
 to 20 minutes, produced by `pnpm bench:longrun`, against `profiles.md`'s 86 runs of about 50 seconds
 each.
 
@@ -31,9 +31,10 @@ broadcast.** It is filed as LAT-10 and it is not this repository's code.
 | 720p 2500k | 1.0s | 6.0 | 51 | 3.17s | | | |
 | **1080p 6000k** | 1.0s | 10.3 | 88 | **3.59s** | -6ms/min | no | 6.25s to 3.92s (**-2.33s**) |
 
-The last two are the publishes that carried the two-node experiment below, kept because they are
-runs and reported without their drift columns because four and six minutes is not long enough for a
-slope to mean anything.
+The three rows with no drift columns are the publishes that carried the experiments below, the two at
+2.0s for the two-node comparison and the one at 1.0s for the segment retrievability measurement. They
+are kept because they are runs and reported without a slope because five or six minutes cannot
+support one.
 
 **1080p holds still too.** Over 10.3 minutes its fitted slope is -6ms per minute, which predicts 0.06s
 against a 0.84s residual, and its buffer demand falls rather than grows. Its median
@@ -42,7 +43,7 @@ about 0.4s and nothing else. Its `mediaPacing` does show a **1.53s hole**, media
 that no segment carried, which is the 1080p publish-path contention `profiles.md` already records
 rather than anything new.
 
-There was a seventh, at 1080p 6000k and 0.5s for 2.1 minutes, which was the instrument's own first
+There was an eighth, at 1080p 6000k and 0.5s for 2.1 minutes, which was the instrument's own first
 smoke run. **Its artifact was deliberately not kept**: it reported a 48 second gap it had no way to
 attribute, and `feedPolls`, the field that turns such a gap into a statement about whose it is, came
 out of reading that report. Its latency figures were 2.55s median and a 2.76s to 4.39s buffer
@@ -50,8 +51,8 @@ demand, and they are quoted here rather than in the table because nothing in the
 
 "Resolvable" is computed, not judged: the change the fitted line predicts across the run against
 twice the root-mean-square spread of the samples around it. No run clears it, so every one of these
-slopes is a line through scatter and none of them is a trend. The 20 minute run is the one to read,
-because it is the only one long enough for a slope of any size to have cleared.
+slopes is a line through scatter and none of them is a trend. The 20 minute 720p run and the 10 minute 1080p run are
+the ones to read, because they are the only two long enough for a slope of any size to have cleared.
 
 ## The instrument checks itself first, and this is why
 
@@ -69,6 +70,7 @@ itself, and both are reported before any drift figure:
 | 720p 0.5s, 20 min | 0.9991 | 0.9991 | 0.00s |
 | 720p 0.5s, 8 min | 0.9942 | 0.9942 | 0.00s |
 | 720p 2.0s, 8 min | 0.9985 | 0.9990 | 0.24s |
+| 1080p 1.0s, 10 min | 0.9984 | 1.0010 | 1.53s |
 
 The two agreeing means the publisher was real-time; a gap between them would mean media the timeline
 crossed that no segment carried, which a viewer would see as a jump and which no latency column shows.
@@ -171,4 +173,5 @@ deployment while the feed behaves this way.
 - **Concurrent viewers.** Never measured at all, at any setting. The gateway is one bee node.
 - **Anything past 20 minutes.** The longest broadcast here is 20.1 minutes.
 - **A real broadcaster.** Every run publishes a synthetic test pattern from the deployment host.
-- **1080p over a long run.** The only long 1080p run is 2.1 minutes.
+- **Whether LAT-10 is this deployment or Bee.** Reproducing it against a node outside this compose
+  project would separate the two, and has not been done.
