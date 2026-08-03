@@ -38,8 +38,14 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
       // `startStream` returned `true` on every path until SEC-26's guard landed, so this answer was
       // correct by accident and stopped being so without changing. It can now refuse, and answering
       // `ok` to a refusal tells an authenticated operator their stream started when it did not.
+      //
+      // The wording names no cause, because there are now two and this route cannot tell them apart.
+      // It used to say the incumbent "is still feeding it", which SEC-28 made false for a stream held
+      // by a publisher who proved its key: that one is refused however long it has been quiet, and an
+      // operator reading the old sentence went looking for a publisher that had stopped. The log line
+      // in `reasonToRefuseTakeover` does say which, and it is the one place that knows.
       if (!streamOrchestrator.startStream(streamId, mediatype)) {
-        throw new ApiError(409, `Another session is publishing on ${streamId} and is still feeding it`);
+        throw new ApiError(409, `Another session holds ${streamId}. See the service log for why it was refused`);
       }
       res.json({ ok: true });
     }),

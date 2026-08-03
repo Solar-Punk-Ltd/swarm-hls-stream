@@ -57,7 +57,7 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
     {
       name: 'takeovers_refused_total',
       type: 'counter',
-      help: 'Announces refused because another publisher holds that stream id and is still feeding it. This cannot tell an attack from a broadcaster locked out of their own id, so read it next to who is publishing: if the live session is the wrong one, POST /stream/stop frees the id.',
+      help: 'Announces refused because another publisher holds that stream id: either it is still being fed, or its holder proved the stream publish key, in which case going quiet will never free it. This cannot tell an attack from a broadcaster locked out of their own id, so read it next to who is publishing: if the live session is the wrong one, POST /stream/stop frees the id.',
       value: snapshot.takeoversRefusedTotal,
     },
     {
