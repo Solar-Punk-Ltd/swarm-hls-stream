@@ -227,9 +227,16 @@ Engines are thin adapters that translate media server events into `StreamOrchest
 
 Each engine owns its configuration: a `create<Name>EngineFromEnv()` factory reads the engine's env vars, and `src/engines/registry.ts` maps the `ENGINE` value to that factory. To add an engine, create its module under `src/engines/`, register it in the registry, and add an `engines/<name>/.env.sample` with its variables — the uploader loads `engines/<name>/.env` automatically when the engine is selected.
 
-Currently supported: **SRS** (SRT/RTMP to HLS) and **OME** (OvenMediaEngine, LLHLS).
+Currently supported: **SRS** (SRT/RTMP to HLS) and **OME** (OvenMediaEngine, MPEG-TS HLS).
 
-## Supported Transcoding Engines
+## Supported Engines
+
+Neither engine transcodes as this repository configures them. OME's output profile sets
+`<Bypass>true</Bypass>` on both the video and the audio encode, and the SRS config carries no
+`transcode` section at all, so both engines remux the broadcaster's own elementary streams into HLS
+and the picture a viewer gets is the picture that was published. Changing the resolution or the
+bitrate is therefore the broadcaster's to do, not the deployment's, which is the same fact
+`docs/bench/profiles.md` records from the other direction.
 
 ### OME Engine - OvenMediaEngine :
 
@@ -239,9 +246,11 @@ When `ENGINE=ome`, webhook endpoints are mounted:
 | ----------------------------- | ------------------------------------- |
 | `POST /engines/ome/admission` | Publish start and stop, HMAC-verified |
 
-1. **Ingest** — broadcaster pushes SRT into OvenMediaEngine, which transcodes and publishes LLHLS.
+1. **Ingest** — broadcaster pushes SRT into OvenMediaEngine, which remuxes it into MPEG-TS HLS.
 2. **Admission** — OME calls the `/engines/ome/admission` webhook on publish start/stop; the uploader verifies the HMAC signature and starts/stops the stream.
-3. **Pull** — an `HlsPuller` polls OME's HLS playlist and fetches new segments over HTTP (one puller per stream).
+3. **Pull** — an `HlsPuller` polls `{app}/{stream}/ts:playlist.m3u8` and fetches new segments over HTTP (one
+   puller per stream). That is OME's **MPEG-TS** playlist, not its fMP4 one, so the segments are
+   `.ts` and nothing downstream ever sees LL-HLS.
 4. **Upload** — the orchestrator uploads segments to Swarm, updates the live manifest feed (SOC), and finalizes a VOD manifest + catalog entry on stop.
 
 ### SRS Engine
