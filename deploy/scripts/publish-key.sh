@@ -23,13 +23,39 @@ set -- "${REST_ARGS[@]}"
 
 STREAM_ID="${1:-}"
 [ -n "$STREAM_ID" ] || usage
-# Same shape the uploader builds its stream ids in, and the key is derived over that exact string, so
-# a mistyped id here yields a key the service will refuse rather than a confusing partial match.
+
+# Mirrors STREAM_ID_SEGMENT and MAX_STREAM_ID_LENGTH in packages/stream-uploader/src/utils/streamId.ts.
+#
+# The one-slash check alone was not the same shape the service accepts, only the same shape it is
+# spelled in, so this issued a real key and exited 0 for ids like `-weird/demo`, `video/my demo` and
+# `video/a&b`. Every one is refused by parseAppStream as an unusable name, which from the outside
+# looks exactly like an authentication failure, which is the confusion this check exists to prevent.
+#
+# `&` in particular also breaks the printed URL: it terminates the outer query, so the key is lost
+# before OME sees it. The hand-rolled encoder below is complete for every id the service would accept
+# and for none of the ones it would not, so screening here is what keeps that true.
+readonly SEGMENT_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+readonly MAX_STREAM_ID_LENGTH=128
+
 case "$STREAM_ID" in
   */*/*) echo "A stream id is <app>/<stream>, with one slash: got '$STREAM_ID'" >&2; exit 1 ;;
   */*) ;;
   *) echo "A stream id is <app>/<stream>: got '$STREAM_ID'" >&2; exit 1 ;;
 esac
+
+if [ "${#STREAM_ID}" -gt "$MAX_STREAM_ID_LENGTH" ]; then
+  echo "A stream id is at most $MAX_STREAM_ID_LENGTH characters, which is what the service enforces" >&2
+  exit 1
+fi
+
+for segment in "${STREAM_ID%%/*}" "${STREAM_ID#*/}"; do
+  if [[ ! "$segment" =~ $SEGMENT_RE ]]; then
+    echo "'$segment' is not a usable app or stream name: the service accepts letters, digits, dot," >&2
+    echo "underscore and hyphen, beginning with a letter or digit. A key issued for this id would be" >&2
+    echo "refused, and the refusal would look like an authentication failure." >&2
+    exit 1
+  fi
+done
 
 require_config
 load_env

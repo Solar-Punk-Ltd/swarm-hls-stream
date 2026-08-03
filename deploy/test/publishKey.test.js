@@ -185,4 +185,41 @@ describe('the publish URLs publish-key.sh hands an operator', () => {
       assert.notEqual(result.status, 0, `"${bad}" must be refused`);
     }
   });
+
+  /**
+   * The shape check has to be the service's, not merely the same spelling. `STREAM_ID_SEGMENT` in
+   * `packages/stream-uploader/src/utils/streamId.ts` accepts letters, digits, dot, underscore and
+   * hyphen, beginning with an alphanumeric, capped at 128 characters. Issuing a key for anything else
+   * hands an operator a credential `parseAppStream` will refuse as an unusable name, which from the
+   * outside is indistinguishable from an authentication failure.
+   *
+   * `video/a&b` also breaks the printed URL outright: the ampersand terminates the outer query, so
+   * the key never reaches OME at all.
+   */
+  it('refuses every stream id the service would refuse', () => {
+    const refused = [
+      '-weird/demo',
+      'video/my demo',
+      'video/a&b',
+      'video/a;id;b',
+      'video/a#b',
+      '.hidden/demo',
+      `video/${'a'.repeat(200)}`,
+    ];
+
+    for (const bad of refused) {
+      const result = runScript({ PUBLISH_KEY_SECRET: SECRET }, bad);
+
+      assert.notEqual(result.status, 0, `"${bad}" must be refused`);
+      assert.equal(result.stdout.includes('Publish key:'), false, `"${bad}" must not be issued a key`);
+    }
+  });
+
+  it('still accepts every character the service accepts', () => {
+    for (const good of ['video/demo', 'video/my-stream_2.0', 'a/b', `video/${'a'.repeat(120)}`]) {
+      const result = runScript({ PUBLISH_KEY_SECRET: SECRET }, good);
+
+      assert.equal(result.status, 0, `"${good}" must be accepted: ${result.stderr}`);
+    }
+  });
 });
