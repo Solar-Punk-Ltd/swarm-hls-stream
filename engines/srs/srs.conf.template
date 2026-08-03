@@ -11,7 +11,7 @@ http_server {
 srt_server {
     enabled         on;
     listen          SRT_PORT_PLACEHOLDER;
-    latency         200;
+    latency         SRT_LATENCY_PLACEHOLDER;
     passphrase      PASSPHRASE_PLACEHOLDER;
     pbkeylen        16;
     tlpktdrop       on;
@@ -26,8 +26,8 @@ vhost __defaultVhost__ {
     hls {
         enabled         on;
         hls_path        ./objs/nginx/html;
-        hls_fragment    1.5;
-        hls_window      22.5;
+        hls_fragment    HLS_FRAGMENT_PLACEHOLDER;
+        hls_window      HLS_WINDOW_PLACEHOLDER;
         hls_ts_file     [app]/[stream]/[stream]-[seq].ts;
         hls_m3u8_file   [app]/[stream]/index.m3u8;
     }

@@ -184,6 +184,12 @@ services:
       SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
       SRS_HTTP_PORT: ${SRS_HTTP_PORT:-8080}
       SRS_SRT_PORT: ${SRS_SRT_PORT:-10080}
+      # The latency knobs. `HLS_FRAGMENT` is the segment length a viewer waits a whole one of, and it
+      # is the largest lever on this side. `main` passed the first two and this branch stopped, which
+      # left the entrypoint substituting defaults into a template that no longer had placeholders.
+      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.5}
+      HLS_WINDOW: ${HLS_WINDOW:-22.5}
+      SRT_LATENCY: ${SRT_LATENCY:-200}
 
   # --- OvenMediaEngine ---
 
