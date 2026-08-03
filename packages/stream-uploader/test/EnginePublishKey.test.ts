@@ -26,7 +26,7 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { derivePublishKey } from '../src/utils/publishKey.js';
 import { redactUrlSecrets } from '../src/utils/urlSecrets.js';
 
-import { makeTestOrchestrator } from './helpers/fakes.js';
+import { makeFakeOrchestrator, makeTestOrchestrator } from './helpers/fakes.js';
 import { listenOnLoopback } from './helpers/loopbackServer.js';
 import { waitFor } from './helpers/waiting.js';
 
@@ -50,11 +50,33 @@ interface OmeReply {
   reason?: string;
 }
 
+/**
+ * How the admission below differs from the ordinary opening. Defaulted so every existing caller keeps
+ * sending exactly what it sent before this existed.
+ *
+ * `port` and `timeMs` are the two session discriminators `reasonToIgnoreClosing` matches a closing on,
+ * so a closing meant to be *acted on* has to carry its own opening's port and a time at or after it.
+ * Get either wrong and the closing is discarded as `replaced` or `already-closed`, which looks
+ * identical from the orchestrator to the refusal these tests are about. See CON-21 and CON-23.
+ */
+interface AdmissionOptions {
+  status?: 'opening' | 'closing';
+  timeMs?: number;
+  port?: number;
+}
+
 /** An OME admission carrying whatever publish url the caller wants, signed the way OME signs it. */
-async function postAdmission(baseUrl: string, prefix: string, address: string, url: string): Promise<OmeReply> {
+async function postAdmission(
+  baseUrl: string,
+  prefix: string,
+  address: string,
+  url: string,
+  options: AdmissionOptions = {},
+): Promise<OmeReply> {
+  const { status = 'opening', timeMs = 0, port = 44546 } = options;
   const body = JSON.stringify({
-    client: { address, port: 44546 },
-    request: { direction: 'incoming', status: 'opening', url, time: new Date(0).toISOString() },
+    client: { address, port },
+    request: { direction: 'incoming', status, url, time: new Date(timeMs).toISOString() },
   });
   const signature = createHmac('sha1', OME_SECRET).update(body).digest('base64url');
   const response = await fetch(`${baseUrl}${prefix}/admission`, {
@@ -70,13 +92,30 @@ async function announceToOme(baseUrl: string, prefix: string, address: string, q
   return postAdmission(baseUrl, prefix, address, `srt://ingest.example:9999/${APP}/${STREAM}${query}`);
 }
 
-/** An SRS `on_publish` for `STREAM_ID`. `param` is omitted entirely when the caller passes null. */
-async function announceToSrs(baseUrl: string, prefix: string, ip: string, param: string | null): Promise<number> {
+/**
+ * An OME `closing` for `STREAM_ID`, carrying the same port its opening carried and a later time, so
+ * the session guard reads it as the live session ending rather than as some other session's closing.
+ */
+async function closeOme(baseUrl: string, prefix: string, address: string, query: string): Promise<OmeReply> {
+  return postAdmission(baseUrl, prefix, address, `srt://ingest.example:9999/${APP}/${STREAM}${query}`, {
+    status: 'closing',
+    timeMs: 60_000,
+  });
+}
+
+/** One SRS stream webhook. `param` is omitted entirely when the caller passes null. */
+async function postSrsWebhook(
+  baseUrl: string,
+  prefix: string,
+  action: string,
+  ip: string,
+  param: string | null,
+): Promise<number> {
   const response = await fetch(`${baseUrl}${prefix}/streams?token=${SRS_TOKEN}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      action: 'on_publish',
+      action,
       app: APP,
       stream: STREAM,
       ip,
@@ -86,11 +125,27 @@ async function announceToSrs(baseUrl: string, prefix: string, ip: string, param:
   return response.json() as Promise<number>;
 }
 
+/** An SRS `on_publish` for `STREAM_ID`. */
+async function announceToSrs(baseUrl: string, prefix: string, ip: string, param: string | null): Promise<number> {
+  return postSrsWebhook(baseUrl, prefix, 'on_publish', ip, param);
+}
+
+/**
+ * An SRS `on_unpublish` for `STREAM_ID`. It really does carry `param`, measured on 2026-08-03 against
+ * `ossrs/srs:6`: the unpublish for a session repeats the publish's own `param` verbatim, leading `?`
+ * and all, which is what lets the close path be screened at all.
+ */
+async function unpublishFromSrs(baseUrl: string, prefix: string, ip: string, param: string | null): Promise<number> {
+  return postSrsWebhook(baseUrl, prefix, 'on_unpublish', ip, param);
+}
+
 interface OmeHarness {
   /** An admission for `STREAM_ID`, with `query` appended to its publish url. */
   announce: (address: string, query: string) => Promise<OmeReply>;
   /** An admission for any publish url at all, for the ones that must not parse. */
   announceUrl: (address: string, url: string) => Promise<OmeReply>;
+  /** A `closing` for `STREAM_ID`, matching the opening's session. See SEC-29. */
+  close: (address: string, query: string) => Promise<OmeReply>;
   orchestrator: StreamOrchestrator;
 }
 
@@ -115,6 +170,7 @@ async function withOme(
     await drive({
       announce: (address, query) => announceToOme(baseUrl, engine.prefix, address, query),
       announceUrl: (address, url) => postAdmission(baseUrl, engine.prefix, address, url),
+      close: (address, query) => closeOme(baseUrl, engine.prefix, address, query),
       orchestrator,
     });
   } finally {
@@ -126,6 +182,8 @@ async function withOme(
 type SrsDrive = (
   announce: (ip: string, param: string | null) => Promise<number>,
   orchestrator: StreamOrchestrator,
+  /** An `on_unpublish` for the same stream. Third rather than second so no existing caller moves. */
+  unpublish: (ip: string, param: string | null) => Promise<number>,
 ) => Promise<void>;
 
 async function withSrs(publishKeySecret: string | undefined, drive: SrsDrive): Promise<void> {
@@ -136,7 +194,11 @@ async function withSrs(publishKeySecret: string | undefined, drive: SrsDrive): P
   app.use(engine.prefix, engine.createRouter(orchestrator));
   const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    await drive((ip, param) => announceToSrs(baseUrl, engine.prefix, ip, param), orchestrator);
+    await drive(
+      (ip, param) => announceToSrs(baseUrl, engine.prefix, ip, param),
+      orchestrator,
+      (ip, param) => unpublishFromSrs(baseUrl, engine.prefix, ip, param),
+    );
   } finally {
     server.close();
     await orchestrator.cleanup();
@@ -403,14 +465,22 @@ describe('the publish key SRS reads out of an on_publish', () => {
   });
 
   /**
-   * An unpublish is not a publish and must not be screened as one. SRS sends it for a session it
-   * already accepted, and the webhook itself is authenticated by the token, so requiring a key here
-   * would only strand the streams whose broadcaster disconnected: the unpublish would be refused, the
-   * stream would never be finalized, and it would sit live until the recovery timeout took it.
+   * A broadcaster who simply disconnects still gets their stream finalized once the close path is
+   * screened, driven through a real orchestrator all the way to the stream leaving the active set.
    *
-   * Driven with no `param` at all, which is the strictest form of the claim.
+   * **This test used to assert the opposite and its reasoning was wrong.** It was written for SEC-28
+   * as "does not require a key on an unpublish", arguing that screening the close path would strand
+   * every stream whose broadcaster dropped, since the unpublish would be refused and the stream would
+   * sit live until the recovery timeout. That rested on an unpublish carrying no key, and it was
+   * driven with no `param` at all as "the strictest form of the claim". SRS sends no such thing. In a
+   * capture on 2026-08-03 against `ossrs/srs:6`, killing the publisher produced an unpublish carrying
+   * `param` identical to its own publish, key included, so the disconnect case screens clean and the
+   * stranding this was written to prevent cannot arise from a real engine. See SEC-29.
+   *
+   * The SEC-29 block below covers the refusals with a recording orchestrator, which answers whether
+   * `stopStream` was called and not whether a stream actually finalizes. This one keeps that half.
    */
-  it('does not require a key on an unpublish', async () => {
+  it('finalizes the stream on an unpublish carrying the key its publish carried', async () => {
     const orchestrator = makeTestOrchestrator();
     const app = express();
     const engine = createSrsEngine('/srv/media', { webhookToken: SRS_TOKEN, publishKeySecret: PUBLISH_SECRET });
@@ -425,10 +495,16 @@ describe('the publish key SRS reads out of an on_publish', () => {
       const response = await fetch(`${baseUrl}${engine.prefix}/streams?token=${SRS_TOKEN}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'on_unpublish', app: APP, stream: STREAM, ip: BROADCASTER }),
+        body: JSON.stringify({
+          action: 'on_unpublish',
+          app: APP,
+          stream: STREAM,
+          ip: BROADCASTER,
+          param: `?key=${KEY}`,
+        }),
       });
 
-      assert.equal(await response.json(), 0, 'an unpublish carrying no key must still be accepted');
+      assert.equal(await response.json(), 0, 'an unpublish is acknowledged whatever it carried');
       await waitFor(() => orchestrator.getActiveStreamCount() === 0, SETTLE_CEILING_MS);
     } finally {
       server.close();
@@ -573,5 +649,212 @@ describe('saying out loud when publisher authentication is off', () => {
     );
 
     assert.doesNotMatch(logged, /No PUBLISH_KEY_SECRET configured/);
+  });
+});
+
+/**
+ * That the publish key gates stopping a stream, not only starting one. See SEC-29.
+ *
+ * **What this is not.** It is not an unauthenticated takedown. Measured on 2026-08-03 against
+ * `ossrs/srs:6`: a publish the hook rejects produces no `on_unpublish` at all, so a stranger cannot
+ * end a broadcast by connecting to its name and being refused. The one unpublish in that capture
+ * carried the accepted session's own `client_id` and `param`. Both close paths also sit behind an
+ * engine credential already, the webhook token here and the admission signature on the OME side.
+ *
+ * **What it is.** After SEC-28, starting a stream needs two credentials and stopping one needed only
+ * the engine's, so anything that could replay or forge an engine webhook could end a broadcast that
+ * it could not have started. Both engines carry the key on the close webhook, so closing the gap
+ * costs one comparison on a path that already had the value in hand.
+ *
+ * The orchestrator is a recorder rather than a real one on purpose. What is under test is whether the
+ * engine *calls* `stopStream`, and reading that off a drain means waiting out a window and asserting
+ * a stream is still live, which is a race that reports the machine's load. `stops` answers the actual
+ * question with no clock in it.
+ */
+describe('the publish key on the path that stops a stream (SEC-29)', () => {
+  /** Answers every playlist poll with a 404 so the puller an accepted announce starts stays quiet. */
+  const silentFetcher = async (): Promise<Response> => new Response('', { status: 404 });
+
+  interface StopHarness {
+    /** Stream ids the engine asked the orchestrator to stop, in order. */
+    stops: string[];
+    announce: (query: string) => Promise<OmeReply>;
+    close: (query: string) => Promise<OmeReply>;
+  }
+
+  async function withOmeStops(
+    publishKeySecret: string | undefined,
+    drive: (harness: StopHarness) => Promise<void>,
+  ): Promise<void> {
+    const stops: string[] = [];
+    const orchestrator = makeFakeOrchestrator({
+      stopStream: async (streamId: string) => {
+        stops.push(streamId);
+      },
+    });
+    const app = express();
+    const engine = createOmeEngine('http://ome.invalid:8081', 60_000, {
+      admissionSecret: OME_SECRET,
+      publishKeySecret,
+      fetcher: silentFetcher,
+    });
+    app.use(
+      express.json({
+        verify: (req, _res, buf) => {
+          (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+        },
+      }),
+    );
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+    try {
+      await drive({
+        stops,
+        announce: (query) => announceToOme(baseUrl, engine.prefix, BROADCASTER, query),
+        close: (query) => closeOme(baseUrl, engine.prefix, BROADCASTER, query),
+      });
+    } finally {
+      server.close();
+    }
+  }
+
+  interface SrsStopHarness {
+    stops: string[];
+    announce: (param: string | null) => Promise<number>;
+    unpublish: (param: string | null) => Promise<number>;
+  }
+
+  async function withSrsStops(
+    publishKeySecret: string | undefined,
+    drive: (harness: SrsStopHarness) => Promise<void>,
+  ): Promise<void> {
+    const stops: string[] = [];
+    const orchestrator = makeFakeOrchestrator({
+      stopStream: async (streamId: string) => {
+        stops.push(streamId);
+      },
+    });
+    const app = express();
+    const engine = createSrsEngine('/srv/media', { webhookToken: SRS_TOKEN, publishKeySecret });
+    app.use(express.json());
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+    try {
+      await drive({
+        stops,
+        announce: (param) => announceToSrs(baseUrl, engine.prefix, BROADCASTER, param),
+        unpublish: (param) => unpublishFromSrs(baseUrl, engine.prefix, BROADCASTER, param),
+      });
+    } finally {
+      server.close();
+    }
+  }
+
+  describe('OME', () => {
+    /**
+     * The degenerate case, asserted first and deliberately. Every test below it asserts that a stop
+     * did *not* happen, and an empty `stops` proves nothing unless a closing that should stop the
+     * stream does reach it through the same harness. Without this one, deleting the whole closing
+     * branch would leave the rest of this block green.
+     */
+    it('stops the stream for a closing that carries the key', async () => {
+      await withOmeStops(PUBLISH_SECRET, async ({ announce, close, stops }) => {
+        assert.equal((await announce(`?key=${KEY}`)).allowed, true);
+
+        assert.equal((await close(`?key=${KEY}`)).allowed, true);
+        assert.deepEqual(stops, [STREAM_ID]);
+      });
+    });
+
+    it('does not stop the stream for a closing that carries no key', async () => {
+      await withOmeStops(PUBLISH_SECRET, async ({ announce, close, stops }) => {
+        assert.equal((await announce(`?key=${KEY}`)).allowed, true);
+
+        await close('');
+        assert.deepEqual(stops, [], 'a keyless closing must not end a proven broadcast');
+      });
+    });
+
+    it('does not stop the stream for a closing carrying a key issued for another stream', async () => {
+      await withOmeStops(PUBLISH_SECRET, async ({ announce, close, stops }) => {
+        assert.equal((await announce(`?key=${KEY}`)).allowed, true);
+
+        await close(`?key=${KEY_FOR_ANOTHER_STREAM}`);
+        assert.deepEqual(stops, []);
+      });
+    });
+
+    /**
+     * OME wants an acknowledgement and nothing else from a closing, and it is entitled to one whoever
+     * sent it. Answering `allowed: false` would be a protocol answer to an authorization question, so
+     * the refusal is expressed by not acting rather than by refusing the reply.
+     */
+    it('still acknowledges the closing it refuses to act on', async () => {
+      await withOmeStops(PUBLISH_SECRET, async ({ announce, close }) => {
+        await announce(`?key=${KEY}`);
+
+        assert.equal((await close('')).allowed, true);
+      });
+    });
+
+    it('stops the stream for a keyless closing when no secret is configured', async () => {
+      await withOmeStops(undefined, async ({ announce, close, stops }) => {
+        assert.equal((await announce('')).allowed, true);
+
+        await close('');
+        assert.deepEqual(stops, [STREAM_ID], 'SEC-29 must not change a deployment that never opted in');
+      });
+    });
+  });
+
+  describe('SRS', () => {
+    it('stops the stream for an unpublish that carries the key', async () => {
+      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops }) => {
+        assert.equal(await announce(`?key=${KEY}`), 0);
+
+        assert.equal(await unpublish(`?key=${KEY}`), 0);
+        assert.deepEqual(stops, [STREAM_ID]);
+      });
+    });
+
+    it('does not stop the stream for an unpublish that carries no key', async () => {
+      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops }) => {
+        assert.equal(await announce(`?key=${KEY}`), 0);
+
+        await unpublish(null);
+        assert.deepEqual(stops, [], 'a keyless unpublish must not end a proven broadcast');
+      });
+    });
+
+    it('does not stop the stream for an unpublish carrying a key issued for another stream', async () => {
+      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish, stops }) => {
+        assert.equal(await announce(`?key=${KEY}`), 0);
+
+        await unpublish(`?key=${KEY_FOR_ANOTHER_STREAM}`);
+        assert.deepEqual(stops, []);
+      });
+    });
+
+    /**
+     * SRS reads any non-zero answer as a failure worth logging and retrying, and an unpublish is not
+     * a request it can usefully be refused: the session it names is already gone from SRS's side. So
+     * the refusal is silent to SRS and visible only in the log and in `stops`.
+     */
+    it('still answers SRS_ACCEPT to the unpublish it refuses to act on', async () => {
+      await withSrsStops(PUBLISH_SECRET, async ({ announce, unpublish }) => {
+        await announce(`?key=${KEY}`);
+
+        assert.equal(await unpublish(null), 0);
+      });
+    });
+
+    it('stops the stream for a keyless unpublish when no secret is configured', async () => {
+      await withSrsStops(undefined, async ({ announce, unpublish, stops }) => {
+        assert.equal(await announce(null), 0);
+
+        await unpublish(null);
+        assert.deepEqual(stops, [STREAM_ID], 'SEC-29 must not change a deployment that never opted in');
+      });
+    });
   });
 });

@@ -199,9 +199,23 @@ function handleStreams(
     const streamId = buildStreamId(payload.app, payload.stream);
 
     if (payload.action === SRS_ACTION_UNPUBLISH) {
-      logger.info(`[SRS] Stream unpublished: ${streamId}`);
+      // Extracted before anything is answered, so a `param` that cannot be parsed reaches the catch
+      // below with the response still unsent. Answering first and screening after would double-send on
+      // exactly that path. See SEC-29.
+      const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromParam(payload.param));
+
+      // SRS reads any non-zero answer as a failure to retry, and an unpublish is not a request that
+      // can usefully be refused: the session it names is already gone from SRS's side. So a refusal
+      // here is expressed by not acting, and SRS is acknowledged either way.
       srsResponse(res, SRS_ACCEPT);
 
+      if (publishKeySecret && !isAuthenticated) {
+        // Neither the key nor `param` is logged, only that one was missing or wrong.
+        logger.warn(`[SRS] Ignored an unpublish of ${streamId} with a missing or invalid publish key`);
+        return;
+      }
+
+      logger.info(`[SRS] Stream unpublished: ${streamId}`);
       streamOrchestrator.stopStream(streamId).catch((error) => {
         const msg = getErrorMessage(error);
         logger.error(`[SRS] Error during stream stop ${streamId}: ${msg}`);
