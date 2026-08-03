@@ -170,6 +170,22 @@ describe('the invocation the parser is written against', () => {
   });
 
   /**
+   * The one argument whose absence is a measurement rather than an error, and it fell in the gap
+   * between the two tests either side of it.
+   *
+   * Without it ffprobe lists the audio packets too, and every figure downstream stays plausible.
+   * Measured against a real 2s MPEG-TS carrying 30fps video and 48kHz AAC: the span reads 2.034s
+   * instead of 2.000, the anchor moves 23ms early, the frame duration drops from 33.3ms to 14.2ms,
+   * and `videoPacketCount` says 148 for a 60-frame segment. Stable across segments and within
+   * rounding distance of the declared duration, which is the exact shape LAT-9 was opened on.
+   */
+  it('reads the first video stream only, so audio packets cannot enter the span', () => {
+    const args = probeArgs('/tmp/seg.ts');
+
+    assert.equal(args[args.indexOf('-select_streams') + 1], 'v:0');
+  });
+
+  /**
    * This used to carry `-read_intervals %+#1`, which stops ffprobe after one packet. That is all the
    * capture instant needs and is why the span had to be taken from the manifest. Restoring it would
    * not break the parse, it would make every segment fail as a one-packet segment, so the absence is
