@@ -180,8 +180,30 @@ allowance, which refreshes on a timer, so it downloads in bursts and is throttle
 predicts what was measured, including a period independent of write rate and of picture size.
 
 **Two things follow.** The test is to enable swap on the gateway and fund it, which is on-chain. The
-no-cost mitigation already exists: `CLIENT_BEE_GATEWAY_HOST` points viewers at another gateway, and a
-public one demonstrably serves this feed better than ours.
+mitigation already exists: `CLIENT_BEE_GATEWAY_HOST` points viewers at another gateway.
+
+### The mitigation measured through the product, which is real and not free
+
+The same bench, same publisher, same setting, pointed at each gateway in turn:
+
+| | our gateway | a public Swarm gateway |
+| --- | ---: | ---: |
+| distinct segments a viewer saw in ~6 min | 51 | **62** |
+| capture to fetchable, median | **3.17s** | 3.94s |
+| capture to fetchable, worst | **5.93s** | 30.73s |
+| freezes over 15s | 5 | **2** |
+| **frozen share of the broadcast** | **55%** | **12%** |
+| index jump when a freeze released | 47, 35, 51, 30, 36 | **1, 17** |
+
+**The last row is the one to read.** Ours releases a backlog of thirty to fifty updates, which is a
+reader that fell behind and caught up. The public gateway advances one at a time, so it is keeping
+pace and merely serving some individual reads slowly, which is what a long tail across the internet
+looks like.
+
+So pointing viewers elsewhere is a genuine mitigation, **55% frozen down to 12% and eleven more
+segments delivered in the same six minutes**, and it is paid for with a worse tail (30.73s against
+5.93s) and with the viewer path leaving infrastructure we control. Neither reader is good. The fix
+is to fund ours.
 
 ## What this changes about choosing a setting
 
