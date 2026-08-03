@@ -57,6 +57,17 @@ describe('parsing ffprobe output into a timestamped segment', () => {
     assert.equal(openGop.firstFrame.pts, 168_000, 'the earliest frame');
     assert.notEqual(openGop.firstFrame.pts, 177_000, 'which is not the first packet listed');
   });
+
+  /**
+   * The resolution the span is good to, and the sole tolerance base of the local self-check in
+   * `selfCheck.ts`. Dropping the `/ timescale` from it leaves every other assertion here passing and
+   * widens that check's window by the tick rate, from one frame to ninety, which is wider than the
+   * whole error it exists to catch.
+   */
+  it('reports the final frame credit in seconds, not in ticks', () => {
+    assert.equal(parseProbedSegment(REORDERED_TS_SEGMENT, 'seg1.ts').frameDurationS, 1 / 30);
+    assert.equal(parseProbedSegment(REORDERED_FMP4_SEGMENT, 'seg1.m4s').frameDurationS, 1 / 30);
+  });
 });
 
 describe('refusing output that only looks like a measurement', () => {
