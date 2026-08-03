@@ -66,8 +66,11 @@ async function main(): Promise<void> {
   console.log('bench: checking the instrument locally, which spends nothing...');
   const check = await checkInstrumentLocally(knobs);
   console.log(
-    `bench: instrument ok — ${check.segmentsProbed} segments, first frame stamped ` +
-      `${Math.round(check.startupDelayMs)}ms after spawn, capture instants ${check.captureOffsetsMs.join('/')}ms apart`,
+    `bench: instrument ok. ${check.segmentsProbed} segments, first frame stamped ` +
+      `${Math.round(check.startupDelayMs)}ms after spawn, capture instants ${check.captureOffsetsMs.join('/')}ms ` +
+      // The spans the new contiguity check accepted. Without them a pass leaves no trace, so an
+      // operator cannot tell the check ran, let alone what it ran against.
+      `apart, media spans ${check.mediaSpansMs.map((ms) => Math.round(ms)).join('/')}ms`,
   );
 
   await requireGatewayReachable(gatewayUrl);
