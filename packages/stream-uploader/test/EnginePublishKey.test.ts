@@ -21,8 +21,10 @@ import { describe, it } from 'node:test';
 
 import { createOmeEngine } from '../src/engines/ome.js';
 import { createSrsEngine } from '../src/engines/srs.js';
+import { Logger } from '../src/libs/Logger.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { derivePublishKey } from '../src/utils/publishKey.js';
+import { redactUrlSecrets } from '../src/utils/urlSecrets.js';
 
 import { makeTestOrchestrator } from './helpers/fakes.js';
 import { listenOnLoopback } from './helpers/loopbackServer.js';
@@ -48,16 +50,11 @@ interface OmeReply {
   reason?: string;
 }
 
-/** An OME admission for `STREAM_ID`, with whatever query the caller wants on the publish url. */
-async function announceToOme(baseUrl: string, prefix: string, address: string, query: string): Promise<OmeReply> {
+/** An OME admission carrying whatever publish url the caller wants, signed the way OME signs it. */
+async function postAdmission(baseUrl: string, prefix: string, address: string, url: string): Promise<OmeReply> {
   const body = JSON.stringify({
     client: { address, port: 44546 },
-    request: {
-      direction: 'incoming',
-      status: 'opening',
-      url: `srt://ingest.example:9999/${APP}/${STREAM}${query}`,
-      time: new Date(0).toISOString(),
-    },
+    request: { direction: 'incoming', status: 'opening', url, time: new Date(0).toISOString() },
   });
   const signature = createHmac('sha1', OME_SECRET).update(body).digest('base64url');
   const response = await fetch(`${baseUrl}${prefix}/admission`, {
@@ -66,6 +63,11 @@ async function announceToOme(baseUrl: string, prefix: string, address: string, q
     body,
   });
   return response.json() as Promise<OmeReply>;
+}
+
+/** An OME admission for `STREAM_ID`, with whatever query the caller wants on the publish url. */
+async function announceToOme(baseUrl: string, prefix: string, address: string, query: string): Promise<OmeReply> {
+  return postAdmission(baseUrl, prefix, address, `srt://ingest.example:9999/${APP}/${STREAM}${query}`);
 }
 
 /** An SRS `on_publish` for `STREAM_ID`. `param` is omitted entirely when the caller passes null. */
@@ -84,12 +86,18 @@ async function announceToSrs(baseUrl: string, prefix: string, ip: string, param:
   return response.json() as Promise<number>;
 }
 
-type OmeDrive = (
-  announce: (address: string, query: string) => Promise<OmeReply>,
-  orchestrator: StreamOrchestrator,
-) => Promise<void>;
+interface OmeHarness {
+  /** An admission for `STREAM_ID`, with `query` appended to its publish url. */
+  announce: (address: string, query: string) => Promise<OmeReply>;
+  /** An admission for any publish url at all, for the ones that must not parse. */
+  announceUrl: (address: string, url: string) => Promise<OmeReply>;
+  orchestrator: StreamOrchestrator;
+}
 
-async function withOme(publishKeySecret: string | undefined, drive: OmeDrive): Promise<void> {
+async function withOme(
+  publishKeySecret: string | undefined,
+  drive: (harness: OmeHarness) => Promise<void>,
+): Promise<void> {
   const orchestrator = makeTestOrchestrator();
   const app = express();
   const engine = createOmeEngine('http://ome:8081', 50, { admissionSecret: OME_SECRET, publishKeySecret });
@@ -104,7 +112,11 @@ async function withOme(publishKeySecret: string | undefined, drive: OmeDrive): P
   app.use(engine.prefix, engine.createRouter(orchestrator));
   const { server, baseUrl } = await listenOnLoopback(app);
   try {
-    await drive((address, query) => announceToOme(baseUrl, engine.prefix, address, query), orchestrator);
+    await drive({
+      announce: (address, query) => announceToOme(baseUrl, engine.prefix, address, query),
+      announceUrl: (address, url) => postAdmission(baseUrl, engine.prefix, address, url),
+      orchestrator,
+    });
   } finally {
     server.close();
     await orchestrator.cleanup();
@@ -144,7 +156,7 @@ describe('the publish key OME reads out of an admission', () => {
    * could not.
    */
   it('lets a proven key take a live id from another address', async () => {
-    await withOme(PUBLISH_SECRET, async (announce, orchestrator) => {
+    await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
       assert.equal((await announce(BROADCASTER, `?key=${KEY}`)).allowed, true);
       await liveStreamFedOnce(orchestrator);
 
@@ -158,14 +170,14 @@ describe('the publish key OME reads out of an admission', () => {
   });
 
   it('refuses an admission carrying no key at all', async () => {
-    await withOme(PUBLISH_SECRET, async (announce, orchestrator) => {
+    await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
       assert.equal((await announce(BROADCASTER, '')).allowed, false);
       assert.equal(orchestrator.getActiveStreamCount(), 0, 'nothing may be started for a refused publisher');
     });
   });
 
   it('refuses an admission carrying a wrong key', async () => {
-    await withOme(PUBLISH_SECRET, async (announce, orchestrator) => {
+    await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
       assert.equal((await announce(BROADCASTER, '?key=not-the-key')).allowed, false);
       assert.equal(orchestrator.getActiveStreamCount(), 0);
     });
@@ -177,7 +189,7 @@ describe('the publish key OME reads out of an admission', () => {
    * another, which is precisely what a single deployment-wide credential would allow.
    */
   it('refuses a key that is valid for a stream this announce is not naming', async () => {
-    await withOme(PUBLISH_SECRET, async (announce, orchestrator) => {
+    await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
       assert.equal((await announce(BROADCASTER, `?key=${KEY_FOR_ANOTHER_STREAM}`)).allowed, false);
       assert.equal(orchestrator.getActiveStreamCount(), 0);
     });
@@ -191,7 +203,7 @@ describe('the publish key OME reads out of an admission', () => {
    * defaulting it on would take every broadcaster off the air on upgrade.
    */
   it('admits a keyless publisher when no secret is configured', async () => {
-    await withOme(undefined, async (announce, orchestrator) => {
+    await withOme(undefined, async ({ announce, orchestrator }) => {
       assert.equal((await announce(BROADCASTER, '')).allowed, true);
       await liveStreamFedOnce(orchestrator);
 
@@ -201,6 +213,56 @@ describe('the publish key OME reads out of an admission', () => {
         'and SEC-26 is still the rule that applies when nobody proved anything',
       );
     });
+  });
+});
+
+/**
+ * The credential travels in a URL, which is the one place a secret cannot be kept out of by choosing
+ * not to log it: every path that logs a URL logs it too. `parseAppStream` wrote the whole publish URL
+ * into three `logger.error` calls and three thrown messages, all reachable by a broadcaster who
+ * mistyped their app or stream, and all landing wherever this deployment ships its logs.
+ *
+ * This is why `redactWebhookToken` was generalised rather than copied. Its own invariant carries over:
+ * it must redact at least every URL the check accepts, and being wider than that costs nothing.
+ */
+describe('keeping the publish key out of the logs', () => {
+  /** Every publish url `parseAppStream` refuses, each of which used to be logged whole. */
+  const UNPARSEABLE = [
+    { name: 'names only an app', url: () => `srt://ingest.example:9999/video?key=${KEY}` },
+    { name: 'is not a url at all', url: () => `:::nonsense:::?key=${KEY}` },
+    { name: 'names an unusable app and stream', url: () => `srt://ingest.example:9999/video/a\\..\\b?key=${KEY}` },
+  ];
+
+  for (const testCase of UNPARSEABLE) {
+    it(`redacts the key from the log when the publish url ${testCase.name}`, async () => {
+      const lines: string[] = [];
+      const logger = Logger.getInstance();
+      const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+
+      try {
+        await withOme(PUBLISH_SECRET, async ({ announceUrl }) => {
+          lines.length = 0;
+          assert.equal((await announceUrl(BROADCASTER, testCase.url())).allowed, false);
+
+          const logged = lines.join('\n');
+          assert.ok(logged.length > 0, 'the refusal has to be logged at all for this to mean anything');
+          assert.equal(logged.includes(KEY), false, 'the publish key must not reach a log line');
+          assert.match(logged, /key=REDACTED/, 'and the parameter has to still be visible as redacted');
+        });
+      } finally {
+        logger.configure(previous);
+      }
+    });
+  }
+
+  /**
+   * The redactor is wider than the key, and has to stay that way. It is the same function the HTTP
+   * request logger and the auth middleware call, so narrowing it to the publish key would silently
+   * un-redact the SRS webhook token on three other paths.
+   */
+  it('still redacts the webhook token it was originally written for', () => {
+    assert.equal(redactUrlSecrets('/engines/srs/hls?token=abc123'), '/engines/srs/hls?token=REDACTED');
+    assert.equal(redactUrlSecrets('/x?token=abc&key=def'), '/x?token=REDACTED&key=REDACTED');
   });
 });
 

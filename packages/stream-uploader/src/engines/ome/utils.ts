@@ -9,6 +9,7 @@ import {
 } from '../../utils/hlsTags.js';
 import { isUsableDuration } from '../../utils/segmentDuration.js';
 import { isUsableStreamId } from '../../utils/streamId.js';
+import { redactUrlSecrets } from '../../utils/urlSecrets.js';
 
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from './../../types.js';
 import { AppStream, PlaylistEntry } from './interfaces.js';
@@ -222,6 +223,9 @@ export function parseStreamId(streamId: string): AppStream {
  * could not name the stream the engine had created. See SEC-25.
  */
 export function parseAppStream(url: string): AppStream {
+  // Redacted once, at the top, because every failure path below names the url and a publish key rides
+  // in its query. See SEC-28.
+  const safeUrl = redactUrlSecrets(url);
   let parts: string[] = [];
 
   try {
@@ -236,18 +240,18 @@ export function parseAppStream(url: string): AppStream {
     }
   } catch (e) {
     const errorMsg = getErrorMessage(e);
-    logger.error(`[OME] URL is not parseable: ${url} (${errorMsg})`);
-    throw new Error(`Could not parse app/stream from URL: ${url} (unparseable: ${errorMsg})`);
+    logger.error(`[OME] URL is not parseable: ${safeUrl} (${errorMsg})`);
+    throw new Error(`Could not parse app/stream from URL: ${safeUrl} (unparseable: ${errorMsg})`);
   }
 
   const [app, stream] = parts;
   if (!app || !stream) {
-    logger.error(`[OME] URL names no app/stream pair: ${url}`);
-    throw new Error(`Could not parse app/stream from URL: ${url} (no app/stream pair)`);
+    logger.error(`[OME] URL names no app/stream pair: ${safeUrl}`);
+    throw new Error(`Could not parse app/stream from URL: ${safeUrl} (no app/stream pair)`);
   }
   if (!isUsableStreamId(buildStreamId(app, stream))) {
-    logger.error(`[OME] URL names an unusable app/stream: ${url}`);
-    throw new Error(`Could not parse app/stream from URL: ${url} (unusable app/stream name)`);
+    logger.error(`[OME] URL names an unusable app/stream: ${safeUrl}`);
+    throw new Error(`Could not parse app/stream from URL: ${safeUrl} (unusable app/stream name)`);
   }
 
   return { app, stream };

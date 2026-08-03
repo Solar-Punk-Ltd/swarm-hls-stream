@@ -7,10 +7,10 @@ import { createSrsEngine, createSrsEngineFromEnv, SrsEngineOptions } from '../sr
 import {
   hasValidWebhookToken,
   MIN_SRS_WEBHOOK_TOKEN_LENGTH,
-  redactWebhookToken,
   SRS_WEBHOOK_TOKEN_PARAM,
 } from '../src/engines/srs/webhookToken.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
+import { redactUrlSecrets } from '../src/utils/urlSecrets.js';
 
 import { startTestApi } from './helpers/apiTestServer.js';
 import { makeFakeOrchestrator } from './helpers/fakes.js';
@@ -417,7 +417,7 @@ describe('SRS webhook token redaction', () => {
 
   for (const testCase of CASES) {
     it(`redacts the token as ${testCase.name}`, () => {
-      const redacted = redactWebhookToken(testCase.url);
+      const redacted = redactUrlSecrets(testCase.url);
 
       assert.equal(redacted, testCase.expected);
       assert.ok(!redacted.includes(TOKEN), 'the secret must not survive anywhere in the line');
@@ -425,13 +425,13 @@ describe('SRS webhook token redaction', () => {
   }
 
   it('leaves a url with no token untouched', () => {
-    assert.equal(redactWebhookToken('/stream/start'), '/stream/start');
+    assert.equal(redactUrlSecrets('/stream/start'), '/stream/start');
   });
 
   it('leaves a different parameter that merely contains the name untouched', () => {
     // Over-redaction is cheap but not free: a parameter the gate would never read as the
     // credential should survive, or the log stops being useful for diagnosing anything else.
-    assert.equal(redactWebhookToken('/x?mytoken=abc&refresh_token=def'), '/x?mytoken=abc&refresh_token=def');
+    assert.equal(redactUrlSecrets('/x?mytoken=abc&refresh_token=def'), '/x?mytoken=abc&refresh_token=def');
   });
 
   it('rejects a single-element array without relying on the length check', () => {
@@ -457,7 +457,7 @@ describe('SRS webhook token redaction', () => {
   });
 
   it('does not throw on a malformed query string', () => {
-    assert.equal(redactWebhookToken('/x?%'), '/x?%');
-    assert.equal(redactWebhookToken(`/x?${SRS_WEBHOOK_TOKEN_PARAM}=%E0%A4`), '/x?token=REDACTED');
+    assert.equal(redactUrlSecrets('/x?%'), '/x?%');
+    assert.equal(redactUrlSecrets(`/x?${SRS_WEBHOOK_TOKEN_PARAM}=%E0%A4`), '/x?token=REDACTED');
   });
 });
