@@ -9,7 +9,13 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "tsx --test test/*.test.ts",
     "test:e2e": "tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' 'suites/scenarios/*.test.ts' 'suites/service/*.test.ts'",
-    "test:e2e:smoke": "tsx --test 'suites/smoke/*.test.ts'"
+    "test:e2e:smoke": "tsx --test 'suites/smoke/*.test.ts'",
+    "bench:latency": "tsx bench/latency.ts",
+    "bench:recipe": "tsx bench/recipeReliability.ts"
+  },
+  "dependencies": {
+    "@ethersphere/bee-js": "^9.0.3",
+    "@swarm-hls-stream/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",

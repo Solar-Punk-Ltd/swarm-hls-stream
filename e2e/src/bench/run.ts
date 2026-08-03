@@ -1,0 +1,253 @@
+/**
+ * One latency run against a deployed stack: publish, watch the feed a viewer would watch, and time
+ * the first frame of each segment from capture to fetchable.
+ *
+ * Ordering matters and is the reason this reads the way it does. The publisher starts before anything
+ * is polled, the log is read once at the end rather than per sample, and the clock skew is taken
+ * before the publish so a run cannot spend minutes and then fail on a `date` that does not support
+ * milliseconds.
+ */
+
+import { Topic } from '@ethersphere/bee-js';
+import { parseManifest, segmentDuration } from '@swarm-hls-stream/shared';
+import { unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { containerName, type E2EConfig } from '../config.js';
+import type { FfmpegExit } from '../harness/ffmpegProcess.js';
+import { type Host, waitForIdle } from '../harness/host.js';
+import { announcedLiveStreams } from '../harness/logwatch.js';
+import { sleep, waitFor } from '../harness/wait.js';
+
+import { measureClockSkew } from './clockSkew.js';
+import { fetchFeedManifest, fetchSegment, segmentRefFromUri } from './gateway.js';
+import { probeFirstVideoFrame } from './probe.js';
+import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
+import { latencySplit, type SegmentInstants } from './split.js';
+import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from './timeline.js';
+import { latencyMsFromPts } from './wallclock.js';
+import { type PublishKnobs, startWallclockPublisher, type WallclockPublisher } from './wallclockPublisher.js';
+
+/** How long to wait for the uploader to announce the stream this run just started publishing. */
+const ANNOUNCE_TIMEOUT_MS = 90_000;
+/** How long to wait for one more unmeasured segment to appear in the feed. */
+const SEGMENT_TIMEOUT_MS = 120_000;
+
+export interface RunOptions {
+  cfg: E2EConfig;
+  host: Host;
+  /** Where a viewer's gateway is, reachable from **this** machine. See `gateway.ts`. */
+  gatewayUrl: string;
+  knobs: PublishKnobs;
+  /** How many distinct segments to carry end to end. */
+  samples: number;
+  /** How often to ask the feed for a new manifest, standing in for the client's own poll. */
+  pollIntervalMs: number;
+}
+
+/** Everything one segment contributed, before the uploader's log is read to fill in the middle. */
+interface PendingSample {
+  ref: string;
+  segmentDurationS: number;
+  capturedAtMs: number;
+  visibleAtMs: number;
+  fetchedAtMs: number;
+}
+
+export async function measureLatency(options: RunOptions): Promise<BenchRun> {
+  const { cfg, host, knobs } = options;
+  const uploader = containerName(cfg, 'stream-uploader');
+
+  await waitForIdle(host, cfg);
+  // Taken before the publish so every log read below is scoped to this run and cannot pick up a
+  // previous stream's segments out of the same `docker logs` tail.
+  const sinceIso = await host.nowIso();
+  const skew = await measureClockSkew(host);
+
+  const publisher = startWallclockPublisher(cfg, knobs);
+  let pending: PendingSample[] = [];
+  let discarded: DiscardedSegment[] = [];
+  try {
+    const stream = await waitForAnnouncement(host, uploader, sinceIso, publisher);
+    const topicHex = Topic.fromString(stream.topic).toString();
+    ({ collected: pending, discarded } = await collectSamples(options, stream.owner, topicHex, publisher.startedAtMs));
+  } finally {
+    await publisher.stop();
+  }
+
+  const timeline = uploadTimeline(await host.logsSince(uploader, sinceIso));
+  const samples = pending.map((sample) => toSample(sample, timeline, skew));
+
+  return {
+    measuredAt: new Date().toISOString(),
+    engine: cfg.engine,
+    profile: cfg.profile,
+    knobs,
+    samples,
+    discarded,
+    trend: latencyTrend(
+      pending.map((sample) => sample.fetchedAtMs),
+      pending.map((sample) => sample.capturedAtMs),
+    ),
+  };
+}
+
+function toSample(
+  pending: PendingSample,
+  timeline: ReturnType<typeof uploadTimeline>,
+  skew: Parameters<typeof latencySplit>[1],
+): SegmentSample {
+  const uploaded = segmentByRef(timeline, pending.ref);
+  if (!uploaded) {
+    throw new Error(
+      `the uploader's log holds no "Segment N uploaded: ${pending.ref}" line, though the gateway served ` +
+        'that segment. Either the deployment is not logging at a level that prints it, or the log ' +
+        'window read here does not reach back to when it was uploaded.',
+    );
+  }
+  const manifest = firstManifestAtOrAfter(timeline, uploaded.atMs);
+  if (!manifest) {
+    throw new Error(
+      `segment ${uploaded.index} uploaded but no manifest publish follows it in the log, so the feed ` +
+        'write that made it visible cannot be timed.',
+    );
+  }
+
+  const instants: SegmentInstants = {
+    capturedAtMs: pending.capturedAtMs,
+    segmentDurationS: pending.segmentDurationS,
+    uploadedAtMs: uploaded.atMs,
+    manifestPublishedAtMs: manifest.atMs,
+    visibleAtMs: pending.visibleAtMs,
+    fetchedAtMs: pending.fetchedAtMs,
+  };
+
+  return { index: uploaded.index, ref: pending.ref, split: latencySplit(instants, skew) };
+}
+
+/**
+ * Wait for the uploader to announce the stream this run just started publishing.
+ *
+ * Checks whether the publisher is still alive on every poll, rather than only at the deadline. A
+ * publisher that failed to spawn or died on its arguments is knowable in the first two seconds, and
+ * without this the run spends the full ninety waiting for something that can no longer happen, then
+ * reports a timeout when what it had was an encoder that never started.
+ */
+async function waitForAnnouncement(host: Host, uploader: string, sinceIso: string, publisher: WallclockPublisher) {
+  const ffmpegSaid = () => publisher.stderr().trim().slice(0, 300) || '(nothing)';
+  let announced: ReturnType<typeof announcedLiveStreams>[number] | undefined;
+  await waitFor(
+    async () => {
+      const exit = publisher.exit();
+      if (exit) {
+        throw new Error(
+          `the publisher exited (${describeExit(exit)}) before the uploader announced a live stream, so ` +
+            `nothing was ever ingested. ffmpeg said: ${ffmpegSaid()}`,
+        );
+      }
+      announced = announcedLiveStreams(await host.logsSince(uploader, sinceIso)).at(-1);
+      return announced !== undefined;
+    },
+    {
+      timeoutMs: ANNOUNCE_TIMEOUT_MS,
+      intervalMs: 2_000,
+      label: `the uploader announcing a live stream. ffmpeg said: ${ffmpegSaid()}`,
+    },
+  );
+  return announced!;
+}
+
+function describeExit(exit: FfmpegExit): string {
+  if (exit.signal !== null) {
+    return `on ${exit.signal}`;
+  }
+  return exit.code === null ? 'without ever starting' : `with status ${exit.code}`;
+}
+
+/**
+ * Poll the feed the way a player does, and carry each newly-appearing segment end to end.
+ *
+ * The newest entry is taken rather than the whole window, because the question is how far behind live
+ * a viewer is: an older entry in the same manifest has been fetchable for longer and would report a
+ * latency that is really its age.
+ */
+async function collectSamples(
+  options: RunOptions,
+  owner: string,
+  topicHex: string,
+  publishStartedAtMs: number,
+): Promise<{ collected: PendingSample[]; discarded: DiscardedSegment[] }> {
+  const { gatewayUrl, samples: wanted, pollIntervalMs } = options;
+  const collected: PendingSample[] = [];
+  const discarded: DiscardedSegment[] = [];
+  const seen = new Set<string>();
+  const deadline = Date.now() + SEGMENT_TIMEOUT_MS * wanted;
+
+  while (collected.length < wanted && Date.now() <= deadline) {
+    const manifest = await fetchFeedManifest(gatewayUrl, owner, topicHex);
+    const newest = parseManifest(manifest.body).segments.at(-1);
+    const ref = newest ? segmentRefFromUri(newest.uri) : null;
+    if (!newest || !ref || seen.has(ref)) {
+      await sleep(pollIntervalMs);
+      continue;
+    }
+    seen.add(ref);
+
+    // One unreadable segment loses that segment and nothing else. Every sample here cost a real
+    // broadcast and real postage, so throwing would discard the ones that already worked, and it
+    // would also make `UnusableTimestampsError` unreachable: that error exists so a run can report a
+    // segment as unmeasurable instead of crashing, and a caller that never catches it cannot.
+    try {
+      collected.push(await measureOne(gatewayUrl, newest, ref, manifest.atMs, publishStartedAtMs));
+    } catch (error) {
+      discarded.push({ ref, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  return { collected, discarded };
+}
+
+/**
+ * One manifest entry carried end to end into a reading.
+ *
+ * Separate from the polling loop so that everything which can fail for a single segment sits inside
+ * one `try` at the call site, and so that adding a step here cannot accidentally escape it.
+ */
+async function measureOne(
+  gatewayUrl: string,
+  newest: { uri: string; extinf: string },
+  ref: string,
+  visibleAtMs: number,
+  publishStartedAtMs: number,
+): Promise<PendingSample> {
+  const durationS = segmentDuration(newest.extinf);
+  if (durationS === null) {
+    throw new Error(`the manifest entry carries an unreadable duration: ${newest.extinf}`);
+  }
+
+  const segment = await fetchSegment(gatewayUrl, ref);
+  const frame = await probeSegmentBytes(segment.body, ref);
+  const latencyMs = latencyMsFromPts(frame, { publishStartedAtMs, observedAtMs: segment.atMs });
+
+  return {
+    ref,
+    segmentDurationS: durationS,
+    capturedAtMs: segment.atMs - latencyMs,
+    visibleAtMs,
+    fetchedAtMs: segment.atMs,
+  };
+}
+
+/** ffprobe reads a path, so the fetched bytes go to a temp file that is removed either way. */
+async function probeSegmentBytes(bytes: Buffer, ref: string) {
+  const path = join(tmpdir(), `swarm-hls-bench-${ref.slice(0, 16)}.ts`);
+  await writeFile(path, bytes);
+  try {
+    return await probeFirstVideoFrame(path, ref);
+  } finally {
+    await unlink(path).catch(() => {
+      // A leftover temp segment is not worth failing a run that otherwise measured cleanly.
+    });
+  }
+}

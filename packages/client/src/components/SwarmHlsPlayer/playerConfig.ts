@@ -7,9 +7,24 @@ const MB = 1024 * 1024;
  *
  * Every segment here is fetched from Swarm rather than from an origin next to the viewer, so the
  * budget covers a feed lookup plus a chunk download, not one HTTP round trip. Lowering it is the
- * largest client-side latency lever there is, and it is not being lowered yet: nothing in this
- * repository can currently measure glass-to-glass latency, so a smaller number here would trade
- * away rebuffering headroom for an improvement nobody could show. That instrument is LAT-1.
+ * largest client-side latency lever there is, and it is still not being lowered, but the reason has
+ * changed: there is a baseline now, and it does not say this number is free to cut.
+ *
+ * Measured 2026-08-02 by `pnpm bench:latency` (LAT-1) against a real deployment, SRS at 1280x720 and
+ * a 2s GOP: **capture to fetchable was 5.94s median, and a viewer of it sits 13.30s behind live**, so
+ * roughly three quarters of what a viewer waits is this constant. That is the split the old note
+ * asked for, and taken alone it makes this look like the obvious thing to cut.
+ *
+ * Behind-live is not the total plus this buffer. The total is anchored on a segment's first frame
+ * and the buffer is measured back from the live edge, which is that same segment's last, so adding
+ * them counts one segment twice.
+ *
+ * What stops that being the conclusion is the spread. Across five samples the pipeline ranged from
+ * 4.21s to 7.60s, so it varied by 3.4s inside one short run, and a live buffer has to absorb that
+ * variance or it converts into rebuffering. Ten seconds against a pipeline with a 3.4s spread is not
+ * obviously generous. The number to cut this against is the spread over a long run rather than a
+ * median over five segments, and per-hop attribution is not usable yet either, because the run's own
+ * breakdown reports an impossible upload hop on every sample (LAT-9).
  */
 export const LIVE_SYNC_DURATION_S = 10;
 

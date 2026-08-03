@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  announcedLiveStreams,
   announcedLiveTopics,
   isContiguous,
   messageText,
@@ -27,11 +28,13 @@ function jsonLine(level: string, message: string): string {
   return JSON.stringify({ ts: '2026-08-02T09:14:05.123Z', level, msg: message });
 }
 
+const ANNOUNCED_OWNER = '0x3f1a9c2b4d5e6f708192a3b4c5d6e7f809a1b2c3';
+
 /** The exact message `StreamUploader.notifyStart` logs, entry shape included. */
 function announcement(topic: string, state: string): string {
   return `Adding stream to list: ${JSON.stringify({
     title: '2026-08-02 09:14',
-    owner: '0x3f1a9c2b4d5e6f708192a3b4c5d6e7f809a1b2c3',
+    owner: ANNOUNCED_OWNER,
     topic,
     state,
     mediatype: 'video',
@@ -201,6 +204,63 @@ describe('announcedLiveTopics', () => {
 
   it('returns nothing when no stream was announced', () => {
     assert.deepEqual(announcedLiveTopics(textLine('log', UPLOADED(0))), []);
+  });
+
+  /**
+   * Both of these were excluded by a truthiness guard until this branch extracted the shared parse
+   * and replaced it with `!== undefined`. The entries come out of `JSON.parse` on a log line, so the
+   * `Partial<AnnouncedStream>` the parse is cast to is a claim rather than a fact, and a predicate
+   * reading `topic is string` was signing for a `null`. What a caller then builds is a feed location
+   * naming the topic "null", which fetches nothing and reads as the publisher never having started.
+   */
+  it('drops an announcement whose topic is empty or null, rather than typing it as a string', () => {
+    const rawTopicLine = (topicJson: string) =>
+      textLine('log', `Adding stream to list: {"owner":"0xabc","topic":${topicJson},"state":"live"}`);
+    const log = [rawTopicLine('null'), rawTopicLine('""'), rawTopicLine('"topic-real"')].join('\n');
+
+    assert.deepEqual(announcedLiveTopics(log), ['topic-real']);
+  });
+});
+
+describe('announcedLiveStreams', () => {
+  const liveEntry = (fields: string) => textLine('log', `Adding stream to list: {${fields},"state":"live"}`);
+
+  /**
+   * The bench resolves a feed location from this before it publishes anything, and it reads that feed
+   * through a gateway rather than asking the uploader, so it needs the owner as well as the topic.
+   * That is the whole reason it exists beside `announcedLiveTopics`, and it had no test of its own
+   * until the PR #64 gate said so.
+   */
+  it('returns the owner alongside the topic', () => {
+    const [stream, ...rest] = announcedLiveStreams(textLine('log', announcement('topic-a', 'live')));
+
+    assert.deepEqual(rest, []);
+    assert.equal(stream.topic, 'topic-a');
+    assert.equal(stream.owner, ANNOUNCED_OWNER);
+  });
+
+  it('ignores an announcement that is not live', () => {
+    assert.deepEqual(announcedLiveStreams(textLine('log', announcement('topic-a', 'vod'))), []);
+  });
+
+  /**
+   * An entry carrying one of the two names a feed nothing can fetch. Dropped here rather than
+   * downstream, where it becomes a request to `/feeds/undefined/...` and a run that waits out its
+   * timeout blaming the publisher for a stream the uploader did announce.
+   */
+  it('drops an entry naming only one half of a feed location', () => {
+    const log = [
+      liveEntry('"topic":"orphan-topic"'),
+      liveEntry(`"owner":"${ANNOUNCED_OWNER}"`),
+      liveEntry(`"owner":"${ANNOUNCED_OWNER}","topic":""`),
+      liveEntry(`"owner":"","topic":"orphan-owner"`),
+      liveEntry(`"owner":"${ANNOUNCED_OWNER}","topic":"whole"`),
+    ].join('\n');
+
+    assert.deepEqual(
+      announcedLiveStreams(log).map((stream) => stream.topic),
+      ['whole'],
+    );
   });
 });
 

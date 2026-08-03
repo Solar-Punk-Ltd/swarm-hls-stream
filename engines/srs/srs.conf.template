@@ -1,16 +1,16 @@
-listen              1935;
+listen              RTMP_PORT_PLACEHOLDER;
 max_connections     1000;
 daemon              off;
 
 http_server {
     enabled         on;
-    listen          8080;
+    listen          HTTP_PORT_PLACEHOLDER;
     dir             ./objs/nginx/html;
 }
 
 srt_server {
     enabled         on;
-    listen          10080;
+    listen          SRT_PORT_PLACEHOLDER;
     latency         200;
     passphrase      PASSPHRASE_PLACEHOLDER;
     pbkeylen        16;

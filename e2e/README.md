@@ -4,15 +4,16 @@ Drives the **real** pipeline (media engine → stream-uploader → bee → Swarm
 injects real failures: stops containers, freezes bee, hard-kills the uploader. Unit tests live in
 each package, this is the layer above them.
 
-Two things live here, and they run at different times:
+Three things live here, and they run at different times:
 
-|           | what                                   | needs a deployment |
-| --------- | -------------------------------------- | ------------------ |
-| `test/`   | unit tests of the harness itself       | no                 |
-| `suites/` | the fault scenarios and service checks | yes                |
+|           | what                                      | needs a deployment |
+| --------- | ----------------------------------------- | ------------------ |
+| `test/`   | unit tests of the harness itself          | no                 |
+| `suites/` | the fault scenarios and service checks    | yes                |
+| `bench/`  | the latency instrument (LAT-1), see below | yes                |
 
 `pnpm test` runs only the first, so the repo-wide `pnpm test` never tries to reach a host. The
-suites are opt-in, and they publish a real stream and spend real postage.
+suites and the bench are opt-in, and they publish a real stream and spend real postage.
 
 ## Pointing it at a deployment
 
@@ -98,6 +99,60 @@ Service coverage, no faults:
 | `service/health-endpoint`         | `/health` across live → idle                                              |
 | `service/catalog-via-gateway`     | player-visible: a `live` entry through the bee-gateway, flipping to `vod` |
 | `service/multi-stream-concurrent` | two concurrent streams, distinct topics, each finalizing to its own VOD   |
+
+## The latency bench (LAT-1)
+
+```bash
+pnpm bench:latency
+```
+
+Publishes a real stream, follows it through the feed a viewer reads, and reports how far behind live
+that viewer is — split across segment duration, upload, feed write, propagation and fetch, plus the
+player's own configured buffer. Writes a markdown report and its JSON to `docs/bench/`.
+
+Nothing else in this repository can measure that, which is why `liveSyncDuration` is still 10: every
+other LAT row asks for an improvement, and Sprint 5 grades them against a baseline that has to exist
+first.
+
+**How the picture is timed.** ffmpeg publishes with `-use_wallclock_as_timestamps 1 -copyts`, so each
+frame carries the bench machine's clock, and the segment fetched at the far end is probed with
+ffprobe for the timestamp of its first frame. No OCR, no burnt-in clock, nothing to read off a
+picture. MPEG-TS stores those timestamps in 33 bits at 90kHz and wraps every ~26.5 hours, which
+`src/bench/wallclock.ts` folds back.
+
+**Both ends are timed by this machine.** The publisher runs here and the gateway is fetched from here,
+over HTTP rather than through ssh, so no clock skew enters the total. That is also the path a real
+viewer takes. It does mean the gateway has to be reachable from wherever you run this: set
+`BENCH_GATEWAY_URL`, or forward the port with `ssh -L`. The run refuses to start otherwise rather than
+publishing first and failing after.
+
+**It checks itself before it spends anything.** The first thing a run does is publish to a local file,
+probe it, and recover the capture instants — the whole chain, offline, in about fifteen seconds. If
+the recipe has stopped carrying the clock, or ffprobe has changed what it prints, that fails there,
+for free, instead of producing a number that becomes a baseline.
+
+**What it refuses to guess.** A media engine may rebase timestamps when it repackages. If it does, the
+arithmetic still yields a plausible-looking number, so the reading is bounded by the two things that
+are true by construction: a frame cannot be captured before the publisher started, and cannot be
+fetched before it was captured. Outside those, the run says the timestamps did not survive rather than
+reporting the number. The per-hop split from the uploader's log still works in that case.
+
+| var                  | default                             | what it is                                         |
+| -------------------- | ----------------------------------- | -------------------------------------------------- |
+| `BENCH_GATEWAY_URL`  | `http://<publicHost>:<gatewayPort>` | viewer gateway, as reachable from **this** machine |
+| `BENCH_SAMPLES`      | `5`                                 | segments carried end to end                        |
+| `BENCH_FPS`          | `30`                                |                                                    |
+| `BENCH_GOP_SECONDS`  | `2`                                 | keyframe interval, which bounds segment duration   |
+| `BENCH_BITRATE_KBPS` | `2500`                              |                                                    |
+| `BENCH_SIZE`         | `1280x720`                          |                                                    |
+
+The deployment has to log at `debug`, for the same reason the suites do, and the run reads the level
+and refuses before publishing rather than timing out.
+
+**Not yet a matrix.** The knobs above are read one run at a time. Sweeping them is a loop over this,
+and it is deliberately not written until one run has been validated against a real deployment: each
+cell costs a real broadcast and real postage, and a matrix built on an unvalidated measurement spends
+that money on numbers nobody should trust.
 
 ## Prerequisites
 

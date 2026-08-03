@@ -57,9 +57,18 @@ STAMP_ID_OVERRIDE=""
 # Populated by parse_profile_args with the argv minus the --profile / --portSlot flags.
 REST_ARGS=()
 
-# Base ports (slot 0). Each service occupies a unique last digit (0-8) so
+# Origins for the --portSlot arithmetic. Each service occupies a unique last digit (0-8) so
 # apply_port_slot can compute `base + slot*10` without collisions across services.
-# Defaults match docker-compose.yml `:-NNNN` fallbacks and .env.sample.
+#
+# These are NOT the docker-compose.yml `:-NNNN` fallbacks and NOT the .env.sample values, which this
+# comment claimed until the PR #64 gate checked it. Not one of the nine agreed with either, and they
+# do not need to: at slot 0 apply_port_slot leaves an already-set variable alone, so wherever a sample
+# carries a value that value wins and these numbers are never reached.
+#
+# SRS_RTMP_PORT and SRS_HTTP_PORT carry none, in .env.sample or engines/srs/.env.sample. A stock
+# deploy takes 10002 and 10003 from here instead of the 1935 and 8080 that engines/srs's compose file
+# falls back to, and since d6394a3 passed these into SRS's own config that is what SRS binds. It is
+# consistent end to end and it is not what the ports are documented as. Filed as OPS-27.
 readonly PORT_VARS=(
   "API_PORT:10000"
   "SRS_SRT_PORT:10001"

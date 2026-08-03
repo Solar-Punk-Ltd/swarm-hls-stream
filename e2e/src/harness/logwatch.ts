@@ -106,6 +106,55 @@ export function messageText(text: string): string {
   return text.split('\n').map(messageOf).join('\n');
 }
 
+/** A log line with the instant it was written, for readers that measure rather than count. */
+export interface TimestampedMessage {
+  /** Epoch milliseconds from the line's own timestamp, which is the **uploader host's** clock. */
+  atMs: number;
+  message: string;
+}
+
+/** `[2026-08-02T19:38:06.123Z] [LOG] - message`, the text format `formatLine` writes. */
+const RE_TEXT_LINE = /^\[([^\]]+)\] \[[A-Z]+\] - (.*)$/;
+
+/**
+ * Log lines paired with when they were written, for the bench: counting events answers what happened
+ * and measuring latency needs when.
+ *
+ * Lines carrying no timestamp of their own are dropped rather than guessed at. That covers the
+ * continuation lines of a multi-line error and anything a container writes outside the logger, and it
+ * is safe for the patterns that read this because every one of them is written by a single
+ * `logger.*` call on one line.
+ */
+export function timestampedMessages(text: string): TimestampedMessage[] {
+  const stamped: TimestampedMessage[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (isStructuredLogLine(parsed)) {
+          pushIfDated(stamped, parsed.ts, parsed.msg);
+        }
+      } catch {
+        // A truncated line in a `docker logs` tail, same as `messageOf` treats it.
+      }
+      continue;
+    }
+    const match = RE_TEXT_LINE.exec(line);
+    if (match) {
+      pushIfDated(stamped, match[1], match[2]);
+    }
+  }
+  return stamped;
+}
+
+function pushIfDated(into: TimestampedMessage[], ts: string, message: string): void {
+  const atMs = Date.parse(ts);
+  if (Number.isFinite(atMs)) {
+    into.push({ atMs, message });
+  }
+}
+
 function captureNumbers(source: string, re: RegExp): number[] {
   return [...source.matchAll(re)].map((m) => Number(m[1]));
 }
@@ -126,24 +175,61 @@ export function parseUploaderLog(text: string): UploaderEvents {
   };
 }
 
+/** Where a stream's feed lives: the signer's address, and the raw topic it has yet to be hashed from. */
+export interface AnnouncedStream {
+  topic: string;
+  owner: string;
+}
+
+/**
+ * Every `live` announcement in the log, as parsed, with whatever fields the entry carried.
+ *
+ * Deliberately does not require both fields. The two readers below want different amounts of the
+ * entry, and tightening the shared parse to what the stricter one needs would quietly shorten the
+ * other's answer: `announcedLiveTopics` returning fewer topics does not fail, it makes a scenario
+ * wait out its timeout and blame the publisher.
+ */
+function announcedLiveEntries(text: string): Partial<AnnouncedStream>[] {
+  const entries: Partial<AnnouncedStream>[] = [];
+  for (const match of messageText(text).matchAll(RE_STREAM_ANNOUNCE)) {
+    try {
+      const entry = JSON.parse(match[1]) as Partial<AnnouncedStream> & { state?: string };
+      if (entry.state === 'live') {
+        entries.push(entry);
+      }
+    } catch {
+      // A log line whose JSON tail is truncated is not a usable announcement — skip it.
+    }
+  }
+  return entries;
+}
+
 /**
  * Topics the uploader announced as `live` in its own `Adding stream to list:` log lines, in order.
  * This is the authoritative, lag-free source of the stream's topic — unlike the gateway-served
  * catalog, which trails the uploader by minutes and can surface a stale topic from a prior stream.
  */
 export function announcedLiveTopics(text: string): string[] {
-  const topics: string[] = [];
-  for (const match of messageText(text).matchAll(RE_STREAM_ANNOUNCE)) {
-    try {
-      const entry = JSON.parse(match[1]) as { topic?: string; state?: string };
-      if (entry.state === 'live' && entry.topic) {
-        topics.push(entry.topic);
-      }
-    } catch {
-      // A log line whose JSON tail is truncated is not a usable announcement — skip it.
-    }
-  }
-  return topics;
+  return (
+    announcedLiveEntries(text)
+      .map((entry) => entry.topic)
+      // Checked against the runtime type, not against `undefined`, because these entries come out of
+      // `JSON.parse` and the shape they are cast to is a claim about the uploader rather than a fact
+      // about the string. A predicate narrowing to `string` has to earn it, or `null` reaches a caller
+      // wearing a type that says it cannot be there.
+      .filter((topic): topic is string => typeof topic === 'string' && topic !== '')
+  );
+}
+
+/**
+ * The same announcements, kept only where they name a whole feed location.
+ *
+ * The bench needs the owner as well as the topic, because it reads the feed through a gateway rather
+ * than asking the uploader. An entry with one of the two names a feed nothing can fetch, so it is
+ * dropped here rather than becoming a request to `/feeds/undefined/...`.
+ */
+export function announcedLiveStreams(text: string): AnnouncedStream[] {
+  return announcedLiveEntries(text).filter((entry): entry is AnnouncedStream => Boolean(entry.topic && entry.owner));
 }
 
 /** True if the sorted unique indices form a gapless run (max − min + 1 === unique count). */

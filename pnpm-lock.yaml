@@ -59,6 +59,13 @@ importers:
         version: 10.0.0(eslint@8.57.1)
 
   e2e:
+    dependencies:
+      '@ethersphere/bee-js':
+        specifier: ^9.0.3
+        version: 9.8.1
+      '@swarm-hls-stream/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
     devDependencies:
       '@types/node':
         specifier: ^22.8.1

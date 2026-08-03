@@ -1,10 +1,11 @@
+# Deliberately declares no `ports:`. Compose CONCATENATES port lists across overlaid files rather
+# than replacing them, so repeating the mapping here does not restate it, it adds a second one. With
+# the base file now publishing the same port on both sides, a repeated fixed-container-port entry
+# gives two claims on one host port and `docker compose up` fails on allocation instead of starting.
+# The base file's mapping is the only one, and it already honours SRS_RTMP_PORT / SRS_HTTP_PORT /
+# SRS_SRT_PORT.
 services:
   srs:
-    ports:
-      - '1935:1935'
-      - '1985:1985'
-      - '8080:8080'
-      - '${SRS_SRT_PORT:-10080}:10080/udp'
     environment:
       SRS_ADAPTER_HOST: host.docker.internal
     extra_hosts:
