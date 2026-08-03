@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  gatewayHealthProblem,
   GatewayStatusError,
   isFeedPendingFirstWrite,
   resolvedFeedIndex,
@@ -121,5 +122,37 @@ describe('the feed index the gateway resolved to', () => {
 
   it('answers null for a header that is not a number, rather than NaN', () => {
     assert.equal(resolvedFeedIndex(new Headers({ 'swarm-feed-index': 'not-hex' })), null);
+  });
+});
+
+/**
+ * The preflight exists so a run fails for free rather than after the postage is spent, and it did
+ * exactly that on 2026-08-03 when the bench was pointed at a public Swarm gateway. But it refused for
+ * the wrong reason: the public gateway answers `/health` with the plain text `OK` rather than a bee
+ * node's JSON, and it serves the feed API perfectly well.
+ *
+ * That matters now rather than in the abstract. LAT-10's only no-cost mitigation is to point viewers
+ * at a different gateway, and a bench that can only measure a bee node cannot measure whether the
+ * mitigation works.
+ */
+describe('what counts as a reachable viewer gateway', () => {
+  it('accepts a bee node, which answers /health with a status', () => {
+    assert.equal(gatewayHealthProblem('{"status":"ok","version":"2.8.1"}'), null);
+  });
+
+  it('accepts a gateway that answers OK, which is what the public ones do', () => {
+    assert.equal(gatewayHealthProblem('OK'), null);
+  });
+
+  /**
+   * The case the guard was written for and still has to catch: a port that is open and serving
+   * something else entirely. Refusing this is the whole reason the preflight runs before the publish.
+   */
+  it('refuses a port serving something that is not a gateway at all', () => {
+    assert.match(gatewayHealthProblem('<!DOCTYPE html><title>nginx</title>') ?? '', /not a gateway/);
+  });
+
+  it('refuses an empty answer, which a proxy can give for a dead upstream', () => {
+    assert.match(gatewayHealthProblem('   ') ?? '', /not a gateway/);
   });
 });

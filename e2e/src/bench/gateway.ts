@@ -142,10 +142,29 @@ export async function fetchSegment(gatewayUrl: string, ref: string): Promise<Tim
 }
 
 /**
+ * Whether a `/health` body says this is a gateway, or null when it does.
+ *
+ * A bee node answers JSON carrying `status`. A public Swarm gateway answers the plain text `OK` and
+ * serves the feed API perfectly well, and this used to refuse it as "not a bee node". That was the
+ * wrong test for the wrong reason, and it stopped mattering in the abstract on 2026-08-03: LAT-10's
+ * only no-cost mitigation is to point viewers at a different gateway, and a bench that can only
+ * measure a bee node cannot measure whether the mitigation works.
+ *
+ * What the guard is actually for is still enforced. A port that is open and serving something else,
+ * or a proxy answering nothing for a dead upstream, is refused before the publish spends postage.
+ */
+export function gatewayHealthProblem(body: string): string | null {
+  const answer = body.trim();
+  if (answer.includes('status') || /^ok$/i.test(answer)) {
+    return null;
+  }
+  return `/health answered something that is not a gateway: ${answer.slice(0, 80) || '(nothing)'}`;
+}
+
+/**
  * Fail now, with an actionable message, rather than after the publish has spent postage.
  *
- * Uses bee's own `/health`, so a reachable port serving something else is refused as well as a
- * closed one.
+ * Uses `/health`, so a reachable port serving something else is refused as well as a closed one.
  */
 export async function requireGatewayReachable(gatewayUrl: string): Promise<void> {
   let body: string;
@@ -155,10 +174,8 @@ export async function requireGatewayReachable(gatewayUrl: string): Promise<void>
   } catch (error) {
     throw new GatewayUnreachableError(gatewayUrl, (error as Error).message);
   }
-  if (!body.includes('status')) {
-    throw new GatewayUnreachableError(
-      gatewayUrl,
-      `/health answered something that is not a bee node: ${body.slice(0, 80)}`,
-    );
+  const problem = gatewayHealthProblem(body);
+  if (problem !== null) {
+    throw new GatewayUnreachableError(gatewayUrl, problem);
   }
 }
