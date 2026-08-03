@@ -75,6 +75,55 @@ export function recommendBufferMs(
   };
 }
 
+/** One measured segment, reduced to what the delivery question needs. */
+export interface DeliverySample {
+  /** Video PES packets found in the segment's bytes, which for this encode is one per frame. */
+  videoPacketCount: number;
+  segmentMs: number;
+  fps: number;
+}
+
+export interface FrameDelivery {
+  /** Median share of the expected frames that arrived, across the samples. */
+  medianRatio: number;
+  /** The single worst segment, since one gap is a visible glitch a median absorbs. */
+  worstRatio: number;
+}
+
+/**
+ * How much of the published picture actually reached the far end.
+ *
+ * The latency columns cannot answer this and do not degrade when it goes wrong. A path losing
+ * packets produces segments the engine still cuts, still uploads and still serves, on ordinary
+ * timings: the 2026-08-03 runs published from a workstation came back with 14 to 24 video frames per
+ * two-second segment where the local self-check produced 60, and nothing in the report said so.
+ *
+ * Expressed as a ratio against `fps x segment` rather than as a raw count, so a row at half-second
+ * segments is not scored against a row at four, and a lower frame rate is not read as loss.
+ */
+export function frameDelivery(samples: readonly DeliverySample[]): FrameDelivery {
+  const ratios = samples.map((sample) => {
+    if (sample.segmentMs <= 0) {
+      throw new Error('a segment with no duration expects no frames, so its delivery has no meaning');
+    }
+    return sample.videoPacketCount / (sample.fps * (sample.segmentMs / 1_000));
+  });
+  return { medianRatio: median(ratios), worstRatio: Math.min(...ratios) };
+}
+
+/**
+ * How far the worst arrival sat above the typical one.
+ *
+ * {@link minimumSafeBufferMs} takes the worst sample, because one stall is a stall, and that makes it
+ * the right number to configure and the wrong one to judge a setting by: it cannot distinguish a
+ * setting whose arrivals cluster from one that is usually quick and occasionally very slow. Two rows
+ * with the same median can demand very different buffers, and this is the difference.
+ */
+export function arrivalTailMs(samples: readonly BufferSample[]): number {
+  const delays = samples.map((sample) => sample.totalMs - sample.segmentMs);
+  return Math.max(...delays) - median(delays);
+}
+
 /** Every run taken at one setting, collapsed into the row a grid prints. */
 export interface GridRow {
   label: string;
@@ -93,6 +142,10 @@ export interface GridRow {
   skewMs: number;
   /** What a viewer would sit behind live here, at the buffer this setting can support. */
   buffer: BufferRecommendation;
+  /** Whether the picture that arrived is the picture that was published. */
+  delivery: FrameDelivery;
+  /** How far the worst arrival sat above the typical one, which is what the buffer has to absorb. */
+  tailMs: number;
 }
 
 export function median(values: readonly number[]): number {

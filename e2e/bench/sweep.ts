@@ -9,7 +9,15 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { BenchRun } from '../src/bench/report.js';
-import { type BufferSample, type GridRow, median, recommendBufferMs } from '../src/bench/sweepAnalysis.js';
+import {
+  arrivalTailMs,
+  type BufferSample,
+  type DeliverySample,
+  frameDelivery,
+  type GridRow,
+  median,
+  recommendBufferMs,
+} from '../src/bench/sweepAnalysis.js';
 import { ROOT_DIR } from '../src/config.js';
 
 const REPORT_DIR = join(ROOT_DIR, 'docs', 'bench');
@@ -18,6 +26,10 @@ const POLL_INTERVAL_MS = 2_000;
 
 function seconds(ms: number): string {
   return `${(ms / 1_000).toFixed(2)}s`;
+}
+
+function percent(ratio: number): string {
+  return `${(ratio * 100).toFixed(1)}%`;
 }
 
 /**
@@ -29,7 +41,8 @@ function seconds(ms: number): string {
  */
 function settingLabel(run: BenchRun): string {
   const segmentMs = median(run.samples.map((sample) => sample.split.hops.find((h) => h.name === 'segment')!.ms));
-  return `segment ${(segmentMs / 1_000).toFixed(2)}s (gop ${run.knobs.gopSeconds}s, ${run.knobs.videoBitrateKbps}kbps)`;
+  const { size, videoBitrateKbps, fps, gopSeconds } = run.knobs;
+  return `${size} ${videoBitrateKbps}k ${fps}fps, segment ${(segmentMs / 1_000).toFixed(2)}s (gop ${gopSeconds}s)`;
 }
 
 /**
@@ -71,6 +84,16 @@ function toRow(label: string, runs: readonly BenchRun[]): GridRow {
     segmentMs: sample.split.hops.find((hop) => hop.name === 'segment')!.ms,
   }));
   const segmentMs = median(bufferSamples.map((sample) => sample.segmentMs));
+  // The frame rate is a per-run knob, so the expectation is taken from the run each sample came from
+  // rather than from the group. A row is only ever one setting, but nothing here enforces that and a
+  // ratio computed against the wrong rate looks exactly like packet loss.
+  const deliverySamples: DeliverySample[] = runs.flatMap((run) =>
+    run.samples.map((sample) => ({
+      videoPacketCount: sample.videoPacketCount,
+      segmentMs: sample.split.hops.find((hop) => hop.name === 'segment')!.ms,
+      fps: run.knobs.fps,
+    })),
+  );
 
   const hopMs: Record<string, number> = {};
   for (const name of samples[0].split.hops.map((hop) => hop.name)) {
@@ -87,6 +110,8 @@ function toRow(label: string, runs: readonly BenchRun[]): GridRow {
     hopMs,
     skewMs: median(runs.map((run) => Math.abs(run.samples[0].split.skew.offsetMs))),
     buffer: recommendBufferMs(bufferSamples, POLL_INTERVAL_MS, segmentMs),
+    delivery: frameDelivery(deliverySamples),
+    tailMs: arrivalTailMs(bufferSamples),
   };
 }
 
@@ -100,6 +125,16 @@ async function main(): Promise<void> {
   for (const run of runs) {
     const label = settingLabel(run);
     grouped.set(label, [...(grouped.get(label) ?? []), run]);
+  }
+
+  // Samples the self-check refused. They never reach a row, so a setting that produced many of them
+  // would otherwise be summarised entirely from the ones that came out well.
+  const discardedBySetting = new Map<string, number>();
+  for (const [label, group] of grouped) {
+    discardedBySetting.set(
+      label,
+      group.reduce((total, run) => total + run.discarded.length, 0),
+    );
   }
 
   const rows = [...grouped.entries()].map(([label, group]) => toRow(label, group));
@@ -124,6 +159,24 @@ async function main(): Promise<void> {
         `${seconds(row.minTotalMs)} | ${seconds(row.maxTotalMs)} | ${Math.round(row.hopMs.segment)}ms | ` +
         `${Math.round(row.hopMs.upload)}ms | ${Math.round(feed)}ms | ${Math.round(row.hopMs.fetch)}ms | ` +
         `${Math.round(row.skewMs)}ms |`,
+    );
+  }
+
+  console.log('\n## Whether the setting is one you could leave running\n');
+  console.log('Latency alone ranks a broken path against a working one. A path losing packets still');
+  console.log('produces segments the engine cuts, uploads and serves on ordinary timings: the runs');
+  console.log('published from a workstation carried 14 to 24 video frames per two-second segment where');
+  console.log('60 were sent, and every latency column looked normal. `frames` is what arrived against');
+  console.log('what was published, and `worst` is the single worst segment, because one gap is visible');
+  console.log('and a median absorbs it. `tail` is how far the slowest arrival sat above the typical');
+  console.log('one, which is the part of the buffer that pays for variance rather than for distance.\n');
+  console.log('| setting | frames | worst | tail | discarded | runs |');
+  console.log('| --- | ---: | ---: | ---: | ---: | ---: |');
+  for (const row of rows) {
+    const discarded = discardedBySetting.get(row.label) ?? 0;
+    console.log(
+      `| ${row.label} | ${percent(row.delivery.medianRatio)} | ${percent(row.delivery.worstRatio)} | ` +
+        `${seconds(row.tailMs)} | ${discarded} | ${row.runs} |`,
     );
   }
 

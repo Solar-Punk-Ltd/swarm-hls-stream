@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { median, minimumSafeBufferMs, recommendBufferMs } from '../src/bench/sweepAnalysis.js';
+import {
+  arrivalTailMs,
+  frameDelivery,
+  median,
+  minimumSafeBufferMs,
+  recommendBufferMs,
+} from '../src/bench/sweepAnalysis.js';
 
 /**
  * The arithmetic behind the one recommendation this project makes about the player.
@@ -68,6 +74,97 @@ describe('the smallest live buffer a set of samples supports', () => {
 
     assert.equal(short.marginMs, 500);
     assert.equal(short.recommendedMs, 2_000 + 2_000 + 500);
+  });
+});
+
+/**
+ * The second question a profile grid has to answer. Latency says how far behind live a viewer sits;
+ * this says whether what arrives there is the picture that was published.
+ */
+describe('frame delivery', () => {
+  /** A segment carrying every frame the publisher was asked for scores 1. */
+  it('scores an intact segment at one', () => {
+    const result = frameDelivery([{ videoPacketCount: 30, segmentMs: 1_000, fps: 30 }]);
+
+    assert.equal(result.medianRatio, 1);
+    assert.equal(result.worstRatio, 1);
+  });
+
+  /**
+   * The reading this exists for, taken from the laptop runs of 2026-08-03. About 15% of SRT packets
+   * were lost on the way to the host and segments came back with 14 to 24 video frames where the
+   * local self-check produced 60. Every latency number in those runs looked ordinary, and a grid
+   * without this column would have ranked a broken path against a working one.
+   */
+  it('catches a lossy path that the latency columns cannot see', () => {
+    const result = frameDelivery([
+      { videoPacketCount: 24, segmentMs: 2_000, fps: 30 },
+      { videoPacketCount: 14, segmentMs: 2_000, fps: 30 },
+      { videoPacketCount: 21, segmentMs: 2_000, fps: 30 },
+    ]);
+
+    assert.ok(result.medianRatio < 0.4, `expected a badly incomplete median, got ${result.medianRatio}`);
+    assert.ok(result.worstRatio < 0.25, `expected the worst segment to be worse still, got ${result.worstRatio}`);
+  });
+
+  /**
+   * The worst is reported beside the median because one gap is a visible glitch, and a single bad
+   * segment among four good ones leaves the median at 1.
+   */
+  it('reports the worst segment separately, since a median hides a single glitch', () => {
+    const result = frameDelivery([
+      { videoPacketCount: 30, segmentMs: 1_000, fps: 30 },
+      { videoPacketCount: 30, segmentMs: 1_000, fps: 30 },
+      { videoPacketCount: 9, segmentMs: 1_000, fps: 30 },
+      { videoPacketCount: 30, segmentMs: 1_000, fps: 30 },
+    ]);
+
+    assert.equal(result.medianRatio, 1);
+    assert.equal(result.worstRatio, 0.3);
+  });
+
+  /** The expectation scales with both knobs, so a half-second segment is not scored against a second. */
+  it('expects fewer frames of a shorter segment and of a slower frame rate', () => {
+    assert.equal(frameDelivery([{ videoPacketCount: 15, segmentMs: 500, fps: 30 }]).medianRatio, 1);
+    assert.equal(frameDelivery([{ videoPacketCount: 15, segmentMs: 1_000, fps: 15 }]).medianRatio, 1);
+  });
+
+  /**
+   * A segment of no duration would divide by zero and report `Infinity`, which sorts as the best row
+   * in the grid. Refusing is the only reading that cannot be mistaken for a good one.
+   */
+  it('refuses a segment with no duration rather than scoring it infinitely well', () => {
+    assert.throws(() => frameDelivery([{ videoPacketCount: 30, segmentMs: 0, fps: 30 }]), /no duration/);
+  });
+});
+
+/**
+ * What the buffer costs beyond the typical case.
+ *
+ * `minimumSafeBufferMs` takes the worst sample because one stall is a stall, which makes it the right
+ * number to configure and the wrong one to judge a setting by: it cannot say whether the worst was
+ * near the typical or far above it. Two settings with the same median can need very different buffers.
+ */
+describe('arrival tail', () => {
+  it('measures how far the worst arrival sat above the typical one', () => {
+    const samples = [
+      { totalMs: 3_000, segmentMs: 1_000 },
+      { totalMs: 3_200, segmentMs: 1_000 },
+      { totalMs: 6_000, segmentMs: 1_000 },
+    ];
+
+    // Delays are 2000/2200/5000; the median is 2200 and the worst 5000.
+    assert.equal(arrivalTailMs(samples), 2_800);
+  });
+
+  it('is zero when every segment arrived alike, which is what a settled setting looks like', () => {
+    assert.equal(
+      arrivalTailMs([
+        { totalMs: 3_000, segmentMs: 1_000 },
+        { totalMs: 3_000, segmentMs: 1_000 },
+      ]),
+      0,
+    );
   });
 });
 
