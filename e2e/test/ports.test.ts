@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
+import { ROOT_DIR } from '../src/config.js';
 import {
   MAX_PORT,
   MAX_PORT_SLOT,
@@ -12,6 +15,16 @@ import {
 } from '../src/ports.js';
 
 import { exportLines, readVars } from './helpers/shell.js';
+
+/** Every `${NAME:-NNNN}` a compose file falls back to, which is what a stock deploy has to match. */
+function composeDefaults(path: string): Record<string, string> {
+  const text = readFileSync(path, 'utf8');
+  const found: Record<string, string> = {};
+  for (const [, name, value] of text.matchAll(/\$\{([A-Z_]+):-([0-9]+)\}/g)) {
+    found[name] = value;
+  }
+  return found;
+}
 
 /**
  * `resolvePort` is a mirror of `apply_port_slot`, and a mirror is only worth having if something
@@ -51,7 +64,7 @@ describe('resolvePort mirrors apply_port_slot', () => {
   it('treats a set-but-empty port as unset at slot 0', () => {
     const env = { API_PORT: '' };
     assert.deepEqual(mirrorPorts(0, env), shellPorts(0, env));
-    assert.equal(mirrorPorts(0, env).API_PORT, String(PORT_DEFAULTS.API_PORT));
+    assert.equal(mirrorPorts(0, env).API_PORT, String(PORT_DEFAULTS.API_PORT.stock));
   });
 
   for (const slot of [1, 2, 7, 999]) {
@@ -64,13 +77,43 @@ describe('resolvePort mirrors apply_port_slot', () => {
   it('ignores env values at a non-zero slot', () => {
     const env = { API_PORT: '3000', CLIENT_PORT: '5173' };
     assert.deepEqual(mirrorPorts(4, env), shellPorts(4, env));
-    assert.equal(mirrorPorts(4, env).API_PORT, String(PORT_DEFAULTS.API_PORT + 40), 'the slot must win over env');
+    assert.equal(mirrorPorts(4, env).API_PORT, String(PORT_DEFAULTS.API_PORT.base + 40), 'the slot must win over env');
+  });
+
+  /**
+   * OPS-27. The stock fallback and the slot origin were one number, so a deploy with no slot and no
+   * env value resolved SRS's RTMP port to 10002 while `engines/srs/docker-compose.yml` falls back to
+   * 1935, and since d6394a3 fed these into SRS's own config that is the port SRS bound. Consistent
+   * end to end and not what the port is documented as, so an operator opening 1935 for a broadcaster
+   * opened a port nothing listened on.
+   *
+   * Read out of the compose files rather than restated, because a copy here would let the two drift
+   * back apart and this test is the only thing holding them together.
+   */
+  it('resolves a stock deploy to the port the compose file publishes', () => {
+    const composeFallbacks = {
+      ...composeDefaults(join(ROOT_DIR, 'deploy', 'docker-compose.yml')),
+      ...composeDefaults(join(ROOT_DIR, 'engines', 'srs', 'docker-compose.yml')),
+    };
+    const resolved = mirrorPorts(0);
+
+    for (const name of PORT_NAMES) {
+      const published = composeFallbacks[name];
+      if (published === undefined) {
+        continue;
+      }
+      assert.equal(
+        resolved[name],
+        published,
+        `a stock deploy resolves ${name}=${resolved[name]} while compose publishes ${published}`,
+      );
+    }
   });
 
   // Each service holds a unique last digit so bands of ten cannot collide. If two services ever
   // share one, two slots overlap and the collision is silent at deploy time.
   it('gives every port a distinct last digit, which is what makes the bands disjoint', () => {
-    const lastDigits = Object.values(PORT_DEFAULTS).map((port) => port % 10);
+    const lastDigits = Object.values(PORT_DEFAULTS).map((port) => port.base % 10);
     assert.equal(new Set(lastDigits).size, lastDigits.length, `last digits collide: ${lastDigits.join(',')}`);
   });
 });
