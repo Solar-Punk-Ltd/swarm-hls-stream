@@ -81,31 +81,40 @@ URL="srt://127.0.0.1:${PORT}?streamid=#!::r=${STREAM_ID}${KEY_QUERY},m=publish"
 # Rounded to the frame, so `-g` takes an integer count rather than a fraction it would truncate.
 GOP_FRAMES=$(awk -v f="${FPS}" -v g="${GOP_SECONDS}" 'BEGIN { printf "%d", (f * g) + 0.5 }')
 
-# `%{localtime}` is evaluated per frame at draw time, so the number in the picture is when that frame
-# was encoded rather than when the graph started. Resolution is one second, which is enough to judge a
-# buffer measured in seconds and is deliberately not dressed up as more.
-DRAW="drawtext=text='%{localtime\\:%H\\\\\\:%M\\\\\\:%S}':fontsize=72:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-text_w)/2:y=h-text_h-40"
-
 log_info "publishing ${SIZE} @ ${FPS}fps ${BITRATE_KBPS}k, ${GOP_SECONDS}s GOP, for ${SECONDS_TO_RUN}s"
 log_info "stream ${STREAM_ID} into UDP ${PORT} on ${TARGET}"
 
-# Runs in the bench image because it already carries ffmpeg with drawtext, and on the host network so
-# the ingest is reached over loopback.
-REMOTE_CMD="docker run --rm --network host swarm-hls-bench \
+# The payload is composed here and fed to the remote shell on **stdin**, with the values quoted by
+# `printf %q` and the filter body taken verbatim from a quoted heredoc.
+#
+# That is not style. `drawtext` uses `:` as its own option separator, so every colon inside the text
+# has to reach ffmpeg as `\:`, and a command sent as an ssh argument is re-parsed by the local shell,
+# then by the remote shell, then by docker. Four attempts at spelling the escape through those layers
+# all arrived as `text=%{localtime\:%H\\:%M\\:%S}`, where the doubled backslash escapes itself and the
+# next colon ends the text, which ffmpeg reports as "Both text and text file provided". On stdin there
+# are no layers to survive.
+#
+# The clock is drawn as epoch seconds for the same reason, leaving one colon rather than three, and it
+# is also the easiest thing to read back: a viewer's screenshot carries a number that subtracts
+# directly from `Date.now() / 1000`. Resolution is one second, which is enough to judge a buffer
+# measured in seconds and is deliberately not dressed up as more.
+{
+  printf 'SIZE=%q\nFPS=%q\nBITRATE=%q\nGOP_FRAMES=%q\nSECONDS_TO_RUN=%q\nURL=%q\n' \
+    "${SIZE}" "${FPS}" "${BITRATE_KBPS}" "${GOP_FRAMES}" "${SECONDS_TO_RUN}" "${URL}"
+  cat <<'PUBLISH_BODY'
+set -e
+DRAW="drawtext=text='%{localtime\:%s}':fontsize=64:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=14:x=(w-text_w)/2:y=h-text_h-40"
+docker run --rm --network host swarm-hls-bench \
   ffmpeg -hide_banner -loglevel error \
-  -f lavfi -i testsrc2=size=${SIZE}:rate=${FPS} \
+  -f lavfi -i "testsrc2=size=${SIZE}:rate=${FPS}" \
   -f lavfi -i sine=frequency=440:sample_rate=48000 \
-  -vf \"${DRAW},realtime\" -af arealtime \
-  -c:v libx264 -preset veryfast -tune zerolatency -b:v ${BITRATE_KBPS}k \
-  -g ${GOP_FRAMES} -sc_threshold 0 -pix_fmt yuv420p \
+  -vf "${DRAW},realtime" -af arealtime \
+  -c:v libx264 -preset veryfast -tune zerolatency -b:v "${BITRATE}k" \
+  -g "${GOP_FRAMES}" -sc_threshold 0 -pix_fmt yuv420p \
   -c:a aac -ar 48000 -b:a 128k \
-  -t ${SECONDS_TO_RUN} \
-  -f mpegts '${URL}'"
-
-if [ "${TARGET}" = "localhost" ]; then
-  bash -c "${REMOTE_CMD}"
-else
-  ssh "${TARGET}" "${REMOTE_CMD}"
-fi
+  -t "${SECONDS_TO_RUN}" \
+  -f mpegts "${URL}"
+PUBLISH_BODY
+} | if [ "${TARGET}" = "localhost" ]; then bash -s; else ssh "${TARGET}" bash -s; fi
 
 log_ok "publish finished"
