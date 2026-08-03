@@ -17,6 +17,20 @@ export interface SegmentSample {
   /** Swarm reference, which is what tied the fetched bytes to a line in the uploader's log. */
   ref: string;
   split: LatencySplit;
+  /**
+   * What the manifest declared this segment's duration to be, against the measured span in the split.
+   *
+   * Carried so a run can answer the question LAT-9 was opened on rather than only route around it.
+   * The register recorded SRS announcing 3.15, 2.73, 3.16, 2.04 and 2.64 seconds against a fixed
+   * two-second GOP, and two different faults produce that: an engine whose segmenting really is that
+   * uneven, and an engine that cuts evenly and misreports. Measuring the span from the bytes makes
+   * the split right under either, and only holding both figures says which it was.
+   *
+   * Null where the entry carried no readable `#EXTINF`, which costs the comparison and not the sample.
+   */
+  declaredDurationS: number | null;
+  /** How many video packets the span was measured across, so a thin reading can be seen as thin. */
+  videoPacketCount: number;
 }
 
 /** A segment that reached the bench but could not be turned into a reading, and why. */
@@ -205,6 +219,91 @@ function medianFlaggedNotice(median: SegmentSample): string[] {
   ];
 }
 
+/**
+ * How much longer the manifest said a segment was than it is, in milliseconds. Negative means shorter.
+ *
+ * Takes the declaration separately from the sample rather than reading it back off one, so the null
+ * case cannot arrive here. It used to, guarded by a `return 0` that no input could reach because every
+ * call site works over the already-filtered list, and a zero gap from a segment carrying no
+ * declaration would have been indistinguishable from perfect agreement.
+ */
+function declaredGapMs(declaredDurationS: number, sample: SegmentSample): number {
+  return (declaredDurationS - sample.split.instants.segmentDurationS) * 1_000;
+}
+
+/** A sample whose manifest entry carried a readable duration, which is the only kind that compares. */
+interface DeclaredSample {
+  sample: SegmentSample;
+  declaredDurationS: number;
+}
+
+function declaredSamples(run: BenchRun): DeclaredSample[] {
+  return run.samples.flatMap((sample) =>
+    sample.declaredDurationS === null ? [] : [{ sample, declaredDurationS: sample.declaredDurationS }],
+  );
+}
+
+/**
+ * What the manifest declared each segment held, against what it holds.
+ *
+ * Printed always and with no verdict attached, for the same reason `trendLine` is. LAT-9 was opened on
+ * SRS announcing 3.15, 2.73, 3.16, 2.04 and 2.64 seconds against a fixed two-second GOP, and two
+ * different faults produce that reading: segmenting that really is uneven, and even segmenting that is
+ * misreported. One run cannot separate them, so a line that only appeared past some threshold would be
+ * stating a judgement the numbers do not support.
+ *
+ * **It is evidence about both figures, not only the engine's.** The gap is declared minus measured,
+ * and the measured term is the one the split runs on, so a disagreement says one of the two is wrong
+ * without saying which. Reporting it as the engine's error would be the same shape of mistake the
+ * `paceDriftMsPerMinute` name was: naming one cause for a signal that has more than one.
+ *
+ * Which matters here more than it looks, because the two are not symmetric in what they cost.
+ * `totalMs` is `fetchedAtMs - capturedAtMs` and never moves, and the hops sum to it whatever the span
+ * is, so `impossibleHops` prints its all-clear either way. What a too-small measured span does instead
+ * is grow the `upload` hop, and that hop coming out negative is the whole reason LAT-9 was opened.
+ * Measured on the real run's own instants: a 2.64s span gives -240ms, 2.0s gives +400ms, and a
+ * truncated 0.067s gives +2333ms. **So a mis-measured span makes LAT-9's symptom look resolved**, and
+ * this line is the only thing in the report that would show it.
+ */
+function declaredDurationLine(run: BenchRun): string {
+  const compared = declaredSamples(run);
+  if (compared.length === 0) {
+    return (
+      '- **no sample carried a readable `#EXTINF`**, so nothing here says whether the engine reports its ' +
+      'own segment durations correctly. Every figure above is measured from the bytes and stands.'
+    );
+  }
+
+  const gapOf = ({ declaredDurationS, sample }: DeclaredSample): number => declaredGapMs(declaredDurationS, sample);
+  const worst = compared.reduce((a, b) => (Math.abs(gapOf(a)) >= Math.abs(gapOf(b)) ? a : b));
+  // Named rather than left to the count, because every figure below is over the readable subset. Four
+  // unreadable entries out of five reduce to one comparison, and one comparison against itself reads
+  // as a reassuring 0ms while the manifest fault it hides is worse than any duration mismatch.
+  const unreadable = run.samples.length - compared.length;
+  const skipped =
+    unreadable === 0
+      ? ''
+      : ` **${unreadable} of ${run.samples.length} carried no readable \`#EXTINF\` and are not in that comparison**, ` +
+        'which is a manifest this cannot read rather than one that disagrees.';
+
+  return (
+    `- the manifest and the bytes disagree by at most ${Math.round(Math.abs(gapOf(worst)))}ms across ` +
+    `${compared.length} sample(s), worst at segment ${worst.sample.index}, where it declared ` +
+    `${seconds(worst.declaredDurationS * 1_000)} for ${seconds(
+      worst.sample.split.instants.segmentDurationS * 1_000,
+    )} ` +
+    'of media. **Read this before the `upload` hop.** The gap is the declared figure minus the ' +
+    'measured one, so it says one of the two is wrong and not which. Nothing above derives from the ' +
+    'declared figure, but everything except `capture to fetchable` derives from the measured one, and ' +
+    'a measured span that came out too small grows the `upload` hop rather than making it negative. ' +
+    'A run where that hop is finally non-negative and this gap is wide has not settled anything. ' +
+    'Separating an engine that segments unevenly from one that misreports even segments needs a ' +
+    'second run at another GOP. Separating either of those from a short measurement needs the packet ' +
+    'counts in the table above.' +
+    skipped
+  );
+}
+
 function knobLine(knobs: PublishKnobs): string {
   return `${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`;
 }
@@ -217,8 +316,20 @@ export function renderReport(run: BenchRun): string {
       '',
       `**No segment was measured.** engine ${run.engine}, profile ${run.profile}, ${knobLine(run.knobs)}.`,
       '',
-      'A run with no samples is not a slow pipeline, it is a run that failed. The reason is above this',
-      'report in the run log.',
+      'A run with no samples is not a slow pipeline, it is a run that failed.',
+      '',
+      // This used to send the reader to the run log, which never had them: `measureLatency` only
+      // pushes to `discarded` and the runner prints the report. So the one artifact naming why every
+      // segment was dropped was the JSON beside this file, and the markdown said to look elsewhere.
+      ...(run.discarded.length === 0
+        ? [
+            'Nothing was discarded either, so no segment ever reached the bench. The reason is above this report in the run log.',
+          ]
+        : [
+            `All ${run.discarded.length} segment(s) that reached the bench were unreadable:`,
+            '',
+            ...run.discarded.map((drop) => `- \`${drop.ref.slice(0, 12)}\`: ${drop.reason}`),
+          ]),
     ].join('\n');
   }
 
@@ -263,15 +374,19 @@ export function renderReport(run: BenchRun): string {
     '',
     '## Every sample',
     '',
-    '| segment | ref | total |',
-    '| ---: | --- | ---: |',
+    '| segment | ref | total | media held | declared | packets |',
+    '| ---: | --- | ---: | ---: | ---: | ---: |',
   );
 
   for (const sample of run.samples) {
-    lines.push(`| ${sample.index} | \`${sample.ref.slice(0, 12)}\` | ${seconds(sample.split.totalMs)} |`);
+    const declared = sample.declaredDurationS === null ? 'unreadable' : seconds(sample.declaredDurationS * 1_000);
+    lines.push(
+      `| ${sample.index} | \`${sample.ref.slice(0, 12)}\` | ${seconds(sample.split.totalMs)} | ` +
+        `${seconds(sample.split.instants.segmentDurationS * 1_000)} | ${declared} | ${sample.videoPacketCount} |`,
+    );
   }
 
-  lines.push('', '## Self-checks', '', trendLine(run.trend));
+  lines.push('', '## Self-checks', '', trendLine(run.trend), declaredDurationLine(run));
 
   const impossible = run.samples.flatMap((sample) =>
     impossibleHops(sample.split).map(

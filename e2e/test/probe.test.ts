@@ -1,120 +1,35 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { parseProbedFrame, probeArgs } from '../src/bench/probe.js';
+import { parseProbedSegment, probeArgs } from '../src/bench/probe.js';
 import { MPEGTS_WRAP_TICKS } from '../src/bench/wallclock.js';
 
-/**
- * Every fixture below is verbatim stdout from `ffprobe 7.1.1 ${probeArgs(file)}`, captured on
- * 2026-08-02 against files that build produced. None of it is written from the documentation, which
- * is the point: the shapes that matter here are the ones the tool actually emits, including the two
- * that look like success.
- */
+import {
+  NO_VIDEO_SEGMENT,
+  OPEN_GOP_TS_SEGMENT,
+  REORDERED_FMP4_SEGMENT,
+  REORDERED_TS_SEGMENT,
+  SINGLE_PACKET_SEGMENT,
+  TRUNCATED_SEGMENT,
+} from './helpers/probeFixtures.js';
 
-/** A live MPEG-TS segment, the normal case. */
-const TS_SEGMENT = `{
-    "packets": [
-        {
-            "pts": 1932509272,
-            "side_data_list": [
-                {
+describe('parsing ffprobe output into a timestamped segment', () => {
+  it('reads the tick rate of an MPEG-TS segment and the span it holds', () => {
+    const segment = parseProbedSegment(REORDERED_TS_SEGMENT, 'seg1.ts');
 
-                }
-            ]
-        }
-    ],
-    "programs": [
-        {
-            "streams": [
-                {
-                    "time_base": "1/90000"
-                }
-            ]
-        }
-    ],
-    "stream_groups": [
-
-    ],
-    "streams": [
-        {
-            "time_base": "1/90000"
-        }
-    ],
-    "format": {
-        "format_name": "mpegts"
-    }
-}`;
-
-/**
- * A fragmented MP4, which OME's low-latency packaging produces. Two things differ and both matter:
- * the timescale is 15360 rather than 90000, so reading 90kHz would be wrong by a factor of six, and
- * `format_name` is the whole comma-separated list of formats the demuxer answers to.
- */
-const FMP4_SEGMENT = `{
-    "packets": [
-        {
-            "pts": 0
-        }
-    ],
-    "programs": [
-
-    ],
-    "stream_groups": [
-
-    ],
-    "streams": [
-        {
-            "time_base": "1/15360"
-        }
-    ],
-    "format": {
-        "format_name": "mov,mp4,m4a,3gp,3g2,mj2"
-    }
-}`;
-
-/**
- * A segment that carries audio and no video. ffprobe exits **0** and reports empty arrays, so this is
- * the shape a reader mistakes for success: `packets[0].pts` is `undefined`, and every arithmetic step
- * after it yields NaN rather than throwing. A gateway serving the wrong bytes looks exactly like this.
- */
-const NO_VIDEO_SEGMENT = `{
-    "packets": [
-
-    ],
-    "programs": [
-        {
-            "streams": [
-
-            ]
-        }
-    ],
-    "stream_groups": [
-
-    ],
-    "streams": [
-
-    ],
-    "format": {
-        "format_name": "mpegts"
-    }
-}`;
-
-/** What a truncated segment produces on stdout. ffprobe exits 1 and puts "End of file" on stderr. */
-const TRUNCATED_SEGMENT = `{
-
-}`;
-
-describe('parsing ffprobe output into a timestamped frame', () => {
-  it('reads the timestamp and tick rate of an MPEG-TS segment', () => {
-    const frame = parseProbedFrame(TS_SEGMENT, 'seg1.ts');
-
-    assert.deepEqual(frame, { pts: 1_932_509_272, timescale: 90_000, wrapTicks: MPEGTS_WRAP_TICKS });
+    assert.equal(segment.firstFrame.timescale, 90_000);
+    assert.equal(segment.firstFrame.wrapTicks, MPEGTS_WRAP_TICKS);
+    assert.equal(segment.mediaSpanS, 0.5, 'which is the 0.500000 its manifest declared');
+    assert.equal(segment.videoPacketCount, 15);
   });
 
   it('reads a fragmented MP4 at its own tick rate, not at 90kHz', () => {
-    const frame = parseProbedFrame(FMP4_SEGMENT, 'seg1.m4s');
+    const segment = parseProbedSegment(REORDERED_FMP4_SEGMENT, 'seg1.m4s');
 
-    assert.equal(frame.timescale, 15_360);
+    assert.equal(segment.firstFrame.timescale, 15_360);
+    // The same half second, and it only comes out that way if the span is divided by the rate the
+    // container declared. Read as 90kHz it would be 0.083s, which is a plausible-looking number.
+    assert.equal(segment.mediaSpanS, 0.5);
   });
 
   /**
@@ -123,15 +38,50 @@ describe('parsing ffprobe output into a timestamped frame', () => {
    * latency. The wrap has to follow the container, and `format_name` is the only thing that says so.
    */
   it('applies the 33-bit wrap only to the container that truncates', () => {
-    assert.equal(parseProbedFrame(TS_SEGMENT, 'seg1.ts').wrapTicks, MPEGTS_WRAP_TICKS);
-    assert.equal(parseProbedFrame(FMP4_SEGMENT, 'seg1.m4s').wrapTicks, null);
+    assert.equal(parseProbedSegment(REORDERED_TS_SEGMENT, 'seg1.ts').firstFrame.wrapTicks, MPEGTS_WRAP_TICKS);
+    assert.equal(parseProbedSegment(REORDERED_FMP4_SEGMENT, 'seg1.m4s').firstFrame.wrapTicks, null);
+  });
+
+  /**
+   * The capture instant is recovered from this one timestamp, so which packet it comes from decides
+   * every latency figure a run reports.
+   *
+   * The open-GOP fixture is the whole test. The other two open on the keyframe that starts their
+   * group, so their first listed packet is also their smallest, and against those alone taking
+   * `timestamps[0]` passes. This one begins with frames that reference the previous group, so the two
+   * differ by three frames, and an anchor read off the list head lands 100ms late on every segment.
+   */
+  it('anchors on the earliest frame rather than the first one listed', () => {
+    const openGop = parseProbedSegment(OPEN_GOP_TS_SEGMENT, 'seg1.ts');
+
+    assert.equal(openGop.firstFrame.pts, 168_000, 'the earliest frame');
+    assert.notEqual(openGop.firstFrame.pts, 177_000, 'which is not the first packet listed');
+  });
+
+  /**
+   * The resolution the span is good to, and the sole tolerance base of the local self-check in
+   * `selfCheck.ts`. Dropping the `/ timescale` from it leaves every other assertion here passing and
+   * widens that check's window by the tick rate, from one frame to ninety, which is wider than the
+   * whole error it exists to catch.
+   */
+  it('reports the final frame credit in seconds, not in ticks', () => {
+    assert.equal(parseProbedSegment(REORDERED_TS_SEGMENT, 'seg1.ts').frameDurationS, 1 / 30);
+    assert.equal(parseProbedSegment(REORDERED_FMP4_SEGMENT, 'seg1.m4s').frameDurationS, 1 / 30);
   });
 });
 
 describe('refusing output that only looks like a measurement', () => {
+  /**
+   * The probe asked for one packet until LAT-9, so this is the shape every segment used to come back
+   * as. It reads cleanly and holds no span, which is why it is refused rather than defaulted.
+   */
+  it('refuses a segment holding one video packet, which fixes no duration', () => {
+    assert.throws(() => parseProbedSegment(SINGLE_PACKET_SEGMENT, 'ref abc123'), /one video packet/);
+  });
+
   it('refuses a segment with no video, which ffprobe reports at exit 0', () => {
     assert.throws(
-      () => parseProbedFrame(NO_VIDEO_SEGMENT, 'ref abc123'),
+      () => parseProbedSegment(NO_VIDEO_SEGMENT, 'ref abc123'),
       (error: Error) => {
         assert.match(error.message, /ref abc123/);
         assert.match(error.message, /no video packets/);
@@ -141,33 +91,40 @@ describe('refusing output that only looks like a measurement', () => {
   });
 
   it('refuses the empty object a truncated segment leaves on stdout', () => {
-    assert.throws(() => parseProbedFrame(TRUNCATED_SEGMENT, 'ref abc123'), /no video packets/);
+    assert.throws(() => parseProbedSegment(TRUNCATED_SEGMENT, 'ref abc123'), /no video packets/);
   });
 
   it('refuses output that is not JSON at all', () => {
-    assert.throws(() => parseProbedFrame('seg1.ts: Invalid data found', 'ref abc123'), /not JSON/);
+    assert.throws(() => parseProbedSegment('seg1.ts: Invalid data found', 'ref abc123'), /not JSON/);
   });
 
   it('refuses empty output, naming it as empty rather than as malformed', () => {
-    assert.throws(() => parseProbedFrame('', 'ref abc123'), /wrote nothing/);
+    assert.throws(() => parseProbedSegment('', 'ref abc123'), /wrote nothing/);
   });
 
-  it('refuses a packet whose timestamp ffprobe could not determine', () => {
-    const noPts = TS_SEGMENT.replace('"pts": 1932509272', '"pts": "N/A"');
+  /**
+   * Checked on every packet rather than the first. ffprobe writes `"N/A"` per packet, so a segment
+   * whose timestamps go missing partway through still reads as a good one at the front, and the span
+   * is measured across all of them.
+   */
+  it('refuses a packet whose timestamp ffprobe could not determine, wherever it sits', () => {
+    const firstUnreadable = REORDERED_TS_SEGMENT.replace('"pts": 177000', '"pts": "N/A"');
+    const lastUnreadable = REORDERED_TS_SEGMENT.replace('"pts": 216000', '"pts": "N/A"');
 
-    assert.throws(() => parseProbedFrame(noPts, 'ref abc123'), /no usable timestamp/);
+    assert.throws(() => parseProbedSegment(firstUnreadable, 'ref abc123'), /no usable timestamp/);
+    assert.throws(() => parseProbedSegment(lastUnreadable, 'ref abc123'), /no usable timestamp/);
   });
 
   it('refuses a stream with no time_base, rather than assuming one', () => {
-    const noTimeBase = TS_SEGMENT.split('"time_base": "1/90000"').join('"codec_type": "video"');
+    const noTimeBase = REORDERED_TS_SEGMENT.split('"time_base": "1/90000"').join('"codec_type": "video"');
 
-    assert.throws(() => parseProbedFrame(noTimeBase, 'ref abc123'), /no time_base/);
+    assert.throws(() => parseProbedSegment(noTimeBase, 'ref abc123'), /no time_base/);
   });
 
   it('refuses a time_base that is not a rational', () => {
-    const odd = TS_SEGMENT.split('"time_base": "1/90000"').join('"time_base": "1:90000"');
+    const odd = REORDERED_TS_SEGMENT.split('"time_base": "1/90000"').join('"time_base": "1:90000"');
 
-    assert.throws(() => parseProbedFrame(odd, 'ref abc123'), /not a rational/);
+    assert.throws(() => parseProbedSegment(odd, 'ref abc123'), /not a rational/);
   });
 
   /**
@@ -179,9 +136,9 @@ describe('refusing output that only looks like a measurement', () => {
    */
   it('refuses a time_base that parses but yields no usable tick rate', () => {
     for (const timeBase of ['1/0', '0/90000', '0/0']) {
-      const noRate = TS_SEGMENT.split('"time_base": "1/90000"').join(`"time_base": "${timeBase}"`);
+      const noRate = REORDERED_TS_SEGMENT.split('"time_base": "1/90000"').join(`"time_base": "${timeBase}"`);
 
-      assert.throws(() => parseProbedFrame(noRate, 'ref abc123'), /no usable tick rate/, `time_base "${timeBase}"`);
+      assert.throws(() => parseProbedSegment(noRate, 'ref abc123'), /no usable tick rate/, `time_base "${timeBase}"`);
     }
   });
 
@@ -190,9 +147,9 @@ describe('refusing output that only looks like a measurement', () => {
    * way is a silent factor error rather than a visible failure.
    */
   it('refuses output with no format_name, rather than guessing whether it wraps', () => {
-    const noFormat = TS_SEGMENT.replace('"format_name": "mpegts"', '"nb_streams": 1');
+    const noFormat = REORDERED_TS_SEGMENT.replace('"format_name": "mpegts"', '"nb_streams": 1');
 
-    assert.throws(() => parseProbedFrame(noFormat, 'ref abc123'), /no format_name/);
+    assert.throws(() => parseProbedSegment(noFormat, 'ref abc123'), /no format_name/);
   });
 });
 
@@ -212,7 +169,29 @@ describe('the invocation the parser is written against', () => {
     assert.deepEqual(args.slice(-3), ['-of', 'json', '/tmp/seg.ts']);
   });
 
-  it('stops decoding after the first packet, so a VOD segment costs the same as a live one', () => {
-    assert.ok(probeArgs('/tmp/seg.ts').includes('%+#1'));
+  /**
+   * The one argument whose absence is a measurement rather than an error, and it fell in the gap
+   * between the two tests either side of it.
+   *
+   * Without it ffprobe lists the audio packets too, and every figure downstream stays plausible.
+   * Measured against a real 2s MPEG-TS carrying 30fps video and 48kHz AAC: the span reads 2.034s
+   * instead of 2.000, the anchor moves 23ms early, the frame duration drops from 33.3ms to 14.2ms,
+   * and `videoPacketCount` says 148 for a 60-frame segment. Stable across segments and within
+   * rounding distance of the declared duration, which is the exact shape LAT-9 was opened on.
+   */
+  it('reads the first video stream only, so audio packets cannot enter the span', () => {
+    const args = probeArgs('/tmp/seg.ts');
+
+    assert.equal(args[args.indexOf('-select_streams') + 1], 'v:0');
+  });
+
+  /**
+   * This used to carry `-read_intervals %+#1`, which stops ffprobe after one packet. That is all the
+   * capture instant needs and is why the span had to be taken from the manifest. Restoring it would
+   * not break the parse, it would make every segment fail as a one-packet segment, so the absence is
+   * asserted rather than left as something a later change could quietly restore for the decode cost.
+   */
+  it('reads the whole segment rather than stopping at the first packet', () => {
+    assert.ok(!probeArgs('/tmp/seg.ts').includes('-read_intervals'));
   });
 });

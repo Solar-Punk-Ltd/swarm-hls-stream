@@ -22,7 +22,13 @@ import { LIVE_SYNC_DURATION_S } from './clientTuning.js';
 export interface SegmentInstants {
   /** Bench clock. When the segment's first frame was captured, recovered from its presentation timestamp. */
   capturedAtMs: number;
-  /** Seconds of media the segment holds, from its `#EXTINF`. */
+  /**
+   * Seconds of media the segment holds, measured from the presentation timestamps of its own packets.
+   *
+   * Not the manifest's `#EXTINF`, which this used to take. That is the engine's claim about the
+   * segment, it reaches two rows here and the viewer figure, and nothing downstream could have told a
+   * wrong claim from a real one. See LAT-9 and `segmentSpan.ts`.
+   */
   segmentDurationS: number;
   /** Uploader host clock. `Segment N uploaded`, so the payload had reached Swarm. */
   uploadedAtMs: number;

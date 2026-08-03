@@ -22,7 +22,7 @@ import { sleep, waitFor } from '../harness/wait.js';
 
 import { measureClockSkew } from './clockSkew.js';
 import { fetchFeedManifest, fetchSegment, segmentRefFromUri } from './gateway.js';
-import { probeFirstVideoFrame } from './probe.js';
+import { probeSegment } from './probe.js';
 import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
 import { latencySplit, type SegmentInstants } from './split.js';
 import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from './timeline.js';
@@ -50,6 +50,9 @@ export interface RunOptions {
 interface PendingSample {
   ref: string;
   segmentDurationS: number;
+  /** What the manifest declared, or null where the entry carried no readable `#EXTINF`. */
+  declaredDurationS: number | null;
+  videoPacketCount: number;
   capturedAtMs: number;
   visibleAtMs: number;
   fetchedAtMs: number;
@@ -123,7 +126,13 @@ function toSample(
     fetchedAtMs: pending.fetchedAtMs,
   };
 
-  return { index: uploaded.index, ref: pending.ref, split: latencySplit(instants, skew) };
+  return {
+    index: uploaded.index,
+    ref: pending.ref,
+    split: latencySplit(instants, skew),
+    declaredDurationS: pending.declaredDurationS,
+    videoPacketCount: pending.videoPacketCount,
+  };
 }
 
 /**
@@ -221,22 +230,47 @@ async function measureOne(
   visibleAtMs: number,
   publishStartedAtMs: number,
 ): Promise<PendingSample> {
-  const durationS = segmentDuration(newest.extinf);
-  if (durationS === null) {
-    throw new Error(`the manifest entry carries an unreadable duration: ${newest.extinf}`);
-  }
-
   const segment = await fetchSegment(gatewayUrl, ref);
-  const frame = await probeSegmentBytes(segment.body, ref);
-  const latencyMs = latencyMsFromPts(frame, { publishStartedAtMs, observedAtMs: segment.atMs });
+  const probed = await probeSegmentBytes(segment.body, ref);
+  const latencyMs = latencyMsFromPts(probed.firstFrame, { publishStartedAtMs, observedAtMs: segment.atMs });
+  requireSpanFitsTheBroadcast(probed.mediaSpanS, segment.atMs - publishStartedAtMs, ref);
 
   return {
     ref,
-    segmentDurationS: durationS,
+    segmentDurationS: probed.mediaSpanS,
+    // No longer fatal. The split is measured from the bytes now, so an unreadable `#EXTINF` costs the
+    // comparison in the report and not the sample, and a segment that was paid for still yields one.
+    declaredDurationS: segmentDuration(newest.extinf),
+    videoPacketCount: probed.videoPacketCount,
     capturedAtMs: segment.atMs - latencyMs,
     visibleAtMs,
     fetchedAtMs: segment.atMs,
   };
+}
+
+/**
+ * A segment cannot hold more media than the publisher has produced.
+ *
+ * True by construction rather than tuned, though **one-sided**, unlike the bounds in `wallclock.ts`
+ * which reject in both directions. A span measured too short has no bound here and none is available
+ * from the packets: for constant-frame-rate output the span is exactly the packet count times the
+ * frame duration, so a truncated list is as self-consistent as a whole one. The external check is the
+ * declared duration the report prints beside it.
+ *
+ * What this one catches is a span measured across an MPEG-TS timestamp wrap, which lands near the
+ * 26.5-hour period. **The order of the two calls above matters and is the only thing making the
+ * anchor safe in that case**: on a wrap-crossing segment `Math.min` picks a post-wrap frame, so
+ * `latencyMsFromPts` returns a latency roughly one segment too small and does not throw. This runs
+ * after it and discards the segment before either figure is used.
+ */
+function requireSpanFitsTheBroadcast(mediaSpanS: number, elapsedMs: number, ref: string): void {
+  if (mediaSpanS * 1_000 > elapsedMs) {
+    throw new Error(
+      `it measures ${mediaSpanS.toFixed(1)}s of media, more than the ${(elapsedMs / 1_000).toFixed(1)}s the ` +
+        `publisher has been running. The likeliest cause is a timestamp wrap inside ${ref} rather than ` +
+        'anything the pipeline did to it, since MPEG-TS counts in 33 bits and rolls every 26.5 hours',
+    );
+  }
 }
 
 /** ffprobe reads a path, so the fetched bytes go to a temp file that is removed either way. */
@@ -244,7 +278,7 @@ async function probeSegmentBytes(bytes: Buffer, ref: string) {
   const path = join(tmpdir(), `swarm-hls-bench-${ref.slice(0, 16)}.ts`);
   await writeFile(path, bytes);
   try {
-    return await probeFirstVideoFrame(path, ref);
+    return await probeSegment(path, ref);
   } finally {
     await unlink(path).catch(() => {
       // A leftover temp segment is not worth failing a run that otherwise measured cleanly.

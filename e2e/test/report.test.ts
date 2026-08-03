@@ -10,11 +10,22 @@ import {
   renderReport,
   type SegmentSample,
 } from '../src/bench/report.js';
-import { type ClockSkew, latencySplit, type SegmentInstants } from '../src/bench/split.js';
+import { type ClockSkew, type LatencySplit, latencySplit, type SegmentInstants } from '../src/bench/split.js';
 import { DEFAULT_KNOBS } from '../src/bench/wallclockPublisher.js';
 
 const BENCH_T0 = 1_785_677_886_564;
 const SKEW: ClockSkew = { offsetMs: 120, uncertaintyMs: 8 };
+
+/**
+ * A measured sample around a split.
+ *
+ * `declaredDurationS` defaults to agreeing with the split's own measured duration, which is the case
+ * every test that is not about the comparison wants: a disagreement prints an extra self-check line,
+ * and a fixture that produced one by accident would put it under tests that never asked for it.
+ */
+function sampleOf(index: number, split: LatencySplit, declaredDurationS: number | null = 2): SegmentSample {
+  return { index, ref: `ref${index}`.padEnd(16, '0'), split, declaredDurationS, videoPacketCount: 60 };
+}
 
 /** A sample whose total is `totalMs`, with the slack taken out of the fetch so the rows still sum. */
 function sampleWithTotal(index: number, totalMs: number): SegmentSample {
@@ -26,7 +37,7 @@ function sampleWithTotal(index: number, totalMs: number): SegmentSample {
     visibleAtMs: BENCH_T0 + 5_200,
     fetchedAtMs: BENCH_T0 + totalMs,
   };
-  return { index, ref: `ref${index}`.padEnd(16, '0'), split: latencySplit(instants, SKEW) };
+  return sampleOf(index, latencySplit(instants, SKEW));
 }
 
 function runWith(
@@ -201,7 +212,7 @@ describe('the report an operator reads', () => {
       visibleAtMs: BENCH_T0 + 5_200,
       fetchedAtMs: BENCH_T0 + 5_800,
     };
-    const sample: SegmentSample = { index: 9, ref: 'ref9'.padEnd(16, '0'), split: latencySplit(impossible, SKEW) };
+    const sample = sampleOf(9, latencySplit(impossible, SKEW));
     const upload = sample.split.hops.find((hop) => hop.name === 'upload');
     assert.ok(upload && upload.ms < -SKEW.uncertaintyMs, 'fixture must produce a gap wider than the uncertainty');
 
@@ -233,7 +244,7 @@ describe('the report an operator reads', () => {
       visibleAtMs: BENCH_T0 + 5_200,
       fetchedAtMs: BENCH_T0 + 5_800,
     };
-    const sample: SegmentSample = { index: 24, ref: 'ref24'.padEnd(16, '0'), split: latencySplit(impossible, SKEW) };
+    const sample = sampleOf(24, latencySplit(impossible, SKEW));
 
     const report = renderReport(runWith([sample]));
 
@@ -330,5 +341,126 @@ describe('the report an operator reads', () => {
     for (const sample of samples) {
       assert.match(report, new RegExp(`\\| ${sample.index} \\|`));
     }
+  });
+});
+
+/**
+ * The all-discarded run is the one a reader most needs the reasons for, and it was the one shape that
+ * threw them away. The text pointed at the run log, which never carries them: `measureLatency` only
+ * collects them into the run and the runner prints this report.
+ */
+describe('a run that measured nothing', () => {
+  it('lists why each segment was unreadable, rather than pointing at a log without them', () => {
+    const report = renderReport(
+      runWith([], null, [
+        { ref: 'abc123def456789', reason: 'it holds no video packets' },
+        { ref: 'fed987cba654321', reason: 'it holds one video packet' },
+      ]),
+    );
+
+    assert.match(report, /No segment was measured/);
+    assert.match(report, /All 2 segment\(s\) that reached the bench were unreadable/);
+    assert.match(report, /`abc123def456`: it holds no video packets/);
+    assert.match(report, /`fed987cba654`: it holds one video packet/);
+    assert.doesNotMatch(report, /The reason is above this report/);
+  });
+
+  it('says nothing reached the bench when nothing was discarded either', () => {
+    const report = renderReport(runWith([], null, []));
+
+    assert.match(report, /no segment ever reached the bench/);
+  });
+});
+
+/**
+ * LAT-9's own question, which the fix routes around rather than answers: the split is measured from
+ * the bytes now, so an engine that misreports its segment durations no longer moves any figure, and
+ * the only place that misreporting can still be seen is here.
+ */
+describe('reporting the manifest against the bytes', () => {
+  /** Measured at 2s, declared at `declaredDurationS`, so the gap is the fixture's own parameter. */
+  function declaring(index: number, declaredDurationS: number | null): SegmentSample {
+    return { ...sampleWithTotal(index, 5_600), declaredDurationS };
+  }
+
+  it('names the widest disagreement and the segment it came from', () => {
+    const report = renderReport(runWith([declaring(1, 2.02), declaring(2, 3.15), declaring(3, 1.99)]));
+
+    assert.match(report, /disagree by at most 1150ms across 3 sample\(s\), worst at segment 2/);
+    assert.match(report, /declared 3\.15s for 2\.00s of media/);
+  });
+
+  /**
+   * Every other fixture here over-declares, so the widest signed gap and the widest absolute gap are
+   * the same sample and the `Math.abs` in the comparison could be dropped with all of them green.
+   * An engine that declares **less** than it ships separates them, and that direction is not
+   * hypothetical: it is what a manifest written before the segment closed would do.
+   */
+  it('finds the widest gap when the engine under-declares, not just when it over-declares', () => {
+    const report = renderReport(runWith([declaring(1, 2.02), declaring(2, 0.5), declaring(3, 1.99)]));
+
+    assert.match(report, /disagree by at most 1500ms across 3 sample\(s\), worst at segment 2/);
+    assert.match(report, /declared 0\.50s for 2\.00s of media/);
+  });
+
+  /**
+   * Unconditional, for the reason the trend line is. A run cannot separate an engine that segments
+   * unevenly from one that segments evenly and misreports, so a line that appeared only past some
+   * threshold would state a judgement these numbers do not carry.
+   */
+  it('prints the comparison even when the two agree exactly', () => {
+    const report = renderReport(runWith([declaring(1, 2), declaring(2, 2)]));
+
+    assert.match(report, /disagree by at most 0ms across 2 sample\(s\)/);
+  });
+
+  /** The declared figure feeds nothing, so its absence costs the comparison and no other row. */
+  it('says when no sample carried a readable duration, rather than reporting a zero gap', () => {
+    const report = renderReport(runWith([declaring(1, null), declaring(2, null)]));
+
+    assert.match(report, /no sample carried a readable `#EXTINF`/);
+    assert.doesNotMatch(report, /disagree by at most/);
+    assert.match(report, /capture to fetchable/, 'the split itself still reports');
+  });
+
+  /**
+   * The line first said the gap "moves no other number in this report", which was the true half of a
+   * false pair: nothing derives from the declared figure, and everything but the total derives from
+   * the measured one. So a wide gap is evidence against the measurement too, and that direction is
+   * the dangerous one. A span measured too small grows the `upload` hop instead of making it
+   * negative, and a negative `upload` hop is the entire symptom LAT-9 was opened on.
+   */
+  it('does not blame the engine for a gap that is evidence against the measurement too', () => {
+    const report = renderReport(runWith([declaring(1, 3.15)]));
+
+    assert.match(report, /says one of the two is wrong and not which/);
+    assert.match(report, /grows the `upload` hop rather than making it negative/);
+    assert.doesNotMatch(report, /moves no other number/);
+  });
+
+  /**
+   * The count alone did not carry this. Four unreadable entries out of five leave one comparison,
+   * which prints a reassuring 0ms because it is a segment compared against itself, and a manifest the
+   * parser cannot read is a worse fault than any duration mismatch it would have found.
+   */
+  it('names how many samples carried no readable duration, when only some did', () => {
+    const report = renderReport(runWith([declaring(1, 2), declaring(2, null), declaring(3, null)]));
+
+    assert.match(report, /disagree by at most 0ms across 1 sample\(s\)/);
+    assert.match(report, /\*\*2 of 3 carried no readable `#EXTINF`/);
+  });
+
+  it('says nothing about skipped samples when every one was readable', () => {
+    assert.doesNotMatch(renderReport(runWith([declaring(1, 2), declaring(2, 2)])), /carried no readable/);
+  });
+
+  it('carries both durations and the packet count into the sample table', () => {
+    const report = renderReport(runWith([declaring(7, 3.15)]));
+
+    assert.match(report, /\| 7 \| `ref700000000` \| 5\.60s \| 2\.00s \| 3\.15s \| 60 \|/);
+  });
+
+  it('marks an unreadable declaration in the table rather than leaving the cell blank', () => {
+    assert.match(renderReport(runWith([declaring(7, null)])), /\| 2\.00s \| unreadable \| 60 \|/);
   });
 });

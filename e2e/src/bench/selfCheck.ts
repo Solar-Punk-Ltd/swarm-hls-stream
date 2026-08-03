@@ -21,7 +21,7 @@ import { promisify } from 'node:util';
 import { startFfmpeg } from '../harness/ffmpegProcess.js';
 import { sleep } from '../harness/wait.js';
 
-import { probeFirstVideoFrame } from './probe.js';
+import { probeSegment } from './probe.js';
 import { latencyMsFromPts } from './wallclock.js';
 import { type PublishKnobs, wallclockEncodeArgs } from './wallclockPublisher.js';
 
@@ -45,12 +45,43 @@ const CHECK_SIZE = '320x240';
  */
 const MAX_SPACING_FACTOR = 3;
 
+/**
+ * How far a segment's measured span may fall from where the next segment starts, in frames.
+ *
+ * Half a frame, which is the widest value that still separates a correct span from one that is a
+ * whole frame out. The quantity being bounded came back exact on every pair measured, so anything
+ * this leaves room for is float error in two tick-to-millisecond conversions.
+ */
+const SPAN_TOLERANCE_FRAMES = 0.5;
+
+/**
+ * Three, because the interrupt-cut final segment is discarded and two whole ones are what the checks
+ * below need: `requirePacedAndOrdered` compares consecutive capture instants and
+ * `requireSpansMeetEndToEnd` measures one span against the next segment's start.
+ */
+const MIN_SEGMENTS_PRODUCED = 3;
+
 export interface SelfCheckResult {
   segmentsProbed: number;
   /** Gap between the process starting and its first frame being stamped. Around 1.5s on ffmpeg 7.1.1. */
   startupDelayMs: number;
   /** Capture instants of consecutive segments, relative to the first. */
   captureOffsetsMs: number[];
+  /** Media each segment holds, measured from its own packets. Reported so a check can be read, not just passed. */
+  mediaSpansMs: number[];
+}
+
+/**
+ * One probed segment of the local check, holding only what the two checks below compare.
+ *
+ * Exported with `requireSpansMeetEndToEnd` so that check can be tested at all. Producing this array
+ * needs ffmpeg; checking it is arithmetic over three numbers, which is the same split that took
+ * `segmentSpan.ts` out of `probe.ts`.
+ */
+export interface ProbedCheckSegment {
+  capturedAtMs: number;
+  mediaSpanMs: number;
+  frameDurationMs: number;
 }
 
 function fail(why: string): never {
@@ -96,34 +127,89 @@ async function runCheck(knobs: PublishKnobs, dir: string): Promise<SelfCheckResu
   await proc.stop();
   await sleep(CHECK_FLUSH_MS);
 
-  const segments = (await readdir(dir))
+  const produced = (await readdir(dir))
     .filter((name) => /^s\d+\.ts$/.test(name))
     .sort((a, b) => Number(a.slice(1, -3)) - Number(b.slice(1, -3)));
 
-  if (segments.length < 2) {
+  if (produced.length < MIN_SEGMENTS_PRODUCED) {
     fail(
-      `publishing produced ${segments.length} segment(s) in ${CHECK_PUBLISH_MS}ms. ` +
+      `publishing produced ${produced.length} segment(s) in ${CHECK_PUBLISH_MS}ms. ` +
         `ffmpeg said: ${proc.stderr().trim().slice(0, 400) || '(nothing)'}`,
     );
   }
 
-  const capturedAtMs: number[] = [];
+  // The last file was cut mid-segment by the interrupt, so it holds whatever had been written when
+  // the muxer stopped. Nothing here wants it: `requireSpansMeetEndToEnd` already excludes it for
+  // having nothing after it to meet. Probing it anyway is a way to fail on it, because a segment
+  // interrupted inside one frame interval holds a single video packet and `measureSpanTicks` refuses
+  // that, correctly, and the run would abort blaming an instrument that is fine.
+  const segments = produced.slice(0, -1);
+
+  const probed: ProbedCheckSegment[] = [];
   for (const segment of segments) {
-    const frame = await probeFirstVideoFrame(join(dir, segment), segment);
+    const { firstFrame, mediaSpanS, frameDurationS } = await probeSegment(join(dir, segment), segment);
     const observedAtMs = Date.now();
     // Throws `UnusableTimestampsError` if the recipe stopped carrying the clock, which is the whole
     // point of running this: against a deployment that error is ambiguous between the recipe and the
     // media engine, and here there is no media engine to blame.
-    capturedAtMs.push(observedAtMs - latencyMsFromPts(frame, { publishStartedAtMs: startedAtMs, observedAtMs }));
+    const latencyMs = latencyMsFromPts(firstFrame, { publishStartedAtMs: startedAtMs, observedAtMs });
+    probed.push({
+      capturedAtMs: observedAtMs - latencyMs,
+      mediaSpanMs: mediaSpanS * 1_000,
+      frameDurationMs: frameDurationS * 1_000,
+    });
   }
 
+  const capturedAtMs = probed.map((segment) => segment.capturedAtMs);
   requirePacedAndOrdered(capturedAtMs);
+  requireSpansMeetEndToEnd(probed);
 
   return {
     segmentsProbed: segments.length,
     startupDelayMs: capturedAtMs[0] - startedAtMs,
     captureOffsetsMs: capturedAtMs.map((at) => at - capturedAtMs[0]),
+    mediaSpansMs: probed.map((segment) => segment.mediaSpanMs),
   };
+}
+
+/**
+ * That each segment's measured span reaches exactly as far as the next segment's first frame.
+ *
+ * The check the span arithmetic needed and could not get from a constant. Segments are contiguous, so
+ * one segment's media ends where the next one's begins, and that next start is a timestamp the span
+ * itself never touched. Asserting the span against `CHECK_SEGMENT_SECONDS` instead would compare the
+ * instrument against the number it was configured with, and pass however the arithmetic was wrong.
+ *
+ * Measured across three local encodes on 2026-08-03, constant-frame-rate and B-frame alike: the two
+ * agree to zero ticks on every consecutive pair. So the tolerance is float noise and nothing else,
+ * and it is expressed in frames rather than milliseconds because the error this is here to catch is
+ * exactly one frame wide. A fixed millisecond bound would have to be re-argued at every frame rate.
+ *
+ * ## What it cannot see against this recipe
+ *
+ * Two errors are one frame wide and only one of them is visible here. Dropping the final frame's
+ * credit shortens every span by a frame and is caught. Reading the ends of the packet list rather
+ * than the widest timestamp is caught only on a stream whose packets are reordered, and
+ * `wallclockEncodeArgs` passes `-tune zerolatency`, which disables B-frames: measured against that
+ * exact recipe, decode order came back strictly ascending over all 60 packets. So this check runs
+ * green either way on the bench's own publish, and only `segmentSpan.test.ts` holds that half.
+ *
+ * The final segment is excluded, because it was cut by the interrupt and nothing follows it to meet.
+ */
+export function requireSpansMeetEndToEnd(probed: readonly ProbedCheckSegment[]): void {
+  for (let i = 1; i < probed.length; i++) {
+    const previous = probed[i - 1];
+    const toNextStartMs = probed[i].capturedAtMs - previous.capturedAtMs;
+    const shortfallMs = toNextStartMs - previous.mediaSpanMs;
+    if (Math.abs(shortfallMs) > previous.frameDurationMs * SPAN_TOLERANCE_FRAMES) {
+      fail(
+        `segment ${i - 1} measures ${Math.round(previous.mediaSpanMs)}ms of media, but segment ${i} starts ` +
+          `${Math.round(toNextStartMs)}ms after it began, leaving ${Math.round(shortfallMs)}ms unaccounted ` +
+          `for against a frame of ${Math.round(previous.frameDurationMs)}ms. Consecutive segments leave no ` +
+          'gap and overlap by nothing, so this is the span being measured wrongly rather than an uneven publish',
+      );
+    }
+  }
 }
 
 function requirePacedAndOrdered(capturedAtMs: readonly number[]): void {
