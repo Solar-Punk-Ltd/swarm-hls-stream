@@ -11,7 +11,7 @@ import { describe, it } from 'node:test';
 
 import { Logger } from '../src/libs/Logger.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
-import { MEDIA_TYPE_VIDEO, REJECT_DRAINING, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
+import { ANONYMOUS_CLAIMANT, MEDIA_TYPE_VIDEO, REJECT_DRAINING, STREAM_STATUS_VOD, StreamState } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
@@ -812,6 +812,12 @@ describe('taking over a stream id with a proven publish key', () => {
    * reading treats as unknown.
    */
   it('does not let an announce naming nobody take a proven id', async () => {
+    // Asserted directly, because both readers of the field are plain truthiness checks, so absent and
+    // `false` are indistinguishable to them and the claim below is about the constant rather than
+    // about any branch. Dropping the field survived every test in this file without this line.
+    assert.equal(ANONYMOUS_CLAIMANT.isAuthenticated, false);
+    assert.ok('isAuthenticated' in ANONYMOUS_CLAIMANT, 'it has to be present, not merely falsy');
+
     const clock = new FakeClock();
     const harness = makeHarness(clock);
     const { orch } = harness;

@@ -17,10 +17,10 @@
 import express from 'express';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 
-import { createOmeEngine } from '../src/engines/ome.js';
-import { createSrsEngine } from '../src/engines/srs.js';
+import { createOmeEngine, createOmeEngineFromEnv } from '../src/engines/ome.js';
+import { createSrsEngine, createSrsEngineFromEnv } from '../src/engines/srs.js';
 import { Logger } from '../src/libs/Logger.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { derivePublishKey } from '../src/utils/publishKey.js';
@@ -169,18 +169,65 @@ describe('the publish key OME reads out of an admission', () => {
     });
   });
 
+  /**
+   * The reason is asserted, not only `allowed: false`. `handleAdmission`'s catch-all answers
+   * `{ allowed: false, reason: 'handler error' }`, so replacing this whole refusal with a `throw`
+   * produced the same observable and left the suite green. That is worse than an untested refusal,
+   * because the engine also ships `OME_ADMISSION_FAIL_OPEN`, and with that on the identical crash
+   * answers `allowed: true`: the suite was greenest in exactly the configuration where the defect
+   * admits the attacker. The SRS half never had this hole, since its catch answers `SRS_ACCEPT` and
+   * the same substitution kills all four of its refusals.
+   */
   it('refuses an admission carrying no key at all', async () => {
     await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
-      assert.equal((await announce(BROADCASTER, '')).allowed, false);
+      assert.deepEqual(await announce(BROADCASTER, ''), { allowed: false, reason: 'invalid publish key' });
       assert.equal(orchestrator.getActiveStreamCount(), 0, 'nothing may be started for a refused publisher');
     });
   });
 
   it('refuses an admission carrying a wrong key', async () => {
     await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
-      assert.equal((await announce(BROADCASTER, '?key=not-the-key')).allowed, false);
+      assert.deepEqual(await announce(BROADCASTER, '?key=not-the-key'), {
+        allowed: false,
+        reason: 'invalid publish key',
+      });
       assert.equal(orchestrator.getActiveStreamCount(), 0);
     });
+  });
+
+  /**
+   * The direction that actually hurts, pinned separately. With fail-open configured a handler crash
+   * answers `allowed: true`, so this is the case where "refused" and "blew up" stop being the same
+   * observable at all, and it is the one an operator is most likely to have turned on.
+   */
+  it('still refuses a keyless admission when the handler is configured to fail open', async () => {
+    const orchestrator = makeTestOrchestrator();
+    const app = express();
+    const engine = createOmeEngine('http://ome:8081', 50, {
+      admissionSecret: OME_SECRET,
+      publishKeySecret: PUBLISH_SECRET,
+      failOpen: true,
+    });
+    app.use(
+      express.json({
+        verify: (req, _res, buf) => {
+          (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+        },
+      }),
+    );
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+
+    try {
+      assert.deepEqual(await announceToOme(baseUrl, engine.prefix, BROADCASTER, ''), {
+        allowed: false,
+        reason: 'invalid publish key',
+      });
+      assert.equal(orchestrator.getActiveStreamCount(), 0);
+    } finally {
+      server.close();
+      await orchestrator.cleanup();
+    }
   });
 
   /**
@@ -190,7 +237,10 @@ describe('the publish key OME reads out of an admission', () => {
    */
   it('refuses a key that is valid for a stream this announce is not naming', async () => {
     await withOme(PUBLISH_SECRET, async ({ announce, orchestrator }) => {
-      assert.equal((await announce(BROADCASTER, `?key=${KEY_FOR_ANOTHER_STREAM}`)).allowed, false);
+      assert.deepEqual(await announce(BROADCASTER, `?key=${KEY_FOR_ANOTHER_STREAM}`), {
+        allowed: false,
+        reason: 'invalid publish key',
+      });
       assert.equal(orchestrator.getActiveStreamCount(), 0);
     });
   });
@@ -350,5 +400,144 @@ describe('the publish key SRS reads out of an on_publish', () => {
       server.close();
       await orchestrator.cleanup();
     }
+  });
+});
+
+/**
+ * That the variable is read from the environment at all.
+ *
+ * This file's header argues that a test constructing the engine directly cannot see an engine that
+ * stopped reading its evidence. That argument applies one level further up than the tests above
+ * reach: every one of them hands the secret in as an option, so both `*FromEnv` builders could
+ * hardcode the empty string and the whole file would stay green while the feature was off in every
+ * real deployment. Mutation showed exactly that, on both engines.
+ *
+ * Both sibling credentials already have this test (`OmeAdmission.test.ts` for the admission secret,
+ * `srsWebhookAuth.test.ts` for the webhook token), so the omission was an asymmetry rather than a
+ * judgement.
+ */
+describe('reading PUBLISH_KEY_SECRET out of the environment', () => {
+  const savedPublishKey = process.env.PUBLISH_KEY_SECRET;
+  const savedOme = process.env.OME_ADMISSION_SECRET;
+  const savedSrs = process.env.SRS_WEBHOOK_TOKEN;
+
+  before(() => {
+    process.env.PUBLISH_KEY_SECRET = PUBLISH_SECRET;
+    process.env.OME_ADMISSION_SECRET = OME_SECRET;
+    process.env.SRS_WEBHOOK_TOKEN = SRS_TOKEN;
+  });
+
+  after(() => {
+    restore('PUBLISH_KEY_SECRET', savedPublishKey);
+    restore('OME_ADMISSION_SECRET', savedOme);
+    restore('SRS_WEBHOOK_TOKEN', savedSrs);
+  });
+
+  function restore(name: string, value: string | undefined): void {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+
+  /** Driven through the router, because "the option was set" is not "the announce is screened". */
+  async function keylessAnnounceIsRefused(engine: ReturnType<typeof createOmeEngineFromEnv>): Promise<void> {
+    const orchestrator = makeTestOrchestrator();
+    const app = express();
+    app.use(
+      express.json({
+        verify: (req, _res, buf) => {
+          (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+        },
+      }),
+    );
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+
+    try {
+      if (engine.name === 'ome') {
+        assert.deepEqual(await announceToOme(baseUrl, engine.prefix, BROADCASTER, ''), {
+          allowed: false,
+          reason: 'invalid publish key',
+        });
+      } else {
+        assert.equal(await announceToSrs(baseUrl, engine.prefix, BROADCASTER, null), 1);
+      }
+      assert.equal(orchestrator.getActiveStreamCount(), 0);
+    } finally {
+      server.close();
+      await orchestrator.cleanup();
+    }
+  }
+
+  it('OME screens an announce when the secret came from the environment', async () => {
+    await keylessAnnounceIsRefused(createOmeEngineFromEnv());
+  });
+
+  it('SRS screens an announce when the secret came from the environment', async () => {
+    await keylessAnnounceIsRefused(createSrsEngineFromEnv());
+  });
+
+  /**
+   * And the length screen is reached through each engine's constructor. Covering the function in
+   * isolation left both engines able to accept a four-character master secret with a green suite.
+   */
+  it('OME refuses to build on a secret the service would reject', () => {
+    assert.throws(
+      () => createOmeEngine('http://ome:8081', 50, { admissionSecret: OME_SECRET, publishKeySecret: 'short' }),
+      /at least/,
+    );
+  });
+
+  it('SRS refuses to build on a secret the service would reject', () => {
+    assert.throws(
+      () => createSrsEngine('/srv/media', { webhookToken: SRS_TOKEN, publishKeySecret: 'short' }),
+      /at least/,
+    );
+  });
+});
+
+/**
+ * The warnings are the only thing that tells an operator publisher authentication is off, and both
+ * engines' source comments argue they are load-bearing for exactly that reason. Neither was asserted,
+ * so either text could be replaced wholesale with the suite green.
+ */
+describe('saying out loud when publisher authentication is off', () => {
+  function warningsWhileBuilding(build: () => void): string {
+    const lines: string[] = [];
+    const logger = Logger.getInstance();
+    const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+    try {
+      build();
+    } finally {
+      logger.configure(previous);
+    }
+    return lines.join('\n');
+  }
+
+  it('OME warns when no secret is configured', () => {
+    const logged = warningsWhileBuilding(() => {
+      const engine = createOmeEngine('http://ome:8081', 50, { admissionSecret: OME_SECRET });
+      engine.createRouter(makeTestOrchestrator());
+    });
+
+    assert.match(logged, /No PUBLISH_KEY_SECRET configured/);
+    assert.match(logged, /SEC-28/);
+  });
+
+  it('SRS warns when no secret is configured', () => {
+    const logged = warningsWhileBuilding(() => createSrsEngine('/srv/media', { webhookToken: SRS_TOKEN }));
+
+    assert.match(logged, /No PUBLISH_KEY_SECRET configured/);
+    assert.match(logged, /SEC-28/);
+  });
+
+  it('says nothing of the sort once a secret is configured', () => {
+    const logged = warningsWhileBuilding(() =>
+      createSrsEngine('/srv/media', { webhookToken: SRS_TOKEN, publishKeySecret: PUBLISH_SECRET }),
+    );
+
+    assert.doesNotMatch(logged, /No PUBLISH_KEY_SECRET configured/);
   });
 });

@@ -29,11 +29,10 @@ const MEASURED_SRS_PARAM = '?key=SECRET123abc';
 /**
  * The golden vector, shared with `deploy/test/publishKey.test.js`.
  *
- * `derive_publish_key` in `deploy/scripts/_lib.sh` is a second implementation of this derivation,
- * because the operator issuing a key runs on a host that is not required to have Node while the
- * service verifying it runs here. They cannot call each other, so they are pinned to one triple
- * instead, and either side drifting fails a test on that side. If they ever disagreed, every key an
- * operator handed out would be refused and it would look exactly like a broadcaster's typo.
+ * `derive_publish_key` in `deploy/scripts/_lib.sh` computes the same thing for the operator issuing a
+ * key, in a separate process the service cannot call into. They are pinned to one triple instead, and
+ * either side drifting fails a test on that side. If they ever disagreed, every key an operator handed
+ * out would be refused, and it would look exactly like a broadcaster's typo.
  */
 const GOLDEN_SECRET = 'publish-key-secret-0123456789abcdef';
 const GOLDEN = [
@@ -168,6 +167,17 @@ describe('reading the publish key out of what each engine sends', () => {
 });
 
 describe('screening the configured secret', () => {
+  /**
+   * The value, not only the boundary. Both tests below are stated relative to the constant, including
+   * the error regex, so dropping the minimum from 32 to 4 left every one of them green. The sibling
+   * credential's file already carries this line for `MIN_SRS_WEBHOOK_TOKEN_LENGTH`, so the omission
+   * was an asymmetry rather than a judgement, and `publish-key.sh` compares against the same number
+   * from the other side of the deployment.
+   */
+  it('holds the minimum at 32', () => {
+    assert.equal(MIN_PUBLISH_KEY_SECRET_LENGTH, 32);
+  });
+
   it('accepts a secret at the minimum length', () => {
     assertUsablePublishKeySecret('a'.repeat(MIN_PUBLISH_KEY_SECRET_LENGTH));
   });

@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.join(here, '..', 'scripts', '_lib.sh');
+const SCRIPT = path.join(here, '..', 'scripts', 'publish-key.sh');
 
 /** A ceiling on a hung `openssl`, so a broken tool fails the run instead of holding it open. */
 const DERIVE_TIMEOUT_MS = 10_000;
@@ -129,5 +130,59 @@ describe('the publish key an operator issues', () => {
 
     assert.doesNotMatch(fn, /-hmac\s+"?\$/, 'the secret must not be interpolated into an argument');
     assert.match(fn, /PUBLISH_KEY_SECRET=/, 'it has to travel in the environment');
+  });
+});
+
+/**
+ * The script an operator actually runs, as opposed to the function under it.
+ *
+ * The golden vector pins `derive_publish_key`, which is real coverage, but every string the
+ * broadcaster copies is emitted here and none of it was executed by any test. The parameter name is
+ * the sharpest case: renaming it to `?wrongname=` left the whole suite green while every publish it
+ * produced would be refused. That is the same drift the repo already guards for the other credential,
+ * where `srsWebhookAuth.test.ts` reads `srs.conf.template` and asserts the parameter name against
+ * `SRS_WEBHOOK_TOKEN_PARAM` rather than against a literal.
+ */
+describe('the publish URLs publish-key.sh hands an operator', () => {
+  const GOLDEN_KEY = GOLDEN[0].key;
+
+  function runScript(env, ...args) {
+    return spawnSync('bash', [SCRIPT, ...args], {
+      encoding: 'utf-8',
+      timeout: DERIVE_TIMEOUT_MS,
+      env: { ...process.env, ...env },
+    });
+  }
+
+  it('prints both publish URLs carrying the key under the name the service reads', () => {
+    const result = runScript({ PUBLISH_KEY_SECRET: SECRET }, 'video/demo');
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`rtmp://[^\\s]*/video/demo\\?key=${GOLDEN_KEY}`));
+    // OME's is percent-encoded, because the key sits inside a value that is itself inside a query.
+    assert.match(result.stdout, new RegExp(`streamid=srt%3A%2F%2F[^\\s]*%2Fvideo%2Fdemo%3Fkey%3D${GOLDEN_KEY}`));
+  });
+
+  it('refuses to print anything when no secret is configured', () => {
+    const result = runScript({ PUBLISH_KEY_SECRET: '' }, 'video/demo');
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout.includes(GOLDEN_KEY), false, 'a key must not be printed when there is no secret');
+    assert.match(result.stderr, /PUBLISH_KEY_SECRET is not set/);
+  });
+
+  it('refuses a secret the service would reject at startup', () => {
+    const result = runScript({ PUBLISH_KEY_SECRET: 'too-short' }, 'video/demo');
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /at least 32 characters/);
+  });
+
+  it('refuses a stream id that is not one app and one stream', () => {
+    for (const bad of ['notaslash', 'a/b/c', '']) {
+      const result = runScript({ PUBLISH_KEY_SECRET: SECRET }, bad);
+
+      assert.notEqual(result.status, 0, `"${bad}" must be refused`);
+    }
   });
 });
