@@ -54,6 +54,13 @@ const MAX_SPACING_FACTOR = 3;
  */
 const SPAN_TOLERANCE_FRAMES = 0.5;
 
+/**
+ * Three, because the interrupt-cut final segment is discarded and two whole ones are what the checks
+ * below need: `requirePacedAndOrdered` compares consecutive capture instants and
+ * `requireSpansMeetEndToEnd` measures one span against the next segment's start.
+ */
+const MIN_SEGMENTS_PRODUCED = 3;
+
 export interface SelfCheckResult {
   segmentsProbed: number;
   /** Gap between the process starting and its first frame being stamped. Around 1.5s on ffmpeg 7.1.1. */
@@ -114,16 +121,23 @@ async function runCheck(knobs: PublishKnobs, dir: string): Promise<SelfCheckResu
   await proc.stop();
   await sleep(CHECK_FLUSH_MS);
 
-  const segments = (await readdir(dir))
+  const produced = (await readdir(dir))
     .filter((name) => /^s\d+\.ts$/.test(name))
     .sort((a, b) => Number(a.slice(1, -3)) - Number(b.slice(1, -3)));
 
-  if (segments.length < 2) {
+  if (produced.length < MIN_SEGMENTS_PRODUCED) {
     fail(
-      `publishing produced ${segments.length} segment(s) in ${CHECK_PUBLISH_MS}ms. ` +
+      `publishing produced ${produced.length} segment(s) in ${CHECK_PUBLISH_MS}ms. ` +
         `ffmpeg said: ${proc.stderr().trim().slice(0, 400) || '(nothing)'}`,
     );
   }
+
+  // The last file was cut mid-segment by the interrupt, so it holds whatever had been written when
+  // the muxer stopped. Nothing here wants it: `requireSpansMeetEndToEnd` already excludes it for
+  // having nothing after it to meet. Probing it anyway is a way to fail on it, because a segment
+  // interrupted inside one frame interval holds a single video packet and `measureSpanTicks` refuses
+  // that, correctly, and the run would abort blaming an instrument that is fine.
+  const segments = produced.slice(0, -1);
 
   const probed: ProbedCheckSegment[] = [];
   for (const segment of segments) {
