@@ -26,7 +26,28 @@ const OTHER_SECRET = 'y'.repeat(MIN_PUBLISH_KEY_SECRET_LENGTH);
 const MEASURED_OME_URL = 'srt://localhost:10080/video/demo?key=SECRET123abc';
 const MEASURED_SRS_PARAM = '?key=SECRET123abc';
 
+/**
+ * The golden vector, shared with `deploy/test/publishKey.test.js`.
+ *
+ * `derive_publish_key` in `deploy/scripts/_lib.sh` is a second implementation of this derivation,
+ * because the operator issuing a key runs on a host that is not required to have Node while the
+ * service verifying it runs here. They cannot call each other, so they are pinned to one triple
+ * instead, and either side drifting fails a test on that side. If they ever disagreed, every key an
+ * operator handed out would be refused and it would look exactly like a broadcaster's typo.
+ */
+const GOLDEN_SECRET = 'publish-key-secret-0123456789abcdef';
+const GOLDEN = [
+  { streamId: 'video/demo', key: '2d1e344ecb833667c936399866349fbc' },
+  { streamId: 'audio/podcast', key: '0901de836aef81a3dfce00aed78a01ff' },
+];
+
 describe('deriving a stream publish key', () => {
+  for (const { streamId, key } of GOLDEN) {
+    it(`derives the agreed key for ${streamId}, which the deploy script has to match`, () => {
+      assert.equal(derivePublishKey(GOLDEN_SECRET, streamId), key);
+    });
+  }
+
   it('gives the same key every time for one stream', () => {
     assert.equal(derivePublishKey(SECRET, 'video/demo'), derivePublishKey(SECRET, 'video/demo'));
   });

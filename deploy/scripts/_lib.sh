@@ -594,6 +594,19 @@ load_env() {
 # outside every quote, so the receiving shell runs it. Found by brute force on 3.2, none on 5.x.
 #
 # The form below round-trips every one of those inputs byte for byte on both versions.
+# The publish key for one stream id, derived from the master secret. See SEC-28.
+#
+# Must agree byte for byte with `derivePublishKey` in packages/stream-uploader/src/utils/publishKey.ts,
+# because the service recomputes it and compares. Both are pinned to one golden vector, asserted in
+# publishKey.test.ts and in deploy/test/publishKey.test.js, so either side drifting fails a test.
+# Truncated to 32 hex characters, which is PUBLISH_KEY_LENGTH there and 128 bits here.
+derive_publish_key() {
+  local secret="$1"
+  local stream_id="$2"
+
+  printf '%s' "$stream_id" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}' | cut -c1-32
+}
+
 shell_quote() {
   local escaped_quote="'\\''"
   printf "'%s'" "${1//\'/$escaped_quote}"
