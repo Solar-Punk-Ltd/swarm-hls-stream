@@ -6,6 +6,7 @@ import { MPEGTS_WRAP_TICKS } from '../src/bench/wallclock.js';
 
 import {
   NO_VIDEO_SEGMENT,
+  OPEN_GOP_TS_SEGMENT,
   REORDERED_FMP4_SEGMENT,
   REORDERED_TS_SEGMENT,
   SINGLE_PACKET_SEGMENT,
@@ -43,12 +44,18 @@ describe('parsing ffprobe output into a timestamped segment', () => {
 
   /**
    * The capture instant is recovered from this one timestamp, so which packet it comes from decides
-   * every latency figure the run reports. Both fixtures are in decode order, so the earliest frame is
-   * not at a fixed position in the list.
+   * every latency figure a run reports.
+   *
+   * The open-GOP fixture is the whole test. The other two open on the keyframe that starts their
+   * group, so their first listed packet is also their smallest, and against those alone taking
+   * `timestamps[0]` passes. This one begins with frames that reference the previous group, so the two
+   * differ by three frames, and an anchor read off the list head lands 100ms late on every segment.
    */
   it('anchors on the earliest frame rather than the first one listed', () => {
-    assert.equal(parseProbedSegment(REORDERED_TS_SEGMENT, 'seg1.ts').firstFrame.pts, 177_000);
-    assert.equal(parseProbedSegment(REORDERED_FMP4_SEGMENT, 'seg1.m4s').firstFrame.pts, 8_694);
+    const openGop = parseProbedSegment(OPEN_GOP_TS_SEGMENT, 'seg1.ts');
+
+    assert.equal(openGop.firstFrame.pts, 168_000, 'the earliest frame');
+    assert.notEqual(openGop.firstFrame.pts, 177_000, 'which is not the first packet listed');
   });
 });
 

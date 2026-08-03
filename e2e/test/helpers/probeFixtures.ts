@@ -302,3 +302,168 @@ export const NO_VIDEO_SEGMENT = `{
 export const TRUNCATED_SEGMENT = `{
 
 }`;
+
+/**
+ * An **open-GOP** MPEG-TS segment, where the first packet listed is not the earliest frame.
+ *
+ * The one shape the two fixtures above cannot produce. Both of those open on the keyframe that starts
+ * their group, so their first listed packet is also their smallest timestamp, and an anchor that took
+ * `packets[0]` instead of the minimum would agree with them on every segment.
+ *
+ * Here it does not. The list opens at 177000 and the earliest frame is 168000, because an open GOP
+ * lets a segment begin with B-frames that reference the group before it, so those frames decode first
+ * and display later. Taking the first listed packet puts the capture instant **100ms late**, which is
+ * three frames at 30fps, and understates every latency figure in the run by that much, silently and
+ * by the same amount on every segment.
+ *
+ * Captured with `-x264opts open-gop=1`. ffprobe writes decoder warnings to stderr for a segment whose
+ * references sit in the previous one, which is what open GOP means rather than a broken capture, and
+ * stdout below is unaffected.
+ */
+export const OPEN_GOP_TS_SEGMENT = `{
+    "packets": [
+        {
+            "pts": 177000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 171000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 168000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 174000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 189000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 183000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 180000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 186000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 201000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 195000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 192000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 198000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 213000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 207000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 204000,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        },
+        {
+            "pts": 210000
+        }
+    ],
+    "programs": [
+        {
+            "streams": [
+                {
+                    "time_base": "1/90000"
+                }
+            ]
+        }
+    ],
+    "stream_groups": [
+
+    ],
+    "streams": [
+        {
+            "time_base": "1/90000"
+        }
+    ],
+    "format": {
+        "format_name": "mpegts"
+    }
+}`;
