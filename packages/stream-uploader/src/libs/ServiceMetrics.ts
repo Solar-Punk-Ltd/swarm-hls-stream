@@ -20,6 +20,7 @@ export class ServiceMetrics {
   private streamsFailed = 0;
   private segmentsSkipped = 0;
   private authRejections = 0;
+  private takeoversRefused = 0;
   private lastSegmentAt: number | null = null;
   private lastAuthRejectionAt: number | null = null;
 
@@ -72,6 +73,22 @@ export class ServiceMetrics {
   }
 
   /**
+   * An announce refused because another publisher holds that stream id and is still feeding it.
+   *
+   * Counted because the refusal is otherwise a log line, and it is the one control here that takes a
+   * broadcaster off the air on evidence that can be wrong: two publishers behind one egress address
+   * look like one, and one publisher whose address changed looks like two.
+   *
+   * **It cannot say which of those it is counting.** An attack and a legitimate broadcaster being
+   * locked out of their own id produce the identical count, so this is a prompt to go and look at who
+   * holds the stream, not a verdict. `POST /stream/stop` is what frees an id held by the wrong
+   * session. See SEC-26 and SEC-28.
+   */
+  public recordTakeoverRefused(): void {
+    this.takeoversRefused += 1;
+  }
+
+  /**
    * Deliberately not part of `MetricsCounters`, which is exactly the set `/metrics` renders. This
    * feeds the `/health` policy, which needs an age rather than an instant.
    */
@@ -89,6 +106,7 @@ export class ServiceMetrics {
       streamsFinalizedTotal: this.streamsFinalized,
       streamsFailedTotal: this.streamsFailed,
       authRejectionsTotal: this.authRejections,
+      takeoversRefusedTotal: this.takeoversRefused,
       lastSegmentAt: this.lastSegmentAt,
     };
   }
@@ -105,6 +123,8 @@ export interface MetricsCounters {
   streamsFailedTotal: number;
   /** Requests refused by a credential gate, across every gate in the process. */
   authRejectionsTotal: number;
+  /** Announces refused because a live session on that stream id is still producing. See SEC-26. */
+  takeoversRefusedTotal: number;
   /** Epoch milliseconds of the newest segment that reached Swarm, or null while none has. */
   lastSegmentAt: number | null;
 }

@@ -1116,11 +1116,18 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
 
   it('tells two sessions apart when they share a port and differ only by address', async () => {
     // The key is address plus port, but the capture that justified it varied only the port, so the
-    // address half was pinned by nothing. A publisher whose address changes between reconnects, behind
-    // a NAT that reassigns or a proxy hop that moves, is the case that needs it.
-    const SAME_PORT = 44546;
-    const FIRST = { address: '10.0.0.5', port: SAME_PORT };
-    const SECOND = { address: '192.168.65.1', port: SAME_PORT };
+    // address half was pinned by nothing. This drives it from the closing side: the live session and
+    // the closing share a port and differ only by address, so nothing but the address half can tell
+    // them apart.
+    //
+    // The two openings share an address deliberately. SEC-26 now refuses an opening from a different
+    // address over a stream that is still producing, so a reconnect that changed address cannot reach
+    // the live state this needs, and driving it that way would be testing the takeover guard instead
+    // of this one.
+    const SAME_PORT = 22138;
+    const FIRST = { address: '192.168.65.1', port: 44546 };
+    const RECONNECT = { address: '192.168.65.1', port: SAME_PORT };
+    const ELSEWHERE = { address: '10.0.0.5', port: SAME_PORT };
 
     const origin = makePollCountingOrigin();
     const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
@@ -1129,16 +1136,16 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
 
     await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, FIRST);
     await waitFor(() => origin.polls() > 0, SETTLE_MS);
-    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, SECOND);
+    await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL, RECONNECT);
     const pollsWhenSecondWasLive = origin.polls();
     await waitFor(() => origin.polls() > pollsWhenSecondWasLive, SETTLE_MS);
-    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, FIRST);
+    await postAdmission(engine, orchestrator, 'closing', SECRET, STREAM_URL, ELSEWHERE);
 
     const pollsAfterStaleClosing = origin.polls();
     await waitFor(() => origin.polls() > pollsAfterStaleClosing, SETTLE_MS);
     assert.ok(
       origin.polls() > pollsAfterStaleClosing,
-      'a closing from the replaced address must not stop the live session that reused its port',
+      'a closing from another address must not stop the live session that shares its port',
     );
   });
 

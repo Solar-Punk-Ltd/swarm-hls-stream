@@ -35,7 +35,12 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
     asyncHandler(async (req: Request, res: Response) => {
       const { streamId, mediatype } = parseOrBadRequest(startStreamBodySchema, req.body);
 
-      streamOrchestrator.startStream(streamId, mediatype);
+      // `startStream` returned `true` on every path until SEC-26's guard landed, so this answer was
+      // correct by accident and stopped being so without changing. It can now refuse, and answering
+      // `ok` to a refusal tells an authenticated operator their stream started when it did not.
+      if (!streamOrchestrator.startStream(streamId, mediatype)) {
+        throw new ApiError(409, `Another session is publishing on ${streamId} and is still feeding it`);
+      }
       res.json({ ok: true });
     }),
   );

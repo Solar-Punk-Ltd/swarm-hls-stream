@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { MEDIA_TYPE_VIDEO } from '../src/types.js';
 import { renderPrometheusMetrics } from '../src/utils/metricsFormat.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
-import { makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
+import { makeMetricsSnapshot, makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
 
 const STREAM_ID = 'live/one';
 const SETTLE_CEILING_MS = 4_000;
@@ -23,6 +25,40 @@ function parseExposition(body: string): Map<string, number> {
   return samples;
 }
 
+/**
+ * Every metric the README's table names, which is the list an operator builds their dashboard from.
+ *
+ * Read out of the file rather than duplicated here, because a copy of the list in a test is a third
+ * place to forget. The table had drifted twice before this existed: `segments_skipped_total` and
+ * `auth_rejections_total` were both exposed and both undocumented.
+ */
+function documentedMetrics(): string[] {
+  const readme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
+  return [...readme.matchAll(/^\| `(swarm_hls_[a-z0-9_]+)` *\| *(counter|gauge) /gm)].map(
+    (match) => `${match[1]} ${match[2]}`,
+  );
+}
+
+/** `name type` for every metric the renderer emits, which is the same shape the table is read as. */
+function servedMetrics(): string[] {
+  const body = renderPrometheusMetrics(makeMetricsSnapshot());
+  return [...body.matchAll(/^# TYPE (swarm_hls_[a-z0-9_]+) (counter|gauge)$/gm)].map(
+    (match) => `${match[1]} ${match[2]}`,
+  );
+}
+
+describe("the README's metric table", () => {
+  /**
+   * A metric nobody documented is one nobody alerts on, and a documented one that no longer exists is
+   * a dashboard panel that reads empty and looks like a healthy service.
+   */
+  it('names exactly the metrics `/metrics` serves, with the right type on each', () => {
+    // The type matters as much as the name: an operator who reads `counter` off this table writes
+    // `rate(...)` over a gauge and gets a number that means nothing, and nothing else compares them.
+    assert.deepEqual(documentedMetrics().sort(), servedMetrics().sort());
+  });
+});
+
 describe('metrics exposition format', () => {
   const SNAPSHOT = {
     segmentsUploadedTotal: 12,
@@ -33,6 +69,7 @@ describe('metrics exposition format', () => {
     streamsFinalizedTotal: 1,
     streamsFailedTotal: 1,
     authRejectionsTotal: 4,
+    takeoversRefusedTotal: 6,
     lastSegmentAt: 1_700_000_000_000,
     activeStreams: 2,
     queueDepth: 7,
@@ -43,7 +80,7 @@ describe('metrics exposition format', () => {
     const body = renderPrometheusMetrics(SNAPSHOT);
 
     const samples = parseExposition(body);
-    assert.equal(samples.size, 12, `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`);
+    assert.equal(samples.size, 13, `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`);
     for (const name of samples.keys()) {
       assert.ok(body.includes(`# HELP ${name} `), `${name} has no HELP line`);
       assert.ok(body.includes(`# TYPE ${name} `), `${name} has no TYPE line`);
