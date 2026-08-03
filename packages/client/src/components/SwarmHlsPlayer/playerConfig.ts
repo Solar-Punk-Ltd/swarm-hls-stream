@@ -48,6 +48,18 @@ const MB = 1024 * 1024;
  * A floor over observed samples is not a proof. Nothing here has been played in a real browser at
  * this setting, so the claim is that 105 measured arrivals would not have stalled a player
  * configured this way, not that no arrival ever will.
+ *
+ * ## And on this deployment it is not enough, which is measured rather than feared
+ *
+ * LAT-10: the feed a player polls stops naming new segments for **30 to 48 seconds at a time**, on a
+ * roughly 63 second cycle, for 42% to 70% of a broadcast. That is far outside any buffer worth
+ * configuring, so **a player on this deployment rebuffers every cycle whatever this number is**, and
+ * raising it would trade constant extra latency for no fewer stalls.
+ *
+ * The cause is not here and not in the uploader: the segments reach a viewer's gateway node in under
+ * a second, and only the single-owner chunk announcing them is slow. **So this number is not the
+ * thing to change in response.** It stays derived from the arrival floor, which is what it is for,
+ * and `docs/bench/longrun.md` carries the rest.
  */
 export const LIVE_SYNC_DURATION_S = 6;
 
