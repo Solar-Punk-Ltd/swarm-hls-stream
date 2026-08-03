@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, before, describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 
 import { ROOT_DIR } from '../src/config.js';
 
@@ -166,17 +166,36 @@ describe('the SRS ingest healthcheck', () => {
   });
 });
 
-/** Guards that the script the container mounts is the script these tests drove. */
-describe('the healthcheck is wired into the engine', () => {
-  let compose = '';
+/**
+ * That the script these tests drove is the script a container runs, on **both** paths.
+ *
+ * There are two compose files carrying an `srs` service and they are not interchangeable.
+ * `engines/srs/docker-compose.yml` is the standalone one behind `pnpm srs:host`, and
+ * `deploy/docker-compose.yml` is what `deploy.sh` puts on a target: the live `latbench-srs-1`
+ * reports the second. The first version of this fix wired only the standalone file, so the check
+ * would have been absent from every real deployment while every test here passed.
+ *
+ * The rsync is asserted for the same reason and it is the sharper half. That list carries
+ * `--delete`, so a file left out of it is not merely missing on the target, it is removed from a
+ * target that had it, and the container would then bind-mount a directory over the script and go
+ * permanently unhealthy on a deployment that is fine.
+ */
+describe('the healthcheck reaches the container on both paths', () => {
+  const read = (...parts: string[]): string => readFileSync(join(ROOT_DIR, ...parts), 'utf8');
 
-  before(() => {
-    compose = execFileSync('cat', [join(ROOT_DIR, 'engines', 'srs', 'docker-compose.yml')], { encoding: 'utf8' });
-  });
+  for (const composePath of [
+    ['engines', 'srs', 'docker-compose.yml'],
+    ['deploy', 'docker-compose.yml'],
+  ]) {
+    it(`mounts the script and runs it, in ${composePath.join('/')}`, () => {
+      const compose = read(...composePath);
 
-  it('mounts the script and runs it as the container healthcheck', () => {
-    assert.match(compose, /healthcheck\.sh:\/usr\/local\/srs\/conf\/healthcheck\.sh:ro/);
-    assert.match(compose, /healthcheck:/);
-    assert.match(compose, /\/usr\/local\/srs\/conf\/healthcheck\.sh/);
+      assert.match(compose, /healthcheck\.sh:\/usr\/local\/srs\/conf\/healthcheck\.sh:ro/);
+      assert.match(compose, /test: \['CMD', 'bash', '\/usr\/local\/srs\/conf\/healthcheck\.sh'\]/);
+    });
+  }
+
+  it('ships the script to a remote target, which the compose mount cannot do for itself', () => {
+    assert.match(read('deploy', 'scripts', 'deploy.sh'), /engines\/srs\/healthcheck\.sh/);
   });
 });

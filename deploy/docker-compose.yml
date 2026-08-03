@@ -171,8 +171,17 @@ services:
     volumes:
       - ../engines/srs/srs.conf.template:/usr/local/srs/conf/srs.conf.template:ro
       - ../engines/srs/entrypoint.sh:/usr/local/srs/conf/entrypoint.sh:ro
+      - ../engines/srs/healthcheck.sh:/usr/local/srs/conf/healthcheck.sh:ro
       - srs-media:/usr/local/srs/objs/nginx/html
     entrypoint: ['/bin/bash', '/usr/local/srs/conf/entrypoint.sh']
+    # Asks whether a broadcaster could reach this engine, not whether the process is alive. See
+    # OBS-20 and the reasoning in `engines/srs/healthcheck.sh`.
+    healthcheck:
+      test: ['CMD', 'bash', '/usr/local/srs/conf/healthcheck.sh']
+      interval: 15s
+      timeout: 5s
+      retries: 2
+      start_period: 20s
     environment:
       SRT_PASSPHRASE: ${SRT_PASSPHRASE:-}
       SRS_WEBHOOK_TOKEN: ${SRS_WEBHOOK_TOKEN:-}
