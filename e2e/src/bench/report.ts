@@ -219,6 +219,48 @@ function medianFlaggedNotice(median: SegmentSample): string[] {
   ];
 }
 
+/** How much longer the manifest said a segment was than it is, in milliseconds. Negative means shorter. */
+function declaredGapMs(sample: SegmentSample): number {
+  if (sample.declaredDurationS === null) {
+    return 0;
+  }
+  return (sample.declaredDurationS - sample.split.instants.segmentDurationS) * 1_000;
+}
+
+/**
+ * What the manifest declared each segment held, against what it holds.
+ *
+ * Printed always and with no verdict attached, for the same reason `trendLine` is. LAT-9 was opened on
+ * SRS announcing 3.15, 2.73, 3.16, 2.04 and 2.64 seconds against a fixed two-second GOP, and two
+ * different faults produce that reading: segmenting that really is uneven, and even segmenting that is
+ * misreported. One run cannot separate them, so a line that only appeared past some threshold would be
+ * stating a judgement the numbers do not support.
+ *
+ * The split is measured from the bytes now, so whatever this says moves nothing else in the report.
+ * That is the point of it being a self-check rather than a figure.
+ */
+function declaredDurationLine(run: BenchRun): string {
+  const compared = run.samples.filter((sample) => sample.declaredDurationS !== null);
+  if (compared.length === 0) {
+    return (
+      '- **no sample carried a readable `#EXTINF`**, so nothing here says whether the engine reports its ' +
+      'own segment durations correctly. Every figure above is measured from the bytes and stands.'
+    );
+  }
+
+  const worst = compared.reduce((a, b) => (Math.abs(declaredGapMs(a)) >= Math.abs(declaredGapMs(b)) ? a : b));
+  return (
+    `- the manifest and the bytes disagree by at most ${Math.round(Math.abs(declaredGapMs(worst)))}ms across ` +
+    `${compared.length} sample(s), worst at segment ${worst.index}, where it declared ` +
+    `${seconds((worst.declaredDurationS ?? 0) * 1_000)} for ${seconds(
+      worst.split.instants.segmentDurationS * 1_000,
+    )} ` +
+    'of media. Nothing above is derived from the declared figure, so this measures how well the engine ' +
+    'reports itself and moves no other number in this report. It cannot say whether an engine that ' +
+    'disagrees is segmenting unevenly or misreporting even segments, which needs a second run at another GOP.'
+  );
+}
+
 function knobLine(knobs: PublishKnobs): string {
   return `${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`;
 }
@@ -277,15 +319,19 @@ export function renderReport(run: BenchRun): string {
     '',
     '## Every sample',
     '',
-    '| segment | ref | total |',
-    '| ---: | --- | ---: |',
+    '| segment | ref | total | media held | declared | packets |',
+    '| ---: | --- | ---: | ---: | ---: | ---: |',
   );
 
   for (const sample of run.samples) {
-    lines.push(`| ${sample.index} | \`${sample.ref.slice(0, 12)}\` | ${seconds(sample.split.totalMs)} |`);
+    const declared = sample.declaredDurationS === null ? 'unreadable' : seconds(sample.declaredDurationS * 1_000);
+    lines.push(
+      `| ${sample.index} | \`${sample.ref.slice(0, 12)}\` | ${seconds(sample.split.totalMs)} | ` +
+        `${seconds(sample.split.instants.segmentDurationS * 1_000)} | ${declared} | ${sample.videoPacketCount} |`,
+    );
   }
 
-  lines.push('', '## Self-checks', '', trendLine(run.trend));
+  lines.push('', '## Self-checks', '', trendLine(run.trend), declaredDurationLine(run));
 
   const impossible = run.samples.flatMap((sample) =>
     impossibleHops(sample.split).map(

@@ -343,3 +343,52 @@ describe('the report an operator reads', () => {
     }
   });
 });
+
+/**
+ * LAT-9's own question, which the fix routes around rather than answers: the split is measured from
+ * the bytes now, so an engine that misreports its segment durations no longer moves any figure, and
+ * the only place that misreporting can still be seen is here.
+ */
+describe('reporting the manifest against the bytes', () => {
+  /** Measured at 2s, declared at `declaredDurationS`, so the gap is the fixture's own parameter. */
+  function declaring(index: number, declaredDurationS: number | null): SegmentSample {
+    return { ...sampleWithTotal(index, 5_600), declaredDurationS };
+  }
+
+  it('names the widest disagreement and the segment it came from', () => {
+    const report = renderReport(runWith([declaring(1, 2.02), declaring(2, 3.15), declaring(3, 1.99)]));
+
+    assert.match(report, /disagree by at most 1150ms across 3 sample\(s\), worst at segment 2/);
+    assert.match(report, /declared 3\.15s for 2\.00s of media/);
+  });
+
+  /**
+   * Unconditional, for the reason the trend line is. A run cannot separate an engine that segments
+   * unevenly from one that segments evenly and misreports, so a line that appeared only past some
+   * threshold would state a judgement these numbers do not carry.
+   */
+  it('prints the comparison even when the two agree exactly', () => {
+    const report = renderReport(runWith([declaring(1, 2), declaring(2, 2)]));
+
+    assert.match(report, /disagree by at most 0ms across 2 sample\(s\)/);
+  });
+
+  /** The declared figure feeds nothing, so its absence costs the comparison and no other row. */
+  it('says when no sample carried a readable duration, rather than reporting a zero gap', () => {
+    const report = renderReport(runWith([declaring(1, null), declaring(2, null)]));
+
+    assert.match(report, /no sample carried a readable `#EXTINF`/);
+    assert.doesNotMatch(report, /disagree by at most/);
+    assert.match(report, /capture to fetchable/, 'the split itself still reports');
+  });
+
+  it('carries both durations and the packet count into the sample table', () => {
+    const report = renderReport(runWith([declaring(7, 3.15)]));
+
+    assert.match(report, /\| 7 \| `ref700000000` \| 5\.60s \| 2\.00s \| 3\.15s \| 60 \|/);
+  });
+
+  it('marks an unreadable declaration in the table rather than leaving the cell blank', () => {
+    assert.match(renderReport(runWith([declaring(7, null)])), /\| 2\.00s \| unreadable \| 60 \|/);
+  });
+});
