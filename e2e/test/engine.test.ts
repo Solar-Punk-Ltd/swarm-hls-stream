@@ -111,3 +111,80 @@ describe('a custom stream path reaches the URL', () => {
     assert.match(srtIngestUrl(config({ E2E_ENGINE: 'ome', E2E_STREAM_PATH: 'audio/other' })), /\/audio\/other$/);
   });
 });
+
+/**
+ * That the URL this suite dials carries the credential the deployment demands. See SEC-28 and SEC-29.
+ *
+ * Every scenario here published with no key at all until 2026-08-03, so against a deployment with
+ * `PUBLISH_KEY_SECRET` set, all of them failed at the first admission. That failure is the expensive
+ * kind: the engine refuses the handshake, no segment is produced, and each scenario waits out its
+ * warmup and reports a publisher timeout, which reads as a broken stack rather than a missing key.
+ *
+ * **Pinned to the golden vector rather than to `derivePublishKey`'s own output**, which is the whole
+ * point. Asserting the URL contains what the function just returned would pass with both sides
+ * broken in the same direction. This literal is the same one `packages/stream-uploader` and
+ * `deploy/test/publishKey.test.js` pin, so the publisher, the verifier and the operator CLI are three
+ * independent files agreeing on one string. If they ever disagree, every key issued is refused and it
+ * looks exactly like a broadcaster's typo.
+ */
+describe('the publish key in the ingest URL', () => {
+  const GOLDEN_SECRET = 'publish-key-secret-0123456789abcdef';
+  const GOLDEN_KEY = '2d1e344ecb833667c936399866349fbc';
+  const GOLDEN_PATH = 'video/demo';
+
+  it('SRS carries the key inside the r= value, ahead of m=publish', () => {
+    const cfg = config({
+      E2E_ENGINE: 'srs',
+      E2E_STREAM_PATH: GOLDEN_PATH,
+      PUBLISH_KEY_SECRET: GOLDEN_SECRET,
+    });
+
+    assert.match(srtIngestUrl(cfg), new RegExp(`streamid=#!::r=video/demo\\?key=${GOLDEN_KEY},m=publish$`));
+  });
+
+  it('OME carries the key in the nested streamid, percent-encoded', () => {
+    const cfg = config({
+      E2E_ENGINE: 'ome',
+      E2E_STREAM_PATH: GOLDEN_PATH,
+      PUBLISH_KEY_SECRET: GOLDEN_SECRET,
+    });
+
+    assert.ok(
+      srtIngestUrl(cfg).includes(`%3Fkey%3D${GOLDEN_KEY}`),
+      'the key has to survive into the streamid, and the second ? has to be encoded',
+    );
+  });
+
+  /**
+   * The property SEC-28 rests on, asserted where it can actually be got wrong. Deriving against the
+   * secret alone, or against a constant, would authenticate every scenario against every stream, and
+   * the multi-stream scenario is the only place that shows.
+   */
+  it('derives a different key per stream, so one scenario cannot publish as another', () => {
+    const cfg = config({ E2E_ENGINE: 'srs', PUBLISH_KEY_SECRET: GOLDEN_SECRET });
+
+    const mine = srtIngestUrl(cfg, 'live/one');
+    const theirs = srtIngestUrl(cfg, 'live/two');
+
+    assert.notEqual(mine, theirs);
+    assert.equal(mine.includes(GOLDEN_KEY), false, 'and neither is the key for some third stream');
+  });
+
+  /** The keyless shape is the one confirmed live, so it is pinned byte for byte against drift. */
+  it('leaves both URLs exactly as they were when no secret is configured', () => {
+    const srs = config({ E2E_ENGINE: 'srs', E2E_PORT_SLOT: '2' });
+    const ome = config({ E2E_ENGINE: 'ome' });
+
+    assert.equal(srtIngestUrl(srs), 'srt://203.0.113.10:10021?streamid=#!::r=live/stream,m=publish');
+    assert.equal(srtIngestUrl(ome).includes('key'), false);
+    assert.equal(srtIngestUrl(ome).includes('%'), false, 'and it is not encoded either');
+  });
+
+  /**
+   * A secret the service would have refused at startup fails here instead, because the alternative
+   * is every scenario timing out against an uploader that never came up.
+   */
+  it('refuses a secret too short for the service to have accepted', () => {
+    assert.throws(() => config({ E2E_ENGINE: 'srs', PUBLISH_KEY_SECRET: 'too-short' }), /at least 32 characters/);
+  });
+});

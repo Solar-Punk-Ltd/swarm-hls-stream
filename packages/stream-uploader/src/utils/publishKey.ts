@@ -1,51 +1,24 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { derivePublishKey, PUBLISH_KEY_PARAM } from '@swarm-hls-stream/shared/publishKey';
+import { timingSafeEqual } from 'node:crypto';
 
 /**
- * Query parameter carrying a stream's publish credential.
+ * How a publish key presented by an engine is verified and extracted. See SEC-28.
  *
- * A query parameter because it is the only channel both engines leave open, and both were measured
- * carrying it on 2026-08-03 rather than taken from their documentation:
+ * **Naming and derivation moved to `@swarm-hls-stream/shared/publishKey`.** The operator CLI and the
+ * e2e publisher have to derive exactly the value this verifies, and a second implementation of that
+ * one line does not fail loudly: it authenticates nobody, which looks from the outside like a
+ * broadcaster typing their key wrong. Re-exported here rather than imported at every call site, so
+ * the move stays invisible to the rest of the package. See ARCH-1.
  *
- * - OME (`airensoft/ovenmediaengine:latest`, SRT provider) puts the publish URL in the admission
- *   body's `request.url` **with its query intact**, on the `opening` and again on the `closing`.
- * - SRS (`ossrs/srs:6`) puts it in the `on_publish` body's `param`, **including the leading `?`**, and
- *   repeats it on `on_unpublish`.
- *
- * The name is short because a broadcaster types it into a publish URL by hand.
+ * What stays here is what only the service does. The constant-time compare, and the two engines'
+ * webhook shapes, neither of which the publisher side has any use for.
  */
-export const PUBLISH_KEY_PARAM = 'key';
-
-/** Matching the SRS webhook token and the API token: short enough to guess is short enough to guess. */
-export const MIN_PUBLISH_KEY_SECRET_LENGTH = 32;
-
-/**
- * Hex characters of the derived key, so 128 bits. Truncating an HMAC is sound and this is far past
- * brute force, while a full SHA-256 digest doubles the length of every publish URL an operator has to
- * hand out and read back over the phone.
- */
-const PUBLISH_KEY_LENGTH = 32;
-
-export function assertUsablePublishKeySecret(secret: string): void {
-  if (secret.length < MIN_PUBLISH_KEY_SECRET_LENGTH) {
-    throw new Error(`PUBLISH_KEY_SECRET must be at least ${MIN_PUBLISH_KEY_SECRET_LENGTH} characters`);
-  }
-}
-
-/**
- * The key that proves the holder may publish `streamId`.
- *
- * Derived rather than stored, which is the whole reason this is a small module and not a subsystem.
- * There is no credential table to persist, no issuance endpoint to guard and no state to lose across a
- * restart, and rotation is one environment variable. The cost is that a single stream cannot be
- * revoked on its own: rotating the secret invalidates every key at once. That trade is worth naming
- * because it is the one an operator will hit, and the answer is to rotate and reissue.
- *
- * Keyed by the stream id and nothing else, so the key a broadcaster holds says nothing about any other
- * stream. One leaked key is one compromised broadcast.
- */
-export function derivePublishKey(secret: string, streamId: string): string {
-  return createHmac('sha256', secret).update(streamId, 'utf8').digest('hex').slice(0, PUBLISH_KEY_LENGTH);
-}
+export {
+  assertUsablePublishKeySecret,
+  derivePublishKey,
+  MIN_PUBLISH_KEY_SECRET_LENGTH,
+  PUBLISH_KEY_PARAM,
+} from '@swarm-hls-stream/shared/publishKey';
 
 /**
  * Whether `presented` is the key for `streamId`.

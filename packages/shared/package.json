@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./publishKey": {
+      "types": "./src/publishKey.ts",
+      "default": "./src/publishKey.ts"
     }
   },
   "scripts": {

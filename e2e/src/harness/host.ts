@@ -256,21 +256,6 @@ export function chequebookBalance(host: Host, cfg: E2EConfig): Promise<Chequeboo
 }
 
 /**
- * Deposit `amountPlur` from the node's wallet into its chequebook (a real on-chain SWAP tx). Returns
- * the transaction hash; the balance reflects it only once the tx mines, so callers must poll after.
- */
-export async function depositToChequebook(host: Host, cfg: E2EConfig, amountPlur: bigint): Promise<string> {
-  const body = await host.localPost<{ transactionHash?: string; message?: string }>(
-    cfg.ports.beeUploaderApi,
-    `/chequebook/deposit?amount=${amountPlur.toString()}`,
-  );
-  if (!body.transactionHash) {
-    throw new Error(`chequebook deposit failed: ${body.message ?? JSON.stringify(body)}`);
-  }
-  return body.transactionHash;
-}
-
-/**
  * Block until the uploader reports no active streams. The scenarios share one live path on one
  * profile and must run serially (--test-concurrency=1); this guards each test's start against the
  * previous test's stream still draining, which would otherwise be rejected as "already active".

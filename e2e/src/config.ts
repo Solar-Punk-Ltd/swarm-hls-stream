@@ -11,6 +11,7 @@
  * engine's. That is `load_env` before `load_engine_envs`, and the shell's "already set wins".
  */
 
+import { assertUsablePublishKeySecret } from '@swarm-hls-stream/shared/publishKey';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -73,6 +74,17 @@ export interface E2EConfig {
   omeHlsPort: number;
   /** OME container for the engine-restart scenario. */
   omeContainer: string;
+  /**
+   * The deployment's `PUBLISH_KEY_SECRET`, or empty when publisher authentication is off. See SEC-28.
+   *
+   * Read from the deployment's own env rather than an `E2E_` var, because it is not a choice this
+   * suite gets to make: the engine either demands a key or it does not, and a publisher that guesses
+   * wrong is refused. Empty is the ordinary case, since `docker-compose.yml` defaults it empty.
+   *
+   * Every scenario here published without one until 2026-08-03, so against a deployment that had
+   * turned SEC-28 on, all of them failed at the first admission and blamed the publisher.
+   */
+  publishKeySecret: string;
   /** Env files that were actually found and read, in precedence order. Printed by the smoke test. */
   envFiles: readonly string[];
 }
@@ -141,6 +153,22 @@ function requireOneOf<T extends string>(name: string, raw: string, allowed: read
 function requireMatch(name: string, raw: string, pattern: RegExp, expected: string): string {
   if (!pattern.test(raw)) {
     throw new Error(`Invalid ${name} "${raw}"; expected ${expected}`);
+  }
+  return raw;
+}
+
+/**
+ * Screened by the service's own rule rather than accepted as given, so a secret too short to have
+ * been accepted by the deployment fails here instead of one admission later.
+ *
+ * The failure it prevents is the confusing one. A short secret makes `createOmeEngineFromEnv` throw
+ * at startup, so the uploader is not running at all, and a suite that derived a key from it anyway
+ * would report a publisher timeout on every scenario rather than a stack that never came up. The
+ * value itself never appears in the message, here or in the shared helper.
+ */
+function requireUsableSecret(raw: string): string {
+  if (raw !== '') {
+    assertUsablePublishKeySecret(raw);
   }
   return raw;
 }
@@ -230,6 +258,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
       DOCKER_NAME_RE,
       `a docker-safe container name (${DOCKER_NAME_RE.source})`,
     ),
+    publishKeySecret: requireUsableSecret(env(resolved, 'PUBLISH_KEY_SECRET', '')),
     envFiles: [rootPath, enginePath],
   };
 }
