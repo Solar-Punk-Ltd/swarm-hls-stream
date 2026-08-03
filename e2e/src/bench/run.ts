@@ -251,16 +251,24 @@ async function measureOne(
 /**
  * A segment cannot hold more media than the publisher has produced.
  *
- * True by construction rather than tuned, and the same argument as the bounds in `wallclock.ts`: the
- * span is now derived from timestamps that a media engine is free to rewrite. What it catches is a
- * span measured across an MPEG-TS wrap, which lands near the 26.5-hour period and would otherwise
- * reach the report as a segment holding a day of media.
+ * True by construction rather than tuned, though **one-sided**, unlike the bounds in `wallclock.ts`
+ * which reject in both directions. A span measured too short has no bound here and none is available
+ * from the packets: for constant-frame-rate output the span is exactly the packet count times the
+ * frame duration, so a truncated list is as self-consistent as a whole one. The external check is the
+ * declared duration the report prints beside it.
+ *
+ * What this one catches is a span measured across an MPEG-TS timestamp wrap, which lands near the
+ * 26.5-hour period. **The order of the two calls above matters and is the only thing making the
+ * anchor safe in that case**: on a wrap-crossing segment `Math.min` picks a post-wrap frame, so
+ * `latencyMsFromPts` returns a latency roughly one segment too small and does not throw. This runs
+ * after it and discards the segment before either figure is used.
  */
 function requireSpanFitsTheBroadcast(mediaSpanS: number, elapsedMs: number, ref: string): void {
   if (mediaSpanS * 1_000 > elapsedMs) {
     throw new Error(
       `it measures ${mediaSpanS.toFixed(1)}s of media, more than the ${(elapsedMs / 1_000).toFixed(1)}s the ` +
-        `publisher has been running, so the timestamps in ${ref} did not survive the pipeline`,
+        `publisher has been running. The likeliest cause is a timestamp wrap inside ${ref} rather than ` +
+        'anything the pipeline did to it, since MPEG-TS counts in 33 bits and rolls every 26.5 hours',
     );
   }
 }

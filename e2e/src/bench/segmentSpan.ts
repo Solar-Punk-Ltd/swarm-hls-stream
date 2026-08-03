@@ -16,6 +16,13 @@
  * is the frame duration exactly, and where frames were dropped the median is unmoved by the gap they
  * left while a mean would carry it into every segment.
  *
+ * That robustness needs gaps to be a median of. **At two packets there is one gap and the median is
+ * it**, so a segment holding two frames a second apart is credited a one-second final frame and
+ * reports two seconds of media for about one. Nothing here rejects that, because two timestamps a
+ * second apart are exactly what a one-frame-per-second segment looks like and the two cases are not
+ * distinguishable from the list. `videoPacketCount` travels to the report so a reading that thin can
+ * be seen to be thin.
+ *
  * Both were checked against ffmpeg 7.1.1's own HLS muxer rather than reasoned about. Over a `-bf 3`
  * segment whose manifest declared `#EXTINF:0.500000`, this lands on 0.500 and the ends of the list
  * give 0.467.
