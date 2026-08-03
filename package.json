@@ -32,6 +32,7 @@
     "e2e:smoke": "pnpm --filter @swarm-hls-stream/e2e test:e2e:smoke",
     "e2e:run": "pnpm --filter @swarm-hls-stream/e2e test:e2e",
     "bench:latency": "pnpm --filter @swarm-hls-stream/e2e bench:latency",
+    "bench:longrun": "pnpm --filter @swarm-hls-stream/e2e bench:longrun",
     "audit:check": "tsx packages/audit-gate/src/index.ts",
     "mutate": "stryker run",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && git ls-files -z | xargs -0 -r npx prettier --check --ignore-unknown",

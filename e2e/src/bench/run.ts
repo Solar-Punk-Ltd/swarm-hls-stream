@@ -42,6 +42,14 @@ export interface RunOptions {
   knobs: PublishKnobs;
   /** How many distinct segments to carry end to end. */
   samples: number;
+  /**
+   * Stop collecting once the publish has been running this long, whichever comes first with `samples`.
+   *
+   * Defaults to `SEGMENT_TIMEOUT_MS` per requested sample, which is the deadline a short run needs to
+   * fail rather than hang. A long run sets both: a duration it wants, and a sample count high enough
+   * that the duration is what ends it.
+   */
+  collectForMs?: number;
   /** How often to ask the feed for a new manifest, standing in for the client's own poll. */
   pollIntervalMs: number;
   /**
@@ -200,8 +208,12 @@ async function collectSamples(
   const collected: PendingSample[] = [];
   const discarded: DiscardedSegment[] = [];
   const seen = new Set<string>();
-  const deadline = Date.now() + SEGMENT_TIMEOUT_MS * wanted;
+  const deadline = Date.now() + (options.collectForMs ?? SEGMENT_TIMEOUT_MS * wanted);
 
+  // Separate from the collection deadline, and shorter than a long run's. A feed that never appears
+  // is knowable in two minutes, and waiting out a half-hour collection window to say so would report
+  // the uploader never writing as a run that measured nothing.
+  const firstWriteDeadline = Date.now() + SEGMENT_TIMEOUT_MS;
   let feedSeen = false;
 
   while (collected.length < wanted && Date.now() <= deadline) {
@@ -209,7 +221,7 @@ async function collectSamples(
     try {
       manifest = await fetchFeedManifest(gatewayUrl, owner, topicHex);
     } catch (error) {
-      if (!isFeedPendingFirstWrite(error, feedSeen)) {
+      if (!isFeedPendingFirstWrite(error, feedSeen) || Date.now() > firstWriteDeadline) {
         throw error;
       }
       await sleep(pollIntervalMs);
@@ -243,7 +255,7 @@ async function collectSamples(
   // only place left that can say so.
   if (!feedSeen) {
     throw new Error(
-      `the feed ${owner}/${topicHex} never appeared at ${gatewayUrl} in ${SEGMENT_TIMEOUT_MS * wanted}ms. ` +
+      `the feed ${owner}/${topicHex} never appeared at ${gatewayUrl} in ${SEGMENT_TIMEOUT_MS}ms. ` +
         'The publisher was accepted, so this is the uploader not writing an update rather than the ' +
         'broadcast failing: check the uploader log for the manifest publish.',
     );

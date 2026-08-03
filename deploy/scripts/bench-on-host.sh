@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run `pnpm bench:latency` on the deployment host instead of on a workstation.
+# Run a bench on the deployment host instead of on a workstation.
 #
 # The bench publishes and fetches from one machine, deliberately, because that is what keeps the
 # capture instant and the fetch instant on a single clock and keeps clock skew out of the total.
@@ -15,9 +15,13 @@
 #
 # Usage:
 #   deploy/scripts/bench-on-host.sh [--profile latbench] [--portSlot 7] [--target manager-host]
+#                                   [--script bench:latency]
 #
 # Anything after `--` is passed to the container as environment, so a knob sweep reads:
 #   deploy/scripts/bench-on-host.sh -- BENCH_GOP_SECONDS=4 BENCH_BITRATE_KBPS=1200
+#
+# `--script` chooses which bench runs, so `bench:longrun` reuses the sync, the image and the container
+# arguments rather than copying them into a second script that could drift from this one.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -32,6 +36,12 @@ IMAGE="swarm-hls-bench"
 # Syncing, building and installing are idempotent but not free, and a sweep repeats one setting many
 # times over an unchanged tree. `--no-setup` skips all three for the repeat runs.
 SETUP=1
+SCRIPT="bench:latency"
+
+# A long run holds one ssh session open for the whole broadcast with nothing crossing it, which is
+# exactly the shape a firewall or a NAT table drops. Without these a thirty-minute run can lose its
+# connection at the twenty-ninth minute and take the report with it, after the postage is spent.
+SSH_OPTS=(-o ServerAliveInterval=30 -o ServerAliveCountMax=20)
 
 BENCH_ENV=()
 while [ $# -gt 0 ]; do
@@ -39,6 +49,7 @@ while [ $# -gt 0 ]; do
     --profile) PROFILE="$2"; shift 2 ;;
     --portSlot) PORT_SLOT="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
+    --script) SCRIPT="$2"; shift 2 ;;
     --no-setup) SETUP=0; shift ;;
     --) shift; BENCH_ENV=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -71,10 +82,10 @@ rsync -az --delete \
   "${REPO_ROOT}/" "${TARGET}:${REMOTE_DIR}/"
 
 echo "bench-on-host: building ${IMAGE} on ${TARGET}"
-ssh "${TARGET}" "cd ${REMOTE_DIR} && docker build -q -f e2e/Dockerfile.bench -t ${IMAGE} e2e/"
+ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && docker build -q -f e2e/Dockerfile.bench -t ${IMAGE} e2e/"
 
 echo "bench-on-host: installing dependencies in the container"
-ssh "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${IMAGE} pnpm install --frozen-lockfile"
+ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${IMAGE} pnpm install --frozen-lockfile"
 fi
 
 # `local` is the sentinel that makes the harness shell out instead of ssh, which the host cannot do to
@@ -84,8 +95,8 @@ for pair in ${BENCH_ENV[@]+"${BENCH_ENV[@]}"}; do
   RUN_ENV="${RUN_ENV} -e ${pair}"
 done
 
-echo "bench-on-host: running the bench on ${TARGET} (profile ${PROFILE}, slot ${PORT_SLOT})"
-ssh "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} pnpm bench:latency"
+echo "bench-on-host: running ${SCRIPT} on ${TARGET} (profile ${PROFILE}, slot ${PORT_SLOT})"
+ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} pnpm ${SCRIPT}"
 
 echo "bench-on-host: collecting reports"
 mkdir -p "${REPO_ROOT}/docs/bench"
