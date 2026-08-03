@@ -28,12 +28,21 @@ broadcast.** It is filed as LAT-10 and it is not this repository's code.
 | 720p 2500k | 2.0s | 8.0 | 69 | 5.90s | +20ms/min | no | 4.98s to 5.29s (+0.31s) |
 | 720p 2500k | 2.0s | 4.7 | 40 | 5.76s | | | |
 | 720p 2500k | 2.0s | 5.7 | 42 | 4.82s | | | |
+| 720p 2500k | 1.0s | 6.0 | 51 | 3.17s | | | |
+| **1080p 6000k** | 1.0s | 10.3 | 88 | **3.59s** | -6ms/min | no | 6.25s to 3.92s (**-2.33s**) |
 
 The last two are the publishes that carried the two-node experiment below, kept because they are
 runs and reported without their drift columns because four and six minutes is not long enough for a
 slope to mean anything.
 
-There was a sixth, at 1080p 6000k and 0.5s for 2.1 minutes, which was the instrument's own first
+**1080p holds still too.** Over 10.3 minutes its fitted slope is -6ms per minute, which predicts 0.06s
+against a 0.84s residual, and its buffer demand falls rather than grows. Its median
+capture-to-fetchable is 3.59s against 720p's 3.17s at the same segment length, so the picture costs
+about 0.4s and nothing else. Its `mediaPacing` does show a **1.53s hole**, media the timeline crossed
+that no segment carried, which is the 1080p publish-path contention `profiles.md` already records
+rather than anything new.
+
+There was a seventh, at 1080p 6000k and 0.5s for 2.1 minutes, which was the instrument's own first
 smoke run. **Its artifact was deliberately not kept**: it reported a 48 second gap it had no way to
 attribute, and `feedPolls`, the field that turns such a gap into a statement about whose it is, came
 out of reading that report. Its latency figures were 2.55s median and a 2.76s to 4.39s buffer
@@ -81,14 +90,19 @@ freshness, which is why every other signal is clean.
 
 ### Segment length mitigates and does not cure
 
-| | 0.5s segments | 1.0s segments | 2.0s segments |
-| --- | ---: | ---: | ---: |
-| feed writes per second | 2 | 1 | 0.5 |
-| freezes over 15s | 7 | 5 | 6 |
-| **period between freezes** | **63, 65, 64, 64, 66, 63s** | **80, 48, 80, 62s** | **60, 67, 63, 63, 61s** |
-| freeze length, median | 47.4s | 36.8s | 33.3s |
-| index jump on release | 96 | 30 to 51 | 17 |
-| **frozen share of the broadcast** | **70%** | **55%** | **42%** |
+| | 720p, 0.5s | 720p, 1.0s | 720p, 2.0s | **1080p, 1.0s** |
+| --- | ---: | ---: | ---: | ---: |
+| feed writes per second | 2 | 1 | 0.5 | 1 |
+| freezes over 15s | 7 | 5 | 6 | 8 |
+| **period between freezes** | **63-66s** | **48-80s** | **60-67s** | **49-109s** |
+| freeze length, median | 47.4s | 36.8s | 33.3s | 33.0s |
+| index jump on release | 96 | 30 to 51 | 17 | 32 to 49 |
+| **frozen share of the broadcast** | **70%** | **55%** | **42%** | **50%** |
+
+**Picture size barely moves it.** 1080p at 6000kbps against 720p at 2500kbps, same segment length, is
+50% frozen against 55%, with the same freeze length and the same index jumps. Two and a half times the
+bytes changes nothing, which is what the SOC finding below predicts: the announcement is one small
+chunk whatever the video is.
 
 The period is the same across a fourfold range of write rate, so the cycle is driven by elapsed time.
 What the write rate changes is how far the reader falls behind while frozen, and 96 against 30 against
