@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -61,5 +61,59 @@ describe('uploader image install (ARCH-1)', () => {
       /vendor-shared\.mjs/,
       'the build no longer vendors shared, so nothing supplies it at runtime',
     );
+  });
+});
+
+/**
+ * That every entry point the shared package advertises survives being vendored into the image.
+ *
+ * This is the check that was missing on 2026-08-03, and its absence cost a crash-looping deployment.
+ * `@swarm-hls-stream/shared` gained a `./publishKey` subpath, `vendor-shared.mjs` wrote a manifest
+ * with a hand-listed `.` entry and nothing else, and the uploader died at its first import with
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED`. Every check in the repository was green while it did, because
+ * nothing outside the image resolves the vendored copy: `pnpm verify`, `tsx` and `tsc` all follow
+ * the workspace symlink to the source package, whose `exports` was correct the whole time.
+ *
+ * So this reads both manifests and compares them, which is the one question the suite could not
+ * otherwise ask. It deliberately does not re-derive the compiled paths with the same expression the
+ * script uses, because a test that repeats the implementation agrees with it however wrong it is.
+ */
+describe('the vendored shared manifest keeps every advertised entry point', () => {
+  const sourceManifest = JSON.parse(readFileSync(resolve(ROOT, 'packages/shared/package.json'), 'utf8'));
+  const vendoredPath = resolve(
+    ROOT,
+    'packages/stream-uploader/dist/node_modules/@swarm-hls-stream/shared/package.json',
+  );
+
+  it('exports the same subpaths the source package does', () => {
+    const vendored = JSON.parse(readFileSync(vendoredPath, 'utf8'));
+
+    assert.deepEqual(
+      Object.keys(vendored.exports).sort(),
+      Object.keys(sourceManifest.exports).sort(),
+      'a subpath the source advertises is missing from the image, so it throws ERR_PACKAGE_PATH_NOT_EXPORTED at runtime',
+    );
+  });
+
+  /**
+   * The other half of the same failure. A subpath present but pointing at a file the compiler never
+   * emitted fails identically from the outside, and `.ts` surviving into the manifest is the exact
+   * shape that would do it, since the source really does point its `exports` at TypeScript.
+   */
+  it('points every export at a file that exists next to it', () => {
+    const vendored = JSON.parse(readFileSync(vendoredPath, 'utf8'));
+    const vendorDir = dirname(vendoredPath);
+
+    for (const [subpath, entry] of Object.entries(vendored.exports)) {
+      // Spelled as what each condition must be rather than as what it must not be. The first version
+      // of this banned a trailing `.ts` and failed on `./index.d.ts`, which is the correct value for
+      // `types`: a declaration file ends in `.ts` too.
+      assert.match(entry.default, /\.js$/, `${subpath} must load JavaScript, not ${entry.default}`);
+      assert.match(entry.types, /\.d\.ts$/, `${subpath} must be typed by a declaration, not ${entry.types}`);
+
+      for (const target of [entry.types, entry.default]) {
+        assert.ok(existsSync(resolve(vendorDir, target)), `${subpath} points at ${target}, which was not emitted`);
+      }
+    }
   });
 });
