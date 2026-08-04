@@ -85,7 +85,20 @@ Currently 2.8.1 on both nodes. If the working setup ran an older bee, this is a 
 **Experiment**: pin the previous minor in compose, redeploy the gateway only, re-measure.
 **Cost**: one run. Blocked on knowing which version to try, so it needs the owner's input above.
 
-### H4 — The feed write carries no redundancy
+### ~~H4 — The feed write carries no redundancy~~ ELIMINATED 2026-08-04, without a run
+
+`FeedUploadOptions extends UploadOptions, FeedUpdateOptions`, and `UploadOptions` is
+`{ act?, pin?, encrypt?, deferred? }`. **bee-js cannot put `redundancyLevel` on a feed write at all.**
+
+The reason is principled rather than an oversight, and it is worth recording because it closes the
+question permanently: **a single-owner chunk is one chunk.** Erasure coding spreads data across
+chunks, so a single chunk has nothing to encode. Replication of one chunk is exactly what the storage
+neighbourhood provides by design. The asymmetry against the segment write is real but it is a category
+difference, not a missing option.
+
+`deferred` was the only knob on that call that mattered, and it is already flipped.
+
+### H4 (original text, kept for the reasoning)
 
 `uploadDataAsSoc` writes with `{ index, deferred: false }`. The segment write alongside it uses
 `{ redundancyLevel: 1, deferred: true }`. So the announcement, which is the thing that is slow, is the
@@ -143,14 +156,23 @@ verifiable record and as the fallback when the channel is unavailable.
 ## Order of work
 
 1. **H1** result, in flight
-2. **H4 plus the scoped code review**, the cheapest code change available and the only lever left that
-   makes the single retrieval itself faster
-3. **H3** once the owner says which bee version to try
+2. ~~H4~~ **eliminated without a run**: bee-js cannot carry redundancy on a feed write, and a single
+   chunk has nothing to erasure code. This removed the last configuration lever that could have made
+   the single retrieval itself faster
+3. **H3**, which now means a **downgrade**, since 2.8.1 released 2026-07-07 is the newest bee that
+   exists and this repo has pinned it since the initial commit. Options are 2.7.0 (2026-02-10) and
+   2.6.0 (2025-07-22). Safe form: back up the gateway data dir, **preserve `keys/` and wipe the
+   rest**, so the overlay identity and the on-chain chequebook survive and no new spend is needed
 4. **H5** only if the above are exhausted
 5. **The announcement side-channel**, promoted from fallback to a live candidate by the no-full-node
    constraint, because with light nodes only there is no way to have the announcement waiting locally
 
-**The realistic expectation, stated in advance so it is not a disappointment later:** H1, H3, H4 and H5
+**The configuration space is nearly exhausted, and that is the real finding of this pass.** `deferred`
+is fixed, funding is fixed, cache was tested and made it worse, redundancy is not available and not
+applicable, full nodes are ruled out, and the only bee versions available are older ones. After H1
+reports, what remains is a downgrade and the architecture.
+
+**The realistic expectation, stated in advance so it is not a disappointment later:** H1, H3 and H5
 each move one retrieval's latency at the margin. None of them changes the fact that a light node must
 fetch the announcement on demand from a network that currently takes 30 to 45 seconds to serve it. If
 the regression turns out to be one of them, excellent. If not, **the side-channel is the thing that
