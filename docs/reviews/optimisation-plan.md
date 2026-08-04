@@ -86,20 +86,51 @@ The synthetic rig from LAT-10 writes one 4KB chunk per second and costs a roundi
 about **how a feed is read** can be answered with it, in minutes, for nothing. Only questions about
 **how video is written** need a broadcast.
 
-| #   | question                                         | why it matters                                                                                                                                                                             | cost |
-| --- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---- |
-| 1.1 | What does the catalog pay for `/feeds/`? (#66)   | `App.tsx:67` and `StreamPreview.tsx:60` poll the endpoint that is 50-57% frozen. This is shipped, on every page load, and unmeasured.                                                      | free |
-| 1.2 | Does caching the head plus walking fix it?       | Same change that took the bench from 37.2s to 4.8s. Prototype against the rig before touching the app.                                                                                     | free |
-| 1.3 | Concurrent viewers, redone (LAT-11)              | The 1.30x staleness at 8 viewers was measured through the broken lookup in both arms. Direction survives, magnitude does not.                                                              | free |
-| 1.4 | `--cache-capacity` 0 vs 1M, redone               | "0 to 1M made it worse, 18% to 28% frozen" is a head-lookup measurement of a read path. Re-test on the explicit-address path.                                                              | free |
-| 1.5 | How large can the manifest window go?            | `LIVE_WINDOW_SIZE = 10` gives about 1.3KB. A chunk is 4KB, so roughly 30 fits. A larger window is free catch-up headroom for a viewer who fell behind. Check the byte size, then the read. | free |
-| 1.6 | Does a refused slot cost more than a served one? | The rig measured 827ms for a 404 against 46ms for a 200. A caught-up viewer gets a 404 on nearly every poll, so this sits in the steady-state path.                                        | free |
+| #   | question                                                        | why it matters                                                                                                                                      | cost |
+| --- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 1.1 | What does the catalog pay for `/feeds/`? (#66)                  | `App.tsx:67` and `StreamPreview.tsx:60` poll the endpoint that is 50-57% frozen. This is shipped, on every page load, and unmeasured.               | free |
+| 1.2 | Does caching the head plus walking fix it?                      | Same change that took the bench from 37.2s to 4.8s. Prototype against the rig before touching the app.                                              | free |
+| 1.3 | Concurrent viewers, redone (LAT-11)                             | The 1.30x staleness at 8 viewers was measured through the broken lookup in both arms. Direction survives, magnitude does not.                       | free |
+| 1.4 | `--cache-capacity` 0 vs 1M, redone                              | "0 to 1M made it worse, 18% to 28% frozen" is a head-lookup measurement of a read path. Re-test on the explicit-address path.                       | free |
+| 1.5 | Does the startup buffer cap below the target at short segments? | Answered already, see section 3.1. Confirm in a browser rather than by measurement (#48).                                                           | free |
+| 1.6 | Does a refused slot cost more than a served one?                | The rig measured 827ms for a 404 against 46ms for a 200. A caught-up viewer gets a 404 on nearly every poll, so this sits in the steady-state path. | free |
 
 Phase 1 has no postage cost and no dependency on the new batch. **It runs first, and some of it may
 land improvements before the grid begins.**
 
 Its limit is worth stating plainly: the rig writes 4KB payloads, so it can answer questions about the
 feed and says nothing about segment throughput.
+
+### 3.1 Two things the code already answers, at no cost at all
+
+**The uploader's live window caps the player's startup buffer, and it is counted in segments while the
+buffer is counted in seconds.** `LIVE_WINDOW_SIZE = 10` in
+[`ManifestManager.ts`](../../packages/stream-uploader/src/libs/ManifestManager.ts) means the first
+manifest a viewer ever sees holds ten segments, so it is 20 seconds of media at a 2.0s segment and
+**5 seconds at a 0.5s one**. hls.js clamps its sync position to the start of the playlist:
+
+```js
+var syncPosition = liveEdge - targetLatency - this.edgeStalled;
+var min = edge - levelDetails.totalduration;
+return Math.min(Math.max(min, syncPosition), max);
+```
+
+So at 0.5s segments a player asking for `LIVE_SYNC_DURATION_S = 6` is silently given 5, and starts on
+the oldest segment it holds with no history behind it. **The best row in the retired profile grid was
+720p at 0.5s**, which is to say the configuration this campaign is most likely to pick is the one
+where the cap bites hardest.
+
+It bounds startup rather than steady state, because the client accumulates: `ManifestStateManager`
+appends every segment it has seen and never trims, so the playlist it hands hls.js grows past the cap
+within a few polls. Worth confirming in a browser (#48) rather than in another bench run.
+
+**That same accumulation is unbounded for the life of the session.** Ten hours at a 0.5s segment is
+about 72,000 entries in `state.segments` and as many in `state.segmentUris`, re-serialised into one
+string on every poll that finds something new. Nothing has ever run long enough to notice, which is
+its own finding: the longest run this project has ever done is ten minutes.
+
+Neither is a change to make on reading alone. They are candidates for Phase 4 with a browser check
+first, and the reason for that caution is `a4f9841`.
 
 ## 4. Phase 2, the grid that needs broadcasts
 
