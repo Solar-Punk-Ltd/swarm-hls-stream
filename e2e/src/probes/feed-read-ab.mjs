@@ -23,6 +23,13 @@
  * explicit address, so the shared tick ran at half the write rate, both walkers fell a slot behind
  * per tick, and `edge` asked for a slot that did not exist zero times in 150 polls. The two walkers
  * returned identical figures to two decimals, which is what a coupled rig looks like from outside.
+ *
+ * RUN IT FROM `e2e`, which is the only workspace package that still declares `cafe-utility`. This is
+ * plain ESM rather than TypeScript, so it cannot import the shared module the bench and the player
+ * now follow feeds through, and it resolves its dependencies from wherever it is started:
+ *
+ *   docker run --rm --network host -w /repo/e2e -e STAMP=... swarm-hls-bench:latest \
+ *     node src/probes/feed-read-ab.mjs
  */
 import { Bee, FeedIndex, Identifier, PrivateKey, Topic } from '@ethersphere/bee-js';
 import { Binary } from 'cafe-utility';

@@ -1,4 +1,5 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
+import { makeFeedIdentifier } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
@@ -11,7 +12,6 @@ import {
   UNSERVED_SLOT_POLL_LIMIT,
 } from '../src/components/SwarmHlsPlayer/feedState';
 import { ManifestFetcher, ManifestStateManager, waitMs } from '../src/components/SwarmHlsPlayer/ManifestManagement';
-import { makeFeedIdentifier } from '../src/utils/bee';
 
 const BEE_URL = 'http://bee.test';
 const OWNER = '0x1111111111111111111111111111111111111111';
@@ -682,5 +682,65 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     await settle();
 
     assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
+  });
+});
+
+/**
+ * The property the bench and the player disagreed about for the whole of LAT-10.
+ *
+ * `GET /feeds/{owner}/{topic}` asks a node to resolve the newest update, and it cannot keep up with a
+ * feed advancing once a second: measured on 2026-08-04 it was 50 to 57% frozen at 1.0 to 7.0 seconds
+ * against 0.2% frozen at 46ms for explicit-address reads of the same chunks on the same node. The
+ * player has always resolved it once and then walked slot addresses. The bench resolved it on every
+ * poll, and so reported the lookup's freeze as the product's.
+ *
+ * Both sides now route through `nextFeedRequest`, and this is the client's arm of that: the same
+ * assertion runs in `packages/shared/test/feedFollow.test.ts` against the shared decision and in
+ * `e2e/test/gateway.test.ts` against the bench's follower.
+ */
+describe('following the feed costs one head lookup (LAT-10)', () => {
+  let fetcher: ManifestFetcher;
+  let requested: string[];
+
+  beforeEach(() => {
+    manager.clear(hexTopic);
+    fetcher = new ManifestFetcher(manager);
+    fetcher.beeUrl = BEE_URL;
+    requested = [];
+
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      const index = requestedIndex(url);
+      return index === undefined
+        ? new Response(manifestForIndex(START_INDEX), { headers: { 'Swarm-Feed-Index': START_INDEX.toString(16) } })
+        : new Response(manifestForIndex(index));
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realConsoleError;
+  });
+
+  it('resolves the head on mount and never again', async () => {
+    for (let poll = 0; poll < 6; poll++) {
+      await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+      await settle();
+    }
+
+    const heads = requested.filter((url) => url.includes('/feeds/'));
+    assert.equal(heads.length, 1, `the head was resolved ${heads.length} times: ${requested.join(' ')}`);
+    assert.equal(requested[0], `${BEE_URL}/feeds/${OWNER}/${hexTopic}`);
+  });
+
+  it('walks one slot per poll from wherever the head landed', async () => {
+    for (let poll = 0; poll < 4; poll++) {
+      await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+      await settle();
+    }
+
+    const slots = requested.slice(1).map((url) => requestedIndex(url));
+    assert.deepEqual(slots, [START_INDEX + 1n, START_INDEX + 2n, START_INDEX + 3n]);
   });
 });

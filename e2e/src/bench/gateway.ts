@@ -14,8 +14,8 @@
  * does not reuse it.
  */
 
-import { FeedIndex, Identifier, Topic } from '@ethersphere/bee-js';
-import { Binary } from 'cafe-utility';
+import { FeedIndex, Topic } from '@ethersphere/bee-js';
+import { type FeedSlotRequest, nextFeedRequest } from '@swarm-hls-stream/shared';
 
 const FEED_TIMEOUT_MS = 15_000;
 const SEGMENT_TIMEOUT_MS = 30_000;
@@ -187,22 +187,6 @@ export function parseFeedReaderMode(raw: string | undefined): FeedReaderMode {
 }
 
 /**
- * The address of one feed slot, which is what the player asks for and therefore what this must ask
- * for too.
- *
- * Hand-built rather than taken from bee-js, because `makeFeedReader().downloadPayload()` is for feeds
- * whose update holds a swarm reference: it fetches the slot and then dereferences the payload with a
- * second `GET /bytes/<ref>`. Our uploader writes the manifest text straight into the slot, so that
- * second request is both wrong and an extra round trip inside the thing being timed.
- */
-function feedSlotUrl(gatewayUrl: string, owner: string, topicHex: string, index: FeedIndex): string {
-  const identifier = new Identifier(
-    Binary.keccak256(Binary.concatBytes(new Topic(topicHex).toUint8Array(), index.toUint8Array())),
-  );
-  return `${gatewayUrl}/soc/${owner}/${identifier.toString()}`;
-}
-
-/**
  * Follows one feed the way the player does, so that what the bench reports is what a viewer sees.
  *
  * **This is the correction to LAT-10 and it is the whole point of the class.** The bench used to
@@ -217,6 +201,10 @@ function feedSlotUrl(gatewayUrl: string, owner: string, topicHex: string, index:
  * So every frozen-share figure this bench produced before this class measured the lookup, not the
  * viewer, and LAT-10's whole history rests on it.
  *
+ * Which request follows is `nextFeedRequest`'s to decide, and the player routes on the same call.
+ * That is the point: this bench and the player each used to own a copy of that decision, which is
+ * how they came to disagree without anything failing.
+ *
  * A poll that finds no new slot returns the previous manifest again rather than failing, which is
  * exactly what the player serves its own hls.js in that case, and it is what lets the caller keep
  * counting a repeated `newestRef` as a stall.
@@ -224,33 +212,34 @@ function feedSlotUrl(gatewayUrl: string, owner: string, topicHex: string, index:
 export class FeedFollower {
   private index: FeedIndex | null = null;
   private last: FeedRead | null = null;
+  private readonly topic: Topic;
 
   constructor(
     private readonly gatewayUrl: string,
     private readonly owner: string,
-    private readonly topicHex: string,
+    topicHex: string,
     private readonly mode: FeedReaderMode = DEFAULT_FEED_READER,
-  ) {}
+  ) {
+    this.topic = new Topic(topicHex);
+  }
 
   async read(): Promise<FeedRead> {
-    if (this.mode === 'head' || this.index === null || this.last === null) {
+    const request = nextFeedRequest(this.owner, this.topic, this.index);
+    if (this.mode === 'head' || request.kind === 'head' || this.last === null) {
       // The anchor, and the only head lookup a walking follower ever performs. The player takes this
       // same path on mount and on every restart.
-      const read = await fetchFeedManifest(this.gatewayUrl, this.owner, this.topicHex);
+      const read = await fetchFeedManifest(this.gatewayUrl, this.owner, this.topic.toString());
       this.index = read.resolvedIndex === null ? null : FeedIndex.fromBigInt(BigInt(read.resolvedIndex));
       this.last = read;
       return read;
     }
-    return this.readNextSlot(this.index, this.last);
+    return this.readNextSlot(request, this.last);
   }
 
-  private async readNextSlot(from: FeedIndex, last: FeedRead): Promise<FeedRead> {
-    const target = from.next();
+  private async readNextSlot(request: FeedSlotRequest, last: FeedRead): Promise<FeedRead> {
+    const target = request.index;
     try {
-      const response = await timedFetch(
-        feedSlotUrl(this.gatewayUrl, this.owner, this.topicHex, target),
-        FEED_TIMEOUT_MS,
-      );
+      const response = await timedFetch(`${this.gatewayUrl}/${request.path}`, FEED_TIMEOUT_MS);
       const body = await response.text();
       this.index = target;
       this.last = { body, atMs: Date.now(), resolvedIndex: Number(target.toBigInt()) };

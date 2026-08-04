@@ -173,9 +173,6 @@ importers:
       '@swarm-hls-stream/shared':
         specifier: workspace:*
         version: link:../shared
-      cafe-utility:
-        specifier: ^27.16.2
-        version: 27.18.0
       hls.js:
         specifier: ^1.6.2
         version: 1.6.15
@@ -293,6 +290,13 @@ importers:
         version: 6.0.2
 
   packages/shared:
+    dependencies:
+      '@ethersphere/bee-js':
+        specifier: ^9.0.3
+        version: 9.8.1
+      cafe-utility:
+        specifier: 31.1.1
+        version: 31.1.1
     devDependencies:
       '@types/node':
         specifier: ^22.8.1
@@ -1881,9 +1885,6 @@ packages:
   bytes@3.1.2:
     resolution: {integrity: sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==}
     engines: {node: '>= 0.8'}
-
-  cafe-utility@27.18.0:
-    resolution: {integrity: sha512-aGcLjeOmy8mw5d0eDIB2SrvbRswRSCUIZFIlmhS1u7RXGeHLge+FmCV6AvEbTVbuNN2P9ZKJMbB8osJJOich8g==}
 
   cafe-utility@31.1.1:
     resolution: {integrity: sha512-1GZGghv6wi5Yfb6DGR02aIwPKH1/ny9w8nlUZM0Mo+dUf0BpmPmy9wKMZZEeaY72LPmDWQtfyoGGgaG5kINsNw==}
@@ -5746,8 +5747,6 @@ snapshots:
   builtin-status-codes@3.0.0: {}
 
   bytes@3.1.2: {}
-
-  cafe-utility@27.18.0: {}
 
   cafe-utility@31.1.1: {}
 

@@ -6,12 +6,12 @@ import {
   HLS_MEDIA_SEQUENCE_ZERO,
   HLS_PLAYLIST_TYPE,
   HLS_PLAYLIST_TYPE_EVENT,
+  nextFeedRequest,
   parseManifest,
   type Segment,
 } from '@swarm-hls-stream/shared';
 import Pqueue from 'p-queue';
 
-import { makeFeedIdentifier } from '@/utils/bee';
 import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 
@@ -231,10 +231,15 @@ export class ManifestFetcher {
     const [owner, topicPart] = url.split('/');
     const topic = Topic.fromString(topicPart);
 
-    if (!this.stateManager.getIndex(topic.toString())) {
+    // Which request follows is `nextFeedRequest`'s to decide, on the same input, for everything in
+    // this repository that reads a feed. The bench used to decide it separately and decided it
+    // differently, which is what put every latency figure the project published on a lookup that is
+    // frozen half the time. See `packages/shared/src/feedFollow.ts`.
+    const knownIndex = this.stateManager.getIndex(topic.toString());
+    if (knownIndex === null) {
       return this.handleInitialFetch(owner, topic);
     }
-    return this.handleFollowupFetch(owner, topic);
+    return this.handleFollowupFetch(owner, topic, knownIndex);
   }
 
   /**
@@ -262,7 +267,7 @@ export class ManifestFetcher {
     // it looks: an empty manifest reaches hls.js as a fatal parse error, which restarts the player
     // straight back into this method, and a gateway recorded as healthy imposes no backoff on that
     // loop and says nothing to the viewer. A 200 carrying a captive portal's HTML does exactly that.
-    const path = `feeds/${owner}/${hexTopic}`;
+    const { path } = nextFeedRequest(owner, topic, null);
     const generation = this.stateManager.generation(hexTopic);
     try {
       const res = await this.fetchResource(path);
@@ -307,25 +312,26 @@ export class ManifestFetcher {
     }
   }
 
-  private async handleFollowupFetch(owner: string, topic: Topic): Promise<string> {
+  /**
+   * @param fromIndex The newest slot already read, taken by the caller in the same tick that routed
+   *   here rather than read again in the callback below. Two callbacks that each advance from
+   *   whatever index they find advance twice for one slot fetched, and the slot in between is never
+   *   requested at all, so its segments never reach the viewer. The second callback used to reach
+   *   that line rather than stopping short, because `updateManifest` answers `true` to a duplicate
+   *   parse, where "nothing new, keep polling" and "this slot was consumed" are the same value read
+   *   two ways.
+   */
+  private async handleFollowupFetch(owner: string, topic: Topic, fromIndex: FeedIndex): Promise<string> {
     const hexTopic = topic.toString();
 
     // One outstanding follow-up per topic. This method is fire and forget by design: it returns the
     // already serialised state at once and leaves the fetch running, so hls.js schedules its next
     // level reload on the ordinary cadence while the previous fetch is still open. See CON-29.
     if (!this.inFlight.has(hexTopic) && this.feedHealth.backoffRemainingMs(hexTopic) === 0) {
-      // Pinned here rather than read again in the callback. Two callbacks that each advance from
-      // whatever index they find advance twice for one slot fetched, and the slot in between is
-      // never requested at all, so its segments never reach the viewer. The second callback used to
-      // reach that line rather than stopping short, because `updateManifest` answers `true` to a
-      // duplicate parse, where "nothing new, keep polling" and "this slot was consumed" are the same
-      // value read two ways.
-      const fromIndex = this.stateManager.getIndex(hexTopic)!;
-      const targetIndex = fromIndex.next();
-      const targetId = makeFeedIdentifier(topic, targetIndex).toString();
+      const { path, index: targetIndex } = nextFeedRequest(owner, topic, fromIndex);
 
       this.inFlight.add(hexTopic);
-      this.fetchResource(`soc/${owner}/${targetId}`)
+      this.fetchResource(path)
         .then((res) => {
           return manifestQueue.add(() => {
             // Nothing cancels this request. `SwarmHlsPlayer`'s effect cleanup calls
