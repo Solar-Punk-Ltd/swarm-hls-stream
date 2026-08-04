@@ -42,8 +42,14 @@ services:
       - start
       - --api-addr=:${BEE_GATEWAY_API_PORT:-1733}
       - --p2p-addr=:${BEE_GATEWAY_P2P_PORT:-1734}
+      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=false
-      - --swap-enable=false
+      # false here plus --full-node=false is bee's `ultra-light` mode, which has no chequebook and
+      # so no way to pay a peer for bandwidth. LAT-10: such a node lives on the free allowance
+      # alone, and a viewer polling it sees the feed freeze 30 to 48s at a time. Turning this on
+      # needs a reachable RPC endpoint and a funded wallet at the address `/addresses` reports as
+      # `chain_address`, so it stays off by default and is opt-in per profile.
+      - --swap-enable=${BEE_GATEWAY_SWAP_ENABLE:-false}
       - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
       - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
