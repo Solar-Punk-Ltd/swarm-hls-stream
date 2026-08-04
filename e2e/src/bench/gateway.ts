@@ -100,6 +100,35 @@ export function isFeedPendingFirstWrite(error: unknown, feedSeenBefore: boolean)
 }
 
 /**
+ * How long every feed poll may go on failing before the run is called dead rather than slow.
+ *
+ * Sized against the effect it must not mistake itself for. LAT-10 freezes the feed for 30 to 45s on a
+ * roughly 63 second cycle, so anything near one cycle would report the finding as a broken gateway.
+ * Three minutes clears more than two full cycles, which is long enough that a feed still silent
+ * afterwards is not slow, it is gone.
+ */
+export const FEED_BLACKOUT_LIMIT_MS = 180_000;
+
+/**
+ * Whether a run of failing feed polls has gone on long enough to mean the gateway is gone.
+ *
+ * A failed feed poll used to end the run outright, and that was wrong in both directions. It threw
+ * away every sample already collected, each of which cost a real broadcast and real postage. And the
+ * thing that triggered it was the effect under study: LAT-10 *is* feed polls being slow, so a poll
+ * slow enough to exceed the timeout is the strongest sample of it there is, and it was the one sample
+ * certain to destroy the run carrying it. A 34-minute run died exactly this way on 2026-08-04 with 30
+ * minutes of good samples already in hand.
+ *
+ * So a failed poll is now recorded as a poll that found nothing, which is what `feedPolls` is for.
+ * The limit is what stops that from swinging too far the other way: a gateway that is simply down
+ * would otherwise be reported as a feed frozen for the entire broadcast, and that is a wrong answer
+ * in the shape of a finding.
+ */
+export function isFeedBlackout(msSinceLastSuccessfulPoll: number): boolean {
+  return msSinceLastSuccessfulPoll >= FEED_BLACKOUT_LIMIT_MS;
+}
+
+/**
  * Which feed update the gateway resolved this read to, from its `Swarm-Feed-Index` header.
  *
  * The header is hexadecimal and zero-padded, which is worth stating because every index under

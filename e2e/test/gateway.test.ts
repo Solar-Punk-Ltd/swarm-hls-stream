@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  FEED_BLACKOUT_LIMIT_MS,
   gatewayHealthProblem,
   GatewayStatusError,
+  isFeedBlackout,
   isFeedPendingFirstWrite,
   resolvedFeedIndex,
   segmentRefFromUri,
@@ -154,5 +156,46 @@ describe('what counts as a reachable viewer gateway', () => {
 
   it('refuses an empty answer, which a proxy can give for a dead upstream', () => {
     assert.match(gatewayHealthProblem('   ') ?? '', /not a gateway/);
+  });
+});
+
+/**
+ * The rule that decides whether a run of failing feed polls is a measurement or a dead gateway.
+ *
+ * A failed feed poll used to end the run outright, and that was wrong twice over. It discarded every
+ * sample already collected, at the cost of a real broadcast and real postage. And what triggered it
+ * was the very thing the run exists to measure: LAT-10 is feed polls being slow, so a poll slow
+ * enough to exceed the timeout is the strongest sample of the effect there is, and it was the one
+ * sample guaranteed to destroy the run. A 34-minute run died this way on 2026-08-04 with 30 minutes
+ * of good samples in hand.
+ *
+ * Treating every failure as data has the opposite failure mode, though, which is why the limit
+ * exists: a gateway that is simply down would otherwise be reported as a feed frozen for the whole
+ * broadcast, and that is a wrong answer wearing the shape of a finding.
+ */
+describe('telling a slow feed from a gateway that has gone', () => {
+  it('keeps measuring through a failure well inside the limit', () => {
+    assert.equal(isFeedBlackout(15_000), false);
+  });
+
+  /**
+   * The freeze under study runs 30 to 45s on a 63s cycle, so the limit has to clear a whole cycle of
+   * it comfortably or the instrument would call the effect a dead gateway.
+   */
+  it('keeps measuring across a full freeze cycle', () => {
+    assert.equal(isFeedBlackout(63_000), false);
+  });
+
+  it('gives up once nothing has answered for the whole limit', () => {
+    assert.equal(isFeedBlackout(FEED_BLACKOUT_LIMIT_MS), true);
+  });
+
+  it('gives up past the limit as well as at it', () => {
+    assert.equal(isFeedBlackout(FEED_BLACKOUT_LIMIT_MS + 1), true);
+  });
+
+  /** Asserted against the freeze it must survive rather than against itself, so the constant is real. */
+  it('leaves room for more than two freeze cycles before giving up', () => {
+    assert.ok(FEED_BLACKOUT_LIMIT_MS > 2 * 63_000);
   });
 });

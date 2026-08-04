@@ -21,7 +21,14 @@ import { announcedLiveStreams } from '../harness/logwatch.js';
 import { sleep, waitFor } from '../harness/wait.js';
 
 import { measureClockSkew } from './clockSkew.js';
-import { fetchFeedManifest, fetchSegment, isFeedPendingFirstWrite, segmentRefFromUri } from './gateway.js';
+import {
+  FEED_BLACKOUT_LIMIT_MS,
+  fetchFeedManifest,
+  fetchSegment,
+  isFeedBlackout,
+  isFeedPendingFirstWrite,
+  segmentRefFromUri,
+} from './gateway.js';
 import type { FeedPoll } from './longRun.js';
 import { probeSegment } from './probe.js';
 import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
@@ -226,19 +233,38 @@ async function collectSamples(
   // the uploader never writing as a run that measured nothing.
   const firstWriteDeadline = Date.now() + SEGMENT_TIMEOUT_MS;
   let feedSeen = false;
+  let lastFeedSuccessAtMs = Date.now();
 
   while (collected.length < wanted && Date.now() <= deadline) {
     let manifest;
     try {
       manifest = await fetchFeedManifest(gatewayUrl, owner, topicHex);
     } catch (error) {
-      if (!isFeedPendingFirstWrite(error, feedSeen) || Date.now() > firstWriteDeadline) {
-        throw error;
+      if (!feedSeen) {
+        if (!isFeedPendingFirstWrite(error, feedSeen) || Date.now() > firstWriteDeadline) {
+          throw error;
+        }
+        await sleep(pollIntervalMs);
+        continue;
+      }
+
+      // A poll that failed is a poll that found nothing, and recording it is the whole point of
+      // `feedPolls`. Throwing here instead discarded every sample the run had already paid a real
+      // broadcast for, and it was triggered by the effect under study: a feed poll slow enough to
+      // exceed the timeout is the strongest sample of LAT-10 there is. See `isFeedBlackout`.
+      feedPolls.push({ atMs: Date.now(), newestRef: null, resolvedIndex: null });
+      if (isFeedBlackout(Date.now() - lastFeedSuccessAtMs)) {
+        throw new Error(
+          `no feed poll has succeeded at ${gatewayUrl} for ${FEED_BLACKOUT_LIMIT_MS}ms, so this is the ` +
+            `gateway being gone rather than the feed being slow. Last error: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
       }
       await sleep(pollIntervalMs);
       continue;
     }
     feedSeen = true;
+    lastFeedSuccessAtMs = manifest.atMs;
 
     const newest = parseManifest(manifest.body).segments.at(-1);
     const ref = newest ? segmentRefFromUri(newest.uri) : null;
