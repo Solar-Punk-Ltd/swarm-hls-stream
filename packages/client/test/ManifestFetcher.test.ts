@@ -1,4 +1,5 @@
-import { FeedIndex, Topic } from '@ethersphere/bee-js';
+import { FeedIndex, Identifier, Topic } from '@ethersphere/bee-js';
+import { Binary } from 'cafe-utility';
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
@@ -11,7 +12,6 @@ import {
   UNSERVED_SLOT_POLL_LIMIT,
 } from '../src/components/SwarmHlsPlayer/feedState';
 import { ManifestFetcher, ManifestStateManager, waitMs } from '../src/components/SwarmHlsPlayer/ManifestManagement';
-import { makeFeedIdentifier } from '../src/utils/bee';
 
 const BEE_URL = 'http://bee.test';
 const OWNER = '0x1111111111111111111111111111111111111111';
@@ -21,25 +21,44 @@ const START_INDEX = 5n;
 /** Where a restart's `handleInitialFetch` re-anchors, far enough ahead that a rewind is unmistakable. */
 const RESYNCED_INDEX = 40n;
 
-/** How far ahead the fixture can answer, which is more slots than any test here consumes. */
-const LAST_SEEDED_INDEX = 12n;
-
 const topic = Topic.fromString(TOPIC_NAME);
 const hexTopic = topic.toString();
 
-/** Feed slot ids the publisher would write, so a request can be read back as the index it asked for. */
-const indexById = new Map<string, bigint>();
-for (let i = 0n; i <= LAST_SEEDED_INDEX; i++) {
-  indexById.set(makeFeedIdentifier(topic, FeedIndex.fromBigInt(i)).toString(), i);
+/** The one address the fetcher may ask for, on either path, once LAT-10 is fixed. */
+const FEED_URL = `${BEE_URL}/feeds/${OWNER}/${hexTopic}`;
+
+/**
+ * The address a speculative walk computes for a feed slot, which LAT-10 says must never be requested
+ * before the publisher has written it.
+ *
+ * Built here from bee-js rather than imported from the client, because what a test asserts
+ * production never does should not be borrowed from production: a helper deleted along with the
+ * defect would take this assertion with it.
+ */
+function socUrlForSlot(index: bigint): string {
+  const identifier = new Identifier(
+    Binary.keccak256(Binary.concatBytes(topic.toUint8Array(), FeedIndex.fromBigInt(index).toUint8Array())),
+  );
+  return `${BEE_URL}/soc/${OWNER}/${identifier.toString()}`;
 }
 
-/** One slot's manifest, carrying a segment no other slot carries so a lost slot is a lost segment. */
-function manifestForIndex(index: bigint): string {
-  return ['#EXTM3U', '#EXT-X-TARGETDURATION:2', '#EXTINF:2,', `seg-${index}.ts`].join('\n');
+/** Mirrors the uploader's live window: a head manifest carries the last ten segments, not all of them. */
+const LIVE_WINDOW = 10n;
+
+/** The manifest slot `index` holds, one segment per slot, so a slot never read is a segment never seen. */
+function manifestAt(index: bigint): string {
+  const lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:2'];
+  for (let i = index >= LIVE_WINDOW ? index - LIVE_WINDOW + 1n : 0n; i <= index; i++) {
+    lines.push('#EXTINF:2,', `seg-${i}.ts`);
+  }
+  return lines.join('\n');
 }
 
-function requestedIndex(url: string): bigint | undefined {
-  return indexById.get(url.slice(url.lastIndexOf('/') + 1));
+/** What the feed endpoint answers with, index header and all. */
+function headResponse(index: bigint, lines?: string[]): Response {
+  return new Response(lines ? lines.join('\n') : manifestAt(index), {
+    headers: { 'Swarm-Feed-Index': index.toString(16) },
+  });
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -77,9 +96,11 @@ const manager = ManifestStateManager.getInstance();
 const realFetch = globalThis.fetch;
 const realConsoleError = console.error;
 
-describe('ManifestFetcher follow-up fetches (CON-29)', () => {
+describe('ManifestFetcher follow-up fetches (LAT-10, CON-29)', () => {
   let fetcher: ManifestFetcher;
-  let requested: bigint[];
+  let requested: string[];
+  /** Where the publisher's feed has got to, which the fixture's feed endpoint answers from. */
+  let head: bigint;
 
   beforeEach(() => {
     manager.clear(hexTopic);
@@ -94,6 +115,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     fetcher = new ManifestFetcher(manager);
     fetcher.beeUrl = BEE_URL;
     requested = [];
+    head = START_INDEX;
   });
 
   afterEach(() => {
@@ -101,26 +123,96 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     console.error = realConsoleError;
   });
 
-  /** Answers every follow-up request, holding each one open until `gate` resolves. */
-  function stubFetch(gate: Promise<void>, respond = (index: bigint) => new Response(manifestForIndex(index))): void {
+  /** Answers every request from the publisher's current head, holding each one open until `gate` resolves. */
+  function stubFetch(gate: Promise<void>, respond = () => headResponse(head)): void {
     globalThis.fetch = async (input: RequestInfo | URL) => {
-      const index = requestedIndex(String(input));
-      assert.notEqual(index, undefined, `a slot outside the fixture was requested: ${String(input)}`);
-      requested.push(index!);
+      requested.push(String(input));
       await gate;
-      return respond(index!);
+      return respond();
     };
   }
 
-  // `handleFollowupFetch` is fire and forget: it starts the SOC fetch and returns the already
-  // serialised state, so hls.js schedules its next level reload while the previous fetch is still
-  // outstanding. Both calls read the same index and ask for the same slot, and then each callback
-  // re-read the index and advanced from whatever it found, so the pair advanced twice. The slot in
-  // between was never fetched and its segments never reached the viewer. The second callback got
-  // that far rather than short-circuiting because `updateManifest` returns `true` for a duplicate
-  // parse, where "nothing new, keep polling" and "this slot was consumed, advance" are the same
-  // value read two ways.
-  it('does not consume a feed slot it never fetched when two follow-up fetches overlap', async () => {
+  /**
+   * The root cause, stated as the one thing this method must never do.
+   *
+   * Asking a bee node for a feed index before the publisher writes it makes that index unretrievable
+   * for 30 to 45 seconds after it is written. A viewer who has caught up asks for the next slot on
+   * nearly every poll, so the player poisoned nearly every slot of the stream it was watching, and
+   * the feed froze for 30 to 45 seconds on a 63 second cycle for 57% of a 20 minute broadcast.
+   *
+   * Measured across four consecutive freezes: the slot being hammered answered 404 in a constant
+   * 196ms, slots two to ten past it that nothing had ever asked for answered 200 in about 230ms, and
+   * slots twenty and forty past it, which genuinely did not exist, took about 900ms to say so.
+   */
+  it('never addresses a feed slot the publisher has not written', async () => {
+    const gate = deferred<void>();
+    stubFetch(gate.promise);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    gate.resolve();
+    await settle();
+
+    for (let ahead = 1n; ahead <= 5n; ahead++) {
+      assert.ok(
+        !requested.includes(socUrlForSlot(head + ahead)),
+        `slot ${head + ahead} was addressed before the publisher wrote it, which blocks it for 30 to 45 seconds`,
+      );
+    }
+    assert.deepEqual(requested, [FEED_URL], `a poll asked for something other than the feed head: ${requested}`);
+  });
+
+  /**
+   * The same defect's second half. The publisher writes one slot per segment and hls.js reloads a
+   * live playlist about once per target duration, so consuming one slot per poll is zero margin by
+   * construction: a viewer who fell behind stayed exactly that far behind for the rest of the
+   * broadcast, and every freeze added to the deficit rather than being recovered from.
+   *
+   * This is what the 578 second drift in the browser check was. It had been written off as an
+   * artefact of a hidden tab, and it was the player working as written.
+   */
+  it('reaches the live head in one poll when it is many slots behind', async () => {
+    head = START_INDEX + 7n;
+    const gate = deferred<void>();
+    stubFetch(gate.promise);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    gate.resolve();
+    await settle();
+
+    assert.equal(
+      manager.getIndex(hexTopic)!.toBigInt(),
+      head,
+      'the player advanced one slot instead of resyncing, so it stays behind for the rest of the broadcast',
+    );
+    assert.match(
+      manager.serialize(hexTopic, `${BEE_URL}/bytes`),
+      new RegExp(`seg-${head}\\.ts`),
+      "the head's newest segment never reached the playlist",
+    );
+  });
+
+  // A head that has not moved is what a caught-up viewer sees on nearly every poll, and it is the
+  // case the 404 used to be before this asked for the head. It must not advance the index, must not
+  // be logged, and must not hold the next poll off.
+  it('treats a head that has not moved as the ordinary caught-up case', async () => {
+    const reported: unknown[] = [];
+    console.error = (...args: unknown[]) => reported.push(args);
+    const gate = deferred<void>();
+    stubFetch(gate.promise);
+
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    gate.resolve();
+    await settle();
+
+    assert.equal(manager.getIndex(hexTopic)!.toBigInt(), START_INDEX, 'an unmoved head advanced the feed');
+    assert.deepEqual(reported, [], 'a viewer who has merely caught up with the publisher was logged as an error');
+    assert.equal(fetcher.feedHealth.backoffRemainingMs(hexTopic), 0, 'a caught-up viewer was held off the gateway');
+  });
+
+  // The guard is fire and forget by design: it returns the already serialised state at once and
+  // leaves the fetch running, so hls.js schedules its next level reload while the previous fetch is
+  // still open. One outstanding poll per topic, or a slow gateway collects a queue of them. See CON-29.
+  it('keeps one poll outstanding per topic when two overlap', async () => {
     const gate = deferred<void>();
     stubFetch(gate.promise);
 
@@ -129,21 +221,13 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     gate.resolve();
     await settle();
 
-    const finalIndex = manager.getIndex(hexTopic)!.toBigInt();
-    assert.ok(requested.length > 0, 'no follow-up fetch was issued, so this test asserted nothing');
-    assert.ok(finalIndex > START_INDEX, 'the index never advanced, so this test asserted nothing');
-    for (let index = START_INDEX + 1n; index <= finalIndex; index++) {
-      assert.ok(
-        requested.includes(index),
-        `slot ${index} was consumed without ever being fetched, so a batch of segments never reaches the viewer`,
-      );
-    }
+    assert.deepEqual(requested, [FEED_URL], `the overlapping poll went out anyway: ${requested}`);
   });
 
   // The half a re-entry guard can quietly break. Refusing the overlapping call is only correct if
   // the topic is released afterwards, and a guard that never released would stop the player
   // following the feed at all while every assertion above stayed green.
-  it('fetches the next slot on a later poll, once the overlapping one has settled', async () => {
+  it('polls again on a later poll, once the overlapping one has settled', async () => {
     const first = deferred<void>();
     stubFetch(first.promise);
 
@@ -151,7 +235,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     first.resolve();
     await settle();
 
-    const afterFirst = manager.getIndex(hexTopic)!.toBigInt();
+    head = START_INDEX + 1n;
     const second = deferred<void>();
     stubFetch(second.promise);
     requested.length = 0; // only what the later poll asks for is under test here
@@ -159,18 +243,17 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     second.resolve();
     await settle();
 
-    assert.deepEqual(requested, [afterFirst + 1n], `the later poll asked for ${requested} rather than the next slot`);
-    assert.equal(manager.getIndex(hexTopic)!.toBigInt(), afterFirst + 1n, 'the later poll did not advance the feed');
+    assert.deepEqual(requested, [FEED_URL], 'the later poll never went out');
+    assert.equal(manager.getIndex(hexTopic)!.toBigInt(), head, 'the later poll did not advance the feed');
   });
 
   // `SwarmHlsPlayer`'s effect cleanup clears the topic and destroys the player, and nothing cancels
-  // a follow-up already in flight. Pinning the target index fixed the skip above and, on its own,
-  // made this case worse than it was: the late callback recreated the topic at its pre-teardown
-  // index, and an index that exists routes the next mount into the follow-up branch, so the player
-  // resumed however far behind it had been rather than resyncing to the live head. On the base
-  // commit the callback's `getIndex(...)!` threw instead, which left the index null and was
-  // accidentally protective.
-  it('does not write its index into the state that replaced the one it read', async () => {
+  // a poll already in flight. The head this response carries was current when the request went out
+  // and is not current for whatever replaced the topic, so the write only applies to the state it
+  // was computed from. On the base commit the callback's `getIndex(...)!` threw instead, which left
+  // the index null and was accidentally protective.
+  it('does not write its head into the state that replaced the one it read', async () => {
+    head = START_INDEX + 1n; // so a missing guard would have something to write
     const gate = deferred<void>();
     stubFetch(gate.promise);
 
@@ -183,9 +266,10 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     assert.equal(manager.serialize(hexTopic, `${BEE_URL}/bytes`), '', 'segments were appended to a cleared topic');
   });
 
-  // The same defect in the other order: the player restarts and resyncs to the live head before the
-  // abandoned fetch lands. Both orderings happen, and only this one moves the index backwards.
+  // The same defect in the other order: the player restarts and resyncs before the abandoned poll
+  // lands. Both orderings happen, and only this one moves the index backwards.
   it('does not rewind the feed when a restart has already resynced ahead of it', async () => {
+    head = START_INDEX + 1n;
     const gate = deferred<void>();
     stubFetch(gate.promise);
 
@@ -199,14 +283,14 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     assert.equal(
       manager.getIndex(hexTopic)!.toBigInt(),
       RESYNCED_INDEX,
-      'a stale callback dragged the feed back behind the live head, where it advances one slot per poll',
+      'a stale callback dragged the feed back behind the live head',
     );
   });
 
-  // A 404 is the ordinary case, not an error: it means the publisher has not written the slot yet.
-  // The guard has to be released on that path too, or one poll that outruns the publisher ends the
-  // broadcast for that viewer.
-  it('keeps following the feed after a follow-up fetch fails, without reporting it', async () => {
+  // A 404 from the feed endpoint is the gateway having no head for a feed this player has already
+  // read, which is not an error a viewer can act on. The guard has to be released on that path too,
+  // or one such poll ends the broadcast for that viewer.
+  it('keeps following the feed after a poll the gateway had no head for, without reporting it', async () => {
     const failed = deferred<void>();
     stubFetch(failed.promise, () => new Response('not found', { status: 404 }));
     const reported: unknown[] = [];
@@ -216,9 +300,10 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     failed.resolve();
     await settle();
 
-    assert.equal(manager.getIndex(hexTopic)!.toBigInt(), START_INDEX, 'a 404 advanced the feed past an unwritten slot');
-    assert.deepEqual(reported, [], 'a slot the publisher has not written yet was logged as an error');
+    assert.equal(manager.getIndex(hexTopic)!.toBigInt(), START_INDEX, 'a 404 advanced the feed');
+    assert.deepEqual(reported, [], 'a gateway with nothing new for the feed was logged as an error');
 
+    head = START_INDEX + 1n;
     const retry = deferred<void>();
     stubFetch(retry.promise);
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
@@ -227,22 +312,23 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
 
     assert.equal(
       manager.getIndex(hexTopic)!.toBigInt(),
-      START_INDEX + 1n,
+      head,
       'the topic stayed marked in flight after a failure, so the player stopped following the feed',
     );
   });
 
-  /** One poll of a feed that answers nothing for the slot the player is waiting on. */
+  /** One poll that brings back no new head, which is what a caught-up viewer sees on nearly every one. */
   async function pollUnservedSlot(): Promise<void> {
     const gate = deferred<void>();
-    stubFetch(gate.promise, () => new Response('not found', { status: 404 }));
+    stubFetch(gate.promise);
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     gate.resolve();
     await settle(UNSERVED_POLL_TICKS);
   }
 
-  /** One poll that the publisher does answer, which is what a run of unserved polls has to forget. */
+  /** One poll that does find the publisher ahead, which is what a run of unserved polls has to forget. */
   async function pollServedSlot(): Promise<void> {
+    head += 1n;
     const gate = deferred<void>();
     stubFetch(gate.promise);
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
@@ -250,11 +336,11 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     await settle();
   }
 
-  // The previous test pins that one unserved slot is silent, which is the ordinary case for a viewer
+  // The previous test pins that one unserved poll is silent, which is the ordinary case for a viewer
   // who has caught up. On its own that assertion is equally satisfied by never reporting at all, and
-  // never reporting is what this branch shipped: a slot no gateway will serve strands the feed there
-  // for good, while later slots exist and every signal the player emits still says fine.
-  it('reports a feed that has sat on an unserved slot for too many polls', async () => {
+  // never reporting is what this branch shipped: a feed no gateway will resolve strands the player
+  // for good while the publisher is still writing, and every signal the player emits still says fine.
+  it('reports a feed whose head has not moved for too many polls', async () => {
     const reported: string[] = [];
     console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
 
@@ -268,22 +354,22 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     assert.equal(reported.length, 1, `expected exactly one report, got ${reported.length}: ${reported.join(' | ')}`);
     assert.match(
       reported[0],
-      new RegExp(`has not advanced past slot ${START_INDEX + 1n} in ${UNSERVED_SLOT_POLL_LIMIT} polls`),
-      `the report does not name the stuck slot: ${reported[0]}`,
+      new RegExp(`has not advanced past slot ${head} in ${UNSERVED_SLOT_POLL_LIMIT} polls`),
+      `the report does not name the head it is stuck on: ${reported[0]}`,
     );
 
     await pollUnservedSlot();
     assert.equal(reported.length, 1, 'the report repeats on every poll after the threshold');
   });
 
-  // The run has to be a run. A feed that answers slowly but does answer must never reach the report,
-  // however long the session lasts.
+  // The run has to be a run. A feed that advances slowly but does advance must never reach the
+  // report, however long the session lasts.
   //
   // The last two steps are what make the silence meaningful. Two runs of `LIMIT - 1` add up to well
-  // past the threshold, so staying quiet through them means the served slot reset the count. And one
+  // past the threshold, so staying quiet through them means the advance reset the count. And one
   // further unserved poll must then report, which can only happen if all `LIMIT - 1` polls before it
   // were counted, so the same assertion also rules out the reading where nothing counted at all.
-  it('forgets the run once a slot is served', async () => {
+  it('forgets the run once the head advances', async () => {
     const reported: string[] = [];
     console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
 
@@ -389,11 +475,6 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
 
   const gatewayDown = () => new Response('bad gateway', { status: 502 });
 
-  /** What the feed endpoint answers on the initial path, index header and all. */
-  function feedHead(index: bigint, lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:2', '#EXTINF:2,', `seg-${index}.ts`]) {
-    return new Response(lines.join('\n'), { headers: { 'Swarm-Feed-Index': index.toString(16) } });
-  }
-
   function seedFollowupState(): void {
     manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
@@ -425,7 +506,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     );
 
     manager.clear(hexTopic);
-    stubFetch(() => feedHead(START_INDEX));
+    stubFetch(() => headResponse(START_INDEX));
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
 
     assert.equal(health.state(hexTopic), FEED_STATE_STALLED, 'the restart reported the frozen feed as healthy');
@@ -438,7 +519,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
     assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
 
-    stubFetch(() => feedHead(START_INDEX));
+    stubFetch(() => headResponse(START_INDEX));
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
 
     assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
@@ -475,7 +556,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
   // The same shape one step earlier. A response the player cannot take an index from is a response
   // it cannot use, and it used to escape after the state had already been set back to live.
   it('refuses a 200 that omits the feed index header', async () => {
-    stubFetch(() => new Response(manifestForIndex(START_INDEX)));
+    stubFetch(() => new Response(manifestAt(START_INDEX)));
 
     await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`), /Missing feed index header/);
 
@@ -492,7 +573,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     const gate = deferred<void>();
     globalThis.fetch = async () => {
       await gate.promise;
-      return feedHead(START_INDEX);
+      return headResponse(START_INDEX);
     };
 
     const pending = fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
@@ -542,7 +623,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     stubFetch(gatewayDown);
     await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
 
-    stubFetch(() => feedHead(START_INDEX));
+    stubFetch(() => headResponse(START_INDEX));
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
 
     assert.deepEqual(waited, [2_000]);
@@ -564,7 +645,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     assert.equal(health.backoffRemainingMs(hexTopic), 30_000, 'the run never reached the cap, so this proves less');
 
     manager.clear(hexTopic);
-    stubFetch(() => feedHead(START_INDEX));
+    stubFetch(() => headResponse(START_INDEX));
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
 
     // Read here, before any follow-up runs. The version of this that failed review closed on a
@@ -587,7 +668,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
 
     const finished = ['#EXTM3U', '#EXT-X-TARGETDURATION:2', '#EXTINF:2,', 'seg-5.ts', '#EXT-X-ENDLIST'];
-    stubFetch(() => feedHead(START_INDEX, finished));
+    stubFetch(() => headResponse(START_INDEX, finished));
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
 
     // A finalised manifest sets no index, so this topic stays on the initial path for the rest of
@@ -614,9 +695,10 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     assert.deepEqual(requested, [], 'the next poll went out while the gateway was still being held off');
   });
 
-  // The opposite case wearing the same status code. A viewer who has caught up with the publisher
-  // gets one of these on nearly every poll and has to keep asking at full cadence.
-  it('does not hold anything off over a slot the publisher has not written yet', async () => {
+  // The opposite case wearing the same status code. A gateway with no head for a feed this player
+  // has already read is not an outage, and a viewer has to keep asking at full cadence to see the
+  // next segment the moment it lands.
+  it('does not hold anything off when the gateway has no head for the feed', async () => {
     seedFollowupState();
     stubFetch(() => new Response('not found', { status: 404 }));
 
@@ -672,7 +754,9 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     const gate = deferred<void>();
     globalThis.fetch = async () => {
       await gate.promise;
-      return new Response(manifestForIndex(START_INDEX + 1n));
+      // A head ahead of the seeded index, so this is a response the success path would act on. An
+      // unmoved head or a missing index header would reach the assertion below by another route.
+      return headResponse(START_INDEX + 1n);
     };
 
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
