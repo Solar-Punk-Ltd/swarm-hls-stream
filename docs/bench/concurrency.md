@@ -105,10 +105,17 @@ feed freshness. Two consequences:
 
 - **Eight is the only loaded arm tested.** Whether the cost is linear, or a knee somewhere between two
   and eight, is unmeasured.
-- **`bee_retrieval_total_errors` runs at 38.8% of chunks retrieved even with one viewer**, rising to
-  41.8% under load. That rate is high enough to be worth its own investigation, and it is not
-  established here what it counts: peer requests per chunk sit at 1.008, which is hard to reconcile
-  with four in ten failing, so the counter probably includes something other than a failed fetch.
+- **RETRACTED 2026-08-04, same day it was written.** This section previously reported
+  `bee_retrieval_total_errors` at "38.8% of chunks retrieved" and called it worth investigating. That
+  ratio divided two unrelated counters and meant nothing. The metric a caller actually experiences is
+  `request_failure_count / request_count`, and on the gateway it is **9.58%, against 11.06% on a
+  reference node under a different workload**, with retries per request identical at 1.45 and 1.49.
+  Retrieval on this gateway is behaving normally. `total_errors` is genuinely 15.7x the reference,
+  but it cannot mean what its name suggests, since 45% of peer attempts failing would demand far more
+  attempts per success than the reference and the attempt counts match. The likeliest reading, stated
+  as a hypothesis, is that it counts not-found probes, which are a consequence of the freeze rather
+  than a cause: during a freeze the reader repeatedly asks for a feed index that is not yet
+  retrievable. Settling it needs bee's source rather than another measurement.
 - **This is measured against one gateway on the writer's own host.** A viewer on a distant gateway is
   a different question.
 
