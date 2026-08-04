@@ -50,6 +50,11 @@ services:
       # needs a reachable RPC endpoint and a funded wallet at the address `/addresses` reports as
       # `chain_address`, so it stays off by default and is opt-in per profile.
       - --swap-enable=${BEE_GATEWAY_SWAP_ENABLE:-false}
+      # In PLUR, so a whole BZZ is 1e16. Bee's own default is 0, which deploys a chequebook that
+      # can back no cheque at all, so swap-enable alone leaves the node just as unable to pay.
+      # Only read when the chequebook is first deployed: changing it later moves nothing, and a
+      # deployed chequebook is topped up through the node's /chequebook/deposit instead.
+      - --swap-initial-deposit=${BEE_GATEWAY_SWAP_INITIAL_DEPOSIT:-0}
       - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
       - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
