@@ -223,8 +223,20 @@ describe('StreamUploader discontinuity lifecycle', () => {
   });
 });
 
+/**
+ * The two writes take opposite `deferred` values, deliberately, and the asymmetry is the point.
+ *
+ * A segment is bytes nothing refers to yet, so deferring it costs a viewer nothing: by the time a
+ * manifest names it, bee has pushed it (measured at 0.8s mean to a second node).
+ *
+ * The manifest SOC is the announcement. Deferring that one means the publish reports success while
+ * the chunk is still only in the writer's local store, so a viewer's gateway is told about a
+ * segment it cannot yet resolve. LAT-10: two 30-minute broadcasts with the synchronous write put
+ * the worst capture-to-fetchable at 9.04s and 9.27s against 14.04s and 14.53s deferred, and the
+ * buffer a player needs at 7.08s against 12.08s. The synchronous push itself costs about 300ms.
+ */
 describe('StreamUploader Swarm write options', () => {
-  it('requests deferred uploads for segment and manifest feed writes', async () => {
+  it('defers the segment upload but not the manifest feed write', async () => {
     const dataOptions: unknown[] = [];
     const payloadOptions: unknown[] = [];
     let refCounter = 0;
@@ -256,7 +268,7 @@ describe('StreamUploader Swarm write options', () => {
     await drain(uploader);
 
     assert.deepEqual(dataOptions, [{ redundancyLevel: 1, deferred: true }]);
-    assert.deepEqual(payloadOptions, [{ index: 0, deferred: true }]);
+    assert.deepEqual(payloadOptions, [{ index: 0, deferred: false }]);
   });
 });
 

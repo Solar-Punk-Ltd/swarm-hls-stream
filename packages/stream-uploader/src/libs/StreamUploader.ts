@@ -478,11 +478,22 @@ export class StreamUploader {
   private async uploadDataAsSoc(index: number, data: Uint8Array) {
     try {
       const { uploadPayload } = this.bee.makeFeedWriter(Topic.fromString(this.streamRawTopic), this.streamSigner);
-      // deferred: bee acks the SOC from its local store and push-syncs in the background (honored
-      // since bee 2.8.1). A direct /soc write blocks until push-sync completes, which held manifest
-      // publishes for ~80s behind the segment backlog after a node restart.
+      // NOT deferred, unlike the segment write below, and the asymmetry is deliberate.
+      //
+      // Deferred means bee acks the SOC from its own local store and push-syncs it in the
+      // background, so the publish reports success while the chunk is still only local and a
+      // viewer's gateway is told about a segment it cannot yet resolve. This was deferred until
+      // LAT-10 measured what that costs: worst capture-to-fetchable 14.04s and 14.53s over two
+      // 30-minute broadcasts, against 9.04s and 9.27s with the synchronous write, and the buffer a
+      // player needs 12.08s against 7.08s.
+      //
+      // The comment this replaces justified deferring as avoiding an ~80s block behind the segment
+      // backlog. That was a post-restart condition. In steady state the synchronous push costs
+      // about 300ms and logs no retries at all.
+      //
+      // Safe to block: retryUntilDeadlineAsync bounds retries, not one slow call.
       return await retryUntilDeadlineAsync(
-        () => uploadPayload(this.stamp, data, { index, deferred: true }),
+        () => uploadPayload(this.stamp, data, { index, deferred: false }),
         MANIFEST_UPLOAD_RETRY_WINDOW_MS,
         UPLOAD_RETRY_BASE_MS,
         UPLOAD_RETRY_CAP_MS,
