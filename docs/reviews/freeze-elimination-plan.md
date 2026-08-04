@@ -1,179 +1,133 @@
 # Eliminating the periodic freeze (LAT-10)
 
-Written 2026-08-04, after the owner said the decisive thing: **earlier versions of this setup streamed
-without this freeze.**
+**Status 2026-08-04: ROOT CAUSE FOUND. It is ours, in the client, and the fix is not yet written.**
 
-## The reframe, and why it matters more than anything measured so far
+This document started as a ranked hypothesis list treating the freeze as Bee's. That framing is
+superseded. The hypotheses and how each died are kept at the bottom, because the reasoning is worth
+more than the conclusions were.
 
-Every experiment to date treated the freeze as a property of Bee to be characterised. If a previous
-version of this setup did not freeze, it is a **regression**, and a regression is a diff rather than a
-mystery. That converts an unbounded search into a bisect.
+## The root cause
 
-It also means the current conclusion, "the residual is Bee's single-owner-chunk retrieval", is at best
-incomplete. Bee may well be slow at this, but something on our side changed to expose it.
+**Asking a bee node for a feed index before the publisher writes it makes that index unretrievable for
+30 to 45 seconds afterwards.**
 
-**Latency is negotiable, the freeze is not.** The target is a stream that does not stop, and periodic
-30 to 45 second stalls are disqualifying against a web2 competitor regardless of how good the median
-looks.
+Measured during four consecutive freezes, probing offsets past the reader's stuck index N:
 
-## What is needed from the owner to make this cheap
+|          offset | asked for before?       | result     |                    time |
+| --------------: | ----------------------- | ---------- | ----------------------: |
+|          **+1** | **hammered every poll** | **404**    | **196-197ms, constant** |
+| +2, +3, +5, +10 | never                   | **200 OK** |               204-722ms |
+|        +20, +40 | never                   | 404        |              730-1022ms |
 
-The single highest-value input is what "before" was. Even approximately:
+Identical at indices 524, 555, 587 and 651. The publisher writes sequentially, so N+1 exists if
+N+2 does. It is not missing, it is blocked, and our own earlier request is what blocked it.
 
-- **roughly when** it worked, and for how long
-- **what the viewer read from**: a public gateway, a full node, or a dedicated light gateway like now
-- **which bee version**, or just which month
-- **same host** or somewhere else
+**Three timing classes separate cleanly, and that separation is the evidence.** A genuine miss costs
+~900ms because the node searches. A real hit costs ~230ms. The poisoned index answers in **196ms
+every single time**, which is a remembered answer rather than a search.
 
-The most valuable of these is the second. If viewers previously read from a public gateway or a full
-node, and today read from a dedicated light node, that difference alone could be the whole finding.
+**The 63 second period is the lifetime of that remembered negative.** Segments were never affected
+because they are only fetched after the manifest names them, so they are never requested early. That
+is why "SOCs are slow, content chunks are fast" looked like a property of Bee. It was request ordering.
 
-## The loop
+## Why nothing found this for two days
 
-Every cycle is: **one variable, one paired measurement against the standing baseline, keep or revert.**
+**Every experiment used a reader that asks for the next index, so every arm of every A/B poisoned
+itself equally.** The funding comparison, the cache test, the segment-length sweep, the picture-size
+comparison, the two-observer run and the shallow-receipt probe all carried the cause on both sides. No
+comparison between two poisoned readers can reveal poisoning.
 
-The harness for this exists as of today and is calibrated, which is what makes the loop cheap:
+This is the strongest instance yet of the lesson that a control has to differ in the thing being
+tested. Both arms were identical in exactly the variable that mattered.
 
-- `bench:longrun` reports `feedPolls`, every poll including the ones that found nothing
-- `meanStalenessMs` as the headline, because it needs no cutoff
-- the **null control**: mislabel quarters of past unchanged runs and see what the metric does anyway.
-  It moves up to 1.95x. Anything smaller than that from a four-level design is noise
-- the **paired alternating design**, validated at zero false positives across seven unchanged runs,
-  resolution about ±15%
-- **phase alignment on the transition**, never a population comparison. A distribution test is
-  structurally blind to an effect sharing the period of the symptom, and it has already refuted one
-  true claim and one false one in this project
+## The two bugs, both in `packages/client/src/components/SwarmHlsPlayer/ManifestManagement.ts`
 
-**The standing baseline is eight 30-minute runs at 720p 2500kbps, 2.0s GOP**, all with the nodes
-unreachable inbound and both in light mode. Any change is measured against that, at that setting.
+### Bug 1: the freeze, in `handleFollowupFetch`
 
-## Ranked hypotheses, each with its experiment
+```ts
+const targetIndex = fromIndex.next();
+this.fetchResource(`soc/${owner}/${targetId}`);
+```
 
-Ranked by how much they would explain, times how cheap they are to test.
+It asks for index N+1 on every poll, which is almost always before the publisher has written it,
+because a caught-up viewer is the normal case. Every one of those poisons that slot.
 
-### H1 — Inbound reachability. IN FLIGHT
+### Bug 2: the cumulative drift, same method
 
-Both nodes reported `isReachable: false` / `Private` for the whole project. The owner opened p2p 10076
-and 10078 on 2026-08-04 and both flipped to `isReachable: true` immediately, without a restart.
+The client never resyncs to the head once it holds an index. `handleInitialFetch` reads `/feeds/` and
+gets latest, but only runs on mount or after a full teardown.
 
-A node nothing can dial builds its Kademlia table only from its own outbound dials, so its bins toward
-distant prefixes can be thin. That affects push routing and retrieval routing, not just inbound serving,
-which is the reasoning error that kept this at the bottom of the list for two days.
+The publisher writes one index per segment. hls.js reloads about once per target duration. The client
+advances **at most one index per poll**. **Consumption equals production exactly, with zero margin by
+construction**, so any backlog is permanent and every freeze is cumulative.
 
-**Experiment**: 30-minute run at the baseline setting, compared against the eight-run baseline.
-**Started 2026-08-04.** Cost: one run.
+This predicts the **578 second drift** observed in the browser check, which was recorded as a
+hidden-tab artefact and dismissed. It was real.
 
-### ⛔ NOT A HYPOTHESIS: light nodes are a constraint, not a choice to test
+## The fix: one change closes both
 
-`deploy/docker-compose.yml` hardcodes `--full-node=false` on `bee-gateway`, and both nodes run with
-`reserveSize: 0`, `storageRadius: 0`, `pullsyncRate: 0`. A light node stores nothing and syncs nothing,
-so every chunk it serves is fetched on demand at the moment it is asked for.
+**Read `/feeds/{owner}/{topicHex}` and let the node resolve latest, instead of computing a speculative
+SOC address.** It never asks for an index that does not exist, and it returns the head, so there is no
+catch-up ceiling. Fetch an explicit index only for a slot already known to exist.
 
-**Owner decision, 2026-08-04: no full nodes.** So this is not an experiment, it is a boundary on every
-other one.
+It is also why an earlier version of this setup did not freeze: a client reading the feed endpoint
+cannot poison anything.
 
-What it implies, and it is worth being explicit because it narrows the whole problem: **on-demand
-single-owner-chunk retrieval latency is the entire game.** There is no reserve to serve the
-announcement from and no pullsync to have fetched it in advance. Every remaining lever must either
-make that one retrieval faster or stop the product depending on it. That is why the architecture
-section below is not a last resort here, it is a serious candidate.
+**Read before touching**, because the current shape is deliberate and the comments say why:
 
-### H3 — Bee version
+- pinning the index fixed an earlier bug where two callbacks each advanced and skipped a slot
+- the `inFlight` guard and the generation guard inside the `manifestQueue` callback each prevent a
+  specific failure, both documented in place
+- `recordGatewayReachable` and `recordGatewayResponse` are deliberately different, see `feedState.ts`
+- the 404 path must keep calling `reportStalledFeed`, for a publisher that genuinely stopped
 
-Currently 2.8.1 on both nodes. If the working setup ran an older bee, this is a one-line test.
+**Test first.** The uncovered case is "the client is many slots behind": assert it reaches the head
+rather than advancing one slot. That gap is what let this ship.
 
-**Experiment**: pin the previous minor in compose, redeploy the gateway only, re-measure.
-**Cost**: one run. Blocked on knowing which version to try, so it needs the owner's input above.
+## How to proceed, in order
 
-### ~~H4 — The feed write carries no redundancy~~ ELIMINATED 2026-08-04, without a run
+1. **Write the fix** (#65), test first, then `pnpm verify`.
+2. **Re-measure** against the standing baseline of eight 30-minute runs at 720p 2500kbps, 2.0s GOP.
+   **Success is the frozen share collapsing, not merely improving.** Use the calibrated harness: null
+   control at 1.95x so noise is known, paired design at zero false positives, alignment on the
+   transition rather than population comparison.
+3. **Re-measure inbound reachability** (#H1 below). The firewall was opened and both nodes went
+   `isReachable: true`, but the run measuring it was discarded as contaminated by the probe. It is
+   unspent and now cheap to redo cleanly.
+4. **Correct the record** (#22). The superseded conclusion is stated confidently in the LAT-10
+   register row, `docs/bench/concurrency.md`, `docs/bench/profiles.md` and this file's history. All of
+   it needs the reframe, not just the register.
+5. **Then decide on #59**, the upstream report, which is currently marked do-not-send. If the fix
+   removes the freeze, what remains upstream is at most a documentation question, and it would need
+   the mechanism read from bee's source plus a reproduction that does not involve this repo.
 
-`FeedUploadOptions extends UploadOptions, FeedUpdateOptions`, and `UploadOptions` is
-`{ act?, pin?, encrypt?, deferred? }`. **bee-js cannot put `redundancyLevel` on a feed write at all.**
+**Every latency figure this project has published was measured through a poisoned reader.** The
+profile sweep, the operating profiles, the buffer recommendations. LAT-11's concurrency result
+survives because both arms were poisoned identically, but the absolute numbers are all inflated by an
+effect we now know how to remove. Re-baselining after the fix is part of step 2, not a separate task.
 
-The reason is principled rather than an oversight, and it is worth recording because it closes the
-question permanently: **a single-owner chunk is one chunk.** Erasure coding spreads data across
-chunks, so a single chunk has nothing to encode. Replication of one chunk is exactly what the storage
-neighbourhood provides by design. The asymmetry against the segment write is real but it is a category
-difference, not a missing option.
+## Hypotheses considered and how each died
 
-`deferred` was the only knob on that call that mattered, and it is already flipped.
+Kept because the eliminations remain valid and re-testing them would be waste.
 
-### H4 (original text, kept for the reasoning)
-
-`uploadDataAsSoc` writes with `{ index, deferred: false }`. The segment write alongside it uses
-`{ redundancyLevel: 1, deferred: true }`. So the announcement, which is the thing that is slow, is the
-one written without redundancy, and the bulk data that arrives in 0.8s has it.
-
-That asymmetry was never deliberate about redundancy. It was about `deferred`.
-
-**Experiment**: add `redundancyLevel` to the SOC write, measure. If erasure coding places additional
-copies, a reader has more places to find it.
-**Cost**: a one-line code change plus a run. Cheapest code change on the list.
-
-### H5 — Postage batch shape
-
-Depth 22, mutable, and it fills to 64/64 within about two days at this write rate, after which a
-mutable batch silently overwrites. The freeze was first seen at 9.4% utilization so a full batch is not
-the cause, but depth and immutability affect where chunks land and how peers treat their stamps.
-
-**Experiment**: a fresh immutable batch at a different depth, measured at the baseline setting.
-**Cost**: an on-chain purchase, so the owner's. Low priority until H1 to H4 are done.
-
-### H6 — bee-js feed semantics
-
-We use `makeFeedWriter(...).uploadPayload`. Worth a read against the current bee-js docs for whether a
-different feed type or write path produces chunks that propagate differently. This is a code review
-rather than an experiment, and it belongs in the same pass as H4.
-
-## Code review, scoped
-
-Not a general review. Three questions only, all about the announcement path:
-
-1. **Is the SOC written the best way bee-js offers?** Feed type, redundancy, stamp handling,
-   index management. H4 and H6 come out of this.
-2. **Does anything in the write path have a period near 63 seconds?** Already checked and the answer is
-   no: the manifest is windowed at 10 segments so it stays one chunk, there is no `setInterval` in the
-   uploader, and `RECOVERY_TIMEOUT`/`SEGMENT_STALL_MS` are one-shot and health-only. **Closed.**
-3. **What happens when an upload fails?** Mutation testing showed both upload catch blocks survive
-   being emptied, so nothing tests the path that runs when the network misbehaves. Filed separately.
-
-## If it turns out to be genuinely Bee: the architecture that sidesteps it
-
-Worth stating now so it is a decision rather than a retreat.
-
-**The video is already on the viewer's machine.** Segments reach a viewer's gateway in 0.8s. Only the
-single-owner chunk announcing them is slow. So **any faster route for segment references restores
-liveness without touching how the bytes travel.**
-
-The concrete version: the client subscribes to the uploader for "segment N exists at ref X", and still
-fetches every byte from Swarm. The control plane becomes centralised, the data plane stays
-decentralised, and the freeze disappears because the announcement no longer waits on SOC retrieval.
-
-That is a real trade and should not be made casually, but against a web2 competitor a 30 second stall
-is disqualifying and a centralised notification channel is not. Keep the SOC feed as the durable,
-verifiable record and as the fallback when the channel is unavailable.
-
-## Order of work
-
-1. **H1** result, in flight
-2. ~~H4~~ **eliminated without a run**: bee-js cannot carry redundancy on a feed write, and a single
-   chunk has nothing to erasure code. This removed the last configuration lever that could have made
-   the single retrieval itself faster
-3. **H3**, which now means a **downgrade**, since 2.8.1 released 2026-07-07 is the newest bee that
-   exists and this repo has pinned it since the initial commit. Options are 2.7.0 (2026-02-10) and
-   2.6.0 (2025-07-22). Safe form: back up the gateway data dir, **preserve `keys/` and wipe the
-   rest**, so the overlay identity and the on-chain chequebook survive and no new spend is needed
-4. **H5** only if the above are exhausted
-5. **The announcement side-channel**, promoted from fallback to a live candidate by the no-full-node
-   constraint, because with light nodes only there is no way to have the announcement waiting locally
-
-**The configuration space is nearly exhausted, and that is the real finding of this pass.** `deferred`
-is fixed, funding is fixed, cache was tested and made it worse, redundancy is not available and not
-applicable, full nodes are ruled out, and the only bee versions available are older ones. After H1
-reports, what remains is a downgrade and the architecture.
-
-**The realistic expectation, stated in advance so it is not a disappointment later:** H1, H3 and H5
-each move one retrieval's latency at the margin. None of them changes the fact that a light node must
-fetch the announcement on demand from a network that currently takes 30 to 45 seconds to serve it. If
-the regression turns out to be one of them, excellent. If not, **the side-channel is the thing that
-makes this competitive**, and the sooner that is decided the less time goes into config archaeology.
+- **H1, inbound reachability.** Both nodes were `Private` for the project's whole life. Opened
+  2026-08-04, both flipped to reachable immediately. **Still unmeasured**, run discarded as
+  contaminated. Worth one clean run, but no longer a candidate root cause.
+- **Light vs full node.** Not a hypothesis, an owner constraint: **no full nodes.** With light nodes
+  only there is no reserve and no pullsync, so on-demand retrieval is the whole path. That made the
+  freeze look structural, and it is why the root cause hid so well.
+- **Bee version.** 2.8.1 released 2026-07-07 is the newest that exists, and this repo has pinned it
+  since the initial commit, so it never drifted. Only downgrades were available, to 2.7.0 or 2.6.0.
+  **Moot now.**
+- **Redundancy on the feed write.** `FeedUploadOptions` is `{ act, pin, encrypt, deferred }`. bee-js
+  cannot carry `redundancyLevel` on a feed write, and a single chunk has nothing to erasure code.
+  **Eliminated by reading the API, without a run.**
+- **Shallow pushsync receipts.** Ours run 7.09% against 2.05% on a reference node with mode, host,
+  version, reachability and peer count controlled. Real asymmetry, **but flat across the freeze cycle
+  at 0.94x with no step at release.** Not the freeze.
+- **Our uploader's code.** Manifest windowed at 10 segments so it stays one chunk, no periodic timer,
+  `commitManifest` serialized behind a `concurrency: 1` queue so no `socIndex` race, stamps valid,
+  zero push errors. **Clean.**
+- **Chunk cache capacity.** 0 to 1M made it measurably **worse**, 18% to 28% frozen. Reverted.
+- **Payment.** Real and fixed: funding the gateway took the frozen share 37% to 18-25%. **A genuine
+  second cause, worth about 40%, and independent of the root cause above.**
