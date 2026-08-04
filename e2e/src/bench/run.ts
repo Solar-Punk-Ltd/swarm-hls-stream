@@ -22,8 +22,10 @@ import { sleep, waitFor } from '../harness/wait.js';
 
 import { measureClockSkew } from './clockSkew.js';
 import {
+  DEFAULT_FEED_READER,
   FEED_BLACKOUT_LIMIT_MS,
-  fetchFeedManifest,
+  FeedFollower,
+  type FeedReaderMode,
   fetchSegment,
   isFeedBlackout,
   isFeedPendingFirstWrite,
@@ -60,6 +62,13 @@ export interface RunOptions {
   collectForMs?: number;
   /** How often to ask the feed for a new manifest, standing in for the client's own poll. */
   pollIntervalMs: number;
+  /**
+   * How to follow the feed. Defaults to `walk`, which is what the player does.
+   *
+   * Configurable only so that `head`, the way this bench used to read on every poll, stays available
+   * for measuring how much of a reported freeze belongs to the instrument. See `FeedFollower`.
+   */
+  feedReader?: FeedReaderMode;
   /**
    * How far the publisher's timestamps run ahead of wall clock, from this run's own self-check.
    *
@@ -235,10 +244,14 @@ async function collectSamples(
   let feedSeen = false;
   let lastFeedSuccessAtMs = Date.now();
 
+  // Follows the feed the way the player does rather than resolving the head on every poll. The two
+  // differ by more than the thing this bench measures: see `FeedFollower`.
+  const follower = new FeedFollower(gatewayUrl, owner, topicHex, options.feedReader ?? DEFAULT_FEED_READER);
+
   while (collected.length < wanted && Date.now() <= deadline) {
     let manifest;
     try {
-      manifest = await fetchFeedManifest(gatewayUrl, owner, topicHex);
+      manifest = await follower.read();
     } catch (error) {
       if (!feedSeen) {
         if (!isFeedPendingFirstWrite(error, feedSeen) || Date.now() > firstWriteDeadline) {

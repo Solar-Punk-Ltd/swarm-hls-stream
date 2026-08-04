@@ -1,12 +1,18 @@
+import { Topic } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 
 import {
+  DEFAULT_FEED_READER,
   FEED_BLACKOUT_LIMIT_MS,
+  FeedFollower,
   gatewayHealthProblem,
   GatewayStatusError,
   isFeedBlackout,
   isFeedPendingFirstWrite,
+  parseFeedReaderMode,
   resolvedFeedIndex,
   segmentRefFromUri,
 } from '../src/bench/gateway.js';
@@ -197,5 +203,126 @@ describe('telling a slow feed from a gateway that has gone', () => {
   /** Asserted against the freeze it must survive rather than against itself, so the constant is real. */
   it('leaves room for more than two freeze cycles before giving up', () => {
     assert.ok(FEED_BLACKOUT_LIMIT_MS > 2 * 63_000);
+  });
+});
+
+/**
+ * The defect this bench shipped with, stated as a test.
+ *
+ * `collectSamples` resolved the feed with `GET /feeds/{owner}/{topic}` on every poll. The player asks
+ * for that once, on mount, and walks explicit slot addresses after it. The two are not close:
+ * measured 2026-08-04 against a synthetic feed advancing one slot per second, the head lookup was 50
+ * to 57% frozen with responses of 1.0 to 7.0 seconds, while an explicit-address reader riding the
+ * live edge was 0.2% frozen at 46ms. It fails identically against the node holding every chunk
+ * locally, so it is the lookup and not retrieval.
+ *
+ * The whole of LAT-10 was built on frozen shares this instrument produced, which means they described
+ * the instrument. Nothing here could have caught that, because nothing asserted which request the
+ * bench makes.
+ */
+describe('following the feed the way the player does (LAT-10)', () => {
+  /** Records every path asked for, and answers a feed that is one slot ahead of wherever it is asked. */
+  async function stubGateway(
+    answer: (path: string) => { status: number; body?: string; headers?: Record<string, string> },
+  ) {
+    const asked: string[] = [];
+    const server = createServer((req, res) => {
+      asked.push(req.url ?? '');
+      const { status, body = '', headers = {} } = answer(req.url ?? '');
+      res.writeHead(status, headers);
+      res.end(body);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    return { asked, url: `http://127.0.0.1:${port}`, close: () => server.close() };
+  }
+
+  const OWNER = '1111111111111111111111111111111111111111';
+  const TOPIC_HEX = Topic.fromString('lat10').toString();
+  const MANIFEST = '#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nhttp://bee/bytes/' + 'a'.repeat(64);
+
+  /**
+   * The assertion that would have caught it. One head lookup for the whole run, however many polls.
+   *
+   * Written against the count rather than the ratio because a bench polling a live broadcast makes
+   * hundreds of reads, and "mostly not the head" is exactly what a viewer does not experience.
+   */
+  it('resolves the head once and never again', async () => {
+    const gw = await stubGateway((path) =>
+      path.startsWith('/feeds/')
+        ? { status: 200, body: MANIFEST, headers: { 'swarm-feed-index': '5' } }
+        : { status: 200, body: MANIFEST },
+    );
+    try {
+      const follower = new FeedFollower(gw.url, OWNER, TOPIC_HEX, 'walk');
+      for (let poll = 0; poll < 5; poll++) {
+        await follower.read();
+      }
+
+      const headLookups = gw.asked.filter((path) => path.startsWith('/feeds/'));
+      assert.equal(headLookups.length, 1, `the head was resolved ${headLookups.length} times: ${gw.asked.join(' ')}`);
+      assert.equal(gw.asked.length, 5, `requests: ${gw.asked.join(' ')}`);
+    } finally {
+      gw.close();
+    }
+  });
+
+  /**
+   * A poll that finds nothing new has to look like a poll that found nothing new, not like a failure.
+   * `feedProgress` counts a repeated `newestRef` as a stall, so returning the previous manifest is
+   * what keeps a genuine freeze measurable rather than turning it into a dead run.
+   */
+  it('answers with the previous manifest when the publisher has not written the next slot', async () => {
+    let served = 0;
+    const gw = await stubGateway((path) => {
+      if (path.startsWith('/feeds/')) {
+        return { status: 200, body: MANIFEST, headers: { 'swarm-feed-index': '5' } };
+      }
+      served += 1;
+      return served === 1 ? { status: 200, body: MANIFEST } : { status: 404 };
+    });
+    try {
+      const follower = new FeedFollower(gw.url, OWNER, TOPIC_HEX, 'walk');
+      await follower.read();
+      const advanced = await follower.read();
+      const stalled = await follower.read();
+
+      assert.equal(stalled.body, advanced.body, 'a slot the publisher has not written yet lost the manifest');
+      assert.equal(stalled.resolvedIndex, advanced.resolvedIndex, 'an unwritten slot advanced the index');
+      assert.ok(stalled.atMs >= advanced.atMs, 'the stalled poll was not stamped when it happened');
+    } finally {
+      gw.close();
+    }
+  });
+
+  /**
+   * The escape hatch has to work, or the instrument's own contribution can only be argued about. This
+   * is the mode that produced every frozen share LAT-10 was built on.
+   */
+  it('still resolves the head on every poll in head mode', async () => {
+    const gw = await stubGateway(() => ({
+      status: 200,
+      body: MANIFEST,
+      headers: { 'swarm-feed-index': '5' },
+    }));
+    try {
+      const follower = new FeedFollower(gw.url, OWNER, TOPIC_HEX, 'head');
+      for (let poll = 0; poll < 3; poll++) {
+        await follower.read();
+      }
+
+      assert.equal(gw.asked.filter((path) => path.startsWith('/feeds/')).length, 3);
+    } finally {
+      gw.close();
+    }
+  });
+
+  it('defaults to walking, so a caller that says nothing measures the viewer', () => {
+    assert.equal(parseFeedReaderMode(undefined), 'walk');
+    assert.equal(DEFAULT_FEED_READER, 'walk');
+  });
+
+  it('refuses a mode it does not have, rather than silently walking', () => {
+    assert.throws(() => parseFeedReaderMode('latest'), /must be 'walk' or 'head'/);
   });
 });

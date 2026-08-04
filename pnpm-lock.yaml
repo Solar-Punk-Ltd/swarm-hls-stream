@@ -66,6 +66,9 @@ importers:
       '@swarm-hls-stream/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      cafe-utility:
+        specifier: 31.1.1
+        version: 31.1.1
     devDependencies:
       '@types/node':
         specifier: ^22.8.1

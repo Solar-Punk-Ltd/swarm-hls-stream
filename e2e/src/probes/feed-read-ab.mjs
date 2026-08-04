@@ -60,9 +60,21 @@ const runTag = process.env.RUN_TAG ?? String(Date.now());
 const TOPICS = {
   head: Topic.fromString(`lat10-head-${runTag}`),
   edge: Topic.fromString(`lat10-edge-${runTag}`),
+  chunk: Topic.fromString(`lat10-chunk-${runTag}`),
   lag: Topic.fromString(`lat10-lag-${runTag}`),
   quiet: Topic.fromString(`lat10-quiet-${runTag}`),
 };
+
+/**
+ * The same explicit-address read as `edge`, issued through bee-js instead of by hand.
+ *
+ * Worth its own arm because the two are not the same request. The client builds
+ * `/soc/{owner}/{identifier}`, and bee-js computes the chunk address and asks for
+ * `/chunks/{address}`. Both retrieve one chunk and the difference should be cosmetic, but this
+ * session has already turned on a distinction that fine, and the bench is about to be rewritten
+ * onto whichever of them is available to it without a new dependency.
+ */
+const readBee = new Bee(READ_URL);
 
 /** Roughly a windowed manifest, so the chunk is a realistic size rather than a few bytes. */
 const PAYLOAD = new TextEncoder().encode('#EXTM3U\n'.padEnd(220, 'x'));
@@ -145,8 +157,20 @@ async function headLoop(deadline) {
   }
 }
 
+/** One explicit-index read through bee-js, which asks for `/chunks/{address}` rather than `/soc/`. */
+async function chunkGet(topic, index) {
+  const at = Date.now();
+  try {
+    const reader = readBee.makeFeedReader(topic, owner);
+    await reader.downloadPayload({ index: FeedIndex.fromBigInt(BigInt(index)) });
+    return { at, ms: Date.now() - at, status: 200, index: null };
+  } catch {
+    return { at, ms: Date.now() - at, status: 404, index: null };
+  }
+}
+
 /** Follows the feed one computed address at a time, which is what the shipped client does. */
-async function walkLoop(name, topic, startAt, deadline) {
+async function walkLoop(name, topic, startAt, deadline, get = (t, i) => timedGet(socUrl(t, i))) {
   let at = startAt;
   while (Date.now() < deadline) {
     const tickAt = Date.now();
@@ -154,7 +178,7 @@ async function walkLoop(name, topic, startAt, deadline) {
     /** Whether the writer had already written this slot when it was asked for. */
     const existed = written >= target;
     const writtenAtAsk = written;
-    const read = await timedGet(socUrl(topic, target));
+    const read = await get(topic, target);
     if (read.status === 200) {
       at = target;
     }
@@ -194,6 +218,7 @@ async function main() {
   }
   running.push(headLoop(deadline));
   running.push(walkLoop('edge', TOPICS.edge, written, deadline));
+  running.push(walkLoop('chunk', TOPICS.chunk, written, deadline, chunkGet));
   running.push(walkLoop('lag', TOPICS.lag, written - LAG_SLOTS, deadline));
 
   await Promise.all(running);
@@ -250,7 +275,7 @@ function report(quiet) {
   console.log(`\nwrote ${written + 1} slots to each topic, ${writeFailures} write failures`);
   console.log(`scored ${scored.length} polls after the first ${WARMUP_S}s\n`);
   console.log('staleness in slots behind the writer:');
-  for (const name of ['head', 'edge', 'lag']) {
+  for (const name of ['head', 'edge', 'chunk', 'lag']) {
     const score = scoreReader(byReader(name));
     console.log(
       `  ${name.padEnd(5)} polls=${String(score.polls).padStart(4)}  mean=${score.meanStaleness
@@ -264,7 +289,7 @@ function report(quiet) {
   // The separation that names the mechanism. A slot refused after it was written is the defect, and
   // asking for one before it was written is the ordinary case suspected of causing it.
   console.log('\nexplicit-address reads, split by whether the slot existed when it was asked for:');
-  for (const name of ['edge', 'lag']) {
+  for (const name of ['edge', 'chunk', 'lag']) {
     for (const existed of [true, false]) {
       const rows = byReader(name).filter((s) => s.existed === existed);
       if (rows.length === 0) {

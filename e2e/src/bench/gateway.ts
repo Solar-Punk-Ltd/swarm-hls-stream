@@ -14,8 +14,17 @@
  * does not reuse it.
  */
 
+import { FeedIndex, Identifier, Topic } from '@ethersphere/bee-js';
+import { Binary } from 'cafe-utility';
+
 const FEED_TIMEOUT_MS = 15_000;
 const SEGMENT_TIMEOUT_MS = 30_000;
+
+/**
+ * A feed slot the publisher has not written yet, which is what a caught-up viewer sees on nearly
+ * every poll. Ordinary, so a walking follower stays where it is and asks again rather than failing.
+ */
+const SLOT_NOT_WRITTEN_YET = 404;
 
 /** A response with the bench-clock instant it finished arriving. */
 export interface TimedFetch<T> {
@@ -145,16 +154,117 @@ export function resolvedFeedIndex(headers: Headers): number | null {
   return Number.parseInt(raw.trim(), 16);
 }
 
-/** The manifest a viewer's player would load, and when it finished arriving here. */
-export async function fetchFeedManifest(
-  gatewayUrl: string,
-  owner: string,
-  topicHex: string,
-): Promise<TimedFetch<string> & { resolvedIndex: number | null }> {
+/** One read of the feed, and when it finished arriving here. */
+export type FeedRead = TimedFetch<string> & { resolvedIndex: number | null };
+
+/** The feed head, resolved by the node. What the player does once, on mount. */
+export async function fetchFeedManifest(gatewayUrl: string, owner: string, topicHex: string): Promise<FeedRead> {
   const response = await timedFetch(`${gatewayUrl}/feeds/${owner}/${topicHex}`, FEED_TIMEOUT_MS);
   const resolvedIndex = resolvedFeedIndex(response.headers);
   const body = await response.text();
   return { body, atMs: Date.now(), resolvedIndex };
+}
+
+/**
+ * How the bench follows the feed.
+ *
+ * `walk` is what the shipped player does and is the default. `head` is what this bench used to do on
+ * every poll, kept because the instrument's own contribution should be measurable rather than argued
+ * about.
+ */
+export type FeedReaderMode = 'walk' | 'head';
+
+export const DEFAULT_FEED_READER: FeedReaderMode = 'walk';
+
+export function parseFeedReaderMode(raw: string | undefined): FeedReaderMode {
+  if (raw === undefined || raw === '') {
+    return DEFAULT_FEED_READER;
+  }
+  if (raw !== 'walk' && raw !== 'head') {
+    throw new Error(`BENCH_FEED_READER must be 'walk' or 'head', got '${raw}'`);
+  }
+  return raw;
+}
+
+/**
+ * The address of one feed slot, which is what the player asks for and therefore what this must ask
+ * for too.
+ *
+ * Hand-built rather than taken from bee-js, because `makeFeedReader().downloadPayload()` is for feeds
+ * whose update holds a swarm reference: it fetches the slot and then dereferences the payload with a
+ * second `GET /bytes/<ref>`. Our uploader writes the manifest text straight into the slot, so that
+ * second request is both wrong and an extra round trip inside the thing being timed.
+ */
+function feedSlotUrl(gatewayUrl: string, owner: string, topicHex: string, index: FeedIndex): string {
+  const identifier = new Identifier(
+    Binary.keccak256(Binary.concatBytes(new Topic(topicHex).toUint8Array(), index.toUint8Array())),
+  );
+  return `${gatewayUrl}/soc/${owner}/${identifier.toString()}`;
+}
+
+/**
+ * Follows one feed the way the player does, so that what the bench reports is what a viewer sees.
+ *
+ * **This is the correction to LAT-10 and it is the whole point of the class.** The bench used to
+ * resolve the feed with `GET /feeds/{owner}/{topic}` on every single poll. The player asks for that
+ * once, on mount, and then walks explicit slot addresses. The two are not close: measured on
+ * 2026-08-04 with a synthetic feed advancing one slot per second, the head lookup was **50 to 57%
+ * frozen with responses of 1.0 to 7.0 seconds**, while an explicit-address reader riding the live
+ * edge was **0.2% frozen at 46ms** and never fell more than two slots behind. It fails the same way
+ * against the node that wrote the chunks and holds them locally, so it is the lookup rather than
+ * retrieval. See `e2e/src/probes/feed-read-ab.mjs`.
+ *
+ * So every frozen-share figure this bench produced before this class measured the lookup, not the
+ * viewer, and LAT-10's whole history rests on it.
+ *
+ * A poll that finds no new slot returns the previous manifest again rather than failing, which is
+ * exactly what the player serves its own hls.js in that case, and it is what lets the caller keep
+ * counting a repeated `newestRef` as a stall.
+ */
+export class FeedFollower {
+  private index: FeedIndex | null = null;
+  private last: FeedRead | null = null;
+
+  constructor(
+    private readonly gatewayUrl: string,
+    private readonly owner: string,
+    private readonly topicHex: string,
+    private readonly mode: FeedReaderMode = DEFAULT_FEED_READER,
+  ) {}
+
+  async read(): Promise<FeedRead> {
+    if (this.mode === 'head' || this.index === null || this.last === null) {
+      // The anchor, and the only head lookup a walking follower ever performs. The player takes this
+      // same path on mount and on every restart.
+      const read = await fetchFeedManifest(this.gatewayUrl, this.owner, this.topicHex);
+      this.index = read.resolvedIndex === null ? null : FeedIndex.fromBigInt(BigInt(read.resolvedIndex));
+      this.last = read;
+      return read;
+    }
+    return this.readNextSlot(this.index, this.last);
+  }
+
+  private async readNextSlot(from: FeedIndex, last: FeedRead): Promise<FeedRead> {
+    const target = from.next();
+    try {
+      const response = await timedFetch(
+        feedSlotUrl(this.gatewayUrl, this.owner, this.topicHex, target),
+        FEED_TIMEOUT_MS,
+      );
+      const body = await response.text();
+      this.index = target;
+      this.last = { body, atMs: Date.now(), resolvedIndex: Number(target.toBigInt()) };
+      return this.last;
+    } catch (error) {
+      // The publisher has not written this slot yet, which is what a caught-up viewer meets on
+      // nearly every poll. Anything else is the gateway failing, and it belongs to the caller's
+      // blackout handling rather than here.
+      if (!(error instanceof GatewayStatusError) || error.status !== SLOT_NOT_WRITTEN_YET) {
+        throw error;
+      }
+      return { ...last, atMs: Date.now() };
+    }
+  }
 }
 
 /**

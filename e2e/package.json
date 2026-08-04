@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
-    "@swarm-hls-stream/shared": "workspace:*"
+    "@swarm-hls-stream/shared": "workspace:*",
+    "cafe-utility": "31.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",

@@ -18,7 +18,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { requireGatewayReachable } from '../src/bench/gateway.js';
+import { parseFeedReaderMode, requireGatewayReachable } from '../src/bench/gateway.js';
 import {
   bufferDemandTrend,
   type FeedProgress,
@@ -339,6 +339,7 @@ async function main(): Promise<void> {
     samples: SAMPLE_CEILING,
     collectForMs: runMinutes * 60_000,
     pollIntervalMs: POLL_INTERVAL_MS,
+    feedReader: parseFeedReaderMode(process.env.BENCH_FEED_READER),
     mediaTimelineLeadMs: check.mediaTimelineLeadMs,
   });
   const report = renderLongRun(run, (Date.now() - startedAtMs) / 60_000);

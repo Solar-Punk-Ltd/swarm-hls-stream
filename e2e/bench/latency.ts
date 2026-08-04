@@ -10,7 +10,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { requireGatewayReachable } from '../src/bench/gateway.js';
+import { parseFeedReaderMode, requireGatewayReachable } from '../src/bench/gateway.js';
 import { renderReport } from '../src/bench/report.js';
 import { measureLatency } from '../src/bench/run.js';
 import { checkInstrumentLocally } from '../src/bench/selfCheck.js';
@@ -97,6 +97,7 @@ async function main(): Promise<void> {
     knobs,
     samples,
     pollIntervalMs: DEFAULT_POLL_MS,
+    feedReader: parseFeedReaderMode(process.env.BENCH_FEED_READER),
     mediaTimelineLeadMs: check.mediaTimelineLeadMs,
   });
   const report = renderReport(run);
