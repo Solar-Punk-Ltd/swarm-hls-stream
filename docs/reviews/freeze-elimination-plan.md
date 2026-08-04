@@ -1,7 +1,17 @@
 # Eliminating the periodic freeze (LAT-10)
 
-**Status 2026-08-04, second revision: the freeze is in bee's sequential feed head lookup. It is not
-our client, and the earlier revision of this document, which said it was, is retracted below.**
+**Status 2026-08-04, third revision: CONFIRMED THROUGH THE PRODUCT. The freeze is in bee's sequential
+feed head lookup, the bench was the only thing standing on it, and reading the feed the way the
+player does takes the worst stall from 37.2 seconds to 4.8.**
+
+Three ten-minute broadcasts read the player's way against one read the old way, same stack, back to
+back: longest stall 4.59 / 4.76 / 4.79s against **37.22s**, feed index jump on release 1 / 1 / 1
+against **19**, segments delivered 280 / 289 / 257 against **91** out of about 303 possible. Full
+table in [`docs/bench/feed-reader-ab.md`](../bench/feed-reader-ab.md). The bench was fixed in
+`f1bfc7c` and `BENCH_FEED_READER=head` reproduces the old behaviour on demand.
+
+**So the 57% frozen headline, and every latency figure this project has published, described the
+instrument.** The rest of this document is how that was found.
 
 This document has been wrong twice. First it treated the freeze as a property of Swarm retrieval.
 Then it named our client as the cause, and a fix was written and committed. A rig built to check that
@@ -66,20 +76,27 @@ bee's source.
 
 ## What to do next, in order
 
-1. **Measure what the lookup costs the product.** The player calls `/feeds/` once per mount, but the
-   catalog is polled continuously through the same endpoint in
+1. ~~**Measure what the lookup costs the product.**~~ Partly done. The player calls `/feeds/` once per
+   mount and is fine. Still open: the catalog is polled continuously through the same endpoint in
    [App.tsx](../../packages/client/src/providers/App.tsx) and
-   [StreamPreview.tsx](../../packages/client/src/components/StreamPreview/StreamPreview.tsx). That is
-   a shipped path sitting on a lookup that stalls half the time.
-2. **Re-baseline the bench.** Reading the feed through `/feeds/` makes the instrument slower and more
-   erratic than the thing it measures. Until that is settled, no latency figure this project holds is
-   trustworthy in absolute terms, the operating profiles included.
-3. **Rewrite the upstream report** (#59) around the synthetic rig. It reproduces without this
+   [StreamPreview.tsx](../../packages/client/src/components/StreamPreview/StreamPreview.tsx), which
+   is a shipped path sitting on a lookup that stalls half the time.
+2. ~~**Re-baseline the bench.**~~ Done, `f1bfc7c`. What remains is re-running the sweep, because
+   `profiles.md` is entirely head-lookup measurements and its figures move by more than a constant:
+   the head reader also delivers a third of the segments, so sample counts, stall lengths and buffer
+   recommendations all describe the reader.
+3. **Measure through the client's own code rather than a second implementation of it.** The bench
+   reimplements the player's feed following, and this whole episode is what two implementations
+   drifting looks like. The client's `ManifestFetcher` already runs under Node: the only obstacles
+   are `@/utils/config`, which reads `import.meta.env` at module scope, and `p-queue`, which `e2e`
+   does not depend on. Moving `ManifestManagement.ts`, `feedState.ts` and `fetchWithTimeout.ts` into
+   `@swarm-hls-stream/shared` leaves one implementation for both.
+4. **Rewrite the upstream report** (#59) around the synthetic rig. It reproduces without this
    repository, without video and without a gateway: a feed advancing at one update per second cannot
    be followed through `/feeds/` even by the node that wrote it, while explicit-address reads of the
    same chunks are perfect. That is a far stronger report than the one drafted before, and this time
    it is genuinely bee's rather than ours.
-4. **Leave the client alone.** It is on the fast path already.
+5. **Leave the client alone.** It is on the fast path already.
 
 ## Hypotheses considered and how each died
 
