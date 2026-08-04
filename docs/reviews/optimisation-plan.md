@@ -80,23 +80,33 @@ eviction that #62 is open on.
 Without it the campaign can screen but cannot confirm, and an unconfirmed winner is how this project
 got sixteen profiles it has now had to retire.
 
-## 3. Phase 1, everything answerable without spending postage
+## 3. Phase 1, everything answerable without a broadcast
 
-The synthetic rig from LAT-10 writes one 4KB chunk per second and costs a rounding error. Anything
-about **how a feed is read** can be answered with it, in minutes, for nothing. Only questions about
-**how video is written** need a broadcast.
+The synthetic rig from LAT-10 writes one 4KB chunk per second. Anything about **how a feed is read**
+can be answered with it in minutes, and only questions about **how video is written** need a
+broadcast.
 
-| #   | question                                                        | why it matters                                                                                                                                      | cost |
-| --- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 1.1 | What does the catalog pay for `/feeds/`? (#66)                  | `App.tsx:67` and `StreamPreview.tsx:60` poll the endpoint that is 50-57% frozen. This is shipped, on every page load, and unmeasured.               | free |
-| 1.2 | Does caching the head plus walking fix it?                      | Same change that took the bench from 37.2s to 4.8s. Prototype against the rig before touching the app.                                              | free |
-| 1.3 | Concurrent viewers, redone (LAT-11)                             | The 1.30x staleness at 8 viewers was measured through the broken lookup in both arms. Direction survives, magnitude does not.                       | free |
-| 1.4 | `--cache-capacity` 0 vs 1M, redone                              | "0 to 1M made it worse, 18% to 28% frozen" is a head-lookup measurement of a read path. Re-test on the explicit-address path.                       | free |
-| 1.5 | Does the startup buffer cap below the target at short segments? | Answered already, see section 3.1. Confirm in a browser rather than by measurement (#48).                                                           | free |
-| 1.6 | Does a refused slot cost more than a served one?                | The rig measured 827ms for a 404 against 46ms for a 200. A caught-up viewer gets a 404 on nearly every poll, so this sits in the steady-state path. | free |
+**It is cheap in bytes and not free in buckets, which is not the same thing.** The head-scaling probe
+wrote 1111 chunks, about a thousandth of what a ten-minute broadcast writes, and still took the stamp
+from 49 of 64 to 50. Utilization is the fullest bucket rather than the average, so near the top of a
+batch almost any activity increments it: with a thousand buckets already sitting at the maximum, a
+thousand randomly addressed chunks will land on one of them with near certainty. That is also the
+mechanism behind #62, where the batch reaches 64 of 64 in about a day.
 
-Phase 1 has no postage cost and no dependency on the new batch. **It runs first, and some of it may
-land improvements before the grid begins.**
+So budget rig runs at roughly **one bucket each** near a full batch, rather than at nothing, and read
+that as another argument for a fresh one.
+
+| #   | question                                                        | why it matters                                                                                                                                      | cost      |
+| --- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| 1.1 | What does the catalog pay for `/feeds/`? (#66)                  | `App.tsx:67` and `StreamPreview.tsx:60` poll the endpoint that is 50-57% frozen. This is shipped, on every page load, and unmeasured.               | ~1 bucket |
+| 1.2 | Does caching the head plus walking fix it?                      | Same change that took the bench from 37.2s to 4.8s. Prototype against the rig before touching the app.                                              | ~1 bucket |
+| 1.3 | Concurrent viewers, redone (LAT-11)                             | The 1.30x staleness at 8 viewers was measured through the broken lookup in both arms. Direction survives, magnitude does not.                       | ~1 bucket |
+| 1.4 | `--cache-capacity` 0 vs 1M, redone                              | "0 to 1M made it worse, 18% to 28% frozen" is a head-lookup measurement of a read path. Re-test on the explicit-address path.                       | ~1 bucket |
+| 1.5 | Does the startup buffer cap below the target at short segments? | Answered already, see section 3.1. Confirm in a browser rather than by measurement (#48).                                                           | none      |
+| 1.6 | Does a refused slot cost more than a served one?                | The rig measured 827ms for a 404 against 46ms for a 200. A caught-up viewer gets a 404 on nearly every poll, so this sits in the steady-state path. | ~1 bucket |
+
+Phase 1 does not depend on the new batch and is a handful of buckets rather than a broadcast's worth.
+**It runs first, and some of it may land improvements before the grid begins.**
 
 Its limit is worth stating plainly: the rig writes 4KB payloads, so it can answer questions about the
 feed and says nothing about segment throughput.
