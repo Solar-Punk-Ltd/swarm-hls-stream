@@ -105,8 +105,13 @@ run_one() {
   if [ ${status} -ne 0 ]; then
     verdict="RUN-FAILED(${status})"
   else
-    local newest
-    newest="$(ls -t "${REPO_DIR}"/docs/bench/longrun-*.json 2>/dev/null | head -1)"
+    local newest="" candidate
+    for candidate in "${REPO_DIR}"/docs/bench/longrun-*.json; do
+      [ -e "${candidate}" ] || continue
+      if [ -z "${newest}" ] || [ "${candidate}" -nt "${newest}" ]; then
+        newest="${candidate}"
+      fi
+    done
     if [ -z "${newest}" ]; then
       verdict="NO-REPORT"
     else
