@@ -73,9 +73,15 @@ READER_PACE_TOLERANCE = 0.05
 # sitting at the bound every poll is one publisher speed-up away from falling behind, which is worth
 # reading off a passing run rather than discovering from the next failing one.
 MAX_WALK_PER_READ = 32
+# What share of polls may spend the whole walk budget before the reader is called out of headroom.
+# A poll that spends it stopped short of the live edge, so its sample is however many slots stale the
+# walk did not cover. Low, because the interesting state is "no headroom left" rather than "already
+# failing": the pace check above only fires once the reader is losing ground, which is too late to
+# learn it from.
+READER_AT_BOUND_SHARE = 0.10
 
 
-def reader_pace(run: dict, achieved_segment_s: float) -> tuple[float, float, float, float] | None:
+def reader_pace(run: dict, achieved_segment_s: float) -> tuple[float, float, float, float, float] | None:
     """Slots per second the reader achieved, what the publisher wrote, its loop time, and walk depth.
 
     The write rate comes from the segment length the encoder actually produced, because that is what
@@ -98,7 +104,28 @@ def reader_pace(run: dict, achieved_segment_s: float) -> tuple[float, float, flo
     steps = [
         resolved[i + 1]["resolvedIndex"] - resolved[i]["resolvedIndex"] for i in range(len(resolved) - 1)
     ]
-    return achieved, 1 / achieved_segment_s, st.median(gaps), st.median(steps)
+    # The share, not the median. A median of 31.5 prints as "32" and compares as under it, so the
+    # number in the verdict and the number the check tested would disagree. The share also asks the
+    # right question directly: on a poll that spent the whole budget the walk stopped short of the
+    # live edge, whatever the other polls did.
+    at_bound = sum(1 for step in steps if step >= MAX_WALK_PER_READ) / len(steps)
+    return achieved, 1 / achieved_segment_s, st.median(gaps), st.median(steps), at_bound
+
+
+def unreadable_note(run: dict, share: float) -> str:
+    """The unreadable share, split by whether the gateway refused the bytes or they were unusable.
+
+    One number covered two different faults. A 404 is a segment that exists and has not been retrieved
+    yet, since segments upload `deferred: true` while the manifest naming them is a synchronous SOC
+    write: every one of the thirteen a 10-minute run refused on 2026-08-05 answered 200 when asked
+    again. Anything else is a segment that arrived and could not be read, which is a real defect. A
+    sweep log that says only "14.1% unreadable" hides which of those happened.
+    """
+    refused = sum(1 for x in run["discarded"] if "answered 404" in x.get("reason", ""))
+    total = len(run["discarded"])
+    if total == 0:
+        return f"{share:.1%} unreadable"
+    return f"{share:.1%} unreadable ({refused} refused, {total - refused} unusable)"
 
 
 def main() -> int:
@@ -147,7 +174,7 @@ def main() -> int:
     # its own verdict so a sweep's log says which of the two happened.
     pace = reader_pace(run, segment_s)
     if pace is not None:
-        achieved, written, loop_ms, walk = pace
+        achieved, written, loop_ms, walk, _ = pace
         if achieved < written * (1 - READER_PACE_TOLERANCE):
             print(
                 f"READER BEHIND: the reader walked {achieved:.2f} feed slots per second against the "
@@ -158,16 +185,28 @@ def main() -> int:
             )
             return 1
 
-    note = " UNREADABLE-HIGH" if discarded_share > NOTEWORTHY_DISCARDED_SHARE else ""
+    notes = []
+    if discarded_share > NOTEWORTHY_DISCARDED_SHARE:
+        notes.append("UNREADABLE-HIGH")
+    # A reader at the bound is not slow. It has exactly the right rate and no headroom left, so the
+    # pace check above passes it and cannot ever say so. See gate lesson ADR: a fix to an accumulation
+    # problem shows in position rather than rate, and so does the failure of one.
+    if pace is not None and pace[4] > READER_AT_BOUND_SHARE:
+        notes.append("READER-AT-BOUND")
+    note = f" {' '.join(notes)}" if notes else ""
+
     pace_note = (
         ""
         if pace is None
-        else f", reader {pace[0]:.2f}/{pace[1]:.2f} slots per second at {pace[3]:.0f} slots a poll"
+        else (
+            f", reader {pace[0]:.2f}/{pace[1]:.2f} slots per second at {pace[3]:.0f}/{MAX_WALK_PER_READ} "
+            f"slots a poll, {pace[4]:.0%} of polls at the bound"
+        )
     )
     print(
         f"axis ok{note}: {segment_s:.3f}s segments for a {requested_gop_s}s GOP, "
         f"{packets:.0f} packets at {delivered_fps:.1f}/{fps:g}fps, "
-        f"{discarded_share:.1%} unreadable{pace_note}"
+        f"{unreadable_note(run, discarded_share)}{pace_note}"
     )
     return 0
 
