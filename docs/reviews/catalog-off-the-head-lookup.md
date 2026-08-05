@@ -72,6 +72,30 @@ The prediction to refute: **fixes 1 and 2 take the steady-state catalog poll to 
 about 4ms, and the thumbnail row for finished streams from N lookups to N direct fetches.** If they do
 not, the reasoning above is wrong somewhere.
 
+## ✅ Measured against the real catalog feed, 2026-08-05, and it holds
+
+Not a synthetic feed. The `latbench` app catalog, **455 slots deep**, read from its own gateway.
+Probe: [`catalog-head-vs-walk.mjs`](../../e2e/src/probes/catalog-head-vs-walk.mjs). 15 rounds, round
+robin. No deploy needed, because this measures the read pattern rather than the shipped client.
+
+| arm                                        |    min | **median** |    max |
+| ------------------------------------------ | -----: | ---------: | -----: |
+| **head lookup**, what the catalog does now | 2412ms | **5015ms** | 5018ms |
+| **walk**, slot present                     |    5ms |    **7ms** |   12ms |
+| **walk**, slot absent, the idle case       |    3ms |    **5ms** | 1529ms |
+
+**5015ms to 5ms, about a thousandfold**, and closer to the synthetic prediction than it had any right
+to be given the feed is twenty times longer.
+
+**The number that matters most is the comparison to the poll interval.** `StreamBrowser` polls at
+`refreshInterval: 5000`, and the head lookup takes **5015ms**. This deployment is already past the
+point where the catalog poll does not fit inside its own interval, so the catalog was never not in
+flight. That was written above as something that would happen past a few hundred events. It has
+happened: 455.
+
+The 1529ms maximum on the absent arm is the same tail the synthetic probe found, about one miss in
+twenty, and it is still under a third of the median it replaces.
+
 ## Do not ship this on reading alone
 
 The one time this project changed the client from reading rather than measuring, the change was wrong
