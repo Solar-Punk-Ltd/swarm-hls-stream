@@ -15,7 +15,7 @@
  */
 
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
-import { type FeedSlotRequest, nextFeedRequest } from '@swarm-hls-stream/shared';
+import { type FeedSlotRequest, nextFeedRequest, resolvedFeedIndex } from '@swarm-hls-stream/shared';
 
 const FEED_TIMEOUT_MS = 15_000;
 const SEGMENT_TIMEOUT_MS = 30_000;
@@ -138,21 +138,14 @@ export function isFeedBlackout(msSinceLastSuccessfulPoll: number): boolean {
 }
 
 /**
- * Which feed update the gateway resolved this read to, from its `Swarm-Feed-Index` header.
+ * Which feed update the gateway resolved a read to, re-exported so this module's callers keep their
+ * import.
  *
- * The header is hexadecimal and zero-padded, which is worth stating because every index under
- * sixteen reads as a plausible decimal and the two only diverge later: `0000000000000022` is 34.
- *
- * Null rather than an error when the header is absent or unreadable. It is a diagnostic column, and
- * a run that threw here would trade every latency figure it had for it.
+ * It lives in `@swarm-hls-stream/shared` rather than here because the client needs the same rule and
+ * the two have to agree. A copy of it here is exactly the shape that let the instrument and the
+ * product read feeds differently for weeks, which is recorded beside `nextFeedRequest`.
  */
-export function resolvedFeedIndex(headers: Headers): number | null {
-  const raw = headers.get('swarm-feed-index');
-  if (raw === null || !/^[0-9a-fA-F]+$/.test(raw.trim())) {
-    return null;
-  }
-  return Number.parseInt(raw.trim(), 16);
-}
+export { resolvedFeedIndex };
 
 /** One read of the feed, and when it finished arriving here. */
 export type FeedRead = TimedFetch<string> & { resolvedIndex: number | null };

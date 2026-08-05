@@ -58,3 +58,25 @@ export function nextFeedRequest(owner: string, topic: Topic, knownIndex: FeedInd
   const index = knownIndex.next();
   return { kind: 'slot', path: `soc/${owner}/${makeFeedIdentifier(topic, index).toString()}`, index };
 }
+
+/**
+ * The feed slot a gateway says it resolved a read to, from the response headers.
+ *
+ * **The header is hexadecimal and zero-padded**, which is worth stating because every index under
+ * sixteen reads as a plausible decimal and the two only diverge later: `0000000000000022` is 34.
+ *
+ * Null rather than an error when the header is absent or unreadable, because every caller has
+ * something better to do than fail. A follower that cannot read it falls back to a head lookup, which
+ * is slow rather than wrong.
+ *
+ * Lives here rather than beside either caller because both the client and the bench need it and they
+ * need it to agree. The last time a feed-reading rule existed twice, the two copies diverged and the
+ * instrument was reported as the product for weeks. See `nextFeedRequest` above.
+ */
+export function resolvedFeedIndex(headers: Headers): number | null {
+  const raw = headers.get('swarm-feed-index');
+  if (raw === null || !/^[0-9a-fA-F]+$/.test(raw.trim())) {
+    return null;
+  }
+  return Number.parseInt(raw.trim(), 16);
+}
