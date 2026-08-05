@@ -90,26 +90,40 @@ for (const entry of sample) {
   if (slot.status !== 200) {
     slotMissing += 1;
     console.log(
-      `MISS  ${entry.topic.slice(0, 8)} state=${entry.state} index=${entry.index} head=${headIndex} slot status ${slot.status}`,
+      `MISS  ${entry.topic.slice(0, 8)} state=${entry.state} index=${entry.index} head=${headIndex} slot status ${
+        slot.status
+      }`,
     );
     continue;
   }
   if (slot.body === head.body) {
     sameBytes += 1;
     console.log(
-      `same  ${entry.topic.slice(0, 8)} state=${entry.state} index=${entry.index} head=${headIndex} ${shape(slot.body)} head ${head.ms}ms slot ${slot.ms}ms`,
+      `same  ${entry.topic.slice(0, 8)} state=${entry.state} index=${entry.index} head=${headIndex} ${shape(
+        slot.body,
+      )} head ${head.ms}ms slot ${slot.ms}ms`,
     );
     continue;
   }
   mismatched += 1;
   console.log(
-    `DIFF  ${entry.topic.slice(0, 8)} state=${entry.state} index=${entry.index} head=${headIndex} head[${shape(head.body)}] slot[${shape(slot.body)}]`,
+    `DIFF  ${entry.topic.slice(0, 8)} state=${entry.state} index=${entry.index} head=${headIndex} head[${shape(
+      head.body,
+    )}] slot[${shape(slot.body)}]`,
   );
 }
 
 const h = stats(headMs);
 const s = stats(slotMs);
 console.log(`\n${'arm'.padEnd(26)}${'min'.padStart(8)}${'median'.padStart(9)}${'max'.padStart(9)}`);
-console.log(`${'head lookup (today)'.padEnd(26)}${`${h.min}ms`.padStart(8)}${`${h.median}ms`.padStart(9)}${`${h.max}ms`.padStart(9)}`);
-console.log(`${'slot by published index'.padEnd(26)}${`${s.min}ms`.padStart(8)}${`${s.median}ms`.padStart(9)}${`${s.max}ms`.padStart(9)}`);
+console.log(
+  `${'head lookup (today)'.padEnd(26)}${`${h.min}ms`.padStart(8)}${`${h.median}ms`.padStart(9)}${`${h.max}ms`.padStart(
+    9,
+  )}`,
+);
+console.log(
+  `${'slot by published index'.padEnd(26)}${`${s.min}ms`.padStart(8)}${`${s.median}ms`.padStart(
+    9,
+  )}${`${s.max}ms`.padStart(9)}`,
+);
 console.log(`\nsame bytes ${sameBytes}, different ${mismatched}, slot missing ${slotMissing}, of ${sample.length}`);
