@@ -68,15 +68,34 @@ function latencySection(run: BrowserRun): string[] {
     '',
   ];
 
-  if (latency.clampedShort) {
+  if (latency.reachedTargetAtJoin) {
     lines.push(
-      `⛔ **Clamped short.** The median sat below the ${LIVE_SYNC_DURATION_S}s target by more than the ` +
-        'tolerance, which is what happens when the uploader names less media than the player asks for: ' +
-        'hls.js pins its sync position to the start of the playlist, so the viewer gets whatever the ' +
-        'window holds and no error is raised anywhere.',
+      `✅ **The window names enough media.** A joining viewer started ${orDash(latency.joinLatencyS)}s behind ` +
+        `the edge against a ${LIVE_SYNC_DURATION_S}s target, so the live manifest holds the runway the ` +
+        'constant asks for. This is the half of the question the uploader controls.',
+      '',
+    );
+  } else {
+    lines.push(
+      `⛔ **Clamped short at the join.** The viewer started only ${orDash(latency.joinLatencyS)}s behind the ` +
+        `edge against a ${LIVE_SYNC_DURATION_S}s target. hls.js pins its sync position to the start of the ` +
+        'playlist, so a first manifest naming less media than the target hands the viewer less runway, ' +
+        'and nothing raises an error.',
       '',
     );
   }
+
+  if (latency.reachedTargetAtJoin && !latency.heldTarget) {
+    lines.push(
+      `⛔ **And it did not keep it.** The median over the session was ${orDash(latency.medianLatencyS)}s, ` +
+        `down from ${orDash(latency.joinLatencyS)}s at the join, with the best sample at ` +
+        `${orDash(latency.minLatencyS)}s. The player started where it was told to and then drifted toward ` +
+        'the edge, which it can only do by playing faster than media reached it. That is a delivery ' +
+        'question, not a manifest one.',
+      '',
+    );
+  }
+
   if (latency.ranLong) {
     lines.push(
       '⛔ **Ran long.** Latency passed `LIVE_MAX_LATENCY_DURATION_S`, past which hls.js is supposed to seek ' +
@@ -84,13 +103,9 @@ function latencySection(run: BrowserRun): string[] {
       '',
     );
   }
-  if (!latency.clampedShort && !latency.ranLong && latency.medianLatencyS !== null) {
-    lines.push(
-      `✅ **The configured buffer is reachable and was held.** The player settled at ` +
-        `${orDash(latency.medianLatencyS)}s against a ${LIVE_SYNC_DURATION_S}s target, so the live window ` +
-        'names enough media for a joining viewer to get the runway the constant promises.',
-      '',
-    );
+
+  if (latency.reachedTargetAtJoin && latency.heldTarget && !latency.ranLong) {
+    lines.push(`✅ **And it held it.** Median ${orDash(latency.medianLatencyS)}s across the session.`, '');
   }
 
   return lines;
@@ -104,7 +119,8 @@ function playbackSection(run: BrowserRun): string[] {
     '| | |',
     '| --- | ---: |',
     `| samples | ${s.samples} over ${seconds(s.spanMs)}s |`,
-    `| media seconds per wall second | ${s.medianAdvanceRatio.toFixed(3)} |`,
+    `| **media seconds per wall second, whole session** | **${s.overallAdvanceRatio.toFixed(3)}** |`,
+    `| media seconds per wall second, typical sample | ${s.medianAdvanceRatio.toFixed(3)} |`,
     `| samples where playback did not advance | ${s.stalledSamples} |`,
     `| rebuffers the player counted | ${s.rebufferCount}, totalling ${s.rebufferMs}ms |`,
     `| fatal errors | ${s.fatalErrors} |`,
@@ -115,6 +131,10 @@ function playbackSection(run: BrowserRun): string[] {
     'The advance ratio is `currentTime` against the wall clock, which is the one measurement here that ' +
       'does not go through the overlay: a stalled player still reports a latency and still renders, and ' +
       'this is what says whether the picture was moving.',
+    '',
+    '**Read the whole-session ratio, not the typical sample.** Playback either runs at its rate or is ' +
+      'stopped, so the typical sample reads 1.000 in any session that plays at all, including one that ' +
+      'spends a sixth of its time frozen. The gap between the two rows is the rebuffering.',
     '',
   ];
 }

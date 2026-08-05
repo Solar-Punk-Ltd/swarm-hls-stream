@@ -83,8 +83,19 @@ export interface LatencyVerdict {
   medianLatencyS: number | null;
   minLatencyS: number | null;
   maxLatencyS: number | null;
-  /** True when the latency sat below the configured target by more than the tolerance. */
-  clampedShort: boolean;
+  /**
+   * Whether the uploader named enough media for the player to start where it was told to.
+   *
+   * Judged on the **join** and on nothing else. hls.js pins its sync position to the start of the
+   * playlist at mount, so the first manifest is the only thing that can hold a joining viewer nearer
+   * the edge than configured. What the latency does afterwards is a different question with
+   * different causes, and answering it with a median was this module's own first mistake: the run of
+   * 2026-08-05 joined at 5.96s against a 6s target, which is the window working, and its median of
+   * 2.28s printed as "the window is too short".
+   */
+  reachedTargetAtJoin: boolean;
+  /** Whether it was still there later. False with {@link reachedTargetAtJoin} true means it drained. */
+  heldTarget: boolean;
   /** True when it ran past the point hls.js is supposed to seek rather than drift. */
   ranLong: boolean;
 }
@@ -97,18 +108,21 @@ export function judgeLatency(samples: readonly ViewerSample[]): LatencyVerdict {
       medianLatencyS: null,
       minLatencyS: null,
       maxLatencyS: null,
-      clampedShort: false,
+      reachedTargetAtJoin: false,
+      heldTarget: false,
       ranLong: false,
     };
   }
 
+  const floor = LIVE_SYNC_DURATION_S - LATENCY_TARGET_TOLERANCE_S;
   const medianLatencyS = median(observed);
   return {
     joinLatencyS: observed[0],
     medianLatencyS,
     minLatencyS: Math.min(...observed),
     maxLatencyS: Math.max(...observed),
-    clampedShort: medianLatencyS < LIVE_SYNC_DURATION_S - LATENCY_TARGET_TOLERANCE_S,
+    reachedTargetAtJoin: observed[0] >= floor,
+    heldTarget: medianLatencyS >= floor,
     ranLong: Math.max(...observed) > LIVE_MAX_LATENCY_DURATION_S,
   };
 }
@@ -119,7 +133,21 @@ export interface SessionSummary {
   spanMs: number;
   /** Samples where playback gained less than {@link STALLED_ADVANCE_RATIO} of wall clock. */
   stalledSamples: number;
+  /**
+   * The advance ratio of a typical sample, which is 1.0 in any session that plays at all.
+   *
+   * Not the one to quote. Playback either runs at its rate or is stopped, so the median describes
+   * the sample rather than the session, and a viewer rebuffering a sixth of the time still scores
+   * 1.000 here. {@link overallAdvanceRatio} is the honest one.
+   */
   medianAdvanceRatio: number;
+  /**
+   * Media seconds delivered per wall second across the whole session, stalls included.
+   *
+   * This is what a viewer experienced: 1.0 means the picture kept up with the world, and the
+   * shortfall below it is time they spent watching a frozen frame.
+   */
+  overallAdvanceRatio: number;
   /** The overlay's own count, which counts a `waiting` event rather than a slow sample. */
   rebufferCount: number;
   rebufferMs: number;
@@ -133,11 +161,13 @@ export interface SessionSummary {
 export function summarize(samples: readonly ViewerSample[]): SessionSummary {
   const last = samples[samples.length - 1];
   const advances = playbackAdvances(samples);
+  const spanMs = samples.length > 1 ? last.atMs - samples[0].atMs : 0;
   return {
     samples: samples.length,
-    spanMs: samples.length > 1 ? last.atMs - samples[0].atMs : 0,
+    spanMs,
     stalledSamples: advances.filter((advance) => advance.ratio < STALLED_ADVANCE_RATIO).length,
     medianAdvanceRatio: advances.length > 0 ? median(advances.map((advance) => advance.ratio)) : 0,
+    overallAdvanceRatio: spanMs > 0 ? ((last.currentTime - samples[0].currentTime) * 1000) / spanMs : 0,
     // Read off the last sample rather than summed, because the overlay reports these as running
     // totals for the session.
     rebufferCount: last?.rebufferCount ?? 0,

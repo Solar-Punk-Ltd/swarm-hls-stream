@@ -59,7 +59,8 @@ describe('judging the latency against the buffer the client is configured with',
   it('accepts a player sitting at its configured target', () => {
     const verdict = judgeLatency(playing(3, 1));
 
-    assert.equal(verdict.clampedShort, false);
+    assert.equal(verdict.reachedTargetAtJoin, true);
+    assert.equal(verdict.heldTarget, true);
     assert.equal(verdict.ranLong, false);
     assert.equal(verdict.medianLatencyS, LIVE_SYNC_DURATION_S);
     assert.equal(verdict.joinLatencyS, LIVE_SYNC_DURATION_S);
@@ -73,12 +74,35 @@ describe('judging the latency against the buffer the client is configured with',
   it('calls a player held near the edge by a short manifest clamped, not merely fast', () => {
     const verdict = judgeLatency(playing(3, 1, { liveLatencyS: 2.5 }));
 
-    assert.equal(verdict.clampedShort, true);
+    assert.equal(verdict.reachedTargetAtJoin, false);
     assert.equal(verdict.ranLong, false);
   });
 
+  /**
+   * The mistake this module made on its own first real run, kept as a test because the two failures
+   * have different owners and the same shape in a summary. The 2026-08-05 session joined at 5.96s
+   * against a 6s target, which is the uploader's window working exactly as the byte budget intended,
+   * and then drained to a 2.28s median. Judged on the median it printed as a short manifest, which
+   * would have sent the next day's work to the wrong side of the system.
+   */
+  it('separates a window that was too short from a session that drained away from a good one', () => {
+    const drained = [
+      { ...BASE, atMs: 0, liveLatencyS: 5.96 },
+      { ...BASE, atMs: 1000, currentTime: 1, liveLatencyS: 3.11 },
+      { ...BASE, atMs: 2000, currentTime: 2, liveLatencyS: 2.28 },
+      { ...BASE, atMs: 3000, currentTime: 3, liveLatencyS: 0.84 },
+    ];
+    const verdict = judgeLatency(drained);
+
+    assert.equal(verdict.reachedTargetAtJoin, true, 'the manifest named the runway the target asks for');
+    assert.equal(verdict.heldTarget, false, 'and the session did not keep it');
+  });
+
   it('leaves a player inside the tolerance of its target alone', () => {
-    assert.equal(judgeLatency(playing(3, 1, { liveLatencyS: LIVE_SYNC_DURATION_S - 0.9 })).clampedShort, false);
+    const verdict = judgeLatency(playing(3, 1, { liveLatencyS: LIVE_SYNC_DURATION_S - 0.9 }));
+
+    assert.equal(verdict.reachedTargetAtJoin, true);
+    assert.equal(verdict.heldTarget, true);
   });
 
   it('calls a player past the seek threshold as having run long', () => {
@@ -100,13 +124,18 @@ describe('judging the latency against the buffer the client is configured with',
     const verdict = judgeLatency(playing(3, 1, { liveLatencyS: null }));
 
     assert.equal(verdict.medianLatencyS, null);
-    assert.equal(verdict.clampedShort, false, 'an absent reading is not a short one');
+    assert.equal(verdict.reachedTargetAtJoin, false, 'nothing was measured, so nothing is confirmed');
+    assert.equal(verdict.heldTarget, false);
   });
 });
 
 describe('summarizing a session', () => {
   it('counts the samples where playback did not advance', () => {
-    const samples = [...playing(3, 1), { ...BASE, atMs: 3000, currentTime: 2 }, { ...BASE, atMs: 4000, currentTime: 2 }];
+    const samples = [
+      ...playing(3, 1),
+      { ...BASE, atMs: 3000, currentTime: 2 },
+      { ...BASE, atMs: 4000, currentTime: 2 },
+    ];
 
     assert.equal(summarize(samples).stalledSamples, 2);
   });
@@ -129,5 +158,23 @@ describe('summarizing a session', () => {
 
   it('reports the resolution the player decoded rather than the one requested', () => {
     assert.equal(summarize(playing(2, 1, { resolution: '640×360' })).resolution, '640×360');
+  });
+
+  /**
+   * The measured session: 84.0 media seconds over 99.4 wall seconds, with every sample that played
+   * at all playing at exactly 1x. Quoting the typical sample would have called that healthy.
+   */
+  it('separates the rate playback ran at from the rate a viewer actually received', () => {
+    const stalling = [
+      { ...BASE, atMs: 0, currentTime: 0 },
+      { ...BASE, atMs: 1000, currentTime: 1 },
+      { ...BASE, atMs: 2000, currentTime: 1 },
+      { ...BASE, atMs: 3000, currentTime: 2 },
+      { ...BASE, atMs: 4000, currentTime: 3 },
+    ];
+    const summary = summarize(stalling);
+
+    assert.equal(summary.medianAdvanceRatio, 1, 'a sample that played, played at its rate');
+    assert.equal(summary.overallAdvanceRatio, 0.75, 'and the viewer got three seconds out of four');
   });
 });
