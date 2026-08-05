@@ -36,6 +36,26 @@ function managerWith(segments: AddedSegment[]): ManifestManager {
   return manager;
 }
 
+/**
+ * Far more segments than one chunk of manifest can name, so the window has certainly slid.
+ *
+ * A stream long enough to overflow rather than a count one past the window, because the window is a
+ * byte budget: how many segments overflow it depends on the reference and gateway URL lengths. The
+ * tests below read where the window starts out of the manifest instead of asserting a number.
+ */
+const OVERFLOWING_SEGMENTS: AddedSegment[] = Array.from({ length: 500 }, (_, index) => ({
+  index,
+  duration: 4,
+  ref: `ref-${index}`,
+}));
+
+function assertWindowSlid(held: number): void {
+  assert.ok(
+    held > 0 && held < OVERFLOWING_SEGMENTS.length,
+    `the window held ${held} of ${OVERFLOWING_SEGMENTS.length} segments, so it did not slide and this asserts nothing`,
+  );
+}
+
 /** Fractional and integer durations both, because `#EXTINF` carries seconds rather than a count. */
 const SEGMENTS: AddedSegment[] = [
   { index: 0, duration: 4, ref: 'ref-a' },
@@ -100,14 +120,13 @@ describe('manifest round trip (ARCH-1)', () => {
   // The live window is the builder's, not the parser's, so the round trip has to survive it rather
   // than assume every segment is present.
   it('round-trips only the live window once the stream outgrows it', () => {
-    const many = Array.from({ length: 14 }, (_, index) => ({ index, duration: 4, ref: `ref-${index}` }));
+    const parsed = parseManifest(managerWith(OVERFLOWING_SEGMENTS).buildLiveManifest());
 
-    const parsed = parseManifest(managerWith(many).buildLiveManifest());
-
+    assertWindowSlid(parsed.segments.length);
     assert.deepEqual(
       parsed.segments.map((s) => s.uri),
-      many.slice(-10).map((s) => `${BEE_URL}/${s.ref}`),
-      'the live window did not round-trip as its last ten segments',
+      OVERFLOWING_SEGMENTS.slice(-parsed.segments.length).map((s) => `${BEE_URL}/${s.ref}`),
+      'the live window did not round-trip as the newest segments it holds',
     );
   });
 
@@ -135,15 +154,22 @@ describe('manifest round trip (ARCH-1)', () => {
   });
 
   // The one assertion that needs the window to have slid. A media sequence stuck at 0 tells a player
-  // the tenth segment is the first, so a viewer joining late replays from the wrong point.
-  it('advances the media sequence once the stream outgrows the live window', () => {
-    const many = Array.from({ length: 14 }, (_, index) => ({ index, duration: 4, ref: `ref-${index}` }));
+  // that the first segment it can see is the first there ever was, so a viewer joining late replays
+  // from the wrong point. Checked against the segment it names rather than against a number, since
+  // where the window starts is now whatever the byte budget allows.
+  it('advances the media sequence to the first segment the window still names', () => {
+    const parsed = parseManifest(managerWith(OVERFLOWING_SEGMENTS).buildLiveManifest());
+    const declared = parsed.headers.find((header) => header.startsWith(`${HLS_MEDIA_SEQUENCE}:`));
 
-    const parsed = parseManifest(managerWith(many).buildLiveManifest());
+    assert.ok(declared, `media sequence missing: ${JSON.stringify(parsed.headers)}`);
+    assertWindowSlid(parsed.segments.length);
 
-    assert.ok(
-      parsed.headers.includes(`${HLS_MEDIA_SEQUENCE}:4`),
-      `14 segments in a window of 10 must start at 4: ${JSON.stringify(parsed.headers)}`,
+    const first = Number(declared.slice(`${HLS_MEDIA_SEQUENCE}:`.length));
+    assert.ok(first > 0, `the media sequence stayed at ${first} while the window slid`);
+    assert.equal(
+      parsed.segments[0].uri,
+      `${BEE_URL}/ref-${first}`,
+      'the media sequence does not name the first segment in the window',
     );
   });
 
