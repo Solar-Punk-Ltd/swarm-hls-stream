@@ -5,17 +5,17 @@ linked, or marked as a guess. Items already tracked carry their task number.
 
 ## Where the product actually is
 
-|                     | state                                                                                                                                                                                                                                                                                                                                         |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Engine              | **SRS works.** OME is at **6 of 11** e2e and must not be called working.                                                                                                                                                                                                                                                                      |
-| LL-HLS              | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams.                                                                                          |
-| Live latency        | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. ✅ **Glass to glass at a viewer is 6.4 to 7.3s and flat**, read off a burned-in clock, [after the client fix](../bench/the-loop-fixed-2026-08-05.md). It was 17.9s and growing before it.                                     |
-| What a viewer sees  | ✅ **1.000 and 1.003 media seconds per wall second at 0.25s, nothing frozen, no rebuffers**, holding 5.86s behind live against a 6s target. It was 0.82x and 17.3% frozen: the client took one feed slot per playlist reload. [Fixed and measured](../bench/the-loop-fixed-2026-08-05.md), [diagnosed](../bench/what-starves-the-viewer-2026-08-05.md).      |
-| Which profile ships | ✅ **0.25s GOP.** The morning's "ship 1.0s" is reversed: its whole reason was 7x the freezing, and the freezing was the client. Both are stable now, 0.25s is no worse on any axis and better on two. ⚠️ Not gated at ten minutes at a viewer.                                                                                              |
-| Seeking             | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                                                                                                                 |
-| Live DVR            | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                                                                                                                  |
-| Crash recovery      | 6 e2e scenarios pass on the **uploader's** side. ✅ A viewer has now been watched through one: `browser:crash` reports what the picture did and what the client said. ⚠️ **Recovery is dominated by the client's own backoff, not by the outage** (task #85).                                                                                |
-| Browser validation  | ✅ **Unblocked 2026-08-05.** `pnpm browser:selfcheck` proves the browser is a valid instrument in ten seconds for no cost, and `browser:watch` reports VOID rather than a number when it is not.                                                                                                                                              |
+|                     | state                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engine              | **SRS works.** OME is at **6 of 11** e2e and must not be called working.                                                                                                                                                                                                                                                                                          |
+| LL-HLS              | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams.                                                                                                              |
+| Live latency        | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. ✅ **Glass to glass at a viewer is 6.4 to 7.3s and flat**, read off a burned-in clock, [after the client fix](../bench/the-loop-fixed-2026-08-05.md). It was 17.9s and growing before it. |
+| What a viewer sees  | ✅ **1.000 and 1.003 media seconds per wall second at 0.25s, nothing frozen, no rebuffers**, holding 5.86s behind live against a 6s target. It was 0.82x and 17.3% frozen: the client took one feed slot per playlist reload. [Fixed and measured](../bench/the-loop-fixed-2026-08-05.md), [diagnosed](../bench/what-starves-the-viewer-2026-08-05.md).           |
+| Which profile ships | ✅ **0.25s GOP.** The morning's "ship 1.0s" is reversed: its whole reason was 7x the freezing, and the freezing was the client. Both are stable now, 0.25s is no worse on any axis and better on two. ⚠️ Not gated at ten minutes at a viewer.                                                                                                                    |
+| Seeking             | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                                                                                                                                     |
+| Live DVR            | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                                                                                                                                      |
+| Crash recovery      | 6 e2e scenarios pass on the **uploader's** side. ✅ A viewer has now been watched through one: `browser:crash` reports what the picture did and what the client said. ⚠️ **Recovery is dominated by the client's own backoff, not by the outage** (task #85).                                                                                                     |
+| Browser validation  | ✅ **Unblocked 2026-08-05.** `pnpm browser:selfcheck` proves the browser is a valid instrument in ten seconds for no cost, and `browser:watch` reports VOID rather than a number when it is not.                                                                                                                                                                  |
 
 ---
 
@@ -179,6 +179,20 @@ drop the index and re-anchor through the head lookup, which is already proven by
 engine restart yields a fresh stream on reconnect; an 8s bee outage loses nothing and arms no
 discontinuity; a long bee outage arms one and resumes; a viewer-gateway outage does not stop uploads;
 a clean stop finalizes a VOD.
+
+⚠️ **Every one of those reads the uploader's log.** They answer whether the publisher did the right
+thing, and all six pass. **`pnpm browser:crash` asks the other question**: what a viewer saw, from a
+real browser watching while the fault is injected. Two scenarios run so far
+([report](../bench/crash-at-a-viewer-2026-08-05.md)), and both found something the six could not see:
+
+- ✅ **`FeedStateOverlay` works.** Both states rendered within a second of their fault and both were
+  correct. Nothing had ever watched it render.
+- ⛔ **A viewer's recovery is bounded by the oldest slot they cannot retrieve, not by the outage.**
+  The uploader was healthy again in 3.4s and the viewer waited 46.7s more, because the walk asked for
+  one slot address 112 times over sixty seconds. Task #71, upgraded from the downgrade a 692-slot
+  scan gave it.
+- ⛔ **The client's manifest backoff overshoots the outage** by about ten seconds after a twenty
+  second one, and by up to thirty at its cap. Task #85.
 
 **Missing, ordered by likelihood times damage:**
 
