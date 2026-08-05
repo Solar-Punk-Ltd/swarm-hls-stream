@@ -26,6 +26,18 @@ import { type ServiceName, SERVICES } from '../config.js';
 export const FAULT_ACTIONS = ['stop', 'kill', 'restart'] as const;
 export type FaultAction = (typeof FAULT_ACTIONS)[number];
 
+/**
+ * What each action reads as in a sentence.
+ *
+ * A table rather than the `${action}ped` the report first used, which produced "killped" and
+ * "restartped" in a document whose whole job is to be quoted.
+ */
+export const FAULT_PAST_TENSE: Record<FaultAction, string> = {
+  stop: 'stopped',
+  kill: 'killed',
+  restart: 'restarted',
+};
+
 export interface FaultScenario {
   /** Selects the scenario on the command line, and names its report. */
   readonly name: string;

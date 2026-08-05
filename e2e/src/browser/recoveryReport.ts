@@ -8,7 +8,7 @@
  * and whether the client told them anything while they saw it.
  */
 
-import type { FaultScenario } from './faults.js';
+import { FAULT_PAST_TENSE, type FaultScenario } from './faults.js';
 import type { RecoveryVerdict } from './recovery.js';
 import { type BrowserRun, instrumentSection, networkSection, orDash, playbackSection, seconds } from './report.js';
 
@@ -26,7 +26,9 @@ function phaseSection(run: CrashRun): string[] {
   return [
     '## What the viewer saw',
     '',
-    `\`${run.container}\` was **${run.scenario.action}ped** for ${downSeconds}s, which breaks ${run.scenario.breaks}.`,
+    `\`${run.container}\` was **${FAULT_PAST_TENSE[run.scenario.action]}** for ${downSeconds}s, which breaks ${
+      run.scenario.breaks
+    }.`,
     '',
     '| | media seconds per wall second | over |',
     '| --- | ---: | ---: |',
@@ -139,7 +141,7 @@ export function renderCrashReport(run: CrashRun): string {
     '',
     `**${run.measuredAt}.** ${run.chromeVersion}, headed against an X display on the deployment host, ` +
       `watching a ${run.gopSeconds}s-GOP broadcast through the shipped client while \`${run.container}\` ` +
-      `was ${run.scenario.action}ped.`,
+      `was ${FAULT_PAST_TENSE[run.scenario.action]}.`,
     '',
     `\`${run.watchUrl}\``,
     '',
