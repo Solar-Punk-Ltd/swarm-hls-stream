@@ -31,7 +31,13 @@ PORT_SLOT="7"
 TARGET="manager-host"
 # Kept apart from the rsynced deploy payload, which `deploy.sh` owns and overwrites.
 REMOTE_DIR="~/swarm-hls-bench"
+
+# `--image` and `--dockerfile` exist so the browser validation runs through this script rather than
+# beside it. Everything here other than which image is built — the sync, the frozen install, host
+# networking, running as the invoking user, the ssh keepalives a long run needs — is the same problem
+# for a browser as for a bench, and a second copy of it would be a second thing to keep true.
 IMAGE="swarm-hls-bench"
+DOCKERFILE="e2e/Dockerfile.bench"
 
 # Syncing, building and installing are idempotent but not free, and a sweep repeats one setting many
 # times over an unchanged tree. `--no-setup` skips all three for the repeat runs.
@@ -50,6 +56,8 @@ while [ $# -gt 0 ]; do
     --portSlot) PORT_SLOT="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --script) SCRIPT="$2"; shift 2 ;;
+    --image) IMAGE="$2"; shift 2 ;;
+    --dockerfile) DOCKERFILE="$2"; shift 2 ;;
     --no-setup) SETUP=0; shift ;;
     --) shift; BENCH_ENV=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -62,9 +70,14 @@ done
 # `--group-add` carries the host's docker group in as a supplementary group. Without it the socket is
 # mounted but unreadable, because dropping to the invoking user also drops the group that owns it,
 # and the run fails at the first log read after the self-check has already published.
+#
+# `--shm-size` is for the browser image: Chrome puts its renderer's shared buffers in /dev/shm and
+# docker's 64MB default makes it crash partway through a video session rather than at startup, which
+# reads as the stream failing. Costs the bench nothing, since shared memory is charged on use.
 DOCKER_RUN="docker run --rm --network host \
   -u \$(id -u):\$(id -g) \
   --group-add \$(getent group docker | cut -d: -f3) \
+  --shm-size=2g \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v ${REMOTE_DIR}:/repo \
   -e HOME=/tmp \
@@ -82,7 +95,7 @@ rsync -az --delete \
   "${REPO_ROOT}/" "${TARGET}:${REMOTE_DIR}/"
 
 echo "bench-on-host: building ${IMAGE} on ${TARGET}"
-ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && docker build -q -f e2e/Dockerfile.bench -t ${IMAGE} e2e/"
+ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && docker build -q -f ${DOCKERFILE} -t ${IMAGE} e2e/"
 
 echo "bench-on-host: installing dependencies in the container"
 ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${IMAGE} pnpm install --frozen-lockfile"
