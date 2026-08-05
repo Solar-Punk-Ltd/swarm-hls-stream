@@ -120,6 +120,30 @@ describe('judging the latency against the buffer the client is configured with',
     assert.equal(judgeLatency(withSpike).medianLatencyS, LIVE_SYNC_DURATION_S);
   });
 
+  /**
+   * The join is where a latency past the threshold is designed to happen, not where it is a defect.
+   * hls.js pins its sync position to the start of the playlist, so a viewer joins as far back as the
+   * first manifest reaches, and the window is budgeted in bytes: 36s of media at a 1.0s segment. The
+   * threshold is what makes hls.js seek, and the seek is what fixes it.
+   *
+   * Measured 2026-08-05: a run joined 35.98s behind and was at 6.25s on the very next sample, and
+   * this module reported it as "it did not recover on its own" against its own next row.
+   */
+  it('does not call a run long for the join it seeked away from', () => {
+    const samples = playing(5, 1);
+    const joinedFarBack = samples.map((sample, i) => (i === 0 ? { ...sample, liveLatencyS: 36 } : sample));
+
+    const verdict = judgeLatency(joinedFarBack);
+
+    assert.equal(verdict.ranLong, false, 'the seek recovered on the next sample and this called it a failure');
+    assert.equal(verdict.joinedPastSeekThreshold, true, 'the jump a viewer saw at the join went unreported');
+  });
+
+  // The other half. A join inside the threshold needs no seek and must not be reported as one.
+  it('says nothing about a join that needed no seek', () => {
+    assert.equal(judgeLatency(playing(3, 1)).joinedPastSeekThreshold, false);
+  });
+
   it('reports no latency rather than zero when the overlay never had one', () => {
     const verdict = judgeLatency(playing(3, 1, { liveLatencyS: null }));
 

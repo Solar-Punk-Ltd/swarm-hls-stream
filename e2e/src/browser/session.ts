@@ -96,7 +96,26 @@ export interface LatencyVerdict {
   reachedTargetAtJoin: boolean;
   /** Whether it was still there later. False with {@link reachedTargetAtJoin} true means it drained. */
   heldTarget: boolean;
-  /** True when it ran past the point hls.js is supposed to seek rather than drift. */
+  /**
+   * Whether the join itself was past the seek threshold, so a viewer's first second was a jump.
+   *
+   * Reported apart from {@link ranLong} because it is a different event with a different cause and a
+   * different fix. hls.js pins its sync position to the start of the playlist, so a viewer joins as
+   * far back as the first manifest reaches, and the uploader's window is budgeted in bytes rather
+   * than in seconds: about 36 seconds of media at a 1.0s segment against a 6s target. Passing the
+   * threshold is what makes hls.js seek, and the seek is the designed response, so this is a
+   * question about how much media the uploader names and not about whether the player recovered.
+   */
+  joinedPastSeekThreshold: boolean;
+  /**
+   * True when latency ran past the point hls.js is supposed to seek rather than drift, **after** the
+   * join.
+   *
+   * The join is excluded because it is the one sample where being past the threshold is expected,
+   * and reading the plain maximum reported a run that joined 35.98s behind and was at 6.25s one
+   * sample later as one where the seek had not worked. Everything after the join is still judged on
+   * a single excursion: mid-session, one sample past the threshold is the whole signal.
+   */
   ranLong: boolean;
 }
 
@@ -110,12 +129,14 @@ export function judgeLatency(samples: readonly ViewerSample[]): LatencyVerdict {
       maxLatencyS: null,
       reachedTargetAtJoin: false,
       heldTarget: false,
+      joinedPastSeekThreshold: false,
       ranLong: false,
     };
   }
 
   const floor = LIVE_SYNC_DURATION_S - LATENCY_TARGET_TOLERANCE_S;
   const medianLatencyS = median(observed);
+  const afterJoin = observed.slice(1);
   return {
     joinLatencyS: observed[0],
     medianLatencyS,
@@ -123,7 +144,8 @@ export function judgeLatency(samples: readonly ViewerSample[]): LatencyVerdict {
     maxLatencyS: Math.max(...observed),
     reachedTargetAtJoin: observed[0] >= floor,
     heldTarget: medianLatencyS >= floor,
-    ranLong: Math.max(...observed) > LIVE_MAX_LATENCY_DURATION_S,
+    joinedPastSeekThreshold: observed[0] > LIVE_MAX_LATENCY_DURATION_S,
+    ranLong: afterJoin.some((latency) => latency > LIVE_MAX_LATENCY_DURATION_S),
   };
 }
 

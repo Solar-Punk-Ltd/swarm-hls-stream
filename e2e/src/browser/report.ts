@@ -98,10 +98,21 @@ function latencySection(run: BrowserRun): string[] {
     );
   }
 
+  if (latency.joinedPastSeekThreshold) {
+    lines.push(
+      `⚠️ **The join was a jump.** A viewer arrived ${orDash(latency.joinLatencyS)}s behind, past ` +
+        '`LIVE_MAX_LATENCY_DURATION_S`, so hls.js seeked to the edge rather than let them catch up. That ' +
+        'recovers, and it is what the threshold is for, but the first thing this viewer saw was stale ' +
+        'and then skipped. The cause is upstream of the player: the live window is budgeted in bytes, so ' +
+        'a longer segment names proportionally more media and puts the start of the playlist further back.',
+      '',
+    );
+  }
+
   if (latency.ranLong) {
     lines.push(
-      '⛔ **Ran long.** Latency passed `LIVE_MAX_LATENCY_DURATION_S`, past which hls.js is supposed to seek ' +
-        'to the edge rather than drift. It did not recover on its own.',
+      '⛔ **Ran long.** After the join, latency passed `LIVE_MAX_LATENCY_DURATION_S`, past which hls.js is ' +
+        'supposed to seek to the edge rather than drift. It did not recover on its own.',
       '',
     );
   }
