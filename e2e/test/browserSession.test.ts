@@ -1,0 +1,133 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
+import { judgeLatency, playbackAdvances, summarize, type ViewerSample } from '../src/browser/session.js';
+
+const BASE: ViewerSample = {
+  atMs: 0,
+  currentTime: 0,
+  paused: false,
+  readyState: 4,
+  playbackRate: 1,
+  bufferAheadS: 8,
+  liveLatencyS: LIVE_SYNC_DURATION_S,
+  rebufferCount: 0,
+  rebufferMs: 0,
+  fatalErrors: 0,
+  droppedFrames: 0,
+  resolution: '1280×720',
+};
+
+/** A run of samples one second apart, each advancing `advance` media seconds. */
+function playing(count: number, advance: number, overrides: Partial<ViewerSample> = {}): ViewerSample[] {
+  return Array.from({ length: count }, (_, i) => ({
+    ...BASE,
+    atMs: i * 1000,
+    currentTime: i * advance,
+    ...overrides,
+  }));
+}
+
+describe('how playback moved against the wall clock', () => {
+  it('reads ordinary playback as one media second per wall second', () => {
+    const advances = playbackAdvances(playing(4, 1));
+
+    assert.equal(advances.length, 3);
+    advances.forEach((advance) => assert.equal(advance.ratio, 1));
+  });
+
+  it('reads the catch-up rate the client configures', () => {
+    assert.equal(playbackAdvances(playing(2, 1.1))[0].ratio, 1.1);
+  });
+
+  /**
+   * The measurement that cannot be wrong about whether a viewer saw anything. A stalled player still
+   * reports a latency and still renders an overlay, and `currentTime` against the clock is what says
+   * the picture was not moving.
+   */
+  it('reads a stalled player as gaining no media time', () => {
+    assert.equal(playbackAdvances(playing(2, 0))[0].ratio, 0);
+  });
+
+  it('has nothing to say about a single sample', () => {
+    assert.deepEqual(playbackAdvances(playing(1, 1)), []);
+  });
+});
+
+describe('judging the latency against the buffer the client is configured with', () => {
+  it('accepts a player sitting at its configured target', () => {
+    const verdict = judgeLatency(playing(3, 1));
+
+    assert.equal(verdict.clampedShort, false);
+    assert.equal(verdict.ranLong, false);
+    assert.equal(verdict.medianLatencyS, LIVE_SYNC_DURATION_S);
+    assert.equal(verdict.joinLatencyS, LIVE_SYNC_DURATION_S);
+  });
+
+  /**
+   * The failure the byte-budgeted window was built to remove. hls.js pins its sync position to the
+   * start of the playlist, so a ten-segment window at a 0.25s segment held 2.5s and a viewer asking
+   * for six got two and a half, with no error anywhere and nothing in the bench able to see it.
+   */
+  it('calls a player held near the edge by a short manifest clamped, not merely fast', () => {
+    const verdict = judgeLatency(playing(3, 1, { liveLatencyS: 2.5 }));
+
+    assert.equal(verdict.clampedShort, true);
+    assert.equal(verdict.ranLong, false);
+  });
+
+  it('leaves a player inside the tolerance of its target alone', () => {
+    assert.equal(judgeLatency(playing(3, 1, { liveLatencyS: LIVE_SYNC_DURATION_S - 0.9 })).clampedShort, false);
+  });
+
+  it('calls a player past the seek threshold as having run long', () => {
+    const verdict = judgeLatency(playing(3, 1, { liveLatencyS: 2 * LIVE_SYNC_DURATION_S + 1 }));
+
+    assert.equal(verdict.ranLong, true);
+  });
+
+  /** One sample past the threshold is the whole point, so this reads the maximum rather than a median. */
+  it('notices a single excursion past the seek threshold inside an otherwise good run', () => {
+    const samples = playing(5, 1);
+    const withSpike = samples.map((sample, i) => (i === 2 ? { ...sample, liveLatencyS: 40 } : sample));
+
+    assert.equal(judgeLatency(withSpike).ranLong, true);
+    assert.equal(judgeLatency(withSpike).medianLatencyS, LIVE_SYNC_DURATION_S);
+  });
+
+  it('reports no latency rather than zero when the overlay never had one', () => {
+    const verdict = judgeLatency(playing(3, 1, { liveLatencyS: null }));
+
+    assert.equal(verdict.medianLatencyS, null);
+    assert.equal(verdict.clampedShort, false, 'an absent reading is not a short one');
+  });
+});
+
+describe('summarizing a session', () => {
+  it('counts the samples where playback did not advance', () => {
+    const samples = [...playing(3, 1), { ...BASE, atMs: 3000, currentTime: 2 }, { ...BASE, atMs: 4000, currentTime: 2 }];
+
+    assert.equal(summarize(samples).stalledSamples, 2);
+  });
+
+  it('takes the running totals off the last sample rather than adding them up', () => {
+    const samples = [
+      { ...BASE, atMs: 0, rebufferCount: 1, rebufferMs: 200, droppedFrames: 3 },
+      { ...BASE, atMs: 1000, currentTime: 1, rebufferCount: 2, rebufferMs: 500, droppedFrames: 9 },
+    ];
+    const summary = summarize(samples);
+
+    assert.equal(summary.rebufferCount, 2);
+    assert.equal(summary.rebufferMs, 500);
+    assert.equal(summary.droppedFrames, 9);
+  });
+
+  it('reports the span the samples cover, so a median is read against its own duration', () => {
+    assert.equal(summarize(playing(11, 1)).spanMs, 10_000);
+  });
+
+  it('reports the resolution the player decoded rather than the one requested', () => {
+    assert.equal(summarize(playing(2, 1, { resolution: '640×360' })).resolution, '640×360');
+  });
+});
