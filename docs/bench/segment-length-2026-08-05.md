@@ -18,7 +18,7 @@ agree to 0.1s. See [`between-session-drift.md`](between-session-drift.md).
 
 | GOP | round 1 | round 2 | round 3 | spread | verdict |
 | ---: | ---: | ---: | ---: | ---: | --- |
-| 0.25s | 8.71s | **rejected** | 2.58s | n/a | fails its own axis check, and not competitive when it passes |
+| 0.25s | ~~8.71s~~ | **rejected** | ~~2.58s~~ | n/a | **below this bench's floor, see the retraction** |
 | **0.5s** | 1.63s | **1.17s** | **1.17s** | **0.46s** | **the operating point** |
 | 1.0s | 2.43s | 2.41s | 2.39s | **0.04s** | the stability champion |
 | 2.0s | 3.99s | 4.07s | 3.94s | 0.13s | the reference |
@@ -110,8 +110,40 @@ dominated by the `segment` hop, which is the GOP itself. It does mean the per-ho
 should be read as `segment`, `upload` and `manifestPublish` being real, and `feedPropagation` being a
 mixture of observation cadence and, at 0.25s only, a genuine delay.
 
-**Where the 0.25s delay forms is still open.** It is after a SOC write that already push-synced with
-`deferred: false`, so the uploader's own queues do not account for it.
+## ⛔ And the 0.25s delay was the instrument too. The whole row is retracted.
+
+**The bench's collection loop takes about 260ms per iteration, and it advances exactly one feed slot
+per iteration.** So it can walk at most about 3.8 slots per second. A 0.25s GOP writes 4 per second.
+
+| GOP | loop iteration, median | segment budget | slots/s achieved | slots/s needed | |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 0.25s | **269ms** | 250ms | 3.62 | 4.00 | **cannot keep up** |
+| 0.25s | **262ms** | 250ms | 3.73 | 4.00 | **cannot keep up** |
+| 0.5s | 455 to 478ms | 500ms | 1.99 to 2.01 | 2.00 | fits |
+| 1.0s | 637 to 905ms | 1000ms | 1.00 to 1.01 | 1.00 | fits |
+| 2.0s | 1105 to 1138ms | 2000ms | 0.49 to 0.50 | 0.50 | fits |
+
+The loop exceeds its budget at 0.25s and nowhere else. Over 643 polls the reader advanced 642 slots,
+so **one slot per poll exactly**, which means its maximum catch-up rate equals its poll rate and a
+follower that falls behind can never recover. The deficit accumulates monotonically, which is exactly
+the 2.54s to 7.55s growth inside run 1.
+
+**So the 8.71s and 2.58s at 0.25s measure the bench failing to keep pace, not the deployment.** The
+backlog I attributed to bee, and then to the uploader's per-segment cost before that, was neither.
+
+**This bench cannot measure a GOP below about 0.3s.** The sub-0.5s question is not answered here in
+either direction. What survives at 0.25s is the axis guard's finding that one run delivered about
+26.7fps against a requested 30, which is an encoder observation and says nothing about latency.
+
+⚠️ **0.5s runs the loop at 91 to 96% of its budget**, so those rows sit close to the same ceiling.
+They fit, but not by much.
+
+### The one part of this that is not the instrument
+
+**A follower that advances one slot per read can never catch up**, and the shipped client walks feed
+slots the same way. Its loop is far lighter, with no segment probe in it, so its ceiling is much
+higher and nothing here measures where. But the shape is architectural rather than ours, and it is
+the same shape as the viewer that never recovers from an unserved slot.
 
 ## What the axis guard caught, and why it matters more than the result
 
