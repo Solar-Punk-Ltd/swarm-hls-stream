@@ -33,7 +33,19 @@ import {
 import { ROOT_DIR } from '../src/config.js';
 
 const REPORT_DIR = join(ROOT_DIR, 'docs', 'bench');
-const SCREENSHOT_DIR = join(REPORT_DIR, 'browser-screenshots');
+
+/**
+ * Where a run's screenshots go, under a directory of its own.
+ *
+ * Flat filenames put every run's `sample-0001.png` at the same path, so a second run silently
+ * replaced the images the first run's report still links to. That is the whole glass-to-glass
+ * measurement gone, and gone in the way that is hardest to notice: the report reads correctly and
+ * the file it names exists, showing a different broadcast. Two runs on 2026-08-05 lost the first
+ * one's clocks that way.
+ */
+function screenshotDirFor(runId: string): string {
+  return join(REPORT_DIR, 'browser-screenshots', runId);
+}
 
 const DEFAULT_WATCH_SECONDS = 180;
 const DEFAULT_SAMPLE_INTERVAL_MS = 1_000;
@@ -71,6 +83,13 @@ async function main(): Promise<void> {
   const watchSeconds = envNumber('BROWSER_WATCH_SECONDS', DEFAULT_WATCH_SECONDS);
   const intervalMs = envNumber('BROWSER_SAMPLE_INTERVAL_MS', DEFAULT_SAMPLE_INTERVAL_MS);
   const gopSeconds = envNumber('BROWSER_GOP_SECONDS', 0.25);
+
+  // Stamped before the watch rather than after it, so the report, its json, and its screenshots all
+  // carry one identity. Taken at the end, the screenshots had no run to belong to while they were
+  // being written.
+  const measuredAt = new Date().toISOString();
+  const runId = measuredAt.replace(/[:.]/g, '-');
+  const screenshotDir = screenshotDirFor(runId);
 
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
@@ -112,7 +131,7 @@ async function main(): Promise<void> {
     );
     console.log('browser: playback started');
 
-    await mkdir(SCREENSHOT_DIR, { recursive: true });
+    await mkdir(screenshotDir, { recursive: true });
     const deadline = Date.now() + watchSeconds * 1000;
     while (Date.now() < deadline) {
       readings.push(await readInstrument(page));
@@ -120,7 +139,7 @@ async function main(): Promise<void> {
       samples.push(sample);
 
       if (samples.length % SCREENSHOT_EVERY === 1) {
-        const path = join(SCREENSHOT_DIR, `sample-${String(samples.length).padStart(4, '0')}.png`);
+        const path = join(screenshotDir, `sample-${String(samples.length).padStart(4, '0')}.png`);
         if (!(await screenshotBothClocks(page, path))) {
           throw new Error(
             `the viewer clock overlay is not in the page, so ${path} carries the publisher's clock and ` +
@@ -148,7 +167,7 @@ async function main(): Promise<void> {
   }
 
   const run = {
-    measuredAt: new Date().toISOString(),
+    measuredAt,
     watchUrl,
     chromeVersion,
     gopSeconds,
@@ -160,7 +179,7 @@ async function main(): Promise<void> {
   };
 
   await mkdir(REPORT_DIR, { recursive: true });
-  const stem = join(REPORT_DIR, `browser-watch-${run.measuredAt.replace(/[:.]/g, '-')}`);
+  const stem = join(REPORT_DIR, `browser-watch-${runId}`);
   await writeFile(`${stem}.md`, renderBrowserReport(run), 'utf8');
   await writeFile(`${stem}.json`, JSON.stringify(run, null, 2), 'utf8');
   // Kept beside the report rather than inside it: a three-minute watch makes thousands of requests,
