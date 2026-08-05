@@ -70,6 +70,24 @@ tail quantities, need full-length runs. **Screen at three minutes, gate at ten.*
 Convergence is a property of a configuration, not a law. Re-run the same check on each new
 configuration's own artifacts rather than assuming it holds.
 
+**Confirmed on fresh data 2026-08-05.** The truncation argument above is weaker than it reads, because
+a truncated ten-minute run is not a three-minute run: the publisher it truncates had already been
+running for ten minutes. So it was tested directly. A real three-minute run and a real ten-minute run
+of the same configuration, back to back, measured **3.77s and 3.81s**. The screen length stands.
+
+### ⚠️ But runs from different sittings cannot be compared at all
+
+Six runs of one configuration, three yesterday afternoon and three tonight, differ by **1.05s between
+the sessions** against 0.1s within them. It is not the postage batch, which was controlled for, and it
+is not the publisher: `segment` and `upload` are identical across all six while `feedPropagation` and
+`fetch` both halve. Full table in [`between-session-drift.md`](../bench/between-session-drift.md).
+
+**That drift is larger than most of what this campaign is trying to measure.** The retired grid
+separated its best rows by about 1.2s. So the sweep runs **interleaved, not blocked**: A, B, C, A, B,
+C rather than A, A, A, B, B, B, with a fixed reference configuration in every block, and every row
+reported against the reference measured beside it. A row compared to a number from another sitting is
+not a comparison.
+
 ### The ask, which is on-chain and therefore the owner's
 
 The full grid below plus confirmation does not fit in 15 buckets. **One new depth-22 batch, roughly
