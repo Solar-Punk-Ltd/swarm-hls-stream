@@ -15,7 +15,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { type InstrumentReading,judgeRun } from '../src/browser/instrument.js';
+import { type InstrumentReading, judgeRun } from '../src/browser/instrument.js';
 import { renderBrowserReport } from '../src/browser/report.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import {
@@ -25,6 +25,7 @@ import {
   launchViewer,
   readInstrument,
   readSample,
+  screenshotBothClocks,
   VIEWPORT,
 } from '../src/browser/viewer.js';
 import { ROOT_DIR } from '../src/config.js';
@@ -43,7 +44,9 @@ const SCREENSHOT_EVERY = 30;
 
 function envNumber(name: string, fallback: number): number {
   const raw = process.env[name];
-  if (raw === undefined || raw === '') {return fallback;}
+  if (raw === undefined || raw === '') {
+    return fallback;
+  }
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${name} must be a positive number, got '${raw}'`);
@@ -85,7 +88,9 @@ async function main(): Promise<void> {
     // Surfaced rather than swallowed: a fatal hls.js error prints its own line in the client, and a
     // run that stalled for a reason the page already explained should not need a second investigation.
     page.on('console', (message) => {
-      if (message.type() === 'error') {console.log(`  page error: ${message.text()}`);}
+      if (message.type() === 'error') {
+        console.log(`  page error: ${message.text()}`);
+      }
     });
 
     watchUrl = process.env.BROWSER_WATCH_URL || (await discoverWatchUrl(page, clientUrl));
@@ -112,7 +117,13 @@ async function main(): Promise<void> {
 
       if (samples.length % SCREENSHOT_EVERY === 1) {
         const path = join(SCREENSHOT_DIR, `sample-${String(samples.length).padStart(4, '0')}.png`);
-        await page.screenshot({ path });
+        if (!(await screenshotBothClocks(page, path))) {
+          throw new Error(
+            `the viewer clock overlay is not in the page, so ${path} carries the publisher's clock and ` +
+              'nothing to compare it against. The glass-to-glass reading is the only thing these images ' +
+              'are for.',
+          );
+        }
         screenshots.push(path);
       }
 
@@ -158,7 +169,9 @@ async function main(): Promise<void> {
 
   // A void instrument is a failed run, not a run with a caveat. Exiting non-zero is what keeps a
   // degraded reading from being quoted by whatever called this.
-  if (!run.instrument.sound) {process.exitCode = 1;}
+  if (!run.instrument.sound) {
+    process.exitCode = 1;
+  }
 }
 
 main().catch((error) => {

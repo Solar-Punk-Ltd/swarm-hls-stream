@@ -129,7 +129,9 @@ interface RawSample {
 export async function readSample(page: Page): Promise<ViewerSample> {
   const raw = await page.evaluate((): RawSample | null => {
     const video = document.querySelector('video');
-    if (!video) {return null;}
+    if (!video) {
+      return null;
+    }
 
     const buffered = video.buffered;
     const bufferAheadS = buffered.length > 0 ? buffered.end(buffered.length - 1) - video.currentTime : 0;
@@ -189,15 +191,20 @@ export async function readSample(page: Page): Promise<ViewerSample> {
  * than two calls, because anything crossing the wire between them lands in the answer: measured over
  * ssh, that round trip is 2.5 to 3.1 seconds and asymmetric.
  */
+export const CLOCK_OVERLAY_ID = 'harness-clock';
+
 export async function installClockOverlay(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+  await page.addInitScript((id: string) => {
     const paint = () => {
-      const id = 'harness-clock';
-      const node = document.getElementById(id) ?? document.createElement('div');
-      if (!node.id) {
+      const existing = document.getElementById(id);
+      const node = existing ?? document.createElement('div');
+      if (!existing) {
         node.id = id;
+        // Bottom-left, because the publisher burns its clock into the bottom of the picture and the
+        // player's own QoE panel occupies the top right. Two clocks in one frame is the whole point,
+        // so neither may sit on top of the other.
         node.style.cssText =
-          'position:fixed;left:0;top:0;z-index:2147483647;background:#000;color:#0f0;' +
+          'position:fixed;left:0;bottom:0;z-index:2147483647;background:#000;color:#0f0;' +
           'font:700 28px/1.2 monospace;padding:6px 10px;';
         document.body.appendChild(node);
       }
@@ -211,5 +218,24 @@ export async function installClockOverlay(page: Page): Promise<void> {
     } else {
       document.addEventListener('DOMContentLoaded', paint);
     }
-  });
+  }, CLOCK_OVERLAY_ID);
+}
+
+/**
+ * Screenshot with both clocks legible, then put the page back as it was.
+ *
+ * The player's QoE panel sits over the picture and covers the clock the publisher burned into it, so
+ * a screenshot taken as-is carries one clock and a panel. `q` is the overlay's own shipped toggle,
+ * which means the harness hides it the way a viewer would rather than by reaching into the page.
+ *
+ * The metrics are not lost by hiding it: the sample beside this screenshot already read them.
+ */
+export async function screenshotBothClocks(page: Page, path: string): Promise<boolean> {
+  await page.keyboard.press('q');
+  await page.screenshot({ path });
+  await page.keyboard.press('q');
+
+  // Reported rather than assumed. A missing overlay makes the screenshot carry one clock instead of
+  // two, which is invisible in a filename and fatal to the only measurement it exists for.
+  return page.evaluate((id: string) => document.getElementById(id) !== null, CLOCK_OVERLAY_ID);
 }
