@@ -33,9 +33,7 @@ describe('reading the numbers off the shipped QoE overlay', () => {
    * distinguishable in a summary, so this stops instead.
    */
   it('refuses to read an overlay that no longer has the label it looks under', () => {
-    const reworded = PLAYING.map((row) =>
-      row.label === 'E2E Live Latency' ? { ...row, label: 'Live Latency' } : row,
-    );
+    const reworded = PLAYING.map((row) => (row.label === 'E2E Live Latency' ? { ...row, label: 'Live Latency' } : row));
 
     assert.throws(() => readOverlayMetrics(reworded), /no 'E2E Live Latency' under 'Live'/);
   });

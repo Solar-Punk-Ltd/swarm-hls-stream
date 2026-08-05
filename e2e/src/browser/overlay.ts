@@ -68,7 +68,9 @@ function requireField(rows: readonly OverlayRow[], field: { section: string; lab
  * disagree with it.
  */
 export function parseOverlayNumber(value: string): number | null {
-  if (value.trim() === OVERLAY_EMPTY) {return null;}
+  if (value.trim() === OVERLAY_EMPTY) {
+    return null;
+  }
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
