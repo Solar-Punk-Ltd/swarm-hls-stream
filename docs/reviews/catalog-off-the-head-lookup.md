@@ -1,7 +1,7 @@
 # Taking the catalog off the head lookup
 
-**2026-08-05, task #73. Read rather than measured, so every claim here is about what the code does and
-none is about what it costs on this deployment. The measurement it needs is named at the end.**
+**2026-08-05, task #73. Written from reading, then measured against the deployment, then fix 1 built.
+The measurement is in the middle and the state of each fix is on its heading.**
 
 The head lookup costs **1 second at minimum and about 5 on a thousand-slot feed**, against **4ms** for
 the same chunk read by explicit address. See [`feed-head-scaling.md`](../bench/feed-head-scaling.md)
@@ -102,12 +102,16 @@ The one time this project changed the client from reading rather than measuring,
 and had to be reverted (`a4f9841`, reverted as `303184c`). The mechanism that caught it was measuring
 the thing the change was supposed to improve.
 
-**So: prototype against the rig, measure the catalog poll before and after, and only then touch the
-client.** The rig for this already exists as
-[`feed-head-scaling.mjs`](../../e2e/src/probes/feed-head-scaling.mjs), which reads feeds of several
-lengths both ways round robin and needs no video and no broadcast. Extending it to walk a feed rather
-than resolve its head is a small change to a probe that costs about a minute to run and roughly one
-postage bucket.
+**So the order was: measure the prerequisite, measure the prediction, then touch the client.** Both
+measurements are above, and both could have refused the change rather than confirming it.
+[`feed-miss-cost.mjs`](../../e2e/src/probes/feed-miss-cost.mjs) asked whether a miss is cheap, since a
+walking reader on an idle catalog mostly misses.
+[`catalog-head-vs-walk.mjs`](../../e2e/src/probes/catalog-head-vs-walk.mjs) asked whether the
+prediction held on the real feed. Neither needed a broadcast or a deploy.
+
+**Fix 1 is built and pushed** (`a522e28`), with the position kept in a `CatalogFeedReader` that walks
+while slots answer rather than advancing one per poll, because a follower whose catch-up rate equals
+its poll rate never recovers from falling behind. Fixes 2 and 3 are not built.
 
 ⚠️ **Browser validation is separately blocked**, so the final confirmation that a real viewer sees the
 improvement cannot come from the automated pane. See the note in the memory on that. The rig answers
