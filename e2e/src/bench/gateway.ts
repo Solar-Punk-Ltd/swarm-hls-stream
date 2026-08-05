@@ -202,6 +202,16 @@ export function parseFeedReaderMode(raw: string | undefined): FeedReaderMode {
  * exactly what the player serves its own hls.js in that case, and it is what lets the caller keep
  * counting a repeated `newestRef` as a stall.
  */
+/**
+ * How many slots one read will walk before returning what it reached.
+ *
+ * A bound, not a target. It exists because a feed that answers every slot forever, which is what a
+ * replayed fixture or a confused gateway looks like, would otherwise hold a single read open with no
+ * way out. Thirty two is far more than a collection loop can fall behind between reads at any segment
+ * length this project measures, and small enough that the worst case is a fraction of a second.
+ */
+export const MAX_WALK_PER_READ = 32;
+
 export class FeedFollower {
   private index: FeedIndex | null = null;
   private last: FeedRead | null = null;
@@ -217,8 +227,8 @@ export class FeedFollower {
   }
 
   async read(): Promise<FeedRead> {
-    const request = nextFeedRequest(this.owner, this.topic, this.index);
-    if (this.mode === 'head' || request.kind === 'head' || this.last === null) {
+    const known = this.index;
+    if (this.mode === 'head' || known === null || this.last === null) {
       // The anchor, and the only head lookup a walking follower ever performs. The player takes this
       // same path on mount and on every restart.
       const read = await fetchFeedManifest(this.gatewayUrl, this.owner, this.topic.toString());
@@ -226,17 +236,59 @@ export class FeedFollower {
       this.last = read;
       return read;
     }
-    return this.readNextSlot(request, this.last);
+    return this.walkToEdge(known, this.last);
   }
 
-  private async readNextSlot(request: FeedSlotRequest, last: FeedRead): Promise<FeedRead> {
-    const target = request.index;
+  /**
+   * Reads forward while slots keep answering, and returns the newest one reached.
+   *
+   * ⛔ **This used to advance exactly one slot per call, and that is why the 0.25s GOP rows are
+   * retracted rather than merely noisy.** A follower gaining one slot per read has a catch-up rate
+   * equal to its read rate, so it can never recover from falling behind: whatever it loses in one
+   * iteration it keeps for the length of the run, and every later reading is its own accumulated lag
+   * wearing the viewer's name. The collection loop pays a segment fetch between reads, which at a
+   * 0.25s GOP is about 260ms against the 250ms the publisher takes to write the next slot, so it fell
+   * behind by construction at roughly 3.8 slots per second against 4.
+   *
+   * Walking instead makes the position independent of how long a sample takes to measure, which is
+   * what lets this instrument read a segment length shorter than its own loop.
+   *
+   * **It also changes what a sample is, and that is deliberate.** The intermediate slots walked past
+   * are not sampled, so a run yields fewer samples than the publisher wrote. Each one is now a
+   * reading taken at the live edge rather than at wherever the bench had drifted to, and a viewer who
+   * fell behind seeks forward rather than playing everything it missed. Fewer, truer.
+   */
+  private async walkToEdge(from: FeedIndex, last: FeedRead): Promise<FeedRead> {
+    let cursor = from;
+    let newest: FeedRead | null = null;
+
+    for (let step = 0; step < MAX_WALK_PER_READ; step++) {
+      // A local cursor rather than the field, because deriving a request's type from a field that is
+      // then assigned from that request is circular and TypeScript widens it away rather than
+      // refusing, silently losing the overload that guarantees a slot request.
+      const request = nextFeedRequest(this.owner, this.topic, cursor);
+      const read = await this.readSlot(request);
+      if (read === null) {
+        break;
+      }
+      cursor = request.index;
+      this.index = cursor;
+      this.last = read;
+      newest = read;
+    }
+
+    // Nothing new means the previous manifest again, stamped now. That is what the player serves its
+    // own hls.js in this case, and it is what lets the caller keep counting a repeated `newestRef` as
+    // a stall rather than as a dead poll.
+    return newest ?? { ...last, atMs: Date.now() };
+  }
+
+  /** One slot, or null when the publisher has not written it yet. */
+  private async readSlot(request: FeedSlotRequest): Promise<FeedRead | null> {
     try {
       const response = await timedFetch(`${this.gatewayUrl}/${request.path}`, FEED_TIMEOUT_MS);
       const body = await response.text();
-      this.index = target;
-      this.last = { body, atMs: Date.now(), resolvedIndex: Number(target.toBigInt()) };
-      return this.last;
+      return { body, atMs: Date.now(), resolvedIndex: Number(request.index.toBigInt()) };
     } catch (error) {
       // The publisher has not written this slot yet, which is what a caught-up viewer meets on
       // nearly every poll. Anything else is the gateway failing, and it belongs to the caller's
@@ -244,7 +296,7 @@ export class FeedFollower {
       if (!(error instanceof GatewayStatusError) || error.status !== SLOT_NOT_WRITTEN_YET) {
         throw error;
       }
-      return { ...last, atMs: Date.now() };
+      return null;
     }
   }
 }

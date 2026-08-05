@@ -12,6 +12,7 @@ import {
   GatewayStatusError,
   isFeedBlackout,
   isFeedPendingFirstWrite,
+  MAX_WALK_PER_READ,
   parseFeedReaderMode,
   resolvedFeedIndex,
   segmentRefFromUri,
@@ -248,10 +249,11 @@ describe('following the feed the way the player does (LAT-10)', () => {
    * hundreds of reads, and "mostly not the head" is exactly what a viewer does not experience.
    */
   it('resolves the head once and never again', async () => {
+    // Nothing after the anchor is written, so this measures the anchor alone rather than the walk.
     const gw = await stubGateway((path) =>
       path.startsWith('/feeds/')
         ? { status: 200, body: MANIFEST, headers: { 'swarm-feed-index': '5' } }
-        : { status: 200, body: MANIFEST },
+        : { status: 404 },
     );
     try {
       const follower = new FeedFollower(gw.url, OWNER, TOPIC_HEX, 'walk');
@@ -261,7 +263,66 @@ describe('following the feed the way the player does (LAT-10)', () => {
 
       const headLookups = gw.asked.filter((path) => path.startsWith('/feeds/'));
       assert.equal(headLookups.length, 1, `the head was resolved ${headLookups.length} times: ${gw.asked.join(' ')}`);
-      assert.equal(gw.asked.length, 5, `requests: ${gw.asked.join(' ')}`);
+      assert.equal(gw.asked.length, 5, `a caught-up poll cost more than one request: ${gw.asked.join(' ')}`);
+    } finally {
+      gw.close();
+    }
+  });
+
+  /**
+   * ⛔ **The defect that made the 0.25s rows measure the instrument, and the reason they are retracted.**
+   *
+   * A follower advancing one slot per read has a catch-up rate equal to its read rate, so once it
+   * falls behind it never recovers and every later reading is its own accumulated lag rather than the
+   * viewer's latency. The collection loop pays a segment fetch between reads, which at a 0.25s GOP is
+   * ~260ms against the 250ms the publisher takes to write the next slot, so it falls behind by
+   * construction and the shortfall compounds for the length of the run.
+   *
+   * The same shape was found and fixed in the client's catalog reader on the same day. It was written
+   * down there as a property not to ship, and it was already shipped here.
+   */
+  it('catches up to the live edge in one read rather than one slot per read', async () => {
+    const written = 5 + 8;
+    let served = 0;
+    const gw = await stubGateway((path) => {
+      if (path.startsWith('/feeds/')) {
+        return { status: 200, body: `${MANIFEST}5`, headers: { 'swarm-feed-index': '5' } };
+      }
+      // Answers while the walk is inside what the publisher has written, then stops. The follower
+      // cannot know how many that is, which is the point: it walks until a slot is missing.
+      served += 1;
+      return served <= written - 5 ? { status: 200, body: `${MANIFEST}${5 + served}` } : { status: 404 };
+    });
+    try {
+      const follower = new FeedFollower(gw.url, OWNER, TOPIC_HEX, 'walk');
+      await follower.read();
+      const caughtUp = await follower.read();
+
+      assert.equal(caughtUp.resolvedIndex, written, `one read reached slot ${caughtUp.resolvedIndex}, not ${written}`);
+      assert.equal(caughtUp.body, `${MANIFEST}${written}`, 'the read returned an older manifest than it walked to');
+    } finally {
+      gw.close();
+    }
+  });
+
+  /**
+   * The bound is what keeps a catch-up from becoming an unbounded stall. A feed that answers every
+   * slot forever, which is what a misconfigured gateway or a replayed fixture looks like, must not
+   * hold one read open indefinitely.
+   */
+  it('stops walking at the bound rather than reading a feed without end', async () => {
+    const gw = await stubGateway((path) =>
+      path.startsWith('/feeds/')
+        ? { status: 200, body: MANIFEST, headers: { 'swarm-feed-index': '5' } }
+        : { status: 200, body: MANIFEST },
+    );
+    try {
+      const follower = new FeedFollower(gw.url, OWNER, TOPIC_HEX, 'walk');
+      await follower.read();
+      await follower.read();
+
+      const slotReads = gw.asked.filter((path) => path.startsWith('/soc/'));
+      assert.equal(slotReads.length, MAX_WALK_PER_READ, `one read made ${slotReads.length} slot reads`);
     } finally {
       gw.close();
     }
