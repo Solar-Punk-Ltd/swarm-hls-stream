@@ -11,11 +11,19 @@ already in the report and neither was being read.
 
 The second check has the same shape and was paid for the same way. On 2026-08-05 the bench's own
 collection loop turned out to take about 260ms per iteration while advancing exactly one feed slot per
-iteration, so it walks at most about 3.8 slots per second. A 0.25s GOP writes four. Those rows
+iteration, so it walked at most about 3.8 slots per second. A 0.25s GOP writes four. Those rows
 reported 8.71s and 2.58s of latency and were measuring the instrument falling behind, and I proposed
-three separate mechanisms for the artifact before finding it. A follower that advances one slot per
-read has a catch-up rate equal to its poll rate, so once behind it never recovers and the deficit
-grows for the rest of the run.
+three separate mechanisms for the artifact before finding it. The follower now walks to the live edge
+in one read, so the deficit no longer compounds, and this check is what says whether that held.
+
+**It is checked against the rate the publisher achieved, not the rate it was asked for**, and the
+difference is not pedantic. When the encoder under-delivers, a reader that tracks it perfectly is
+still slower than the request, and comparing against the request reports the reader for the encoder's
+shortfall. That is exactly what happened on the first run of the sweep that fixed the follower: the
+encoder produced 0.540s segments for a 0.5s request, so the publisher wrote 1.85 slots per second, the
+reader walked 1.86, and the run was rejected as READER BEHIND. The segment-length check above is what
+catches an encoder that missed its request, and it runs first, so by the time this one runs the
+achieved rate is already known to be close to the requested one.
 
 Usage:  python3 check-axis.py <report.json> <requested-gop-seconds> <fps>
 Exits 0 when the run matches what it asked for and the reader kept pace, 1 otherwise, and prints one
@@ -42,10 +50,18 @@ NOTEWORTHY_DISCARDED_SHARE = 0.05
 # Five percent covers the run's own boundaries, where the first and last segments are partly outside
 # the window, while catching the 7 to 10% shortfall that made the 0.25s rows unreadable.
 READER_PACE_TOLERANCE = 0.05
+# Mirrors `MAX_WALK_PER_READ` in `e2e/src/bench/gateway.ts`, for the verdict text only. A reader
+# sitting at the bound every poll is one publisher speed-up away from falling behind, which is worth
+# reading off a passing run rather than discovering from the next failing one.
+MAX_WALK_PER_READ = 32
 
 
-def reader_pace(run: dict, requested_gop_s: float) -> tuple[float, float, float] | None:
-    """Slots per second the reader achieved, what the GOP demands, and its median loop time.
+def reader_pace(run: dict, achieved_segment_s: float) -> tuple[float, float, float, float] | None:
+    """Slots per second the reader achieved, what the publisher wrote, its loop time, and walk depth.
+
+    The write rate comes from the segment length the encoder actually produced, because that is what
+    the reader had to follow. Using the requested length instead reports the reader whenever the
+    encoder misses, which is a different failure with its own verdict above.
 
     None where the report predates `resolvedIndex` or carries too few polls to measure a rate.
     """
@@ -55,12 +71,15 @@ def reader_pace(run: dict, requested_gop_s: float) -> tuple[float, float, float]
         return None
 
     span_s = (resolved[-1]["atMs"] - resolved[0]["atMs"]) / 1_000
-    if span_s <= 0:
+    if span_s <= 0 or achieved_segment_s <= 0:
         return None
 
     achieved = (resolved[-1]["resolvedIndex"] - resolved[0]["resolvedIndex"]) / span_s
     gaps = sorted(polls[i + 1]["atMs"] - polls[i]["atMs"] for i in range(len(polls) - 1))
-    return achieved, 1 / requested_gop_s, st.median(gaps)
+    steps = [
+        resolved[i + 1]["resolvedIndex"] - resolved[i]["resolvedIndex"] for i in range(len(resolved) - 1)
+    ]
+    return achieved, 1 / achieved_segment_s, st.median(gaps), st.median(steps)
 
 
 def main() -> int:
@@ -94,20 +113,25 @@ def main() -> int:
     # Separate from the axis checks and separately fatal. The axis moved here, the encoder did what it
     # was asked, and the run is still unusable because the reader could not follow it. Reported with
     # its own verdict so a sweep's log says which of the two happened.
-    pace = reader_pace(run, requested_gop_s)
+    pace = reader_pace(run, segment_s)
     if pace is not None:
-        achieved, needed, loop_ms = pace
-        if achieved < needed * (1 - READER_PACE_TOLERANCE):
+        achieved, written, loop_ms, walk = pace
+        if achieved < written * (1 - READER_PACE_TOLERANCE):
             print(
                 f"READER BEHIND: the reader walked {achieved:.2f} feed slots per second against the "
-                f"{needed:.2f} a {requested_gop_s}s GOP writes, and its loop took {loop_ms:.0f}ms per "
-                f"iteration against a {requested_gop_s * 1_000:.0f}ms budget. It advances one slot per "
-                "poll, so it never catches up and this run measures the instrument, not the deployment"
+                f"{written:.2f} the publisher wrote at its achieved {segment_s:.3f}s segments, taking "
+                f"{loop_ms:.0f}ms per poll and {walk:.0f} slots a poll against a {MAX_WALK_PER_READ} "
+                "bound. A reader that cannot reach the edge samples stale manifests, so this run "
+                "measures the instrument, not the deployment"
             )
             return 1
 
     note = " UNREADABLE-HIGH" if discarded_share > NOTEWORTHY_DISCARDED_SHARE else ""
-    pace_note = "" if pace is None else f", reader {pace[0]:.2f}/{pace[1]:.2f} slots per second"
+    pace_note = (
+        ""
+        if pace is None
+        else f", reader {pace[0]:.2f}/{pace[1]:.2f} slots per second at {pace[3]:.0f} slots a poll"
+    )
     print(
         f"axis ok{note}: {segment_s:.3f}s segments for a {requested_gop_s}s GOP, "
         f"{packets:.0f} packets, {discarded_share:.1%} unreadable{pace_note}"
