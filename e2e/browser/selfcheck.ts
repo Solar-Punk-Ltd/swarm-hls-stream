@@ -13,7 +13,14 @@
  */
 
 import { judgeInstrument } from '../src/browser/instrument.js';
-import { installTimerProbe, launchViewer, readInstrument, VIEWPORT } from '../src/browser/viewer.js';
+import {
+  CLOCK_OVERLAY_ID,
+  installClockOverlay,
+  installTimerProbe,
+  launchViewer,
+  readInstrument,
+  VIEWPORT,
+} from '../src/browser/viewer.js';
 
 /** Long enough for the timer probe to have fired many times and for the page to settle. */
 const OBSERVE_MS = 5_000;
@@ -31,13 +38,22 @@ async function main(): Promise<void> {
     const page = await (await browser.newContext({ viewport: VIEWPORT })).newPage();
     await installTimerProbe(page);
     await page.goto(clientUrl, { waitUntil: 'domcontentloaded' });
+    await installClockOverlay(page);
     await page.waitForTimeout(OBSERVE_MS);
 
     const reading = await readInstrument(page);
     const verdict = judgeInstrument(reading);
 
+    // Checked here, where it costs nothing, because the alternative is finding out during a
+    // broadcast that every screenshot carries one clock and nothing to compare it against.
+    const clock = await page.evaluate(
+      (id: string) => document.getElementById(id)?.textContent ?? null,
+      CLOCK_OVERLAY_ID,
+    );
+
     console.log(`  visibilityState  ${reading.visibilityState}`);
     console.log(`  timer drift      ${reading.timerDriftRatio.toFixed(2)}x requested`);
+    console.log(`  viewer clock     ${clock ?? 'NOT RENDERED'}`);
     Object.entries(reading.codecSupport).forEach(([codec, supported]) => {
       console.log(`  ${supported ? 'decodes' : 'CANNOT DECODE'}  ${codec}`);
     });

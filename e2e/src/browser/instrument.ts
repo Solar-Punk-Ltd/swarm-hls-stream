@@ -95,7 +95,9 @@ export function judgeInstrument(reading: InstrumentReading): InstrumentVerdict {
   const missing = REQUIRED_CODECS.filter((codec) => !reading.codecSupport[codec]);
   if (missing.length > 0) {
     failures.push(
-      `the browser cannot decode ${missing.join(' or ')}, so an empty picture here would be the build and not the stream`,
+      `the browser cannot decode ${missing.join(
+        ' or ',
+      )}, so an empty picture here would be the build and not the stream`,
     );
   }
 

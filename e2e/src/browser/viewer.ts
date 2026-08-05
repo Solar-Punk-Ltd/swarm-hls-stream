@@ -193,31 +193,39 @@ export async function readSample(page: Page): Promise<ViewerSample> {
  */
 export const CLOCK_OVERLAY_ID = 'harness-clock';
 
+/**
+ * Called **after** navigating, not as an init script.
+ *
+ * An init script runs against a document with no `<body>` yet, so it has to defer to
+ * `DOMContentLoaded`, and from there any error it raises is swallowed with no report anywhere.
+ * Running it against a page that already exists means a failure comes back as a rejected call.
+ *
+ * **Nothing in the evaluated body may be a named function.** tsx transpiles with esbuild's
+ * `keepNames`, which wraps each named function in a `__name(...)` helper that exists in the harness
+ * and not in the page, so `const paint = () => {}` arrives as `ReferenceError: __name is not
+ * defined`. That is what the first version of this overlay did, and from inside an init script it
+ * failed silently: `browser:selfcheck` said `NOT RENDERED` while the run reported success. The
+ * repainting interval below is anonymous for that reason, not by preference.
+ */
 export async function installClockOverlay(page: Page): Promise<void> {
-  await page.addInitScript((id: string) => {
-    const paint = () => {
-      const existing = document.getElementById(id);
-      const node = existing ?? document.createElement('div');
-      if (!existing) {
-        node.id = id;
-        // Bottom-left, because the publisher burns its clock into the bottom of the picture and the
-        // player's own QoE panel occupies the top right. Two clocks in one frame is the whole point,
-        // so neither may sit on top of the other.
-        node.style.cssText =
-          'position:fixed;left:0;bottom:0;z-index:2147483647;background:#000;color:#0f0;' +
-          'font:700 28px/1.2 monospace;padding:6px 10px;';
-        document.body.appendChild(node);
-      }
-      node.textContent = `viewer ${(Date.now() / 1000).toFixed(1)}`;
-      requestAnimationFrame(paint);
-    };
-    // `requestAnimationFrame` rather than an interval: it is driven by the compositor, so a frame
-    // that was actually presented carries a clock that was actually current when it was presented.
-    if (document.body) {
-      paint();
-    } else {
-      document.addEventListener('DOMContentLoaded', paint);
+  await page.evaluate((id: string) => {
+    if (document.getElementById(id)) {
+      return;
     }
+    const node = document.createElement('div');
+    node.id = id;
+    // Bottom-left, because the publisher burns its clock into the bottom of the picture and the
+    // player's own QoE panel occupies the top right. Two clocks in one frame is the whole point, so
+    // neither may sit on top of the other.
+    node.style.cssText =
+      'position:fixed;left:0;bottom:0;z-index:2147483647;background:#000;color:#0f0;' +
+      'font:700 28px/1.2 monospace;padding:6px 10px;';
+    document.body.appendChild(node);
+    // Ten times the resolution of the tenth-of-a-second it prints, so the number in a screenshot is
+    // never more than one tick stale.
+    setInterval(() => {
+      node.textContent = `viewer ${(Date.now() / 1000).toFixed(1)}`;
+    }, 100);
   }, CLOCK_OVERLAY_ID);
 }
 

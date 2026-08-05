@@ -83,7 +83,6 @@ async function main(): Promise<void> {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     await installTimerProbe(page);
-    await installClockOverlay(page);
 
     // Surfaced rather than swallowed: a fatal hls.js error prints its own line in the client, and a
     // run that stalled for a reason the page already explained should not need a second investigation.
@@ -96,6 +95,7 @@ async function main(): Promise<void> {
     watchUrl = process.env.BROWSER_WATCH_URL || (await discoverWatchUrl(page, clientUrl));
     console.log(`browser: watching ${watchUrl}`);
     await page.goto(watchUrl, { waitUntil: 'domcontentloaded' });
+    await installClockOverlay(page);
 
     // Wait for playback rather than for a selector: the video element exists from the first render
     // and says nothing about whether anything arrived.
