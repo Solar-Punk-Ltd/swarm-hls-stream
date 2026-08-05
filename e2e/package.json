@@ -15,7 +15,8 @@
     "bench:recipe": "tsx bench/recipeReliability.ts",
     "bench:sweep-report": "tsx bench/sweep.ts",
     "browser:selfcheck": "tsx browser/selfcheck.ts",
-    "browser:watch": "tsx browser/watch.ts"
+    "browser:watch": "tsx browser/watch.ts",
+    "browser:crash": "tsx browser/crash.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",

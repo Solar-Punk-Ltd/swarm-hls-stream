@@ -25,10 +25,10 @@ export interface BrowserRun {
   screenshots: readonly string[];
 }
 
-const seconds = (ms: number): string => (ms / 1000).toFixed(1);
-const orDash = (value: number | null, digits = 2): string => (value === null ? '—' : value.toFixed(digits));
+export const seconds = (ms: number): string => (ms / 1000).toFixed(1);
+export const orDash = (value: number | null, digits = 2): string => (value === null ? '—' : value.toFixed(digits));
 
-function instrumentSection(run: BrowserRun): string[] {
+export function instrumentSection(run: BrowserRun): string[] {
   if (run.instrument.sound) {
     return [
       '## The instrument was sound',
@@ -52,7 +52,7 @@ function instrumentSection(run: BrowserRun): string[] {
   ];
 }
 
-function latencySection(run: BrowserRun): string[] {
+export function latencySection(run: BrowserRun): string[] {
   const { latency } = run.summary;
   const lines = [
     '## Where the player sat',
@@ -124,7 +124,7 @@ function latencySection(run: BrowserRun): string[] {
   return lines;
 }
 
-function playbackSection(run: BrowserRun): string[] {
+export function playbackSection(run: BrowserRun): string[] {
   const s = run.summary;
   return [
     '## What playback did',
@@ -158,7 +158,7 @@ function playbackSection(run: BrowserRun): string[] {
  * The two have opposite fixes and the same symptom, so they are printed against each other rather
  * than in separate places.
  */
-function networkSection(run: BrowserRun): string[] {
+export function networkSection(run: BrowserRun): string[] {
   const net = run.network;
   if (!net) {
     return [];

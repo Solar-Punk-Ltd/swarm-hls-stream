@@ -17,6 +17,7 @@ const BASE: ViewerSample = {
   fatalErrors: 0,
   droppedFrames: 0,
   resolution: '1280×720',
+  feedStateMessage: null,
 };
 
 /** A run of samples one second apart, each advancing `advance` media seconds. */

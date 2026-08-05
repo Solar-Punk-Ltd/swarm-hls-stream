@@ -118,7 +118,16 @@ interface RawSample {
   playbackRate: number;
   bufferAheadS: number;
   overlayRows: OverlayRow[];
+  feedStateMessage: string | null;
 }
+
+/**
+ * The shipped feed-state overlay, which renders nothing at all while the feed is live.
+ *
+ * Read by class rather than by message text, so a reworded message stays readable here and a
+ * restyled one does not. `FeedStateOverlay.tsx`.
+ */
+const FEED_STATE_OVERLAY = '.swarm-hls-feed-state';
 
 /**
  * One coherent snapshot of the player.
@@ -128,7 +137,7 @@ interface RawSample {
  * disagreement of exactly the size being measured.
  */
 export async function readSample(page: Page): Promise<ViewerSample> {
-  const raw = await page.evaluate((): RawSample | null => {
+  const raw = await page.evaluate((feedStateSelector: string): RawSample | null => {
     const video = document.querySelector('video');
     if (!video) {
       return null;
@@ -154,8 +163,9 @@ export async function readSample(page: Page): Promise<ViewerSample> {
       playbackRate: video.playbackRate,
       bufferAheadS,
       overlayRows,
+      feedStateMessage: document.querySelector(feedStateSelector)?.textContent?.trim() || null,
     };
-  });
+  }, FEED_STATE_OVERLAY);
 
   if (!raw) {
     throw new Error('the watch page rendered no <video> element, so there is no session to sample');
@@ -180,6 +190,7 @@ export async function readSample(page: Page): Promise<ViewerSample> {
     fatalErrors: metrics.fatalErrors,
     droppedFrames: metrics.droppedFrames,
     resolution: metrics.resolution,
+    feedStateMessage: raw.feedStateMessage,
   };
 }
 

@@ -53,6 +53,15 @@ export interface ViewerSample {
   droppedFrames: number;
   /** As the player decoded it, so `1280x720` here is what arrived rather than what was requested. */
   resolution: string | null;
+  /**
+   * What the shipped `FeedStateOverlay` was telling the viewer, or null when it was telling them
+   * nothing, which is what it renders while the feed is live.
+   *
+   * The one reading here that is about the product's words rather than its timing. A picture that
+   * has stopped is a different event from a picture that has stopped and says why, and only the
+   * second one is a viewer who knows to wait rather than to reload.
+   */
+  feedStateMessage: string | null;
 }
 
 export interface PlaybackAdvance {
