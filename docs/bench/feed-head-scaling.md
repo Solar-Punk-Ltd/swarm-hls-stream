@@ -33,6 +33,41 @@ extrapolates to roughly 6s rather than to 50.
 so the cost is a count of timeouts rather than a quantity of work, and a probe for a slot that does
 not exist is what is being counted.
 
+## The source says the same thing, and names the second
+
+`pkg/feeds/sequence/sequence.go` at `v2.8.1`. The lookup is `asyncFinder`, and the whole-second
+quantisation is a literal:
+
+```go
+// TODO: remove hardcoded timeout and define it as constant or inject in the getter.
+reqCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+```
+
+Three things make that timeout the dominant cost rather than an upper bound.
+
+**A probe for a slot that does not exist always spends the whole second.** `get` returns
+`(nil, nil)` for a local `ErrNotFound`, which is fast, but a slot that was never written is not
+locally absent, it is absent everywhere, so the retrieval goes to the network and never resolves.
+`asyncGet` then returns without sending anything and the caller falls through to
+`case <-reqCtx.Done()`, reporting "not found" after a full second.
+
+**Every round probes past the head by construction.** `at()` launches `DefaultLevels = 8` concurrent
+probes at `base + 2^l - 1` for `l = 8..1`, which is `base+255, +127, +63, +31, +15, +7, +3, +1`.
+Finding where the feed stops means asking for indices beyond it, so at least one probe misses in
+almost every round, and the round costs a second however many probes it ran.
+
+**The rounds are sequential.** Each round narrows the interval and launches the next, so the total is
+one second per narrowing step.
+
+That predicts the table above, including the floor. A one-slot feed still runs one full round of
+eight probes that all miss, which is **one second to establish that index 0 is the head**. Longer
+feeds need more narrowing steps, and the count grows with the logarithm of the length, which is the
+0.4s-per-doubling slope.
+
+It also explains a detail that has been unexplained since the first LAT-10 work: the feed index
+plateaus that recurred at gaps of **exactly 64 and 128**. Those are `2^6` and `2^7`, two of the probe
+offsets.
+
 ## What it costs the product
 
 **The catalog is on this path and grows forever.**
