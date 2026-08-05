@@ -4,9 +4,11 @@
 which 3179 sit in admissible rows.** The first screening grid this project has produced where the
 instrument was not itself the finding.
 
-**The answer: 0.5 seconds, at a median 1.17s behind live.** And the reason is not that half a second
-is special. It is that **the uploader needs about 500ms of work per segment**, so at a 0.5s GOP the
-pipeline is running at almost exactly 100% duty cycle, and anything shorter cannot keep up.
+**The answer: 0.5 seconds, at a median 1.17s behind live.**
+
+Latency tracks segment duration almost linearly, because the `segment` hop **is** the GOP and it is
+the largest term in every row. The floor underneath it is that **a quarter second segment saturates
+the uploader's segment queue at 96%**, so 0.5s is the shortest length with any headroom at all.
 
 ## The grid
 
@@ -43,24 +45,37 @@ Two things fall out of that table.
 the same feed write as a two second one. This confirms the earlier finding from a retired grid, now
 on an instrument that can be trusted.
 
-**So the uploader's work per segment is `upload + manifestPublish`**, and the media only supplies GOP
-milliseconds of wall clock to do it in:
+**⚠️ Corrected after reading the code. An earlier version of this document added `upload` and
+`manifestPublish` together and called the sum the work per segment. That is wrong.**
+`StreamUploader` runs **two independent queues, `segmentQueue` and `manifestQueue`, each at
+concurrency 1**, and `uploadSegment` fires `uploadLiveManifest()` without awaiting it. So the two
+hops overlap rather than stacking. The manifest queue also **coalesces**: a `liveManifestQueued` flag
+means at most one publish is ever pending, so segments arriving faster than manifests publish share a
+manifest rather than queueing one each.
 
-| GOP | work per segment | wall clock available | duty cycle |
+The queue that must keep pace one-for-one with segments is therefore the **segment upload queue
+alone**:
+
+| GOP | upload per segment | wall clock available | segment queue duty cycle |
 | ---: | ---: | ---: | ---: |
-| 0.25s | 436ms | 250ms | **174%, impossible** |
-| 0.5s | 498ms | 500ms | **99.6%, exactly at the edge** |
-| 1.0s | 592ms | 1000ms | 59% |
-| 2.0s | 747ms | 2000ms | 37% |
+| 0.25s | 240ms | 250ms | **96%, saturated** |
+| 0.5s | 274ms | 500ms | 55% |
+| 1.0s | 363ms | 1000ms | 36% |
+| 2.0s | 511ms | 2000ms | 26% |
 
-At 0.25s the pipeline is asked for 174% of the time it has, so a backlog forms and grows. It surfaces
-in `feedPropagation` as 2804ms, which is not propagation at all but queueing in front of it. In round
-1 that backlog was visible growing inside a single run, from 2.54s over the first thirty samples to
-7.55s over the last thirty, and that run delivered only 643 of the ~720 segments it owed where every
-other row delivered 98 to 99%.
+**At 0.25s the segment queue is at 96%**, so it has no room for jitter and any hesitation becomes a
+backlog it cannot work off. That is the run that delivered only 643 of the ~720 segments it owed,
+where every other row delivered 98 to 99%, and whose latency grew inside a single run from 2.54s over
+the first thirty samples to 7.55s over the last thirty.
 
-**0.5s sits at 99.6%.** That is why it wins and also why it is the one row with any spread worth
-mentioning: it has no headroom, so any jitter shows up.
+**Everything from 0.5s up has comfortable headroom**, so the duty cycle does not explain why 0.5s
+beats 1.0s. Segment duration itself does: the `segment` hop **is** the GOP, and it is the largest
+term in every row.
+
+**What is not yet explained** is where the 0.25s backlog actually forms. It surfaces as 2804ms of
+`feedPropagation`, which is measured *after* the uploader's SOC write returns, and that write is
+`deferred: false` so it has already push-synced. So the queueing is somewhere the uploader's own
+queues do not account for, most likely inside bee. That is the thread to pull.
 
 ## What the axis guard caught, and why it matters more than the result
 
@@ -77,16 +92,20 @@ been quoted.
 
 **Settled.** Among 720p configurations reachable without a redeploy, 0.5s is the best operating point
 and 1.0s is the choice if consistency matters more than 1.2 seconds. The dominant term is the segment
-duration itself, and the second term is the uploader's fixed per-segment cost.
+duration itself. What sets the floor is that a 0.25s segment leaves the segment upload queue at 96%.
 
 **Not settled.**
 
-- **Why 0.5s round 1 measured 1.63s against 1.17s twice.** At 99.6% duty cycle there is no slack, so
-  this may simply be what no headroom looks like.
-- **Whether the 500ms of per-segment work can be reduced.** This is now the highest value question in
-  the project, because it is what stands between us and sub-second. `upload` is 274ms and
-  `manifestPublish` is 224ms at the winning configuration. Halving them would put 0.25s inside its
-  budget and, on the model below, near 0.7s.
+- **Why 0.5s round 1 measured 1.63s against 1.17s twice.** The segment queue sits at 55% there, so
+  headroom is not the explanation and this is unaccounted for.
+- **Where the 0.25s backlog forms.** It appears as `feedPropagation`, after a SOC write that already
+  push-synced, so the uploader's own queues do not explain it. Until that is answered, "cut the
+  uploader's per-segment cost" is a plausible lead rather than a diagnosis.
+- **Whether `upload` can be cut.** 240 to 511ms depending on segment size, and it is the one hop that
+  must keep pace one-for-one with segments. It is what puts 0.25s at 96%.
+- **Whether `manifestPublish` can be cut.** 196 to 236ms whatever the segment holds. It is coalesced
+  so it does not gate throughput, but it does sit on the path between a segment landing and a viewer
+  being told about it.
 - **Anything beyond three minutes.** These are screening runs. The gate is ten.
 - **1080p**, which is out of the grid entirely until it can hold 30fps through the publish path.
 
