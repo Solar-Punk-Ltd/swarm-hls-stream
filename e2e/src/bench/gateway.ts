@@ -302,16 +302,69 @@ export class FeedFollower {
 }
 
 /**
+ * A gateway that has not yet retrieved a segment's bytes, which is not the same as not having them.
+ *
+ * Segments are uploaded with `deferred: true`, so bee acks them from its own store and push-syncs in
+ * the background, while the manifest naming them is a synchronous SOC write. The announcement can
+ * therefore outrun the bytes. Every one of the thirteen refs a 10-minute 0.25s run refused on
+ * 2026-08-05 answered 200 when asked again twenty minutes later, so this is a wait rather than a loss.
+ */
+const SEGMENT_NOT_RETRIEVABLE_YET = 404;
+
+/**
+ * Whether to wait out a gateway that refuses a segment, and how long.
+ *
+ * Off by default, because waiting inside the collection loop slows the loop, and the loop's pace is
+ * what keeps the reader at the live edge. A run that turns this on is measuring how long segments
+ * stay unretrievable and **its latency figures are not comparable** with a run that did not.
+ *
+ * Leaving it off is not neutral either, and that is the reason this exists: a refused segment is
+ * discarded, refused segments are the slowest ones, and dropping the slowest samples flatters every
+ * figure taken over what is left.
+ */
+export interface UnservedRetry {
+  budgetMs: number;
+  recheckMs: number;
+}
+
+export const NO_UNSERVED_RETRY: UnservedRetry = { budgetMs: 0, recheckMs: 0 };
+
+export interface SegmentFetch extends TimedFetch<Buffer> {
+  /** How long the gateway refused these bytes before serving them. Zero when the first ask worked. */
+  unservedForMs: number;
+  attempts: number;
+}
+
+/**
  * A segment's bytes, and the instant the last of them arrived.
  *
  * `atMs` is taken after the body is fully read, not when the response headers land, because a frame
  * is not playable until its segment is complete. Measuring at the headers would understate every
  * total by the download time, which is the one hop this call is meant to measure.
  */
-export async function fetchSegment(gatewayUrl: string, ref: string): Promise<TimedFetch<Buffer>> {
-  const response = await timedFetch(`${gatewayUrl}/bytes/${ref}`, SEGMENT_TIMEOUT_MS);
-  const body = Buffer.from(await response.arrayBuffer());
-  return { body, atMs: Date.now() };
+export async function fetchSegment(
+  gatewayUrl: string,
+  ref: string,
+  unserved: UnservedRetry = NO_UNSERVED_RETRY,
+): Promise<SegmentFetch> {
+  const askedAtMs = Date.now();
+  const deadlineMs = askedAtMs + unserved.budgetMs;
+  let attempts = 0;
+
+  for (;;) {
+    attempts += 1;
+    try {
+      const response = await timedFetch(`${gatewayUrl}/bytes/${ref}`, SEGMENT_TIMEOUT_MS);
+      const body = Buffer.from(await response.arrayBuffer());
+      return { body, atMs: Date.now(), unservedForMs: Date.now() - askedAtMs, attempts };
+    } catch (error) {
+      const refused = error instanceof GatewayStatusError && error.status === SEGMENT_NOT_RETRIEVABLE_YET;
+      if (!refused || Date.now() + unserved.recheckMs > deadlineMs) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, unserved.recheckMs));
+    }
+  }
 }
 
 /**

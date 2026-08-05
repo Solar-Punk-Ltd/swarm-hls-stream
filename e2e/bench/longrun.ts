@@ -18,7 +18,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { parseFeedReaderMode, requireGatewayReachable } from '../src/bench/gateway.js';
+import { parseFeedReaderMode, requireGatewayReachable, type UnservedRetry } from '../src/bench/gateway.js';
 import {
   bufferDemandTrend,
   type FeedProgress,
@@ -31,7 +31,7 @@ import {
   mediaPacing,
   percentile,
 } from '../src/bench/longRun.js';
-import type { BenchRun } from '../src/bench/report.js';
+import type { BenchRun, SegmentSample } from '../src/bench/report.js';
 import { measureLatency } from '../src/bench/run.js';
 import { checkInstrumentLocally } from '../src/bench/selfCheck.js';
 import { type BufferSample, median, recommendBufferMs } from '../src/bench/sweepAnalysis.js';
@@ -229,6 +229,36 @@ function stallLines(
   ];
 }
 
+/**
+ * How long the gateway refused segments before serving them, on a run that waited rather than
+ * discarded.
+ *
+ * Silent on a run that did not wait, since every reading would be zero by construction and a table of
+ * zeroes reads as "this never happens" rather than "this was not asked".
+ *
+ * The share matters as much as the delay. A refused segment is the slowest sample there is, so a run
+ * that discards them reports a median over everything except the samples that would have moved it.
+ */
+function unservedLines(samples: readonly SegmentSample[]): string[] {
+  const waited = samples.filter((sample) => sample.unservedForMs > 0).map((sample) => sample.unservedForMs);
+  if (waited.length === 0) {
+    return [];
+  }
+  return [
+    '## How long segments stayed unretrievable',
+    '',
+    `- **${waited.length} of ${samples.length}** (${((100 * waited.length) / samples.length).toFixed(1)}%) were ` +
+      'refused by the gateway on the first ask and served on a later one.',
+    `- median wait **${seconds(median(waited))}**, p95 ${seconds(percentile(waited, 0.95))}, worst ` +
+      `${seconds(Math.max(...waited))}.`,
+    '- Segments are uploaded `deferred: true` while the manifest naming them is a synchronous SOC ' +
+      'write, so the announcement can outrun the bytes. These waits are what that costs a viewer, ' +
+      'and hls.js retries a fragment six times starting at one second, so a wait shorter than that ' +
+      'is absorbed by the buffer rather than seen.',
+    '',
+  ];
+}
+
 export function renderLongRun(run: BenchRun, runMinutes: number): string {
   const samples = [...run.samples].sort((a, b) => a.split.instants.fetchedAtMs - b.split.instants.fetchedAtMs);
   if (samples.length < 3) {
@@ -300,6 +330,7 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
     }s assumed client poll + one segment) | ${seconds(buffer.recommendedMs)} |`,
     `| **behind live at that buffer** | **${seconds(edgeToFetchableMs + buffer.recommendedMs)}** |`,
     '',
+    ...unservedLines(samples),
     '## Does the buffer demand grow',
     '',
     `- first third of the run needed **${seconds(demand.firstThirdMs)}**, last third needed ` +
@@ -348,6 +379,25 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
   return lines.join('\n');
 }
 
+/**
+ * How long to wait out a gateway that refuses a segment, from `BENCH_UNSERVED_BUDGET_MS`.
+ *
+ * Off unless asked for. Waiting happens inside the collection loop, and the loop's pace is what keeps
+ * the reader at the live edge, so a run that waits is a diagnostic and **its latency figures are not
+ * comparable** with a run that did not.
+ *
+ * Off is not the neutral choice either, which is the reason this is worth turning on at all. A
+ * refused segment is discarded, refused segments are by definition the slowest ones, and a median
+ * taken over what survives is flattered by exactly the samples that would have moved it.
+ */
+function unservedRetryFromEnv(): UnservedRetry | undefined {
+  const budgetMs = envNumber('BENCH_UNSERVED_BUDGET_MS', 0);
+  if (budgetMs <= 0) {
+    return undefined;
+  }
+  return { budgetMs, recheckMs: envNumber('BENCH_UNSERVED_RECHECK_MS', 250) };
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const knobs = knobsFromEnv();
@@ -390,6 +440,7 @@ async function main(): Promise<void> {
     idlePollIntervalMs: idlePollIntervalMs(knobs.gopSeconds),
     feedReader: parseFeedReaderMode(process.env.BENCH_FEED_READER),
     mediaTimelineLeadMs: check.mediaTimelineLeadMs,
+    unservedRetry: unservedRetryFromEnv(),
   });
   const report = renderLongRun(run, (Date.now() - startedAtMs) / 60_000);
 

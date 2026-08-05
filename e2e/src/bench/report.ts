@@ -32,6 +32,8 @@ export interface SegmentSample {
   declaredDurationS: number | null;
   /** The segment's size on the wire, which is what makes a throttled publisher readable. */
   segmentBytes: number;
+  /** How long the gateway refused the bytes before serving them. Zero unless the run waited. */
+  unservedForMs: number;
   /** How many video packets the span was measured across, so a thin reading can be seen as thin. */
   videoPacketCount: number;
 }

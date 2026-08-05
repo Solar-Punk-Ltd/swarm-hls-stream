@@ -33,6 +33,8 @@ function sampleOf(index: number, split: LatencySplit, declaredDurationS: number 
     // 60 packets over the fixtures' 2s segment is 30fps, and 750kB over 2s is 3000kbps, so the two
     // per-second columns come out as round numbers a test can name.
     segmentBytes: 750_000,
+    // Served on the first ask, which is what a run that does not wait out a refusal always records.
+    unservedForMs: 0,
   };
 }
 

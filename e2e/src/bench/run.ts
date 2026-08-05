@@ -29,7 +29,9 @@ import {
   fetchSegment,
   isFeedBlackout,
   isFeedPendingFirstWrite,
+  NO_UNSERVED_RETRY,
   segmentRefFromUri,
+  type UnservedRetry,
 } from './gateway.js';
 import type { FeedPoll } from './longRun.js';
 import { probeSegment } from './probe.js';
@@ -89,6 +91,14 @@ export interface RunOptions {
    * exists to end. See `measureMediaTimelineLead`.
    */
   mediaTimelineLeadMs: number;
+  /**
+   * Whether to wait out a gateway that refuses a segment, rather than discarding the sample.
+   *
+   * Absent by default. A run that sets it is measuring how long segments stay unretrievable, and its
+   * latency figures are not comparable with a run that did not, because the wait happens inside the
+   * collection loop and the loop's pace is what keeps the reader at the live edge.
+   */
+  unservedRetry?: UnservedRetry;
 }
 
 /** Everything one segment contributed, before the uploader's log is read to fill in the middle. */
@@ -107,6 +117,13 @@ interface PendingSample {
    * while its bytes per segment does not.
    */
   segmentBytes: number;
+  /**
+   * How long the gateway refused these bytes before serving them, zero when the first ask worked.
+   *
+   * Always zero unless the run enabled `UnservedRetry`, since without it a refused segment is
+   * discarded rather than waited for.
+   */
+  unservedForMs: number;
   capturedAtMs: number;
   visibleAtMs: number;
   fetchedAtMs: number;
@@ -194,6 +211,7 @@ function toSample(
     declaredDurationS: pending.declaredDurationS,
     videoPacketCount: pending.videoPacketCount,
     segmentBytes: pending.segmentBytes,
+    unservedForMs: pending.unservedForMs,
   };
 }
 
@@ -316,7 +334,15 @@ async function collectSamples(
     // segment as unmeasurable instead of crashing, and a caller that never catches it cannot.
     try {
       collected.push(
-        await measureOne(gatewayUrl, newest, ref, manifest.atMs, publishStartedAtMs, options.mediaTimelineLeadMs),
+        await measureOne(
+          gatewayUrl,
+          newest,
+          ref,
+          manifest.atMs,
+          publishStartedAtMs,
+          options.mediaTimelineLeadMs,
+          options.unservedRetry ?? NO_UNSERVED_RETRY,
+        ),
       );
     } catch (error) {
       discarded.push({ ref, reason: error instanceof Error ? error.message : String(error) });
@@ -350,8 +376,9 @@ async function measureOne(
   visibleAtMs: number,
   publishStartedAtMs: number,
   mediaTimelineLeadMs: number,
+  unserved: UnservedRetry,
 ): Promise<PendingSample> {
-  const segment = await fetchSegment(gatewayUrl, ref);
+  const segment = await fetchSegment(gatewayUrl, ref, unserved);
   const probed = await probeSegmentBytes(segment.body, ref);
   const latencyMs = latencyMsFromPts(probed.firstFrame, {
     publishStartedAtMs,
@@ -368,6 +395,7 @@ async function measureOne(
     declaredDurationS: segmentDuration(newest.extinf),
     videoPacketCount: probed.videoPacketCount,
     segmentBytes: segment.body.length,
+    unservedForMs: segment.unservedForMs,
     capturedAtMs: captureInstantMs(segment.atMs, latencyMs, mediaTimelineLeadMs),
     visibleAtMs,
     fetchedAtMs: segment.atMs,
