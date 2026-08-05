@@ -66,6 +66,18 @@ export interface FaultScenario {
    * rather than the absence of one. A scenario with no expectation either way cannot fail.
    */
   readonly expectFreeze: boolean;
+  /**
+   * Whether playback is expected to start again at all.
+   *
+   * False for a fault that genuinely ends the broadcast, where a picture that never moves again is
+   * the correct outcome and there is nothing left to resume. Without this the report called a
+   * correct engine-restart run a failure, in the same words it uses for a viewer stranded on a
+   * stream that is still being published. Those are opposite outcomes and had one verdict.
+   *
+   * What still has to be true when this is false is that the viewer was **told**: a broadcast that
+   * ended and says so is a viewer who stops waiting, and one that ended in silence is not.
+   */
+  readonly expectRecovery: boolean;
 }
 
 /**
@@ -87,6 +99,7 @@ const VIEWER_GATEWAY_OUTAGE: FaultScenario = {
     'leave a frozen frame unexplained, and should resume on its own once the gateway answers again, ' +
     'without a reload and without ending the broadcast.',
   expectFreeze: true,
+  expectRecovery: true,
 };
 
 /**
@@ -107,6 +120,7 @@ const UPLOADER_CRASH: FaultScenario = {
     'Once it is back the feed advances again and playback resumes, either at the live edge or by ' +
     'catching up to it.',
   expectFreeze: true,
+  expectRecovery: true,
 };
 
 /**
@@ -125,8 +139,10 @@ const ENGINE_RESTART: FaultScenario = {
   breaks: 'the ingest engine, which takes the publisher connection with it',
   expectation:
     'The broadcast this viewer is watching ends. They should be told the feed has stopped advancing ' +
-    'rather than left on a frozen picture that still claims to be live.',
+    'rather than left on a frozen picture that still claims to be live. Playback is NOT expected to ' +
+    'resume: the publisher went with the engine and this broadcast is over.',
   expectFreeze: true,
+  expectRecovery: false,
 };
 
 export const FAULT_SCENARIOS: readonly FaultScenario[] = [VIEWER_GATEWAY_OUTAGE, UPLOADER_CRASH, ENGINE_RESTART];

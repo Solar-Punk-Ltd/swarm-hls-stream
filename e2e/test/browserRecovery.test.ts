@@ -4,7 +4,8 @@ import { describe, it } from 'node:test';
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
 import { FAULT_SCENARIOS, scenarioByName } from '../src/browser/faults.js';
 import { judgeRecovery } from '../src/browser/recovery.js';
-import { type ViewerSample } from '../src/browser/session.js';
+import { renderCrashReport } from '../src/browser/recoveryReport.js';
+import { summarize, type ViewerSample } from '../src/browser/session.js';
 
 const SAMPLE_MS = 1_000;
 
@@ -153,5 +154,50 @@ describe('the fault scenario catalog', () => {
 
   it('resolves each catalogued scenario by its own name', () => {
     FAULT_SCENARIOS.forEach((scenario) => assert.equal(scenarioByName(scenario.name), scenario));
+  });
+});
+
+/**
+ * A run that ends the broadcast and a viewer stranded on one that is still being published are
+ * opposite outcomes, and the report gave them one verdict: the engine-restart run of 2026-08-05
+ * behaved exactly as designed and was written up as "⛔ It did not recover".
+ */
+describe('reporting a fault that is supposed to end the broadcast', () => {
+  const scenario = scenarioByName('engine-restart');
+  const samples = run([1, 1, 0, 0, 0, 0], { 2: { feedStateMessage: 'Waiting for the broadcast to continue' } });
+  const fault = { injectedAtMs: 2 * SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS };
+
+  const rendered = renderCrashReport({
+    measuredAt: '2026-08-05T00:00:00.000Z',
+    watchUrl: 'http://client.test/#/watch/video/owner/topic?qoe=1',
+    chromeVersion: 'Chrome 151',
+    gopSeconds: 0.25,
+    scenario,
+    container: 'latbench-srs-1',
+    fault,
+    summary: summarize(samples),
+    recovery: judgeRecovery(samples, fault),
+    instrument: { sound: true, failures: [], soundSamples: samples.length },
+    samples,
+    screenshots: [],
+  });
+
+  it('declares that this fault ends the broadcast', () => {
+    assert.equal(scenario.expectRecovery, false, 'the fixture no longer tests what this describe is about');
+  });
+
+  it('does not call a picture that correctly stayed stopped a failure', () => {
+    assert.doesNotMatch(rendered, /⛔ \*\*It did not recover/, 'the designed outcome was reported as a defect');
+    assert.match(rendered, /✅ \*\*Playback did not resume, which is correct here/);
+  });
+
+  // The half that still has to hold. A broadcast that ends and says so is a viewer who stops waiting.
+  it('still requires that the viewer was told', () => {
+    assert.match(rendered, /the viewer was told, and they were\./);
+  });
+
+  it('names the container in a tense a person would write', () => {
+    assert.match(rendered, /was \*\*restarted\*\*/);
+    assert.doesNotMatch(rendered, /restartped/);
   });
 });

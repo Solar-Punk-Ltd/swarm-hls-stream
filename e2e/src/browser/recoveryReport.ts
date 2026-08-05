@@ -100,10 +100,28 @@ function verdictSection(run: CrashRun): string[] {
             'no reload and nothing asked of the viewer.',
       '',
     );
-  } else {
+  } else if (run.scenario.expectRecovery) {
     lines.push(
       '⛔ **It did not recover.** Playback was still stopped on the last sample, however long after the ' +
         'service returned. A viewer would be looking at a frozen picture with nothing left to wait for.',
+      '',
+    );
+  } else {
+    lines.push(
+      '✅ **Playback did not resume, which is correct here.** This fault ends the broadcast, so there is ' +
+        'nothing left to play and a picture that stays stopped is the honest outcome. What matters is ' +
+        (r.explainedTheFreeze
+          ? 'that the viewer was told, and they were.'
+          : '⛔ that the viewer was told, and they were not: the picture simply stopped.'),
+      '',
+    );
+  }
+
+  if (!run.scenario.expectRecovery && r.recovered) {
+    lines.push(
+      '⚠️ **Playback resumed, and this scenario did not expect it to.** Either the broadcast did not ' +
+        'actually end or the player found media it should not have. Worth reading the samples before ' +
+        'treating this run as a pass.',
       '',
     );
   }
