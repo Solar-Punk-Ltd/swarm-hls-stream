@@ -98,6 +98,15 @@ interface PendingSample {
   /** What the manifest declared, or null where the entry carried no readable `#EXTINF`. */
   declaredDurationS: number | null;
   videoPacketCount: number;
+  /**
+   * The segment's size on the wire.
+   *
+   * Free, since the probe already holds the bytes, and it is the reading that would have placed the
+   * publisher throttle of `docs/bench/publisher-backpressure.md` instead of leaving it inferred: a
+   * throttled run stretches media time to match its consumer, so its bytes per second of media falls
+   * while its bytes per segment does not.
+   */
+  segmentBytes: number;
   capturedAtMs: number;
   visibleAtMs: number;
   fetchedAtMs: number;
@@ -184,6 +193,7 @@ function toSample(
     split: latencySplit(instants, skew),
     declaredDurationS: pending.declaredDurationS,
     videoPacketCount: pending.videoPacketCount,
+    segmentBytes: pending.segmentBytes,
   };
 }
 
@@ -357,6 +367,7 @@ async function measureOne(
     // comparison in the report and not the sample, and a segment that was paid for still yields one.
     declaredDurationS: segmentDuration(newest.extinf),
     videoPacketCount: probed.videoPacketCount,
+    segmentBytes: segment.body.length,
     capturedAtMs: captureInstantMs(segment.atMs, latencyMs, mediaTimelineLeadMs),
     visibleAtMs,
     fetchedAtMs: segment.atMs,

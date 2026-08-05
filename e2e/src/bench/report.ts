@@ -30,6 +30,8 @@ export interface SegmentSample {
    * Null where the entry carried no readable `#EXTINF`, which costs the comparison and not the sample.
    */
   declaredDurationS: number | null;
+  /** The segment's size on the wire, which is what makes a throttled publisher readable. */
+  segmentBytes: number;
   /** How many video packets the span was measured across, so a thin reading can be seen as thin. */
   videoPacketCount: number;
 }
@@ -245,6 +247,18 @@ function medianFlaggedNotice(median: SegmentSample): string[] {
  * call site works over the already-filtered list, and a zero gap from a segment carrying no
  * declaration would have been indistinguishable from perfect agreement.
  */
+/**
+ * A per-segment quantity over the media it holds, to one decimal.
+ *
+ * Frames and bytes are both read against media time rather than wall time, because that is what
+ * separates a throttled publisher from a healthy one: media time stretches to match a slow consumer,
+ * so a throttled segment carries its full complement of frames and bytes over a longer span and both
+ * rates fall together. See `docs/bench/publisher-backpressure.md`.
+ */
+function perSecond(amount: number, mediaS: number): string {
+  return mediaS > 0 ? (amount / mediaS).toFixed(1) : 'n/a';
+}
+
 function declaredGapMs(declaredDurationS: number, sample: SegmentSample): number {
   return (declaredDurationS - sample.split.instants.segmentDurationS) * 1_000;
 }
@@ -417,15 +431,17 @@ export function renderReport(run: BenchRun): string {
     '',
     '## Every sample',
     '',
-    '| segment | ref | total | media held | declared | packets |',
-    '| ---: | --- | ---: | ---: | ---: | ---: |',
+    '| segment | ref | total | media held | declared | packets | fps | kB/s |',
+    '| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
   );
 
   for (const sample of run.samples) {
     const declared = sample.declaredDurationS === null ? 'unreadable' : seconds(sample.declaredDurationS * 1_000);
+    const mediaS = sample.split.instants.segmentDurationS;
     lines.push(
       `| ${sample.index} | \`${sample.ref.slice(0, 12)}\` | ${seconds(sample.split.totalMs)} | ` +
-        `${seconds(sample.split.instants.segmentDurationS * 1_000)} | ${declared} | ${sample.videoPacketCount} |`,
+        `${seconds(mediaS * 1_000)} | ${declared} | ${sample.videoPacketCount} | ` +
+        `${perSecond(sample.videoPacketCount, mediaS)} | ${perSecond(sample.segmentBytes / 1_000, mediaS)} |`,
     );
   }
 
