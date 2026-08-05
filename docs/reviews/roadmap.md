@@ -89,11 +89,12 @@ The encoder delivered 30.0-30.1fps in all six, so the publisher throttle of 0.2 
 
 ⚠️ **The gap narrowed from the ~650ms the 3-minute screening claimed to 462ms.** The ordering holds.
 
-⚠️ **Two things the 0.25s profile pays, absent at 0.5s, and they are one fact from two ends.**
-5-14% of segments are refused on the first ask, and the reader spends its whole walk budget on half
-its polls. Both come from four segments a second against per-segment costs near their budgets: the
-segment queue runs at 89% duty at 0.25s against 55% at 0.5s. **Refused is not lost** and how long the
-wait is remains the open question.
+⚠️ **Two things the 0.25s profile pays, absent at 0.5s, and they turned out NOT to be one fact.**
+The reader spends its whole walk budget on half its polls in **all five** runs of this configuration,
+so that is the profile. The refusal share ranges **0% to 22.6%** across those same five, so that is
+the afternoon. **Refused is not lost**, and two attempts to time the wait have not landed: the
+in-loop version could not reach past two seconds and made the refusals worse by loading the gateway,
+and the off-loop watcher drew a run with nothing to watch. Task #83.
 
 ---
 

@@ -18,6 +18,10 @@ ten-segment one the screening ran on.
 **A 29ms spread across three ten-minute runs is the tightest repeatability this project has
 measured.** The screening figure was 1.00-1.06s and the gate says 1.074s, so it did not move.
 
+⚠️ **Those three were taken back to back, and a fourth run of the same configuration an hour later
+measured 936ms**, which is 119ms below the lowest of them. So the 29ms is how much three consecutive
+runs agree, and it is **not** the width of this configuration.
+
 **No run drifted.** Every one of the six has `msPerMinute` below its own `scatterMsPerMinute`
 (12/182, 117/144, 6/110, 32/126, 59/139, 95/188), which is this project's own rule for when a trend is
 not readable. Ten minutes of continuous broadcast does not degrade either configuration.
@@ -47,18 +51,43 @@ absence is read off the byte rate rather than inferred.
 
 ## What the 0.25s profile pays
 
-Both of these are the same fact seen from two ends, and neither appears at 0.5s.
+Neither appears at 0.5s, and **they are not the same fact**, which is what two extra runs settled.
 
 | | 0.25s | 0.5s |
 | --- | --- | --- |
-| segments refused on the first ask | **14.1%, 5.2%, 5.3%** | 1.0%, 0.0%, 0.0% |
-| polls spending the whole walk budget | **50%, 53%, ~50%** | 9%, 9%, ~10% |
+| segments refused on the first ask | **14.1%, 5.2%, 5.3%**, and 22.6% and 0.0% on two later runs | 1.0%, 0.0%, 0.0% |
+| polls spending the whole walk budget | **50%, 53%, ~50%**, and 32 slots on both later runs too | 9%, 9%, ~10% |
+
+The walk depth is the same in **all five** runs, including the one that refused nothing. The refusal
+share ranges over the whole interval from zero to a fifth. **One of these is a property of the
+configuration and the other is a property of the afternoon**, and reading them as one thing is what a
+single sweep would have licensed.
 
 **Refused is not lost.** Every one of the thirteen refs the first run refused answered 200 when asked
 again twenty minutes later, and all 21 refusals across the six runs are 404s with zero unusable
-segments. Segments upload `deferred: true` while the manifest naming them is a synchronous SOC write,
-so the announcement outruns the bytes. hls.js retries a fragment six times starting at one second, so
-whether a viewer notices depends entirely on how long the wait is, **which is still unmeasured**.
+segments.
+
+⛔ **And the refusal share is not a property of this profile, which took two more runs to find out.**
+Five runs of the identical configuration, in order:
+
+| run | refused | capture to fetchable | `fetch` hop |
+| --- | ------: | -------------------: | ----------: |
+| gate round 1 | 14.1% | 1084ms | 329ms |
+| gate round 2 | 5.2% | 1055ms | 300ms |
+| gate round 3 | 5.3% | 1081ms | 318ms |
+| a run that retried refusals inside the loop | **22.6%** | 1408ms | **492ms** |
+| a run an hour after the gate | **0.0%** | **936ms** | **128ms** |
+
+**Zero to 22.6% on one configuration**, and it moves with the `fetch` hop rather than with anything
+the profile chooses. So the three gate rows above are three draws from something dispersed, and the
+5-14% they suggested was never a rate.
+
+⚠️ **The retry run is the worst of the five and that is the instrument's own doing.** Retrying a
+refusal puts more reads on the gateway the run is measuring, the gateway slows, and slower retrieval
+is what a 404 here means. Measuring the thing made the thing worse.
+
+⚠️ 0.5s does not fit the same story: its `fetch` hop is **longer** at 438ms and it refuses **less** at
+0-1%, so retrieval speed alone does not explain it and the segment rate probably matters. **Unresolved.**
 
 **The reader has no headroom left.** A slot read costs about 265ms and a 0.25s GOP writes 3.76 slots a
 second, so `MAX_WALK_PER_READ = 32` is spent on half the polls. The pace check cannot see this,
@@ -82,8 +111,12 @@ deployment, so the target is reachable.
 
 ## What this does not say
 
-**Ten minutes is not an hour.** Nothing here has run longer, and the one quantity that plainly grows
-with duration is the refusal share, which went from 0.0-2.9% at three minutes to 5-14% at ten.
+**Ten minutes is not an hour.** Nothing here has run longer.
+
+⚠️ **An earlier draft of this file said the refusal share grows with duration**, on the grounds that it
+went from 0.0-2.9% at three minutes to 5-14% at ten. A fifth ten-minute run then refused nothing at
+all. Three points in one direction were a trend until the fourth and fifth arrived, and the honest
+statement is that the share is dispersed and its cause is unresolved.
 
 **Nobody has watched it.** Every figure is the bench's, and browser validation is still blocked.
 
