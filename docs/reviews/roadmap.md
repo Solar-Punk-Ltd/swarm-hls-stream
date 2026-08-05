@@ -54,11 +54,27 @@ covering it.
 segments appear in no manifest any viewer reads and no discontinuity tag is armed, so the loss is
 silent. Five times the window is five times the tolerance and it does not close the hole.
 
-### 0.2 The encoder misses its GOP in ~1 run in 3 — task #76
+### 0.2 ✅ diagnosed — the encoder never missed its GOP, the publisher was throttled
 
-Right packet count for the request, declared duration up to 2.5x long. Not 1080p-only and not
-GOP-specific, contrary to how it was filed. **It cost a third of today's sweep**, so every future grid
-pays for it. Free to investigate: the reports are already on disk.
+Filed twice with the wrong cause, first as a 1080p limit and then as an encoder that misses its GOP.
+[It is neither.](../bench/publisher-backpressure.md) `-g` is set in **frames** and is honoured exactly
+in every run: 8 packets at a 0.25s request, 15 at 0.5s, good runs and bad alike. What moves is the
+**delivered frame rate**, 30.1 in the good runs against 12.0 and 23.7 in the bad, and the segment
+length follows from it.
+
+The recipe stamps timestamps at the demuxer and paces inside the filter graph, so a blocked muxer
+stops the demuxer pulling while the wall clock runs on, and media time stretches to match the
+consumer. Reproduced with no engine, no SRT and no postage by feeding the encode to a pipe read at a
+fixed rate: **30.0 / 29.7 / 19.8 / 12.2 fps** at unthrottled / 400 / 250 / 150 kB/s, against a run
+that measured 12.0. The knee sits at the stream's own bitrate, which is why 1080p at 6000kbps met it
+far more often. **Resolution was never the variable, bitrate is.**
+
+`check-axis.py` now names the cause instead of blaming the encoder, and prints the delivered frame
+rate on passing runs so a mildly throttled one is visible rather than silent.
+
+⚠️ **Which consumer is slow is still open, task #82.** The reports carry no segment byte size, so the
+throttle cannot be read out of any run already taken. Recording it costs nothing extra, since the
+probe already downloads each segment and discards the size.
 
 ### 0.3 Gate the 0.25s winner at 10 minutes — task #72
 
