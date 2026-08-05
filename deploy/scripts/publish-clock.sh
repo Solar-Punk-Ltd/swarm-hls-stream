@@ -116,5 +116,17 @@ docker run --rm --network host swarm-hls-bench \
   -f mpegts "${URL}"
 PUBLISH_BODY
 } | if [ "${TARGET}" = "localhost" ]; then bash -s; else ssh "${TARGET}" bash -s; fi
+# The exit status of a pipeline is its last command's, and `set -e` does not fire on the left-hand
+# side of one, so a failed ffmpeg reached the success line below and the script exited 0. That
+# happened three times on 2026-08-05: twice a second publisher collided with one still holding the
+# stream id and died in a second, once the port was wrong, and each time this printed "publish
+# finished" and the run that followed measured whatever was left over from before.
+PUBLISH_STATUS=$?
+
+if [ "${PUBLISH_STATUS}" -ne 0 ]; then
+  log_error "publish FAILED (exit ${PUBLISH_STATUS}). Nothing was broadcast, so do not measure against this."
+  log_error "The usual cause is another publisher still holding ${STREAM_ID}. Wait for it, or use --stream=."
+  exit "${PUBLISH_STATUS}"
+fi
 
 log_ok "publish finished"
