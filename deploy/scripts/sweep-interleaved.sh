@@ -87,13 +87,22 @@ mkdir -p "${OUT_DIR}"
 # a reference: each row can be read against the one taken beside it rather than against a number from
 # another sitting. It is also the configuration with six prior runs behind it, so a round that puts it
 # somewhere unfamiliar is saying something about the round.
+#
+# 1080p is deliberately absent. On 2026-08-05 three of its four rows failed the axis guard by
+# delivering ~26.5fps against a requested 30: the packet count per segment was always exactly right
+# for the GOP while the declared duration ran ~13% long, so the encoder was falling behind real time
+# rather than dropping frames. A row that was not delivered at the GOP it asked for cannot be read as
+# that GOP, and at 6000kbps it costs 2.4x the bitrate of a 720p row to learn nothing.
+#
+# The quarter second row is back. It was rejected once, and both instrument defects found since then
+# push a fast configuration to look worse: the broken feed reader, and a wrap fold that discarded any
+# sample beating the publisher's own 1.39s lead. It can only be judged against rows taken beside it,
+# which is what this sweep is for.
 CONFIGS=(
   "ref-720-2.0:1280x720:2500:2.0"
+  "720-0.25:1280x720:2500:0.25"
   "720-0.5:1280x720:2500:0.5"
   "720-1.0:1280x720:2500:1.0"
-  "1080-0.5:1920x1080:6000:0.5"
-  "1080-1.0:1920x1080:6000:1.0"
-  "1080-2.0:1920x1080:6000:2.0"
 )
 
 say() {
