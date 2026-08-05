@@ -25,6 +25,19 @@ reader walked 1.86, and the run was rejected as READER BEHIND. The segment-lengt
 catches an encoder that missed its request, and it runs first, so by the time this one runs the
 achieved rate is already known to be close to the requested one.
 
+The frame-rate check was the same arithmetic as the packet check before it and reported the wrong
+cause. `packets < span * fps` and `delivered fps < fps` are one inequality rearranged, and the verdict
+said "segments are being cut mid-GOP", which sends a reader to the encoder. It is not what happens.
+Two of the six runs on 2026-08-05 held **exactly** the frames one requested GOP holds, 8 for 0.25s and
+15 for 0.5s, and spanned 0.666s and 0.633s, so the GOP was intact and the media time was stretched.
+
+Reproduced with no engine, no Swarm and no postage in `docs/bench/publisher-backpressure.md`: the
+publish recipe stamps timestamps at demux and paces inside the filter graph, so a consumer slower than
+the stream's own bitrate blocks the muxer, the demuxer stops pulling, and the wall clock keeps
+running. Feeding that encode to a pipe read at 150kB/s delivered **12.2fps** against a run that
+measured 12.0, and nothing warned. So the discriminator is whether the segment holds a *whole* GOP:
+it does under a throttle, and it does not when the segmenter cut mid-GOP.
+
 Usage:  python3 check-axis.py <report.json> <requested-gop-seconds> <fps>
 Exits 0 when the run matches what it asked for and the reader kept pace, 1 otherwise, and prints one
 line either way.
@@ -38,9 +51,15 @@ import sys
 # and the span is measured first-frame to last-frame which is one frame interval short. A tenth is
 # wide enough for both and far tighter than the 4x error it exists to catch.
 SEGMENT_TOLERANCE = 0.10
-# Packet count against what the frame rate implies for the media actually carried. A segment cut
-# mid-GOP holds no keyframe and shows up here as well as in the discard count.
+# Packet count against what one requested GOP holds. This is the discriminator between the two ways a
+# segment can carry fewer frames than its own span implies, and they have opposite causes: a segment
+# cut mid-GOP holds a fraction of a GOP, while a throttled publisher holds a whole one and took longer
+# to produce it.
 PACKET_TOLERANCE = 0.10
+# How far the delivered frame rate may fall short of the request. Wider than it looks: the span
+# credits the final frame with the median gap, so `packets / span` is the delivered rate exactly
+# rather than short by a frame, and 10% is four times the largest shortfall a passing run has shown.
+FRAME_RATE_TOLERANCE = 0.10
 # Reported rather than fatal, and the distinction is the point. A malformed segment shows up in the
 # two checks above, which are the ones that decide whether the axis moved. Segments that are well
 # formed and still unreadable are a separate defect in the instrument's own PTS anchoring, and failing
@@ -93,18 +112,31 @@ def main() -> int:
     spans = [s["split"]["instants"]["segmentDurationS"] for s in samples]
     segment_s = st.median(spans)
     packets = st.median([s["videoPacketCount"] for s in samples])
-    expected_packets = segment_s * fps
     discarded_share = len(run["discarded"]) / (len(samples) + len(run["discarded"]))
 
+    delivered_fps = packets / segment_s if segment_s > 0 else 0
+    gop_packets = requested_gop_s * fps
+    holds_a_whole_gop = abs(packets - gop_packets) <= PACKET_TOLERANCE * gop_packets
+
     problems = []
-    if abs(segment_s - requested_gop_s) > SEGMENT_TOLERANCE * requested_gop_s:
+    if delivered_fps < fps * (1 - FRAME_RATE_TOLERANCE):
+        if holds_a_whole_gop:
+            problems.append(
+                f"the publisher delivered {delivered_fps:.1f}fps against the {fps:g} it was asked for, "
+                f"so a whole GOP of {packets:.0f} frames spans {segment_s:.3f}s instead of "
+                f"{requested_gop_s}s. The GOP is intact and the media time is stretched, which is a "
+                "consumer slower than the stream's own bitrate rather than an encoder that missed"
+            )
+        else:
+            problems.append(
+                f"{packets:.0f} packets per segment against the {gop_packets:.0f} a {requested_gop_s}s "
+                f"GOP holds at {fps:g}fps, and only {delivered_fps:.1f}fps delivered, so segments are "
+                "being cut mid-GOP"
+            )
+    elif abs(segment_s - requested_gop_s) > SEGMENT_TOLERANCE * requested_gop_s:
         problems.append(
-            f"asked for a {requested_gop_s}s GOP and measured {segment_s:.3f}s segments"
-        )
-    if abs(packets - expected_packets) > PACKET_TOLERANCE * expected_packets:
-        problems.append(
-            f"{packets:.0f} packets per segment against the {expected_packets:.0f} that "
-            f"{fps:g}fps implies for {segment_s:.3f}s, so segments are being cut mid-GOP"
+            f"asked for a {requested_gop_s}s GOP and measured {segment_s:.3f}s segments at the full "
+            f"{delivered_fps:.1f}fps, so the segmenter is cutting somewhere other than the GOP"
         )
     if problems:
         print(f"AXIS FAIL: {'; '.join(problems)}")
@@ -134,7 +166,8 @@ def main() -> int:
     )
     print(
         f"axis ok{note}: {segment_s:.3f}s segments for a {requested_gop_s}s GOP, "
-        f"{packets:.0f} packets, {discarded_share:.1%} unreadable{pace_note}"
+        f"{packets:.0f} packets at {delivered_fps:.1f}/{fps:g}fps, "
+        f"{discarded_share:.1%} unreadable{pace_note}"
     )
     return 0
 
