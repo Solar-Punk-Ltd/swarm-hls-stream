@@ -11,7 +11,7 @@ linked, or marked as a guess. Items already tracked carry their task number.
 | LL-HLS             | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams. |
 | Live latency       | **1.00-1.06s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP. [Measured today.](../bench/quarter-second-2026-08-05.md) 3-minute screening, never gated at 10.                                                                                     |
 | Seeking            | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                        |
-| Live DVR           | One chunk of manifest. At the best profile that is **12.5 seconds**, up from 2.5.                                                                                                                                                                    |
+| Live DVR           | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                         |
 | Crash recovery     | 6 e2e scenarios pass. The gaps are listed in phase 2 and the top two are known to occur.                                                                                                                                                             |
 | Browser validation | **Blocked.** Gates every claim about what a viewer sees.                                                                                                                                                                                             |
 
@@ -32,12 +32,16 @@ fetches the root chunk back and wraps that, so crossing **4096 bytes** turns one
 publish into three. Ten segments spent **864** of those bytes, so 79% of the chunk was already paid
 for and unused.
 
-| segment   | window before | window now          | required | old verdict            |
-| --------- | ------------: | ------------------- | -------: | ---------------------- |
-| **0.25s** |     **2.50s** | **12.50s** (50 seg) |    2.67s | **short by 172-550ms** |
-| 0.5s      |         5.00s | 25.50s (51 seg)     |    4.91s | fits, by **91ms**      |
-| 1.0s      |        10.00s | 52.00s (52 seg)     |        — | fits                   |
-| 2.0s      |        20.00s | 104.00s (52 seg)    |        — | fits                   |
+The window is a byte budget, so what it holds depends on how long a segment line is. On **latbench**
+`MANIFEST_ACCESS_URL` is set and each line costs 111 bytes against the 79 a bare Swarm reference
+costs, so a deployment that leaves it empty gets 50 segments where this one gets 36.
+
+| segment   | window before | window now (latbench) | bare ref | required | old verdict            |
+| --------- | ------------: | --------------------- | -------: | -------: | ---------------------- |
+| **0.25s** |     **2.50s** | **9.00s** (36 seg)    |   12.50s |    2.67s | **short by 172-550ms** |
+| 0.5s      |         5.00s | 18.00s (36 seg)       |   25.50s |    4.91s | fits, by **91ms**      |
+| 1.0s      |        10.00s | 37.00s (37 seg)       |   52.00s |        — | fits                   |
+| 2.0s      |        20.00s | 74.00s (37 seg)       |  104.00s |        — | fits                   |
 
 `required` is the worst edge-to-fetchable delay in that configuration's clean runs, plus the cadence
 hls.js reloads a live playlist at, plus one segment of margin. **The ten-segment window was adequate
@@ -107,7 +111,7 @@ Live seeking is a different feature and belongs in 1.3.
 
 ### 1.3 A real DVR window
 
-A live viewer can now seek back **12.5 seconds** at the best profile rather than 2.5, and 0.1 spent
+A live viewer can now seek back **9.0 seconds** at the best profile rather than 2.5, and 0.1 spent
 what was free to get there. Past that the manifest leaves one chunk and every publish costs three
 round trips instead of one, so **the next second of DVR is not free and this is where it stops being
 a constant**. A useful DVR means the client addressing segments the live manifest no longer names. It

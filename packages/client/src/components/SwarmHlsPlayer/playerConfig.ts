@@ -51,9 +51,10 @@ const MB = 1024 * 1024;
  * media than this asks for puts a joining viewer at the live edge with no runway, whatever this says.
  * Against the requirements above, the uploader's old ten-segment window held 2.5s at a 0.25s segment
  * and was short in **both** clean runs, by 172ms and 550ms, while clearing the worst 0.5s run by 91ms.
- * The window is now budgeted against one chunk rather than counted in segments, which is 12.5s at
- * 0.25s, and `ManifestManager.test.ts` reads this constant out of this file and fails if the window
- * stops covering it.
+ * The window is now budgeted against one chunk rather than counted in segments, which is 9.0s at
+ * 0.25s on the deployment these numbers were measured on and 12.5s where `MANIFEST_ACCESS_URL` is
+ * left empty, and `ManifestManager.test.ts` reads this constant out of this file and fails if the
+ * window stops covering it.
  *
  * ## What this is not
  *
