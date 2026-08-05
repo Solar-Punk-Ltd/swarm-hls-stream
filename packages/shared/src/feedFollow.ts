@@ -26,6 +26,18 @@ export function makeFeedIdentifier(topic: Topic, index: FeedIndex): Identifier {
   return new Identifier(Binary.keccak256(Binary.concatBytes(topic.toUint8Array(), index.toUint8Array())));
 }
 
+/**
+ * Where one feed slot lives, for a caller that already knows which slot it wants.
+ *
+ * Distinct from `nextFeedRequest`, which answers the follower's question of what comes *after* the
+ * slot it holds. A VOD catalog entry publishes the SOC index of its own final manifest, so a reader
+ * handed one wants that slot exactly. Writing it as an offset from the slot before would be
+ * arithmetic at every call site and would have no answer at index 0.
+ */
+export function feedSlotPath(owner: string, topic: Topic, index: FeedIndex): string {
+  return `soc/${owner}/${makeFeedIdentifier(topic, index).toString()}`;
+}
+
 /** Resolves whichever update is newest, at the cost of a lookup that cannot keep up with a live feed. */
 export interface FeedHeadRequest {
   readonly kind: 'head';
@@ -56,7 +68,7 @@ export function nextFeedRequest(owner: string, topic: Topic, knownIndex: FeedInd
     return { kind: 'head', path: `feeds/${owner}/${topic.toString()}` };
   }
   const index = knownIndex.next();
-  return { kind: 'slot', path: `soc/${owner}/${makeFeedIdentifier(topic, index).toString()}`, index };
+  return { kind: 'slot', path: feedSlotPath(owner, topic, index), index };
 }
 
 /**

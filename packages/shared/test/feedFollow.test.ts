@@ -2,7 +2,7 @@ import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { type FeedRequest, makeFeedIdentifier, nextFeedRequest } from '../src/feedFollow.js';
+import { type FeedRequest, feedSlotPath, makeFeedIdentifier, nextFeedRequest } from '../src/feedFollow.js';
 
 type SlotRequest = Extract<FeedRequest, { kind: 'slot' }>;
 
@@ -91,5 +91,33 @@ describe('nextFeedRequest', () => {
     }
 
     assert.deepEqual(indices, [1n, 2n, 3n, 4n, 5n]);
+  });
+});
+
+/**
+ * The address of a slot a caller already knows the number of, which is a different question from the
+ * one `nextFeedRequest` answers.
+ *
+ * A VOD catalog entry carries the SOC index of its final manifest, so a thumbnail needs *that* slot
+ * rather than the one after it. Expressing that as `nextFeedRequest(owner, topic, index - 1)` reads
+ * as arithmetic nobody can check and is wrong at index 0, so it gets its own name.
+ */
+describe('feedSlotPath', () => {
+  it('addresses the slot it was given, not the one after it', () => {
+    assert.equal(feedSlotPath(OWNER, TOPIC, FeedIndex.fromBigInt(42n)), `soc/${OWNER}/${BEE_JS_IDENTIFIERS[42]}`);
+  });
+
+  it('addresses slot zero, which no offset from a previous slot can reach', () => {
+    assert.equal(feedSlotPath(OWNER, TOPIC, FeedIndex.fromBigInt(0n)), `soc/${OWNER}/${BEE_JS_IDENTIFIERS[0]}`);
+  });
+
+  /**
+   * The two spell one address, so a change to either has to move both. They were separate strings for
+   * about an hour and that is exactly how the last feed-reading rule drifted.
+   */
+  it('spells the same address nextFeedRequest does', () => {
+    const request = nextFeedRequest(OWNER, TOPIC, FeedIndex.fromBigInt(41n));
+
+    assert.equal(request.path, feedSlotPath(OWNER, TOPIC, FeedIndex.fromBigInt(42n)));
   });
 });
