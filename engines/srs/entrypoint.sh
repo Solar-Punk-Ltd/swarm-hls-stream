@@ -24,10 +24,21 @@ require_number() {
 # Segment length, and how much of it the playlist keeps.
 #
 # **This is the largest latency lever on the engine side**, and it is bounded from below by the
-# publisher: SRS can only cut on a keyframe, so the segment a viewer waits for is the first keyframe
+# publisher: SRS prefers to cut on a keyframe, so the segment a viewer waits for is the first keyframe
 # at or after `HLS_FRAGMENT`, not `HLS_FRAGMENT` itself. Measured on the deployment host on
 # 2026-08-03, a 2s GOP against a 1.5 fragment produced segments of exactly 2.00s on every sample.
 # Lowering this alone therefore changes nothing until the GOP comes down with it.
+#
+# **Except past `HLS_AOF_RATIO`, which this comment used to omit and which cost twelve runs.** SRS
+# force-closes a segment at `HLS_FRAGMENT * HLS_AOF_RATIO` whether a keyframe has arrived or not, so
+# the preference above is only a preference while the GOP fits inside that product. On 2026-08-05 a
+# fragment of 0.25 against a 2s GOP produced 0.53s segments of 13 packets, against 2.11s and 59 at a
+# fragment of 1.0: SRS's default ratio is 2.1, and 0.25 * 2.1 is 0.525. Every one of those segments
+# was cut mid-GOP and carried no keyframe, and 281 of them could not be read at all.
+#
+# So the pair has a rule: **`HLS_FRAGMENT <= GOP <= HLS_FRAGMENT * HLS_AOF_RATIO`**. A sweep that
+# holds the fragment still while moving the GOP has to raise the ratio far enough to cover the whole
+# range, which is what the ratio is a knob for.
 #
 # These were configurable on `main` and this branch hard-coded them back, which took the knob away
 # without anything failing. Restored under main's names.
@@ -48,7 +59,10 @@ require_number() {
 # `HLS_WINDOW` stays at fifteen fragments, which is what 22.5 against 1.5 already was.
 require_number HLS_FRAGMENT "${HLS_FRAGMENT:-1.0}"
 require_number HLS_WINDOW "${HLS_WINDOW:-15}"
+# 2.1 is SRS's own default, so naming it here changes no deployment that does not set it.
+require_number HLS_AOF_RATIO "${HLS_AOF_RATIO:-2.1}"
 sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-1.0}/" "$CONF"
+sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO:-2.1}/" "$CONF"
 sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-15}/" "$CONF"
 
 # How long SRT holds a packet waiting for a retransmission before delivering without it.

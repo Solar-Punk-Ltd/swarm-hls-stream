@@ -208,6 +208,9 @@ services:
       # is the largest lever on this side. `main` passed the first two and this branch stopped, which
       # left the entrypoint substituting defaults into a template that no longer had placeholders.
       HLS_FRAGMENT: ${HLS_FRAGMENT:-1.0}
+      # SRS force-closes a segment at `HLS_FRAGMENT * HLS_AOF_RATIO` regardless of keyframes, so this
+      # is the ceiling on the pair rather than a detail. 2.1 is SRS's own default. See the entrypoint.
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-2.1}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
 
