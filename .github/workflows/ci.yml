@@ -59,16 +59,26 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        run: pnpm test
-
-      # Nothing here built the bundle until now, and that is how a build-tool
-      # upgrade shipped a silent browser-target change: typecheck, lint and the
-      # client's five unit tests all pass without a bundler ever running. This
-      # does not check what the bundle contains, only that one can be produced,
-      # which is the cheap half of a gap recorded in full as TEST-22.
+      # Before the tests, not after, because some of them read what it produces.
+      #
+      # `uploaderImage.test.js` asserts that the shared package vendored into the
+      # uploader image still advertises every entry point the source does, and it
+      # reads `packages/stream-uploader/dist/node_modules/...` to do it. With the
+      # build afterwards that file does not exist on a clean checkout, so those
+      # two tests failed on every CI run while passing on any machine that had
+      # built once. A test that only passes on leftover state is worse than no
+      # test: it reports green locally and red where it matters.
+      #
+      # The build also earns its own keep here. A build-tool upgrade once shipped
+      # a silent browser-target change, because typecheck, lint and the client's
+      # unit tests all pass without a bundler ever running. This does not check
+      # what the bundle contains, only that one can be produced, which is the
+      # cheap half of a gap recorded in full as TEST-22.
       - name: Build
         run: pnpm build
+
+      - name: Test
+        run: pnpm test
 
   audit:
     name: audit

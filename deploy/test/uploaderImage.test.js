@@ -85,8 +85,27 @@ describe('the vendored shared manifest keeps every advertised entry point', () =
     'packages/stream-uploader/dist/node_modules/@swarm-hls-stream/shared/package.json',
   );
 
+  /**
+   * Says which precondition is missing rather than surfacing a bare ENOENT.
+   *
+   * These two read a build artifact, and for a while CI ran `pnpm test` before `pnpm build`. The
+   * result was two failures on every clean checkout and none on any machine that had built once,
+   * reported as an unreadable path error. The ordering is fixed in both `verify` and the workflow,
+   * so this should now be unreachable, and it is here to name the cause if it ever is not.
+   */
+  function readVendored() {
+    if (!existsSync(vendoredPath)) {
+      throw new Error(
+        `${vendoredPath} does not exist, so the uploader has not been built in this tree. ` +
+          'Run `pnpm build` first. These tests assert a property of the build output and cannot ' +
+          'run without it.',
+      );
+    }
+    return JSON.parse(readFileSync(vendoredPath, 'utf8'));
+  }
+
   it('exports the same subpaths the source package does', () => {
-    const vendored = JSON.parse(readFileSync(vendoredPath, 'utf8'));
+    const vendored = readVendored();
 
     assert.deepEqual(
       Object.keys(vendored.exports).sort(),
@@ -101,7 +120,7 @@ describe('the vendored shared manifest keeps every advertised entry point', () =
    * shape that would do it, since the source really does point its `exports` at TypeScript.
    */
   it('points every export at a file that exists next to it', () => {
-    const vendored = JSON.parse(readFileSync(vendoredPath, 'utf8'));
+    const vendored = readVendored();
     const vendorDir = dirname(vendoredPath);
 
     for (const [subpath, entry] of Object.entries(vendored.exports)) {
