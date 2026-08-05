@@ -25,7 +25,7 @@ route through it. The catalog does not.
 **Fix: one head lookup on mount, then walk.** Same shape as the player, same shared function, no new
 concept. This is the cheapest of the three and the one whose cost grows without bound.
 
-### 2. VOD thumbnails, where the index is already published and thrown away
+### 2. ✅ VOD thumbnails, where the index was already published and thrown away
 
 [`StreamPreview.tsx`](../../packages/client/src/components/StreamPreview/StreamPreview.tsx) resolves
 `/feeds/{owner}/{hexTopic}` once per card, through a queue at concurrency 1, so ten cards is ten
@@ -44,6 +44,27 @@ helper is already exported and already covered by tests against bee-js's own vec
 **Fix: use the index when the entry has one.** Nothing new is published, nothing changes on the
 uploader, and the fallback for entries without an index is the path that exists today.
 
+**Measured on the real catalog first, then built.** Probe:
+[`vod-thumbnail-index.mjs`](../../e2e/src/probes/vod-thumbnail-index.mjs), 12 entries, round robin.
+
+| arm                          |    min | **median** |    max |
+| ---------------------------- | -----: | ---------: | -----: |
+| head lookup, what a card did | 1107ms | **2647ms** | 4179ms |
+| slot by the published index  |    3ms |    **4ms** |    8ms |
+
+**12 of 12 byte-identical, and the head resolved to exactly the published index every time**, so the
+two arms are the same read reached two ways. That equality was the thing that could have refused the
+change: had the head been newer than the recorded index, an index-addressed thumbnail would show an
+older manifest than today's does.
+
+Worth stating what the queue makes of that. Previews share a `PQueue` at concurrency 1, so the
+lookups are serial: **ten cards is about 26 seconds of head lookups against about 40ms of slot
+reads.** At the time of measurement the catalog held **228 entries, all VOD, all carrying an index**,
+so this covers every card on the page.
+
+Shipped in `1ccb891`, with the address spelled by `feedSlotPath` in the shared package (`da6b043`)
+rather than a second copy of the rule.
+
 ### 3. Live thumbnails, which genuinely have nothing to go on
 
 `notifyStart` publishes a live entry with **no index at all**, unlike the VOD entry. So a live
@@ -55,11 +76,44 @@ is stale almost immediately, and refreshing it costs a catalog feed write per re
 same trade the announce rate limit already manages, and getting it wrong turns a viewer-facing latency
 win into a per-segment postage cost.
 
-**Worth noting the index does not have to be current to help.** A thumbnail is a still image. An index
-from thirty seconds ago addresses a manifest whose segments have expired from the live window, but a
-reader handed a stale position can walk forward from it at 4ms a step, which is the same thing the
-player does. So a coarse periodic refresh may be enough, and how coarse is a measurement rather than a
-judgement.
+#### The cheap version does not work, and here is the arithmetic that says so
+
+The tempting move is to put the index on the live entry for free. `commitManifest` sets `socIndex`
+and then calls `announceToCatalog` in the same pass, so `notifyStart`'s entry could carry the first
+manifest's index at no extra write. A reader handed a stale position walks forward from it, which is
+what the player does.
+
+**That walk inverts partway through a broadcast.** A step costs 4ms and the head lookup it replaces
+costs 2647ms, so walking wins while the stream is under **662 slots** old. The live manifest is
+republished per segment, so at a 0.5s GOP that is one slot every half second:
+
+| broadcast age at 0.5s GOP | slots behind |     walk | head lookup |
+| ------------------------- | -----------: | -------: | ----------: |
+| 1 minute                  |          120 |    480ms |      2647ms |
+| **5.5 minutes**           |      **662** | **2.6s** |    **2.6s** |
+| 30 minutes                |         3600 |    14.4s |      2647ms |
+
+So a fix that helps a stream someone just started makes a long broadcast **five times worse**, and
+which side of the line a viewer lands on depends on when they happened to open the page. That is not
+a fix, it is a coin flip, and it is worth writing down because the free version looked obviously
+correct until the crossover was computed.
+
+#### What is actually on the table
+
+**Address the first manifest and stop.** 4ms flat, no walk, at the cost of showing the opening frame
+of the broadcast rather than a recent one. Worth weighing against how fresh the current thumbnail
+really is: the effect runs once per mount and never refreshes, so a card that has been on screen for
+twenty minutes is already showing a twenty-minute-old frame. The difference is between an old frame
+and the oldest frame, and whether an opening frame is an acceptable thumbnail is a product call
+rather than a measurement.
+
+**Refresh the index periodically.** Keeps a recent frame and costs one catalog feed write per
+refresh. The catalog is currently written twice per stream, at start and at stop, so this is a real
+new cost rather than a reshuffle, and it lengthens the feed every viewer reads.
+
+**Leave live thumbnails on the head lookup.** The status quo, and it is defensible: at the time of
+measurement the catalog held 228 entries and **none of them were live**, because the VOD entry
+replaces the live one on the same `(owner, topic)`. Fix 2 already covers every card on that page.
 
 ## What this is worth, stated as the prediction to check
 
@@ -71,6 +125,9 @@ inside its own interval**, so the catalog is never not in flight.
 The prediction to refute: **fixes 1 and 2 take the steady-state catalog poll to a single slot read at
 about 4ms, and the thumbnail row for finished streams from N lookups to N direct fetches.** If they do
 not, the reasoning above is wrong somewhere.
+
+Both halves were then put to the deployment and both held. The catalog poll is measured below, the
+thumbnail row in the fix 2 section above.
 
 ## ✅ Measured against the real catalog feed, 2026-08-05, and it holds
 
@@ -109,9 +166,14 @@ walking reader on an idle catalog mostly misses.
 [`catalog-head-vs-walk.mjs`](../../e2e/src/probes/catalog-head-vs-walk.mjs) asked whether the
 prediction held on the real feed. Neither needed a broadcast or a deploy.
 
-**Fix 1 is built and pushed** (`a522e28`), with the position kept in a `CatalogFeedReader` that walks
-while slots answer rather than advancing one per poll, because a follower whose catch-up rate equals
-its poll rate never recovers from falling behind. Fixes 2 and 3 are not built.
+[`vod-thumbnail-index.mjs`](../../e2e/src/probes/vod-thumbnail-index.mjs) asked whether the index a
+VOD entry publishes addresses the same manifest the card's own lookup finds, since an index-addressed
+thumbnail showing an older manifest would be a regression however fast it was.
+
+**Fix 1 is built** (`a522e28`), with the position kept in a `CatalogFeedReader` that walks while slots
+answer rather than advancing one per poll, because a follower whose catch-up rate equals its poll rate
+never recovers from falling behind. **Fix 2 is built** (`1ccb891`). Fix 3 is not, and the section
+above argues its cheapest form is a coin flip rather than a fix.
 
 ⚠️ **Browser validation is separately blocked**, so the final confirmation that a real viewer sees the
 improvement cannot come from the automated pane. See the note in the memory on that. The rig answers
