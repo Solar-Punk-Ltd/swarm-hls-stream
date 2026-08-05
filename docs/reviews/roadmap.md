@@ -5,16 +5,17 @@ linked, or marked as a guess. Items already tracked carry their task number.
 
 ## Where the product actually is
 
-|                    | state                                                                                                                                                                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Engine             | **SRS works.** OME is at **6 of 11** e2e and must not be called working.                                                                                                                                                                                                        |
-| LL-HLS             | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams.                            |
-| Live latency       | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. ⛔ **A viewer watching that stream was 17.9s behind reality after 90 seconds, and growing.** See below. |
-| What a viewer sees | ⛔ **12-17% of the wall clock frozen, in 3 of 3 sessions**, and a true glass-to-glass gap that grows by the frozen time. [Measured in a real browser](../bench/viewer-in-a-browser-2026-08-05.md). The publisher is ruled out: it produced 420.0s of media in 419.6s. Task #84. |
-| Seeking            | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                                                   |
-| Live DVR           | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                                                    |
-| Crash recovery     | 6 e2e scenarios pass. The gaps are listed in phase 2 and the top two are known to occur.                                                                                                                                                                                        |
-| Browser validation | ✅ **Unblocked 2026-08-05.** `pnpm browser:selfcheck` proves the browser is a valid instrument in ten seconds for no cost, and `browser:watch` reports VOID rather than a number when it is not.                                                                                |
+|                     | state                                                                                                                                                                                                                                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engine              | **SRS works.** OME is at **6 of 11** e2e and must not be called working.                                                                                                                                                                                                                                                                      |
+| LL-HLS              | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams.                                                                                          |
+| Live latency        | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. ⛔ **A viewer watching that stream was 17.9s behind reality after 90 seconds, and growing.** See below.                                                               |
+| What a viewer sees  | ⛔ **The viewer's picture advances at exactly the rate their client can fetch segments**, measured across three GOPs. At 0.25s that is 0.82x and **17.3% of the wall clock frozen**; at 1.0s it is 0.99x and 2.4%. [Diagnosed](../bench/what-starves-the-viewer-2026-08-05.md), [first measured](../bench/viewer-in-a-browser-2026-08-05.md). |
+| Which profile ships | ⚠️ **1.0s GOP, not the gated 0.25s.** Behind-live is 2.19 / 2.17 / 2.54s across a fourfold change in segment length, so 0.25s's 462ms bench advantage never reaches a viewer and costs 7x the freezing. Task #84 fixes the client, then 0.25s is available again.                                                                             |
+| Seeking             | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                                                                                                                 |
+| Live DVR            | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                                                                                                                  |
+| Crash recovery      | 6 e2e scenarios pass. The gaps are listed in phase 2 and the top two are known to occur.                                                                                                                                                                                                                                                      |
+| Browser validation  | ✅ **Unblocked 2026-08-05.** `pnpm browser:selfcheck` proves the browser is a valid instrument in ten seconds for no cost, and `browser:watch` reports VOID rather than a number when it is not.                                                                                                                                              |
 
 ---
 
@@ -115,7 +116,22 @@ and it earned its keep immediately by catching a clock overlay that silently nev
 **[What it found is worse than what it unblocked.](../bench/viewer-in-a-browser-2026-08-05.md)** The
 byte-budgeted window works, twice measured at 5.96 and 5.97s against a 6s target. But the player
 cannot hold it: 12-17% of the wall clock frozen in 3 of 3 sessions, and a true glass-to-glass gap
-that reached **17.9s while the player reported 1.16s**. Task #84 finds the cause.
+that reached **17.9s while the player reported 1.16s**.
+
+### 1.1b ✅ diagnosed — [the client asks for segments one at a time](../bench/what-starves-the-viewer-2026-08-05.md)
+
+Both obvious causes are **refuted by the request log**: 0 refusals in 469 segment requests, 0ms spent
+on retry delays, and a 125ms median transfer from a gateway that served everything asked of it.
+
+The client's live loop walks **one feed slot per segment**, serially, with at most 2 requests in
+flight: 469 segments against 455 feed reads. Each cycle pays a 51-72ms feed round trip on top of the
+segment's own duration, and gains one segment of media. So the advance ratio is
+`duration / (duration + round trip)`, which is 0.82 at a 0.267s segment and 0.99 at a 1.0s one.
+**Shorter segments do not make the client faster, they make it ask more often.**
+
+⬅ **The fix is in the client, and it is the highest-value change on this roadmap**: ask for the next
+slot while the current segment is still downloading, or fetch several announced segments at once. The
+client already addresses segments by computed slot, so neither needs new information.
 
 ⬅ **1.2 and 1.3 are now measurable.** They were the reason this came first, and they are also now
 lower priority than #84, because a seek feature on a stream that freezes a sixth of the time is not
