@@ -4,8 +4,8 @@ import { Topic } from '@ethersphere/bee-js';
 import { manifestFetcher } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
 import { ManifestStateManager } from '@/components/SwarmHlsPlayer/ManifestManagement';
 import { Stream } from '@/types/stream';
+import { CatalogFeedReader } from '@/utils/catalogFeed';
 import { config } from '@/utils/config';
-import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
 
 type AppContextState = {
   streamList: Stream[];
@@ -54,6 +54,10 @@ export const AppContextProvider = ({ children }: Props) => {
     gatewayRef.current = trimmed;
     setGatewayUrlState(trimmed);
     manifestFetcher.beeUrl = trimmed;
+    // The new node has its own view of the feed, so a position established against the old one would
+    // ask it for slots it may not hold, which reads as a catalog that stopped rather than one being
+    // followed from the wrong place.
+    catalogReader.current.reset();
     ManifestStateManager.getInstance().markAllDirty();
     try {
       localStorage.setItem(GATEWAY_STORAGE_KEY, trimmed);
@@ -62,10 +66,22 @@ export const AppContextProvider = ({ children }: Props) => {
     }
   }, []);
 
+  /**
+   * Kept in a ref rather than rebuilt per call, because its whole value is the position it remembers
+   * between polls. A reader recreated on each render would resolve the head every time, which is the
+   * cost this replaces.
+   */
+  const catalogReader = useRef(new CatalogFeedReader(config.appOwner, Topic.fromString(config.rawAppTopic)));
+
+  /**
+   * Null when nothing is newer than the last poll, which both callers already treat as no change.
+   *
+   * The head is resolved once, on the first call, and every call after asks for the slot after the
+   * one it holds. See `CatalogFeedReader` for why that is worth about a thousand times at the median.
+   */
   const fetchAppState = useCallback(async () => {
-    const topic = Topic.fromString(config.rawAppTopic);
-    const response = await fetchWithTimeout(`${gatewayRef.current}/feeds/${config.appOwner}/${topic.toString()}`);
-    return JSON.parse(response.text);
+    const body = await catalogReader.current.read(gatewayRef.current);
+    return body === null ? null : JSON.parse(body);
   }, []);
 
   const setNewStreamList = (data: any) => {
