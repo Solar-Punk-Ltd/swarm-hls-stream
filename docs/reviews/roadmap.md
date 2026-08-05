@@ -5,15 +5,16 @@ linked, or marked as a guess. Items already tracked carry their task number.
 
 ## Where the product actually is
 
-|                    | state                                                                                                                                                                                                                                                |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Engine             | **SRS works.** OME is at **6 of 11** e2e and must not be called working.                                                                                                                                                                             |
-| LL-HLS             | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams. |
-| Live latency       | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. Nobody has watched it in a browser.                                          |
-| Seeking            | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                        |
-| Live DVR           | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                         |
-| Crash recovery     | 6 e2e scenarios pass. The gaps are listed in phase 2 and the top two are known to occur.                                                                                                                                                             |
-| Browser validation | **Blocked.** Gates every claim about what a viewer sees.                                                                                                                                                                                             |
+|                    | state                                                                                                                                                                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engine             | **SRS works.** OME is at **6 of 11** e2e and must not be called working.                                                                                                                                                                                                        |
+| LL-HLS             | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams.                            |
+| Live latency       | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. ⛔ **A viewer watching that stream was 17.9s behind reality after 90 seconds, and growing.** See below. |
+| What a viewer sees | ⛔ **12-17% of the wall clock frozen, in 3 of 3 sessions**, and a true glass-to-glass gap that grows by the frozen time. [Measured in a real browser](../bench/viewer-in-a-browser-2026-08-05.md). The publisher is ruled out: it produced 420.0s of media in 419.6s. Task #84. |
+| Seeking            | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                                                   |
+| Live DVR           | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                                                    |
+| Crash recovery     | 6 e2e scenarios pass. The gaps are listed in phase 2 and the top two are known to occur.                                                                                                                                                                                        |
+| Browser validation | ✅ **Unblocked 2026-08-05.** `pnpm browser:selfcheck` proves the browser is a valid instrument in ten seconds for no cost, and `browser:watch` reports VOID rather than a number when it is not.                                                                                |
 
 ---
 
@@ -100,15 +101,25 @@ and the off-loop watcher drew a run with nothing to watch. Task #83.
 
 ## Phase 1 — the viewer features
 
-### 1.1 Unblock browser validation — task #48 ⬅ **do this first, it gates the rest of the phase**
+### 1.1 ✅ done — browser validation is unblocked, and it found something
 
-The automated pane is permanently `visibilityState: hidden`, which stops muted video and throttles
-timers once playback stalls, starving hls.js's own loader. A measurement whose subject is degraded by
-observing it is not a weak reading, it is not a reading.
+Real Chrome, headed against an Xvfb display on the deployment host, driven by `playwright-core`.
+The page is genuinely foregrounded, so the hidden-pane failure that produced the 578-second reading
+of 2026-08-03 cannot recur silently: `visibilityState`, timer fidelity and codec support are checked
+on **every sample**, and a run that fails any of them reports **VOID** instead of a number.
 
-**This blocks 1.2, 1.3, the catalog fix's product claim, and every future statement about what a
-viewer sees.** Two candidate routes, neither tried: a headful Chrome session, or a Playwright
-container on the deployment host where the page is genuinely foregrounded.
+`pnpm browser:selfcheck` answers "is this browser a usable instrument" on its own, in ten seconds,
+with no broadcast and no BZZ. It is the cheap first call after any change to the image or the host,
+and it earned its keep immediately by catching a clock overlay that silently never rendered.
+
+**[What it found is worse than what it unblocked.](../bench/viewer-in-a-browser-2026-08-05.md)** The
+byte-budgeted window works, twice measured at 5.96 and 5.97s against a 6s target. But the player
+cannot hold it: 12-17% of the wall clock frozen in 3 of 3 sessions, and a true glass-to-glass gap
+that reached **17.9s while the player reported 1.16s**. Task #84 finds the cause.
+
+⬅ **1.2 and 1.3 are now measurable.** They were the reason this came first, and they are also now
+lower priority than #84, because a seek feature on a stream that freezes a sixth of the time is not
+the thing to build next.
 
 ### 1.2 Seeking
 
