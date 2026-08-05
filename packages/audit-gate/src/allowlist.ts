@@ -22,4 +22,12 @@ export const ALLOWED_ADVISORIES: readonly AllowedAdvisory[] = [
     reason:
       'First patched in react-router 8.3.0, which declares a peer range of react >= 19.2.7 against this client on react 18.3.1, so closing it is a React major migration rather than a bump. The advisory is an RSC mode CSRF bypass, and the client imports only HashRouter, Routes, Route, useNavigate, useParams and useSearchParams, with no createBrowserRouter, RouterProvider, loader, action or server entry point anywhere in src, so the vulnerable path is not built. Registered as SEC-16.',
   },
+  {
+    ghsa: 'GHSA-7p8r-x3mc-p8w7',
+    packageName: 'fast-uri',
+    reviewedSeverity: 'high',
+    reviewedPatchedVersions: '>=3.1.5',
+    reason:
+      'Development tooling only, and the bump is worse than the exposure. fast-uri 3.1.4 arrives twice, through ajv under @commitlint/config-validator and under @stryker-mutator/core, and neither is in any shipped artifact: the client bundle, the uploader image and the CLI all resolve without it. The advisory is host confusion via a backslash authority introducer, which needs a URI from an untrusted source, and the only URIs ajv parses here are the $id and $ref fields of our own commitlint and stryker config schemas, committed in this repository. Against that, 3.1.5 was published 2026-07-31 and is five days old at the time of writing, carries a registry signature but no SLSA provenance attestation, and no malware advisory names the package. Taking a fresh unattested release into the tree to close a path that is not reachable is the larger risk of the two. Revisit when 3.1.5 has aged, or when it arrives on its own through a commitlint or stryker upgrade.',
+  },
 ];
