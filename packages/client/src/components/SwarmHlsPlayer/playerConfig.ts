@@ -13,53 +13,59 @@ const MB = 1024 * 1024;
  * and the buffer is measured back from the live edge, which is that same segment's last, so adding
  * them counts one segment twice.
  *
- * ## Why it was 10, and why that reasoning expired
- *
- * The previous note declined to cut it for two stated reasons: the per-hop split reported an
- * impossible negative upload hop on every sample (LAT-9), and a spread taken over five samples is
- * not a spread. Both are now closed. LAT-9 was the publisher's timestamps running 1.4s ahead of wall
- * clock, and the sweep of 2026-08-03 measured 105 samples over four segment durations, on the
- * deployment host so that no uplink sat inside the numbers.
- *
- * ## What the number is now, and how it was derived
+ * ## What the number has to cover
  *
  * A player stalls unless its buffer covers the largest edge-to-fetchable delay, which is
- * `totalMs - segmentMs` per segment. Measured floors, against a 1.0s segment:
+ * `totalMs - segmentMs` per segment, plus the cadence it asks at, since a segment becomes fetchable
+ * before the player has asked for it. hls.js reloads a live playlist once per target duration and
+ * the uploader declares `ceil(segment duration)`, so that cadence is one second at every segment
+ * length below a second. One segment of margin covers an arrival later than any measured.
  *
- * | segment | observed floor | this constant needs to be |
- * | ------- | -------------- | ------------------------- |
- * | 0.5s    | 2.46s          | 4.96s                     |
- * | 1.0s    | 2.88s          | 5.88s                     |
- * | 2.0s    | 4.45s          | 8.45s                     |
- * | 4.0s    | 6.72s          | 12.72s                    |
+ * ## Re-derived 2026-08-05, and it stays at six
  *
- * The right column is the floor plus the client's manifest poll cadence, since a segment is fetchable
- * before the player has asked for it, plus one segment of margin for an arrival later than any of the
- * 105 measured. Six seconds is the 1.0s row rounded up, and `HLS_FRAGMENT` now defaults to 1.0 for
- * exactly that reason: **these two numbers were chosen together and only make sense together.**
+ * The four clean runs of `docs/bench/quarter-second-2026-08-05.md`, which are the first arrivals
+ * measured with the bench's follower reaching the live edge:
  *
- * A deployment running longer segments has to raise this or it will rebuffer. That coupling is real
- * and this side does not control the other half, which is the same limitation
- * {@link LIVE_MAX_LATENCY_DURATION_S} describes: the target duration is whatever the uploader's
- * segment length makes it.
+ * | segment | samples | observed floor | so this constant needs |
+ * | ------- | ------: | -------------: | ---------------------: |
+ * | 0.25s   |      33 |          1.42s |                  2.67s |
+ * | 0.25s   |      37 |          1.80s |                  3.05s |
+ * | 0.5s    |      67 |          2.92s |                  4.42s |
+ * | 0.5s    |     107 |          3.41s |                  4.91s |
+ *
+ * **Six covers the worst of them by 1.09s.** The value did not move, and only the derivation under
+ * it did: the table this replaces came from the sweep of 2026-08-03, and every figure from before
+ * 2026-08-05 was taken through an instrument with six known defects, two of which made a faster
+ * deployment report worse.
+ *
+ * The floor is not proportional to the segment length across those rows, and two segment lengths are
+ * not a scaling law, so **a deployment running segments longer than 0.5s has no fresh measurement
+ * here** and the old table put the 2.0s floor at 4.45s. Raising this is what such a deployment
+ * would need, and the coupling is the same one {@link LIVE_MAX_LATENCY_DURATION_S} describes: the
+ * target duration is whatever the uploader's segment length makes it, and this side does not choose
+ * it.
+ *
+ * ## The uploader has to name enough media for this to be reachable
+ *
+ * hls.js clamps its sync position to the start of the playlist, so a first manifest holding less
+ * media than this asks for puts a joining viewer at the live edge with no runway, whatever this says.
+ * Against the requirements above, the uploader's old ten-segment window held 2.5s at a 0.25s segment
+ * and was short in **both** clean runs, by 172ms and 550ms, while clearing the worst 0.5s run by 91ms.
+ * The window is now budgeted against one chunk rather than counted in segments, which is 12.5s at
+ * 0.25s, and `ManifestManager.test.ts` reads this constant out of this file and fails if the window
+ * stops covering it.
  *
  * ## What this is not
  *
- * A floor over observed samples is not a proof. Nothing here has been played in a real browser at
- * this setting, so the claim is that 105 measured arrivals would not have stalled a player
+ * A floor over observed samples is not a proof, and these are 244 arrivals over four three-minute
+ * runs rather than a steady state. Nothing here has been played in a real browser at this setting,
+ * which is task #48, so the claim is that the arrivals measured would not have stalled a player
  * configured this way, not that no arrival ever will.
  *
- * ## And on this deployment it is not enough, which is measured rather than feared
- *
- * LAT-10: the feed a player polls stops naming new segments for **30 to 48 seconds at a time**, on a
- * roughly 63 second cycle, for 42% to 70% of a broadcast. That is far outside any buffer worth
- * configuring, so **a player on this deployment rebuffers every cycle whatever this number is**, and
- * raising it would trade constant extra latency for no fewer stalls.
- *
- * The cause is not here and not in the uploader: the segments reach a viewer's gateway node in under
- * a second, and only the single-owner chunk announcing them is slow. **So this number is not the
- * thing to change in response.** It stays derived from the arrival floor, which is what it is for,
- * and `docs/bench/longrun.md` carries the rest.
+ * A paragraph here used to say that a player on this deployment rebuffers every 63 seconds whatever
+ * this number is. That was LAT-10 and it is **retracted**: the freeze was bee's sequential feed head
+ * lookup, which the bench polled every cycle and a player calls only on mount. See
+ * `docs/reviews/freeze-elimination-plan.md`.
  */
 export const LIVE_SYNC_DURATION_S = 6;
 
