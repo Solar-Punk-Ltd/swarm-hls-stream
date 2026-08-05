@@ -11,7 +11,7 @@ linked, or marked as a guess. Items already tracked carry their task number.
 | LL-HLS             | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams. |
 | Live latency       | **1.00-1.06s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP. [Measured today.](../bench/quarter-second-2026-08-05.md) 3-minute screening, never gated at 10.                                                                                     |
 | Seeking            | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                        |
-| Live DVR           | 10 segments. At the best profile that is **2.5 seconds**.                                                                                                                                                                                            |
+| Live DVR           | One chunk of manifest. At the best profile that is **12.5 seconds**, up from 2.5.                                                                                                                                                                    |
 | Crash recovery     | 6 e2e scenarios pass. The gaps are listed in phase 2 and the top two are known to occur.                                                                                                                                                             |
 | Browser validation | **Blocked.** Gates every claim about what a viewer sees.                                                                                                                                                                                             |
 
@@ -21,22 +21,38 @@ linked, or marked as a guess. Items already tracked carry their task number.
 
 Cheap, no new infrastructure, and the first item blocks shipping the profile we just chose.
 
-### 0.1 `LIVE_WINDOW_SIZE` makes the winning profile unshippable ⚠️ new today
+### 0.1 ✅ done — the live window is budgeted in bytes, not counted in segments
 
-`ManifestManager.ts:16` caps the live manifest at **10 segments**, so the media a player can hold is
-`10 × segment length`. `playerConfig.ts` targets a **6 second** sync buffer.
+`LIVE_WINDOW_SIZE = 10` counted segments, so the media a joining viewer could hold was
+`10 × segment length` and collapsed exactly where a viewer had least time to recover.
 
-| GOP       | media in the live manifest | against a 6s target                        |
-| --------- | -------------------------: | ------------------------------------------ |
-| 2.0s      |                        20s | fine                                       |
-| 0.5s      |                         5s | already short                              |
-| **0.25s** |                   **2.5s** | **the player cannot reach its own target** |
+**The binding constraint turned out not to be a count at all, it is one chunk.** bee-js writes a feed
+payload straight into the single-owner chunk while it fits and otherwise uploads it separately,
+fetches the root chunk back and wraps that, so crossing **4096 bytes** turns one round trip per
+publish into three. Ten segments spent **864** of those bytes, so 79% of the chunk was already paid
+for and unused.
 
-**Shortening the GOP shortens the buffer, and that is the whole reason a short GOP is worth having.**
-The two constants were never related to each other and now pull in opposite directions. A window
-counted in **seconds** rather than segments fixes it, and the number should come from the measured
-`smallest buffer that would not have stalled` (1.15-2.10s across today's clean runs) rather than from
-taste. One uploader constant, one client constant, and a test that the two cannot disagree.
+| segment   | window before | window now          | required | old verdict            |
+| --------- | ------------: | ------------------- | -------: | ---------------------- |
+| **0.25s** |     **2.50s** | **12.50s** (50 seg) |    2.67s | **short by 172-550ms** |
+| 0.5s      |         5.00s | 25.50s (51 seg)     |    4.91s | fits, by **91ms**      |
+| 1.0s      |        10.00s | 52.00s (52 seg)     |        — | fits                   |
+| 2.0s      |        20.00s | 104.00s (52 seg)    |        — | fits                   |
+
+`required` is the worst edge-to-fetchable delay in that configuration's clean runs, plus the cadence
+hls.js reloads a live playlist at, plus one segment of margin. **The ten-segment window was adequate
+at every segment length except the one the campaign just chose**, and at 0.5s it was adequate by 2%.
+
+Same one chunk, same one SOC write, so the postage cost per publish did not move.
+`playerConfig.ts` was re-derived on the same runs and **stays at 6 seconds**, clearing the worst
+requirement by 1.09s. A test reads it out of the client's source and fails if the window stops
+covering it.
+
+⚠️ **Left open, and it is new: the window is also the client's gap-repair budget.**
+`uploadLiveManifest` coalesces behind `liveManifestQueued` and `MANIFEST_UPLOAD_RETRY_WINDOW_MS` is
+**15 seconds**, so a stalled publish can advance the window by more segments than it names. Those
+segments appear in no manifest any viewer reads and no discontinuity tag is armed, so the loss is
+silent. Five times the window is five times the tolerance and it does not close the hole.
 
 ### 0.2 The encoder misses its GOP in ~1 run in 3 — task #76
 
@@ -75,10 +91,13 @@ Live seeking is a different feature and belongs in 1.3.
 
 ### 1.3 A real DVR window
 
-Today a live viewer can seek back **2.5 seconds** at the best profile. A useful DVR means the client
-addressing segments the live manifest no longer names. It already has the machinery, since it walks
-feed slots by computed address, so this is a design question rather than a hard one: decide whether
-the client keeps its own history, or whether the uploader publishes a rolling index.
+A live viewer can now seek back **12.5 seconds** at the best profile rather than 2.5, and 0.1 spent
+what was free to get there. Past that the manifest leaves one chunk and every publish costs three
+round trips instead of one, so **the next second of DVR is not free and this is where it stops being
+a constant**. A useful DVR means the client addressing segments the live manifest no longer names. It
+already has the machinery, since it walks feed slots by computed address, so this is a design
+question rather than a hard one: decide whether the client keeps its own history, or whether the
+uploader publishes a rolling index.
 
 ⚠️ Related and already known: the client's manifest state **never trims**, so a long broadcast grows
 it without bound. Fix these together.
@@ -157,6 +176,14 @@ has to be addressable, which means a feed slot per part. Measured today, per hop
 read side, not the encoder, and LL-HLS does nothing about the read side. Adding parts to this
 architecture makes the reader fall behind, which is exactly the failure that made the 0.25s rows
 unreadable until today.
+
+**A second bound came out of 0.1, and it is close rather than already binding.** One chunk of
+manifest names about **50** media lines with a bare Swarm reference and about **37** once
+`MANIFEST_ACCESS_URL` is set. A window has to hold the buffer the client asks for, so at a 6 second
+target the shortest media unit a one-chunk manifest can name is **0.12s** bare and **0.162s** with a
+gateway URL. Parts of 200ms clear that, and a manifest naming parts **and** the segments they belong
+to does not. Past one chunk every publish costs three round trips instead of one, at the moment the
+publish rate is going up.
 
 **So the question worth answering is not "does OME do LL-HLS".** It is: **can a segment be fetched
 without being announced?**
