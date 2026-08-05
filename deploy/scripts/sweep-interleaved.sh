@@ -14,15 +14,24 @@
 # result. This runs one round of every configuration before repeating any of them, and **reverses the
 # order on even rounds**, so position within a round cannot favour a configuration either.
 #
-# ## Why nothing here redeploys
+# ## Why nothing here redeploys, and the condition that makes that safe
 #
-# `HLS_FRAGMENT` is a floor: SRS cuts at the first keyframe at or after it, so whenever the publisher's
-# GOP is longer, the GOP decides the segment. Setting the fragment below the shortest GOP in the grid
-# once, before this starts, makes every configuration reachable from the bench container alone. That
-# removes a compose redeploy per run, and with it the reason this would have needed the laptop.
+# SRS prefers to cut on a keyframe at or after `HLS_FRAGMENT`, but force-closes a segment at
+# `HLS_FRAGMENT * HLS_AOF_RATIO` whether a keyframe arrived or not. So the publisher's GOP decides the
+# segment only while **`HLS_FRAGMENT <= GOP <= HLS_FRAGMENT * HLS_AOF_RATIO`**, and inside that range
+# every configuration below is reachable from the bench container alone, with no compose redeploy and
+# therefore no laptop.
 #
-# The caller must have set `HLS_FRAGMENT` at or below the smallest GOP below and confirmed the SRT
-# ingest is bound. This script cannot check either without the deploy tooling it deliberately avoids.
+# Getting that wrong is not hypothetical. On 2026-08-05 a fragment of 0.25 against SRS's default ratio
+# of 2.1 force-cut every segment at 0.53s regardless of a GOP swept from 0.5s to 2.0s, and twelve runs
+# reported an axis that had never moved. The caller must set the fragment at or below the smallest GOP
+# here, the ratio high enough to cover the largest, and confirm the SRT ingest is bound.
+#
+# ## The guard, which is why that cannot happen twice quietly
+#
+# Every run is checked against its own request before it counts: measured segment span against the
+# requested GOP, packets per segment against what the frame rate implies, and the share of segments
+# that could not be read. A run whose axis did not move is recorded as AXIS-FAIL rather than as a row.
 #
 # Usage, from the repo root on the laptop:
 #   scp deploy/scripts/sweep-interleaved.sh manager-host:~/swarm-hls-bench/
@@ -90,11 +99,26 @@ run_one() {
     "${IMAGE}" pnpm bench:longrun >> "${LOG}" 2>&1
   local status=$?
 
+  # Checked against what it asked for, not merely that it exited zero. A run that swept nothing still
+  # exits zero and still writes a report full of plausible numbers.
+  local verdict
+  if [ ${status} -ne 0 ]; then
+    verdict="RUN-FAILED(${status})"
+  else
+    local newest
+    newest="$(ls -t "${REPO_DIR}"/docs/bench/longrun-*.json 2>/dev/null | head -1)"
+    if [ -z "${newest}" ]; then
+      verdict="NO-REPORT"
+    else
+      verdict="$(python3 "${REPO_DIR}/e2e/src/probes/check-axis.py" "${newest}" "${gop}" 30 2>&1)"
+    fi
+  fi
+  say "  ${verdict}"
+
   # A failed run loses that run and nothing else. Every run is a real broadcast paid for with real
   # postage, so aborting the sweep would throw away everything already measured.
   printf '%s\t%s\t%s\t%s\t%s\t%ss\t%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${round}" "${name}" "${size}" "${kbps}" "${gop}" \
-    "$([ ${status} -eq 0 ] && echo ok || echo "FAILED(${status})")" >> "${STATE}"
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${round}" "${name}" "${size}" "${kbps}" "${gop}" "${verdict}" >> "${STATE}"
   say "round ${round}: ${name} finished in $(( $(date -u +%s) - started ))s, status ${status}"
 }
 
@@ -118,4 +142,4 @@ for round in $(seq 1 "${ROUNDS}"); do
   done
 done
 
-say "sweep done: $(grep -c ok "${STATE}") ok, $(grep -c FAILED "${STATE}") failed"
+say "sweep done: $(grep -c "axis ok" "${STATE}") axis-ok, $(grep -cE "AXIS FAIL|RUN-FAILED|NO-REPORT" "${STATE}") bad, $(grep -c "UNREADABLE-HIGH" "${STATE}") with high unreadable share"
