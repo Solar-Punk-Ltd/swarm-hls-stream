@@ -32,8 +32,8 @@ function ptsForInstant(epochMs: number): number {
   return Math.round(((epochMs / 1_000) * MPEGTS_TIMESCALE) % MPEGTS_WRAP_TICKS);
 }
 
-function windowFrom(startMs: number, observedMs: number): CaptureWindow {
-  return { publishStartedAtMs: startMs, observedAtMs: observedMs };
+function windowFrom(startMs: number, observedMs: number, leadMs = 0): CaptureWindow {
+  return { publishStartedAtMs: startMs, observedAtMs: observedMs, mediaTimelineLeadMs: leadMs };
 }
 
 describe('reading a wall-clock instant back out of an MPEG-TS timestamp', () => {
@@ -237,5 +237,69 @@ describe('correcting a capture instant for a publisher that runs ahead', () => {
   /** A publisher that keeps time needs no correction, which is what a zero lead has to mean. */
   it('changes nothing when the publisher keeps time', () => {
     assert.equal(captureInstantMs(OBSERVED_AT, LATENCY_MS, 0), OBSERVED_AT - LATENCY_MS);
+  });
+});
+
+/**
+ * The arm that says a fast deployment is measurable at all.
+ *
+ * The publisher's timeline runs ahead of wall clock, so a stamp carries `capture + lead` and the
+ * latest value a real one can hold is `observed + lead`. Folding against `observed` alone puts the
+ * fold line inside the range a fast deployment legitimately produces: any frame whose wall-clock
+ * latency beats the lead lands a whole wrap period in the past and is rejected as impossible.
+ *
+ * Not hypothetical, and not symmetric in its damage. Measured 2026-08-05 against a 1386ms lead: at a
+ * 2.0s GOP the fastest segment measured 3028ms and nothing was lost, while at a 0.5s GOP the fastest
+ * survivor measured 1432ms, 46ms clear of the lead, and 79% of a three-minute run was discarded. The
+ * survivors are the slow tail, so the better a configuration was the worse it was reported to be.
+ */
+describe('measuring a deployment that beats the publisher lead (2026-08-05)', () => {
+  const LEAD_MS = 1_386;
+  const PUBLISH_START = REAL_PUBLISH_START_MS;
+
+  /** A frame captured `latencyMs` before it was observed, stamped on a timeline that leads by `LEAD_MS`. */
+  function frameCapturedAgo(latencyMs: number, observedAtMs: number): FramePts {
+    return {
+      pts: ptsForInstant(observedAtMs - latencyMs + LEAD_MS),
+      timescale: MPEGTS_TIMESCALE,
+      wrapTicks: MPEGTS_WRAP_TICKS,
+    };
+  }
+
+  for (const latencyMs of [3_028, 1_432, 900, 200]) {
+    it(`reads a ${latencyMs}ms latency rather than discarding it`, () => {
+      const observedAtMs = PUBLISH_START + 60_000;
+      const frame = frameCapturedAgo(latencyMs, observedAtMs);
+
+      const timelineLatencyMs = latencyMsFromPts(frame, windowFrom(PUBLISH_START, observedAtMs, LEAD_MS));
+
+      // The function answers in the publisher's timeline, and `captureInstantMs` puts it back on wall
+      // clock. Asserting the round trip rather than the intermediate, since that is what a report uses.
+      const capturedAtMs = captureInstantMs(observedAtMs, timelineLatencyMs, LEAD_MS);
+      assert.equal(Math.round(observedAtMs - capturedAtMs), latencyMs);
+    });
+  }
+
+  /** The arm that fails on the old anchoring, which is the whole point of the block. */
+  it('rejects the same frames when the lead is not carried into the fold', () => {
+    const observedAtMs = PUBLISH_START + 60_000;
+    const beatsTheLead = frameCapturedAgo(900, observedAtMs);
+
+    assert.throws(
+      () => latencyMsFromPts(beatsTheLead, windowFrom(PUBLISH_START, observedAtMs, 0)),
+      UnusableTimestampsError,
+      'a frame faster than the lead was accepted without the lead, so this fixture proves nothing',
+    );
+  });
+
+  /** The bounds still have to reject what is genuinely impossible, or the fix has only widened a hole. */
+  it('still refuses a capture instant from before the publisher existed', () => {
+    const observedAtMs = PUBLISH_START + 10_000;
+    const tooOld = frameCapturedAgo(30_000, observedAtMs);
+
+    assert.throws(
+      () => latencyMsFromPts(tooOld, windowFrom(PUBLISH_START, observedAtMs, LEAD_MS)),
+      UnusableTimestampsError,
+    );
   });
 });

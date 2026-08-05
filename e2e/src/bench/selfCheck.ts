@@ -159,7 +159,14 @@ async function runCheck(knobs: PublishKnobs, dir: string): Promise<SelfCheckResu
     // Throws `UnusableTimestampsError` if the recipe stopped carrying the clock, which is the whole
     // point of running this: against a deployment that error is ambiguous between the recipe and the
     // media engine, and here there is no media engine to blame.
-    const latencyMs = latencyMsFromPts(firstFrame, { publishStartedAtMs: startedAtMs, observedAtMs });
+    // Zero, and not because the publisher keeps time. This is the measurement the lead comes OUT of,
+    // so there is nothing yet to correct against, and `measureMediaTimelineLead` below reads it from
+    // these very instants. Passing anything else would fold the answer into its own input.
+    const latencyMs = latencyMsFromPts(firstFrame, {
+      publishStartedAtMs: startedAtMs,
+      observedAtMs,
+      mediaTimelineLeadMs: 0,
+    });
     probed.push({
       capturedAtMs: observedAtMs - latencyMs,
       mediaSpanMs: mediaSpanS * 1_000,

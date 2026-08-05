@@ -331,7 +331,11 @@ async function measureOne(
 ): Promise<PendingSample> {
   const segment = await fetchSegment(gatewayUrl, ref);
   const probed = await probeSegmentBytes(segment.body, ref);
-  const latencyMs = latencyMsFromPts(probed.firstFrame, { publishStartedAtMs, observedAtMs: segment.atMs });
+  const latencyMs = latencyMsFromPts(probed.firstFrame, {
+    publishStartedAtMs,
+    observedAtMs: segment.atMs,
+    mediaTimelineLeadMs,
+  });
   requireSpanFitsTheBroadcast(probed.mediaSpanS, segment.atMs - publishStartedAtMs, ref);
 
   return {
