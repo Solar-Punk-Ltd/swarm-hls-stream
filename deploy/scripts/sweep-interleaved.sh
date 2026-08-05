@@ -262,4 +262,4 @@ for round in $(seq 1 "${ROUNDS}"); do
   done
 done
 
-say "sweep done: $(grep -c "axis ok" "${STATE}") axis-ok, $(grep -cE "AXIS FAIL|RUN-FAILED|NO-REPORT" "${STATE}") bad, $(grep -c "UNREADABLE-HIGH" "${STATE}") with high unreadable share"
+say "sweep done: $(grep -c "axis ok" "${STATE}") axis-ok, $(grep -cE "AXIS FAIL|READER BEHIND|RUN-FAILED|NO-REPORT" "${STATE}") bad, $(grep -c "UNREADABLE-HIGH" "${STATE}") with high unreadable share"
