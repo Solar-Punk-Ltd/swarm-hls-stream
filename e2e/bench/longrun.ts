@@ -240,15 +240,16 @@ function stallLines(
  * that discards them reports a median over everything except the samples that would have moved it.
  */
 function unservedLines(samples: readonly SegmentSample[]): string[] {
-  const waited = samples.filter((sample) => sample.unservedForMs > 0).map((sample) => sample.unservedForMs);
+  const refused = samples.filter((sample) => sample.fetchAttempts > 1);
+  const waited = refused.map((sample) => sample.unservedForMs);
   if (waited.length === 0) {
     return [];
   }
   return [
     '## How long segments stayed unretrievable',
     '',
-    `- **${waited.length} of ${samples.length}** (${((100 * waited.length) / samples.length).toFixed(1)}%) were ` +
-      'refused by the gateway on the first ask and served on a later one.',
+    `- **${waited.length} of ${samples.length}** (${((100 * waited.length) / samples.length).toFixed(1)}%) took ` +
+      'more than one ask, so the gateway refused them and then served them.',
     `- median wait **${seconds(median(waited))}**, p95 ${seconds(percentile(waited, 0.95))}, worst ` +
       `${seconds(Math.max(...waited))}.`,
     '- Segments are uploaded `deferred: true` while the manifest naming them is a synchronous SOC ' +

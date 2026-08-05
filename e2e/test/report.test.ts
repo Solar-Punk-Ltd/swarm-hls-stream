@@ -35,6 +35,7 @@ function sampleOf(index: number, split: LatencySplit, declaredDurationS: number 
     segmentBytes: 750_000,
     // Served on the first ask, which is what a run that does not wait out a refusal always records.
     unservedForMs: 0,
+    fetchAttempts: 1,
   };
 }
 

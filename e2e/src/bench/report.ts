@@ -34,6 +34,8 @@ export interface SegmentSample {
   segmentBytes: number;
   /** How long the gateway refused the bytes before serving them. Zero unless the run waited. */
   unservedForMs: number;
+  /** Asks the segment took. One unless the gateway refused it and the run waited. */
+  fetchAttempts: number;
   /** How many video packets the span was measured across, so a thin reading can be seen as thin. */
   videoPacketCount: number;
 }

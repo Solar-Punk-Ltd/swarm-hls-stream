@@ -124,6 +124,8 @@ interface PendingSample {
    * discarded rather than waited for.
    */
   unservedForMs: number;
+  /** Asks the segment took, so a refusal is distinguishable from a slow download rather than inferred. */
+  fetchAttempts: number;
   capturedAtMs: number;
   visibleAtMs: number;
   fetchedAtMs: number;
@@ -212,6 +214,7 @@ function toSample(
     videoPacketCount: pending.videoPacketCount,
     segmentBytes: pending.segmentBytes,
     unservedForMs: pending.unservedForMs,
+    fetchAttempts: pending.fetchAttempts,
   };
 }
 
@@ -396,6 +399,7 @@ async function measureOne(
     videoPacketCount: probed.videoPacketCount,
     segmentBytes: segment.body.length,
     unservedForMs: segment.unservedForMs,
+    fetchAttempts: segment.attempts,
     capturedAtMs: captureInstantMs(segment.atMs, latencyMs, mediaTimelineLeadMs),
     visibleAtMs,
     fetchedAtMs: segment.atMs,

@@ -330,8 +330,14 @@ export interface UnservedRetry {
 export const NO_UNSERVED_RETRY: UnservedRetry = { budgetMs: 0, recheckMs: 0 };
 
 export interface SegmentFetch extends TimedFetch<Buffer> {
-  /** How long the gateway refused these bytes before serving them. Zero when the first ask worked. */
+  /**
+   * How long the gateway went on refusing these bytes, from the first refusal to the ask that worked.
+   *
+   * Zero when the first ask worked, which is what makes the field readable: it must not include the
+   * successful download, or a segment nothing ever refused reports its own fetch time.
+   */
   unservedForMs: number;
+  /** Asks it took, so a reader can tell a refusal from a slow download without inferring it. */
   attempts: number;
 }
 
@@ -347,8 +353,8 @@ export async function fetchSegment(
   ref: string,
   unserved: UnservedRetry = NO_UNSERVED_RETRY,
 ): Promise<SegmentFetch> {
-  const askedAtMs = Date.now();
-  const deadlineMs = askedAtMs + unserved.budgetMs;
+  const deadlineMs = Date.now() + unserved.budgetMs;
+  let refusedAtMs: number | null = null;
   let attempts = 0;
 
   for (;;) {
@@ -356,12 +362,21 @@ export async function fetchSegment(
     try {
       const response = await timedFetch(`${gatewayUrl}/bytes/${ref}`, SEGMENT_TIMEOUT_MS);
       const body = Buffer.from(await response.arrayBuffer());
-      return { body, atMs: Date.now(), unservedForMs: Date.now() - askedAtMs, attempts };
+      // From the first refusal, not from the first ask. Measuring from the ask counts the successful
+      // download too, so every segment served on the first try reported its own fetch time as though
+      // it had been refused for that long, and the field read 100% non-zero with a 89ms floor.
+      return {
+        body,
+        atMs: Date.now(),
+        unservedForMs: refusedAtMs === null ? 0 : Date.now() - refusedAtMs,
+        attempts,
+      };
     } catch (error) {
       const refused = error instanceof GatewayStatusError && error.status === SEGMENT_NOT_RETRIEVABLE_YET;
       if (!refused || Date.now() + unserved.recheckMs > deadlineMs) {
         throw error;
       }
+      refusedAtMs ??= Date.now();
       await new Promise((resolve) => setTimeout(resolve, unserved.recheckMs));
     }
   }
