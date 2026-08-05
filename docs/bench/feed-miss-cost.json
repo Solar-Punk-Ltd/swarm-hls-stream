@@ -1,0 +1,61 @@
+{
+  "measuredAt": "2026-08-05T07:48:52.315Z",
+  "owner": "3fdb8ff2cf5d03f14bfe898d35d0be06e13fea59",
+  "topic": "13e26dae35993147900c76c5d574d6ae3f53ac5eb75d5e86e9df62480c3160b8",
+  "slots": 20,
+  "rounds": 30,
+  "arms": {
+    "hit": {
+      "n": 30,
+      "min": 2,
+      "median": 5,
+      "p95": 9,
+      "max": 101,
+      "statuses": [
+        200
+      ],
+      "bytes": [
+        79
+      ]
+    },
+    "miss": {
+      "n": 30,
+      "min": 3,
+      "median": 4,
+      "p95": 1405,
+      "max": 1477,
+      "statuses": [
+        404
+      ],
+      "bytes": [
+        62
+      ]
+    },
+    "farMiss": {
+      "n": 30,
+      "min": 2,
+      "median": 5,
+      "p95": 1547,
+      "max": 1558,
+      "statuses": [
+        404
+      ],
+      "bytes": [
+        62
+      ]
+    },
+    "head": {
+      "n": 30,
+      "min": 2560,
+      "median": 4012,
+      "p95": 5570,
+      "max": 5617,
+      "statuses": [
+        200
+      ],
+      "bytes": [
+        79
+      ]
+    }
+  }
+}
