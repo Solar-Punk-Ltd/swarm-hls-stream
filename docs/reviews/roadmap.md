@@ -80,10 +80,20 @@ rate on passing runs so a mildly throttled one is visible rather than silent.
 throttle cannot be read out of any run already taken. Recording it costs nothing extra, since the
 probe already downloads each segment and discards the size.
 
-### 0.3 Gate the 0.25s winner at 10 minutes — task #72
+### 0.3 ✅ done — the 0.25s winner holds at 10 minutes
 
-Screening is 3 minutes by design. ⚠️ **A full 10-minute grid is ~120 minutes of publishing and would
-exhaust the uploader chequebook**, so this one needs sizing with the owner before it starts.
+[Six 10-minute runs, 6 of 6 usable.](../bench/ten-minute-gate-2026-08-05.md) **0.25s measured 1055,
+1081 and 1084ms, a 29ms spread and the tightest repeatability this project has recorded**, against
+1502-1596ms for the 0.5s reference. No run drifted: every one has `msPerMinute` below its own scatter.
+The encoder delivered 30.0-30.1fps in all six, so the publisher throttle of 0.2 did not appear once.
+
+⚠️ **The gap narrowed from the ~650ms the 3-minute screening claimed to 462ms.** The ordering holds.
+
+⚠️ **Two things the 0.25s profile pays, absent at 0.5s, and they are one fact from two ends.**
+5-14% of segments are refused on the first ask, and the reader spends its whole walk budget on half
+its polls. Both come from four segments a second against per-segment costs near their budgets: the
+segment queue runs at 89% duty at 0.25s against 55% at 0.5s. **Refused is not lost** and how long the
+wait is remains the open question.
 
 ---
 
