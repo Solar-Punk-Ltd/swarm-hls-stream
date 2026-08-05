@@ -49,6 +49,12 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.segmentsSkippedTotal,
     },
     {
+      name: 'segments_never_named_total',
+      type: 'counter',
+      help: 'Segments uploaded to Swarm that no published manifest ever named, so no viewer can reach them.',
+      value: snapshot.segmentsNeverNamedTotal,
+    },
+    {
       name: 'auth_rejections_total',
       type: 'counter',
       help: 'Requests refused by a credential gate. Rising with no ingest means a secret this deployment holds is wrong.',

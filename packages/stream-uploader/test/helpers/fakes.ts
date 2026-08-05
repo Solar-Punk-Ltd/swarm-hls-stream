@@ -127,6 +127,7 @@ export function makeMetricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): M
     segmentsDroppedTotal: 0,
     segmentsLostTotal: 0,
     segmentsSkippedTotal: 0,
+    segmentsNeverNamedTotal: 0,
     manifestPublishFailuresTotal: 0,
     streamsFinalizedTotal: 0,
     streamsFailedTotal: 0,

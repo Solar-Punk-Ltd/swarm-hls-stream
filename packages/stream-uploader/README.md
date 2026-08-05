@@ -115,6 +115,7 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone     |
 | `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin      |
 | `swarm_hls_segments_skipped_total`          | counter | Segments discarded on purpose at a puller handover          |
+| `swarm_hls_segments_never_named_total`      | counter | Segments in Swarm that no published manifest named          |
 | `swarm_hls_auth_rejections_total`           | counter | Requests refused by a credential gate                       |
 | `swarm_hls_takeovers_refused_total`         | counter | Announces refused because a live session still holds the id |
 | `swarm_hls_manifest_publish_failures_total` | counter | Live manifest publishes that failed                         |

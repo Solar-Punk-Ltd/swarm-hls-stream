@@ -148,6 +148,57 @@ describe('the live window is bounded by bytes rather than by a segment count', (
 });
 
 /**
+ * The window is also the client's gap-repair budget, and nothing measured it.
+ *
+ * A viewer only ever learns of a segment that appears in some manifest it reads, and it reads every
+ * feed slot. `uploadLiveManifest` coalesces behind `liveManifestQueued` while a publish is in flight,
+ * and `MANIFEST_UPLOAD_RETRY_WINDOW_MS` lets one publish occupy 15 seconds, so segments can be
+ * produced and uploaded faster than the window that names them advances. The bytes are in Swarm and
+ * perfectly retrievable. No viewer is ever told the address.
+ */
+describe('segments the window slid past before anything named them', () => {
+  it('reports none while every segment still fits', () => {
+    assert.equal(withSegments(3, 2).segmentsNeverNamed(0), 0);
+  });
+
+  it('counts the segments between the last announced one and the window', () => {
+    const manager = withSegments(500, 2);
+    const held = segmentUris(manager.buildLiveManifest()).length;
+
+    // Announced through segment 100, and the window now starts at 500 - held.
+    assert.equal(manager.segmentsNeverNamed(100), 500 - held - 101);
+  });
+
+  it('reports none when the last announced segment is still inside the window', () => {
+    const manager = withSegments(500, 2);
+    const first = 500 - segmentUris(manager.buildLiveManifest()).length;
+
+    assert.equal(manager.segmentsNeverNamed(first), 0);
+    assert.equal(manager.segmentsNeverNamed(499), 0);
+  });
+
+  // A segment whose own upload failed was never added, and `recordSegmentDropped` already owns it.
+  // Counting the hole it left here would report the same loss twice under two different causes.
+  it('counts only segments it actually holds, so a dropped one is not counted twice', () => {
+    const manager = new ManifestManager('');
+    for (let i = 0; i < 500; i++) {
+      if (i !== 50 && i !== 51) {
+        manager.addSegment(i, 2, ref(i));
+      }
+    }
+    const held = segmentUris(manager.buildLiveManifest()).length;
+    const total = 498;
+
+    assert.equal(manager.segmentsNeverNamed(0), total - held - 1);
+  });
+
+  it('names the newest segment the window reaches, which is what was announced', () => {
+    assert.equal(withSegments(500, 2).liveWindowNewestIndex(), 499);
+    assert.equal(new ManifestManager('').liveWindowNewestIndex(), null);
+  });
+});
+
+/**
  * The one number this side does not own.
  *
  * hls.js holds playback `liveSyncDuration` behind the live edge, and clamps that position to the

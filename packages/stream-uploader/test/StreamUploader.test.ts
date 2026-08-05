@@ -2,6 +2,7 @@ import { Bee } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { ManifestManager } from '../src/libs/ManifestManager.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
@@ -579,5 +580,114 @@ describe('StreamUploader recovery persist failures (OBS-4)', () => {
     await drain(uploader);
 
     assert.equal(uploader.getMsSinceStatePersistFailed(), null, 'a save that landed must clear the signal');
+  });
+});
+
+/**
+ * A segment line long enough that only a few fit in one chunk, so a modest fixture overflows the
+ * window. The real deployment reaches the same state with 36 segments and a 0.25s GOP, which is nine
+ * seconds of a stalled publish, and a publish may retry for fifteen.
+ */
+const WIDE_MANIFEST_URL = `http://bee.test/${'p'.repeat(1_000)}`;
+
+/** How many of `count` segments a live manifest built the same way would actually name. */
+function liveWindowSize(count: number, manifestBeeUrl: string): number {
+  const probe = new ManifestManager(manifestBeeUrl);
+  for (let i = 0; i < count; i++) {
+    probe.addSegment(i, 2, `ref${i}`);
+  }
+  return probe
+    .buildLiveManifest()
+    .split('\n')
+    .filter((line) => line.length > 0 && !line.startsWith('#')).length;
+}
+
+/** A bee whose first feed write blocks until released, so segments pile up behind one publish. */
+function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void): Bee {
+  let refCounter = 0;
+  let publishes = 0;
+  const bee = {
+    uploadData: async () => ({ reference: { toHex: () => `ref${refCounter++}` } }),
+    makeFeedWriter: () => ({
+      uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => {
+        publishes += 1;
+        if (publishes === 1) {
+          entered();
+          await held;
+        }
+        return { reference: { toHex: () => `soc${opts.index}` } };
+      },
+    }),
+  };
+  return bee as unknown as Bee;
+}
+
+/**
+ * The quietest way this uploader can lose a piece of a broadcast.
+ *
+ * A viewer learns of a segment only from a manifest naming it. `uploadLiveManifest` coalesces behind
+ * `liveManifestQueued` while a publish is in flight, and the segment queue is a separate queue that
+ * keeps running, so a publish slow enough lets the window advance past segments that were uploaded
+ * perfectly well. Their bytes are in Swarm. No playlist names them, and `pendingDiscontinuity`
+ * answers a failed upload rather than this, so not even a discontinuity marks the hole.
+ */
+describe('segments the live window outran before anything published them', () => {
+  function uploaderWith(bee: Bee, manifestBeeUrl: string): StreamUploader {
+    return new StreamUploader(
+      bee,
+      manifestBeeUrl,
+      makeFakeCatalog(),
+      makeFakeRecoveryStore(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+      {},
+    );
+  }
+
+  it('counts the segments no published manifest ever named', async () => {
+    let release = (): void => {};
+    let entered = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const firstPublishStarted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+
+    const uploader = uploaderWith(
+      beeWithHeldFirstPublish(held, () => entered()),
+      WIDE_MANIFEST_URL,
+    );
+
+    // The first publish names segment 0 alone, and is held there.
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await firstPublishStarted;
+
+    // Nine more upload while it is held, so the next publish is built from all ten.
+    for (let index = 1; index <= 9; index++) {
+      uploader.handleSegment(index, 2, Buffer.from('a'));
+    }
+    await uploader.segmentQueue.onIdle();
+
+    release();
+    await drain(uploader);
+
+    const named = liveWindowSize(10, WIDE_MANIFEST_URL);
+    assert.ok(named < 9, `fixture must overflow the window, but it named ${named} of 10`);
+    // Everything after segment 0 and before the window: ten segments, less the window, less segment 0.
+    assert.equal(uploader.getSegmentsNeverNamed(), 10 - named - 1);
+  });
+
+  it('counts nothing while every segment still reaches a manifest', async () => {
+    const uploader = uploaderWith(makeBee({}), '');
+
+    for (let index = 0; index < 5; index++) {
+      uploader.handleSegment(index, 2, Buffer.from('a'));
+      await drain(uploader);
+    }
+
+    assert.equal(uploader.getSegmentsNeverNamed(), 0);
   });
 });

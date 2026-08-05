@@ -95,6 +95,35 @@ export class ManifestManager {
     ]);
   }
 
+  /**
+   * The newest segment the live window reaches, which is the newest segment there is.
+   *
+   * Read together with {@link buildLiveManifest} and before anything is awaited, since `addSegment`
+   * runs between awaits: an index read after the publish returns would name a segment the published
+   * manifest did not hold.
+   */
+  public liveWindowNewestIndex(): number | null {
+    return this.segments.length === 0 ? null : this.segments[this.segments.length - 1].index;
+  }
+
+  /**
+   * Segments held here that start before the live window and after `announcedThrough`.
+   *
+   * These were uploaded, so their bytes are in Swarm and any viewer handed the address could fetch
+   * them. The window slid past them before a manifest naming them was published, and a viewer learns
+   * of a segment only from a manifest, so nothing will ever tell one that they exist. No
+   * discontinuity is armed either, because `pendingDiscontinuity` answers a failed segment upload
+   * rather than a window that outran its own publishing.
+   *
+   * Counted over the segments actually held rather than as an index range, so a segment whose upload
+   * failed and which was therefore never added is not counted a second time here on top of
+   * `recordSegmentDropped`.
+   */
+  public segmentsNeverNamed(announcedThrough: number): number {
+    const windowStart = this.segments.length - this.liveWindowLength();
+    return this.segments.slice(0, windowStart).filter((seg) => seg.index > announcedThrough).length;
+  }
+
   public getTotalDuration(): number {
     return this.segments.reduce((sum, seg) => sum + seg.duration, 0);
   }

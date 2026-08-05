@@ -79,6 +79,15 @@ export class StreamUploader {
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
   private consecutiveSegmentFailures = 0;
+  /**
+   * The newest segment index a published live manifest has named, or null before the first publish.
+   *
+   * Null rather than restored from persisted state after a crash: the window a recovered uploader
+   * publishes is built from segments it did reload, so a restored value would report the whole
+   * outage as segments this uploader failed to name when nothing here failed at all.
+   */
+  private announcedThrough: number | null = null;
+  private segmentsNeverNamed = 0;
   /** Whether the recovery entry under this stream id still describes this uploader. See `retire`. */
   private ownsRecoveryEntry = true;
   /** The one finalize this session gets, so a second caller joins it rather than repeating it. */
@@ -377,6 +386,13 @@ export class StreamUploader {
       if (!manifest) {
         return;
       }
+      // Both read here, beside the build and before anything is awaited. `handleSegment` runs between
+      // awaits, so either read taken after the publish returns would describe a manifest other than
+      // the one being published.
+      const newestNamed = this.manifestManager.liveWindowNewestIndex();
+      const neverNamed =
+        this.announcedThrough === null ? 0 : this.manifestManager.segmentsNeverNamed(this.announcedThrough);
+
       const index = await this.commitManifest(manifest);
       if (index === null) {
         this.consecutiveManifestFailures += 1;
@@ -384,10 +400,45 @@ export class StreamUploader {
         this.logger.warn(
           `Live manifest for stream ${this.streamId} is stale: ${this.consecutiveManifestFailures} consecutive publish failure(s)`,
         );
-      } else {
-        this.consecutiveManifestFailures = 0;
+        return;
       }
+
+      this.consecutiveManifestFailures = 0;
+      this.reportSegmentsNeverNamed(neverNamed);
+      this.announcedThrough = newestNamed;
     });
+  }
+
+  /**
+   * Segments that were uploaded and that no manifest will ever name.
+   *
+   * Their bytes are in Swarm and any viewer handed the address could fetch them. A viewer learns of a
+   * segment only from a manifest, and the window slid past these before one naming them was
+   * published, so the media is simply missing from every playlist with no discontinuity to mark it.
+   * That makes this the quietest way this uploader can lose a piece of a broadcast, and until now
+   * nothing counted it: `recordSegmentDropped` answers a failed upload and `recordSegmentsLost`
+   * answers segments the engine never had.
+   *
+   * The window has to outrun its own publishing for this to happen, which
+   * `MANIFEST_UPLOAD_RETRY_WINDOW_MS` permits for {@link MANIFEST_UPLOAD_RETRY_WINDOW_MS}ms while the
+   * segment queue keeps running.
+   */
+  private reportSegmentsNeverNamed(count: number): void {
+    if (count === 0) {
+      return;
+    }
+    this.segmentsNeverNamed += count;
+    this.metrics?.recordSegmentsNeverNamed(count);
+    this.logger.warn(
+      `Stream ${this.streamId} published a live manifest that skipped ${count} uploaded segment(s): ` +
+        `the window advanced past them before a manifest naming them was published, so no viewer can ` +
+        `reach them. ${this.segmentsNeverNamed} total this stream.`,
+    );
+  }
+
+  /** Segments uploaded but never named in any published manifest, for the life of this stream. */
+  public getSegmentsNeverNamed(): number {
+    return this.segmentsNeverNamed;
   }
 
   private async commitManifest(manifestContent: string): Promise<number | null> {

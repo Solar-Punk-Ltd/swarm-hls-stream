@@ -19,6 +19,7 @@ export class ServiceMetrics {
   private streamsFinalized = 0;
   private streamsFailed = 0;
   private segmentsSkipped = 0;
+  private segmentsNeverNamed = 0;
   private authRejections = 0;
   private takeoversRefused = 0;
   private lastSegmentAt: number | null = null;
@@ -66,6 +67,19 @@ export class ServiceMetrics {
     this.segmentsSkipped += count;
   }
 
+  /**
+   * Segments uploaded successfully that no published manifest ever named.
+   *
+   * Distinct from all three counters above, and the distinction is the whole reason it exists. These
+   * were not dropped, the engine did have them, and nothing chose to discard them: they are in Swarm
+   * and retrievable, and the live window advanced past them before a manifest naming them was
+   * published, so no viewer is ever told the address. Nothing else in this class can be non-zero when
+   * this is, which is what makes it worth reading on its own.
+   */
+  public recordSegmentsNeverNamed(count: number): void {
+    this.segmentsNeverNamed += count;
+  }
+
   /** A request a credential gate refused. Never reset, so a scraper can take a rate over it. */
   public recordAuthRejection(at: number): void {
     this.authRejections += 1;
@@ -103,6 +117,7 @@ export class ServiceMetrics {
       segmentsDroppedTotal: this.segmentsDropped,
       segmentsLostTotal: this.segmentsLost,
       segmentsSkippedTotal: this.segmentsSkipped,
+      segmentsNeverNamedTotal: this.segmentsNeverNamed,
       manifestPublishFailuresTotal: this.manifestPublishFailures,
       streamsFinalizedTotal: this.streamsFinalized,
       streamsFailedTotal: this.streamsFailed,
@@ -119,6 +134,7 @@ export interface MetricsCounters {
   segmentsLostTotal: number;
   /** Segments the CON-20 handover floor discarded on purpose. Correct behaviour, not a failure. */
   segmentsSkippedTotal: number;
+  segmentsNeverNamedTotal: number;
   manifestPublishFailuresTotal: number;
   streamsFinalizedTotal: number;
   streamsFailedTotal: number;
