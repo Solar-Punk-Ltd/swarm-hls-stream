@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -35,7 +35,9 @@ const SCRIPT = join(ROOT, 'deploy/scripts/sweep-interleaved.sh');
 const cleanups = [];
 
 after(() => {
-  for (const cleanup of cleanups) cleanup();
+  for (const cleanup of cleanups) {
+    cleanup();
+  }
 });
 
 const PLUR_PER_BZZ = 10n ** 16n;
