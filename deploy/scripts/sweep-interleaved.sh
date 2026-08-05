@@ -98,12 +98,22 @@ mkdir -p "${OUT_DIR}"
 # push a fast configuration to look worse: the broken feed reader, and a wrap fold that discarded any
 # sample beating the publisher's own 1.39s lead. It can only be judged against rows taken beside it,
 # which is what this sweep is for.
-CONFIGS=(
-  "ref-720-2.0:1280x720:2500:2.0"
-  "720-0.25:1280x720:2500:0.25"
-  "720-0.5:1280x720:2500:0.5"
-  "720-1.0:1280x720:2500:1.0"
-)
+#
+# `SWEEP_CONFIGS` overrides the grid with a space-separated list in the same form. The point is to
+# answer one question with the runs it needs rather than the whole screen: a focused pair still gets
+# the interleaving, the reversal, the axis guard and the funding check, and a question that needs two
+# configurations should not cost four. Keep a reference row in any override, since a row read against
+# nothing taken beside it is a number from another sitting.
+if [ -n "${SWEEP_CONFIGS:-}" ]; then
+  read -r -a CONFIGS <<< "${SWEEP_CONFIGS}"
+else
+  CONFIGS=(
+    "ref-720-2.0:1280x720:2500:2.0"
+    "720-0.25:1280x720:2500:0.25"
+    "720-0.5:1280x720:2500:0.5"
+    "720-1.0:1280x720:2500:1.0"
+  )
+fi
 
 say() {
   echo "[$(date -u +%H:%M:%S)] $*" >> "${LOG}"

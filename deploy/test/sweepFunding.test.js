@@ -79,7 +79,7 @@ async function startChequebook(availableBzz) {
  * The burn rates and margin are pinned here so the expected figures follow from the test's own
  * inputs rather than from whatever the measured constants happen to be this month.
  */
-async function runPreflight({ uploaderPort, gatewayPort, rounds = 1, minutes = 3 }) {
+async function runPreflight({ uploaderPort, gatewayPort, rounds = 1, minutes = 3, configs }) {
   const out = mkdtempSync(join(tmpdir(), 'sweep-funds-'));
   cleanups.push(() => rmSync(out, { recursive: true, force: true }));
 
@@ -89,6 +89,7 @@ async function runPreflight({ uploaderPort, gatewayPort, rounds = 1, minutes = 3
     PREFLIGHT_ONLY: '1',
     ROUNDS: String(rounds),
     MINUTES: String(minutes),
+    ...(configs === undefined ? {} : { SWEEP_CONFIGS: configs }),
     UPLOADER_BEE_PORT: String(uploaderPort),
     GATEWAY_BEE_PORT: String(gatewayPort),
     UPLOADER_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n), // 0.01 BZZ per minute
@@ -151,8 +152,31 @@ describe('a sweep proves it can pay before it publishes anything', () => {
     const one = await runPreflight({ uploaderPort: funded, gatewayPort: funded, rounds: 1 });
     const three = await runPreflight({ uploaderPort: funded, gatewayPort: funded, rounds: 3 });
 
-    const needed = ({ log }) => Number(log.match(/preflight: uploader has [\d.]+ BZZ, needs ([\d.]+)/)[1]);
     assert.ok(needed(one) > 0);
     assert.equal(needed(three), needed(one) * 3);
   });
+
+  /**
+   * A focused pair costs what a pair costs, so a question needing two configurations does not have to
+   * buy four. The estimate has to follow the override or the funding check would guard the default
+   * grid while the sweep ran a different one.
+   */
+  it('prices the grid it was given rather than the one in the script', async () => {
+    const funded = await startChequebook(500);
+    const pair = await runPreflight({
+      uploaderPort: funded,
+      gatewayPort: funded,
+      configs: 'ref-720-0.5:1280x720:2500:0.5 720-0.25:1280x720:2500:0.25',
+    });
+    const fullGrid = await runPreflight({ uploaderPort: funded, gatewayPort: funded });
+
+    assert.match(pair.log, /sweep starting: 2 configs/);
+    assert.match(fullGrid.log, /sweep starting: 4 configs/);
+    assert.equal(needed(pair) * 2, needed(fullGrid));
+  });
 });
+
+/** The uploader's estimate for the whole sweep, in BZZ, as the preflight reported it. */
+function needed({ log }) {
+  return Number(log.match(/preflight: uploader has [\d.]+ BZZ, needs ([\d.]+)/)[1]);
+}
