@@ -32,16 +32,23 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-PROFILE="latbench"
-PORT_SLOT="7"
+# Named apart from `_lib.sh`'s own PROFILE and PORT_SLOT, which sourcing it resets. Reading them
+# back after the source produced `--portSlot=0`, which silently means "keep the env file's ports",
+# and the run went looking for the client on the unshifted default port instead of this profile's.
+WANT_PROFILE="latbench"
+WANT_PORT_SLOT="7"
 TARGET="manager-host"
 PASSTHROUGH=()
 FORWARDED=()
+# `browser:selfcheck` answers whether the browser is a usable instrument and needs no broadcast, so
+# it is the cheap first call whenever anything about the image or the host has changed.
+SCRIPT="browser:watch"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --profile) PROFILE="$2"; FORWARDED+=(--profile "$2"); shift 2 ;;
-    --portSlot) PORT_SLOT="$2"; FORWARDED+=(--portSlot "$2"); shift 2 ;;
+    --script) SCRIPT="$2"; shift 2 ;;
+    --profile) WANT_PROFILE="$2"; FORWARDED+=(--profile "$2"); shift 2 ;;
+    --portSlot) WANT_PORT_SLOT="$2"; FORWARDED+=(--portSlot "$2"); shift 2 ;;
     --target) TARGET="$2"; FORWARDED+=(--target "$2"); shift 2 ;;
     --no-setup) FORWARDED+=(--no-setup); shift ;;
     --) shift; PASSTHROUGH=("$@"); break ;;
@@ -52,7 +59,7 @@ done
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "$0")" && pwd)/_lib.sh"
 
-parse_profile_args "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}"
+parse_profile_args "--profile=${WANT_PROFILE}" "--portSlot=${WANT_PORT_SLOT}"
 load_env
 apply_port_slot
 
@@ -66,5 +73,5 @@ exec "${REPO_ROOT}/deploy/scripts/bench-on-host.sh" \
   ${FORWARDED[@]+"${FORWARDED[@]}"} \
   --image swarm-hls-browser \
   --dockerfile e2e/Dockerfile.browser \
-  --script browser:watch \
+  --script "${SCRIPT}" \
   -- "BROWSER_CLIENT_URL=http://127.0.0.1:${CLIENT_PORT}" ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}
