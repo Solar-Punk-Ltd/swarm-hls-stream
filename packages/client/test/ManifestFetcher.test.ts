@@ -11,7 +11,12 @@ import {
   type FeedState,
   UNSERVED_SLOT_POLL_LIMIT,
 } from '../src/components/SwarmHlsPlayer/feedState';
-import { ManifestFetcher, ManifestStateManager, waitMs } from '../src/components/SwarmHlsPlayer/ManifestManagement';
+import {
+  ManifestFetcher,
+  ManifestStateManager,
+  MAX_SLOTS_PER_POLL,
+  waitMs,
+} from '../src/components/SwarmHlsPlayer/ManifestManagement';
 
 const BEE_URL = 'http://bee.test';
 const OWNER = '0x1111111111111111111111111111111111111111';
@@ -21,15 +26,23 @@ const START_INDEX = 5n;
 /** Where a restart's `handleInitialFetch` re-anchors, far enough ahead that a rewind is unmistakable. */
 const RESYNCED_INDEX = 40n;
 
-/** How far ahead the fixture can answer, which is more slots than any test here consumes. */
-const LAST_SEEDED_INDEX = 12n;
+/**
+ * How far the fixture can name a slot by address.
+ *
+ * Distinct from how far its publisher has written, which each test sets for itself. A request past
+ * this is one the fixture cannot recognise at all, which is a limit of the fixture rather than a case
+ * under test, so `stubFetch` asserts on it instead of answering. It has to clear
+ * {@link MAX_SLOTS_PER_POLL} slots past any index a test starts from, since one poll may now consume
+ * that many.
+ */
+const LAST_ADDRESSABLE_INDEX = 128n;
 
 const topic = Topic.fromString(TOPIC_NAME);
 const hexTopic = topic.toString();
 
 /** Feed slot ids the publisher would write, so a request can be read back as the index it asked for. */
 const indexById = new Map<string, bigint>();
-for (let i = 0n; i <= LAST_SEEDED_INDEX; i++) {
+for (let i = 0n; i <= LAST_ADDRESSABLE_INDEX; i++) {
   indexById.set(makeFeedIdentifier(topic, FeedIndex.fromBigInt(i)).toString(), i);
 }
 
@@ -80,6 +93,7 @@ const realConsoleError = console.error;
 describe('ManifestFetcher follow-up fetches (CON-29)', () => {
   let fetcher: ManifestFetcher;
   let requested: bigint[];
+  let publishedThrough: bigint;
 
   beforeEach(() => {
     manager.clear(hexTopic);
@@ -94,6 +108,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     fetcher = new ManifestFetcher(manager);
     fetcher.beeUrl = BEE_URL;
     requested = [];
+    publishedThrough = START_INDEX + 1n;
   });
 
   afterEach(() => {
@@ -101,8 +116,21 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     console.error = realConsoleError;
   });
 
+  /**
+   * What a publisher who has written every slot up to `publishedThrough` answers.
+   *
+   * A slot past that is a 404, which is the ordinary answer to a viewer who has caught up, and the
+   * only thing that tells a poll to stop walking. A fixture that served every address instead would
+   * let one poll run to {@link MAX_SLOTS_PER_POLL} in tests about something else entirely.
+   */
+  function servedByPublisher(index: bigint): Response {
+    return index <= publishedThrough
+      ? new Response(manifestForIndex(index))
+      : new Response('not found', { status: 404 });
+  }
+
   /** Answers every follow-up request, holding each one open until `gate` resolves. */
-  function stubFetch(gate: Promise<void>, respond = (index: bigint) => new Response(manifestForIndex(index))): void {
+  function stubFetch(gate: Promise<void>, respond = servedByPublisher): void {
     globalThis.fetch = async (input: RequestInfo | URL) => {
       const index = requestedIndex(String(input));
       assert.notEqual(index, undefined, `a slot outside the fixture was requested: ${String(input)}`);
@@ -121,6 +149,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
   // parse, where "nothing new, keep polling" and "this slot was consumed, advance" are the same
   // value read two ways.
   it('does not consume a feed slot it never fetched when two follow-up fetches overlap', async () => {
+    publishedThrough = START_INDEX + 4n; // room for the pair to advance past a slot nobody fetched
     const gate = deferred<void>();
     stubFetch(gate.promise);
 
@@ -152,6 +181,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     await settle();
 
     const afterFirst = manager.getIndex(hexTopic)!.toBigInt();
+    publishedThrough = afterFirst + 1n; // the publisher wrote one more slot between the two polls
     const second = deferred<void>();
     stubFetch(second.promise);
     requested.length = 0; // only what the later poll asks for is under test here
@@ -159,7 +189,11 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     second.resolve();
     await settle();
 
-    assert.deepEqual(requested, [afterFirst + 1n], `the later poll asked for ${requested} rather than the next slot`);
+    assert.deepEqual(
+      requested,
+      [afterFirst + 1n, afterFirst + 2n],
+      `the later poll asked for ${requested} rather than the next slot and then one past the publisher`,
+    );
     assert.equal(manager.getIndex(hexTopic)!.toBigInt(), afterFirst + 1n, 'the later poll did not advance the feed');
   });
 
@@ -301,6 +335,144 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     await pollUnservedSlot();
 
     assert.equal(reported.length, 1, 'the polls after the reset were not counted, so the silence above proved nothing');
+  });
+});
+
+/**
+ * The defect a browser found on 2026-08-05, stated as tests.
+ *
+ * The player consumed exactly one feed slot per playlist reload, and hls.js reloads a live playlist
+ * about once per segment duration plus the round trip it just measured. So a viewer's picture could
+ * only advance at `duration / (duration + roundTrip)` of real time and the rest of the wall clock was
+ * spent frozen: 0.82x at a 0.25s segment with 17.3% of the clock frozen, 0.90x at 0.5s, 0.98x at
+ * 1.0s, each matching that ratio to within 0.02, over 897 logged requests. The shorter the segment
+ * the worse it got, because a shorter segment does not make the client faster, it makes it ask more
+ * often at a fixed cost per ask. See `docs/bench/what-starves-the-viewer-2026-08-05.md`.
+ *
+ * The fix is not to poll faster. It is to stop treating one poll as worth one slot.
+ */
+describe('keeping up with a publisher that writes faster than hls.js reloads (#84)', () => {
+  let fetcher: ManifestFetcher;
+  let health: FeedHealthTracker;
+  let requested: bigint[];
+  let publishedThrough: bigint;
+  let finalSlot: bigint | null;
+
+  beforeEach(() => {
+    manager.clear(hexTopic);
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
+
+    health = new FeedHealthTracker(() => 0);
+    fetcher = new ManifestFetcher(manager, health);
+    fetcher.beeUrl = BEE_URL;
+    requested = [];
+    publishedThrough = START_INDEX;
+    finalSlot = null;
+
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const index = requestedIndex(String(input));
+      assert.notEqual(index, undefined, `a slot outside the fixture was requested: ${String(input)}`);
+      requested.push(index!);
+      if (index! > publishedThrough) {
+        return new Response('not found', { status: 404 });
+      }
+      const lines = [manifestForIndex(index!)];
+      if (index! === finalSlot) {
+        lines.push('#EXT-X-ENDLIST');
+      }
+      return new Response(lines.join('\n'));
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realConsoleError;
+  });
+
+  const poll = async () => {
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+  };
+
+  // The defect itself. One poll used to be worth one segment however many the publisher had written,
+  // so a client polling every 327ms against a publisher writing every 267ms lost a segment a second.
+  it('consumes every slot the publisher has written, rather than one per poll', async () => {
+    publishedThrough = START_INDEX + 5n;
+
+    await poll();
+
+    assert.equal(
+      manager.getIndex(hexTopic)!.toBigInt(),
+      publishedThrough,
+      'one poll did not reach the publisher, so a viewer falls further behind with every segment',
+    );
+    const manifest = manager.serialize(hexTopic, `${BEE_URL}/bytes`);
+    for (let index = START_INDEX + 1n; index <= publishedThrough; index++) {
+      assert.match(manifest, new RegExp(`seg-${index}\\.ts`), `slot ${index} was walked past without being played`);
+    }
+  });
+
+  // The other half: catching up must end. A poll that kept asking would turn a caught-up viewer,
+  // which is every healthy viewer, into a loop against the gateway bounded only by the cap below.
+  it('stops one slot past the publisher, which is how it learns it has caught up', async () => {
+    publishedThrough = START_INDEX + 2n;
+
+    await poll();
+
+    assert.deepEqual(requested, [START_INDEX + 1n, START_INDEX + 2n, START_INDEX + 3n]);
+  });
+
+  // A viewer whose tab was hidden, or whose gateway was slow, comes back to a backlog. Draining it
+  // is right, draining all of it inside one poll is not: the topic stays marked in flight for the
+  // whole walk, and a teardown lands in the middle of it.
+  it('hands control back rather than draining an unbounded backlog in one poll', async () => {
+    publishedThrough = START_INDEX + BigInt(MAX_SLOTS_PER_POLL) * 3n;
+
+    await poll();
+
+    assert.equal(requested.length, MAX_SLOTS_PER_POLL, `one poll made ${requested.length} feed reads`);
+    assert.equal(manager.getIndex(hexTopic)!.toBigInt(), START_INDEX + BigInt(MAX_SLOTS_PER_POLL));
+
+    await poll();
+
+    assert.equal(
+      manager.getIndex(hexTopic)!.toBigInt(),
+      START_INDEX + BigInt(MAX_SLOTS_PER_POLL) * 2n,
+      'the next poll did not carry on from where the cap stopped it',
+    );
+  });
+
+  // Every poll of a healthy feed now ends on the 404 that says the publisher has been caught. That
+  // is the same status code a feed stuck on a slot no gateway will serve answers with, and counting
+  // the two the same way would report every advancing feed as stalled.
+  it('never calls an advancing feed stalled, however long it runs', async () => {
+    const reported: string[] = [];
+    console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
+
+    for (let round = 0; round < UNSERVED_SLOT_POLL_LIMIT + 5; round++) {
+      publishedThrough += 1n; // the publisher writes one more slot between polls, as it does live
+      await poll();
+    }
+
+    assert.deepEqual(reported, [], 'a feed that advanced on every poll was reported as stuck');
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
+    assert.equal(
+      manager.getIndex(hexTopic)!.toBigInt(),
+      publishedThrough,
+      'the fixture never kept up, so this proves less',
+    );
+  });
+
+  // A finalised manifest sets no index, so a walk that read `#EXT-X-ENDLIST` and carried on would
+  // ask for the same slot again on every step until it hit the cap, for the rest of the session.
+  it('stops walking at the end of the stream', async () => {
+    publishedThrough = START_INDEX + 6n;
+    finalSlot = START_INDEX + 2n;
+
+    await poll();
+
+    assert.deepEqual(requested, [START_INDEX + 1n, START_INDEX + 2n], 'the walk carried on past the end of the stream');
   });
 });
 
@@ -701,19 +873,26 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
 describe('following the feed costs one head lookup (LAT-10)', () => {
   let fetcher: ManifestFetcher;
   let requested: string[];
+  let publishedThrough: bigint;
 
   beforeEach(() => {
     manager.clear(hexTopic);
     fetcher = new ManifestFetcher(manager);
     fetcher.beeUrl = BEE_URL;
     requested = [];
+    publishedThrough = START_INDEX + 3n;
 
     globalThis.fetch = async (input: RequestInfo | URL) => {
       const url = String(input);
       requested.push(url);
       const index = requestedIndex(url);
-      return index === undefined
-        ? new Response(manifestForIndex(START_INDEX), { headers: { 'Swarm-Feed-Index': START_INDEX.toString(16) } })
+      if (index === undefined) {
+        return new Response(manifestForIndex(START_INDEX), {
+          headers: { 'Swarm-Feed-Index': START_INDEX.toString(16) },
+        });
+      }
+      return index > publishedThrough
+        ? new Response('not found', { status: 404 })
         : new Response(manifestForIndex(index));
     };
   });
@@ -734,13 +913,22 @@ describe('following the feed costs one head lookup (LAT-10)', () => {
     assert.equal(requested[0], `${BEE_URL}/feeds/${OWNER}/${hexTopic}`);
   });
 
-  it('walks one slot per poll from wherever the head landed', async () => {
+  it('walks by explicit slot address from wherever the head landed', async () => {
     for (let poll = 0; poll < 4; poll++) {
       await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
       await settle();
     }
 
-    const slots = requested.slice(1).map((url) => requestedIndex(url));
-    assert.deepEqual(slots, [START_INDEX + 1n, START_INDEX + 2n, START_INDEX + 3n]);
+    const followUps = requested.slice(1);
+    assert.ok(followUps.length > 0, 'nothing followed the head lookup, so this asserted nothing');
+    assert.ok(
+      followUps.every((url) => url.includes('/soc/')),
+      `a follow-up went back to the head lookup: ${followUps.join(' ')}`,
+    );
+    assert.equal(
+      manager.getIndex(hexTopic)!.toBigInt(),
+      publishedThrough,
+      'walking slot addresses never reached the publisher',
+    );
   });
 });

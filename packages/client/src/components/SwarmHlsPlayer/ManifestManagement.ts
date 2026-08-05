@@ -41,6 +41,22 @@ const manifestQueue = new Pqueue({ concurrency: 1 });
 const SLOT_NOT_WRITTEN_YET = 404;
 
 /**
+ * How many feed slots one poll may walk before handing control back.
+ *
+ * A poll walks until the publisher's head, so this is reached only by a viewer catching up on a
+ * backlog: a hidden tab, a slow gateway, a stretch of failed polls. Live it is never approached,
+ * because hls.js reloads a live playlist about once per segment and the publisher writes about one
+ * slot in that time.
+ *
+ * The cost of a large value is that the topic stays marked in flight for the whole walk, and the
+ * teardown that a fatal error triggers lands in the middle of one. Sixteen slots at the round trips
+ * measured on this deployment, 51 to 72ms, is about a second of walking, and it recovers four
+ * seconds of a 0.25s stream per poll, which outruns a publisher writing in real time by enough to
+ * close any backlog within a few polls.
+ */
+export const MAX_SLOTS_PER_POLL = 16;
+
+/**
  * The wait the fetcher ships with, named so that something can run it.
  *
  * As an inline default parameter it was the one code path every backoff test injected over, so a
@@ -314,79 +330,130 @@ export class ManifestFetcher {
 
   /**
    * @param fromIndex The newest slot already read, taken by the caller in the same tick that routed
-   *   here rather than read again in the callback below. Two callbacks that each advance from
-   *   whatever index they find advance twice for one slot fetched, and the slot in between is never
-   *   requested at all, so its segments never reach the viewer. The second callback used to reach
-   *   that line rather than stopping short, because `updateManifest` answers `true` to a duplicate
-   *   parse, where "nothing new, keep polling" and "this slot was consumed" are the same value read
-   *   two ways.
+   *   here rather than read again inside the walk. Two walks that each advance from whatever index
+   *   they find advance twice for one slot fetched, and the slot in between is never requested at
+   *   all, so its segments never reach the viewer. The second one used to get that far rather than
+   *   stopping short, because `updateManifest` answers `true` to a duplicate parse, where "nothing
+   *   new, keep polling" and "this slot was consumed" are the same value read two ways.
    */
-  private async handleFollowupFetch(owner: string, topic: Topic, fromIndex: FeedIndex): Promise<string> {
+  private handleFollowupFetch(owner: string, topic: Topic, fromIndex: FeedIndex): string {
     const hexTopic = topic.toString();
 
-    // One outstanding follow-up per topic. This method is fire and forget by design: it returns the
-    // already serialised state at once and leaves the fetch running, so hls.js schedules its next
-    // level reload on the ordinary cadence while the previous fetch is still open. See CON-29.
+    // One outstanding walk per topic. This method is fire and forget by design: it returns the
+    // already serialised state at once and leaves the walk running, so hls.js schedules its next
+    // level reload on the ordinary cadence while the previous one is still open. See CON-29.
     if (!this.inFlight.has(hexTopic) && this.feedHealth.backoffRemainingMs(hexTopic) === 0) {
-      const { path, index: targetIndex } = nextFeedRequest(owner, topic, fromIndex);
-
       this.inFlight.add(hexTopic);
-      this.fetchResource(path)
-        .then((res) => {
-          return manifestQueue.add(() => {
-            // Nothing cancels this request. `SwarmHlsPlayer`'s effect cleanup calls
-            // `ManifestStateManager.clear(topic)` and then `hls.destroy()`, on unmount and on every
-            // `restartTrigger` bump, which is the recovery path for a fatal player error and so
-            // fires exactly when a fetch is already slow. A response that lands after that would
-            // otherwise recreate the topic it was issued against and stamp a pre-teardown index on
-            // it, and an index that exists is what routes the next mount into this method instead
-            // of `handleInitialFetch`, the only path that resyncs to the live head. So the write
-            // only applies to the state it was computed from.
-            if (this.stateManager.getIndex(hexTopic)?.toBigInt() !== fromIndex.toBigInt()) {
-              return;
-            }
-
-            // Inside the guard, unlike the failure below. A response that outlived its topic says
-            // the gateway was answering before a teardown this fetch is older than, and the mount
-            // that replaced it has its own initial fetch to say whether it still is.
-            this.feedHealth.recordGatewayResponse(hexTopic);
-
-            const parsed = parseManifest(res.text);
-            const shouldContinue = this.stateManager.updateManifest(
-              hexTopic,
-              parsed.headers,
-              parsed.segments,
-              parsed.isFinalized,
-            );
-            if (shouldContinue) {
-              this.stateManager.setIndex(hexTopic, targetIndex);
-            }
-          });
-        })
-        .catch((error) => {
-          if (error instanceof ManifestFetchError && error.status === SLOT_NOT_WRITTEN_YET) {
-            this.reportStalledFeed(hexTopic, targetIndex);
-            return;
-          }
-          // Deliberately outside the generation guard the success path sits inside. A gateway that
-          // did not answer is a fact about the gateway rather than about the topic generation, and
-          // it is the fact worth keeping across the teardown, because the restart that discards the
-          // topic is itself what a fatal network error triggers.
-          this.feedHealth.recordGatewayFailure(hexTopic);
-          console.error('Error fetching follow-up manifest:', error);
-        })
-        // Released only once the state update has run, since the queue's promise is what the chain
-        // above resolves on. Releasing at response time would cost a duplicate request rather than a
-        // wrong index, because the index is pinned. It has to be released on the failure path too,
-        // or one poll that outran the publisher would end the broadcast for this viewer, and a
-        // caught-up viewer gets a 404 on nearly every poll. That comes from sitting after the
-        // `catch` rather than from `finally`, which by then has no rejection left to see.
+      this.walkToPublisher(owner, topic, fromIndex)
+        .catch((error) => console.error('Error following the feed:', error))
+        // Released only once the walk has finished, on the failure path as well, or one poll that
+        // outran the publisher would end the broadcast for this viewer, and a caught-up viewer gets
+        // a 404 on nearly every poll.
         .finally(() => {
           this.inFlight.delete(hexTopic);
         });
     }
 
     return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+  }
+
+  /**
+   * Read forward from `fromIndex` until the publisher's head, one slot at a time.
+   *
+   * ## Why a walk and not a single read
+   *
+   * This used to consume exactly one slot per call, and hls.js reloads a live playlist about once
+   * per segment duration plus the round trip it just measured. So the media a viewer could play
+   * advanced at `duration / (duration + roundTrip)` of real time, and the rest of the wall clock was
+   * spent frozen. Watched in a real browser on 2026-08-05, over 897 logged requests: **0.82x at a
+   * 0.25s segment with 17.3% of the clock frozen, 0.90x at 0.5s, 0.98x at 1.0s**, each within 0.02
+   * of that ratio. Shorter segments made it worse rather than better, because a shorter segment does
+   * not make the client faster, it makes it ask more often at a fixed cost per ask. See
+   * `docs/bench/what-starves-the-viewer-2026-08-05.md`.
+   *
+   * Asking more often was the wrong fix: the cadence belongs to hls.js, and a poll loop of this
+   * side's own would be a second thing to tear down and a second thing to get wrong. Reading every
+   * slot the publisher has written costs one extra request per poll, the 404 that says there is
+   * nothing more, and makes the rate a viewer can sustain independent of how finely the stream is
+   * cut.
+   *
+   * Each slot is applied before the next is requested, so the index it is written against is the one
+   * it was read from, and a teardown anywhere in the walk stops it rather than being walked over.
+   */
+  private async walkToPublisher(owner: string, topic: Topic, fromIndex: FeedIndex): Promise<void> {
+    const hexTopic = topic.toString();
+    let readIndex = fromIndex;
+
+    for (let consumed = 0; consumed < MAX_SLOTS_PER_POLL; consumed++) {
+      const { path, index: targetIndex } = nextFeedRequest(owner, topic, readIndex);
+
+      let response: TimedResponse;
+      try {
+        response = await this.fetchResource(path);
+      } catch (error) {
+        if (error instanceof ManifestFetchError && error.status === SLOT_NOT_WRITTEN_YET) {
+          // Where every healthy poll ends: the walk has caught the publisher up. Counted as an
+          // unserved poll only when this poll read nothing, because the run that count belongs to is
+          // a run of polls that did not advance, and a poll that read four slots and then met the
+          // publisher's head advanced.
+          if (consumed === 0) {
+            this.reportStalledFeed(hexTopic, targetIndex);
+          }
+          return;
+        }
+        // Deliberately outside the guard in `applySlot`. A gateway that did not answer is a fact
+        // about the gateway rather than about the topic generation, and it is the fact worth keeping
+        // across a teardown, because the restart that discards the topic is itself what a fatal
+        // network error triggers.
+        this.feedHealth.recordGatewayFailure(hexTopic);
+        console.error('Error fetching follow-up manifest:', error);
+        return;
+      }
+
+      const advanced = await manifestQueue.add(() => this.applySlot(hexTopic, response, readIndex, targetIndex));
+      if (advanced !== true) {
+        return;
+      }
+      readIndex = targetIndex;
+    }
+  }
+
+  /**
+   * Fold one slot's manifest into the topic's state, if that state is still the one it was read from.
+   *
+   * @returns Whether the feed advanced, which is also whether the walk may ask for another slot.
+   */
+  private applySlot(hexTopic: string, response: TimedResponse, readIndex: FeedIndex, targetIndex: FeedIndex): boolean {
+    // Nothing cancels a request already in flight. `SwarmHlsPlayer`'s effect cleanup calls
+    // `ManifestStateManager.clear(topic)` and then `hls.destroy()`, on unmount and on every
+    // `restartTrigger` bump, which is the recovery path for a fatal player error and so fires
+    // exactly when a fetch is already slow. A response that lands after that would otherwise
+    // recreate the topic it was issued against and stamp a pre-teardown index on it, and an index
+    // that exists is what routes the next mount into `handleFollowupFetch` instead of
+    // `handleInitialFetch`, the only path that resyncs to the live head. So the write only applies
+    // to the state it was computed from.
+    if (this.stateManager.getIndex(hexTopic)?.toBigInt() !== readIndex.toBigInt()) {
+      return false;
+    }
+
+    // Inside the guard, unlike the failure in the caller. A response that outlived its topic says
+    // the gateway was answering before a teardown this fetch is older than, and the mount that
+    // replaced it has its own initial fetch to say whether it still is.
+    this.feedHealth.recordGatewayResponse(hexTopic);
+
+    const parsed = parseManifest(response.text);
+    const shouldContinue = this.stateManager.updateManifest(
+      hexTopic,
+      parsed.headers,
+      parsed.segments,
+      parsed.isFinalized,
+    );
+    if (!shouldContinue) {
+      return false;
+    }
+
+    this.stateManager.setIndex(hexTopic, targetIndex);
+    return true;
   }
 
   /**
