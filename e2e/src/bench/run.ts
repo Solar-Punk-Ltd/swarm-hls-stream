@@ -60,8 +60,20 @@ export interface RunOptions {
    * that the duration is what ends it.
    */
   collectForMs?: number;
-  /** How often to ask the feed for a new manifest, standing in for the client's own poll. */
-  pollIntervalMs: number;
+  /**
+   * How long to wait before asking again **when a poll found nothing new**.
+   *
+   * Deliberately not called a cadence and deliberately not a stand-in for the client's poll, which is
+   * what the name and comment here used to claim. The loop below does not sleep at all when a poll
+   * finds a new segment, so under steady arrival the observed rate is however fast this can read and
+   * fetch, and this value only bounds how late the bench can be in *noticing* a manifest that has
+   * already arrived.
+   *
+   * Getting that wrong made `feedPropagation` report this sleep instead of the network: measured
+   * 2026-08-05, the hop equalled the wait for the next poll to within 2 to 5ms across nine runs.
+   * A client's own cadence is a separate, modelled quantity. See `recommendBufferMs`.
+   */
+  idlePollIntervalMs: number;
   /**
    * How to follow the feed. Defaults to `walk`, which is what the player does.
    *
@@ -227,7 +239,7 @@ async function collectSamples(
   topicHex: string,
   publishStartedAtMs: number,
 ): Promise<{ collected: PendingSample[]; discarded: DiscardedSegment[]; feedPolls: FeedPoll[] }> {
-  const { gatewayUrl, samples: wanted, pollIntervalMs } = options;
+  const { gatewayUrl, samples: wanted, idlePollIntervalMs } = options;
   const collected: PendingSample[] = [];
   const discarded: DiscardedSegment[] = [];
   // Every completed read, not only the ones that yielded a sample. A gap in the samples is either
@@ -257,7 +269,7 @@ async function collectSamples(
         if (!isFeedPendingFirstWrite(error, feedSeen) || Date.now() > firstWriteDeadline) {
           throw error;
         }
-        await sleep(pollIntervalMs);
+        await sleep(idlePollIntervalMs);
         continue;
       }
 
@@ -273,7 +285,7 @@ async function collectSamples(
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      await sleep(pollIntervalMs);
+      await sleep(idlePollIntervalMs);
       continue;
     }
     feedSeen = true;
@@ -283,7 +295,7 @@ async function collectSamples(
     const ref = newest ? segmentRefFromUri(newest.uri) : null;
     feedPolls.push({ atMs: manifest.atMs, newestRef: ref, resolvedIndex: manifest.resolvedIndex });
     if (!newest || !ref || seen.has(ref)) {
-      await sleep(pollIntervalMs);
+      await sleep(idlePollIntervalMs);
       continue;
     }
     seen.add(ref);

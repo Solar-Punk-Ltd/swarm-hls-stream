@@ -292,6 +292,35 @@ export interface FeedProgress {
  * poll stays newest because the publisher stopped, and counting it would report every clean run as
  * stalling at its end.
  */
+/**
+ * The sampling cadence this run actually achieved, which is not the backoff it was configured with.
+ *
+ * The collection loop sleeps only when a poll finds nothing new, so under steady arrival it runs as
+ * fast as it can read and fetch. Reporting the configured value instead told readers that nothing
+ * shorter than two seconds was observable while the loop was in fact sampling several times a second,
+ * and it made `feedPropagation` look like a network property when it was the sampler. Measured
+ * 2026-08-05: that hop equalled the wait for the next poll to within 2 to 5ms across nine runs.
+ *
+ * Median rather than mean because the gaps are bimodal by construction, short when a poll found a new
+ * segment and a full backoff when it did not. Under steady arrival the fast mode dominates and the
+ * median lands in it, where a mean would report a gap that never happened.
+ *
+ * ⚠️ **Where the two modes are evenly balanced the median lands between them and is no better than
+ * the mean**, reporting a gap that also never happened. So this is never printed alone: the report
+ * carries the longest gap beside it, and the pair is what bounds the resolution.
+ *
+ * Zero for fewer than two polls, where there is no gap to measure.
+ */
+export function medianPollGapMs(polls: readonly FeedPoll[]): number {
+  if (polls.length < 2) {
+    return 0;
+  }
+  const gaps = polls.slice(1).map((poll, i) => poll.atMs - polls[i].atMs);
+  gaps.sort((a, b) => a - b);
+  const mid = Math.floor(gaps.length / 2);
+  return gaps.length % 2 === 1 ? gaps[mid] : Math.round((gaps[mid - 1] + gaps[mid]) / 2);
+}
+
 export function feedProgress(polls: readonly FeedPoll[]): FeedProgress {
   if (polls.length < 2) {
     throw new Error('attributing a gap needs at least two polls to sit between');

@@ -27,7 +27,7 @@ export interface BufferSample {
  * the total is anchored on its **first**, which is why the segment comes out and not in.
  *
  * **This is a lower bound over what was observed, not a safe setting.** A slower segment than any
- * here stalls a player configured at exactly this. Add `pollIntervalMs` for the cadence a real client
+ * here stalls a player configured at exactly this. Add `clientPollIntervalMs` for the cadence a real client
  * asks at, and a margin, which `recommendBufferMs` does.
  */
 export function minimumSafeBufferMs(samples: readonly BufferSample[]): number {
@@ -56,20 +56,20 @@ export interface BufferRecommendation {
  * percentage would shrink the allowance exactly where segments are short and arrivals are most
  * frequent.
  *
- * `pollIntervalMs` is added because the floor is when a segment became fetchable, while a player
- * learns of it on its next poll, so a client asking every `pollIntervalMs` can be that much later
+ * `clientPollIntervalMs` is added because the floor is when a segment became fetchable, while a player
+ * learns of it on its next poll, so a client asking every `clientPollIntervalMs` can be that much later
  * than the instant measured here.
  */
 export function recommendBufferMs(
   samples: readonly BufferSample[],
-  pollIntervalMs: number,
+  clientPollIntervalMs: number,
   segmentMs: number,
 ): BufferRecommendation {
   const observedFloorMs = minimumSafeBufferMs(samples);
   const marginMs = segmentMs;
   return {
     observedFloorMs,
-    recommendedMs: observedFloorMs + pollIntervalMs + marginMs,
+    recommendedMs: observedFloorMs + clientPollIntervalMs + marginMs,
     samples: samples.length,
     marginMs,
   };

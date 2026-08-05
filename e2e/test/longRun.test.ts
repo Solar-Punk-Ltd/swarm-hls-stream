@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { bufferDemandTrend, feedProgress, latencyByMinute, latencyDrift, mediaPacing } from '../src/bench/longRun.js';
+import {
+  bufferDemandTrend,
+  feedProgress,
+  latencyByMinute,
+  latencyDrift,
+  medianPollGapMs,
+  mediaPacing,
+} from '../src/bench/longRun.js';
 
 /**
  * A publisher paced by a filter graph anchors wall clock at its first frame and emits at the nominal
@@ -319,5 +326,69 @@ describe('whether a gap belongs to the feed or to the bench watching it', () => 
 
   it('refuses to judge a feed off fewer than two polls', () => {
     assert.throws(() => feedProgress([{ atMs: 0, newestRef: 'a', resolvedIndex: null }]), /at least two polls/);
+  });
+});
+
+/**
+ * That the cadence a run reports is the one it achieved, not the one it was configured with.
+ *
+ * The collection loop sleeps its backoff only when a poll finds nothing new, so under steady arrival
+ * it never sleeps and runs several times faster than its own constant. Reporting the constant told
+ * readers "nothing shorter than 2s is observable here" while the loop was sampling four times a
+ * second, and it made `feedPropagation` look like a network property when it was the sampler:
+ * measured 2026-08-05, that hop equalled the wait for the next poll to within 2 to 5ms in nine runs.
+ *
+ * Nothing compared the constant against the behaviour, which is why it survived. These do.
+ */
+describe('medianPollGapMs', () => {
+  it('measures the gaps that happened rather than the interval that was asked for', () => {
+    // Configured backoff would be 2000ms. The loop only slept once, at the end.
+    const polls = [
+      { atMs: 0, newestRef: 'a', resolvedIndex: null },
+      { atMs: 250, newestRef: 'b', resolvedIndex: null },
+      { atMs: 500, newestRef: 'c', resolvedIndex: null },
+      { atMs: 2_500, newestRef: 'c', resolvedIndex: null },
+    ];
+
+    assert.equal(medianPollGapMs(polls), 250);
+  });
+
+  it('tracks the dominant mode, which under steady arrival is the fast one', () => {
+    // Four fast gaps and one slept. A mean would report 600ms, a gap that never happened.
+    const polls = [
+      { atMs: 0, newestRef: 'a', resolvedIndex: null },
+      { atMs: 250, newestRef: 'b', resolvedIndex: null },
+      { atMs: 500, newestRef: 'c', resolvedIndex: null },
+      { atMs: 750, newestRef: 'd', resolvedIndex: null },
+      { atMs: 1_000, newestRef: 'e', resolvedIndex: null },
+      { atMs: 3_000, newestRef: 'e', resolvedIndex: null },
+    ];
+
+    assert.equal(medianPollGapMs(polls), 250);
+  });
+
+  /**
+   * The honest limit of this summary, asserted so nobody rediscovers it as a surprise.
+   *
+   * The gaps are bimodal, fast when a poll found something and a full backoff when it did not, and
+   * where the two modes are equally represented the median lands exactly between them and reports a
+   * gap that never occurred. It is then no better than the mean. That is why the report prints the
+   * longest gap beside this one rather than relying on a single number.
+   */
+  it('lands between the modes when they are evenly balanced, which is a gap that never happened', () => {
+    const polls = [
+      { atMs: 0, newestRef: 'a', resolvedIndex: null },
+      { atMs: 250, newestRef: 'b', resolvedIndex: null },
+      { atMs: 500, newestRef: 'c', resolvedIndex: null },
+      { atMs: 2_500, newestRef: 'c', resolvedIndex: null },
+      { atMs: 4_500, newestRef: 'c', resolvedIndex: null },
+    ];
+
+    assert.equal(medianPollGapMs(polls), 1_125);
+  });
+
+  it('reports zero where there is no gap to measure', () => {
+    assert.equal(medianPollGapMs([]), 0);
+    assert.equal(medianPollGapMs([{ atMs: 7, newestRef: 'a', resolvedIndex: null }]), 0);
   });
 });

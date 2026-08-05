@@ -26,6 +26,7 @@ import {
   latencyByMinute,
   type LatencyDrift,
   latencyDrift,
+  medianPollGapMs,
   type MediaPacing,
   mediaPacing,
   percentile,
@@ -40,14 +41,52 @@ import { makeHost, uploaderHealth } from '../src/harness/host.js';
 import { effectiveLogLevel, logLevelProblem } from '../src/logLevel.js';
 
 const DEFAULT_RUN_MINUTES = 30;
-/** Matches `bench:latency`, so a long run's totals are comparable against every grid row. */
-const POLL_INTERVAL_MS = 2_000;
+
+/**
+ * How long to wait before asking again **when a poll found nothing new**.
+ *
+ * Not a cadence, and the distinction is what this replaces. The collection loop does not sleep at all
+ * when a poll finds a new segment, so under steady arrival the bench polls as fast as it can read and
+ * fetch. This value only bounds how late the bench can be in *noticing* a manifest that has already
+ * arrived.
+ *
+ * It used to be a flat 2 seconds, and that made `feedPropagation` report the bench's own sleep rather
+ * than the network. Measured 2026-08-05 across the segment-length grid: that hop equalled the wait for
+ * the next poll to within a median of 2 to 5ms in nine of eleven runs, so the column said nothing
+ * about how long a manifest actually took to reach a reader.
+ *
+ * A tenth of a segment keeps the discovery error under 10% of the quantity being measured. It is
+ * affordable because **a feed poll is one chunk while a segment at 2500kbps and 2s is about 150**, so
+ * ten polls per segment add roughly 7% to chunk retrieval rather than multiplying it.
+ */
+const IDLE_POLL_FRACTION_OF_SEGMENT = 0.1;
+const MIN_IDLE_POLL_MS = 50;
+const MAX_IDLE_POLL_MS = 250;
+
+function idlePollIntervalMs(gopSeconds: number): number {
+  const tenthOfASegment = Math.round(gopSeconds * 1_000 * IDLE_POLL_FRACTION_OF_SEGMENT);
+  return Math.min(MAX_IDLE_POLL_MS, Math.max(MIN_IDLE_POLL_MS, tenthOfASegment));
+}
+
+/**
+ * How often a real viewer's player is assumed to ask for a new manifest.
+ *
+ * A **model**, not a measurement, and separate from the bench's own idle backoff on purpose. The
+ * buffer a player needs depends on its cadence rather than on how often this instrument happened to
+ * look, and the two were one number until 2026-08-05, which is how the recommendation came to be
+ * built on a constant that described neither.
+ *
+ * Kept at the value the recommendation has always used so this change moves no published figure.
+ * ⚠️ It has never been checked against `ManifestManagement.ts`, and LAT-3 added backoff there, so
+ * validating it is outstanding work rather than something this constant settles.
+ */
+const ASSUMED_CLIENT_POLL_INTERVAL_MS = 2_000;
 /**
  * High enough that the duration is always what ends a run.
  *
- * At the shortest fragment measured and the poll cadence above, half an hour yields under a thousand
- * samples. A count is still required because it is the loop's other bound, and one that can never
- * bind is the honest way to say the duration governs.
+ * A sample costs a distinct segment, so at the shortest fragment measured half an hour yields a few
+ * thousand at most. A count is still required because it is the loop's other bound, and one that can
+ * never bind is the honest way to say the duration governs.
  */
 const SAMPLE_CEILING = 100_000;
 
@@ -149,15 +188,25 @@ function driftLines(drift: LatencyDrift, runMinutes: number): string[] {
  * and the feed kept standing still, which is what a viewer polling at that cadence would have seen.
  * One means the bench was not asking, and what the feed did in that window is simply not known.
  */
-function stallLines(feed: FeedProgress, bufferMs: number, segmentMs: number, runStartedAtMs: number): string[] {
+function stallLines(
+  feed: FeedProgress,
+  bufferMs: number,
+  segmentMs: number,
+  runStartedAtMs: number,
+  medianPollGapMs: number,
+): string[] {
   const observed = feed.stallPolls >= 2;
   const atMinute = ((feed.stallStartedAtMs - runStartedAtMs) / 60_000).toFixed(1);
 
   return [
     `- the feed named the same newest segment for **${seconds(feed.stallMs)}**, across ${feed.stallPolls} ` +
       `poll(s), starting ${atMinute} minutes in.`,
-    `- the bench itself went at most ${seconds(feed.longestPollGapMs)} between two polls, against a ` +
-      `${seconds(POLL_INTERVAL_MS)} cadence. Nothing shorter than that is observable here.`,
+    // The MEASURED gap, not the configured backoff. This line used to quote the constant and claim
+    // nothing shorter was observable, which was false whenever the stream was healthy: the loop does
+    // not sleep when a poll finds something, so it runs far faster than its own backoff.
+    `- the bench itself went at most ${seconds(feed.longestPollGapMs)} between two polls and ` +
+      `${seconds(medianPollGapMs)} typically. **Both are measured rather than configured**, and the ` +
+      'pair is what bounds the resolution here: the gaps are bimodal, so neither alone describes it.',
     observed
       ? `- **that stall is the feed's**: the bench asked ${feed.stallPolls} times inside it and got the same ` +
         'answer every time, so a viewer polling at this cadence saw the stream stop for that long.'
@@ -216,7 +265,7 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
   const demand = bufferDemandTrend(buffered);
   const feed = feedProgress(run.feedPolls);
   const segmentMs = median(bufferSamples.map((sample) => sample.segmentMs));
-  const buffer = recommendBufferMs(bufferSamples, POLL_INTERVAL_MS, segmentMs);
+  const buffer = recommendBufferMs(bufferSamples, ASSUMED_CLIENT_POLL_INTERVAL_MS, segmentMs);
   const totals = timed.map((sample) => sample.totalMs);
   const edgeToFetchableMs = median(totals) - segmentMs;
 
@@ -246,9 +295,9 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
     `| capture to fetchable, worst | ${seconds(Math.max(...totals))} |`,
     `| segment, median | ${seconds(segmentMs)} |`,
     `| smallest buffer that would not have stalled | ${seconds(buffer.observedFloorMs)} |`,
-    `| recommended buffer (floor + ${POLL_INTERVAL_MS / 1_000}s poll + one segment) | ${seconds(
-      buffer.recommendedMs,
-    )} |`,
+    `| recommended buffer (floor + ${
+      ASSUMED_CLIENT_POLL_INTERVAL_MS / 1_000
+    }s assumed client poll + one segment) | ${seconds(buffer.recommendedMs)} |`,
     `| **behind live at that buffer** | **${seconds(edgeToFetchableMs + buffer.recommendedMs)}** |`,
     '',
     '## Does the buffer demand grow',
@@ -265,7 +314,7 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
     '',
     '## The longest a viewer waited',
     '',
-    ...stallLines(feed, buffer.recommendedMs, segmentMs, timed[0].fetchedAtMs),
+    ...stallLines(feed, buffer.recommendedMs, segmentMs, timed[0].fetchedAtMs, medianPollGapMs(run.feedPolls)),
     '',
     '## Minute by minute',
     '',
@@ -338,7 +387,7 @@ async function main(): Promise<void> {
     knobs,
     samples: SAMPLE_CEILING,
     collectForMs: runMinutes * 60_000,
-    pollIntervalMs: POLL_INTERVAL_MS,
+    idlePollIntervalMs: idlePollIntervalMs(knobs.gopSeconds),
     feedReader: parseFeedReaderMode(process.env.BENCH_FEED_READER),
     mediaTimelineLeadMs: check.mediaTimelineLeadMs,
   });

@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     gatewayUrl,
     knobs,
     samples,
-    pollIntervalMs: DEFAULT_POLL_MS,
+    idlePollIntervalMs: DEFAULT_POLL_MS,
     feedReader: parseFeedReaderMode(process.env.BENCH_FEED_READER),
     mediaTimelineLeadMs: check.mediaTimelineLeadMs,
   });
