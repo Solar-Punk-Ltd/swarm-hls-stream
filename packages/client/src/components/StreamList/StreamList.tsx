@@ -48,6 +48,7 @@ export function StreamList() {
             duration={stream.duration}
             mediatype={stream.mediatype}
             title={stream.title}
+            index={stream.index}
           />
         ))}
       </div>

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Topic } from '@ethersphere/bee-js';
 import {
   HLS_ENDLIST,
   HLS_M3U,
@@ -20,6 +19,7 @@ import { useAppContext } from '@/providers/App';
 import { MediaType, StreamState } from '@/types/stream';
 import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
 import { formatDuration } from '@/utils/format';
+import { thumbnailManifestUrl } from '@/utils/thumbnailManifest';
 
 import './StreamPreview.scss';
 
@@ -33,12 +33,14 @@ interface StreamPreviewProps {
   duration?: string;
   mediatype: MediaType;
   title: string;
+  /** The SOC index of this stream's final manifest, published by the uploader on a finished stream. */
+  index?: number;
 }
 
 /** The preview plays one segment, so the target duration only has to be at least that long. */
 const PREVIEW_TARGET_DURATION_SECONDS = 10;
 
-export const StreamPreview = ({ owner, topic, state, duration, mediatype, title }: StreamPreviewProps) => {
+export const StreamPreview = ({ owner, topic, state, duration, mediatype, title, index }: StreamPreviewProps) => {
   const navigate = useNavigate();
   const { gatewayUrl } = useAppContext();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -56,8 +58,7 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title 
       }
 
       try {
-        const hexTopic = Topic.fromString(topic).toString();
-        const res = await fetchWithTimeout(`${gatewayUrl}/feeds/${owner}/${hexTopic}`, {
+        const res = await fetchWithTimeout(thumbnailManifestUrl(gatewayUrl, owner, topic, index), {
           signal: abort.signal,
         });
         const { segments } = parseManifest(res.text);
@@ -143,7 +144,7 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title 
         blobUrl = null;
       }
     };
-  }, [owner, topic, gatewayUrl]);
+  }, [owner, topic, gatewayUrl, index]);
 
   return (
     <div className="stream-preview" onClick={() => navigate(`/watch/${mediatype}/${owner}/${topic}`)}>
