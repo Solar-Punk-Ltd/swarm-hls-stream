@@ -72,10 +72,46 @@ the first thirty samples to 7.55s over the last thirty.
 beats 1.0s. Segment duration itself does: the `segment` hop **is** the GOP, and it is the largest
 term in every row.
 
-**What is not yet explained** is where the 0.25s backlog actually forms. It surfaces as 2804ms of
-`feedPropagation`, which is measured *after* the uploader's SOC write returns, and that write is
-`deferred: false` so it has already push-synced. So the queueing is somewhere the uploader's own
-queues do not account for, most likely inside bee. That is the thread to pull.
+## ⛔ `feedPropagation` is not propagation. Do not read that column as a network property.
+
+**Established by re-analysing these same runs: for nine of the eleven admissible rows,
+`feedPropagation` equals the wait for the bench's next poll to within a median of 2 to 5ms.** It is
+not measuring how long a manifest took to reach a reader. It is measuring when the bench next looked.
+
+| GOP | run | feedPropagation | wait for next poll | median difference |
+| ---: | --- | ---: | ---: | ---: |
+| 2.0s | 04:52 | 920ms | 841ms | **5ms** |
+| 1.0s | 05:06 | 354ms | 124ms | **2ms** |
+| 0.5s | 05:26 | 62ms | 58ms | **2ms** |
+| 0.25s | 04:55 | 7920ms | 146ms | **7826ms** |
+| 0.25s | 05:23 | 1795ms | 151ms | **1626ms** |
+
+The cause is in the collection loop. It sleeps `pollIntervalMs` **only when a poll finds nothing new**
+(`run.ts`, the `seen.has(ref)` branch). Under steady segment arrival every poll finds something, so
+the loop never sleeps and spins at whatever speed it can read and fetch. Measured cadence was 262ms
+at a 0.25s GOP, 476ms at 0.5s, about 900ms at 1.0s and about 1110ms at 2.0s, all far below the
+declared `POLL_INTERVAL_MS = 2000`. The report's own line saying nothing shorter than a two second
+cadence is observable is therefore wrong whenever the stream is healthy.
+
+**Three consequences.**
+
+1. **The apparent growth of `feedPropagation` with GOP is an artifact.** It tracks the observation
+   cadence, which tracks the segment rate. 0.5s did not achieve better propagation than 2.0s.
+2. **The 0.5s spread between rounds is largely this.** Round 1 measured 332ms of `feedPropagation`
+   against 58 and 62ms in the other two, which is most of the 0.46s spread I had listed as
+   unexplained. It is poll phase, not the deployment.
+3. **The two 0.25s rows are the exception, and that is what makes them interesting.** There
+   `feedPropagation` exceeds the next-poll wait by 1.6 and 7.8 seconds, so the manifest genuinely was
+   not visible when the bench looked, repeatedly. **That backlog is real. Everything else in that
+   column is the instrument.**
+
+This does not overturn the grid: `totalMs` is still capture to fetchable, and the ordering is
+dominated by the `segment` hop, which is the GOP itself. It does mean the per-hop attribution above
+should be read as `segment`, `upload` and `manifestPublish` being real, and `feedPropagation` being a
+mixture of observation cadence and, at 0.25s only, a genuine delay.
+
+**Where the 0.25s delay forms is still open.** It is after a SOC write that already push-synced with
+`deferred: false`, so the uploader's own queues do not account for it.
 
 ## What the axis guard caught, and why it matters more than the result
 
