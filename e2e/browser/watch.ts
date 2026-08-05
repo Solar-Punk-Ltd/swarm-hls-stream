@@ -16,6 +16,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { type InstrumentReading, judgeRun } from '../src/browser/instrument.js';
+import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { renderBrowserReport } from '../src/browser/report.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import {
@@ -25,6 +26,7 @@ import {
   launchViewer,
   readInstrument,
   readSample,
+  recordRequests,
   screenshotBothClocks,
   VIEWPORT,
 } from '../src/browser/viewer.js';
@@ -77,12 +79,14 @@ async function main(): Promise<void> {
   const samples: ViewerSample[] = [];
   const readings: InstrumentReading[] = [];
   const screenshots: string[] = [];
+  const requests: RequestRecord[] = [];
   let watchUrl = clientUrl;
 
   try {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     await installTimerProbe(page);
+    recordRequests(page, requests);
 
     // Surfaced rather than swallowed: a fatal hls.js error prints its own line in the client, and a
     // run that stalled for a reason the page already explained should not need a second investigation.
@@ -150,6 +154,7 @@ async function main(): Promise<void> {
     gopSeconds,
     summary: summarize(samples),
     instrument: judgeRun(readings),
+    network: summarizeNetwork(requests),
     samples,
     screenshots,
   };
@@ -158,6 +163,9 @@ async function main(): Promise<void> {
   const stem = join(REPORT_DIR, `browser-watch-${run.measuredAt.replace(/[:.]/g, '-')}`);
   await writeFile(`${stem}.md`, renderBrowserReport(run), 'utf8');
   await writeFile(`${stem}.json`, JSON.stringify(run, null, 2), 'utf8');
+  // Kept beside the report rather than inside it: a three-minute watch makes thousands of requests,
+  // and the answer to "why did it stall" is usually a distribution over them rather than one row.
+  await writeFile(`${stem}.requests.json`, JSON.stringify(requests), 'utf8');
 
   console.log(`\nbrowser: wrote ${stem}.md`);
   console.log(`browser: instrument ${run.instrument.sound ? 'SOUND' : 'VOID'}`);

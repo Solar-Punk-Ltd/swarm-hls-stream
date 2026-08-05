@@ -10,6 +10,7 @@
 import { LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
 
 import type { InstrumentVerdict } from './instrument.js';
+import type { NetworkSummary } from './network.js';
 import type { SessionSummary, ViewerSample } from './session.js';
 
 export interface BrowserRun {
@@ -19,6 +20,7 @@ export interface BrowserRun {
   gopSeconds: number;
   summary: SessionSummary;
   instrument: InstrumentVerdict & { soundSamples: number };
+  network?: NetworkSummary;
   samples: readonly ViewerSample[];
   screenshots: readonly string[];
 }
@@ -139,6 +141,41 @@ function playbackSection(run: BrowserRun): string[] {
   ];
 }
 
+/**
+ * Where the stalled time went: waiting between attempts, or inside a transfer.
+ *
+ * The two have opposite fixes and the same symptom, so they are printed against each other rather
+ * than in separate places.
+ */
+function networkSection(run: BrowserRun): string[] {
+  const net = run.network;
+  if (!net) {
+    return [];
+  }
+
+  const waitedShare = run.summary.rebufferMs > 0 ? net.totalWaitedBetweenAttemptsMs / run.summary.rebufferMs : 0;
+  return [
+    '## Where the time went',
+    '',
+    '| | |',
+    '| --- | ---: |',
+    `| segment requests | ${net.segmentRequests} for ${net.distinctSegments} distinct segments |`,
+    `| refused (404, not yet retrievable) | ${net.refusals} (${(net.refusalShare * 100).toFixed(1)}% of requests) |`,
+    `| segments refused at least once | ${net.segmentsRefusedAtLeastOnce} |`,
+    `| segments never served at all | ${net.segmentsNeverServed} |`,
+    `| **time spent waiting between attempts** | **${net.totalWaitedBetweenAttemptsMs}ms** |`,
+    `| median successful transfer | ${net.medianTransferMs.toFixed(0)}ms |`,
+    `| segment bytes delivered | ${(net.segmentBytesPerSecond / 1000).toFixed(0)} kB/s |`,
+    `| most segment fetches in flight at once | ${net.maxConcurrent} |`,
+    '',
+    `The waiting figure accounts for **${(waitedShare * 100).toFixed(0)}%** of the ${run.summary.rebufferMs}ms ` +
+      'this session spent rebuffering. It is measured between one attempt ending and the next starting, so ' +
+      'it contains no transfer time and cannot be inflated by a slow gateway: it is time the player chose ' +
+      'to spend doing nothing, which on a refused fragment is `fragLoadPolicy.errorRetry.retryDelayMs`.',
+    '',
+  ];
+}
+
 export function renderBrowserReport(run: BrowserRun): string {
   const sampleRows = run.samples.map((sample, i) =>
     [
@@ -164,6 +201,7 @@ export function renderBrowserReport(run: BrowserRun): string {
     ...instrumentSection(run),
     ...latencySection(run),
     ...playbackSection(run),
+    ...networkSection(run),
     '## Every sample',
     '',
     '| # | t (s) | currentTime | behind live (s) | buffered ahead (s) | rate | readyState | rebuffers |',

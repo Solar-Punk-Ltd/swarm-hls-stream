@@ -23,9 +23,10 @@
  * delivery failure. See `REQUIRED_CODECS`.
  */
 
-import { type Browser, chromium, type Page } from 'playwright-core';
+import { type Browser, chromium, type Page, type Request } from 'playwright-core';
 
 import { type InstrumentReading, REQUIRED_CODECS, TIMER_PROBE_INTERVAL_MS } from './instrument.js';
+import { type RequestRecord } from './network.js';
 import { type OverlayRow, readOverlayMetrics } from './overlay.js';
 import { type ViewerSample } from './session.js';
 
@@ -191,6 +192,41 @@ export async function readSample(page: Page): Promise<ViewerSample> {
  * than two calls, because anything crossing the wire between them lands in the answer: measured over
  * ssh, that round trip is 2.5 to 3.1 seconds and asymmetric.
  */
+/**
+ * Record every request the page makes, so a stall can be attributed rather than guessed at.
+ *
+ * Timings come from the harness's own clock at the request and response events rather than from the
+ * page's Resource Timing, because a refused request is the interesting one and the interval that
+ * matters is the **gap between** requests, which no per-request timing API reports.
+ *
+ * Sizes come from the response body length where the body is available. A 404 carries no segment, so
+ * it contributes nothing to throughput, which is what makes bytes-per-second a measure of delivery
+ * rather than of asking.
+ */
+export function recordRequests(page: Page, into: RequestRecord[]): void {
+  const startedAtMs = new Map<Request, number>();
+  page.on('request', (request) => startedAtMs.set(request, Date.now()));
+
+  const finish = (request: Request, status: number | null, bytes: number) => {
+    const started = startedAtMs.get(request);
+    if (started === undefined) {
+      return;
+    }
+    startedAtMs.delete(request);
+    into.push({ url: request.url(), status, startedAtMs: started, endedAtMs: Date.now(), bytes });
+  };
+
+  page.on('requestfailed', (request) => finish(request, null, 0));
+  page.on('response', (response) => {
+    // The body is read for its length only, and a response that cannot be read (redirect, aborted)
+    // still has to land in the log with its status, or a refusal would go uncounted.
+    response
+      .body()
+      .then((body) => finish(response.request(), response.status(), body.length))
+      .catch(() => finish(response.request(), response.status(), 0));
+  });
+}
+
 export const CLOCK_OVERLAY_ID = 'harness-clock';
 
 /**
