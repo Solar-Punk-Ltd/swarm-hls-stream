@@ -24,7 +24,16 @@ const SKEW: ClockSkew = { offsetMs: 120, uncertaintyMs: 8 };
  * and a fixture that produced one by accident would put it under tests that never asked for it.
  */
 function sampleOf(index: number, split: LatencySplit, declaredDurationS: number | null = 2): SegmentSample {
-  return { index, ref: `ref${index}`.padEnd(16, '0'), split, declaredDurationS, videoPacketCount: 60 };
+  return {
+    index,
+    ref: `ref${index}`.padEnd(16, '0'),
+    split,
+    declaredDurationS,
+    videoPacketCount: 60,
+    // 60 packets over the fixtures' 2s segment is 30fps, and 750kB over 2s is 3000kbps, so the two
+    // per-second columns come out as round numbers a test can name.
+    segmentBytes: 750_000,
+  };
 }
 
 /** A sample whose total is `totalMs`, with the slack taken out of the fetch so the rows still sum. */
@@ -228,6 +237,17 @@ describe('the report an operator reads', () => {
 
     assert.match(report, /\*\*Not the skew estimate\.\*\*/);
     assert.doesNotMatch(report, /The totals are unaffected/);
+  });
+
+  // A throttled publisher carries its full complement of frames and bytes over a stretched span, so
+  // both per-second columns fall together and neither alone would say which fault it was.
+  // See `docs/bench/publisher-backpressure.md`.
+  it('reports frames and bytes per second of media, not per segment', () => {
+    const report = renderReport(runWith([sampleWithTotal(1, 7_000)]));
+
+    const row = report.split('\n').find((line) => line.startsWith('| 1 |'));
+    assert.ok(row, `no sample row in:\n${report}`);
+    assert.match(row, /\| 30\.0 \| 375\.0 \|$/, `60 packets and 750kB over a 2s segment: ${row}`);
   });
 
   it('names which segment the split came from, so it can be found in the sample list', () => {
