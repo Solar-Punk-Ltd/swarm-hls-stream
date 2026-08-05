@@ -27,9 +27,11 @@ import {
   FeedFollower,
   type FeedReaderMode,
   fetchSegment,
+  GatewayStatusError,
   isFeedBlackout,
   isFeedPendingFirstWrite,
   NO_UNSERVED_RETRY,
+  SEGMENT_NOT_RETRIEVABLE_YET,
   segmentRefFromUri,
   type UnservedRetry,
 } from './gateway.js';
@@ -38,6 +40,7 @@ import { probeSegment } from './probe.js';
 import { type BenchRun, type DiscardedSegment, latencyTrend, type SegmentSample } from './report.js';
 import { latencySplit, type SegmentInstants } from './split.js';
 import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from './timeline.js';
+import type { UnservedSegmentWatch } from './unservedWatch.js';
 import { captureInstantMs, latencyMsFromPts } from './wallclock.js';
 import { type PublishKnobs, startWallclockPublisher, type WallclockPublisher } from './wallclockPublisher.js';
 
@@ -99,6 +102,13 @@ export interface RunOptions {
    * collection loop and the loop's pace is what keeps the reader at the live edge.
    */
   unservedRetry?: UnservedRetry;
+  /**
+   * Times refusals off the loop, so the budget can reach past the two seconds an in-loop wait allows.
+   *
+   * Absent by default. What it costs the gateway is `concurrency / recheckMs` requests a second and is
+   * known before the run starts, which is the reason it is bounded rather than fired per refusal.
+   */
+  unservedWatch?: UnservedSegmentWatch;
 }
 
 /** Everything one segment contributed, before the uploader's log is read to fill in the middle. */
@@ -273,6 +283,7 @@ async function collectSamples(
   const { gatewayUrl, samples: wanted, idlePollIntervalMs } = options;
   const collected: PendingSample[] = [];
   const discarded: DiscardedSegment[] = [];
+  const watch = options.unservedWatch;
   // Every completed read, not only the ones that yielded a sample. A gap in the samples is either
   // the feed not advancing or this loop not asking, and without the polls that never yielded
   // anything the two are the same shape. See `feedProgress`.
@@ -349,8 +360,15 @@ async function collectSamples(
       );
     } catch (error) {
       discarded.push({ ref, reason: error instanceof Error ? error.message : String(error) });
+      // Off the loop on purpose. A refusal is timed by a watcher with its own bounded rate, because
+      // waiting here costs the loop its pace and the loop's pace is what keeps the reader at the edge.
+      if (watch && error instanceof GatewayStatusError && error.status === SEGMENT_NOT_RETRIEVABLE_YET) {
+        watch.observe(ref);
+      }
     }
   }
+
+  await watch?.settle();
 
   // Waiting out the first 404 must not turn a feed that never appeared into an empty run, which the
   // sweep report skips over in silence. A feed the uploader never wrote is a real failure and the

@@ -18,7 +18,12 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { parseFeedReaderMode, requireGatewayReachable, type UnservedRetry } from '../src/bench/gateway.js';
+import {
+  fetchSegment,
+  parseFeedReaderMode,
+  requireGatewayReachable,
+  type UnservedRetry,
+} from '../src/bench/gateway.js';
 import {
   bufferDemandTrend,
   type FeedProgress,
@@ -35,6 +40,7 @@ import type { BenchRun, SegmentSample } from '../src/bench/report.js';
 import { measureLatency } from '../src/bench/run.js';
 import { checkInstrumentLocally } from '../src/bench/selfCheck.js';
 import { type BufferSample, median, recommendBufferMs } from '../src/bench/sweepAnalysis.js';
+import { UnservedSegmentWatch } from '../src/bench/unservedWatch.js';
 import { DEFAULT_KNOBS, type PublishKnobs } from '../src/bench/wallclockPublisher.js';
 import { containerName, loadConfig, ROOT_DIR } from '../src/config.js';
 import { makeHost, uploaderHealth } from '../src/harness/host.js';
@@ -239,6 +245,41 @@ function stallLines(
  * The share matters as much as the delay. A refused segment is the slowest sample there is, so a run
  * that discards them reports a median over everything except the samples that would have moved it.
  */
+/**
+ * How long refused segments stayed refused, timed off the collection loop.
+ *
+ * Reports what it could not watch alongside what it did, because a distribution over whatever
+ * happened to fit within the concurrency bound, printed as though it covered every refusal, is
+ * exactly the shape of reporting that this instrument has been wrong about twice already.
+ */
+function watchedRefusalLines(watch?: UnservedSegmentWatch): string[] {
+  const seen = watch?.resolutions ?? [];
+  if (seen.length === 0) {
+    return [];
+  }
+  const settled = seen.filter((r) => r.resolvedAfterMs !== null).map((r) => r.resolvedAfterMs as number);
+  const never = seen.length - settled.length;
+  const lines = [
+    '## How long a refused segment stayed refused',
+    '',
+    `- **${seen.length} refusals timed**, ${watch?.unwatched ?? 0} more arrived while every watcher slot ` +
+      'was busy and were not timed at all.',
+  ];
+  if (settled.length > 0) {
+    const ordered = [...settled].sort((a, b) => a - b);
+    lines.push(
+      `- of the ${settled.length} that were eventually served: median **${seconds(median(ordered))}**, ` +
+        `p95 ${seconds(percentile(ordered, 0.95))}, worst ${seconds(Math.max(...ordered))}.`,
+      `- **${ordered.filter((ms) => ms < 1_000).length} of ${ordered.length} came back inside one second**, ` +
+        'which is where hls.js makes its first fragment retry and therefore where a viewer stops noticing.',
+    );
+  }
+  if (never > 0) {
+    lines.push(`- **${never} were still refused when the watcher gave up.**`);
+  }
+  return [...lines, ''];
+}
+
 function unservedLines(samples: readonly SegmentSample[]): string[] {
   const refused = samples.filter((sample) => sample.fetchAttempts > 1);
   const waited = refused.map((sample) => sample.unservedForMs);
@@ -260,7 +301,7 @@ function unservedLines(samples: readonly SegmentSample[]): string[] {
   ];
 }
 
-export function renderLongRun(run: BenchRun, runMinutes: number): string {
+export function renderLongRun(run: BenchRun, runMinutes: number, watch?: UnservedSegmentWatch): string {
   const samples = [...run.samples].sort((a, b) => a.split.instants.fetchedAtMs - b.split.instants.fetchedAtMs);
   if (samples.length < 3) {
     return [
@@ -332,6 +373,7 @@ export function renderLongRun(run: BenchRun, runMinutes: number): string {
     `| **behind live at that buffer** | **${seconds(edgeToFetchableMs + buffer.recommendedMs)}** |`,
     '',
     ...unservedLines(samples),
+    ...watchedRefusalLines(watch),
     '## Does the buffer demand grow',
     '',
     `- first third of the run needed **${seconds(demand.firstThirdMs)}**, last third needed ` +
@@ -399,6 +441,38 @@ function unservedRetryFromEnv(): UnservedRetry | undefined {
   return { budgetMs, recheckMs: envNumber('BENCH_UNSERVED_RECHECK_MS', 250) };
 }
 
+/**
+ * Watchers to run at once, and how often each asks.
+ *
+ * Together these are the load this adds, `concurrency / recheckMs` requests a second, and four at one
+ * second is at most four. The collection loop itself runs at about four requests a second at a 0.25s
+ * GOP, so this doubles the gateway's read load in the worst case and never more. Four slots also
+ * collect plenty: at ten minutes and even a minute per refusal that is forty measurements.
+ */
+const UNSERVED_WATCH_CONCURRENCY = 4;
+const UNSERVED_WATCH_RECHECK_MS = 1_000;
+
+/**
+ * Times how long refused segments stay refused, from `BENCH_UNSERVED_WATCH_MS`.
+ *
+ * Separate from `BENCH_UNSERVED_BUDGET_MS`, which waits inside the loop, because the two answer
+ * different halves and only one of them can reach past two seconds. A 10-minute run with a 2s in-loop
+ * budget found 19 of 84 segments still refused when it expired, so the answer is above the only
+ * window that measurement could see.
+ */
+function unservedWatchFromEnv(gatewayUrl: string): UnservedSegmentWatch | undefined {
+  const budgetMs = envNumber('BENCH_UNSERVED_WATCH_MS', 0);
+  if (budgetMs <= 0) {
+    return undefined;
+  }
+  return new UnservedSegmentWatch(
+    async (ref) => {
+      await fetchSegment(gatewayUrl, ref);
+    },
+    { budgetMs, recheckMs: UNSERVED_WATCH_RECHECK_MS, concurrency: UNSERVED_WATCH_CONCURRENCY },
+  );
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const knobs = knobsFromEnv();
@@ -430,6 +504,15 @@ async function main(): Promise<void> {
   const health = await uploaderHealth(host, cfg);
   console.log(`longrun: uploader ${health.status}, ${health.activeStreams} active stream(s), LOG_LEVEL=${level}`);
 
+  const watch = unservedWatchFromEnv(gatewayUrl);
+  if (watch) {
+    console.log(
+      `longrun: timing refused segments off the loop, ${UNSERVED_WATCH_CONCURRENCY} at a time and one ` +
+        `ask each per ${UNSERVED_WATCH_RECHECK_MS}ms, so at most ` +
+        `${(1_000 * UNSERVED_WATCH_CONCURRENCY) / UNSERVED_WATCH_RECHECK_MS} extra requests a second`,
+    );
+  }
+
   const startedAtMs = Date.now();
   const run = await measureLatency({
     cfg,
@@ -442,8 +525,9 @@ async function main(): Promise<void> {
     feedReader: parseFeedReaderMode(process.env.BENCH_FEED_READER),
     mediaTimelineLeadMs: check.mediaTimelineLeadMs,
     unservedRetry: unservedRetryFromEnv(),
+    unservedWatch: watch,
   });
-  const report = renderLongRun(run, (Date.now() - startedAtMs) / 60_000);
+  const report = renderLongRun(run, (Date.now() - startedAtMs) / 60_000, watch);
 
   await mkdir(REPORT_DIR, { recursive: true });
   const stem = join(REPORT_DIR, `longrun-${run.measuredAt.replace(/[:.]/g, '-')}`);

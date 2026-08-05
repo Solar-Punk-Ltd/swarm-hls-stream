@@ -309,7 +309,7 @@ export class FeedFollower {
  * therefore outrun the bytes. Every one of the thirteen refs a 10-minute 0.25s run refused on
  * 2026-08-05 answered 200 when asked again twenty minutes later, so this is a wait rather than a loss.
  */
-const SEGMENT_NOT_RETRIEVABLE_YET = 404;
+export const SEGMENT_NOT_RETRIEVABLE_YET = 404;
 
 /**
  * Whether to wait out a gateway that refuses a segment, and how long.
