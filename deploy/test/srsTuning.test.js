@@ -152,3 +152,54 @@ describe('the SRS latency knobs', () => {
     });
   }
 });
+
+/**
+ * That both compose files pass every knob the entrypoint reads.
+ *
+ * There are two of them and they enumerate rather than inherit, which is deliberate: `env_file`
+ * would hand `PUBLISH_KEY_SECRET` to the publisher-facing engine image, and that secret has no
+ * per-stream revocation. See SEC-28. The cost of enumerating is that a variable added to one list is
+ * silently missing from the other, and a variable the container never sees falls back to a default
+ * with nothing reporting a problem.
+ *
+ * It has now happened twice over the same two files. OBS-20's healthcheck went into
+ * `deploy/docker-compose.yml` and not `engines/srs/docker-compose.yml`, and the four latency knobs
+ * did the same, so on the `pnpm srs:host` and `pnpm srs:local` path setting `HLS_FRAGMENT=0.5`
+ * produced 1.0s segments. This compares the two lists instead of trusting whoever edits one of them.
+ */
+describe('both SRS compose files carry the same tuning knobs', () => {
+  const STANDALONE = join(ROOT, 'engines/srs/docker-compose.yml');
+
+  /** Names the entrypoint reads from its environment, which is the list that has to arrive. */
+  function knobsTheEntrypointReads() {
+    const entrypoint = readFileSync(ENTRYPOINT, 'utf8');
+    return [...entrypoint.matchAll(/\$\{(HLS_[A-Z_]+|SRT_[A-Z_]+)(?::-|\})/g)].map((m) => m[1]);
+  }
+
+  for (const composePath of [COMPOSE, STANDALONE]) {
+    it(`passes every knob into the container from ${composePath.slice(ROOT.length + 1)}`, () => {
+      const compose = readFileSync(composePath, 'utf8');
+
+      for (const knob of new Set(knobsTheEntrypointReads())) {
+        assert.match(
+          compose,
+          new RegExp(`^\\s*${knob}:\\s*\\$\\{${knob}`, 'm'),
+          `${knob} is read by the entrypoint and never passed here, so it silently keeps its default`,
+        );
+      }
+    });
+  }
+
+  it('gives each knob the same default in both files, so which one started the engine cannot matter', () => {
+    const [primary, standalone] = [COMPOSE, STANDALONE].map((p) => readFileSync(p, 'utf8'));
+
+    for (const knob of new Set(knobsTheEntrypointReads())) {
+      const pattern = new RegExp(`^\\s*${knob}:\\s*\\$\\{${knob}:-([^}]*)\\}`, 'm');
+      assert.equal(
+        standalone.match(pattern)?.[1],
+        primary.match(pattern)?.[1],
+        `${knob} defaults differently in the two compose files, so the same env produces two pictures`,
+      );
+    }
+  });
+});

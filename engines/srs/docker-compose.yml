@@ -43,6 +43,21 @@ services:
       SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
       SRS_HTTP_PORT: ${SRS_HTTP_PORT:-8080}
       SRS_SRT_PORT: ${SRS_SRT_PORT:-10080}
+      # The latency knobs, restated here because this file is the one behind `pnpm srs:host` and
+      # `pnpm srs:local`. `deploy/docker-compose.yml` gained them and this did not, so on the local
+      # engine path every one of them was inert: setting `HLS_FRAGMENT=0.5` produced 1.0s segments
+      # with nothing reporting a problem, because the entrypoint substituted its own default into a
+      # template whose placeholder the variable never reached. Defaults are the same on both sides on
+      # purpose, so which compose file started the engine cannot change the picture.
+      #
+      # This is the second time the two files have diverged over the same kind of change. OBS-20's
+      # healthcheck went into one and not the other. Enumerating rather than inheriting is right, for
+      # the SEC-28 reason above, and its cost is exactly this: a knob added to one list is missing
+      # from the other until someone notices.
+      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.0}
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-2.1}
+      HLS_WINDOW: ${HLS_WINDOW:-15}
+      SRT_LATENCY: ${SRT_LATENCY:-200}
     # Asks whether a broadcaster could reach this engine, not whether the process is alive. See
     # OBS-20 and the reasoning in `healthcheck.sh`: SRS ran 44 minutes with a dead SRT listener while
     # every signal the deployment had said it was fine.
