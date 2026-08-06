@@ -124,12 +124,20 @@ jobs:
       # --severity=style is the strictest level, which is the point: the
       # exceptions live in .shellcheckrc where each one carries its reason, so a
       # finding that is not on that list fails here.
+      #
+      # The file list has to stay in step with the `shellcheck` script in the root
+      # package.json, which is the copy a developer runs. The two silently diverged
+      # once: the root script was widened from `engines/*/entrypoint.sh` to
+      # `engines/*/*.sh` for `engines/srs/healthcheck.sh`, this copy was not, and
+      # 89 lines of new shell running as a container healthcheck went unlinted in
+      # the only place that gates a merge. Nothing runs `pnpm shellcheck` in CI, so
+      # widening one does not widen the other.
       - name: ShellCheck
         run: |
           docker run --rm -v "$PWD:/mnt" -w /mnt \
             koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
             --severity=style --format=gcc \
-            deploy/scripts/*.sh nodes/*.sh engines/*/entrypoint.sh
+            deploy/scripts/*.sh nodes/*.sh engines/*/*.sh e2e/*.sh
 
   format:
     name: format
