@@ -166,6 +166,9 @@ export function playbackSection(run: BrowserRun): string[] {
     `| rebuffers the player counted | ${s.rebufferCount}, totalling ${s.rebufferMs}ms |`,
     `| fatal errors | ${s.fatalErrors} |`,
     `| dropped frames | ${s.droppedFrames} |`,
+    `| **frames per second of media** | ${
+      s.deliveredFps === null ? 'too little media to say' : `**${s.deliveredFps.toFixed(1)}**`
+    } |`,
     `| buffered ahead of the playhead, median | ${s.medianBufferAheadS.toFixed(2)}s |`,
     `| resolution decoded | ${s.resolution ?? '—'} |`,
     '',

@@ -45,6 +45,15 @@ export interface ViewerSample {
   playbackRate: number;
   /** Buffered media ahead of the playhead, in seconds. */
   bufferAheadS: number;
+  /**
+   * Frames the decoder has produced since the session began, or null where the browser has no
+   * `getVideoPlaybackQuality`.
+   *
+   * Counted rather than rated, because a rate needs two samples and one of them belongs to whoever
+   * is asking. Against **media** time it gives the frame rate that arrived. See
+   * {@link RunSummary.deliveredFps}.
+   */
+  decodedFrames: number | null;
   /** `hls.latency` as the shipped QoE overlay reports it, or null before it has a value. */
   liveLatencyS: number | null;
   rebufferCount: number;
@@ -185,8 +194,48 @@ export interface SessionSummary {
   fatalErrors: number;
   droppedFrames: number;
   resolution: string | null;
+  /**
+   * Frames the decoder produced per second of **media**, which is the frame rate that arrived.
+   *
+   * ⚠️ **The silent quality failure this exists for.** A consumer slower than the stream's bitrate
+   * does not drop frames or raise an error: it stretches media time, so the encoder's own log shows
+   * its keyframe interval hit exactly while the frame rate underneath collapsed. Reproduced at
+   * **12.2fps against a requested 30** with no engine error and no postage problem, which is task
+   * #76, and `check-axis.py` caught every instance of it while naming the wrong cause.
+   *
+   * Against media rather than wall time on purpose: a frozen picture decodes nothing, so a wall-time
+   * rate reads a freeze and a collapsed frame rate as the same number. Against media time a freeze
+   * cancels out of both halves and what is left is the content's own rate.
+   *
+   * Null when the run saw too little media, or where the browser has no `getVideoPlaybackQuality`.
+   */
+  deliveredFps: number | null;
   medianBufferAheadS: number;
   latency: LatencyVerdict;
+}
+
+/** Media that has to pass before a frame rate means anything, in seconds. */
+const MIN_MEDIA_FOR_FPS_S = 5;
+
+/**
+ * The frame rate that reached the viewer, from the frames the decoder counted over the media it
+ * played. Null when the run is too short for the ratio to say anything, rather than a number built
+ * from two samples that happen to straddle a stall.
+ */
+function deliveredFps(samples: readonly ViewerSample[]): number | null {
+  const counted = samples.filter(
+    (sample): sample is ViewerSample & { decodedFrames: number } => sample.decodedFrames !== null,
+  );
+  if (counted.length < 2) {
+    return null;
+  }
+  const first = counted[0];
+  const last = counted[counted.length - 1];
+  const mediaS = last.currentTime - first.currentTime;
+  if (mediaS < MIN_MEDIA_FOR_FPS_S) {
+    return null;
+  }
+  return (last.decodedFrames - first.decodedFrames) / mediaS;
 }
 
 export function summarize(samples: readonly ViewerSample[]): SessionSummary {
@@ -206,6 +255,7 @@ export function summarize(samples: readonly ViewerSample[]): SessionSummary {
     fatalErrors: last?.fatalErrors ?? 0,
     droppedFrames: last?.droppedFrames ?? 0,
     resolution: last?.resolution ?? null,
+    deliveredFps: deliveredFps(samples),
     medianBufferAheadS: samples.length > 0 ? median(samples.map((sample) => sample.bufferAheadS)) : 0,
     latency: judgeLatency(samples),
   };

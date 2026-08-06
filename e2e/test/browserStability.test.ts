@@ -20,6 +20,7 @@ const BASE: ViewerSample = {
   rebufferCount: 0,
   rebufferMs: 0,
   fatalErrors: 0,
+  decodedFrames: 0,
   droppedFrames: 0,
   resolution: '1280×720',
   feedStateMessage: null,

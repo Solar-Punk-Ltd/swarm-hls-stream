@@ -15,6 +15,7 @@ const BASE: ViewerSample = {
   rebufferCount: 0,
   rebufferMs: 0,
   fatalErrors: 0,
+  decodedFrames: 0,
   droppedFrames: 0,
   resolution: '1280×720',
   feedStateMessage: null,
@@ -201,5 +202,52 @@ describe('summarizing a session', () => {
 
     assert.equal(summary.medianAdvanceRatio, 1, 'a sample that played, played at its rate');
     assert.equal(summary.overallAdvanceRatio, 0.75, 'and the viewer got three seconds out of four');
+  });
+});
+
+/**
+ * The silent quality failure, and why the rate is per media second rather than per wall second.
+ *
+ * A consumer slower than the stream's bitrate does not error or drop frames, it stretches media
+ * time, so the encoder reports its keyframe interval hit exactly while the frame rate underneath
+ * collapsed. Task #76 reproduced 12.2fps against a requested 30 that way.
+ */
+describe('the frame rate that actually arrived', () => {
+  const at = (i: number, currentTime: number, decodedFrames: number): ViewerSample => ({
+    ...BASE,
+    atMs: i * 1000,
+    currentTime,
+    decodedFrames,
+  });
+
+  it('reads a healthy stream at the rate it was encoded', () => {
+    const samples = [at(0, 0, 0), at(1, 3, 90), at(2, 6, 180), at(3, 9, 270)];
+
+    assert.equal(summarize(samples).deliveredFps, 30);
+  });
+
+  it('sees a collapsed frame rate that nothing else reports', () => {
+    // Same wall clock, same media, a third of the frames. Nothing here is frozen and nothing errored.
+    const samples = [at(0, 0, 0), at(1, 3, 36), at(2, 6, 72), at(3, 9, 108)];
+    const summary = summarize(samples);
+
+    assert.equal(summary.deliveredFps, 12);
+    assert.equal(summary.stalledSamples, 0, 'a collapsed frame rate was reported as a stall');
+  });
+
+  /**
+   * The reason for the denominator. A picture that has stopped decodes nothing, so a wall-time rate
+   * would call a freeze and a collapse the same number, and the two need opposite fixes.
+   */
+  it('is not fooled by a freeze, which decodes nothing and plays nothing', () => {
+    const samples = [at(0, 0, 0), at(1, 3, 90), at(2, 3, 90), at(3, 3, 90), at(4, 6, 180), at(5, 9, 270)];
+
+    assert.equal(summarize(samples).deliveredFps, 30, 'a frozen stretch was charged to the frame rate');
+  });
+
+  it('says nothing rather than guessing from too little media', () => {
+    const samples = [at(0, 0, 0), at(1, 2, 60)];
+
+    assert.equal(summarize(samples).deliveredFps, null);
   });
 });

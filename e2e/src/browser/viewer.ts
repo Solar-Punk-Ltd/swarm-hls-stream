@@ -117,6 +117,7 @@ interface RawSample {
   readyState: number;
   playbackRate: number;
   bufferAheadS: number;
+  decodedFrames: number | null;
   overlayRows: OverlayRow[];
   feedStateMessage: string | null;
 }
@@ -155,6 +156,11 @@ export async function readSample(page: Page): Promise<ViewerSample> {
       }));
     });
 
+    // Every frame the decoder has produced this session. Divided by media time rather than wall time
+    // it is the frame rate that actually arrived, which is the only way to see a stream whose frame
+    // rate collapsed: nothing errors, the picture just carries less motion than it was asked for.
+    const quality = typeof video.getVideoPlaybackQuality === 'function' ? video.getVideoPlaybackQuality() : null;
+
     return {
       atMs: Date.now(),
       currentTime: video.currentTime,
@@ -162,6 +168,7 @@ export async function readSample(page: Page): Promise<ViewerSample> {
       readyState: video.readyState,
       playbackRate: video.playbackRate,
       bufferAheadS,
+      decodedFrames: quality?.totalVideoFrames ?? null,
       overlayRows,
       feedStateMessage: document.querySelector(feedStateSelector)?.textContent?.trim() || null,
     };
@@ -184,6 +191,7 @@ export async function readSample(page: Page): Promise<ViewerSample> {
     readyState: raw.readyState,
     playbackRate: raw.playbackRate,
     bufferAheadS: raw.bufferAheadS,
+    decodedFrames: raw.decodedFrames,
     liveLatencyS: metrics.liveLatencyS,
     rebufferCount: metrics.rebufferCount,
     rebufferMs: metrics.rebufferMs,
