@@ -770,6 +770,35 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     assert.equal(health.state(hexTopic), FEED_STATE_LIVE);
   });
 
+  /**
+   * Opening a recording, which is the one route where every playlist a viewer is ever offered is a
+   * finished one. The test above already drove it and asked only what the health signal said, so the
+   * playlist it handed back went unread: it carried no `#EXTM3U`, which hls.js refuses whole as
+   * `Missing format identifier #EXTM3U` and reports as fatal rather than as a bad playlist.
+   */
+  it('hands back a playable playlist when the feed head is already the recording', async () => {
+    const recording = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXTINF:2,',
+      'seg-0.ts',
+      '#EXTINF:2,',
+      'seg-1.ts',
+      '#EXT-X-ENDLIST',
+    ];
+    stubFetch(() => feedHead(START_INDEX, recording));
+
+    const manifest = await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    assert.ok(manifest.startsWith('#EXTM3U'), `a playlist must open with #EXTM3U, got:\n${manifest}`);
+    assert.ok(manifest.includes('#EXT-X-TARGETDURATION:2'), `the target duration must survive, got:\n${manifest}`);
+    assert.ok(manifest.includes('#EXT-X-ENDLIST'), `a finished playlist must be closed, got:\n${manifest}`);
+    assert.match(manifest, /seg-0\.ts[\s\S]*seg-1\.ts/, `both segments, in order, got:\n${manifest}`);
+  });
+
   it('holds off the poll cadence when the gateway fails mid-stream', async () => {
     seedFollowupState();
     console.error = () => {};
