@@ -48,15 +48,45 @@ three minutes is noise rather than a trend.
 was asked for and all of it is reaching the viewer. The price of the best picture is **2.24x the BZZ**
 and 21ms of median transfer time. Quality here is bought with bandwidth, not with latency.
 
+## ✅ GATED AT TEN MINUTES, at the best configuration
+
+`browser-watch-2026-08-06T06-21-17-165Z.md`, same sitting, 594 samples over 10.0 minutes.
+
+| | 1080p 6000k, 3 min | **1080p 6000k, 10 min** |
+| --- | ---: | ---: |
+| resolution | 1920×1080 | **1920×1080** |
+| frames per second of media | 30.0 | **30.0** |
+| media per wall second | 0.999 | **1.000** |
+| median of the per-sample ratios | — | **1.000** |
+| stalled samples | 0/178 | **0/594** |
+| rebuffers | 0 | **0** |
+| dropped frames | 4 | 15 |
+| fatal errors | 0 | **0** |
+| behind live, median | 5.84s | **5.77s** |
+
+⭐ **The best picture this deployment can make holds for ten minutes with nothing to report.** No
+stalled sample, no rebuffer, no fatal error, thirty frames per second of media, and latency between
+**4.52s and 6.45s** across the whole run against a 6s target. `heldTarget` true, `ranLong` false.
+
+⚠️ The one number that moved is **refusals: 14 in 2271 segments, 0.61%**, against 0 in the three
+minute run at the same setting. That matches [[swarm-hls-loop-fixed]]: refusals appear at length
+rather than at rate, 94 in 13,617 over the hour at 720p, all served on retry. **Nothing was lost**,
+and the run finished at 1.000.
+
+**This is the answer to the standing goal.** Stable, constant latency at the best quality available:
+1080p at 6000kbps, a 0.25s GOP, ten minutes, 1.000.
+
 ## What this does not say
 
 **Three minutes each, one run each, one sitting.** Enough to screen, not to gate.
 [[swarm-hls-optimisation-campaign]] holds the rule this follows: a three-minute run reproduces a
 ten-minute median to within 0.06s, so screen at 3 and gate at 10.
 
-⚠️ **The hour that held was measured at 720p/2500k only.** The mechanism behind #76 is a consumer
-slower than the stream's **bitrate**, and 6000k is 2.4x more of it, so length is exactly where a
-1080p stream would be expected to fail if it fails at all. Three minutes cannot see that.
+⚠️ **The hour that held was measured at 720p/2500k, and 1080p has now been gated at ten minutes, not
+sixty.** The mechanism behind #76 is a consumer slower than the stream's **bitrate**, and 6000k is
+2.4x more of it, so length is where a 1080p stream would fail if it fails. Ten minutes did not find
+it. Sixty has not been tried at this setting, and the refusal share appearing between three minutes
+and ten is exactly the kind of thing that grows with length.
 
 **One machine, one viewer, one publisher on the deployment host.** Nothing here says what a second
 viewer costs at 1080p, and [[swarm-hls-concurrent-viewers]] found a viewer **adds** load rather than
