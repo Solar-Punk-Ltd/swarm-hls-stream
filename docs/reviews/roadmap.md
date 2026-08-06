@@ -114,13 +114,122 @@ constant asked for a deposit that was not needed.
 Every run now reports what it consumed and warns at 80% full, so this table is the plan and the runs
 themselves are the check on it.
 
-|      | run                                               | why it is on the list                                                                                                                                                                                                                                                                                                                                          | broadcast-min |
-| ---- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------: |
-| 0.5a | 10-minute viewer gate at 0.25s, ×2                | The loop fix is gated on two 150s runs. This project's own discipline is screen at 3, gate at 10.                                                                                                                                                                                                                                                              |            26 |
-| 0.5b | **60-minute viewer run at 0.25s**                 | The one that matters. The client's manifest state **never trims**: it appends every segment it has seen and rebuilds the whole playlist on every poll, which at 0.25s is four a second and ~14,000 in an hour. The loop fix made it consume **more** slots, so if that costs anything this is where it shows. Nothing here has ever streamed past 150 seconds. |            63 |
-| 0.5c | 60-minute run at 1.0s                             | The control. Same hour, a quarter of the segments, so a degradation that tracks segment count separates from one that tracks wall clock.                                                                                                                                                                                                                       |            63 |
-| 0.5d | #71 and #85 fixed, each verified before and after | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state.                                                                                                                                                                                                                                         |            50 |
-| 0.5e | The five remaining crash scenarios, ×2            | Phase 2's list, now that a viewer can be watched through one.                                                                                                                                                                                                                                                                                                  |            60 |
+|     | run | why it is on the list | broadcast-min |
+| --- | --- | --------------------- | ------------- |
+
+## Phase 0.6 — light against ultra-light, at a viewer
+
+**The question: does a viewer's gateway have to be funded?** An ultra-light bee node (`--full-node=false`
+plus `--swap-enable=false`) has no chequebook and no way to pay a peer for bandwidth, so it lives on
+the free allowance alone. If a stream holds on one, an operator can run the viewer path with no chain,
+no wallet and no on-chain funding at all, which is a large difference in what it costs to deploy this.
+
+⚠️ **This was measured once, on 2026-08-04, and the answer does not survive.** Three 30-minute runs
+found ultra-light **37% frozen against light's 19%**, with 31 peers past half the debt ceiling in the
+ultra-light arm and none in the funded one, and a credit jump at every freeze release. The mechanism
+is real and the peer-accounting evidence still stands.
+
+**What does not stand is the magnitude at a viewer**, for two reasons found afterwards:
+
+1. Every frozen-share figure in that comparison came through **the bench's `/feeds/` head lookup**,
+   which is 50-57% frozen on its own and which a viewer never calls. See
+   [the reader A/B](../bench/feed-reader-ab.md).
+2. The client has since been fixed to walk the feed rather than take one slot per poll, which changed
+   the viewer's fetch pattern completely.
+
+So the honest position is: **credit exhaustion degrades retrieval, and nobody has ever seen what it
+does to a picture.** The arms differed through one shared broken instrument, which supports a
+direction and not a size.
+
+### The comparison
+
+Flip is one env value and a redeploy: `BEE_GATEWAY_SWAP_ENABLE` in `.env.<profile>`, then
+`deploy.sh --profile=latbench --portSlot=7 bee-gateway`.
+
+| arm   | gateway                                                    |
+| ----- | ---------------------------------------------------------- |
+| **L** | `--swap-enable=true`, funded chequebook. What ships today. |
+| **U** | `--swap-enable=false`, no chequebook. bee's ultra-light.   |
+
+**Interleave L, U, L, U in one sitting.** Two sittings of one configuration have differed by 1.05s,
+which is larger than most effects this project chases, so arms compared across sittings are not
+compared at all.
+
+**Warm each arm after the redeploy.** A restarted bee node has to re-establish peers and performs
+differently cold. ⚠️ Task #57 controlled for exactly this and found the warm run slightly **worse**,
+so warm-up does not flatter the funded arm.
+
+|     | run | broadcast-min |
+| --- | --- | ------------- |
+
+## Phase 0.7 — quality, which no viewer has ever been shown
+
+**Every browser run this project has done was 720p, 2500kbps, 30fps.** That is
+`publish-clock.sh`'s default and it was never moved. Segment length is the only variable a viewer has
+ever been measured across, which was right while the freeze was being diagnosed and leaves the
+standing goal, "best possible quality", untested at the one place it matters.
+
+The encoder grid did sweep resolutions, but it was screened through the bench and **through the
+instrument defects since found**, and none of it was ever watched in a browser.
+
+### Why this is not just "run it again at 1080p"
+
+The loop fix changed what quality costs. The client now consumes **every** feed slot, so at 720p it
+pulls about 325 kB/s in ~90kB segments with a 160ms median transfer and at most two requests in
+flight. 1080p at 6000kbps is roughly **2.4x the bytes**, which lengthens every transfer against a
+per-segment budget of 267ms at a 0.25s GOP.
+
+⚠️ **And the failure mode is silent.** Task #76 established that a consumer slower than the stream's
+bitrate does not error, it **stretches media time**: the frame rate collapses and segment length
+follows, reproduced at 12.2fps against a requested 30. So an over-ambitious quality setting degrades
+quality rather than announcing itself, which is exactly the kind of thing only a viewer sees.
+
+### The runs
+
+|      | run                                                                         | broadcast-min |
+| ---- | --------------------------------------------------------------------------- | ------------: |
+| 0.7a | 10-minute viewer runs at 720p/2500k, 1080p/4000k, 1080p/6000k, all at 0.25s |            33 |
+| 0.7b | 60 minutes at whichever of those holds, as the gate                         |            63 |
+| 0.7c | The best quality that holds at 0.25s against the same quality at 0.5s       |            22 |
+
+**Judge on what arrived, not what was asked for.** The report already carries the decoded resolution,
+the dropped-frame count and the delivered bytes per second, so a run that quietly downgraded is
+visible as a disagreement between the requested bitrate and the delivered one rather than as a good
+result.
+
+0.7c exists because quality and segment length trade against each other through the same budget: if
+1080p cannot hold at 0.25s but holds at 0.5s, that is a real product choice between picture and
+latency, and it should be made on a measurement rather than on which one was tested first.
+
+|
+| 0.6a | 10-minute viewer runs, L U L U | 44 |
+| 0.6b | 60-minute viewer run on each arm | 126 |
+| 0.6c | `viewer-gateway-outage` and `uploader-crash` on arm U | 20 |
+
+**0.6c is the one with the sharpest interaction.** Task #71 is a viewer blocked on the oldest feed
+slot they cannot retrieve. A gateway that cannot pay for bandwidth should meet more of those, so
+ultra-light may make the worst known recovery defect substantially worse. That is a prediction, and
+the run either shows it or does not.
+
+**Measure the mechanism, not only the outcome.** Sample the gateway's peer debt distribution during
+each arm. Credit exhaustion has a signature, peers pinned near the debt ceiling and a credit jump
+when a freeze releases, and it is what separates "ultra-light is slower" from "ultra-light is
+starved".
+
+⚠️ **The compose file currently asserts the old answer**, in a comment saying a viewer polling an
+ultra-light gateway "sees the feed freeze 30 to 48s at a time". That number came through the broken
+lookup. Whatever this phase finds, that comment gets rewritten to match it.
+
+⚠️ **`--cache-capacity=0` is set on both arms**, so neither caches anything and every chunk is
+re-fetched per viewer. That is a separate variable and a likely large one for concurrent viewers. Not
+in this phase, deliberately, because two variables at once answers neither.
+
+|
+| 0.5a | 10-minute viewer gate at 0.25s, ×2 | The loop fix is gated on two 150s runs. This project's own discipline is screen at 3, gate at 10. | 26 |
+| 0.5b | **60-minute viewer run at 0.25s** | The one that matters. The client's manifest state **never trims**: it appends every segment it has seen and rebuilds the whole playlist on every poll, which at 0.25s is four a second and ~14,000 in an hour. The loop fix made it consume **more** slots, so if that costs anything this is where it shows. Nothing here has ever streamed past 150 seconds. | 63 |
+| 0.5c | 60-minute run at 1.0s | The control. Same hour, a quarter of the segments, so a degradation that tracks segment count separates from one that tracks wall clock. | 63 |
+| 0.5d | #71 and #85 fixed, each verified before and after | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state. | 50 |
+| 0.5e | The five remaining crash scenarios, ×2 | Phase 2's list, now that a viewer can be watched through one. | 60 |
 
 **Read the windows, not the median.** A run that is perfect for its first half and rebuffering
 through its second has a respectable median and is a broken stream, which is why `stability.ts` cuts
