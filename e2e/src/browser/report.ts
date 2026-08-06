@@ -163,6 +163,9 @@ export function playbackSection(run: BrowserRun): string[] {
     `| **media seconds per wall second, whole session** | **${s.overallAdvanceRatio.toFixed(3)}** |`,
     `| media seconds per wall second, typical sample | ${s.medianAdvanceRatio.toFixed(3)} |`,
     `| samples where playback did not advance | ${s.stalledSamples} |`,
+    `| forward seeks, and media they skipped | ${
+      s.forwardSeeks === 0 ? 'none' : `${s.forwardSeeks}, skipping ${s.seekedPastS.toFixed(1)}s`
+    } |`,
     `| rebuffers the player counted | ${s.rebufferCount}, totalling ${s.rebufferMs}ms |`,
     `| fatal errors | ${s.fatalErrors} |`,
     `| dropped frames | ${s.droppedFrames} |`,
@@ -179,6 +182,14 @@ export function playbackSection(run: BrowserRun): string[] {
     '**Read the whole-session ratio, not the typical sample.** Playback either runs at its rate or is ' +
       'stopped, so the typical sample reads 1.000 in any session that plays at all, including one that ' +
       'spends a sixth of its time frozen. The gap between the two rows is the rebuffering.',
+    '',
+    '**A seek is not playback, and the whole-session ratio no longer counts it as such.** When latency ' +
+      'passes `LIVE_MAX_LATENCY_DURATION_S` hls.js jumps the playhead to the live edge, which is its ' +
+      'designed recovery and the normal end of any freeze. Reading `currentTime` at the ends of a run ' +
+      'could not tell that from playing throughout, so a freeze and the seek that ended it used to net ' +
+      'to 1.000. Media above what the clock allows at the catch-up rate is now counted as skipped and ' +
+      'reported on its own row. Replaying the recorded runs through both definitions moved every ' +
+      'faulted run and left all 27 clean ones identical to three decimals.',
     '',
   ];
 }

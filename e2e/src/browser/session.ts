@@ -18,7 +18,11 @@
  * Both are read off the player's own live latency, which is why {@link ViewerSample} carries it.
  */
 
-import { LIVE_MAX_LATENCY_DURATION_S, LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
+import {
+  LIVE_MAX_LATENCY_DURATION_S,
+  LIVE_SYNC_DURATION_S,
+  MAX_LIVE_SYNC_PLAYBACK_RATE,
+} from '../bench/clientTuning.js';
 
 /**
  * How far below the configured target the latency may sit before it reads as clamped.
@@ -185,9 +189,22 @@ export interface SessionSummary {
    * Media seconds delivered per wall second across the whole session, stalls included.
    *
    * This is what a viewer experienced: 1.0 means the picture kept up with the world, and the
-   * shortfall below it is time they spent watching a frozen frame.
+   * shortfall below it is time they spent watching a frozen frame. Media the player jumped past is
+   * excluded, so this cannot exceed {@link MAX_LIVE_SYNC_PLAYBACK_RATE} however far it seeks.
    */
   overallAdvanceRatio: number;
+  /**
+   * Times the playhead moved forward by more than the clock allows, which is a seek and not
+   * playback.
+   *
+   * Non-zero is not a fault by itself. Every session that joins behind the live edge gets one, and
+   * hls.js seeking after a freeze is its designed recovery. It is here because
+   * {@link overallAdvanceRatio} now excludes those seconds, and a ratio that dropped wants the
+   * reason next to it.
+   */
+  forwardSeeks: number;
+  /** Media seconds those seeks passed over, which is media that existed and nobody saw. */
+  seekedPastS: number;
   /** The overlay's own count, which counts a `waiting` event rather than a slow sample. */
   rebufferCount: number;
   rebufferMs: number;
@@ -221,6 +238,10 @@ const MIN_MEDIA_FOR_FPS_S = 5;
  * The frame rate that reached the viewer, from the frames the decoder counted over the media it
  * played. Null when the run is too short for the ratio to say anything, rather than a number built
  * from two samples that happen to straddle a stall.
+ *
+ * Media the player seeked past is out of the denominator because it is already out of the numerator:
+ * a seek decodes nothing it jumps over. Counting it understated the rate in every session with a
+ * join seek in it, which is most of them.
  */
 function deliveredFps(samples: readonly ViewerSample[]): number | null {
   const counted = samples.filter(
@@ -229,7 +250,7 @@ function deliveredFps(samples: readonly ViewerSample[]): number | null {
   if (counted.length < 2) {
     return null;
   }
-  const mediaS = mediaPlayedS(counted);
+  const mediaS = mediaPlayed(counted).playedS;
   if (mediaS < MIN_MEDIA_FOR_FPS_S) {
     return null;
   }
@@ -267,37 +288,81 @@ function totalAcrossRestarts<T extends ViewerSample>(samples: readonly T[], of: 
   return carried + peak;
 }
 
-/** Media seconds the playhead actually covered, counting each life of the player separately. */
-function mediaPlayedS(samples: readonly ViewerSample[]): number {
-  if (samples.length === 0) {
-    return 0;
-  }
+/**
+ * Slack for reading `currentTime` and the clock at slightly different instants.
+ *
+ * Sized against the gap it has to sit in rather than picked. Sampling is a second apart, so an
+ * honest interval gains at most {@link MAX_LIVE_SYNC_PLAYBACK_RATE} seconds, while the smallest seek
+ * hls.js can make is {@link LIVE_MAX_LATENCY_DURATION_S} minus {@link LIVE_SYNC_DURATION_S}, six
+ * seconds, because it only fires past the first and lands on the second. Anything between about a
+ * tenth of a second and five separates them, and this sits in the middle of that.
+ */
+const SEEK_TOLERANCE_S = 0.5;
 
-  let played = 0;
-  let lifeStart = samples[0].currentTime;
-  let previous = lifeStart;
+interface PlayedMedia {
+  /** Media seconds the playhead covered by playing, with seek jumps taken out. */
+  playedS: number;
+  forwardSeeks: number;
+  seekedPastS: number;
+}
 
-  for (const sample of samples) {
-    if (sample.currentTime < previous - RESTART_REWIND_S) {
-      played += previous - lifeStart;
-      lifeStart = sample.currentTime;
+/**
+ * Media the viewer watched, told apart from media the player jumped over.
+ *
+ * Walks pairs rather than reading the ends, because the ends cannot tell a session that played
+ * throughout from one that froze and then seeked past the freeze. Two things break the run of
+ * ordinary playback and they are not the same event:
+ *
+ * - **Backwards past {@link RESTART_REWIND_S}** is the client remounting its player, which starts
+ *   again from whatever loads next. Nothing was watched or skipped, so the step counts as neither.
+ * - **Forwards past what the clock allows** is a seek. The ceiling is
+ *   {@link MAX_LIVE_SYNC_PLAYBACK_RATE} rather than the rate either sample reported, because hls.js
+ *   may raise the rate between two samples and a ceiling that trusted the samples would call that a
+ *   seek. What the step is credited is that ceiling, which is an upper bound on what could have
+ *   played rather than a guess at how much did: the player probably spent most of the interval
+ *   stalled, so this errs toward the flattering reading and still lands far below the old one.
+ */
+function mediaPlayed(samples: readonly ViewerSample[]): PlayedMedia {
+  let playedS = 0;
+  let forwardSeeks = 0;
+  let seekedPastS = 0;
+
+  for (let i = 1; i < samples.length; i += 1) {
+    const previous = samples[i - 1];
+    const sample = samples[i];
+    const gained = sample.currentTime - previous.currentTime;
+
+    if (gained < -RESTART_REWIND_S) {
+      continue;
     }
-    previous = sample.currentTime;
+
+    const playable = ((sample.atMs - previous.atMs) / 1000) * MAX_LIVE_SYNC_PLAYBACK_RATE;
+    if (gained > playable + SEEK_TOLERANCE_S) {
+      forwardSeeks += 1;
+      seekedPastS += gained - playable;
+      playedS += playable;
+      continue;
+    }
+
+    playedS += gained;
   }
 
-  return played + previous - lifeStart;
+  return { playedS, forwardSeeks, seekedPastS };
 }
 
 export function summarize(samples: readonly ViewerSample[]): SessionSummary {
   const last = samples[samples.length - 1];
   const advances = playbackAdvances(samples);
   const spanMs = samples.length > 1 ? last.atMs - samples[0].atMs : 0;
+  const played = mediaPlayed(samples);
   return {
     samples: samples.length,
     spanMs,
     stalledSamples: advances.filter((advance) => advance.ratio < STALLED_ADVANCE_RATIO).length,
     medianAdvanceRatio: advances.length > 0 ? median(advances.map((advance) => advance.ratio)) : 0,
-    overallAdvanceRatio: spanMs > 0 ? (mediaPlayedS(samples) * 1000) / spanMs : 0,
+    overallAdvanceRatio: spanMs > 0 ? (played.playedS * 1000) / spanMs : 0,
+    forwardSeeks: played.forwardSeeks,
+    seekedPastS: played.seekedPastS,
     rebufferCount: totalAcrossRestarts(samples, (sample) => sample.rebufferCount),
     rebufferMs: totalAcrossRestarts(samples, (sample) => sample.rebufferMs),
     fatalErrors: totalAcrossRestarts(samples, (sample) => sample.fatalErrors),

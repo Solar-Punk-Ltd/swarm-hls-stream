@@ -206,6 +206,105 @@ describe('summarizing a session', () => {
 });
 
 /**
+ * Task #102. A forward jump is the player abandoning media, and it used to be counted as media the
+ * viewer watched.
+ *
+ * hls.js writes `media.currentTime = liveSyncPosition` whenever latency passes
+ * `LIVE_MAX_LATENCY_DURATION_S`, which is its designed response to falling behind and is the normal
+ * end of every freeze the gateway causes. The playhead then covers the whole freeze in one sample.
+ * Reading `currentTime` at the ends of a session cannot tell that apart from playing throughout, so
+ * a ten second freeze and the seek that ended it netted to exactly 1.000 and the run read as
+ * flawless. Two crash reports were published against that reading.
+ *
+ * The cure is a ceiling rather than a judgement: no viewer can watch more media seconds than the
+ * clock allows at the fastest rate the player is configured to use, so anything above that was
+ * jumped past. The excess is reported rather than quietly dropped, because a session with one seek
+ * in it is a different thing from a session with none and the ratio alone no longer says which.
+ */
+describe('media a viewer watched, against media the player skipped', () => {
+  /** Plays for `playedS`, freezes for `frozenS`, then seeks to the live edge and plays on. */
+  function frozenThenSeeking(playedS: number, frozenS: number, afterS: number): ViewerSample[] {
+    const before = Array.from({ length: playedS }, (_, i) => ({ ...BASE, atMs: i * 1000, currentTime: i }));
+    const frozen = Array.from({ length: frozenS }, (_, i) => ({
+      ...BASE,
+      atMs: (playedS + i) * 1000,
+      currentTime: playedS - 1,
+    }));
+    // The seek: one sample later, the playhead is at the live edge, which is where the clock is.
+    const after = Array.from({ length: afterS }, (_, i) => ({
+      ...BASE,
+      atMs: (playedS + frozenS + i) * 1000,
+      currentTime: playedS + frozenS + i,
+    }));
+    return [...before, ...frozen, ...after];
+  }
+
+  it('does not credit a freeze and its recovery seek as a session that played throughout', () => {
+    const summary = summarize(frozenThenSeeking(6, 10, 5));
+
+    assert.ok(
+      summary.overallAdvanceRatio < 0.75,
+      `read ${summary.overallAdvanceRatio.toFixed(3)}, and ten of twenty seconds were a frozen frame`,
+    );
+  });
+
+  it('says how much media the seek skipped, rather than dropping it silently', () => {
+    const summary = summarize(frozenThenSeeking(6, 10, 5));
+
+    assert.equal(summary.forwardSeeks, 1);
+    assert.ok(
+      summary.seekedPastS > 8 && summary.seekedPastS < 11,
+      `read ${summary.seekedPastS}s skipped, against the ten seconds the freeze cost`,
+    );
+  });
+
+  /**
+   * The join seek, which every session has. A viewer starts as far back as the first manifest
+   * reaches, about 36 seconds of media against a 6s target, and hls.js jumps them forward at once.
+   * {@link LatencyVerdict.joinedPastSeekThreshold} already reports the event, so counting those
+   * seconds as watched was the same defect happening to every run rather than only to a faulted one.
+   */
+  it('excludes the jump a viewer is given when they join behind the edge', () => {
+    const joined = [
+      { ...BASE, atMs: 0, currentTime: 0 },
+      { ...BASE, atMs: 1000, currentTime: 30 },
+      ...Array.from({ length: 9 }, (_, i) => ({ ...BASE, atMs: (2 + i) * 1000, currentTime: 31 + i })),
+    ];
+    const summary = summarize(joined);
+
+    assert.equal(summary.forwardSeeks, 1);
+    assert.ok(
+      summary.overallAdvanceRatio <= 1.1,
+      `read ${summary.overallAdvanceRatio.toFixed(3)}, which is more media than the clock allows`,
+    );
+  });
+
+  it('leaves the catch-up rate alone, which is playing fast and not jumping', () => {
+    const summary = summarize(playing(10, 1.1, { playbackRate: 1.1 }));
+
+    assert.equal(summary.forwardSeeks, 0);
+    assert.equal(summary.seekedPastS, 0);
+    assert.ok(Math.abs(summary.overallAdvanceRatio - 1.1) < 0.001);
+  });
+
+  /**
+   * `currentTime` and the clock are not read in the same instant, so a sample pair can show slightly
+   * more media than the rate strictly allows without anything having jumped. The tolerance absorbing
+   * that has a wide gap to sit in: an honest second gains at most 1.1s, and the smallest seek hls.js
+   * can make is 6s, because it fires past a 12s latency and lands on a 6s one.
+   */
+  it('reads a sampling wobble as playback rather than as a seek', () => {
+    const wobbling = [
+      { ...BASE, atMs: 0, currentTime: 0 },
+      { ...BASE, atMs: 1000, currentTime: 1.4 },
+      { ...BASE, atMs: 2000, currentTime: 2.4 },
+    ];
+
+    assert.equal(summarize(wobbling).forwardSeeks, 0);
+  });
+});
+
+/**
  * The silent quality failure, and why the rate is per media second rather than per wall second.
  *
  * A consumer slower than the stream's bitrate does not error or drop frames, it stretches media
@@ -213,22 +312,30 @@ describe('summarizing a session', () => {
  * collapsed. Task #76 reproduced 12.2fps against a requested 30 that way.
  */
 describe('the frame rate that actually arrived', () => {
-  const at = (i: number, currentTime: number, decodedFrames: number): ViewerSample => ({
+  /**
+   * A sample at a stated wall second, holding a stated media position.
+   *
+   * Both clocks are named because they have to agree: media that outruns the wall clock by more
+   * than the catch-up rate is a seek, and the denominator excludes it. These fixtures used to
+   * advance three media seconds per wall second, which no player does and which reads as a seek on
+   * every step.
+   */
+  const at = (atS: number, currentTime: number, decodedFrames: number): ViewerSample => ({
     ...BASE,
-    atMs: i * 1000,
+    atMs: atS * 1000,
     currentTime,
     decodedFrames,
   });
 
   it('reads a healthy stream at the rate it was encoded', () => {
-    const samples = [at(0, 0, 0), at(1, 3, 90), at(2, 6, 180), at(3, 9, 270)];
+    const samples = [at(0, 0, 0), at(3, 3, 90), at(6, 6, 180), at(9, 9, 270)];
 
     assert.equal(summarize(samples).deliveredFps, 30);
   });
 
   it('sees a collapsed frame rate that nothing else reports', () => {
     // Same wall clock, same media, a third of the frames. Nothing here is frozen and nothing errored.
-    const samples = [at(0, 0, 0), at(1, 3, 36), at(2, 6, 72), at(3, 9, 108)];
+    const samples = [at(0, 0, 0), at(3, 3, 36), at(6, 6, 72), at(9, 9, 108)];
     const summary = summarize(samples);
 
     assert.equal(summary.deliveredFps, 12);
@@ -240,13 +347,13 @@ describe('the frame rate that actually arrived', () => {
    * would call a freeze and a collapse the same number, and the two need opposite fixes.
    */
   it('is not fooled by a freeze, which decodes nothing and plays nothing', () => {
-    const samples = [at(0, 0, 0), at(1, 3, 90), at(2, 3, 90), at(3, 3, 90), at(4, 6, 180), at(5, 9, 270)];
+    const samples = [at(0, 0, 0), at(3, 3, 90), at(6, 3, 90), at(9, 3, 90), at(12, 6, 180), at(15, 9, 270)];
 
     assert.equal(summarize(samples).deliveredFps, 30, 'a frozen stretch was charged to the frame rate');
   });
 
   it('says nothing rather than guessing from too little media', () => {
-    const samples = [at(0, 0, 0), at(1, 2, 60)];
+    const samples = [at(0, 0, 0), at(2, 2, 60)];
 
     assert.equal(summarize(samples).deliveredFps, null);
   });
