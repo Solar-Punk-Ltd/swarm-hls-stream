@@ -204,10 +204,20 @@ written for LAT-9 and it handles the two things a naive reading gets wrong: pack
 order so the newest frame is not the last listed, and a timestamp says when a frame started rather
 than how long it lasted, so the final frame is credited the median gap.
 
-The uploader already holds the segment bytes at `handleSegment`. Moving that module into
-`packages/shared` and deriving `#EXTINF` from the bytes rather than from the webhook is the fix, and
-it is the same call the bench already made. The cost to weigh is that it puts a parse of every
-segment on the upload path.
+The uploader already held the segment bytes at `handleSegment`, so the module moved into
+`packages/shared` and `#EXTINF` now comes from the bytes. What could not move is how the bench feeds
+it, which is ffprobe: the uploader has no ffmpeg in its image, so `readVideoPts` reads the timestamps
+out of the transport packets directly.
+
+Substituted in the **orchestrator**, where the HTTP route, the SRS webhook and the OME puller
+converge, because the engine caught at this is not special. The engine's claim is still the answer
+for a segment that cannot be read, which is not a fallback for the unexpected but the live path for
+OME, whose fMP4 segments carry no transport packets at all. That is counted as well as logged, since
+the two deployments are opposite and both normal: one falls back on every segment, the other never,
+and the rate moving between them is the signal.
+
+The cost accepted is a parse of every segment on the upload path. It is a scan of roughly 550 packet
+headers per segment, and no fallback fired across 17 real segments.
 
 ## ⚠️ The instrument, and it took three tries to trust it
 
