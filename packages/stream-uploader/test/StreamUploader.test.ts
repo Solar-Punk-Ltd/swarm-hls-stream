@@ -372,6 +372,9 @@ describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
 });
 
 describe('StreamUploader finalization (CON-25)', () => {
+  const ENDLIST_TAG = '#EXT-X-ENDLIST';
+  const PLAYLIST_TYPE_VOD_TAG = '#EXT-X-PLAYLIST-TYPE:VOD';
+
   /**
    * Two callers reach `notifyStop` for one session and neither can see the other. A reconnect during a
    * drain retires the live session and hands it to `finalizeRetiredSession`, which deliberately stays
@@ -426,9 +429,53 @@ describe('StreamUploader finalization (CON-25)', () => {
     );
     assert.deepEqual(
       socWrites,
-      [0, 1],
-      'the second finalize committed another VOD manifest at the next index, paid for and identical',
+      [0, 1, 2],
+      'the live manifest, then one closing manifest and one VOD however many times finalize is asked',
     );
+  });
+
+  /**
+   * The VOD manifest renumbers the playlist from zero, and it lands in the feed live viewers are
+   * still walking. hls.js merges a live playlist against its predecessor and reads a media sequence
+   * moving backwards as a parsing error, which its error controller escalates to fatal on a
+   * single-variant stream, and the client answers a fatal parsing error by remounting the player.
+   * That is how the end of a broadcast used to send a viewer back to its first second.
+   *
+   * So the broadcast ends on a manifest a live viewer can merge, and the recording follows it.
+   */
+  it('ends the live playlist before publishing the VOD that renumbers it', async () => {
+    const written: string[] = [];
+    const bee = {
+      uploadData: async () => ({ reference: { toHex: () => 'ref0' } }),
+      makeFeedWriter: () => ({
+        uploadPayload: async (_stamp: string, data: Uint8Array, opts: { index: number }) => {
+          written.push(Buffer.from(data).toString('utf-8'));
+          return { reference: { toHex: () => `soc${opts.index}` } };
+        },
+      }),
+    } as unknown as Bee;
+
+    const uploader = new StreamUploader(
+      bee,
+      '',
+      makeFakeCatalog(),
+      makeFakeRecoveryStore(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+    await uploader.notifyStop();
+
+    const [live, closing, vod] = written;
+    assert.equal(written.length, 3, `expected live, closing and VOD manifests, got ${written.length}`);
+    assert.ok(!live.includes(ENDLIST_TAG), 'the live manifest is open while the broadcast runs');
+    assert.ok(closing.includes(ENDLIST_TAG), 'the broadcast ends on a playlist a live viewer can merge');
+    assert.ok(!closing.includes(PLAYLIST_TYPE_VOD_TAG), 'and that playlist is still the live one');
+    assert.ok(vod.includes(PLAYLIST_TYPE_VOD_TAG), 'the recording is published after it, not instead of it');
   });
 });
 

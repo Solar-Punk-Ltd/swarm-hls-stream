@@ -65,18 +65,38 @@ export class ManifestManager {
   }
 
   public buildLiveManifest(): string {
+    const lines = this.liveManifestLines();
+    return lines.length === 0 ? '' : joinManifest(lines);
+  }
+
+  /**
+   * The live manifest with its playlist ended, published when the broadcast stops.
+   *
+   * A viewer walking the feed reads this as the next update of the playlist they are already
+   * playing, so it has to stay that playlist: same media sequence, same segments, now closed. The
+   * VOD manifest cannot do this job, because it renumbers from zero, and a media sequence moving
+   * backwards is what hls.js reports as a parsing error rather than as an ending. That error is
+   * escalated to fatal on a single-variant stream, and the client answers a fatal parsing error by
+   * remounting the player, which restarts playback at the beginning of the recording.
+   */
+  public buildClosingLiveManifest(): string {
+    const lines = this.liveManifestLines();
+    return lines.length === 0 ? '' : joinManifest([...lines, HLS_ENDLIST]);
+  }
+
+  private liveManifestLines(): string[] {
     if (this.segments.length === 0) {
-      return '';
+      return [];
     }
 
     // The media sequence is the count of segments the window left behind, so it is also where the
     // window starts.
     const mediaSequence = this.segments.length - this.liveWindowLength();
 
-    return joinManifest([
+    return [
       ...this.liveHeaderLines(mediaSequence),
       ...this.segments.slice(mediaSequence).flatMap((seg) => this.segmentLines(seg)),
-    ]);
+    ];
   }
 
   public buildVODManifest(): string {

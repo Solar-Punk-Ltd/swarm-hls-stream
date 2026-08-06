@@ -232,3 +232,49 @@ describe('the window covers the buffer the client asks for', () => {
     );
   });
 });
+
+/**
+ * A broadcast ends into a feed that live viewers are still walking, so the manifest that ends it is
+ * read as the next update of the one they are playing. hls.js merges a live playlist against its
+ * predecessor and raises `media sequence mismatch` when the sequence moves backwards, which its
+ * error controller escalates to fatal on a single-variant stream because there is no level to switch
+ * to. The client answers a fatal parsing error by remounting the player, and a remounted player
+ * starts at the beginning. That is why the end of a broadcast used to rewind the viewer to zero.
+ */
+describe('ending a broadcast that live viewers are still following', () => {
+  const ENDLIST_TAG = '#EXT-X-ENDLIST';
+  const PLAYLIST_TYPE_VOD_TAG = '#EXT-X-PLAYLIST-TYPE:VOD';
+
+  it('leaves the media sequence exactly where the live manifest had it', () => {
+    const manager = withSegments(500, SHORTEST_SEGMENT_DURATION_S);
+
+    assert.equal(mediaSequence(manager.buildClosingLiveManifest()), mediaSequence(manager.buildLiveManifest()));
+  });
+
+  it('names the same segments the live manifest named', () => {
+    const manager = withSegments(500, SHORTEST_SEGMENT_DURATION_S);
+
+    assert.deepEqual(segmentUris(manager.buildClosingLiveManifest()), segmentUris(manager.buildLiveManifest()));
+  });
+
+  it('ends the playlist, so a player stops reloading it instead of following a dead feed', () => {
+    assert.ok(withSegments(10, 2).buildClosingLiveManifest().includes(ENDLIST_TAG));
+  });
+
+  /** A live playlist that has ended is still a live playlist. Calling it VOD restarts the player. */
+  it('does not relabel the playlist as VOD', () => {
+    assert.ok(!withSegments(10, 2).buildClosingLiveManifest().includes(PLAYLIST_TYPE_VOD_TAG));
+  });
+
+  it('says nothing when there was never a segment to end', () => {
+    assert.equal(new ManifestManager('').buildClosingLiveManifest(), '');
+  });
+
+  /** The recording is a separate resource with a separate reader, and it is not what changed. */
+  it('leaves the VOD manifest starting at zero and naming everything', () => {
+    const manager = withSegments(500, SHORTEST_SEGMENT_DURATION_S);
+
+    assert.equal(mediaSequence(manager.buildVODManifest()), 0);
+    assert.equal(segmentUris(manager.buildVODManifest()).length, 500);
+  });
+});

@@ -295,6 +295,20 @@ export class StreamUploader {
       return;
     }
 
+    // Published first, and to its own slot, because the VOD manifest below renumbers the playlist
+    // from zero into the same feed that live viewers are still walking. They read whatever is newest,
+    // and a media sequence moving backwards restarts their player at the beginning of the recording.
+    // This one ends the playlist they are already on, so they play out what they hold and stop.
+    const closingManifest = this.manifestManager.buildClosingLiveManifest();
+    if ((await this.manifestQueue.add(() => this.commitManifest(closingManifest))) === null) {
+      // Not fatal to finalization. The recording below is what the catalog points at and it is still
+      // worth publishing; what is lost is the clean ending for whoever is watching right now.
+      this.logger.warn(
+        `Failed to publish the closing live manifest for stream ${this.streamId}; viewers watching ` +
+          'live will restart at the beginning of the recording rather than stopping at the end',
+      );
+    }
+
     const vodManifest = this.manifestManager.buildVODManifest();
     const vodIndex = (await this.manifestQueue.add(() => this.commitManifest(vodManifest))) ?? null;
     if (vodIndex === null) {
