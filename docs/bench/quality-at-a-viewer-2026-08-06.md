@@ -76,17 +76,72 @@ and the run finished at 1.000.
 **This is the answer to the standing goal.** Stable, constant latency at the best quality available:
 1080p at 6000kbps, a 0.25s GOP, ten minutes, 1.000.
 
+## ✅ AND IT HOLDS FOR AN HOUR, with one disturbance
+
+`browser-watch-2026-08-06T07-26-32-437Z.md`, 3,557 samples over 60.0 minutes at 1080p/6000k.
+
+| | **1080p 6000k, 60 min** | 720p 2500k, 60 min |
+| --- | ---: | ---: |
+| samples | 3,557 | 3,558 |
+| **frames per second of media** | **30.00** | not measured |
+| media per wall second | **1.0000** | 1.000 |
+| stalled samples | **5** | **0** |
+| rebuffers | **5, 7,520ms** | **1, 246ms** |
+| fatal errors | 0 | 0 |
+| behind live, median | 5.68s | 5.59s |
+
+⭐ **`deliveredFps` is 30.00 exactly across the whole hour.** That is the reading the run was for: the
+encoder was **never starved**, so this is not #76 reappearing at 2.4x the bitrate. Whatever went wrong
+was delivery timing, not the picture.
+
+**Six ten-minute windows, and only one is disturbed:**
+
+| window | advance | median behind live |
+| --- | ---: | ---: |
+| 0-10 | 1.0011 | 5.82s |
+| 10-20 | 1.0004 | 5.79s |
+| 20-30 | 1.0000 | 5.49s |
+| 30-40 | 1.0001 | 5.47s |
+| **40-50** | **0.9976** | 5.45s |
+| 50-60 | 1.0006 | 6.43s |
+
+**All five rebuffers fall inside four minutes**, at 46.3, 46.4, 46.4, 46.7 and 50.5 minutes. Behind-live
+dropped to a minimum of **0.48s**, which is the live edge stopping while the player kept going rather
+than the player improving, then overshot to 8.27s and was pulled back by
+`MAX_LIVE_SYNC_PLAYBACK_RATE`. `heldTarget` true, `ranLong` false: it never crossed the seek threshold.
+
+**So the honest verdict is not "it holds" and not "it fails".** It holds, at a cost 720p does not pay:
+five stalled samples against none, and 7.5 seconds of rebuffering against a quarter of one. In an
+hour that is 0.2%, and it is 30x what the cheaper profile cost.
+
+⚠️ **One disturbance in one hour cannot tell a periodic fault from an accident.** A second hour is
+what separates them and has not been run.
+
+## ⛔ The probe audit cannot be done on this run, and the reason is my own instrument
+
+Fix 0.8a's probe was verified as **0 in 2,308 requests** on the ten-minute run. Repeating it here
+reported 96%, with distances up to +35 against a ladder that only asks +1, +2, +4 and +8.
+
+That is `thinRequestLog` doing its job: over `MAX_LOGGED_SUCCESSES = 5_000` it keeps every Nth
+success, and this hour kept **4,506 of more than 14,000**. Consecutive slot reads are missing, so
+every gap in the sampled log reads as a jump.
+
+⚠️ **A thinned request log cannot support any analysis that depends on one request following
+another.** The ten-minute run was under the cap and was not thinned, which is why its answer stands
+and this one does not.
+
 ## What this does not say
 
 **Three minutes each, one run each, one sitting.** Enough to screen, not to gate.
 [[swarm-hls-optimisation-campaign]] holds the rule this follows: a three-minute run reproduces a
 ten-minute median to within 0.06s, so screen at 3 and gate at 10.
 
-⚠️ **The hour that held was measured at 720p/2500k, and 1080p has now been gated at ten minutes, not
-sixty.** The mechanism behind #76 is a consumer slower than the stream's **bitrate**, and 6000k is
-2.4x more of it, so length is where a 1080p stream would fail if it fails. Ten minutes did not find
-it. Sixty has not been tried at this setting, and the refusal share appearing between three minutes
-and ten is exactly the kind of thing that grows with length.
+✅ **Sixty minutes has now been run at 1080p/6000k and the answer is above.** The frame rate held
+exactly, so #76's mechanism was ruled out rather than merely not seen. What sixty minutes found that
+ten could not is a single four-minute disturbance costing 7.5 seconds of rebuffering.
+
+⚠️ Refusals grow with length at every profile measured: 0% at three minutes, 0.61% at ten,
+**1.27% at sixty** (174 of 13,522), all served on retry.
 
 **One machine, one viewer, one publisher on the deployment host.** Nothing here says what a second
 viewer costs at 1080p, and [[swarm-hls-concurrent-viewers]] found a viewer **adds** load rather than
