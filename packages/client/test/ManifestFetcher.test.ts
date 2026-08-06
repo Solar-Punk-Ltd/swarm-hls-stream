@@ -974,6 +974,8 @@ describe('a refused slot that later slots are already behind (#71)', () => {
   let publishedThrough: bigint;
   /** Slots the gateway refuses although the publisher wrote them, which is what the probe is for. */
   let unretrievable: Set<bigint>;
+  /** Slots holding the finished recording, which names every segment and renumbers from zero. */
+  let recordingAt: Set<bigint>;
 
   beforeEach(() => {
     manager.clear(hexTopic);
@@ -986,6 +988,7 @@ describe('a refused slot that later slots are already behind (#71)', () => {
     requested = [];
     publishedThrough = START_INDEX;
     unretrievable = new Set();
+    recordingAt = new Set();
 
     globalThis.fetch = async (input: RequestInfo | URL) => {
       const index = requestedIndex(String(input));
@@ -995,8 +998,12 @@ describe('a refused slot that later slots are already behind (#71)', () => {
         return new Response('not found', { status: 404 });
       }
       const lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:2'];
-      for (let seg = index! > WINDOW ? index! - WINDOW : 0n; seg <= index!; seg++) {
+      const from = recordingAt.has(index!) ? 0n : index! > WINDOW ? index! - WINDOW : 0n;
+      for (let seg = from; seg <= index!; seg++) {
         lines.push('#EXTINF:2,', `seg-${seg}.ts`);
+      }
+      if (recordingAt.has(index!)) {
+        lines.push('#EXT-X-ENDLIST');
       }
       return new Response(lines.join('\n'));
     };
@@ -1206,5 +1213,81 @@ describe('a broadcast ending under a viewer who joined partway through (#94)', (
     manager.updateManifest(TOPIC_ID, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'other-stream.ts' }], true);
 
     assert.deepEqual(uris(manager), before, 'a foreign playlist was concatenated onto the end');
+  });
+});
+
+/**
+ * The live failure of #94, driven through the fetcher rather than asserted on the state manager.
+ *
+ * Measured on 2026-08-06: the uploader published the closing manifest and the recording 273ms apart,
+ * the closing one was momentarily unretrievable, and the probe added in 0.8a stepped over it onto the
+ * recording. So the uploader publishing a closing manifest first is necessary and not sufficient, and
+ * the guard has to hold on the path the probe takes and not only where the manifests are folded in.
+ */
+describe('the probe landing on the recording instead of the manifest that ended the stream (#94)', () => {
+  const WINDOW = 4n;
+  let fetcher: ManifestFetcher;
+  let requested: bigint[];
+
+  beforeEach(() => {
+    manager.clear(hexTopic);
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
+    fetcher = new ManifestFetcher(manager, new FeedHealthTracker(() => 0));
+    fetcher.beeUrl = BEE_URL;
+    requested = [];
+
+    // Slot 6 is the closing manifest and cannot be fetched; slot 7 is the recording and can.
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const index = requestedIndex(String(input));
+      assert.notEqual(index, undefined, `a slot outside the fixture was requested: ${String(input)}`);
+      requested.push(index!);
+      if (index! !== START_INDEX + 2n) {
+        return new Response('not found', { status: 404 });
+      }
+      const lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:2'];
+      for (let seg = 0n; seg <= START_INDEX + 2n; seg++) {
+        lines.push('#EXTINF:2,', `seg-${seg}.ts`);
+      }
+      lines.push('#EXT-X-ENDLIST');
+      return new Response(lines.join('\n'));
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realConsoleError;
+  });
+
+  const poll = async () => {
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+  };
+
+  const firstSegment = () =>
+    manager
+      .serialize(hexTopic, '')
+      .split('\n')
+      .find((line) => line.length > 0 && !line.startsWith('#'));
+
+  it('does not rewind the viewer to the first second of the broadcast', async () => {
+    for (let attempt = 0; attempt <= UNSERVED_POLLS_BEFORE_PROBE; attempt++) {
+      await poll();
+    }
+
+    assert.ok(requested.includes(START_INDEX + 2n), 'the probe never reached the recording, so this asserted nothing');
+    assert.match(
+      firstSegment() ?? '',
+      /seg-5\.ts$/,
+      'the recording replaced the playlist and sent the viewer back to its start',
+    );
+  });
+
+  it('still learns that the broadcast ended', async () => {
+    for (let attempt = 0; attempt <= UNSERVED_POLLS_BEFORE_PROBE; attempt++) {
+      await poll();
+    }
+
+    assert.match(manager.serialize(hexTopic, ''), /#EXT-X-ENDLIST/);
   });
 });
