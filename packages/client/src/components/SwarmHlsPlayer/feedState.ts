@@ -40,10 +40,23 @@ export const MANIFEST_RETRY_BASE_MS = 2_000;
 export const MANIFEST_RETRY_CAP_MS = 30_000;
 
 /**
- * How many consecutive polls may sit on an unserved slot before the feed is called stalled. hls.js
- * reloads a live playlist about once per target duration, which is 2 seconds here, so this is
- * roughly a minute of a feed that is not advancing. Low enough to reach a viewer while they are
- * still watching, high enough that a viewer who has merely caught up with the publisher stays quiet.
+ * How many consecutive polls may sit on an unserved slot before the feed is called stalled.
+ *
+ * Counted in polls rather than in seconds, because the poll is what observes the slot. Low enough to
+ * reach a viewer while they are still watching, high enough that a viewer who has merely caught up
+ * with the publisher stays quiet, since that viewer is refused on nearly every poll.
+ *
+ * ⚠️ **What this is worth in seconds is not what this comment used to claim.** It said hls.js
+ * reloads "about once per target duration, which is 2 seconds here, so this is roughly a minute".
+ * The uploader declares `ceil(segment duration)`, so the target is **1 second** at every segment
+ * length below a second, which `playerConfig.ts` states correctly and this did not. At the shipping
+ * profile thirty polls is therefore on the order of thirty seconds rather than sixty, and the
+ * measured live slot-read rate suggests faster still.
+ *
+ * The number is left where it is deliberately. It was chosen against how long a viewer will sit
+ * through a frozen picture, which is a fact about viewers rather than about the arithmetic above,
+ * and moving it on the strength of a corrected derivation would be changing measured behaviour
+ * without a measurement. Re-deriving it wants a run, not an edit.
  */
 export const UNSERVED_SLOT_POLL_LIMIT = 30;
 
