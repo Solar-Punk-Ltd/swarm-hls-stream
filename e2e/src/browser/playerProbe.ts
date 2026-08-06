@@ -92,6 +92,15 @@ export async function installPlayerProbe(page: Page): Promise<void> {
       // that says so rather than one that reads as a quiet page. This script runs before any page
       // script, so nothing here reaches a console anyone is watching.
       try {
+        // tsx compiles this file with esbuild's `keepNames`, which rewrites every function it can
+        // name into `__name(fn, 'fn')` against a helper defined at **module** scope. Playwright
+        // serialises this function's source alone, so the helper is not there and the script dies on
+        // `ReferenceError: __name is not defined` before installing anything. Assigned onto
+        // `globalThis` rather than declared as a local, because a local of that name is exactly what
+        // the compiler is entitled to rename. `installTimerProbe` escapes it only by declaring no
+        // named function at all.
+        (globalThis as unknown as { __name?: unknown }).__name ??= (fn: unknown) => fn;
+
         const record = (name: string, readyState: number): void => {
           probe.events.push({ name, atMs: Math.round(performance.now()), readyState });
         };

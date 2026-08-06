@@ -237,8 +237,13 @@ async function main(): Promise<void> {
       if (!Number.isFinite(duration) || duration <= 0) {
         openError = `duration is ${duration}, so the player was not handed a finished playlist`;
       } else {
+        // Off `seekable`, not off `duration`. Seeking past the seekable end is not a product failure,
+        // it is an invalid request, and the two are not the same number here: `duration` was read as
+        // 27.10s at the start of one run and 22.59s eight seconds later, which silently moved every
+        // target and turned a run that reached nothing new into a clean pass.
+        const reachable = Math.min(duration, afterSettle.seekable);
         for (const fraction of SEEK_FRACTIONS) {
-          const seek = await seekTo(page, duration * fraction, fraction);
+          const seek = await seekTo(page, reachable * fraction, fraction);
           seeks.push(seek);
           console.log(
             `browser: seek to ${(fraction * 100).toFixed(0)}% (${seek.targetS.toFixed(2)}s) ` +
@@ -309,13 +314,16 @@ function renderVodReport(run: {
   lines.push('');
   lines.push('| | |');
   lines.push('| --- | ---: |');
-  lines.push(`| duration | ${run.afterSettle?.duration.toFixed(2)}s |`);
+  lines.push(`| duration at the first frame | ${run.startedPlaying?.duration.toFixed(2)}s |`);
+  lines.push(`| duration after settling | ${run.afterSettle?.duration.toFixed(2)}s |`);
   lines.push(`| seekable to | ${run.afterSettle?.seekable.toFixed(2)}s |`);
   lines.push(`| buffered ahead | ${run.afterSettle?.buffered.toFixed(2)}s |`);
   lines.push(`| position after settling | ${run.afterSettle?.currentTime.toFixed(2)}s |`);
   lines.push('');
   lines.push('A finite duration is the whole point: a live playlist reports `Infinity` here, so this');
-  lines.push('is what says the player received a finished playlist rather than a live window.');
+  lines.push('is what says the player received a finished playlist rather than a live window. The two');
+  lines.push('duration rows are separate because they have been seen to disagree, and the seek targets');
+  lines.push('below come off `seekable`, which is what a seek can actually reach.');
   lines.push('');
   lines.push('## Seeking');
   lines.push('');
