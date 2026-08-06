@@ -100,6 +100,32 @@ and the off-loop watcher drew a run with nothing to watch. Task #83.
 
 ---
 
+## Phase 0.5 — the long-run campaign, now that it is funded
+
+**Funded 2026-08-06.** Postage batch `7849851f…` at depth 24 is 256 buckets and 30 days, immutable,
+which is about **1100 broadcast-minutes** at the 0.22 buckets a minute measured on 10-minute runs.
+Uploader chequebook 9.98 BZZ against a measured **0.0214 BZZ/min**, so about 460 minutes. Neither
+binds the plan below, which is roughly 260.
+
+⚠️ **The gateway spends essentially nothing on this topology**, 0.0002 BZZ/min measured, 174x under
+the constant `sweep-interleaved.sh` prices it at. It has never been the binding node and quoting the
+constant asked for a deposit that was not needed.
+
+Every run now reports what it consumed and warns at 80% full, so this table is the plan and the runs
+themselves are the check on it.
+
+|      | run                                               | why it is on the list                                                                                                                                                                                                                                                                                                                                          | broadcast-min |
+| ---- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------: |
+| 0.5a | 10-minute viewer gate at 0.25s, ×2                | The loop fix is gated on two 150s runs. This project's own discipline is screen at 3, gate at 10.                                                                                                                                                                                                                                                              |            26 |
+| 0.5b | **60-minute viewer run at 0.25s**                 | The one that matters. The client's manifest state **never trims**: it appends every segment it has seen and rebuilds the whole playlist on every poll, which at 0.25s is four a second and ~14,000 in an hour. The loop fix made it consume **more** slots, so if that costs anything this is where it shows. Nothing here has ever streamed past 150 seconds. |            63 |
+| 0.5c | 60-minute run at 1.0s                             | The control. Same hour, a quarter of the segments, so a degradation that tracks segment count separates from one that tracks wall clock.                                                                                                                                                                                                                       |            63 |
+| 0.5d | #71 and #85 fixed, each verified before and after | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state.                                                                                                                                                                                                                                         |            50 |
+| 0.5e | The five remaining crash scenarios, ×2            | Phase 2's list, now that a viewer can be watched through one.                                                                                                                                                                                                                                                                                                  |            60 |
+
+**Read the windows, not the median.** A run that is perfect for its first half and rebuffering
+through its second has a respectable median and is a broken stream, which is why `stability.ts` cuts
+a run into five-minute windows and reports each on its own.
+
 ## Phase 1 — the viewer features
 
 ### 1.1 ✅ done — browser validation is unblocked, and it found something
