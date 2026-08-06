@@ -225,8 +225,8 @@ re-fetched per viewer. That is a separate variable and a likely large one for co
 in this phase, deliberately, because two variables at once answers neither.
 
 |
-| 0.5a | 10-minute viewer gate at 0.25s, ×2 | The loop fix is gated on two 150s runs. This project's own discipline is screen at 3, gate at 10. | 26 |
-| 0.5b | **60-minute viewer run at 0.25s** | The one that matters. The client's manifest state **never trims**: it appends every segment it has seen and rebuilds the whole playlist on every poll, which at 0.25s is four a second and ~14,000 in an hour. The loop fix made it consume **more** slots, so if that costs anything this is where it shows. Nothing here has ever streamed past 150 seconds. | 63 |
+| 0.5a | ✅ **done 2026-08-06.** 10-minute gate: 0.998, one stall at t=2.2s (the join). | | 13 |
+| 0.5b | ✅ **DONE 2026-08-06, and it holds.** 12 windows all at 1.000 or 0.999, **zero frozen samples**, latency drift −0.29s. The predicted manifest-growth degradation is **absent** at 13,522 accumulated segments. [Report](../bench/browser-watch-2026-08-06T02-23-11-449Z.md). | | 63 |
 | 0.5c | 60-minute run at 1.0s | The control. Same hour, a quarter of the segments, so a degradation that tracks segment count separates from one that tracks wall clock. | 63 |
 | 0.5d | #71 and #85 fixed, each verified before and after | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state. | 50 |
 | 0.5e | The five remaining crash scenarios, ×2 | Phase 2's list, now that a viewer can be watched through one. | 60 |
