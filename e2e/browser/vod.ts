@@ -25,6 +25,7 @@ import { type Page } from 'playwright-core';
 
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
+import { installPlayerProbe, type PlayerProbe, readPlayerProbe } from '../src/browser/playerProbe.js';
 import { envNumber, requireEnv, runIdFrom, thinRequestLog, writeRunArtifacts } from '../src/browser/runFiles.js';
 import { installTimerProbe, launchViewer, readInstrument, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 
@@ -45,6 +46,28 @@ interface PlaybackReading {
   readyState: number;
   paused: boolean;
   seekable: number;
+  /** `MediaError.code` and its message, which is where a segment the player refused shows up. */
+  mediaError: string | null;
+  /** What the media element itself thinks it is doing, which a stalled `readyState` does not say. */
+  networkState: number;
+}
+
+/** What a page with no media element at all reads as, which is a distinct fault from one that stalled. */
+const NO_VIDEO: PlaybackReading = {
+  currentTime: 0,
+  duration: 0,
+  buffered: 0,
+  readyState: 0,
+  paused: true,
+  seekable: 0,
+  mediaError: null,
+  networkState: 0,
+};
+
+/** One line the page logged. Warnings included: hls.js reports a non-fatal error as one. */
+interface PageMessage {
+  type: string;
+  text: string;
 }
 
 interface SeekResult {
@@ -57,20 +80,24 @@ interface SeekResult {
 }
 
 async function readPlayback(page: Page): Promise<PlaybackReading> {
-  return page.evaluate(() => {
-    const video = document.querySelector('video');
-    if (!video) {
-      return { currentTime: 0, duration: 0, buffered: 0, readyState: 0, paused: true, seekable: 0 };
-    }
-    return {
-      currentTime: video.currentTime,
-      duration: video.duration,
-      buffered: video.buffered.length > 0 ? video.buffered.end(video.buffered.length - 1) : 0,
-      readyState: video.readyState,
-      paused: video.paused,
-      seekable: video.seekable.length > 0 ? video.seekable.end(video.seekable.length - 1) : 0,
-    };
-  });
+  return (
+    (await page.evaluate(() => {
+      const video = document.querySelector('video');
+      if (!video) {
+        return null;
+      }
+      return {
+        currentTime: video.currentTime,
+        duration: video.duration,
+        buffered: video.buffered.length > 0 ? video.buffered.end(video.buffered.length - 1) : 0,
+        readyState: video.readyState,
+        paused: video.paused,
+        seekable: video.seekable.length > 0 ? video.seekable.end(video.seekable.length - 1) : 0,
+        mediaError: video.error ? `${video.error.code}: ${video.error.message}` : null,
+        networkState: video.networkState,
+      };
+    })) ?? NO_VIDEO
+  );
 }
 
 /** Seek, then wait for the position to land and for the picture to start moving again. */
@@ -139,13 +166,20 @@ async function main(): Promise<void> {
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
-  const watchUrl = `${clientUrl}/watch/${mediatype}/${owner}/${topic}?qoe=1`;
+  // The route goes in the **fragment**. The client mounts its routes under a `HashRouter`, so the
+  // path form of this URL matches no route at all and renders the catalog instead, silently: the
+  // page loads, the catalog renders a thumbnail player per card, one of those loads one segment, and
+  // the run reports a recording that would not start. Every reading taken through the path form was
+  // of the thumbnail grid. This is the only harness that builds a watch URL rather than clicking a
+  // catalog card, which is why it is the only one that could meet this.
+  const watchUrl = `${clientUrl}/#/watch/${mediatype}/${owner}/${topic}?qoe=1`;
 
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
   console.log(`browser: ${chromeVersion}, playing back ${watchUrl}`);
 
   const requests: RequestRecord[] = [];
+  const messages: PageMessage[] = [];
   let startedPlaying: PlaybackReading | undefined;
   let afterSettle: PlaybackReading | undefined;
   const seeks: SeekResult[] = [];
@@ -156,10 +190,18 @@ async function main(): Promise<void> {
     const page = await context.newPage();
     recordRequests(page, requests);
     await installTimerProbe(page);
+    await installPlayerProbe(page);
+
+    // Warnings as well as errors, and this is the whole reason the first run of this said nothing:
+    // the player logs a **non-fatal** hls.js error as `console.warn`, and non-fatal is exactly what
+    // a player that quietly stops after one segment reports.
     page.on('console', (message) => {
-      if (message.type() === 'error') {
-        console.log(`  page error: ${message.text()}`);
+      const type = message.type();
+      if (type !== 'error' && type !== 'warning') {
+        return;
       }
+      messages.push({ type, text: message.text() });
+      console.log(`  page ${type}: ${message.text()}`);
     });
 
     await page.goto(watchUrl, { waitUntil: 'domcontentloaded' });
@@ -181,6 +223,10 @@ async function main(): Promise<void> {
       );
     } catch {
       openError = 'the recording never started playing';
+      // Read on the failing path too. Without it the run reports only that nothing happened, and
+      // "no source buffer was ever created" and "a segment was appended and the picture stayed
+      // frozen" are different faults that reach here identically.
+      afterSettle = await readPlayback(page);
     }
 
     if (!openError) {
@@ -210,6 +256,8 @@ async function main(): Promise<void> {
       startedPlaying,
       afterSettle,
       seeks,
+      player: await readPlayerProbe(page),
+      messages,
       instrument: judgeRun([await readInstrument(page)]),
       network: summarizeNetwork(requests),
     };
@@ -236,6 +284,8 @@ function renderVodReport(run: {
   startedPlaying?: PlaybackReading;
   afterSettle?: PlaybackReading;
   seeks: SeekResult[];
+  player: PlayerProbe;
+  messages: PageMessage[];
   instrument: { sound: boolean; failures: string[] };
   network: unknown;
 }): string {
@@ -251,6 +301,7 @@ function renderVodReport(run: {
   if (run.openError) {
     lines.push(`## ⛔ ${run.openError}`);
     lines.push('');
+    lines.push(...renderWhatThePlayerDid(run));
     return lines.join('\n');
   }
 
@@ -282,6 +333,55 @@ function renderVodReport(run: {
   lines.push('already buffered, and a backward one into a discarded region cannot.');
   lines.push('');
   return lines.join('\n');
+}
+
+/**
+ * Everything that separates one way of not playing from another. A request log ends at "a segment
+ * arrived", and every fault after that point looks the same from there.
+ */
+function renderWhatThePlayerDid(run: {
+  afterSettle?: PlaybackReading;
+  player: PlayerProbe;
+  messages: PageMessage[];
+}): string[] {
+  const lines: string[] = ['### What the player did with what it was handed', ''];
+  const bytes = run.player.appends.reduce((total, append) => total + append.bytes, 0);
+
+  lines.push('| | |');
+  lines.push('| --- | --- |');
+  lines.push(`| networkState | ${run.afterSettle?.networkState ?? '—'} |`);
+  lines.push(`| source buffers | ${run.player.sourceBuffers.join(', ') || 'none were ever created'} |`);
+  lines.push(`| appends | ${run.player.appends.length}, ${bytes.toLocaleString()} bytes |`);
+  lines.push('');
+
+  run.player.failures.forEach((failure) => lines.push(`- ⛔ ${failure}`));
+
+  lines.push('', '#### The media elements on the page', '');
+  lines.push('| # | readyState | currentTime | paused | muted | autoplay | buffered | error |');
+  lines.push('| --- | ---: | ---: | --- | --- | --- | --- | --- |');
+  run.player.elements.forEach((media, index) => {
+    const ranges = media.buffered.map(([from, to]) => `${from.toFixed(2)}-${to.toFixed(2)}`).join(', ') || 'nothing';
+    lines.push(
+      `| ${index} | ${media.readyState} | ${media.currentTime.toFixed(2)}s | ${media.paused} | ` +
+        `${media.muted} | ${media.autoplay} | ${ranges} | ${media.error ?? 'none'} |`,
+    );
+  });
+
+  lines.push('', '#### What the element did, in order', '');
+  if (run.player.events.length === 0) {
+    lines.push('Nothing. No media event fired at all.');
+  }
+  run.player.events.forEach((event) =>
+    lines.push(`- \`${event.atMs}ms\` ${event.name} (readyState ${event.readyState})`),
+  );
+
+  if (run.messages.length > 0) {
+    lines.push('', '#### What the page said', '');
+    run.messages.forEach((message) => lines.push(`- \`${message.type}\` ${message.text}`));
+  }
+  lines.push('');
+
+  return lines;
 }
 
 main().catch((error) => {

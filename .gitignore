@@ -48,3 +48,5 @@ docs/bench/browser-watch-*.md
 docs/bench/browser-crash-*.md
 docs/bench/profiles-*.log
 docs/bench/sweep-*.log
+docs/bench/browser-vod-*.json
+docs/bench/browser-vod-*.md
