@@ -71,14 +71,30 @@ export interface PlayerProbe {
   events: ProbeEvent[];
   /** Every media element on the page, since a page holding two is itself an answer. */
   elements: MediaElementReading[];
+  /**
+   * What each source buffer holds, separately.
+   *
+   * `HTMLMediaElement.buffered` is the **intersection** across every source buffer, so one short
+   * track truncates the element's whole timeline and the element cannot say which track did it. This
+   * is the only place that distinguishes "the media is short" from "one of its two tracks is".
+   */
+  tracks: { mime: string; buffered: [number, number][] }[];
 }
 
 /** The window key the probe publishes itself under, shared by the installer and the reader. */
 const PROBE_KEY = '__playerProbe';
 
+/**
+ * Where the live `SourceBuffer` objects are kept, apart from the serialisable probe.
+ *
+ * They cannot cross `page.evaluate`, and their `buffered` only means anything read in the page at
+ * the moment it is asked, so the reader walks these rather than a snapshot taken at append time.
+ */
+const TRACKS_KEY = '__playerProbeTracks';
+
 export async function installPlayerProbe(page: Page): Promise<void> {
   await page.addInitScript(
-    ({ key, eventNames }: { key: string; eventNames: string[] }) => {
+    ({ key, tracksKey, eventNames }: { key: string; tracksKey: string; eventNames: string[] }) => {
       const probe = { installed: false, sourceBuffers: [], appends: [], failures: [], events: [] } as {
         installed: boolean;
         sourceBuffers: string[];
@@ -87,6 +103,8 @@ export async function installPlayerProbe(page: Page): Promise<void> {
         events: { name: string; atMs: number; readyState: number }[];
       };
       (window as unknown as Record<string, unknown>)[key] = probe;
+      const tracks: { mime: string; buffer: SourceBuffer }[] = [];
+      (window as unknown as Record<string, unknown>)[tracksKey] = tracks;
 
       // Published before the hooks and wrapped around them, so an install that throws leaves a probe
       // that says so rather than one that reads as a quiet page. This script runs before any page
@@ -162,6 +180,7 @@ export async function installPlayerProbe(page: Page): Promise<void> {
               throw error;
             }
             probe.sourceBuffers.push(mime);
+            tracks.push({ mime, buffer });
             buffer.addEventListener('error', () => probe.failures.push(`the source buffer for ${mime} errored`));
 
             const appendBuffer = buffer.appendBuffer.bind(buffer);
@@ -184,37 +203,58 @@ export async function installPlayerProbe(page: Page): Promise<void> {
         probe.failures.push(`the probe could not install itself: ${String(error)}`);
       }
     },
-    { key: PROBE_KEY, eventNames: MEDIA_EVENTS },
+    { key: PROBE_KEY, tracksKey: TRACKS_KEY, eventNames: MEDIA_EVENTS },
   );
 }
 
 export function readPlayerProbe(page: Page): Promise<PlayerProbe> {
-  return page.evaluate((key: string) => {
-    const probe = (window as unknown as Record<string, Omit<PlayerProbe, 'elements'> | undefined>)[key];
-    const elements = [...document.querySelectorAll('video, audio')].map((node) => {
-      const media = node as HTMLMediaElement;
-      const buffered: [number, number][] = [];
-      for (let range = 0; range < media.buffered.length; range++) {
-        buffered.push([media.buffered.start(range), media.buffered.end(range)]);
-      }
-      return {
-        currentTime: media.currentTime,
-        readyState: media.readyState,
-        paused: media.paused,
-        muted: media.muted,
-        autoplay: media.autoplay,
-        buffered,
-        error: media.error ? `${media.error.code}: ${media.error.message}` : null,
-      };
-    });
+  return page.evaluate(
+    ([key, tracksKey]: [string, string]) => {
+      const probe = (window as unknown as Record<string, Omit<PlayerProbe, 'elements' | 'tracks'> | undefined>)[key];
 
-    return {
-      installed: probe?.installed ?? false,
-      sourceBuffers: probe?.sourceBuffers ?? [],
-      appends: probe?.appends ?? [],
-      failures: probe?.failures ?? ['the probe never ran'],
-      events: probe?.events ?? [],
-      elements,
-    };
-  }, PROBE_KEY);
+      const readRanges = (ranges: TimeRanges): [number, number][] => {
+        const out: [number, number][] = [];
+        for (let range = 0; range < ranges.length; range++) {
+          out.push([ranges.start(range), ranges.end(range)]);
+        }
+        return out;
+      };
+
+      const live = (window as unknown as Record<string, { mime: string; buffer: SourceBuffer }[] | undefined>)[
+        tracksKey
+      ];
+      const tracks = (live ?? []).map((track) => {
+        try {
+          return { mime: track.mime, buffered: readRanges(track.buffer.buffered) };
+        } catch (error) {
+          // A source buffer detached from its media source throws on `buffered`, which is itself worth
+          // reporting rather than losing the whole reading to.
+          return { mime: track.mime, buffered: [] as [number, number][], detached: String(error) };
+        }
+      });
+      const elements = [...document.querySelectorAll('video, audio')].map((node) => {
+        const media = node as HTMLMediaElement;
+        return {
+          currentTime: media.currentTime,
+          readyState: media.readyState,
+          paused: media.paused,
+          muted: media.muted,
+          autoplay: media.autoplay,
+          buffered: readRanges(media.buffered),
+          error: media.error ? `${media.error.code}: ${media.error.message}` : null,
+        };
+      });
+
+      return {
+        installed: probe?.installed ?? false,
+        sourceBuffers: probe?.sourceBuffers ?? [],
+        appends: probe?.appends ?? [],
+        failures: probe?.failures ?? ['the probe never ran'],
+        events: probe?.events ?? [],
+        elements,
+        tracks,
+      };
+    },
+    [PROBE_KEY, TRACKS_KEY] as [string, string],
+  );
 }

@@ -369,6 +369,17 @@ function renderWhatThePlayerDid(run: {
 
   run.player.failures.forEach((failure) => lines.push(`- ⛔ ${failure}`));
 
+  lines.push('', '#### What each track holds', '');
+  lines.push('`HTMLMediaElement.buffered` is the intersection of these, so the shortest one sets the');
+  lines.push('whole timeline and the element cannot say which track did it.');
+  lines.push('');
+  lines.push('| track | buffered |');
+  lines.push('| --- | --- |');
+  run.player.tracks.forEach((track) => {
+    const ranges = track.buffered.map(([from, to]) => `${from.toFixed(3)} - ${to.toFixed(3)}`).join(', ');
+    lines.push(`| \`${track.mime}\` | ${ranges || 'nothing'} |`);
+  });
+
   lines.push('', '#### The media elements on the page', '');
   lines.push('| # | readyState | currentTime | paused | muted | autoplay | buffered | error |');
   lines.push('| --- | ---: | ---: | --- | --- | --- | --- | --- |');
