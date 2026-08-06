@@ -18,6 +18,7 @@ export class ServiceMetrics {
   private manifestPublishFailures = 0;
   private streamsFinalized = 0;
   private streamsFailed = 0;
+  private streamsReaped = 0;
   private segmentsSkipped = 0;
   private segmentsNeverNamed = 0;
   private authRejections = 0;
@@ -55,6 +56,18 @@ export class ServiceMetrics {
   /** A stop whose finalize never published. There is no VOD for that broadcast and no retry. */
   public recordStreamFailed(): void {
     this.streamsFailed += 1;
+  }
+
+  /**
+   * A broadcast finalized because its engine went silent, rather than because anything asked. See #86.
+   *
+   * Worth a counter of its own rather than folding into the finalize total, because every one of these
+   * is an engine that died without sending `on_unpublish`. A deployment where this is routine has a
+   * sick engine, and before the reaper existed that condition was invisible: the stream simply stayed
+   * live forever and nothing counted it.
+   */
+  public recordStreamReaped(): void {
+    this.streamsReaped += 1;
   }
 
   /**
@@ -121,6 +134,7 @@ export class ServiceMetrics {
       manifestPublishFailuresTotal: this.manifestPublishFailures,
       streamsFinalizedTotal: this.streamsFinalized,
       streamsFailedTotal: this.streamsFailed,
+      streamsReapedTotal: this.streamsReaped,
       authRejectionsTotal: this.authRejections,
       takeoversRefusedTotal: this.takeoversRefused,
       lastSegmentAt: this.lastSegmentAt,
@@ -138,6 +152,8 @@ export interface MetricsCounters {
   manifestPublishFailuresTotal: number;
   streamsFinalizedTotal: number;
   streamsFailedTotal: number;
+  /** Broadcasts finalized because their engine went silent rather than because anything asked. See #86. */
+  streamsReapedTotal: number;
   /** Requests refused by a credential gate, across every gate in the process. */
   authRejectionsTotal: number;
   /** Announces refused because a live session on that stream id is still producing. See SEC-26. */

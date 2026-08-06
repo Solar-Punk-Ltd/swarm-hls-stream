@@ -107,6 +107,7 @@ async function start() {
       manifestBeeUrl: config.manifestAccessUrl,
       maxQueueSize: config.maxQueueSize,
       recoveryTimeout: config.recoveryTimeout,
+      orphanReapMs: config.orphanReapMs,
       segmentStallMs: config.segmentStallMs,
       segmentDedupWindow: config.segmentDedupWindow,
     });

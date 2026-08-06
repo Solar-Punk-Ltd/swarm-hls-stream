@@ -52,6 +52,8 @@ export interface StreamOrchestratorConfig {
   manifestBeeUrl: string;
   maxQueueSize: number;
   recoveryTimeout: number;
+  /** How long a live stream may receive nothing before it is reaped as an orphan. See #86. */
+  orphanReapMs: number;
   segmentStallMs: number;
   /** How many further segments an index stays remembered for, so a duplicate inside that is refused. */
   segmentDedupWindow: number;
@@ -117,6 +119,16 @@ export class StreamOrchestrator {
   private drainPromises = new Map<string, { uploader: StreamUploader | undefined; promise: Promise<void> }>();
   private processedSegments = new Map<string, RecentSegmentIndexes>();
   private recoveryTimers = new Map<string, Timer>();
+  /**
+   * One watchdog per live stream, which finalizes it if its engine goes silent and stays silent.
+   *
+   * Kept separate from `recoveryTimers` rather than merged with them, even though both end in
+   * `stopStream`, because they answer for different populations and must not both hold one stream:
+   * a recovered stream is waiting for an engine that has never spoken to this process, and these
+   * watch one that has. A stream moves from the first to the second exactly where its recovery timer
+   * is cancelled.
+   */
+  private stallReapers = new Map<string, Timer>();
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
    * clock so a backwards NTP step cannot make an age negative and hide a stall. Registration counts
@@ -186,6 +198,10 @@ export class StreamOrchestrator {
       // unknown-owner rule in `mayTakeOver`. Reaching here at all is the uncommon case: an engine
       // that resumed the stream with segments never calls this method again.
       this.streamClaimants.set(streamId, claimant);
+      // The recovery timer that was watching this stream has just been cancelled, so from here it is
+      // an ordinary live stream and needs the ordinary watchdog. `handleSegment` arms it on the other
+      // route out of recovery, which is the one both shipped engines take.
+      this.armStallReaper(streamId);
       this.logger.info(`[StreamOrchestrator] Resumed recovering stream: ${streamId}`);
       return true;
     }
@@ -351,6 +367,10 @@ export class StreamOrchestrator {
     // the moment a broadcaster reconnected under the same id: `/health` then answered `degraded` with
     // `segment_loss` for a broadcast that had lost nothing.
     this.segmentLossAt.delete(streamId);
+    // Nothing can reach this session by id any more, so a pending reap would either find no ingest
+    // reading and do nothing, or find its replacement's and finalize a live broadcast.
+    this.stallReapers.get(streamId)?.cancel();
+    this.stallReapers.delete(streamId);
   }
 
   /**
@@ -421,6 +441,7 @@ export class StreamOrchestrator {
     this.streamActivityAt.set(streamId, this.clock.now());
     this.streamIngestAt.set(streamId, this.clock.now());
     this.streamClaimants.set(streamId, claimant);
+    this.armStallReaper(streamId);
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
 
@@ -488,6 +509,11 @@ export class StreamOrchestrator {
       // from the start, so its first segments are duplicates, and the stream would otherwise rejoin
       // the signal carrying the reading it was given when recovery registered it.
       this.streamActivityAt.set(streamId, this.clock.now());
+      // The stream is ordinary and live from here, and this is the path production actually takes to
+      // get there: neither engine re-announces a session that stayed open across the crash, so
+      // `startStream` never fires. Without arming the watchdog here, surviving one crash would remove
+      // the #86 protection for the rest of the broadcast.
+      this.armStallReaper(streamId);
       this.logger.info(`[StreamOrchestrator] Segments resumed for ${streamId}; cancelled recovery finalize timer`);
     }
 
@@ -587,6 +613,12 @@ export class StreamOrchestrator {
       recoveryTimer.cancel();
       this.recoveryTimers.delete(streamId);
     }
+
+    // The broadcast is ending on this path, so the watchdog for it ending on no path has nothing left
+    // to do. A reap that fired afterwards would commit a second VOD manifest over the one this stop
+    // published, which is the same waste CON-22 describes for a doubled drain.
+    this.stallReapers.get(streamId)?.cancel();
+    this.stallReapers.delete(streamId);
 
     // A stop already running is the answer to this one, but only when it is draining the same session.
     // Every caller in the engines fires and forgets, and two of them sit next to each other: a puller
@@ -711,6 +743,67 @@ export class StreamOrchestrator {
     );
 
     return streamId;
+  }
+
+  /**
+   * Watch a live stream for an engine that stops feeding it and never comes back. Task #86.
+   *
+   * An engine that dies does not send `on_unpublish`, so nothing tells this process the broadcast is
+   * over. Before this, such a stream was held in `activeStreams` for the life of the process:
+   * `/health` answered `degraded` with `segment_stall` forever, its catalog entry stayed live for a
+   * broadcast that had ended, and no VOD was ever published. Detection was already right and there
+   * was no way out of it but a restart by hand.
+   *
+   * **The window is `recoveryTimeout`, deliberately, and not `segmentStallMs`.** That one is a health
+   * *reporting* threshold at half this value, and ending a broadcast on it would kill streams that
+   * recover: a twenty second write outage is survivable and measured, and a pull engine retries a
+   * silent origin for its own patience window, 60s by default, which is what `recoveryTimeout` was
+   * already chosen against in CON-10. Reusing it keeps one number governing "how long do we wait for
+   * an engine that might come back" instead of two that can drift apart.
+   *
+   * Rearms itself rather than being reset per segment, so a stream feeding at four segments a second
+   * costs one timer rather than four cancellations a second, and a healthy stream is only looked at
+   * once per window.
+   */
+  private armStallReaper(streamId: string): void {
+    this.stallReapers.get(streamId)?.cancel();
+    this.stallReapers.set(streamId, this.scheduleStallReap(streamId, this.config.orphanReapMs));
+  }
+
+  private scheduleStallReap(streamId: string, delayMs: number): Timer {
+    return this.clock.setTimer(() => {
+      this.stallReapers.delete(streamId);
+
+      const ingestAt = this.streamIngestAt.get(streamId);
+      // The stream left the live maps while this was pending, so there is nothing to reap. Retiring
+      // and stopping both cancel the timer, so reaching here means the entry went without either.
+      if (ingestAt === undefined) {
+        return;
+      }
+
+      // A stream holding a recovery timer is that timer's business, not this one's. The two never
+      // arm together today, and this keeps a future path that armed both from finalizing twice.
+      if (this.recoveryTimers.has(streamId)) {
+        return;
+      }
+
+      const idleMs = this.clock.now() - ingestAt;
+      if (idleMs < this.config.orphanReapMs) {
+        // Fed since this was armed, so the window restarts from the last segment rather than from
+        // now. Sleeping exactly the remainder is what keeps the check off the per-segment path.
+        this.stallReapers.set(streamId, this.scheduleStallReap(streamId, this.config.orphanReapMs - idleMs));
+        return;
+      }
+
+      this.logger.warn(
+        `[StreamOrchestrator] No segments for ${streamId} in ${Math.round(idleMs)}ms and no stop was ever sent; ` +
+          'finalizing it as a VOD. Its engine most likely died without sending on_unpublish',
+      );
+      this.metrics.recordStreamReaped();
+      void this.stopStream(streamId).catch((error) =>
+        this.errorHandler.handleError(error, `StreamOrchestrator.stallReap - ${streamId}`),
+      );
+    }, delayMs);
   }
 
   /** If the engine never reconnects, finalize the recovered stream as a VOD rather than hold it live. */

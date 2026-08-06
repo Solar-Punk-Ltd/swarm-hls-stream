@@ -28,6 +28,15 @@ const BROADCASTER = '203.0.113.10';
 const STRANGER = '198.51.100.7';
 
 const STALL_MS = 30_000;
+/**
+ * Far past anything these tests advance, so the #86 orphan reaper never fires inside one.
+ *
+ * Every test here asserts who may hold a stream id while the incumbent is quiet, and the reaper ends
+ * a quiet broadcast outright. Left at its default those two collide on the clock rather than on the
+ * rule, and a test about authentication would start failing because a stream was finalized. The
+ * interaction between them is real and is pinned on its own below, rather than left to emerge here.
+ */
+const NEVER_REAP_MS = 60 * 60 * 1000;
 /** A ceiling on a hung wait, not a measurement. See the note on the same constant in `StreamOrchestrator.test.ts`. */
 const SETTLE_CEILING_MS = 4_000;
 /** Long enough for a finalize to have started, short enough that a test meant to reach it stays cheap. */
@@ -49,7 +58,7 @@ function makeHarness(clock?: FakeClock): Harness {
   const published: PublishedEntry[] = [];
   const saved: StreamState[] = [];
   const orch = makeTestOrchestrator(
-    { segmentStallMs: STALL_MS, clock },
+    { segmentStallMs: STALL_MS, orphanReapMs: NEVER_REAP_MS, clock },
     {},
     makeFakeRecoveryStore({ save: (_streamId: string, state: StreamState) => saved.push(state) }),
     makeRecordingCatalog(published as unknown[]),
@@ -409,7 +418,7 @@ describe('taking over a stream id that is already being published', () => {
     const published: PublishedEntry[] = [];
     const saved: StreamState[] = [];
     const orch = makeTestOrchestrator(
-      { segmentStallMs: STALL_MS, recoveryTimeout: 60_000, clock },
+      { segmentStallMs: STALL_MS, recoveryTimeout: 60_000, orphanReapMs: NEVER_REAP_MS, clock },
       {},
       makeFakeRecoveryStore({
         listActive: () => [toRecoveryFileId(STREAM_ID)],
@@ -646,7 +655,7 @@ describe('taking over a stream id with a proven publish key', () => {
     const published: PublishedEntry[] = [];
     const saved: StreamState[] = [];
     const orch = makeTestOrchestrator(
-      { segmentStallMs: STALL_MS, recoveryTimeout: 60_000, clock },
+      { segmentStallMs: STALL_MS, recoveryTimeout: 60_000, orphanReapMs: NEVER_REAP_MS, clock },
       {},
       makeFakeRecoveryStore({
         listActive: () => [toRecoveryFileId(STREAM_ID)],

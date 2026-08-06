@@ -85,6 +85,12 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.streamsFailedTotal,
     },
     {
+      name: 'streams_reaped_total',
+      type: 'counter',
+      help: 'Streams finalized because their engine went silent, rather than because a stop was sent. A rising rate means an engine is dying without unpublishing.',
+      value: snapshot.streamsReapedTotal,
+    },
+    {
       name: 'last_segment_timestamp_seconds',
       type: 'gauge',
       help: 'Unix time of the newest segment that reached Swarm. Zero while none has.',
