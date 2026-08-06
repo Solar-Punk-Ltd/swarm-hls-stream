@@ -40,6 +40,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     // default. The OBS-15 cases below set both fields explicitly.
     hasIngestedMedia: true,
     segmentsSkipped: 0,
+    segmentsNeverNamed: 0,
     ...overrides,
   };
 }
@@ -433,6 +434,23 @@ describe('deriveHealthStatus deliberate discards (OBS-16)', () => {
    */
   it('does not degrade on segments the handover floor discarded on purpose', () => {
     const report = deriveHealthStatus(signals({ segmentsSkipped: 25 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  /**
+   * Segments no manifest will ever name are the quietest way a broadcast loses a piece of itself:
+   * the bytes are in Swarm and no playlist points at them, so a viewer simply never sees that media
+   * and there is no discontinuity marking the hole.
+   *
+   * ⛔ **Deliberately does not degrade the verdict, and that is a decision rather than an
+   * oversight.** The compose healthcheck acts on this status, so a broadcast that lost a few
+   * segments could take a running stack down. It is here to be READ, exactly as `segmentsSkipped`
+   * is. Changing it to raise a reason is the owner's call.
+   */
+  it('does not degrade on segments no manifest will ever name, which is a decision not an oversight', () => {
+    const report = deriveHealthStatus(signals({ segmentsNeverNamed: 40 }), STALL_MS);
 
     assert.equal(report.status, HEALTH_OK);
     assert.deepEqual(report.reasons, []);

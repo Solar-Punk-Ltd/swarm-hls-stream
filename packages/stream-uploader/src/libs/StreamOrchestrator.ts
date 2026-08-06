@@ -992,6 +992,7 @@ export class StreamOrchestrator {
       msSinceAuthRejection: lastAuthRejectionAt === null ? null : Date.now() - lastAuthRejectionAt,
       hasIngestedMedia: counters.segmentsUploadedTotal > 0,
       segmentsSkipped: counters.segmentsSkippedTotal,
+      segmentsNeverNamed: counters.segmentsNeverNamedTotal,
     };
   }
 

@@ -116,6 +116,7 @@ export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): Healt
     msSinceAuthRejection: null,
     hasIngestedMedia: false,
     segmentsSkipped: 0,
+    segmentsNeverNamed: 0,
     ...overrides,
   };
 }
