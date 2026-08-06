@@ -1,6 +1,6 @@
 # A recording, watched for the first time
 
-**2026-08-06.** Phase 1.2. Two runs, against the two recordings the task #86 crash runs left behind.
+**2026-08-06.** Phase 1.2.
 
 A recording plays. That had never been true and had never been checked, and getting there took one
 product fix, one retraction of a fix that was answering a question nobody asks, and one harness that
@@ -107,7 +107,7 @@ is not stable (below), one run computed its targets from 22.59s instead of 27.10
 positions well inside the buffer, and reported "seeks all landed and resumed". A run that covers less
 should not look like a run that covers more.
 
-## ⛔ Open, and the real finding: a recording is 19% shorter than its playlist claims
+## ✅ Fixed, and the real finding: a recording was 19% shorter than its playlist claimed
 
 `duration` and `seekable` both start at **27.10s** and settle at **22.587s** within eight seconds.
 A viewer's scrubber shrinks by 17% shortly after playback begins.
