@@ -173,7 +173,9 @@ while (Date.now() < deadline) {
   if (served.length > 0) {
     console.log(
       `t+${since()}s  slot ${target} refused on poll ${unservedRun} of its run, ` +
-        `but ${served.length} of ${AHEAD.length} probes ahead were SERVED: +${served.map((p) => p.distance).join(' +')}`,
+        `but ${served.length} of ${AHEAD.length} probes ahead were SERVED: +${served
+          .map((p) => p.distance)
+          .join(' +')}`,
     );
   }
 
@@ -208,5 +210,18 @@ if (holes.length === 0) {
 
 console.log(`\nJSON: ${JSON.stringify({ entry: entry.topic, polls, slotsRead, longestRun, refusals }).length} bytes`);
 process.stdout.write(
-  `\n---JSON---\n${JSON.stringify({ owner: entry.owner, topic: entry.topic, seconds: SECONDS, polls, slotsRead, longestRun, holes: holes.length, refusals }, null, 2)}\n`,
+  `\n---JSON---\n${JSON.stringify(
+    {
+      owner: entry.owner,
+      topic: entry.topic,
+      seconds: SECONDS,
+      polls,
+      slotsRead,
+      longestRun,
+      holes: holes.length,
+      refusals,
+    },
+    null,
+    2,
+  )}\n`,
 );

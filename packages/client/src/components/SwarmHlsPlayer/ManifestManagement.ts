@@ -1,5 +1,6 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import {
+  feedSlotPath,
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
   HLS_MEDIA_SEQUENCE,
@@ -55,6 +56,29 @@ const SLOT_NOT_WRITTEN_YET = 404;
  * close any backlog within a few polls.
  */
 export const MAX_SLOTS_PER_POLL = 16;
+
+/**
+ * How many polls may sit on one refused slot before asking whether anything is behind it.
+ *
+ * Not zero, and that is the whole of the tuning. A reader riding the live edge is refused on plenty
+ * of polls simply because the publisher has not written yet, and probing each one would add a
+ * request per poll for every viewer in order to find nothing. Three polls is about a second at the
+ * shipping profile, short against the nineteen and forty-six second stalls this is for, and long
+ * enough that the ordinary refusal never reaches it: nine of the ten distinct refusals measured on
+ * 2026-08-06 cleared within a single poll.
+ */
+export const UNSERVED_POLLS_BEFORE_PROBE = 3;
+
+/**
+ * How far past a refused slot to look, in order, stopping at the first slot that answers.
+ *
+ * **+1 is not a guess.** Of the seventy-four refused slots measured with something behind them,
+ * seventy-three had it at +1, so the common case costs exactly one extra request. The one exception
+ * was a hole four slots wide, which is why this carries on rather than giving up, and why it stops
+ * at +8: nothing wider than that was seen, and every step costs a request on a gateway that is
+ * already the reason the slot is missing.
+ */
+export const PROBE_DISTANCES = [1, 2, 4, 8] as const;
 
 /**
  * The wait the fetcher ships with, named so that something can run it.
@@ -397,7 +421,10 @@ export class ManifestFetcher {
           // a run of polls that did not advance, and a poll that read four slots and then met the
           // publisher's head advanced.
           if (consumed === 0) {
-            this.reportStalledFeed(hexTopic, targetIndex);
+            const polls = this.reportStalledFeed(hexTopic, targetIndex);
+            if (polls >= UNSERVED_POLLS_BEFORE_PROBE) {
+              await this.probePastRefusal(owner, topic, readIndex, targetIndex);
+            }
           }
           return;
         }
@@ -457,6 +484,60 @@ export class ManifestFetcher {
   }
 
   /**
+   * Ask whether anything is behind the slot the walk is waiting on, and step over it if so.
+   *
+   * ## What a 404 means here, measured
+   *
+   * A refused slot is read as the publisher's head, and on this deployment it usually is not.
+   * Measured on 2026-08-06 beside a broadcast, by an instrument that asked past every refusal:
+   * **seventy-four of seventy-six refused slots already had a served slot behind them**, and only
+   * two were the head a 404 is meant to mean. The worst was refused for sixty-five consecutive polls
+   * over nineteen seconds with something at +1 on every one of them, and the browser run before it
+   * left a viewer frozen for forty-six seconds after the service was healthy again.
+   * `docs/bench/what-is-behind-a-refused-slot-2026-08-06.md`.
+   *
+   * ## Why stepping over it loses nothing
+   *
+   * Each slot carries a **full manifest window**, budgeted in bytes against one chunk, so the slot
+   * that answers still names the segments the skipped one announced. This is the same property that
+   * lets a fresh mount join at the publisher's head rather than replaying the feed.
+   *
+   * ## Why not the head lookup
+   *
+   * `GET /feeds/{owner}/{topic}` would answer this in one request and is the wrong request to make:
+   * it measured 50 to 57% frozen at 1.0 to 7.0 seconds on this deployment against 46ms for an
+   * explicit address, so recovering through it would pay the slowest request the deployment has, in
+   * the one moment the gateway is already struggling. See `packages/shared/src/feedFollow.ts`.
+   */
+  private async probePastRefusal(owner: string, topic: Topic, readIndex: FeedIndex, missing: FeedIndex): Promise<void> {
+    const hexTopic = topic.toString();
+
+    for (const distance of PROBE_DISTANCES) {
+      const index = FeedIndex.fromBigInt(missing.toBigInt() + BigInt(distance));
+      let response: TimedResponse;
+      try {
+        response = await this.fetchResource(feedSlotPath(owner, topic, index));
+      } catch (error) {
+        // A refusal here is the ordinary answer and the reason the ladder has more than one rung:
+        // the slot may be inside the hole, or simply past the publisher. Anything else is the
+        // gateway itself, which the walk already backs off for.
+        if (error instanceof ManifestFetchError && error.status === SLOT_NOT_WRITTEN_YET) {
+          continue;
+        }
+        this.feedHealth.recordGatewayFailure(hexTopic);
+        console.error('Error probing past a refused manifest slot:', error);
+        return;
+      }
+
+      // Written against `readIndex`, the slot the walk actually holds, not against the one it could
+      // not fetch. That keeps the teardown guard in `applySlot` meaningful: the jump applies to the
+      // state it was computed from or not at all.
+      await manifestQueue.add(() => this.applySlot(hexTopic, response, readIndex, index));
+      return;
+    }
+  }
+
+  /**
    * A single unserved slot is the ordinary case and says nothing. A long run of them is a different
    * event wearing the same status code: a chunk that never synced, a lapsed stamp, or a gateway that
    * will not serve this slot. The feed is then stuck there for good while later slots exist, and the
@@ -467,8 +548,11 @@ export class ManifestFetcher {
    * viewer who has merely caught up with the publisher sees one of these on nearly every poll and
    * has to keep asking at full cadence to see the next segment the moment it lands. Reported once
    * per run, since the poll that reports it is followed by another a target duration later.
+   *
+   * @returns The length of the run this poll extends, which is what decides whether it is long
+   *   enough to be worth asking what is behind the slot.
    */
-  private reportStalledFeed(hexTopic: string, slot: FeedIndex): void {
+  private reportStalledFeed(hexTopic: string, slot: FeedIndex): number {
     const polls = this.feedHealth.recordUnservedSlot(hexTopic);
 
     if (polls === UNSERVED_SLOT_POLL_LIMIT) {
@@ -477,6 +561,7 @@ export class ManifestFetcher {
           'The publisher may have stopped, or this gateway may not hold that slot.',
       );
     }
+    return polls;
   }
 
   private async fetchResource(path: string): Promise<TimedResponse> {

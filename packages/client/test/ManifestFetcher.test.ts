@@ -15,6 +15,7 @@ import {
   ManifestFetcher,
   ManifestStateManager,
   MAX_SLOTS_PER_POLL,
+  UNSERVED_POLLS_BEFORE_PROBE,
   waitMs,
 } from '../src/components/SwarmHlsPlayer/ManifestManagement';
 
@@ -930,5 +931,177 @@ describe('following the feed costs one head lookup (LAT-10)', () => {
       publishedThrough,
       'walking slot addresses never reached the publisher',
     );
+  });
+});
+
+/**
+ * A slot that is refused while later slots are already retrievable, and the reader that cannot see
+ * past it (#71).
+ *
+ * ## The measurement this is built on
+ *
+ * `ManifestFetcher` stops its walk at the first 404, because that is how a reader who has caught up
+ * with the publisher finds out. A 404 also means something else, and on this deployment it usually
+ * means the other thing. Measured 2026-08-06 beside a broadcast with the uploader killed, by an
+ * instrument that asks past every refusal:
+ *
+ * | | |
+ * | --- | ---: |
+ * | slots refused | 76 |
+ * | **refused with a served slot behind them** | **74** |
+ * | refused with nothing behind them, a true head | 2 |
+ * | worst stall | **65 consecutive polls, 19.1s** |
+ * | nearest served distance | **+1 in 73 of 74** |
+ *
+ * `docs/bench/what-is-behind-a-refused-slot-2026-08-06.md`. The reader was one request away from
+ * moving for the whole of that nineteen seconds.
+ *
+ * ## Why skipping is safe
+ *
+ * Each feed slot carries a **full manifest window**, sized in bytes against one chunk, so a later
+ * slot still names the segments the skipped ones announced. The fixture below models that rather
+ * than one segment per slot, because a fixture that gave each slot a single segment would make
+ * jumping look lossy when it is not, and would test the fixture instead of the client.
+ */
+describe('a refused slot that later slots are already behind (#71)', () => {
+  /** How many segments of history each slot's manifest carries, as the live window does. */
+  const WINDOW = 4n;
+
+  let fetcher: ManifestFetcher;
+  let health: FeedHealthTracker;
+  let requested: bigint[];
+  let publishedThrough: bigint;
+  /** Slots the gateway refuses although the publisher wrote them, which is what the probe is for. */
+  let unretrievable: Set<bigint>;
+
+  beforeEach(() => {
+    manager.clear(hexTopic);
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
+
+    health = new FeedHealthTracker(() => 0);
+    fetcher = new ManifestFetcher(manager, health);
+    fetcher.beeUrl = BEE_URL;
+    requested = [];
+    publishedThrough = START_INDEX;
+    unretrievable = new Set();
+
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const index = requestedIndex(String(input));
+      assert.notEqual(index, undefined, `a slot outside the fixture was requested: ${String(input)}`);
+      requested.push(index!);
+      if (index! > publishedThrough || unretrievable.has(index!)) {
+        return new Response('not found', { status: 404 });
+      }
+      const lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:2'];
+      for (let seg = index! > WINDOW ? index! - WINDOW : 0n; seg <= index!; seg++) {
+        lines.push('#EXTINF:2,', `seg-${seg}.ts`);
+      }
+      return new Response(lines.join('\n'));
+    };
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realConsoleError;
+  });
+
+  const poll = async () => {
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle();
+  };
+
+  const at = () => manager.getIndex(hexTopic)!.toBigInt();
+
+  /**
+   * The ordinary case, and the reason this waits at all. A reader riding the live edge is refused on
+   * many polls simply because the publisher has not written yet, and probing every one of those would
+   * add a request per poll for every viewer to find nothing.
+   */
+  it('asks for nothing extra while the run of refusals is short', async () => {
+    publishedThrough = START_INDEX;
+
+    for (let attempt = 0; attempt < UNSERVED_POLLS_BEFORE_PROBE - 1; attempt++) {
+      await poll();
+    }
+
+    assert.deepEqual(
+      [...new Set(requested)],
+      [START_INDEX + 1n],
+      'a reader that had merely caught up went looking past the publisher',
+    );
+  });
+
+  it('looks past the refusal once the run is long enough to mean something', async () => {
+    publishedThrough = START_INDEX + 8n;
+    unretrievable.add(START_INDEX + 1n);
+
+    for (let attempt = 0; attempt < UNSERVED_POLLS_BEFORE_PROBE; attempt++) {
+      await poll();
+    }
+
+    assert.equal(at(), START_INDEX + 2n, 'the reader stayed parked on a slot that later slots were behind');
+    assert.ok(
+      requested.includes(START_INDEX + 2n),
+      `the slot after the refusal was never asked for: asked ${[...new Set(requested)].join(',')}`,
+    );
+  });
+
+  // The whole point of jumping: the segments the skipped slot announced are in the window of the one
+  // that answered, so a viewer loses no media by stepping over a slot they cannot fetch.
+  it('loses no segment by stepping over the slot it could not fetch', async () => {
+    publishedThrough = START_INDEX + 8n;
+    unretrievable.add(START_INDEX + 1n);
+
+    for (let attempt = 0; attempt < UNSERVED_POLLS_BEFORE_PROBE; attempt++) {
+      await poll();
+    }
+
+    const manifest = manager.serialize(hexTopic, `${BEE_URL}/bytes`);
+    assert.match(manifest, new RegExp(`seg-${START_INDEX + 1n}\\.ts`), 'the skipped slot took its segment with it');
+  });
+
+  /**
+   * A hole several slots wide, which is one of the seventy-four and the reason the probe is a short
+   * ladder rather than a single request at +1.
+   */
+  it('carries on past a hole too wide for the first probe', async () => {
+    publishedThrough = START_INDEX + 16n;
+    for (const offset of [1n, 2n, 3n, 4n]) {
+      unretrievable.add(START_INDEX + offset);
+    }
+
+    for (let attempt = 0; attempt < UNSERVED_POLLS_BEFORE_PROBE; attempt++) {
+      await poll();
+    }
+
+    assert.equal(at(), START_INDEX + 5n, 'a hole wider than one slot parked the reader anyway');
+  });
+
+  /**
+   * The failure the probe must not invent. A reader at the true head finds nothing behind it either,
+   * so it must stay where it is rather than treat its own probes as a reason to move.
+   */
+  it('stays where it is when there is genuinely nothing behind the refusal', async () => {
+    publishedThrough = START_INDEX;
+
+    for (let attempt = 0; attempt < UNSERVED_POLLS_BEFORE_PROBE + 2; attempt++) {
+      await poll();
+    }
+
+    assert.equal(at(), START_INDEX, 'the reader moved past the publisher, onto a slot nobody has written');
+    assert.equal(health.state(hexTopic), FEED_STATE_LIVE, 'a caught-up viewer was told something was wrong');
+  });
+
+  // And a probe that finds nothing costs the run nothing: the next poll asks again from the same slot.
+  it('keeps asking for the slot it is waiting on after a probe finds nothing', async () => {
+    publishedThrough = START_INDEX;
+
+    for (let attempt = 0; attempt < UNSERVED_POLLS_BEFORE_PROBE + 1; attempt++) {
+      await poll();
+    }
+    const asked = requested.filter((index) => index === START_INDEX + 1n).length;
+
+    assert.equal(asked, UNSERVED_POLLS_BEFORE_PROBE + 1, 'the reader stopped asking for the slot it needs');
   });
 });
