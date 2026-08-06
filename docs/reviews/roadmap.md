@@ -186,11 +186,102 @@ quality rather than announcing itself, which is exactly the kind of thing only a
 
 ### The runs
 
-|      | run                                                                         | broadcast-min |
-| ---- | --------------------------------------------------------------------------- | ------------: |
-| 0.7a | 10-minute viewer runs at 720p/2500k, 1080p/4000k, 1080p/6000k, all at 0.25s |            33 |
-| 0.7b | 60 minutes at whichever of those holds, as the gate                         |            63 |
-| 0.7c | The best quality that holds at 0.25s against the same quality at 0.5s       |            22 |
+|     | run | broadcast-min |
+| --- | --- | ------------- |
+
+## Phase 0.8 — lowering recovery, which is mostly ours to lower
+
+A freeze is not one thing. It is what the outage costs minus what the buffer absorbs, plus whatever
+this side adds on top. Both crash runs reconcile to that identity exactly:
+
+|                 | outage | buffer absorbed | **floor** | measured freeze | **client-side** |
+| --------------- | -----: | --------------: | --------: | --------------: | --------------: |
+| gateway stopped |  20.5s |            6.1s | **14.4s** |           30.6s | **16.2s** (53%) |
+| uploader killed |  15.3s |            7.1s |  **8.2s** |           54.9s | **46.7s** (85%) |
+
+**The floor is physics: you cannot play media that was never written, and an outage shorter than
+`LIVE_SYNC_DURATION_S` is invisible to a viewer already.** Everything above the floor is this side's,
+and in the uploader case it is six times the floor.
+
+### 0.8a The walk cannot pass its oldest missing slot (#71) — worth ~46s
+
+The walk asks for slot N+1 and stops on a 404, because a 404 is also how a caught-up viewer learns
+there is nothing more. Those two cases are indistinguishable from one request, so a slot that will
+never be served parks the viewer forever while every later slot sits retrievable and invisible. The
+uploader crash measured one address asked **112 times over sixty seconds** while ~175 newer slots
+existed.
+
+⭐ **They become distinguishable with one extra request.** A viewer who has caught up sees 404 at N+1
+**and** at N+1+D. A viewer stuck behind a hole sees 404 at N+1 and **200** at N+1+D. That is a cheap,
+decisive discriminator and it needs nothing from the head lookup.
+
+**On a served probe, jump the index to it.** Nothing is lost by skipping: each feed slot carries a
+**full manifest window** of about 36 segments, so a later slot's manifest already names everything the
+skipped ones announced that is still inside the window. Anything older than the window is media a live
+viewer should not be waiting for anyway. This is the same property that makes `handleInitialFetch`
+work.
+
+**Fire the probe only after K consecutive 404s on the same address**, so a normally caught-up viewer
+never sends it: live, the publisher writes every 267ms against polls 327ms apart, so the same slot
+404ing repeatedly does not happen.
+
+Constants to choose with tests rather than by argument: K, and the probe distance D. D trades
+detection speed against how far ahead the publisher must be for the probe to mean anything, and a
+natural calibration is that after K polls a healthy publisher has written K more slots.
+
+⚠️ This supersedes the older sketch of re-anchoring through the head lookup on `stalled`. That works,
+but it waits 30 polls to declare the stall and then pays for the **slowest** request this deployment
+has, the one that is 50-57% frozen. The probe answers in one poll and costs one request.
+
+**Expected: 46.7s becomes a few seconds.** Detection is K polls, the jump is one round trip, and the
+walk already drains 16 slots per poll.
+
+### 0.8b The backoff outlives the outage (#85) — worth ~16s
+
+`MANIFEST_RETRY_BASE_MS = 2000` doubles and is stamped from the failure, so attempts fall at t=0, 2,
+6, 14, 30. The gateway returned at 20.5s and the next attempt was not due until 30s. At the
+`MANIFEST_RETRY_CAP_MS = 30_000` cap the overshoot can be thirty seconds.
+
+⭐ **The client already knows the gateway is back and does not use it.** While the feed is being held
+off, hls.js is fetching **segments** through the same gateway, and those start succeeding the moment
+it returns. Nothing wires a successful fragment load back into `FeedHealthTracker`, so the one signal
+that would clear the hold is thrown away. `CustomFragmentLoader` is the place it already passes
+through.
+
+Secondary, and only if that is not enough: lower `MANIFEST_RETRY_CAP_MS`. The cap exists to bound what
+a page of stalled players does to a gateway that is already struggling (LAT-3, whose reason still
+holds), but once a live gateway clears the hold instantly the cap only governs a genuinely dead one,
+where 8s against 30s is a small absolute difference.
+
+**Expected: 16.2s becomes 1-3 seconds**, the time for hls.js's own fragment retry plus one poll.
+
+### 0.8c The dial that is already free
+
+An outage shorter than `LIVE_SYNC_DURATION_S` never reaches the viewer: the picture kept moving 6.1s
+and 7.1s into the two faults, which is the constant spending itself exactly as designed. Raising it
+buys outage tolerance and costs latency one-for-one. **Not a fix and not recommended blind**, but it
+is the honest third lever and it should be named beside the other two rather than discovered later.
+
+### How it gets verified
+
+Both fixes have a number to move, measured, on a scenario that reproduces on demand:
+
+|      | scenario                | today |   target |
+| ---- | ----------------------- | ----: | -------: |
+| 0.8a | `uploader-crash`        | 46.7s | under 5s |
+| 0.8b | `viewer-gateway-outage` | 16.2s | under 3s |
+
+Run each before and after, twice, and read `it moved again, after the service returned` rather than
+the freeze length, since the freeze also contains the floor.
+
+⚠️ **Do not edit `ManifestManagement.ts` on reading alone.** Commit `a4f9841`, reverted as `303184c`,
+was a client fix written from reading that was wrong. What is different here is that both defects are
+measured from request logs and both reproduce on demand.
+
+|
+| 0.7a | 10-minute viewer runs at 720p/2500k, 1080p/4000k, 1080p/6000k, all at 0.25s | 33 |
+| 0.7b | 60 minutes at whichever of those holds, as the gate | 63 |
+| 0.7c | The best quality that holds at 0.25s against the same quality at 0.5s | 22 |
 
 **Judge on what arrived, not what was asked for.** The report already carries the decoded resolution,
 the dropped-frame count and the delivered bytes per second, so a run that quietly downgraded is
