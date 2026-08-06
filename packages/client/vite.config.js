@@ -13,15 +13,7 @@ export default defineConfig(({ mode }) => {
   const beeUrl = env.VITE_READER_BEE_URL || 'http://127.0.0.1:1633';
 
   return {
-    // Absolute, because this app routes on the path and is served from the root. With `./` the
-    // asset URLs in `index.html` are relative, so a cold load of `/watch/video/<owner>/<topic>`
-    // resolves them against that directory and asks for
-    // `/watch/video/<owner>/assets/index-<hash>.js`. nginx's SPA fallback answers **200 with
-    // `index.html`**, the browser refuses `text/html` as a module script, and the page never starts.
-    // A viewer meets that by sharing a link, bookmarking one, opening a stream in a new tab, or
-    // pressing reload while watching. Only in-app navigation from the catalog survived it, which is
-    // why every browser run reached the player by clicking a card and none of them ever saw this.
-    base: '/',
+    base: './',
     envDir: path.resolve(__dirname, '../..'),
     plugins: [nodePolyfills(), react()],
     build: {
