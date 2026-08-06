@@ -94,8 +94,40 @@ opposite of the usual finding here, where the instrument or the client turned ou
 it holds and stops, which is correct behaviour and a silent one. An end-of-broadcast `FeedStateOverlay`
 state is a separate, smaller piece of work.
 
-⚠️ **Not yet verified live.** The unit tests cover the manifests and the publish order. The viewer-side
-proof needs another `ended-run.sh`, which is queued behind the hour-long 1080p gate.
+## ✅ VERIFIED LIVE, same scenario, fixed uploader
+
+`browser-watch-2026-08-06T10-24-24-325Z`, the same run: 150 seconds live, then the publisher killed
+and the viewer left on the page for 300 more.
+
+| | before | **after** |
+| --- | --- | --- |
+| **`currentTime` rewinds** | **1, at t=151.7s: 155.98 → 0.00** | **none** |
+| fatal errors | 1 | **0** |
+| `media sequence mismatch` in the console | yes | **none** |
+| player restarts | 1 | **0** |
+| where playback ended | 180.59s, after replaying from zero | **156.87s, the end of the broadcast** |
+| segment requests | 1,248 for 677 distinct | **574 for 568 distinct** |
+| **segment bytes fetched** | **116.3 MB** | **53.2 MB** |
+| last request | t = 281.6s | **t = 158.8s** |
+
+⭐ **The viewer now watches to the end of the broadcast and stops there.** It reaches 156.87 seconds,
+which is everything from where it joined to where the broadcast finished, and pauses. No rewind, no
+fatal error, no restart, nothing in the console.
+
+⭐ **It also stops re-downloading the recording, which was never the point and is the larger number.**
+The broken path fetched **116.3 MB** because the remount pulled the whole VOD to replay it. The fixed
+path fetches **53.2 MB**, once, and goes quiet **123 seconds earlier**. That is bandwidth and BZZ the
+old behaviour spent to deliver a worse experience.
+
+The request log was confirmed **unthinned** first (1,134 successes against the 5,000 cap), as the rule
+after `thinRequestLog` invalidated an adjacency analysis on the hour-long run.
+
+⚠️ **One reading is not meaningful and is not a defect.** `behind live` pins at 56.60s once the
+playlist ends, because hls.js's latency is defined against a live edge and the playlist is no longer
+live. `currentTime` is the measurement that matters here and it is correct.
+
+⚠️ **Still nothing on screen.** The viewer stops, correctly and silently. An end-of-broadcast
+`FeedStateOverlay` state is separate, smaller work and is not done.
 
 ## ⛔ And the report said none of this had happened
 
