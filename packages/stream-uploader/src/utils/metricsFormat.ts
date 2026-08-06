@@ -91,6 +91,12 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.streamsReapedTotal,
     },
     {
+      name: 'segment_durations_unread_total',
+      type: 'counter',
+      help: "Segments published with the engine's declared duration because their own timestamps could not be read. Expected to rise on every segment for an fMP4 engine and never for a transport-stream one.",
+      value: snapshot.segmentDurationsUnreadTotal,
+    },
+    {
       name: 'last_segment_timestamp_seconds',
       type: 'gauge',
       help: 'Unix time of the newest segment that reached Swarm. Zero while none has.',

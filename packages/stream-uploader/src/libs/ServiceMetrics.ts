@@ -19,6 +19,7 @@ export class ServiceMetrics {
   private streamsFinalized = 0;
   private streamsFailed = 0;
   private streamsReaped = 0;
+  private segmentDurationsUnread = 0;
   private segmentsSkipped = 0;
   private segmentsNeverNamed = 0;
   private authRejections = 0;
@@ -68,6 +69,18 @@ export class ServiceMetrics {
    */
   public recordStreamReaped(): void {
     this.streamsReaped += 1;
+  }
+
+  /**
+   * A segment whose own timestamps could not be read, so the engine's claim about it was published.
+   *
+   * Counted rather than only logged because the two deployments this has are opposite and both are
+   * normal: an fMP4 engine carries no transport packets and lands here on every segment, while a
+   * transport-stream engine should never land here at all. A rate that moves from one of those to
+   * the other is the signal, and no single log line carries it.
+   */
+  public recordSegmentDurationUnread(): void {
+    this.segmentDurationsUnread += 1;
   }
 
   /**
@@ -135,6 +148,7 @@ export class ServiceMetrics {
       streamsFinalizedTotal: this.streamsFinalized,
       streamsFailedTotal: this.streamsFailed,
       streamsReapedTotal: this.streamsReaped,
+      segmentDurationsUnreadTotal: this.segmentDurationsUnread,
       authRejectionsTotal: this.authRejections,
       takeoversRefusedTotal: this.takeoversRefused,
       lastSegmentAt: this.lastSegmentAt,
@@ -154,6 +168,8 @@ export interface MetricsCounters {
   streamsFailedTotal: number;
   /** Broadcasts finalized because their engine went silent rather than because anything asked. See #86. */
   streamsReapedTotal: number;
+  /** Segments published with the engine's declared duration because their own timestamps were unreadable. */
+  segmentDurationsUnreadTotal: number;
   /** Requests refused by a credential gate, across every gate in the process. */
   authRejectionsTotal: number;
   /** Announces refused because a live session on that stream id is still producing. See SEC-26. */

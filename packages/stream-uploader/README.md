@@ -122,6 +122,7 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_streams_finalized_total`         | counter | Stops that published a VOD                                  |
 | `swarm_hls_streams_failed_total`            | counter | Stops that did not. Those broadcasts have no recording      |
 | `swarm_hls_streams_reaped_total`            | counter | Broadcasts finalized because their engine went silent       |
+| `swarm_hls_segment_durations_unread_total`  | counter | Segments published on the engine's word, unreadable here    |
 | `swarm_hls_last_segment_timestamp_seconds`  | gauge   | Unix time of the newest segment that landed, 0 while none   |
 | `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing             |
 | `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream              |

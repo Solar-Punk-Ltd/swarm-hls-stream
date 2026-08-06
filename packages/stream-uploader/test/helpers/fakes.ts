@@ -24,8 +24,13 @@ const NON_RETRYABLE_STATUS = 400;
 export interface FakeUploads {
   /** Segment payload write, called as Bee is: stamp, then payload. Defaults to a fresh reference. */
   uploadData?: (stamp: string, data: Uint8Array) => Promise<unknown>;
-  /** Manifest SOC write. Defaults to resolving with a reference for the requested index. */
-  uploadPayload?: (index: number) => Promise<unknown>;
+  /**
+   * Manifest SOC write. Defaults to resolving with a reference for the requested index.
+   *
+   * The payload is passed too, so a test can read the playlist a viewer would be served rather than
+   * only counting that one was published.
+   */
+  uploadPayload?: (index: number, payload: unknown) => Promise<unknown>;
 }
 
 /** Rejects immediately with a non-retryable status, standing in for a Bee that refuses the write. */
@@ -43,8 +48,10 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
   return {
     uploadData: uploads.uploadData ?? (async () => ({ reference: { toHex: () => `ref${refCounter++}` } })),
     makeFeedWriter: () => ({
-      uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) =>
-        uploads.uploadPayload ? uploads.uploadPayload(opts.index) : { reference: { toHex: () => `soc${opts.index}` } },
+      uploadPayload: async (_stamp: string, data: unknown, opts: { index: number }) =>
+        uploads.uploadPayload
+          ? uploads.uploadPayload(opts.index, data)
+          : { reference: { toHex: () => `soc${opts.index}` } },
     }),
   } as unknown as Bee;
 }
@@ -133,6 +140,7 @@ export function makeMetricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): M
     streamsFinalizedTotal: 0,
     streamsFailedTotal: 0,
     streamsReapedTotal: 0,
+    segmentDurationsUnreadTotal: 0,
     authRejectionsTotal: 0,
     takeoversRefusedTotal: 0,
     lastSegmentAt: null,

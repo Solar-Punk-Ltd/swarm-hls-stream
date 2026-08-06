@@ -25,7 +25,7 @@ import {
   StreamStatusReport,
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
-import { isUsableDuration } from '../utils/segmentDuration.js';
+import { isUsableDuration, measureSegmentDuration } from '../utils/segmentDuration.js';
 
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
@@ -129,6 +129,8 @@ export class StreamOrchestrator {
    * is cancelled.
    */
   private stallReapers = new Map<string, Timer>();
+  /** Streams already reported as having unreadable segment durations, so the warning fires once each. */
+  private unreadDurationReported = new Set<string>();
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
    * clock so a backwards NTP step cannot make an age negative and hide a stall. Registration counts
@@ -367,6 +369,10 @@ export class StreamOrchestrator {
     // the moment a broadcaster reconnected under the same id: `/health` then answered `degraded` with
     // `segment_loss` for a broadcast that had lost nothing.
     this.segmentLossAt.delete(streamId);
+    // Cleared with the session rather than kept for the id, so that a later broadcast on the same id
+    // says it again. Whether an engine's segments are readable is a fact about the session producing
+    // them, and the id can be handed to a different engine entirely.
+    this.unreadDurationReported.delete(streamId);
     // Nothing can reach this session by id any more, so a pending reap would either find no ingest
     // reading and do nothing, or find its replacement's and finalize a live broadcast.
     this.stallReapers.get(streamId)?.cancel();
@@ -542,8 +548,38 @@ export class StreamOrchestrator {
     if (discontinuity) {
       uploader.markDiscontinuity();
     }
-    uploader.handleSegment(segmentIndex, duration, data);
+    uploader.handleSegment(segmentIndex, this.mediaDuration(streamId, segmentIndex, duration, data), data);
     return { accepted: true };
+  }
+
+  /**
+   * How much media this segment holds, preferring the segment over whatever the engine said about it.
+   *
+   * Substituted here rather than in either engine, because this is where the HTTP route, the SRS
+   * webhook and the OME puller converge, and the engine that was measured lying about it is not
+   * special: what a manifest promises a viewer should come from the media in every case.
+   *
+   * @see measureSegmentDuration for the measurement, and what SRS declares instead
+   */
+  private mediaDuration(streamId: string, segmentIndex: number, declared: number, data: Buffer): number {
+    const reading = measureSegmentDuration(data, declared);
+    if (reading.fellBackBecause === null) {
+      return reading.seconds;
+    }
+
+    this.metrics.recordSegmentDurationUnread();
+    // Once per stream, not once per segment. At the shipping profile this path runs four times a
+    // second for the length of a broadcast, and an engine whose segments are never readable is one
+    // fact about that engine rather than thousands about its segments.
+    if (!this.unreadDurationReported.has(streamId)) {
+      this.unreadDurationReported.add(streamId);
+      this.logger.warn(
+        `[StreamOrchestrator] Cannot read how much media segment ${segmentIndex} of ${streamId} holds, so ` +
+          `${declared}s is being published on the engine's word: ${reading.fellBackBecause}. ` +
+          'Reported once per stream; see the segment_durations_unread_total counter for the rate',
+      );
+    }
+    return reading.seconds;
   }
 
   /**
