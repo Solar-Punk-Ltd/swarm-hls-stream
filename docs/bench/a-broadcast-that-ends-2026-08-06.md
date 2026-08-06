@@ -185,8 +185,23 @@ so the uploader fix carried them and **the playlist-extension fix was never exer
 unit-tested and falsifiable, and that is the whole of its evidence.
 
 **What would exercise it**: the closing manifest unretrievable for a few seconds while the recording
-is retrievable, which is what happened once and has not been reproduced on demand. A fault injection
-that delays one specific feed slot would do it, and does not exist.
+is retrievable, which is what happened once and has not been reproduced on demand at a viewer.
+
+## ✅ So the race was made deterministic instead, one level down
+
+`6837bed`. The guard had only been asserted on the state manager, which is not where it failed: what
+failed live was **the probe**. The new case drives the real `ManifestFetcher` down that exact path,
+with the closing slot refused and the next slot holding the recording, and asserts the viewer's
+playlist still starts where they joined rather than at the broadcast's first second.
+
+⭐ **It reproduces on every run what three live runs failed to reproduce once**, and it fails without
+the fix. That is a better answer than another broadcast would have been: a live re-run can only ever
+say the race did not happen this time.
+
+⚠️ **What it still does not cover** is everything between the fetcher and the picture. hls.js is not
+in this test, so "the playlist was not replaced" is proved and "the viewer did not rewind" is
+inferred from it. The live runs are what cover that seam, and they cover it only for the path where
+the probe is not involved.
 
 ## ✅ Verified live: the viewer is told
 
