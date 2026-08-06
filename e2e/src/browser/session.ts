@@ -229,13 +229,63 @@ function deliveredFps(samples: readonly ViewerSample[]): number | null {
   if (counted.length < 2) {
     return null;
   }
-  const first = counted[0];
-  const last = counted[counted.length - 1];
-  const mediaS = last.currentTime - first.currentTime;
+  const mediaS = mediaPlayedS(counted);
   if (mediaS < MIN_MEDIA_FOR_FPS_S) {
     return null;
   }
-  return (last.decodedFrames - first.decodedFrames) / mediaS;
+  return totalAcrossRestarts(counted, (sample) => sample.decodedFrames) / mediaS;
+}
+
+/**
+ * How far `currentTime` may fall between samples before it is a restart rather than a slow sample.
+ *
+ * The client destroys and remounts its player when a manifest will not parse, and a remounted player
+ * starts from the beginning of whatever it then loads. Nothing else moves the playhead backwards:
+ * there is no seek control on a live viewer.
+ */
+const RESTART_REWIND_S = 5;
+
+/**
+ * Total a counter the page maintains as a running total for the session.
+ *
+ * A remounted player starts these at zero, so the last sample carries only what happened since the
+ * most recent restart. That is zero for exactly the runs worth reading, because the restart is
+ * usually the last interesting thing to happen in one.
+ */
+function totalAcrossRestarts<T extends ViewerSample>(samples: readonly T[], of: (sample: T) => number): number {
+  let carried = 0;
+  let peak = 0;
+
+  for (const sample of samples) {
+    const value = of(sample);
+    if (value < peak) {
+      carried += peak;
+    }
+    peak = value;
+  }
+
+  return carried + peak;
+}
+
+/** Media seconds the playhead actually covered, counting each life of the player separately. */
+function mediaPlayedS(samples: readonly ViewerSample[]): number {
+  if (samples.length === 0) {
+    return 0;
+  }
+
+  let played = 0;
+  let lifeStart = samples[0].currentTime;
+  let previous = lifeStart;
+
+  for (const sample of samples) {
+    if (sample.currentTime < previous - RESTART_REWIND_S) {
+      played += previous - lifeStart;
+      lifeStart = sample.currentTime;
+    }
+    previous = sample.currentTime;
+  }
+
+  return played + previous - lifeStart;
 }
 
 export function summarize(samples: readonly ViewerSample[]): SessionSummary {
@@ -247,13 +297,11 @@ export function summarize(samples: readonly ViewerSample[]): SessionSummary {
     spanMs,
     stalledSamples: advances.filter((advance) => advance.ratio < STALLED_ADVANCE_RATIO).length,
     medianAdvanceRatio: advances.length > 0 ? median(advances.map((advance) => advance.ratio)) : 0,
-    overallAdvanceRatio: spanMs > 0 ? ((last.currentTime - samples[0].currentTime) * 1000) / spanMs : 0,
-    // Read off the last sample rather than summed, because the overlay reports these as running
-    // totals for the session.
-    rebufferCount: last?.rebufferCount ?? 0,
-    rebufferMs: last?.rebufferMs ?? 0,
-    fatalErrors: last?.fatalErrors ?? 0,
-    droppedFrames: last?.droppedFrames ?? 0,
+    overallAdvanceRatio: spanMs > 0 ? (mediaPlayedS(samples) * 1000) / spanMs : 0,
+    rebufferCount: totalAcrossRestarts(samples, (sample) => sample.rebufferCount),
+    rebufferMs: totalAcrossRestarts(samples, (sample) => sample.rebufferMs),
+    fatalErrors: totalAcrossRestarts(samples, (sample) => sample.fatalErrors),
+    droppedFrames: totalAcrossRestarts(samples, (sample) => sample.droppedFrames),
     resolution: last?.resolution ?? null,
     deliveredFps: deliveredFps(samples),
     medianBufferAheadS: samples.length > 0 ? median(samples.map((sample) => sample.bufferAheadS)) : 0,

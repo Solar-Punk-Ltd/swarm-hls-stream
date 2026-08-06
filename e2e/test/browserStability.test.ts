@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
 import { judgeCost, type ResourceReading } from '../src/browser/resources.js';
 import { thinRequestLog } from '../src/browser/runFiles.js';
-import { type ViewerSample } from '../src/browser/session.js';
+import { summarize, type ViewerSample } from '../src/browser/session.js';
 import { judgeStability, MIN_WINDOWS_FOR_TREND, stabilitySection, WINDOW_MS } from '../src/browser/stability.js';
 
 const SAMPLE_MS = 1_000;
@@ -220,5 +220,66 @@ describe('thinning a long run request log', () => {
     const records = [record(200), record(404), record(200), record(500), record(200)];
 
     assert.deepEqual(thinRequestLog(records), records);
+  });
+});
+
+/**
+ * The client destroys and remounts its player when a manifest will not parse, which is what the
+ * switch from a live playlist to the finished VOD one looks like at the end of a broadcast. The page
+ * reports rebuffers, fatal errors and dropped frames as running totals, so the fresh instance starts
+ * them at zero and everything the run had accumulated stops being visible in the last sample.
+ */
+describe('summarising a run whose player restarted', () => {
+  /** A run that plays `beforeS`, restarts, then plays `afterS` from the beginning of the VOD. */
+  function restartedRun(beforeS: number, afterS: number, atRestart: Partial<ViewerSample> = {}): ViewerSample[] {
+    const before = Array.from({ length: beforeS }, (_, i) => ({
+      ...BASE,
+      atMs: i * SAMPLE_MS,
+      currentTime: i + 1,
+      droppedFrames: i,
+    }));
+    const after = Array.from({ length: afterS }, (_, i) => ({
+      ...BASE,
+      atMs: (beforeS + i + 1) * SAMPLE_MS,
+      currentTime: i,
+      droppedFrames: i,
+    }));
+    return [...before, { ...before[before.length - 1], ...atRestart, atMs: beforeS * SAMPLE_MS }, ...after];
+  }
+
+  it('counts a fatal error that the restart it triggered then erased', () => {
+    const samples = restartedRun(150, 300, { currentTime: 0, fatalErrors: 1 });
+
+    assert.equal(summarize(samples).fatalErrors, 1);
+  });
+
+  it('adds the rebuffers from before the restart to the ones after it', () => {
+    const samples = restartedRun(150, 300, { currentTime: 0, rebufferCount: 4, rebufferMs: 900 });
+    const after = samples.slice(-10).map((sample) => ({ ...sample, rebufferCount: 2, rebufferMs: 500 }));
+
+    const summary = summarize([...samples.slice(0, -10), ...after]);
+
+    assert.equal(summary.rebufferCount, 6);
+    assert.equal(summary.rebufferMs, 1_400);
+  });
+
+  it('counts the media played on both sides rather than reading a rewind as a stall', () => {
+    const samples = restartedRun(150, 300, { currentTime: 0 });
+
+    // 150s before the restart and 299 after, against 451 wall seconds: a player that never stopped.
+    assert.ok(
+      summarize(samples).overallAdvanceRatio > 0.95,
+      `read ${summarize(samples).overallAdvanceRatio}, which reads a replay as a freeze`,
+    );
+  });
+
+  it('leaves a run that never restarted exactly as it was', () => {
+    const samples = longRun(3).map((sample, i) => ({ ...sample, rebufferCount: 2, droppedFrames: i }));
+
+    const summary = summarize(samples);
+
+    assert.equal(summary.rebufferCount, 2);
+    assert.equal(summary.fatalErrors, 0);
+    assert.ok(Math.abs(summary.overallAdvanceRatio - 1) < 0.01);
   });
 });
