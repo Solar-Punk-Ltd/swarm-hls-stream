@@ -64,6 +64,9 @@ const REQUEST_TIMEOUT_MS = 15_000;
 /** How far ahead of a refused slot to look. Doubling, so one run sizes the distance a fix would need. */
 const AHEAD = [1, 2, 4, 8, 16, 32];
 
+/** Slots one poll may consume before yielding, matching `MAX_SLOTS_PER_POLL` in the client. */
+const MAX_SLOTS_PER_WALK = 16;
+
 const slotUrl = (owner, topic, index) =>
   `${READ_URL}/soc/${owner}/${new Identifier(
     Binary.keccak256(Binary.concatBytes(topic.toUint8Array(), FeedIndex.fromBigInt(BigInt(index)).toUint8Array())),
@@ -126,13 +129,28 @@ let unservedRun = 0;
 
 while (Date.now() < deadline) {
   polls++;
-  const target = index + 1;
-  const answer = await read(slotUrl(entry.owner, topic, target));
 
-  if (answer.status === 200) {
+  // Walks to the publisher's head, exactly as `ManifestFetcher` does since `ce87d3a`, rather than
+  // taking one slot per poll.
+  //
+  // ⚠️ **The one-slot-per-poll version of this measured nothing.** It read 3.34 slots a second
+  // against a publisher writing 3.75, so it lost ground continuously and was never at the live edge.
+  // Every 404 it did meet was a moment it had briefly caught up, which is why its longest stall was
+  // three polls on a run where the uploader was killed for fifteen seconds. An instrument that
+  // cannot reach the edge cannot see what happens there, and this is the same defect the client was
+  // fixed for in task #84.
+  let target = index + 1;
+  let answer = await read(slotUrl(entry.owner, topic, target));
+  for (let consumed = 0; answer.status === 200 && consumed < MAX_SLOTS_PER_WALK; consumed++) {
     index = target;
     slotsRead++;
     unservedRun = 0;
+    target = index + 1;
+    answer = await read(slotUrl(entry.owner, topic, target));
+  }
+
+  if (answer.status === 200) {
+    await sleep(POLL_MS);
     continue;
   }
 
