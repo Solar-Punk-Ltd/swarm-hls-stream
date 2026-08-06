@@ -422,7 +422,13 @@ export class ManifestFetcher {
           // publisher's head advanced.
           if (consumed === 0) {
             const polls = this.reportStalledFeed(hexTopic, targetIndex);
-            if (polls >= UNSERVED_POLLS_BEFORE_PROBE) {
+            // Bounded at both ends. Below the first, a refusal is too likely to be the publisher's
+            // head to be worth asking about. Above the second the feed is called stalled, by which
+            // point the ladder has been tried on every poll and found nothing every time, so what is
+            // missing is not within its reach and asking again just costs four requests a poll for
+            // as long as the page is open. The walk keeps asking for the slot it needs either way,
+            // so a slot that becomes retrievable later is still picked up.
+            if (polls >= UNSERVED_POLLS_BEFORE_PROBE && polls < UNSERVED_SLOT_POLL_LIMIT) {
               await this.probePastRefusal(owner, topic, readIndex, targetIndex);
             }
           }

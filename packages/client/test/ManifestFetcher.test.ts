@@ -15,6 +15,7 @@ import {
   ManifestFetcher,
   ManifestStateManager,
   MAX_SLOTS_PER_POLL,
+  PROBE_DISTANCES,
   UNSERVED_POLLS_BEFORE_PROBE,
   waitMs,
 } from '../src/components/SwarmHlsPlayer/ManifestManagement';
@@ -1103,5 +1104,32 @@ describe('a refused slot that later slots are already behind (#71)', () => {
     const asked = requested.filter((index) => index === START_INDEX + 1n).length;
 
     assert.equal(asked, UNSERVED_POLLS_BEFORE_PROBE + 1, 'the reader stopped asking for the slot it needs');
+  });
+
+  /**
+   * The ladder is a bet that a refusal is a hole rather than the publisher's head, and it is a good
+   * bet: seventy-four of seventy-six refusals had a served slot behind them. It is a bet that has
+   * been settled by the time the feed is called stalled, though. By then it has been placed
+   * twenty-seven times and lost every one, so whatever is missing is not within reach of it, and
+   * carrying on costs four extra requests per poll for as long as the page stays open.
+   *
+   * Stopping it does not stop recovery. The walk still asks for the next slot every poll at full
+   * cadence, so a slot that becomes retrievable later is picked up by the ordinary path.
+   */
+  it('gives up on the ladder once the feed has been called stalled', async () => {
+    publishedThrough = START_INDEX;
+
+    for (let attempt = 0; attempt < UNSERVED_SLOT_POLL_LIMIT + 5; attempt++) {
+      await poll();
+    }
+    const beyond = requested.filter((index) => index > START_INDEX + 1n).length;
+    const needed = requested.filter((index) => index === START_INDEX + 1n).length;
+
+    assert.equal(health.state(hexTopic), FEED_STATE_STALLED, 'the run never reached the stalled threshold');
+    assert.ok(
+      beyond <= (UNSERVED_SLOT_POLL_LIMIT - UNSERVED_POLLS_BEFORE_PROBE + 1) * PROBE_DISTANCES.length,
+      `probed ${beyond} times past the refusal, which is more than the polls before stalling allow`,
+    );
+    assert.equal(needed, UNSERVED_SLOT_POLL_LIMIT + 5, 'the reader stopped asking for the slot it actually needs');
   });
 });
