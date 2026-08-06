@@ -42,9 +42,11 @@ docs/bench/latency-*.json
 docs/bench/longrun-*.json
 docs/bench/browser-watch-*.json
 docs/bench/browser-crash-*.json
+docs/bench/browser-vod-*.json
 docs/bench/latency-*.md
 docs/bench/longrun-*.md
 docs/bench/browser-watch-*.md
 docs/bench/browser-crash-*.md
+docs/bench/browser-vod-*.md
 docs/bench/profiles-*.log
 docs/bench/sweep-*.log
