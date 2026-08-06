@@ -64,7 +64,11 @@ So the rewind is not a failure of the recovery path. **It is the recovery path w
 written, on an event that is not a fault.** The end of a broadcast is a normal thing for a broadcast
 to do.
 
-## ✅ Fixed in the uploader, and the client needed no change
+## ⚠️ Fixed in the uploader, and the claim that the client needed no change was wrong
+
+**Read the two sections after this one before believing this one.** The uploader change below is
+correct and still shipped. The conclusion drawn beside it, that the client needed nothing, was
+refuted by the next run.
 
 Filed as **#94** and fixed in `f0912fd`. The chain was read end to end in hls.js's own source rather
 than inferred:
@@ -83,18 +87,22 @@ it merges rather than restarting anything. The recording is published after it a
 still renumbers from zero and still names every segment, because it is a different resource with a
 different reader.
 
-⭐ **The client needed no change, and finding that out was the point of looking.** `parseManifest`
+⛔ **This paragraph is wrong and is kept because being wrong here was the point.** `parseManifest`
 already sets `isFinalized` from `#EXT-X-ENDLIST` (`packages/shared/src/manifest.ts:86`), and
 `updateManifest` already applies such a manifest, stops the walk, and ignores everything after it.
-The client's design was right the whole time. It was being handed a manifest it could not merge, and
-the guard that would have protected it fires on the same tag the fix now arrives with. **This is the
-opposite of the usual finding here, where the instrument or the client turned out to be at fault.**
+What that missed is the probe added in 0.8a, which steps over a refused slot and can therefore reach
+the recording without ever seeing the manifest that ends the live playlist. **The satisfying shape of
+the conclusion, that for once the client was not at fault, is what stopped the search early.**
 
 ⚠️ **What is still not done**: nothing on screen says the broadcast ended. The viewer plays out what
 it holds and stops, which is correct behaviour and a silent one. An end-of-broadcast `FeedStateOverlay`
 state is a separate, smaller piece of work.
 
-## ✅ VERIFIED LIVE, same scenario, fixed uploader
+## ⛔ "VERIFIED LIVE", which it was not: one run of a race
+
+**Superseded by the section after it.** The numbers below are real and the run happened, but it was a
+single run of a scenario whose failure is a race, and the next one failed. Kept because the claim was
+published and the correction belongs beside it.
 
 `browser-watch-2026-08-06T10-24-24-325Z`, the same run: 150 seconds live, then the publisher killed
 and the viewer left on the page for 300 more.
