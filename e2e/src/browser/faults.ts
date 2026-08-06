@@ -92,6 +92,14 @@ export interface FaultScenario {
   readonly ready?: {
     readonly port: keyof Ports;
     readonly path: string;
+    /**
+     * Fields the answer must carry before the service counts as back.
+     *
+     * Without this the check passes on any parseable body, and a service that is starting answers
+     * with one: bee's `/health` says `ok` about a second after `docker start` while the node still
+     * cannot retrieve a chunk. What the endpoint means is the scenario's knowledge, not the runner's.
+     */
+    readonly is: Readonly<Record<string, string>>;
   };
 }
 
@@ -115,7 +123,7 @@ const VIEWER_GATEWAY_OUTAGE: FaultScenario = {
     'without a reload and without ending the broadcast.',
   expectFreeze: true,
   expectRecovery: true,
-  ready: { port: 'beeGatewayApi', path: '/health' },
+  ready: { port: 'beeGatewayApi', path: '/readiness', is: { status: 'ready' } },
 };
 
 /**
@@ -137,7 +145,7 @@ const UPLOADER_CRASH: FaultScenario = {
     'catching up to it.',
   expectFreeze: true,
   expectRecovery: true,
-  ready: { port: 'uploaderApi', path: '/health' },
+  ready: { port: 'uploaderApi', path: '/health', is: { status: 'ok' } },
 };
 
 /**

@@ -93,17 +93,19 @@ async function waitUntilServing(host: Host, cfg: E2EConfig, scenario: FaultScena
   if (!scenario.ready) {
     return null;
   }
-  const { port, path } = scenario.ready;
+  const { port, path, is } = scenario.ready;
   const deadline = Date.now() + READY_TIMEOUT_MS;
+  const saysReady = (body: unknown): boolean =>
+    typeof body === 'object' &&
+    body !== null &&
+    Object.entries(is).every(([field, value]) => (body as Record<string, unknown>)[field] === value);
 
   while (Date.now() < deadline) {
-    // Any parsed answer means the process is up and serving. What it says is the scenario's business,
-    // not this function's: a gateway that answers at all is one a viewer can read through again.
-    const answered = await host
+    const ready = await host
       .localJson(cfg.ports[port], path)
-      .then(() => true)
+      .then(saysReady)
       .catch(() => false);
-    if (answered) {
+    if (ready) {
       return Date.now();
     }
     await sleep(READY_POLL_MS);
