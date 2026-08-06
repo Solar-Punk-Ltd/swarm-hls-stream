@@ -65,3 +65,38 @@ numbers of similar size, so a viewer sitting further forward in their buffer wou
 The pause window was chosen at eight seconds to sit under the retry window. **Nothing here locates the
 threshold at which a write outage starts reaching a viewer**, only that eight seconds is past it and
 that the buffer is what decides.
+
+## ✅ Decision on the gap: accept it (2026-08-06)
+
+The gap is between what the two sides call success. The uploader retries a manifest publish for
+**15 seconds** and calls anything it recovers within that window lossless, correctly, because no
+media is lost. A viewer holds **6 seconds** of buffer, so anything past six is visible to them. A
+write outage between those two numbers is clean upstream and a freeze downstream, and nothing said
+so.
+
+Three ways out were considered and the decision is to **accept**.
+
+**Raising `LIVE_SYNC_DURATION_S` is rejected.** It buys tolerance at exactly one second of latency per
+second of tolerance, against a standing goal of stable, constant latency at the best quality
+available. Covering the full 15-second window would put every viewer 15 seconds behind live,
+permanently, to hide a fault that lasted eight seconds once.
+
+**Shortening the uploader's retry window is rejected, and it is the worse of the two.** It would trade
+a viewer's freeze for permanently lost media. A three-second freeze recovers. A segment no manifest
+ever names does not, and #81 exists because that is the quietest way this uploader can lose part of a
+broadcast.
+
+**Accepted, because the measured cost is small and the buffer is already doing its job.** Eight
+seconds of write outage cost a viewer **3.1 seconds** of frozen picture. The buffer absorbed the rest,
+which is what it is for, and the identity holds:
+`freeze = (outage − buffer absorbed) + client-side overhead`.
+
+⚠️ **Deliberately not shown on screen.** `FeedStateOverlay` declares a stalled feed after 30 unserved
+polls, far longer than this, and a banner that appears and disappears inside three seconds would be
+more disruptive than the freeze it announces.
+
+**Reversible in one constant** if a deployment would rather buy the tolerance:
+`LIVE_SYNC_DURATION_S` in `packages/client/src/components/SwarmHlsPlayer/playerConfig.ts`.
+
+⚠️ **What would reopen this:** a measurement showing write outages in the 6-15 second band are common
+rather than rare on this deployment. Nothing has counted how often one happens.
