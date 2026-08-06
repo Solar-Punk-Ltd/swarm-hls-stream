@@ -30,7 +30,10 @@
  * Reads only, so it costs no broadcast and no postage of its own. It does need something publishing,
  * so run it beside a broadcast, and beside a crash scenario for the case it was written for.
  *
- *   STREAM_OWNER=... STREAM_RAW_TOPIC=... SECONDS=180 node e2e/src/probes/feed-ahead-probe.mjs
+ *   STREAM_OWNER=... STREAM_RAW_TOPIC=... PROBE_SECONDS=180 node e2e/src/probes/feed-ahead-probe.mjs
+ *
+ * `PROBE_SECONDS` rather than `SECONDS`, which bash owns and resets in any shell the run passes
+ * through, so the value read here would be that shell's own age.
  *
  * With no STREAM_OWNER it takes the newest live entry from the app catalog.
  *
@@ -54,7 +57,7 @@ const APP_OWNER = process.env.APP_OWNER;
 const APP_RAW_TOPIC = process.env.APP_RAW_TOPIC;
 const STREAM_OWNER = process.env.STREAM_OWNER;
 const STREAM_RAW_TOPIC = process.env.STREAM_RAW_TOPIC;
-const SECONDS = Number(process.env.SECONDS ?? 180);
+const SECONDS = Number(process.env.PROBE_SECONDS ?? 180);
 const POLL_MS = Number(process.env.POLL_MS ?? 250);
 const REQUEST_TIMEOUT_MS = 15_000;
 

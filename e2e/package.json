@@ -16,7 +16,8 @@
     "bench:sweep-report": "tsx bench/sweep.ts",
     "browser:selfcheck": "tsx browser/selfcheck.ts",
     "browser:watch": "tsx browser/watch.ts",
-    "browser:crash": "tsx browser/crash.ts"
+    "browser:crash": "tsx browser/crash.ts",
+    "probe:ahead": "node src/probes/feed-ahead-probe.mjs"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
