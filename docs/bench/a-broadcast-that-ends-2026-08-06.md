@@ -126,8 +126,67 @@ after `thinRequestLog` invalidated an adjacency analysis on the hour-long run.
 playlist ends, because hls.js's latency is defined against a live edge and the playlist is no longer
 live. `currentTime` is the measurement that matters here and it is correct.
 
-⚠️ **Still nothing on screen.** The viewer stops, correctly and silently. An end-of-broadcast
-`FeedStateOverlay` state is separate, smaller work and is not done.
+## ⛔ AND THEN IT CAME BACK, because one run of a race is not a verification
+
+The next run of the same scenario rewound exactly as before. **The verification above was one run of
+a race and it won the toss.** Decoding the slot indices out of the hashed request URLs says what
+happened:
+
+| t (s) | slot | |
+| ---: | ---: | --- |
+| 158.9 | 670 | 404, the fourth refusal, so the probe fires |
+| 160.4 | **671** | **200, and 671 is the recording** |
+| 160.9 | 670 | timed out after 10s |
+
+The uploader published **670 (closing)** and **671 (recording)** 273ms apart, and **the probe added in
+0.8a stepped over the closing manifest into the recording.** So publishing a closing manifest first is
+**necessary and not sufficient**: a viewer can still reach the recording first, and here it did
+because 670 was momentarily unretrievable while 671 was not.
+
+⛔ **The first client guard written for this was also wrong, and it would have shipped as a no-op.** It
+compared media sequences and refused one that moved backwards. `normalizeHeaders`
+(`ManifestManagement.ts:269`) rewrites **every** playlist this client serves to
+`#EXT-X-MEDIA-SEQUENCE:0`, so both playlists sit at zero and the comparison can never fire. The same
+number meaning different media in each is precisely what `mergeDetails` reports. Found by reading
+`normalizeHeaders` before wiring the guard up, not by a test.
+
+## ✅ The fix that shipped: a finished playlist extends, it does not replace
+
+`0d83a04`. Segment N means "the Nth since this viewer joined", so changing the front of the list
+changes what every number already handed to hls.js refers to. **Both finished playlists would do it**:
+the closing manifest is a live window and starts **later** than a viewer who joined earlier, the
+recording names everything and starts **earlier** than one who joined partway through.
+
+Neither replaces the list now. Each contributes only what it carries after the last segment already
+held, matched by segment address rather than position, and one sharing no segment at all is ignored.
+Against the old wholesale replacement, three of the five new cases fail.
+
+## What three more runs actually showed, which is less than it looks
+
+Three end-of-broadcast runs against the corrected client: **no rewind, no fatal error, and the ended
+overlay in all three.** Mapping each client trace onto the uploader's own indices:
+
+| run | closing | recording | what the client fetched |
+| --- | ---: | ---: | --- |
+| 11-16 | 558 | 559 | 558 only, never touched the recording |
+| 11-22 | 563 | 564 | 562 then 563, never touched the recording |
+| 11-28 | 555 | 556 | the probe stepped over 554 and landed on **555, the closing manifest** |
+
+⚠️ **None of the three reproduced the race.** In every one the client stopped at the closing manifest,
+so the uploader fix carried them and **the playlist-extension fix was never exercised live.** It is
+unit-tested and falsifiable, and that is the whole of its evidence.
+
+**What would exercise it**: the closing manifest unretrievable for a few seconds while the recording
+is retrievable, which is what happened once and has not been reproduced on demand. A fault injection
+that delays one specific feed slot would do it, and does not exist.
+
+## ✅ Verified live: the viewer is told
+
+`browser-watch-2026-08-06T10-57-37-286Z` and all three runs above. **"This broadcast has ended"**
+appears on the first sample after the feed finishes and stays, and on no sample before it. `ended`
+outranks `reconnecting` and `stalled`, because a gateway going down afterwards does not make a
+broadcast unfinished, and it carries no pulsing dot, since the pulse promises a picture that is not
+coming.
 
 ## ⛔ And the report said none of this had happened
 
