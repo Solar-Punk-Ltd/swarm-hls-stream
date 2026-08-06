@@ -64,9 +64,38 @@ So the rewind is not a failure of the recovery path. **It is the recovery path w
 written, on an event that is not a fault.** The end of a broadcast is a normal thing for a broadcast
 to do.
 
-Filed as **#94**. The decision is a product one: end-of-broadcast should either stop with something
-on screen that says the broadcast ended, or continue into the recording from where the viewer
-already was. Neither is what happens today.
+## ✅ Fixed in the uploader, and the client needed no change
+
+Filed as **#94** and fixed in `f0912fd`. The chain was read end to end in hls.js's own source rather
+than inferred:
+
+| where | what |
+| --- | --- |
+| `hls.js` line 9045 | `mergeDetails` sets `playlistParsingError` to **`media sequence mismatch`** |
+| `hls.js` line 36455 | raised as `LEVEL_PARSING_ERROR`, **`fatal: false`** |
+| `hls.js` line 5072 | the error controller **escalates it to fatal**, because a single-variant stream has no level to switch to |
+| `SwarmHlsPlayer.tsx:98` | a fatal `LEVEL_PARSING_ERROR` calls `restartStream()`, which remounts the player |
+
+**So the uploader was the one breaking the rule**, and hls.js was correctly objecting to it.
+Finalization now publishes the live window with `#EXT-X-ENDLIST` **before** the VOD manifest. That
+closing manifest is the playlist the viewer is already on, at the same media sequence, now ended, so
+it merges rather than restarting anything. The recording is published after it and is unchanged: it
+still renumbers from zero and still names every segment, because it is a different resource with a
+different reader.
+
+⭐ **The client needed no change, and finding that out was the point of looking.** `parseManifest`
+already sets `isFinalized` from `#EXT-X-ENDLIST` (`packages/shared/src/manifest.ts:86`), and
+`updateManifest` already applies such a manifest, stops the walk, and ignores everything after it.
+The client's design was right the whole time. It was being handed a manifest it could not merge, and
+the guard that would have protected it fires on the same tag the fix now arrives with. **This is the
+opposite of the usual finding here, where the instrument or the client turned out to be at fault.**
+
+⚠️ **What is still not done**: nothing on screen says the broadcast ended. The viewer plays out what
+it holds and stops, which is correct behaviour and a silent one. An end-of-broadcast `FeedStateOverlay`
+state is a separate, smaller piece of work.
+
+⚠️ **Not yet verified live.** The unit tests cover the manifests and the publish order. The viewer-side
+proof needs another `ended-run.sh`, which is queued behind the hour-long 1080p gate.
 
 ## ⛔ And the report said none of this had happened
 
