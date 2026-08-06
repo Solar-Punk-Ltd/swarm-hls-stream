@@ -93,6 +93,7 @@ makes every later slot invisible.
 **The engine restart left the uploader holding a stream forever.** SRS never sends `on_unpublish`
 when it dies, so `activeStreams` stayed at 1 with no activity and the uploader reported `degraded`
 with `segment_stall` until it was restarted by hand. Correct detection, no path out of it. Task #86,
+✅ **fixed and verified live on 2026-08-06**, see [an engine that dies](./an-engine-that-dies-2026-08-06.md).
 found by running this rather than by looking for it.
 
 **Segment length was 0.25s throughout, and the client was the fixed one** from
