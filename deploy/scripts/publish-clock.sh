@@ -98,13 +98,42 @@ log_info "stream ${STREAM_ID} into UDP ${PORT} on ${TARGET}"
 # is also the easiest thing to read back: a viewer's screenshot carries a number that subtracts
 # directly from `Date.now() / 1000`. Resolution is one second, which is enough to judge a buffer
 # measured in seconds and is deliberately not dressed up as more.
+#
+# ## Why it is started detached and then waited on, rather than run in the foreground
+#
+# The publisher used to run in the foreground of one ssh session for the whole broadcast. ffmpeg at
+# `-loglevel error` sends nothing across that session for the entire run, so an hour-long broadcast is
+# an hour of an idle connection, and if it drops the remote shell takes SIGHUP and ffmpeg dies with
+# it. The viewer then measures a broadcast that stopped, which looks exactly like the product failing.
+#
+# Detached, the ffmpeg container outlives its ssh session, and the wait below is a series of short
+# calls: a blip costs one poll instead of the run. This is what makes a sixty minute run worth
+# starting.
+CONTAINER="swarm-hls-publish-$$"
+
+run_remote() {
+  if [ "${TARGET}" = "localhost" ]; then
+    bash -s
+  else
+    # The same keepalives `bench-on-host.sh` uses, for the same reason.
+    ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "${TARGET}" bash -s
+  fi
+}
+
+# Killed rather than left running when this script is interrupted, so a Ctrl-C does not leave a
+# publisher holding the stream id and blocking every run that follows.
+cleanup_publisher() {
+  printf 'docker rm -f %q >/dev/null 2>&1 || true\n' "${CONTAINER}" | run_remote || true
+}
+trap cleanup_publisher INT TERM
+
 {
-  printf 'SIZE=%q\nFPS=%q\nBITRATE=%q\nGOP_FRAMES=%q\nSECONDS_TO_RUN=%q\nURL=%q\n' \
-    "${SIZE}" "${FPS}" "${BITRATE_KBPS}" "${GOP_FRAMES}" "${SECONDS_TO_RUN}" "${URL}"
+  printf 'CONTAINER=%q\nSIZE=%q\nFPS=%q\nBITRATE=%q\nGOP_FRAMES=%q\nSECONDS_TO_RUN=%q\nURL=%q\n' \
+    "${CONTAINER}" "${SIZE}" "${FPS}" "${BITRATE_KBPS}" "${GOP_FRAMES}" "${SECONDS_TO_RUN}" "${URL}"
   cat <<'PUBLISH_BODY'
 set -e
 DRAW="drawtext=text='%{localtime\:%s}':fontsize=64:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=14:x=(w-text_w)/2:y=h-text_h-40"
-docker run --rm --network host swarm-hls-bench \
+docker run -d --name "${CONTAINER}" --network host swarm-hls-bench \
   ffmpeg -hide_banner -loglevel error \
   -f lavfi -i "testsrc2=size=${SIZE}:rate=${FPS}" \
   -f lavfi -i sine=frequency=440:sample_rate=48000 \
@@ -113,20 +142,42 @@ docker run --rm --network host swarm-hls-bench \
   -g "${GOP_FRAMES}" -sc_threshold 0 -pix_fmt yuv420p \
   -c:a aac -ar 48000 -b:a 128k \
   -t "${SECONDS_TO_RUN}" \
-  -f mpegts "${URL}"
+  -f mpegts "${URL}" >/dev/null
 PUBLISH_BODY
-} | if [ "${TARGET}" = "localhost" ]; then bash -s; else ssh "${TARGET}" bash -s; fi
+} | run_remote
 # The exit status of a pipeline is its last command's, and `set -e` does not fire on the left-hand
 # side of one, so a failed ffmpeg reached the success line below and the script exited 0. That
 # happened three times on 2026-08-05: twice a second publisher collided with one still holding the
 # stream id and died in a second, once the port was wrong, and each time this printed "publish
 # finished" and the run that followed measured whatever was left over from before.
-PUBLISH_STATUS=$?
+START_STATUS=$?
 
-if [ "${PUBLISH_STATUS}" -ne 0 ]; then
-  log_error "publish FAILED (exit ${PUBLISH_STATUS}). Nothing was broadcast, so do not measure against this."
-  log_error "The usual cause is another publisher still holding ${STREAM_ID}. Wait for it, or use --stream=."
-  exit "${PUBLISH_STATUS}"
+if [ "${START_STATUS}" -ne 0 ]; then
+  log_error "publish FAILED to start (exit ${START_STATUS}). Nothing was broadcast."
+  exit "${START_STATUS}"
 fi
 
+# Polled rather than `docker wait`, which would hold a session open for the whole broadcast and put
+# the problem back exactly where it was. Generous, because the poll is only how promptly the end is
+# noticed and the broadcast length is already known.
+POLL_SECONDS=10
+while true; do
+  RUNNING=$(printf 'docker inspect -f {{.State.Running}} %q 2>/dev/null || echo missing\n' "${CONTAINER}" | run_remote)
+  case "${RUNNING}" in
+    true) sleep "${POLL_SECONDS}" ;;
+    *) break ;;
+  esac
+done
+
+PUBLISH_STATUS=$(printf 'docker inspect -f {{.State.ExitCode}} %q 2>/dev/null || echo 127\n' "${CONTAINER}" | run_remote)
+
+if [ "${PUBLISH_STATUS}" != "0" ]; then
+  log_error "publish FAILED (exit ${PUBLISH_STATUS}). Nothing usable was broadcast, so do not measure against this."
+  log_error "The usual cause is another publisher still holding ${STREAM_ID}. Wait for it, or use --stream=."
+  printf 'docker logs --tail 20 %q 2>&1 || true\n' "${CONTAINER}" | run_remote || true
+  cleanup_publisher
+  exit 1
+fi
+
+cleanup_publisher
 log_ok "publish finished"
