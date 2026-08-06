@@ -11,10 +11,10 @@ linked, or marked as a guess. Items already tracked carry their task number.
 | LL-HLS              | **Not implemented and not configured.** `OmeHlsPuller` reads `ts:playlist.m3u8`, OME's MPEG-TS playlist. No `<LLHLS>` publisher exists in `Server.xml.template`. Neither engine transcodes: both set bypass and remux the broadcaster's own streams.                                                                                                              |
 | Live latency        | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. ✅ **Glass to glass at a viewer is 6.4 to 7.3s and flat**, read off a burned-in clock, [after the client fix](../bench/the-loop-fixed-2026-08-05.md). It was 17.9s and growing before it. |
 | What a viewer sees  | ✅ **1.000 and 1.003 media seconds per wall second at 0.25s, nothing frozen, no rebuffers**, holding 5.86s behind live against a 6s target. It was 0.82x and 17.3% frozen: the client took one feed slot per playlist reload. [Fixed and measured](../bench/the-loop-fixed-2026-08-05.md), [diagnosed](../bench/what-starves-the-viewer-2026-08-05.md).           |
-| Which profile ships | ✅ **0.25s GOP.** The morning's "ship 1.0s" is reversed: its whole reason was 7x the freezing, and the freezing was the client. Both are stable now, 0.25s is no worse on any axis and better on two. ⚠️ Not gated at ten minutes at a viewer.                                                                                                                    |
+| Which profile ships | ✅ **0.25s GOP, and 1080p at 6000kbps with it.** Gated at ten minutes at a viewer: 30.0fps, advance 1.000, nothing stalled, nothing rebuffered. Latency across a 2.4x bitrate range differs by 70ms, so the best picture costs bandwidth (2.24x the BZZ) rather than seconds. |
 | Seeking             | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                                                                                                                                     |
 | Live DVR            | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                                                                                                                                      |
-| Crash recovery      | 6 e2e scenarios pass on the **uploader's** side. ✅ A viewer has now been watched through one: `browser:crash` reports what the picture did and what the client said. ⚠️ **Recovery is dominated by the client's own backoff, not by the outage** (task #85).                                                                                                     |
+| Crash recovery      | 6 e2e scenarios pass on the **uploader's** side. ✅ **A viewer has now been watched through five**, and one of them plays through a **discontinuity** and survives it. ✅ The largest client-side cost is fixed: recovery from an uploader crash went **46.7s → 4.1s** by asking what is behind a refused slot instead of parking on it. ⛔ #92: a write outage the upload side calls clean still freezes a viewer, because lossless is the uploader's 15s retry window and invisible is the viewer's 6s buffer. |
 | Browser validation  | ✅ **Unblocked 2026-08-05.** `pnpm browser:selfcheck` proves the browser is a valid instrument in ten seconds for no cost, and `browser:watch` reports VOID rather than a number when it is not.                                                                                                                                                                  |
 
 ---
@@ -162,7 +162,7 @@ so warm-up does not flatter the funded arm.
 |     | run | broadcast-min |
 | --- | --- | ------------- |
 
-## Phase 0.7 — quality, which no viewer has ever been shown
+## Phase 0.7 ✅ DONE 2026-08-06 — quality, which no viewer had ever been shown
 
 **Every browser run this project has done was 720p, 2500kbps, 30fps.** That is
 `publish-clock.sh`'s default and it was never moved. Segment length is the only variable a viewer has
@@ -203,7 +203,7 @@ this side adds on top. Both crash runs reconcile to that identity exactly:
 `LIVE_SYNC_DURATION_S` is invisible to a viewer already.** Everything above the floor is this side's,
 and in the uploader case it is six times the floor.
 
-### 0.8a The walk cannot pass its oldest missing slot (#71) — worth ~46s
+### 0.8a ✅ DONE 2026-08-06 — the walk cannot pass its oldest missing slot (#71), **46.7s → 4.1s**
 
 The walk asks for slot N+1 and stops on a 404, because a 404 is also how a caught-up viewer learns
 there is nothing more. Those two cases are indistinguishable from one request, so a slot that will
@@ -236,7 +236,7 @@ has, the one that is 50-57% frozen. The probe answers in one poll and costs one 
 **Expected: 46.7s becomes a few seconds.** Detection is K polls, the jump is one round trip, and the
 walk already drains 16 slots per poll.
 
-### 0.8b The backoff outlives the outage (#85) — worth ~16s
+### 0.8b ⚠️ DONE 2026-08-06 — the backoff outlives the outage (#85), and the shortfall was the instrument
 
 `MANIFEST_RETRY_BASE_MS = 2000` doubles and is stamped from the failure, so attempts fall at t=0, 2,
 6, 14, 30. The gateway returned at 20.5s and the next attempt was not due until 30s. At the
@@ -268,8 +268,18 @@ Both fixes have a number to move, measured, on a scenario that reproduces on dem
 
 |      | scenario                | today |   target |
 | ---- | ----------------------- | ----: | -------: |
-| 0.8a | `uploader-crash`        | 46.7s | under 5s |
-| 0.8b | `viewer-gateway-outage` | 16.2s | under 3s |
+| 0.8a | `uploader-crash`        | 46.7s | under 5s | ✅ **4.1s** |
+| 0.8b | `viewer-gateway-outage` | 16.2s | under 3s | ⚠️ see below |
+
+⛔ **0.8b's target was never reachable and the instrument was why.** Recovery was clocked from
+`docker start` **returning**, which is when the container exists rather than when the process serves:
+the gateway returned at t+79.1s, answered a 503 at t+80.3s and served its first 200 at **t+86.3s**.
+Seven of the fourteen seconds were never the client's to spend. Fixed in `169ce9e` and `738d9fd`,
+where a scenario declares how to tell its service is answering and both numbers reach the report.
+
+⚠️ Two mechanisms were proposed for the shortfall and the request log refuted both: hls.js does
+**not** back off its fragment retries (it asked every 500ms throughout), and **no** player restart
+happened. `fragLoadPolicy` was never the lever.
 
 Run each before and after, twice, and read `it moved again, after the service returned` rather than
 the freeze length, since the freeze also contains the floor.
@@ -279,9 +289,20 @@ was a client fix written from reading that was wrong. What is different here is 
 measured from request logs and both reproduce on demand.
 
 |
-| 0.7a | 10-minute viewer runs at 720p/2500k, 1080p/4000k, 1080p/6000k, all at 0.25s | 33 |
-| 0.7b | 60 minutes at whichever of those holds, as the gate | 63 |
+| 0.7a | ✅ **done.** Screened all three at 3 min in one sitting: **all deliver 30.0fps at full resolution, 0 stalled, 0 rebuffers**, and latency across a 2.4x bitrate range differs by **70ms**. | 10 |
+| 0.7b | ✅ **done.** 1080p/6000k gated at 10 min: 594 samples, 30.0fps, advance **1.000**, 0 stalled, 0 rebuffers, 0 fatal. [Report](../bench/quality-at-a-viewer-2026-08-06.md). | 10 |
 | 0.7c | The best quality that holds at 0.25s against the same quality at 0.5s | 22 |
+
+⭐ **Quality is bought with bandwidth, not with latency: 2.24x the BZZ (0.0170 → 0.0381 per
+broadcast-minute) and essentially no seconds.** 1080p at 6000kbps ships.
+
+⭐ **The instrument had to exist first and that is the transferable part.** Quality was judged on
+resolution and dropped frames, and #76's failure appears in **neither**: a consumer slower than the
+stream's bitrate stretches media time rather than erroring. `deliveredFps` divides the decoder's own
+frame count by **media** seconds, because a frozen picture decodes nothing and a wall-time rate would
+read a freeze and a collapse as the same number.
+
+⚠️ Sixty minutes has still only been run at 720p/2500k.
 
 **Judge on what arrived, not what was asked for.** The report already carries the decoded resolution,
 the dropped-frame count and the delivered bytes per second, so a run that quietly downgraded is
