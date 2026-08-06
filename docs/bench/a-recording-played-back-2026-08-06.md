@@ -128,24 +128,57 @@ Nothing is lost on the wire. Measured in the same run:
 the obvious first guess and is refuted. Every segment the playlist names was fetched and accepted,
 and laid end to end those 84 segments carry **22.57s** of media against **26.86s** declared.
 
-Two mechanisms fit and this run cannot separate them:
+### Diagnosed: the engine's declared duration matches neither the media nor the clock
 
-- the `#EXTINF` durations over-declare, by a factor of **1.19** (0.320s declared against 0.269s of
-  media per segment, at a profile whose GOP is 0.25s)
-- consecutive segments **overlap in presentation time**, and the player discards the duplicate
+Read straight off the segments' own presentation timestamps, all 84 of them:
 
-The next measurement is the same either way: take the PTS span of a handful of segments straight from
-the bytes and compare it with what the manifest says about them.
+| | |
+| --- | --- |
+| media per segment | **0.2667s, dead constant** (8 frames at 30fps) |
+| segment continuity | first PTS advances by exactly one segment each time, **no gap, no overlap** |
+| media total, 84 segments | **22.400s** |
+| `#EXTINF` total | **26.920s** |
+| ratio | **1.2018** |
+
+That ratio predicts 22.55s of playable media. The browser measured **22.587s**. It agrees to 0.2%,
+so this is the whole of the gap and there is nothing else to look for.
+
+Both candidate mechanisms above are answered. The segments do **not** overlap, so nothing is
+discarded as duplicate. The declared durations are simply wrong, and wrong in a specific way: they
+jitter between 0.27s and 0.41s around a mean of **0.3205s**, against media that never varies from
+0.2667s.
+
+**The pipeline is not at fault, and neither is the encoder.** From the uploader's own log, segments
+69 to 83 arrived **3.710s apart over 14 segments, or 0.265s each**, which matches the 0.2667s of
+media they carry. The broadcast ran in real time, produced media in real time, and dropped nothing.
+So the declared value is not a wall-clock measurement either. It matches nothing.
+
+It comes from SRS. `on_hls` sends a `duration` field and the uploader passes it through verbatim into
+`ManifestManager.addSegment` (`engines/srs.ts:308`), which is what lands in `#EXTINF`. SRS is
+configured `hls_fragment 0.25`, and the media honours that exactly by cutting at the first GOP
+boundary at or after 0.25s. Only the number SRS reports about it is wrong.
 
 ⚠️ **Both recordings here were made during the task #86 crash runs**, with SRS restarted underneath
-them. Whether a cleanly started and cleanly stopped broadcast shows the same ratio is untested, and
-should be checked before this is generalised.
+them. Whether a cleanly started and stopped broadcast shows the same ratio is untested.
 
-It matters beyond the scrubber. The **catalog's advertised duration** comes from the same sum
-(`getTotalDuration()`), `#EXT-X-TARGETDURATION` is derived from the same numbers, and so is every
-latency figure this project computes from a manifest. Task #41 already moved the bench off manifest
-spans onto the bytes for exactly this reason. This is the first time the gap has been measured at a
-viewer.
+### Why it reaches further than the scrubber
+
+The same figure is the **catalog's advertised duration** (`getTotalDuration()` sums the same values),
+it sets `#EXT-X-TARGETDURATION`, and it is the basis of any latency figure computed from a manifest.
+Task #41 already moved the bench off declared spans and onto the bytes for exactly this reason. This
+is the first time the gap has been measured on the **product** path rather than the instrument's.
+
+### The fix already exists, in the wrong package
+
+`e2e/src/bench/segmentSpan.ts` does this measurement properly and is covered by nine tests. It was
+written for LAT-9 and it handles the two things a naive reading gets wrong: packets arrive in decode
+order so the newest frame is not the last listed, and a timestamp says when a frame started rather
+than how long it lasted, so the final frame is credited the median gap.
+
+The uploader already holds the segment bytes at `handleSegment`. Moving that module into
+`packages/shared` and deriving `#EXTINF` from the bytes rather than from the webhook is the fix, and
+it is the same call the bench already made. The cost to weigh is that it puts a parse of every
+segment on the upload path.
 
 ## ⚠️ The instrument, and it took three tries to trust it
 
