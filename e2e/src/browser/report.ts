@@ -38,6 +38,15 @@ export interface BrowserRun {
  */
 const MAX_TABLE_ROWS = 240;
 
+/** `3` becomes `3rd`, because a heading reading "Every 3th sample" undermines the document it titles. */
+function ordinal(n: number): string {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) {
+    return `${n}th`;
+  }
+  return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
+}
+
 /** Every Nth sample, so a long run's table covers the whole run rather than the first four minutes. */
 function forTable<T>(samples: readonly T[]): { rows: readonly T[]; everyNth: number } {
   const everyNth = Math.max(1, Math.ceil(samples.length / MAX_TABLE_ROWS));
@@ -235,13 +244,13 @@ export function renderBrowserReport(run: BrowserRun): string {
     ...stabilitySection(judgeStability(run.samples)),
     ...networkSection(run),
     ...(run.cost ? costSection(run.cost) : []),
-    everyNth === 1 ? '## Every sample' : `## Every ${everyNth}th sample`,
+    everyNth === 1 ? '## Every sample' : `## Every ${ordinal(everyNth)} sample`,
     '',
     ...(everyNth === 1
       ? []
       : [
           `${run.samples.length} samples is more than a table is worth reading, so this prints every ` +
-            `${everyNth}th. The whole series is in the \`.json\` beside this file.`,
+            `${ordinal(everyNth)}. The whole series is in the \`.json\` beside this file.`,
           '',
         ]),
     '| # | t (s) | currentTime | behind live (s) | buffered ahead (s) | rate | readyState | rebuffers |',

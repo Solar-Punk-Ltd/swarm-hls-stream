@@ -18,6 +18,13 @@
  * `utilization` is the fullest bucket, not the average one, and a batch is full when **that** bucket
  * reaches `2 ^ (depth - bucketDepth)`. So capacity cannot be read off total bytes uploaded, and the
  * only honest way to project it is to watch the number the batch actually enforces.
+ *
+ * ⚠️ **A maximum over sixty-five thousand buckets grows fastest when the batch is nearly empty**, and
+ * then flattens as the distribution concentrates. So the rate an early run measures **overstates**
+ * the long-run rate, and the runway it projects is a floor rather than an estimate. The first run on
+ * a fresh depth-24 batch measured 0.59 buckets a minute where the previous batch had settled at about
+ * 0.22 over hours. Read a single run's projection as "at least this much", and let later runs on the
+ * same batch refine it.
  */
 
 import { type E2EConfig } from '../config.js';
@@ -159,6 +166,10 @@ export function costSection(cost: ResourceCost): string[] {
     `At this run's own rate: **${runway(cost.minutesOfPostageLeft)} of postage**, ` +
       `**${runway(cost.minutesOfBzzLeft)} of BZZ**, and the batch expires in ` +
       `${cost.after.postageTtlDays.toFixed(1)} days.`,
+    '',
+    'The postage runway is a **floor**. `utilization` is the fullest of sixty-five thousand buckets, and ' +
+      'a maximum grows fastest while the batch is nearly empty and then flattens, so an early run ' +
+      'overstates the long-run rate. Later runs on the same batch are the ones to believe.',
     '',
     ...(cost.warnings.length > 0
       ? ['⚠️ **Before planning the next run:**', '', ...cost.warnings.map((w) => `- ${w}`), '']
