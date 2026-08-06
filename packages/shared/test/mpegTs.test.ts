@@ -143,12 +143,32 @@ describe('reading a segment video timestamps out of its own bytes', () => {
     assert.deepEqual(readVideoPts(new Uint8Array(0)), []);
   });
 
+  /**
+   * The tail has to be a packet that would otherwise be read, or this asserts nothing.
+   *
+   * It first appended forty bytes holding a lone sync byte and zeros. That is rejected by the
+   * payload-unit-start check long before the loop bound matters, so relaxing the bound to
+   * `start < segment.length` left this test green. A truncated segment is what an interrupted write
+   * leaves behind, and this repository already injects crashes and outages that produce them.
+   *
+   * The tail below is the first forty bytes of a real video PES packet, which is enough to carry a
+   * complete timestamp: the PES header starts at offset 4 and its five PTS bytes end at offset 18.
+   * So the only thing standing between the parser and a timestamp from a packet that does not exist
+   * is the bound itself.
+   */
   it('stops at a trailing partial packet instead of reading past the end', () => {
     const whole = segment(packet({ pid: VIDEO_PID, streamId: VIDEO_STREAM_ID, pts: FRAME_TICKS }));
-    const truncated = new Uint8Array(whole.length + 40);
+    const PARTIAL_BYTES = 40;
+    const cutOffPts = 900_000;
+    const truncated = new Uint8Array(whole.length + PARTIAL_BYTES);
     truncated.set(whole);
-    truncated[whole.length] = 0x47;
+    truncated.set(
+      packet({ pid: VIDEO_PID, streamId: VIDEO_STREAM_ID, pts: cutOffPts }).subarray(0, PARTIAL_BYTES),
+      whole.length,
+    );
 
+    // Reading the tail would put the span at 897000 ticks, just under ten seconds, which
+    // `isUsableDuration` accepts and publishes as `#EXTINF` for a segment holding one frame.
     assert.deepEqual(readVideoPts(truncated), [FRAME_TICKS]);
   });
 });
