@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
+    "cafe-utility": "31.1.1",
     "dotenv": "^16.4.7",
     "express": "^5.2.1",
     "p-queue": "^8.1.0",

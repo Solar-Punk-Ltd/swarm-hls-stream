@@ -119,6 +119,40 @@ describe('the vendored shared manifest keeps every advertised entry point', () =
    * emitted fails identically from the outside, and `.ts` surviving into the manifest is the exact
    * shape that would do it, since the source really does point its `exports` at TypeScript.
    */
+  /**
+   * What the vendored copy needs at runtime, which is a different question from what it exports.
+   *
+   * `packages/shared` gained its first runtime dependencies in this branch, `@ethersphere/bee-js` and
+   * `cafe-utility`, and its first module importing them, which `index.js` re-exports eagerly. The
+   * image installs from the **uploader's** manifest alone: `Dockerfile.uploader` copies only that one
+   * file and runs `npm install --omit=dev`, and nothing ever runs an install inside
+   * `dist/node_modules`. So a package shared imports but the uploader does not declare reaches the
+   * image only if something else happens to pull it in.
+   *
+   * `cafe-utility` was exactly that. It resolved because `@ethersphere/bee-js` declares a compatible
+   * range of it and npm hoists flat, which is not a guarantee: the image ships no lockfile, so that
+   * range is re-resolved on every build, and a bee-js release that moved off it would have taken the
+   * uploader down at its first import on the ingest path.
+   */
+  it('declares in the uploader manifest every package the vendored copy imports', () => {
+    for (const [name, range] of Object.entries(sourceManifest.dependencies ?? {})) {
+      assert.equal(
+        manifest.dependencies?.[name],
+        range,
+        `shared needs ${name}@${range} at runtime and the image installs only from the uploader's ` +
+          'manifest, so it has to be declared there too, at the same version the workspace resolved',
+      );
+    }
+  });
+
+  it('carries the source package dependencies into the vendored manifest', () => {
+    assert.deepEqual(
+      readVendored().dependencies ?? {},
+      sourceManifest.dependencies ?? {},
+      'the vendored copy has to state what it needs, or nothing in the image records the requirement',
+    );
+  });
+
   it('points every export at a file that exists next to it', () => {
     const vendored = readVendored();
     const vendorDir = dirname(vendoredPath);

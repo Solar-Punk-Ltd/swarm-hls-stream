@@ -334,6 +334,9 @@ importers:
       '@ethersphere/bee-js':
         specifier: ^9.0.3
         version: 9.8.1
+      cafe-utility:
+        specifier: 31.1.1
+        version: 31.1.1
       dotenv:
         specifier: ^16.4.7
         version: 16.6.1

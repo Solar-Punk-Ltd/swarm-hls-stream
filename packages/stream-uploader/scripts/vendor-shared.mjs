@@ -70,6 +70,13 @@ writeFileSync(
       main: exports['.'].default,
       types: exports['.'].types,
       exports,
+      // Carried across so the vendored copy states what it needs rather than relying on whatever the
+      // image happens to have. It installs nothing by itself, since nothing runs `npm install` inside
+      // `dist/node_modules`, so the load-bearing half of this is that the uploader's own manifest
+      // declares the same packages. `uploaderImage.test.js` asserts that it does. Without both, an
+      // import here resolves only by hoisting luck: `cafe-utility` reached the image because
+      // `@ethersphere/bee-js` happens to depend on a compatible range of it.
+      dependencies: sourceManifest.dependencies ?? {},
     },
     null,
     2,
