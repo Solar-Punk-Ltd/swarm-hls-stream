@@ -21,7 +21,15 @@ import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { judgeRecovery } from '../src/browser/recovery.js';
 import { renderCrashReport } from '../src/browser/recoveryReport.js';
-import { envNumber, requireEnv, runIdFrom, screenshotDirFor, writeRunArtifacts } from '../src/browser/runFiles.js';
+import { judgeCost, readResources } from '../src/browser/resources.js';
+import {
+  envNumber,
+  requireEnv,
+  runIdFrom,
+  screenshotDirFor,
+  thinRequestLog,
+  writeRunArtifacts,
+} from '../src/browser/runFiles.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import { launchViewer, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, type SampledStretch, sampleFor } from '../src/browser/watchLoop.js';
@@ -80,6 +88,7 @@ async function main(): Promise<void> {
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
   const screenshotDir = screenshotDirFor(runId);
+  const resourcesBefore = await readResources(host, cfg);
 
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
@@ -134,6 +143,8 @@ async function main(): Promise<void> {
     throw new Error('no samples collected');
   }
 
+  const cost = judgeCost(resourcesBefore, await readResources(host, cfg));
+
   const run = {
     measuredAt,
     watchUrl,
@@ -148,12 +159,13 @@ async function main(): Promise<void> {
     network: summarizeNetwork(requests),
     samples,
     screenshots: stretches.flatMap((stretch) => stretch.screenshots),
+    cost,
   };
 
   const stem = await writeRunArtifacts(`browser-crash-${scenario.name}`, runId, {
     markdown: renderCrashReport(run),
     run,
-    requests,
+    requests: thinRequestLog(requests),
   });
 
   console.log(`\nbrowser: wrote ${stem}.md`);
@@ -174,6 +186,7 @@ async function main(): Promise<void> {
       recovery.saidWhileFrozen.length > 0 ? `"${recovery.saidWhileFrozen.join('", "')}"` : 'NOTHING'
     } while frozen`,
   );
+  cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 }
 
 main().catch((error) => {

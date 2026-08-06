@@ -35,6 +35,37 @@ export function screenshotDirFor(runId: string): string {
   return join(REPORT_DIR, 'browser-screenshots', runId);
 }
 
+/**
+ * How many successful requests a run's log keeps.
+ *
+ * An hour at a 0.25s segment makes roughly fifty thousand requests, which is a fifteen megabyte json
+ * file per run committed to git. Everything that went wrong is kept in full, because a refusal or a
+ * failure is why anyone opens this file at all, and the successes are thinned to a sample that still
+ * carries the timing distribution. The aggregate the report prints is computed over **every**
+ * request before any of this, so no figure changes.
+ */
+export const MAX_LOGGED_SUCCESSES = 5_000;
+
+const succeeded = (status: number | null): boolean => status !== null && status < 400;
+
+/**
+ * Keep every failure and refusal, and an evenly spread sample of what worked.
+ *
+ * One pass, in order. Selecting the two groups separately and sorting them back together needs each
+ * record's original position, and looking that up per record is quadratic: at the fifty thousand
+ * requests an hour-long run makes, that is the thinning costing more than the run it is thinning.
+ */
+export function thinRequestLog<T extends { status: number | null }>(records: readonly T[]): T[] {
+  const successes = records.reduce((total, r) => total + (succeeded(r.status) ? 1 : 0), 0);
+  if (successes <= MAX_LOGGED_SUCCESSES) {
+    return [...records];
+  }
+
+  const everyNth = Math.ceil(successes / MAX_LOGGED_SUCCESSES);
+  let kept = 0;
+  return records.filter((record) => (succeeded(record.status) ? kept++ % everyNth === 0 : true));
+}
+
 export interface RunArtifacts {
   /** The rendered report, which is the thing a person reads. */
   markdown: string;

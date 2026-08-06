@@ -15,10 +15,20 @@
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { renderBrowserReport } from '../src/browser/report.js';
-import { envNumber, requireEnv, runIdFrom, screenshotDirFor, writeRunArtifacts } from '../src/browser/runFiles.js';
+import { judgeCost, readResources } from '../src/browser/resources.js';
+import {
+  envNumber,
+  requireEnv,
+  runIdFrom,
+  screenshotDirFor,
+  thinRequestLog,
+  writeRunArtifacts,
+} from '../src/browser/runFiles.js';
 import { summarize } from '../src/browser/session.js';
 import { launchViewer, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, type SampledStretch, sampleFor } from '../src/browser/watchLoop.js';
+import { loadConfig } from '../src/config.js';
+import { makeHost } from '../src/harness/host.js';
 
 const DEFAULT_WATCH_SECONDS = 180;
 
@@ -30,6 +40,12 @@ async function main(): Promise<void> {
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
+
+  // Read before the browser opens and again after it closes, so what the run cost is measured rather
+  // than reconstructed from balances noticed at different times on different days.
+  const cfg = loadConfig();
+  const host = makeHost(cfg);
+  const resourcesBefore = await readResources(host, cfg);
 
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
@@ -60,6 +76,8 @@ async function main(): Promise<void> {
     throw new Error('no samples collected');
   }
 
+  const cost = judgeCost(resourcesBefore, await readResources(host, cfg));
+
   const run = {
     measuredAt,
     watchUrl,
@@ -70,12 +88,13 @@ async function main(): Promise<void> {
     network: summarizeNetwork(requests),
     samples: watched.samples,
     screenshots: watched.screenshots,
+    cost,
   };
 
   const stem = await writeRunArtifacts('browser-watch', runId, {
     markdown: renderBrowserReport(run),
     run,
-    requests,
+    requests: thinRequestLog(requests),
   });
 
   console.log(`\nbrowser: wrote ${stem}.md`);
@@ -85,6 +104,11 @@ async function main(): Promise<void> {
     `browser: ${run.summary.latency.medianLatencyS?.toFixed(2) ?? '—'}s behind live, ` +
       `${run.summary.rebufferCount} rebuffers, ${run.summary.stalledSamples} stalled samples`,
   );
+  console.log(
+    `browser: cost ${cost.bucketsUsed} postage buckets and ${cost.bzzSpent.toFixed(3)} BZZ over ` +
+      `${cost.minutes.toFixed(1)} min`,
+  );
+  cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 }
 
 main().catch((error) => {

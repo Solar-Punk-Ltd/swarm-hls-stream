@@ -11,7 +11,9 @@ import { LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
 
 import type { InstrumentVerdict } from './instrument.js';
 import type { NetworkSummary } from './network.js';
+import { costSection, type ResourceCost } from './resources.js';
 import type { SessionSummary, ViewerSample } from './session.js';
+import { judgeStability, stabilitySection } from './stability.js';
 
 export interface BrowserRun {
   measuredAt: string;
@@ -23,6 +25,23 @@ export interface BrowserRun {
   network?: NetworkSummary;
   samples: readonly ViewerSample[];
   screenshots: readonly string[];
+  /** What the run took out of the postage batch and the chequebook, when it was measured. */
+  cost?: ResourceCost;
+}
+
+/**
+ * The most sample rows a report prints.
+ *
+ * An hour at one sample a second is 3600 rows, which is a table nobody reads inside a document
+ * nobody opens. Longer runs are printed every Nth row and say so, and the untouched series stays in
+ * the `.json` beside it, so nothing is lost and the markdown stays a thing a person can scan.
+ */
+const MAX_TABLE_ROWS = 240;
+
+/** Every Nth sample, so a long run's table covers the whole run rather than the first four minutes. */
+function forTable<T>(samples: readonly T[]): { rows: readonly T[]; everyNth: number } {
+  const everyNth = Math.max(1, Math.ceil(samples.length / MAX_TABLE_ROWS));
+  return { rows: samples.filter((_, i) => i % everyNth === 0), everyNth };
 }
 
 export const seconds = (ms: number): string => (ms / 1000).toFixed(1);
@@ -188,9 +207,10 @@ export function networkSection(run: BrowserRun): string[] {
 }
 
 export function renderBrowserReport(run: BrowserRun): string {
-  const sampleRows = run.samples.map((sample, i) =>
+  const { rows, everyNth } = forTable(run.samples);
+  const sampleRows = rows.map((sample, i) =>
     [
-      `| ${i + 1}`,
+      `| ${i * everyNth + 1}`,
       seconds(sample.atMs - run.samples[0].atMs),
       sample.currentTime.toFixed(2),
       orDash(sample.liveLatencyS),
@@ -212,9 +232,18 @@ export function renderBrowserReport(run: BrowserRun): string {
     ...instrumentSection(run),
     ...latencySection(run),
     ...playbackSection(run),
+    ...stabilitySection(judgeStability(run.samples)),
     ...networkSection(run),
-    '## Every sample',
+    ...(run.cost ? costSection(run.cost) : []),
+    everyNth === 1 ? '## Every sample' : `## Every ${everyNth}th sample`,
     '',
+    ...(everyNth === 1
+      ? []
+      : [
+          `${run.samples.length} samples is more than a table is worth reading, so this prints every ` +
+            `${everyNth}th. The whole series is in the \`.json\` beside this file.`,
+          '',
+        ]),
     '| # | t (s) | currentTime | behind live (s) | buffered ahead (s) | rate | readyState | rebuffers |',
     '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...sampleRows,
