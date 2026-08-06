@@ -74,10 +74,14 @@ export class ServiceMetrics {
   /**
    * A segment whose own timestamps could not be read, so the engine's claim about it was published.
    *
-   * Counted rather than only logged because the two deployments this has are opposite and both are
-   * normal: an fMP4 engine carries no transport packets and lands here on every segment, while a
-   * transport-stream engine should never land here at all. A rate that moves from one of those to
-   * the other is the signal, and no single log line carries it.
+   * Counted rather than only logged because **no shipped deployment should ever reach it**, and a
+   * thing that should never happen needs a rate rather than a line. Both engines deliver MPEG-TS:
+   * SRS writes it, and OME is pulled from `ts:playlist.m3u8` rather than its fMP4 playlist. So any
+   * rise means `readVideoPts` found no video PES where there should be one, and every `#EXTINF`
+   * since is the engine's claim rather than the media. On SRS that claim measured 20 to 25% long.
+   *
+   * The log line beside this fires once per stream, so it says a stream had the problem and cannot
+   * say for how much of it. That is what this counter is for.
    */
   public recordSegmentDurationUnread(): void {
     this.segmentDurationsUnread += 1;

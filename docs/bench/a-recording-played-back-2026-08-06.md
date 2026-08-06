@@ -211,10 +211,17 @@ out of the transport packets directly.
 
 Substituted in the **orchestrator**, where the HTTP route, the SRS webhook and the OME puller
 converge, because the engine caught at this is not special. The engine's claim is still the answer
-for a segment that cannot be read, which is not a fallback for the unexpected but the live path for
-OME, whose fMP4 segments carry no transport packets at all. That is counted as well as logged, since
-the two deployments are opposite and both normal: one falls back on every segment, the other never,
-and the rate moving between them is the signal.
+for a segment that cannot be read, and that is counted as well as logged.
+
+⛔ **Corrected 2026-08-07.** This paragraph first said the fallback was "the live path for OME, whose
+fMP4 segments carry no transport packets at all", and the same claim reached three comments in
+shipped code and the `/metrics` help text beside the counter. It is wrong. `OmeHlsPuller` builds
+`${base}/${app}/${stream}/ts:playlist.m3u8`, which is OME's **MPEG-TS** playlist rather than its fMP4
+one, and this branch's own README correction says exactly that. **Both shipped engines deliver
+transport streams, so the counter should sit at zero on either, and any rise means the measurement
+has stopped working and `#EXTINF` is back on the engine's word.** As written, an operator on OME who
+watched the counter climb would have read the failure as the expected behaviour, which is the one
+reading that makes the signal useless. Found by the pre-merge review of PR #74.
 
 The cost accepted is a parse of every segment on the upload path. It is a scan of roughly 550 packet
 headers per segment, and no fallback fired across 17 real segments.

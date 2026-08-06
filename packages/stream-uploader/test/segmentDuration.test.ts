@@ -81,8 +81,9 @@ describe('how long a segment is, according to the segment', () => {
   });
 
   it('falls back to the engine when the segment is not a transport stream, and says so', () => {
-    // What an fMP4 segment reaches here as. OME publishes those, so this is a live path rather than
-    // a hypothetical, and answering zero for it would publish a playlist of zero-length segments.
+    // No shipped engine should produce this: SRS writes MPEG-TS, and the OME puller asks for
+    // `ts:playlist.m3u8` rather than the fMP4 playlist. What matters is the shape of the degradation,
+    // since answering zero would publish a playlist of zero-length segments no player can follow.
     const notTransportStream = Buffer.alloc(4096, 0x00);
 
     const reading = measureSegmentDuration(notTransportStream, SRS_CLAIMED_SECONDS);

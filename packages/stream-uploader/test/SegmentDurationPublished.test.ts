@@ -84,7 +84,7 @@ describe('what a playlist tells a viewer a segment lasts', () => {
     await orch.stopStream(STREAM_ID);
   });
 
-  it('keeps publishing the engine claim for a segment it cannot read, so an fMP4 engine still works', async () => {
+  it('keeps publishing the engine claim for a segment it cannot read, rather than a zero', async () => {
     const published: string[] = [];
     const orch = makeTestOrchestrator(
       {},
@@ -97,9 +97,11 @@ describe('what a playlist tells a viewer a segment lasts', () => {
     );
     await orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
 
-    // Not a transport stream. OME publishes fMP4, so this is the live path for one of the two
-    // shipped engines rather than a hypothetical, and answering zero for it would publish a playlist
-    // of zero-length segments that no player can follow.
+    // Not a transport stream, which no shipped engine should produce: SRS writes MPEG-TS and the OME
+    // puller asks for `ts:playlist.m3u8` rather than the fMP4 playlist. So this is the path for a
+    // segment that is genuinely unreadable, and what matters is that it degrades to the engine's
+    // claim instead of to a zero, since a playlist of zero-length segments is one no player can
+    // follow. The counter asserted below is what makes the degradation visible rather than silent.
     orch.handleSegment(STREAM_ID, 0, SRS_CLAIMED_SECONDS, Buffer.alloc(4096));
 
     await waitFor(() => published.length > 0, SETTLE_CEILING_MS);

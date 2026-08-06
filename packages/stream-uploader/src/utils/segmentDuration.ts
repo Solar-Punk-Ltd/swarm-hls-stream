@@ -50,8 +50,11 @@ function whyItFailed(error: unknown): string {
  *
  * The arithmetic is `measureSpanTicks`, which the bench has used since LAT-9 for exactly this reason.
  *
- * @param declared what the engine said, kept for the segments this cannot read. An fMP4 segment
- *   carries no transport packets, so OME lands here on every segment and must keep working.
+ * @param declared what the engine said, kept for a segment this cannot read. **Neither shipped
+ *   engine should reach it.** OME is pulled from `ts:playlist.m3u8`, its MPEG-TS playlist rather
+ *   than its fMP4 one, so its segments carry transport packets exactly as SRS's do. The fallback is
+ *   for a segment that is genuinely unreadable, and reaching it means a viewer is being told what
+ *   the engine claimed. See `segment_durations_unread_total`.
  */
 export function measureSegmentDuration(segment: Uint8Array, declared: number): SegmentDurationReading {
   try {

@@ -93,7 +93,7 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
     {
       name: 'segment_durations_unread_total',
       type: 'counter',
-      help: "Segments published with the engine's declared duration because their own timestamps could not be read. Expected to rise on every segment for an fMP4 engine and never for a transport-stream one.",
+      help: "Segments published with the engine's declared duration because their own timestamps could not be read. Both shipped engines deliver MPEG-TS, so this is expected to stay at zero. Any rise means those segments' durations are the engine's claim, which on SRS measured 20 to 25% long.",
       value: snapshot.segmentDurationsUnreadTotal,
     },
     {
