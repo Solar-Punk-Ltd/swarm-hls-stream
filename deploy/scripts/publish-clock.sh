@@ -161,15 +161,56 @@ fi
 # the problem back exactly where it was. Generous, because the poll is only how promptly the end is
 # noticed and the broadcast length is already known.
 POLL_SECONDS=10
+
+# How many consecutive polls may fail to be taken before this stops waiting.
+#
+# **A poll that could not be taken is not a broadcast that ended**, and reading it as one is what
+# this exists for. `|| echo missing` guards `docker inspect` failing on the far side and cannot guard
+# `ssh` failing on the near side: a refused connection, a momentary DNS failure or a dead mux socket
+# exits 255 having written only to stderr, so the substitution comes back empty. Empty is not `true`,
+# so the loop broke while ffmpeg was still broadcasting, `.State.ExitCode` read 0 because it reads 0
+# for a *running* container, and this script deleted the live publisher and printed `publish
+# finished` with exit 0. A sixty minute run ended at whatever minute the first blip landed, with its
+# postage and BZZ already spent and nothing in the record marking where it stopped.
+#
+# Six is a minute at the interval above: long enough to outlast a restarted sshd or a laptop changing
+# network, short enough that a host which is genuinely gone is not waited on for the rest of the run.
+MAX_CONSECUTIVE_POLL_FAILURES=6
+
+POLL_FAILURES=0
 while true; do
-  RUNNING=$(printf 'docker inspect -f {{.State.Running}} %q 2>/dev/null || echo missing\n' "${CONTAINER}" | run_remote)
+  if ! RUNNING=$(printf 'docker inspect -f {{.State.Running}} %q 2>/dev/null || echo missing\n' "${CONTAINER}" | run_remote) ||
+    [ -z "${RUNNING}" ]; then
+    POLL_FAILURES=$((POLL_FAILURES + 1))
+    if [ "${POLL_FAILURES}" -ge "${MAX_CONSECUTIVE_POLL_FAILURES}" ]; then
+      log_error "publish UNKNOWN: ${MAX_CONSECUTIVE_POLL_FAILURES} consecutive polls of ${TARGET} could not be taken."
+      log_error "The broadcast may still be running. Do not measure against this, and check for a leftover ${CONTAINER}."
+      exit 1
+    fi
+    sleep "${POLL_SECONDS}"
+    continue
+  fi
+
+  # Reset on any poll that was actually taken, so this counts a run of failures rather than their
+  # total. One blip an hour is the case the whole detached design exists to survive.
+  POLL_FAILURES=0
   case "${RUNNING}" in
     true) sleep "${POLL_SECONDS}" ;;
     *) break ;;
   esac
 done
 
-PUBLISH_STATUS=$(printf 'docker inspect -f {{.State.ExitCode}} %q 2>/dev/null || echo 127\n' "${CONTAINER}" | run_remote)
+# Only reached once a poll has actually reported the container is no longer running, which is what
+# makes this read meaningful: `.State.ExitCode` is 0 for a running container, so asking it while the
+# broadcast is live cannot tell a clean finish from anything else.
+if ! PUBLISH_STATUS=$(printf 'docker inspect -f {{.State.ExitCode}} %q 2>/dev/null || echo 127\n' "${CONTAINER}" | run_remote) ||
+  [ -z "${PUBLISH_STATUS}" ]; then
+  # Distinguished from a failed publish, because it is a different thing to act on: the broadcast may
+  # have been fine and this could not find out. Either way it must not read as success.
+  log_error "publish UNKNOWN: could not read the publisher's exit status from ${TARGET}."
+  log_error "Do not measure against this, and check for a leftover ${CONTAINER}."
+  exit 1
+fi
 
 if [ "${PUBLISH_STATUS}" != "0" ]; then
   log_error "publish FAILED (exit ${PUBLISH_STATUS}). Nothing usable was broadcast, so do not measure against this."
