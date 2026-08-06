@@ -128,6 +128,16 @@ export class ManifestStateManager {
       return false;
     }
 
+    // Above the finalized branch, because a viewer who opens a broadcast that already ended never
+    // meets an open playlist at all: the feed head is the recording, so a finished manifest is the
+    // only thing they will ever be offered a header by. Taken from one, `serialize` emits a body
+    // with no `#EXTM3U`, which hls.js refuses whole as `Missing format identifier #EXTM3U` and
+    // reports as a fatal error, and the player answers a fatal error by remounting into the same
+    // manifest. A viewer sees a recording that never starts.
+    if (state.headers.length === 0) {
+      state.headers = this.normalizeHeaders(headers);
+    }
+
     if (isFinalized) {
       // Extended, never replaced. `normalizeHeaders` pins every playlist this client serves to media
       // sequence zero, so segment N means "the Nth since this viewer joined" and changing the front
@@ -139,10 +149,6 @@ export class ManifestStateManager {
       state.isFinalized = true;
       state.dirty = true;
       return false;
-    }
-
-    if (state.headers.length === 0) {
-      state.headers = this.normalizeHeaders(headers);
     }
 
     const newSegments = segments.filter((s) => !state.segmentUris.has(s.uri));
