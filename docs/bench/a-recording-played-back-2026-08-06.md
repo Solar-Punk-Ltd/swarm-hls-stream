@@ -84,46 +84,87 @@ the very start and then steps over it. It recovers because `maxBufferHole` is 1 
 identically. Nobody had seen this before because these two warnings are `console.warn`, and the
 harness was reading only `console.error`.
 
-## ⛔ Open: seeking outside the buffer stops the picture for good
+## ✅ Seeking works, and the first report of it failing was mine
 
-| target | asked | landed | landed in | resumed in | |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 50% | 13.55s | 13.56s | 57ms | 358ms | ✅ |
-| 90% | 24.39s | 22.59s | — | — | ⛔ never landed within 1.5s |
-| 20% | 5.42s | 5.42s | 61ms | — | ⛔ landed, and the picture never moved again |
+The first two runs reported two failed seeks. That was the harness, not the player. It took its seek
+targets from `duration`, and 90% of 27.10s is **24.39s**, which is past the end of the seekable
+range. Asking for it is an invalid request, not a defect. Targets now come off `seekable`.
 
-Recording 2 reproduces every row: 47ms and 351ms, then stuck at 22.39s, then landed at 5.37s and
-frozen.
+With that fixed, seeking is clean on every run:
 
-A **forward seek inside what the player already holds is fast and clean**. Both failures are seeks
-outside it, and the 90% target lands at the buffer's own edge rather than where it was asked.
+| target | landed in | resumed in |
+| --- | ---: | ---: |
+| 50% forward | 35 to 43ms | 338 to 341ms |
+| 90% forward | 17 to 40ms | 347 to 359ms |
+| 20% backward | 32 to 48ms | 343 to 348ms |
 
-The element afterwards is the part worth keeping:
+The media-event log, once the probe worked, shows why nothing was ever wrong here: each seek is
+`seeking → waiting → seeked → canplay → playing`, and **no `pause` event fires in the whole run**.
+The earlier reading of a paused element was the aftermath of asking for an unreachable position.
 
-```
-readyState 4, currentTime 5.372, paused TRUE
-buffered [0.021 - 15.211], [22.154 - 22.387]
-```
+⭐ **The harness could pass by reaching less.** Because targets came off `duration`, and `duration`
+is not stable (below), one run computed its targets from 22.59s instead of 27.10s, tested three
+positions well inside the buffer, and reported "seeks all landed and resumed". A run that covers less
+should not look like a run that covers more.
 
-**`readyState 4` is HAVE_ENOUGH_DATA, and 5.372 sits inside the first buffered range.** The media for
-the position it is parked on is already in memory. It is not waiting for a segment. It is paused.
+## ⛔ Open, and the real finding: a recording is 19% shorter than its playlist claims
 
-That is as far as this goes, and the rest is a reading of the code rather than a result: the player
-calls `hls.stopLoad()` on the media element's `pause` event, so once something pauses it, loading
-stops and nothing is left to start it again. **Whether that is what pauses it here is not measured.**
-The next run should get it, now that the probe records media events, since the `pause` and its
-`readyState` would name the moment exactly.
+`duration` and `seekable` both start at **27.10s** and settle at **22.587s** within eight seconds.
+A viewer's scrubber shrinks by 17% shortly after playback begins.
 
-## ⚠️ One instrument caveat, and it is the same shape as the defect above
+Nothing is lost on the wire. Measured in the same run:
 
-The probe's `MediaSource` and media-event hooks recorded **nothing** on the watch page across two
-runs, while its element reading worked and did all the work here. An empty `sourceBuffers` on a page
-that plainly played fifteen seconds of video is a probe fault, not a fact about the player, and the
-run said nothing to distinguish the two. The probe now sets `installed` as the last thing its init
-script does, so a reader can tell "installed and saw nothing" from "never ran". **Until a run comes
-back with `installed: true` and non-empty counters, treat the append and event capture as unproven.**
+| | |
+| --- | --- |
+| segments the playlist names | **84**, `#EXTINF` summing to **26.860s** |
+| distinct segments fetched | **85** (84 plus one refetch after a seek) |
+| appends | **86 audio and 86 video**, 7,816,929 bytes |
+| append or source-buffer failures | **none** |
+| audio track buffered | `0 - 22.549` |
+| video track buffered | `0.021 - 22.587` |
+| gaps | **none**, one contiguous range on each track |
+
+**Both tracks end together**, so this is not one short track truncating the intersection, which was
+the obvious first guess and is refuted. Every segment the playlist names was fetched and accepted,
+and laid end to end those 84 segments carry **22.57s** of media against **26.86s** declared.
+
+Two mechanisms fit and this run cannot separate them:
+
+- the `#EXTINF` durations over-declare, by a factor of **1.19** (0.320s declared against 0.269s of
+  media per segment, at a profile whose GOP is 0.25s)
+- consecutive segments **overlap in presentation time**, and the player discards the duplicate
+
+The next measurement is the same either way: take the PTS span of a handful of segments straight from
+the bytes and compare it with what the manifest says about them.
+
+⚠️ **Both recordings here were made during the task #86 crash runs**, with SRS restarted underneath
+them. Whether a cleanly started and cleanly stopped broadcast shows the same ratio is untested, and
+should be checked before this is generalised.
+
+It matters beyond the scrubber. The **catalog's advertised duration** comes from the same sum
+(`getTotalDuration()`), `#EXT-X-TARGETDURATION` is derived from the same numbers, and so is every
+latency figure this project computes from a manifest. Task #41 already moved the bench off manifest
+spans onto the bytes for exactly this reason. This is the first time the gap has been measured at a
+viewer.
+
+## ⚠️ The instrument, and it took three tries to trust it
+
+The probe's `MediaSource` and media-event hooks recorded **nothing** across three runs while its
+element reading worked and did all the real work. Two separate faults, and the second was only
+findable because the first was fixed:
+
+1. An empty `sourceBuffers` and a probe that never installed produced identical JSON, and the empty
+   one is the reassuring answer. The probe now sets `installed` as the last statement its init script
+   runs.
+2. With that in place, one run named the cause exactly: **`ReferenceError: __name is not defined`**.
+   tsx compiles with esbuild's `keepNames`, which rewrites named functions against a helper defined
+   at module scope, and Playwright serialises only the function's own source. The whole script died
+   before installing anything. `installTimerProbe` escapes it only by declaring no named function.
+
+Readings from before `installed: true` say nothing about appends or events.
 
 ## Still untested
 
 Seeking past a discontinuity, and seeking into a region whose chunks have left the local gateway.
-The harness asks both and neither has been reached, because the seek defect above stops it first.
+The harness asks both, and on a 27-second recording that fits in the buffer entirely, neither is
+reached.
