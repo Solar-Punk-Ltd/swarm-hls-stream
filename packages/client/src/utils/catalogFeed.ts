@@ -1,7 +1,7 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import { nextFeedRequest, resolvedFeedIndex } from '@swarm-hls-stream/shared';
 
-import { fetchWithTimeout } from './fetchWithTimeout';
+import { fetchWithTimeout, TimedResponse } from './fetchWithTimeout';
 
 /**
  * How far a single read will walk forward before giving up and finishing on the next one.
@@ -80,7 +80,32 @@ export class CatalogFeedReader {
 
     for (let step = 0; step < MAX_WALK_PER_READ; step++) {
       const request = nextFeedRequest(this.owner, this.topic, cursor);
-      const response = await this.fetcher(`${gatewayUrl}/${request.path}`, { signal });
+
+      let response: TimedResponse;
+      try {
+        response = await this.fetcher(`${gatewayUrl}/${request.path}`, { signal });
+      } catch (error) {
+        // A throw is not the same shape as a refusal and must not lose what the walk already read.
+        // `this.index` is committed per slot, inside this loop, while the body is only handed back
+        // after it, so letting the rejection out drops a snapshot this walk successfully fetched
+        // *and* keeps the index that consumed it. The next poll then asks for the slot after the one
+        // it threw away, and since each slot carries the whole catalog rather than a delta, a
+        // broadcast announced only in that slot is never offered to this reader again.
+        //
+        // Reached by a gateway going slow rather than answering: `fetchWithTimeout` rejects on a
+        // transport failure and on its own timeout, and returns `ok: false` only for an HTTP status.
+        // A hit and the miss that ends the walk are different requests, and a miss has a measured
+        // tail of about 1.4s at the 95th percentile, so "one slot answered, the next one hung" is
+        // the ordinary shape of this rather than an exotic one. See `docs/bench/feed-miss-cost.md`.
+        //
+        // Rethrown only when there is nothing to salvage, so a walk that failed on its first step
+        // still reaches the caller as the error it is instead of reading as an idle catalog.
+        if (newest === null) {
+          throw error;
+        }
+        return newest;
+      }
+
       if (!response.ok) {
         // The expected case on an idle catalog, and the cheap one. Anything that is not a slot we can
         // read stops the walk rather than being retried here, since the poll comes round again.

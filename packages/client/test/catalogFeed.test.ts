@@ -24,14 +24,22 @@ function respond(overrides: Partial<TimedResponse> = {}): TimedResponse {
   return { ok: true, status: 200, headers: new Headers(), text: '[]', ...overrides };
 }
 
-/** A stub that records every URL and answers from a queue, so ordering is assertable. */
-function stubFetcher(replies: TimedResponse[]) {
+/**
+ * A stub that records every URL and answers from a queue, so ordering is assertable.
+ *
+ * A queued `Error` is thrown rather than returned, which is how a transport failure or a timeout
+ * reaches the reader. That is a different path from `ok: false`, and only the latter was ever driven.
+ */
+function stubFetcher(replies: (TimedResponse | Error)[]) {
   const urls: string[] = [];
   const fetcher = async (url: string): Promise<TimedResponse> => {
     urls.push(url);
     const reply = replies.shift();
     if (!reply) {
       throw new Error(`unexpected request to ${url}`);
+    }
+    if (reply instanceof Error) {
+      throw reply;
     }
     return reply;
   };
@@ -157,5 +165,42 @@ describe('CatalogFeedReader', () => {
 
     expect(await reader.read('http://gw')).toBeNull();
     expect(reader.getIndex()).toBeNull();
+  });
+
+  /**
+   * A throw is a different shape from a refusal, and only the refusal was handled. `this.index` is
+   * committed per slot inside the walk while the body is returned after it, so a rejection used to
+   * drop a snapshot that had already been fetched and keep the index that consumed it. Each slot
+   * carries the whole catalog rather than a delta, so the broadcast announced in the dropped slot was
+   * never offered to this reader again.
+   *
+   * `fetchWithTimeout` rejects on a transport failure and on its own timeout, and answers `ok: false`
+   * only for an HTTP status, so this is the ordinary shape of a gateway going slow mid-walk.
+   */
+  it('keeps the slot it already read when a later step of the same walk throws', async () => {
+    const { fetcher } = stubFetcher([
+      respond({ headers: headerFor(7) }),
+      respond({ text: '[{"live":true}]' }),
+      // Deliberately not `ok: false`. The refusal path was always handled, and a test that used one
+      // here would pass against the version this covers.
+      new Error('socket hang up') as never,
+    ]);
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    await reader.read('http://gw');
+
+    expect(await reader.read('http://gw')).toBe('[{"live":true}]');
+    // The position and the body have to agree: index 8 is the slot the returned body came from.
+    expect(reader.getIndex()?.toBigInt()).toBe(8n);
+  });
+
+  it('still raises when the first step of a walk throws, so a dead gateway is not read as an idle catalog', async () => {
+    const { fetcher } = stubFetcher([respond({ headers: headerFor(7) }), new Error('socket hang up') as never]);
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    await reader.read('http://gw');
+
+    await expect(reader.read('http://gw')).rejects.toThrow('socket hang up');
+    expect(reader.getIndex()?.toBigInt()).toBe(7n);
   });
 });
