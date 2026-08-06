@@ -22,8 +22,16 @@
 
 import { type Ports, type ServiceName, SERVICES } from '../config.js';
 
-/** How the fault is applied. `stop` is a clean shutdown, `kill` is SIGKILL, which is what a crash is. */
-export const FAULT_ACTIONS = ['stop', 'kill', 'restart'] as const;
+/**
+ * How the fault is applied.
+ *
+ * `stop` is a clean shutdown, `kill` is SIGKILL, which is what a crash is, and `pause` freezes the
+ * process without ending it. `pause` exists because a **short** outage cannot be built out of the
+ * others: stopping a bee node and starting it again costs twenty to thirty seconds of its own
+ * startup, so there is no way to ask what a five second outage looks like. Pause and unpause are
+ * both instant, which makes the window the one the scenario asked for.
+ */
+export const FAULT_ACTIONS = ['stop', 'kill', 'restart', 'pause'] as const;
 export type FaultAction = (typeof FAULT_ACTIONS)[number];
 
 /**
@@ -36,6 +44,7 @@ export const FAULT_PAST_TENSE: Record<FaultAction, string> = {
   stop: 'stopped',
   kill: 'killed',
   restart: 'restarted',
+  pause: 'paused',
 };
 
 export interface FaultScenario {
@@ -170,7 +179,70 @@ const ENGINE_RESTART: FaultScenario = {
   expectRecovery: false,
 };
 
-export const FAULT_SCENARIOS: readonly FaultScenario[] = [VIEWER_GATEWAY_OUTAGE, UPLOADER_CRASH, ENGINE_RESTART];
+/**
+ * The writer's bee node frozen for less time than the uploader's retry window.
+ *
+ * **The one scenario whose expected result is that nothing happens.** The uploader retries a failed
+ * segment for fifteen seconds before giving up, so an outage shorter than that should back-pressure,
+ * buffer in order and flush on recovery, losing nothing.
+ * `suites/scenarios/bee-outage-short.test.ts` already establishes that from the upload side: indices
+ * stay gapless and no discontinuity is armed. What has never been asked is whether it reaches a
+ * viewer at all, and the answer should be no, because the feed keeps advancing once the flush lands
+ * and the viewer has six seconds of buffer in front of it.
+ *
+ * A fault with `expectFreeze: false` is worth more than one without: a scenario that predicts nothing
+ * cannot fail, and this one fails if a viewer notices.
+ */
+const WRITER_BEE_PAUSE: FaultScenario = {
+  name: 'writer-bee-pause',
+  service: SERVICES.beeUploader,
+  action: 'pause',
+  downMs: 8_000,
+  breaks: 'the bee node the uploader writes segments and manifests through, briefly',
+  expectation:
+    'Nothing. The outage is shorter than the uploader retry window, so segments buffer and flush ' +
+    'rather than being lost, and a viewer with six seconds of buffer should never see the picture ' +
+    'stop or be told anything is wrong.',
+  expectFreeze: false,
+  expectRecovery: true,
+  ready: { port: 'beeUploaderApi', path: '/readiness', is: { status: 'ready' } },
+};
+
+/**
+ * The writer's bee node taken away for longer than the uploader can retry.
+ *
+ * ⭐ **The first time a viewer plays through a discontinuity.** Past the fifteen second window the
+ * uploader gives up on the segment in flight and arms `#EXT-X-DISCONTINUITY` so the next good segment
+ * declares that the timeline broke. `suites/scenarios/bee-outage-long.test.ts` proves the uploader
+ * does this correctly and stops there. Whether hls.js then recovers the timeline, or stalls on a
+ * discontinuity it was told about, is a different question and nothing has ever watched it.
+ *
+ * `stop` rather than `kill`: a SIGKILL risks the node's database, and this is the node that holds the
+ * postage batch every measurement is paid for with. A clean shutdown fails uploads just as hard.
+ */
+const WRITER_BEE_OUTAGE: FaultScenario = {
+  name: 'writer-bee-outage',
+  service: SERVICES.beeUploader,
+  action: 'stop',
+  downMs: 20_000,
+  breaks: 'the bee node the uploader writes through, for longer than it can retry',
+  expectation:
+    'The segment in flight is dropped and a discontinuity is armed, so the viewer meets a break in ' +
+    'the timeline rather than a gap in the numbering. The picture should stop while nothing is ' +
+    'being written and then resume across the discontinuity without a reload and without ending the ' +
+    'broadcast.',
+  expectFreeze: true,
+  expectRecovery: true,
+  ready: { port: 'beeUploaderApi', path: '/readiness', is: { status: 'ready' } },
+};
+
+export const FAULT_SCENARIOS: readonly FaultScenario[] = [
+  VIEWER_GATEWAY_OUTAGE,
+  UPLOADER_CRASH,
+  ENGINE_RESTART,
+  WRITER_BEE_PAUSE,
+  WRITER_BEE_OUTAGE,
+];
 
 export function scenarioByName(name: string): FaultScenario {
   const scenario = FAULT_SCENARIOS.find((candidate) => candidate.name === name);

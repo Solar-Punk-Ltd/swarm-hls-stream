@@ -57,6 +57,10 @@ async function applyFault(host: Host, container: string, scenario: FaultScenario
     await host.kill(container);
     return;
   }
+  if (scenario.action === 'pause') {
+    await host.pause(container);
+    return;
+  }
   await host.restart(container);
 }
 
@@ -71,7 +75,11 @@ async function restore(host: Host, container: string, scenario: FaultScenario): 
   if (scenario.action === 'restart') {
     return;
   }
-  await host.start(container).catch((error) => console.error(`could not restore ${container}:`, error));
+  // A paused container is running, so `start` is not what puts it back and would report success
+  // without unfreezing anything. Called from `finally` as well, and `unpause` on a container that is
+  // not paused is an error rather than damage, so the catch below is the whole handling it needs.
+  const putBack = scenario.action === 'pause' ? host.unpause(container) : host.start(container);
+  await putBack.catch((error) => console.error(`could not restore ${container}:`, error));
 }
 
 /** How long to keep asking a restored service before giving up and saying the figure includes startup. */
