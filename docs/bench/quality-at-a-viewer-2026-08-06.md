@@ -115,7 +115,38 @@ five stalled samples against none, and 7.5 seconds of rebuffering against a quar
 hour that is 0.2%, and it is 30x what the cheaper profile cost.
 
 ⚠️ **One disturbance in one hour cannot tell a periodic fault from an accident.** A second hour is
-what separates them and has not been run.
+what separates them, and it has now been run.
+
+## ✅ THE SECOND HOUR: it was an accident, and 1080p/6000k holds
+
+`browser-watch-2026-08-06T09-21-10-388Z.md`, 3,559 samples over 3,599.0s, identical settings.
+
+| | hour 1 | **hour 2** |
+| --- | ---: | ---: |
+| samples | 3,557 | 3,559 |
+| media per wall second | 1.0000 | **1.000** |
+| **stalled samples** | 5 | **0** |
+| **rebuffers** | **5, 7,520ms** | **1, 352ms** |
+| frames per second of media | 30.00 | **30.0** |
+| fatal errors | 0 | **0** |
+| dropped frames | not compared | 859 |
+
+⭐ **All twelve five-minute windows landed between 0.999 and 1.001 with zero frozen samples in every
+one of them.** Hour 1's 7.5 seconds of rebuffering did not recur. Hour 2 cost **352 milliseconds**,
+which is 21x less and is the same order as the single 246ms rebuffer the 720p hour paid.
+
+**So the verdict is accident, not schedule.** A fault that costs 7.5 seconds every 45 minutes would
+have shown up again. What repeated is the profile holding: two hours, 7,116 samples, advance 1.000,
+thirty frames per second of media, no fatal error, and a viewer sitting 5.2 to 5.9 seconds behind
+live in every window of both runs.
+
+⚠️ **One coincidence is recorded rather than dismissed.** Hour 2's single rebuffer fell in the
+**45-50 minute window**, the same band as hour 1's cluster at 46.3 to 50.5 minutes. With one event
+each across two runs that is roughly a one-in-twelve landing twice, so it is an observation and not a
+finding. **What did not recur is the severity**, which is what the second hour was run to test.
+
+⚠️ Dropped frames were 859 in 108,000, **0.8%**, against 15 in the ten-minute run. Nothing in this
+run's advance ratio or frame rate reflects them, so they are recorded and not explained.
 
 ## ⛔ The probe audit cannot be done on this run, and the reason is my own instrument
 
