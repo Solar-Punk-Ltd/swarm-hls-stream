@@ -168,9 +168,25 @@ export class FeedHealthTracker {
    * progress and one that stopped an hour ago. Anything that clears the unserved run on the strength
    * of reaching the gateway erases a stall the player has already reported, and the path that would
    * do it is the one every restart takes.
+   *
+   * @param topicId The feed whose own read proved it, or every topic being held off when the proof
+   *   was not a feed read at all. A segment is fetched by chunk address through the one gateway all
+   *   these feeds are read from, so its arrival is a fact about that gateway rather than about any
+   *   one feed, and a viewer of another topic on the same page has learned it too.
    */
-  recordGatewayReachable(topicId: string): void {
-    this.update(topicId, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
+  recordGatewayReachable(topicId?: string): void {
+    const release = (id: string): void =>
+      this.update(id, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
+
+    if (topicId !== undefined) {
+      release(topicId);
+      return;
+    }
+    // Snapshotted because releasing a topic rewrites the entry being walked: `update` deletes before
+    // it writes, so that eviction takes the least recently updated rather than the oldest.
+    for (const held of [...this.topics.keys()]) {
+      release(held);
+    }
   }
 
   /** A slot was served. Forgets both runs, since serving one ends either. */
