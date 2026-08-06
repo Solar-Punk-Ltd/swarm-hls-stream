@@ -17,7 +17,8 @@
     "browser:selfcheck": "tsx browser/selfcheck.ts",
     "browser:watch": "tsx browser/watch.ts",
     "browser:crash": "tsx browser/crash.ts",
-    "probe:ahead": "node src/probes/feed-ahead-probe.mjs"
+    "probe:ahead": "node src/probes/feed-ahead-probe.mjs",
+    "browser:vod": "tsx browser/vod.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
