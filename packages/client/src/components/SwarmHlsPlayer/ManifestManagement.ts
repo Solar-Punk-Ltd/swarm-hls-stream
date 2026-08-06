@@ -129,9 +129,13 @@ export class ManifestStateManager {
     }
 
     if (isFinalized) {
-      state.headers = headers;
-      state.segments = segments;
-      state.segmentUris = new Set(segments.map((s) => s.uri));
+      // Extended, never replaced. `normalizeHeaders` pins every playlist this client serves to media
+      // sequence zero, so segment N means "the Nth since this viewer joined" and changing the front
+      // of the list changes what every number already handed to hls.js refers to. That is what it
+      // reports as a media sequence mismatch, and both finished playlists would cause it: the
+      // closing one is a live window and starts later than a viewer who joined earlier, while the
+      // recording names every segment and starts earlier than a viewer who joined partway through.
+      this.appendAfterLastHeld(state, segments);
       state.isFinalized = true;
       state.dirty = true;
       return false;
@@ -153,6 +157,26 @@ export class ManifestStateManager {
     state.dirty = true;
 
     return true;
+  }
+
+  /**
+   * Add whatever a playlist carries after the last segment this viewer already holds.
+   *
+   * The overlap is found by segment address rather than by position, because the two lists start in
+   * different places: a finished playlist that shares no segment with this one is a different
+   * playlist of the same broadcast, and is ignored rather than concatenated onto the end.
+   */
+  private appendAfterLastHeld(state: TopicState, segments: Segment[]): void {
+    const lastHeld = state.segments[state.segments.length - 1]?.uri;
+    const overlap = lastHeld === undefined ? -1 : segments.findIndex((seg) => seg.uri === lastHeld);
+    if (lastHeld !== undefined && overlap === -1) {
+      return;
+    }
+
+    for (const seg of segments.slice(overlap + 1)) {
+      state.segments.push(seg);
+      state.segmentUris.add(seg.uri);
+    }
   }
 
   serialize(topicId: string, bytesUrl: string): string {

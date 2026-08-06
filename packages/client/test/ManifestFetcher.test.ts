@@ -1133,3 +1133,78 @@ describe('a refused slot that later slots are already behind (#71)', () => {
     assert.equal(needed, UNSERVED_SLOT_POLL_LIMIT + 5, 'the reader stopped asking for the slot it actually needs');
   });
 });
+
+/**
+ * The end of a broadcast reaches a viewer as one of two finished playlists, and neither may replace
+ * the one being played.
+ *
+ * `normalizeHeaders` pins every playlist this client serves to media sequence zero, so segment N
+ * means "the Nth since this viewer joined". Changing the front of the list changes what every number
+ * already handed to hls.js refers to, which is exactly what it reports as `media sequence mismatch`,
+ * escalates to fatal on a single-variant stream, and the player answers by restarting at zero.
+ *
+ * Both finished playlists would do it. The closing manifest is a live window and starts later than a
+ * viewer who joined earlier. The recording names every segment and starts earlier than a viewer who
+ * joined partway through, which is the one measured live on 2026-08-06.
+ */
+describe('a broadcast ending under a viewer who joined partway through (#94)', () => {
+  const TOPIC_ID = 'ending-topic';
+  const seg = (n: number) => ({ extinf: '#EXTINF:2,', uri: `seg-${n}.ts` });
+  const live = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => seg(from + i));
+
+  function joinedMidBroadcast() {
+    const manager = ManifestStateManager.getInstance();
+    manager.clear(TOPIC_ID);
+    manager.updateManifest(TOPIC_ID, ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:600'], live(600, 650), false);
+    return manager;
+  }
+
+  const uris = (manager: ManifestStateManager) =>
+    manager
+      .serialize(TOPIC_ID, '')
+      .split('\n')
+      .filter((line) => line.length > 0 && !line.startsWith('#'));
+
+  it('keeps its own playlist when the recording arrives naming the whole broadcast', () => {
+    const manager = joinedMidBroadcast();
+    const before = uris(manager);
+
+    manager.updateManifest(TOPIC_ID, ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0'], live(0, 650), true);
+
+    assert.deepEqual(uris(manager), before, 'the recording replaced the playlist and rewound the viewer');
+  });
+
+  it('keeps its own playlist when the closing manifest is a window that starts later', () => {
+    const manager = joinedMidBroadcast();
+    const before = uris(manager);
+
+    manager.updateManifest(TOPIC_ID, ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:615'], live(615, 650), true);
+
+    assert.deepEqual(uris(manager), before, 'the closing window truncated the front of the playlist');
+  });
+
+  it('takes the segments a closing manifest adds after the last one held', () => {
+    const manager = joinedMidBroadcast();
+
+    manager.updateManifest(TOPIC_ID, ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:615'], live(615, 653), true);
+
+    assert.deepEqual(uris(manager).slice(-3), ['seg-651.ts', 'seg-652.ts', 'seg-653.ts']);
+  });
+
+  it('ends the playlist either way, which is the fact worth keeping from it', () => {
+    const manager = joinedMidBroadcast();
+
+    manager.updateManifest(TOPIC_ID, ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:0'], live(0, 650), true);
+
+    assert.match(manager.serialize(TOPIC_ID, ''), /#EXT-X-ENDLIST/);
+  });
+
+  it('ignores a finished playlist that shares no segment with this one', () => {
+    const manager = joinedMidBroadcast();
+    const before = uris(manager);
+
+    manager.updateManifest(TOPIC_ID, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'other-stream.ts' }], true);
+
+    assert.deepEqual(uris(manager), before, 'a foreign playlist was concatenated onto the end');
+  });
+});
