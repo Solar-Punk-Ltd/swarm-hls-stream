@@ -88,64 +88,92 @@ export async function installPlayerProbe(page: Page): Promise<void> {
       };
       (window as unknown as Record<string, unknown>)[key] = probe;
 
-      const record = (name: string, readyState: number): void => {
-        probe.events.push({ name, atMs: Math.round(performance.now()), readyState });
-      };
-
-      for (const name of eventNames) {
-        document.addEventListener(
-          name,
-          (event) => {
-            const target = event.target;
-            if (target instanceof HTMLMediaElement) {
-              record(name, target.readyState);
-            }
-          },
-          true,
-        );
-      }
-
-      // Patched rather than inferred from the `play` event. A `play()` that rejects fires no event at
-      // all, and an autoplay the browser refused is exactly that case.
-      const play = HTMLMediaElement.prototype.play;
-      HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
-        record('play() called', this.readyState);
-        return play.call(this).then(
-          () => record('play() resolved', this.readyState),
-          (error: unknown) => {
-            record(`play() rejected: ${String(error)}`, this.readyState);
-            throw error;
-          },
-        );
-      };
-
-      const addSourceBuffer = MediaSource.prototype.addSourceBuffer;
-      MediaSource.prototype.addSourceBuffer = function (this: MediaSource, mime: string) {
-        let buffer: SourceBuffer;
-        try {
-          buffer = addSourceBuffer.call(this, mime);
-        } catch (error) {
-          probe.failures.push(`addSourceBuffer(${mime}) threw: ${String(error)}`);
-          throw error;
-        }
-        probe.sourceBuffers.push(mime);
-        buffer.addEventListener('error', () => probe.failures.push(`the source buffer for ${mime} errored`));
-
-        const appendBuffer = buffer.appendBuffer.bind(buffer);
-        buffer.appendBuffer = (data: BufferSource) => {
-          probe.appends.push({ mime, bytes: data.byteLength });
-          try {
-            appendBuffer(data);
-          } catch (error) {
-            probe.failures.push(`appending ${data.byteLength}B to ${mime} threw: ${String(error)}`);
-            throw error;
-          }
+      // Published before the hooks and wrapped around them, so an install that throws leaves a probe
+      // that says so rather than one that reads as a quiet page. This script runs before any page
+      // script, so nothing here reaches a console anyone is watching.
+      try {
+        const record = (name: string, readyState: number): void => {
+          probe.events.push({ name, atMs: Math.round(performance.now()), readyState });
         };
-        return buffer;
-      };
 
-      // Last, so that reading it back true means every hook above was reached.
-      probe.installed = true;
+        for (const name of eventNames) {
+          document.addEventListener(
+            name,
+            (event) => {
+              const target = event.target;
+              if (target instanceof HTMLMediaElement) {
+                record(name, target.readyState);
+              }
+            },
+            true,
+          );
+        }
+
+        // Patched rather than inferred from the `play` event. A `play()` that rejects fires no event
+        // at all, and an autoplay the browser refused is exactly that case.
+        const play = HTMLMediaElement.prototype.play;
+        HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+          record('play() called', this.readyState);
+          return play.call(this).then(
+            () => record('play() resolved', this.readyState),
+            (error: unknown) => {
+              record(`play() rejected: ${String(error)}`, this.readyState);
+              throw error;
+            },
+          );
+        };
+
+        // `pause()` the same way, because the interesting pause is the one nothing asked for: knowing
+        // whether a call came from the page or from the browser is the difference between a bug in
+        // the player and a policy in Chrome.
+        const pause = HTMLMediaElement.prototype.pause;
+        HTMLMediaElement.prototype.pause = function (this: HTMLMediaElement) {
+          record('pause() called by the page', this.readyState);
+          return pause.call(this);
+        };
+
+        // Both media source flavours. Chrome exposes `ManagedMediaSource` as its own global, and
+        // hls.js prefers it where it exists, so patching only `MediaSource` can leave the hooks in
+        // place and recording nothing at all.
+        const sources = [
+          MediaSource,
+          (window as unknown as { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource,
+        ];
+        for (const source of sources) {
+          if (!source?.prototype) {
+            continue;
+          }
+          const addSourceBuffer = source.prototype.addSourceBuffer;
+          source.prototype.addSourceBuffer = function (this: MediaSource, mime: string) {
+            let buffer: SourceBuffer;
+            try {
+              buffer = addSourceBuffer.call(this, mime);
+            } catch (error) {
+              probe.failures.push(`addSourceBuffer(${mime}) threw: ${String(error)}`);
+              throw error;
+            }
+            probe.sourceBuffers.push(mime);
+            buffer.addEventListener('error', () => probe.failures.push(`the source buffer for ${mime} errored`));
+
+            const appendBuffer = buffer.appendBuffer.bind(buffer);
+            buffer.appendBuffer = (data: BufferSource) => {
+              probe.appends.push({ mime, bytes: data.byteLength });
+              try {
+                appendBuffer(data);
+              } catch (error) {
+                probe.failures.push(`appending ${data.byteLength}B to ${mime} threw: ${String(error)}`);
+                throw error;
+              }
+            };
+            return buffer;
+          };
+        }
+
+        // Last, so that reading it back true means every hook above was reached.
+        probe.installed = true;
+      } catch (error) {
+        probe.failures.push(`the probe could not install itself: ${String(error)}`);
+      }
     },
     { key: PROBE_KEY, eventNames: MEDIA_EVENTS },
   );
