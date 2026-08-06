@@ -45,17 +45,54 @@ describe('what a viewer experienced across a fault', () => {
   it('separates the rate before, during and after the fault', () => {
     const samples = run([1, 1, 1, 0, 0, 0, 1, 1, 1]);
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: 3 * SAMPLE_MS, liftedAtMs: 6 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, {
+      injectedAtMs: 3 * SAMPLE_MS,
+      liftedAtMs: 6 * SAMPLE_MS,
+      servingAtMs: null,
+    });
 
     assert.equal(verdict.before.ratio, 1, 'the baseline picked up the outage');
     assert.equal(verdict.during.ratio, 0, 'the picture was moving while the service was down');
     assert.equal(verdict.after.ratio, 1, 'playback did not come back to full rate');
   });
 
+  /**
+   * The defect this exists for. `docker start` returns when the container exists, not when the
+   * process inside it serves: on 2026-08-06 the bee gateway returned from it at t+79.1s and did not
+   * answer a 200 until t+86.3s. Charging those 7.2 seconds to the viewer set fix 0.8b a target no
+   * client change could reach, and made a fix that worked read as a fix that had not.
+   */
+  it('measures recovery from the service answering, not from docker returning', () => {
+    const samples = run([1, 1, 0, 0, 0, 0, 1, 1]);
+    const injectedAtMs = 2 * SAMPLE_MS;
+    const liftedAtMs = 3 * SAMPLE_MS;
+    const servingAtMs = 5 * SAMPLE_MS;
+
+    const verdict = judgeRecovery(samples, { injectedAtMs, liftedAtMs, servingAtMs });
+
+    assert.equal(verdict.recoveredAfterLiftMs, SAMPLE_MS, 'the service startup was charged to the viewer');
+    assert.equal(verdict.serviceStartupMs, 2 * SAMPLE_MS, 'the startup the viewer waited through went unreported');
+  });
+
+  // Without a readiness signal there is nothing better to measure from, and the figure then includes
+  // the startup. Falling back silently is fine only because the report says which one it is.
+  it('falls back to docker returning when readiness could not be established', () => {
+    const samples = run([1, 1, 0, 0, 0, 0, 1, 1]);
+
+    const verdict = judgeRecovery(samples, {
+      injectedAtMs: 2 * SAMPLE_MS,
+      liftedAtMs: 3 * SAMPLE_MS,
+      servingAtMs: null,
+    });
+
+    assert.equal(verdict.recoveredAfterLiftMs, 3 * SAMPLE_MS);
+    assert.equal(verdict.serviceStartupMs, null, 'a startup was reported that was never measured');
+  });
+
   it('reports the longest stretch the picture did not move', () => {
     const samples = run([1, 0, 1, 0, 0, 0, 1]);
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 6 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 6 * SAMPLE_MS, servingAtMs: null });
 
     assert.equal(verdict.longestFreezeMs, 3 * SAMPLE_MS, 'a longer freeze was reported as a shorter one');
   });
@@ -67,7 +104,11 @@ describe('what a viewer experienced across a fault', () => {
   it('times the recovery from the fault being lifted, not from the freeze starting', () => {
     const samples = run([1, 1, 0, 0, 0, 0, 1, 1]);
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: 2 * SAMPLE_MS, liftedAtMs: 5 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, {
+      injectedAtMs: 2 * SAMPLE_MS,
+      liftedAtMs: 5 * SAMPLE_MS,
+      servingAtMs: null,
+    });
 
     assert.equal(verdict.freezeStartedAfterFaultMs, 0, 'the picture stopped on the sample the fault landed');
     assert.equal(verdict.recoveredAfterLiftMs, SAMPLE_MS, 'the wait after the service returned is misreported');
@@ -82,7 +123,11 @@ describe('what a viewer experienced across a fault', () => {
   it('says nothing froze when the buffer covered the whole outage', () => {
     const samples = run([1, 1, 1, 1, 1, 1]);
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: 2 * SAMPLE_MS, liftedAtMs: 4 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, {
+      injectedAtMs: 2 * SAMPLE_MS,
+      liftedAtMs: 4 * SAMPLE_MS,
+      servingAtMs: null,
+    });
 
     assert.equal(verdict.longestFreezeMs, 0);
     assert.equal(verdict.freezeStartedAfterFaultMs, null);
@@ -96,7 +141,7 @@ describe('what a viewer experienced across a fault', () => {
   it('does not call it recovered when playback stopped again and stayed stopped', () => {
     const samples = run([1, 0, 0, 1, 1, 0, 0, 0]);
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS, servingAtMs: null });
 
     assert.equal(verdict.recovered, false, 'a run that ended frozen was reported as recovered');
   });
@@ -111,7 +156,7 @@ describe('what a viewer experienced across a fault', () => {
       2: { feedStateMessage: 'Reconnecting to the stream' },
     });
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS, servingAtMs: null });
 
     assert.deepEqual(verdict.saidWhileFrozen, ['Reconnecting to the stream'], 'the message was not read once');
     assert.equal(verdict.explainedTheFreeze, true);
@@ -120,7 +165,7 @@ describe('what a viewer experienced across a fault', () => {
   it('reports a freeze the client never explained', () => {
     const samples = run([1, 0, 0, 1]);
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, { injectedAtMs: SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS, servingAtMs: null });
 
     assert.deepEqual(verdict.saidWhileFrozen, []);
     assert.equal(verdict.explainedTheFreeze, false, 'a silently frozen picture passed as explained');
@@ -134,7 +179,11 @@ describe('what a viewer experienced across a fault', () => {
   it('reports where the player sat before the fault and where it ended up', () => {
     const samples = run([1, 1, 0, 1, 1], { 0: { liveLatencyS: 6 }, 4: { liveLatencyS: 41 } });
 
-    const verdict = judgeRecovery(samples, { injectedAtMs: 2 * SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS });
+    const verdict = judgeRecovery(samples, {
+      injectedAtMs: 2 * SAMPLE_MS,
+      liftedAtMs: 3 * SAMPLE_MS,
+      servingAtMs: null,
+    });
 
     assert.equal(verdict.latencyBeforeS, 6);
     assert.equal(verdict.latencyAfterS, 41, 'a viewer who resumed in the past reads as a clean recovery');
@@ -165,7 +214,7 @@ describe('the fault scenario catalog', () => {
 describe('reporting a fault that is supposed to end the broadcast', () => {
   const scenario = scenarioByName('engine-restart');
   const samples = run([1, 1, 0, 0, 0, 0], { 2: { feedStateMessage: 'Waiting for the broadcast to continue' } });
-  const fault = { injectedAtMs: 2 * SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS };
+  const fault = { injectedAtMs: 2 * SAMPLE_MS, liftedAtMs: 3 * SAMPLE_MS, servingAtMs: null };
 
   const rendered = renderCrashReport({
     measuredAt: '2026-08-05T00:00:00.000Z',

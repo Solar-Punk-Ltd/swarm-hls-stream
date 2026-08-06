@@ -15,7 +15,7 @@ import { type BrowserRun, instrumentSection, networkSection, orDash, playbackSec
 export interface CrashRun extends BrowserRun {
   scenario: FaultScenario;
   container: string;
-  fault: { injectedAtMs: number; liftedAtMs: number };
+  fault: { injectedAtMs: number; liftedAtMs: number; servingAtMs: number | null };
   recovery: RecoveryVerdict;
 }
 
@@ -42,7 +42,10 @@ function phaseSection(run: CrashRun): string[] {
     `| it stopped, after the fault | ${
       r.freezeStartedAfterFaultMs === null ? 'it never stopped' : `${seconds(r.freezeStartedAfterFaultMs)}s`
     } |`,
-    `| it moved again, after the service returned | ${
+    `| the service took, to answer after docker returned | ${
+      r.serviceStartupMs === null ? 'not measured, so the row below includes it' : `${seconds(r.serviceStartupMs)}s`
+    } |`,
+    `| it moved again, after the service **answered** | ${
       r.recoveredAfterLiftMs === null ? '—' : `${seconds(r.recoveredAfterLiftMs)}s`
     } |`,
     `| behind live before | ${orDash(r.latencyBeforeS)}s |`,

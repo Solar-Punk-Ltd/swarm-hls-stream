@@ -33,8 +33,9 @@ import {
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import { launchViewer, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, type SampledStretch, sampleFor } from '../src/browser/watchLoop.js';
-import { containerName, loadConfig } from '../src/config.js';
+import { containerName, type E2EConfig, loadConfig } from '../src/config.js';
 import { type Host, makeHost } from '../src/harness/host.js';
+import { sleep } from '../src/harness/wait.js';
 
 /**
  * How long to watch before breaking anything.
@@ -73,6 +74,45 @@ async function restore(host: Host, container: string, scenario: FaultScenario): 
   await host.start(container).catch((error) => console.error(`could not restore ${container}:`, error));
 }
 
+/** How long to keep asking a restored service before giving up and saying the figure includes startup. */
+const READY_TIMEOUT_MS = 60_000;
+const READY_POLL_MS = 250;
+
+/**
+ * When the restored service actually answered, which is not when docker said it had started.
+ *
+ * ⚠️ **The gap is seconds, not milliseconds, and it used to be charged to the viewer.** The bee
+ * gateway returned from `docker start` at t+79.1s on 2026-08-06, answered a 503 at t+80.3s and served
+ * its first 200 at **t+86.3s**. A viewer cannot recover before the thing they read from works, so
+ * measuring recovery from docker's return set fix 0.8b a target no client change could reach.
+ *
+ * Null when readiness cannot be established, so the caller can say the figure includes startup rather
+ * than quietly reporting one number as the other.
+ */
+async function waitUntilServing(host: Host, cfg: E2EConfig, scenario: FaultScenario): Promise<number | null> {
+  if (!scenario.ready) {
+    return null;
+  }
+  const { port, path } = scenario.ready;
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    // Any parsed answer means the process is up and serving. What it says is the scenario's business,
+    // not this function's: a gateway that answers at all is one a viewer can read through again.
+    const answered = await host
+      .localJson(cfg.ports[port], path)
+      .then(() => true)
+      .catch(() => false);
+    if (answered) {
+      return Date.now();
+    }
+    await sleep(READY_POLL_MS);
+  }
+
+  console.error(`browser: ${scenario.service} never answered ${path} within ${READY_TIMEOUT_MS / 1000}s`);
+  return null;
+}
+
 async function main(): Promise<void> {
   const clientUrl = requireEnv('BROWSER_CLIENT_URL');
   const scenario = scenarioByName(requireEnv('BROWSER_SCENARIO'));
@@ -100,6 +140,7 @@ async function main(): Promise<void> {
   let watchUrl = clientUrl;
   let injectedAtMs = 0;
   let liftedAtMs = 0;
+  let servingAtMs: number | null = null;
 
   const collect = (stretch: SampledStretch): void => {
     stretches.push(stretch);
@@ -129,7 +170,14 @@ async function main(): Promise<void> {
     } finally {
       await restore(host, container, scenario);
       liftedAtMs = Date.now();
-      console.log(`browser: ${container} restored, watching ${recoverMs / 1000}s for recovery`);
+      // Asked in parallel with the watch below rather than awaited here, because waiting for it would
+      // stop sampling the viewer over exactly the seconds the service is coming back, which is the
+      // stretch the whole run is about.
+      void waitUntilServing(host, cfg, scenario).then((at) => {
+        servingAtMs = at;
+        const startup = at === null ? 'never answered' : `${((at - liftedAtMs) / 1000).toFixed(1)}s to answer`;
+        console.log(`browser: ${container} restored, ${startup}, watching ${recoverMs / 1000}s for recovery`);
+      });
     }
 
     collect(await watch(recoverMs));
@@ -152,9 +200,9 @@ async function main(): Promise<void> {
     gopSeconds,
     scenario,
     container,
-    fault: { injectedAtMs, liftedAtMs },
+    fault: { injectedAtMs, liftedAtMs, servingAtMs },
     summary: summarize(samples),
-    recovery: judgeRecovery(samples, { injectedAtMs, liftedAtMs }),
+    recovery: judgeRecovery(samples, { injectedAtMs, liftedAtMs, servingAtMs }),
     instrument: judgeRun(stretches.flatMap((stretch) => stretch.readings)),
     network: summarizeNetwork(requests),
     samples,

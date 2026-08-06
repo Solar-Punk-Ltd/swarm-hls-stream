@@ -28,12 +28,26 @@ import { type PlaybackAdvance, playbackAdvances, STALLED_ADVANCE_RATIO, type Vie
 export interface FaultWindow {
   injectedAtMs: number;
   /**
-   * When the service was brought back.
+   * When docker was asked to bring the container back, and returned.
    *
    * For a `restart` this is when docker was asked, since it brings the container back itself and
    * there is no separate moment to record.
    */
   liftedAtMs: number;
+  /**
+   * When the service itself answered again, which is later and is the moment recovery is judged from.
+   *
+   * ⚠️ **These two are not close together and reading them as one made every recovery figure this
+   * project holds too large.** `docker start` returns when the container exists, not when the process
+   * inside it works: on 2026-08-06 the bee gateway returned from `docker start` at t+79.1s, answered
+   * its first request with a 503 at t+80.3s and did not serve a 200 until **t+86.3s, 7.2 seconds
+   * later**. A viewer cannot recover before that, so charging those seconds to the client set a
+   * target no client change could ever reach.
+   *
+   * Null when the readiness of the service could not be established, in which case
+   * {@link liftedAtMs} is used and the report says the figure includes startup.
+   */
+  servingAtMs: number | null;
 }
 
 /** Media seconds per wall second over one stretch of a run, with the wall time it covers. */
@@ -52,12 +66,18 @@ export interface RecoveryVerdict {
   /** Wall time from the fault being applied to the picture stopping. Null when it never stopped. */
   freezeStartedAfterFaultMs: number | null;
   /**
-   * Wall time from the fault being lifted to the picture moving again.
+   * Wall time from the service **answering again** to the picture moving again.
+   *
+   * This is the figure a client change can move, and the only one worth setting a target against.
+   * Measured from {@link FaultWindow.servingAtMs} rather than from `docker start` returning, which
+   * is up to seven seconds earlier and belongs to the service rather than to the viewer.
    *
    * Negative when playback resumed before the service came back, which is not an anomaly: a viewer
    * whose buffer outlasted the outage never depended on it.
    */
   recoveredAfterLiftMs: number | null;
+  /** How long the service took to answer after docker returned, which no client change can shorten. */
+  serviceStartupMs: number | null;
   /** Whether playback was moving again by the last sample of the run. */
   recovered: boolean;
   /** Everything the client said to the viewer while the picture was stopped, in order, deduplicated. */
@@ -138,9 +158,13 @@ function lastLatency(samples: readonly ViewerSample[]): number | null {
 }
 
 export function judgeRecovery(samples: readonly ViewerSample[], fault: FaultWindow): RecoveryVerdict {
+  // The moment the outage actually ended for a viewer. Falls back to `docker start` returning only
+  // when readiness could not be established, and the report says so when it does.
+  const servingAtMs = fault.servingAtMs ?? fault.liftedAtMs;
+
   const before = phaseOf(samples, Number.NEGATIVE_INFINITY, fault.injectedAtMs);
-  const during = phaseOf(samples, fault.injectedAtMs, fault.liftedAtMs);
-  const after = phaseOf(samples, fault.liftedAtMs, Number.POSITIVE_INFINITY);
+  const during = phaseOf(samples, fault.injectedAtMs, servingAtMs);
+  const after = phaseOf(samples, servingAtMs, Number.POSITIVE_INFINITY);
 
   // The first stalled interval at or after the fault, and the first moving one after that. Indices
   // rather than timestamps while scanning, because "frozen" is a property of the gap between two
@@ -160,7 +184,8 @@ export function judgeRecovery(samples: readonly ViewerSample[], fault: FaultWind
     after: advanceOf(after),
     longestFreezeMs: freeze,
     freezeStartedAfterFaultMs: firstFrozen === -1 ? null : samples[firstFrozen].atMs - fault.injectedAtMs,
-    recoveredAfterLiftMs: movingAgain === -1 ? null : samples[movingAgain].atMs - fault.liftedAtMs,
+    recoveredAfterLiftMs: movingAgain === -1 ? null : samples[movingAgain].atMs - servingAtMs,
+    serviceStartupMs: fault.servingAtMs === null ? null : fault.servingAtMs - fault.liftedAtMs,
     // Judged on the end of the run rather than on `movingAgain`, so a picture that started again and
     // then stopped for good does not read as recovered.
     recovered: samples.length > 1 && !isFrozenAt(samples, samples.length - 1),

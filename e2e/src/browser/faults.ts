@@ -20,7 +20,7 @@
  * deployment is shared with everything else this project measures.
  */
 
-import { type ServiceName, SERVICES } from '../config.js';
+import { type Ports, type ServiceName, SERVICES } from '../config.js';
 
 /** How the fault is applied. `stop` is a clean shutdown, `kill` is SIGKILL, which is what a crash is. */
 export const FAULT_ACTIONS = ['stop', 'kill', 'restart'] as const;
@@ -78,6 +78,21 @@ export interface FaultScenario {
    * ended and says so is a viewer who stops waiting, and one that ended in silence is not.
    */
   readonly expectRecovery: boolean;
+  /**
+   * How to tell the service is answering again, rather than merely existing again.
+   *
+   * ⚠️ **`docker start` returns long before the process inside works, and reading the two as one
+   * moment made every recovery figure this project holds too large.** On 2026-08-06 the bee gateway
+   * returned from `docker start` at t+79.1s, answered a 503 at t+80.3s, and did not serve a 200 until
+   * **t+86.3s**. Charging those 7.2 seconds to the viewer set fix 0.8b a target of "under 3s" that no
+   * client change could ever have reached.
+   *
+   * Absent for a fault with nothing to lift, which is `restart`.
+   */
+  readonly ready?: {
+    readonly port: keyof Ports;
+    readonly path: string;
+  };
 }
 
 /**
@@ -100,6 +115,7 @@ const VIEWER_GATEWAY_OUTAGE: FaultScenario = {
     'without a reload and without ending the broadcast.',
   expectFreeze: true,
   expectRecovery: true,
+  ready: { port: 'beeGatewayApi', path: '/health' },
 };
 
 /**
@@ -121,6 +137,7 @@ const UPLOADER_CRASH: FaultScenario = {
     'catching up to it.',
   expectFreeze: true,
   expectRecovery: true,
+  ready: { port: 'uploaderApi', path: '/health' },
 };
 
 /**
