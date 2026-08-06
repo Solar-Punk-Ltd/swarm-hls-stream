@@ -168,7 +168,36 @@ it sets `#EXT-X-TARGETDURATION`, and it is the basis of any latency figure compu
 Task #41 already moved the bench off declared spans and onto the bytes for exactly this reason. This
 is the first time the gap has been measured on the **product** path rather than the instrument's.
 
-### The fix already exists, in the wrong package
+### ✅ Fixed, and confirmed against SRS on a clean broadcast
+
+⭐ **The caveat above is cleared, and the answer is that this is SRS's ordinary behaviour.** Captured
+from SRS's own playlist on disk, during a fresh broadcast published at a **2.000s** GOP, with nothing
+crashed and nothing restarted:
+
+```
+#EXT-X-TARGETDURATION:3
+#EXTINF:2.514, no desc
+#EXTINF:2.509, no desc
+#EXTINF:2.513, no desc
+```
+
+**2.51s declared for 2.00s of media**, 25% over, on a healthy stream. It is not a crash artifact and
+it is not specific to the 0.25s profile.
+
+The uploader now measures each segment instead. Verified end to end on a recording published after
+the fix, cleanly started and cleanly stopped, comparing every `#EXTINF` in the playlist a viewer is
+served against the presentation timestamps in the segment it names:
+
+| | |
+| --- | --- |
+| segments compared | **17 of 17** |
+| worst disagreement | **0.000000s** |
+| segments that fell back to the engine's claim | **0** |
+
+The values are right rather than merely consistent: the first segment is published as **2.068s**,
+which is 62 frames at 30fps exactly, where SRS declared **2.514s** for those same 62 frames.
+
+### The fix, which already existed in the wrong package
 
 `e2e/src/bench/segmentSpan.ts` does this measurement properly and is covered by nine tests. It was
 written for LAT-9 and it handles the two things a naive reading gets wrong: packets arrive in decode
