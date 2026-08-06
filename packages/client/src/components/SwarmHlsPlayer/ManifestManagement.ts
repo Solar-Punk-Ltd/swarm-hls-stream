@@ -469,6 +469,10 @@ export class ManifestFetcher {
     this.feedHealth.recordGatewayResponse(hexTopic);
 
     const parsed = parseManifest(response.text);
+    if (parsed.isFinalized) {
+      this.feedHealth.recordFeedEnded(hexTopic);
+    }
+
     const shouldContinue = this.stateManager.updateManifest(
       hexTopic,
       parsed.headers,

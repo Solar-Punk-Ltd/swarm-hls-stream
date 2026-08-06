@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'vitest';
 
 import {
+  FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FEED_STATE_STALLED,
@@ -64,6 +65,23 @@ describe('FeedStateOverlay', () => {
 
     assert.match(html, /class="swarm-hls-feed-state"/);
     assert.match(html, /class="swarm-hls-feed-state__dot"/);
+  });
+
+  it('says the broadcast has ended, distinctly from the two states that recover', () => {
+    const ended = textOf(render(FEED_STATE_ENDED));
+
+    assert.match(ended, /ended/i);
+    assert.notEqual(ended, textOf(render(FEED_STATE_RECONNECTING)));
+    assert.notEqual(ended, textOf(render(FEED_STATE_STALLED)));
+  });
+
+  /**
+   * The dot pulses, which reads as something still being attempted. An ended broadcast is the one
+   * state here where nothing is, and showing the pulse would promise a picture that is not coming.
+   */
+  it('drops the pulsing dot once the broadcast has ended', () => {
+    assert.doesNotMatch(renderToStaticMarkup(render(FEED_STATE_ENDED)), /swarm-hls-feed-state__dot/);
+    assert.match(renderToStaticMarkup(render(FEED_STATE_ENDED)), /class="swarm-hls-feed-state"/);
   });
 
   it('announces itself to a screen reader without stealing focus', () => {

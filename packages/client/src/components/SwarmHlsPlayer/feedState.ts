@@ -7,7 +7,17 @@ export const FEED_STATE_RECONNECTING = 'reconnecting';
 /** The gateway is answering, but has not served the slot the player waits on, for a long run. */
 export const FEED_STATE_STALLED = 'stalled';
 
-export type FeedState = typeof FEED_STATE_LIVE | typeof FEED_STATE_RECONNECTING | typeof FEED_STATE_STALLED;
+/**
+ * The broadcaster ended the stream. The only terminal state here: the other three describe something
+ * still being retried, and this one describes there being nothing left to retry.
+ */
+export const FEED_STATE_ENDED = 'ended';
+
+export type FeedState =
+  | typeof FEED_STATE_LIVE
+  | typeof FEED_STATE_RECONNECTING
+  | typeof FEED_STATE_STALLED
+  | typeof FEED_STATE_ENDED;
 
 export type FeedStateListener = (state: FeedState) => void;
 
@@ -54,9 +64,11 @@ interface TopicHealth {
   retryAtMs: number;
   /** Consecutive polls spent on a slot the gateway answered for, but had nothing in. */
   unservedSlotPolls: number;
+  /** Whether the broadcaster published a manifest that ends the playlist. Never goes back to false. */
+  hasEnded: boolean;
 }
 
-const HEALTHY: TopicHealth = { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: 0 };
+const HEALTHY: TopicHealth = { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: 0, hasEnded: false };
 
 /** How long to hold off after `failures` consecutive failures, doubling and then flat at the cap. */
 export function backoffDelayMs(failures: number): number {
@@ -69,12 +81,17 @@ export function backoffDelayMs(failures: number): number {
  * before then is dropping the count that decides when that is.
  */
 function isWorthTracking(health: TopicHealth): boolean {
-  return health.gatewayFailures > 0 || health.unservedSlotPolls > 0;
+  return health.gatewayFailures > 0 || health.unservedSlotPolls > 0 || health.hasEnded;
 }
 
 function stateOfHealth(health: TopicHealth | undefined): FeedState {
   if (!health) {
     return FEED_STATE_LIVE;
+  }
+  // First, and deliberately. A gateway going down after the broadcast finished does not make the
+  // broadcast unfinished, and a feed that stops advancing because it ended is not stalled.
+  if (health.hasEnded) {
+    return FEED_STATE_ENDED;
   }
   if (health.gatewayFailures > 0) {
     return FEED_STATE_RECONNECTING;
@@ -152,9 +169,9 @@ export class FeedHealthTracker {
     this.update(topicId, (health) => {
       const gatewayFailures = health.gatewayFailures + 1;
       return {
+        ...health,
         gatewayFailures,
         retryAtMs: this.now() + backoffDelayMs(gatewayFailures),
-        unservedSlotPolls: health.unservedSlotPolls,
       };
     });
   }
@@ -189,9 +206,19 @@ export class FeedHealthTracker {
     }
   }
 
-  /** A slot was served. Forgets both runs, since serving one ends either. */
+  /**
+   * A slot was served. Forgets both runs, since serving one ends either.
+   *
+   * An ended broadcast is kept rather than forgotten. Forgetting it would read as `live` again, and
+   * the last thing a finished stream does is serve the manifest that finished it.
+   */
   recordGatewayResponse(topicId: string): void {
-    this.update(topicId, () => null);
+    this.update(topicId, (health) => (health.hasEnded ? { ...HEALTHY, hasEnded: true } : null));
+  }
+
+  /** The broadcaster published a manifest that ends the playlist. Terminal, and not a fault. */
+  recordFeedEnded(topicId: string): void {
+    this.update(topicId, (health) => ({ ...health, hasEnded: true }));
   }
 
   /**
@@ -209,7 +236,7 @@ export class FeedHealthTracker {
     let polls = 0;
     this.update(topicId, (health) => {
       polls = health.unservedSlotPolls + 1;
-      return { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: polls };
+      return { ...health, gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: polls };
     });
     return polls;
   }

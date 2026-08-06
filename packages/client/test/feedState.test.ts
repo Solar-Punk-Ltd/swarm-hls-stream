@@ -3,6 +3,7 @@ import { describe, it } from 'vitest';
 
 import {
   backoffDelayMs,
+  FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FEED_STATE_STALLED,
@@ -448,5 +449,73 @@ describe('FeedHealthTracker bounds', () => {
 
     assert.equal(tracker.state('topic-0'), FEED_STATE_RECONNECTING, 'the topic still failing was evicted');
     assert.equal(tracker.state('topic-1'), FEED_STATE_LIVE);
+  });
+});
+
+/**
+ * A broadcast that ends is not a fault, and it is the one state here that never resolves. The other
+ * two describe something being retried behind the overlay; this one describes there being nothing
+ * left to retry, so it has to survive everything that would otherwise clear or overwrite it.
+ */
+describe('FeedHealthTracker on a broadcast that has ended', () => {
+  it('says the broadcast ended', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    tracker.recordFeedEnded(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_ENDED]);
+  });
+
+  it('says it once however many finalized manifests arrive', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    tracker.recordFeedEnded(TOPIC);
+    tracker.recordFeedEnded(TOPIC);
+    tracker.recordFeedEnded(TOPIC);
+
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_ENDED]);
+  });
+
+  /** A gateway going down after the broadcast finished does not make the broadcast unfinished. */
+  it('outranks a gateway that stops answering afterwards', () => {
+    const { tracker } = makeTracker();
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.recordGatewayFailure(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+  });
+
+  it('outranks a feed that then sits on an unserved slot', () => {
+    const { tracker } = makeTracker();
+    tracker.recordFeedEnded(TOPIC);
+
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT + 5; poll++) {
+      tracker.recordUnservedSlot(TOPIC);
+    }
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+  });
+
+  /** `recordGatewayReachable` clears the other two states. It must not un-end a broadcast. */
+  it('is not cleared by the gateway answering again', () => {
+    const { tracker } = makeTracker();
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.recordGatewayReachable(TOPIC);
+    tracker.recordGatewayResponse(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+  });
+
+  it('leaves a topic that never ended alone', () => {
+    const { tracker } = makeTracker();
+
+    tracker.recordFeedEnded('some-other-broadcast');
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
   });
 });
