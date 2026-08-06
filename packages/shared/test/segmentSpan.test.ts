@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { measureSpanTicks } from '../src/bench/segmentSpan.js';
+import { measureSpanTicks } from '../src/segmentSpan.js';
 
 /**
  * The presentation timestamps of one real segment, in the order ffprobe listed them.
