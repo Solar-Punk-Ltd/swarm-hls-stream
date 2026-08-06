@@ -32,3 +32,12 @@ reports/mutation/
 # `docs/bench/` back wholesale after every run, so anything a harness leaves there is staged
 # without anyone choosing to keep it. Each run's own report carries the numbers these show.
 docs/bench/browser-screenshots/
+
+# Raw per-run telemetry, one file per run beside the markdown report that summarises it, and
+# rsynced back by the same wholesale copy. The reports are the findings and are kept; these are
+# roughly 4,500 lines each and are read once, by the analysis that produced the report. A raw
+# file worth keeping as evidence is added deliberately with `git add -f`.
+docs/bench/latency-*.json
+docs/bench/longrun-*.json
+docs/bench/browser-watch-*.json
+docs/bench/browser-crash-*.json
