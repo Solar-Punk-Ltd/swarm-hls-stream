@@ -54,6 +54,15 @@ export interface MediaElementReading {
 }
 
 export interface PlayerProbe {
+  /**
+   * Whether every hook below is actually in place, set by the last statement the init script runs.
+   *
+   * Not a formality. The counters are all empty until something happens, so "installed and saw
+   * nothing" and "never installed" read identically, and the second silently answers every question
+   * with the reassuring value. This is the difference, and a reader must check it before believing
+   * an empty `sourceBuffers` on a page that plainly played something.
+   */
+  installed: boolean;
   /** MIME types the player asked `MediaSource` for, in order. */
   sourceBuffers: string[];
   appends: { mime: string; bytes: number }[];
@@ -70,7 +79,8 @@ const PROBE_KEY = '__playerProbe';
 export async function installPlayerProbe(page: Page): Promise<void> {
   await page.addInitScript(
     ({ key, eventNames }: { key: string; eventNames: string[] }) => {
-      const probe = { sourceBuffers: [], appends: [], failures: [], events: [] } as {
+      const probe = { installed: false, sourceBuffers: [], appends: [], failures: [], events: [] } as {
+        installed: boolean;
         sourceBuffers: string[];
         appends: { mime: string; bytes: number }[];
         failures: string[];
@@ -133,6 +143,9 @@ export async function installPlayerProbe(page: Page): Promise<void> {
         };
         return buffer;
       };
+
+      // Last, so that reading it back true means every hook above was reached.
+      probe.installed = true;
     },
     { key: PROBE_KEY, eventNames: MEDIA_EVENTS },
   );
@@ -159,6 +172,7 @@ export function readPlayerProbe(page: Page): Promise<PlayerProbe> {
     });
 
     return {
+      installed: probe?.installed ?? false,
       sourceBuffers: probe?.sourceBuffers ?? [],
       appends: probe?.appends ?? [],
       failures: probe?.failures ?? ['the probe never ran'],

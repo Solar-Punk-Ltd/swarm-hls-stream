@@ -332,6 +332,10 @@ function renderVodReport(run: {
   lines.push('The last target is backwards on purpose: a forward seek can be served by what the player');
   lines.push('already buffered, and a backward one into a discarded region cannot.');
   lines.push('');
+  // On the success path as well, because a seek that fails leaves its evidence on the element rather
+  // than in the seek row: a target inside a buffered range with the element paused is a different
+  // fault from one that ran out of media, and the row above cannot tell them apart.
+  lines.push(...renderWhatThePlayerDid(run));
   return lines.join('\n');
 }
 
@@ -349,6 +353,7 @@ function renderWhatThePlayerDid(run: {
 
   lines.push('| | |');
   lines.push('| --- | --- |');
+  lines.push(`| probe installed | ${run.player.installed} |`);
   lines.push(`| networkState | ${run.afterSettle?.networkState ?? '—'} |`);
   lines.push(`| source buffers | ${run.player.sourceBuffers.join(', ') || 'none were ever created'} |`);
   lines.push(`| appends | ${run.player.appends.length}, ${bytes.toLocaleString()} bytes |`);
