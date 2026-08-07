@@ -86,7 +86,18 @@ say so and it agrees with the retraction made this morning.
 
 ## Why the sitting drifted, which is not established
 
-Not known. What can be said:
+⭐ **ANSWERED, same day, by replay.** It is not the sitting and it is not drift. Arm 3 took one
+non-fatal stall at its join, which raised the latency target hls.js was steering to from 6.0s to
+about 7.0s **for the rest of the run**, and nothing lowers it again. The 0.92s between the arms is
+that one second. See `one-stall-costs-a-second-2026-08-07.md` for the library source, the inversion
+of hls.js's catch-up curve that recovers each arm's target from its playback rates, and the check
+added so a run says this about itself.
+
+Everything below was written before that and is kept as the record of what had been ruled out. The
+five bullets remain true and are exactly why the cause was not in the series: the picture never
+froze, the join was identical, and the player was playing perfectly, from further back.
+
+Not known at the time. What could be said:
 
 - **It is not within-arm noise.** Both control arms are flat to 0.01-0.04s across four windows each.
 - **It is not the join.** Both 0.25s arms joined at exactly **9.33s**, the same to two decimals. Only
