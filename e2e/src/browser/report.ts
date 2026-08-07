@@ -201,9 +201,13 @@ function latencyTargetLines(target: LatencyTargetVerdict): string[] {
       '**Nothing else in this report shows it**: a stall is not fatal, and it need not fire a `waiting` ' +
       'event, so the rebuffer, stalled-sample and fatal-error rows can all read zero.',
     '',
-    `⭐ **What is still comparable is ${pastTarget}.** Raw latency is what this viewer got and is the ` +
-      'right number for a viewer-facing claim, but it carries the stall penalty. This one has the ' +
-      'penalty subtracted out, so it is the figure to put beside another run when the targets differed.',
+    target.medianPastTargetS === null
+      ? '⛔ **And nothing here is comparable instead.** No sample carried both a latency and a target, ' +
+        'so the distance that would have had the penalty subtracted out could not be taken either.'
+      : `⭐ **What is still comparable is ${pastTarget}.** Raw latency is what this viewer got and is ` +
+        'the right number for a viewer-facing claim, but it carries the stall penalty. This one has ' +
+        'the penalty subtracted out, so it is the figure to put beside another run when the targets ' +
+        'differed.',
     '',
   ];
 }

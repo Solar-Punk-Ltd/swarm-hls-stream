@@ -222,6 +222,18 @@ describe('what the latency section says about the target it was measured against
     assert.match(section, /⛔ \*\*The latency figures above are against a target that moved/);
   });
 
+  // The prose has to stay true in the corner as well as the common case: "what is still comparable is
+  // not measurable from this run" is a sentence that contradicts itself.
+  it('does not offer a replacement figure it does not have', () => {
+    const section = sectionFor(
+      { liveLatencyS: null, liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 },
+      { liveLatencyS: null, liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 },
+    );
+
+    assert.match(section, /nothing here is comparable instead/);
+    assert.doesNotMatch(section, /What is still comparable/);
+  });
+
   it('says it could not tell, rather than saying it held, when no target was reported', () => {
     const section = sectionFor({ liveTargetLatencyS: null }, { liveTargetLatencyS: null });
 
