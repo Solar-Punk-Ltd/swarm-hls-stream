@@ -13,6 +13,7 @@ import {
 const HEALTHY_OUTPUT = [
   '0.031 200',
   '1.42',
+  '{"totalBalance":"227039111999998600","availableBalance":"80000000000000000"}',
   '{"connected":92,"population":1204,"depth":8,"reachability":"Public"}',
 ].join('\n');
 
@@ -25,6 +26,7 @@ const at = (atMs: number, overrides: Partial<GatewaySample> = {}): GatewaySample
   neighbourhoodDepth: 8,
   reachability: 'Public',
   hostLoad1: 1.4,
+  chequebookAvailableBzz: 8,
   ...overrides,
 });
 
@@ -37,7 +39,7 @@ const at = (atMs: number, overrides: Partial<GatewaySample> = {}): GatewaySample
  * whether the node had lost the peers it retrieves through.
  */
 describe('reading a gateway sample off the host', () => {
-  it('reads the three lines the remote command emits', () => {
+  it('reads the four lines the remote command emits', () => {
     const sample = parseGatewaySample(HEALTHY_OUTPUT, 1_000);
 
     assert.deepEqual(sample, {
@@ -49,7 +51,43 @@ describe('reading a gateway sample off the host', () => {
       neighbourhoodDepth: 8,
       reachability: 'Public',
       hostLoad1: 1.42,
+      chequebookAvailableBzz: 8,
     });
+  });
+
+  /**
+   * ⭐ The reading added after the instrument had already shipped, because checking the deployment's
+   * funds before a proving run found the gateway's spendable balance at **0.0000007 BZZ** against a
+   * 14.7 BZZ chequebook, every last unit of it committed to outstanding cheques. A gateway in that
+   * state is healthy by every other signal here — `/health` answered in 1.1ms, 134 peers, reachability
+   * Public — and cannot pay for retrieval past the free tier.
+   *
+   * That is a candidate cause for the fourteen-minute collapse, whose shape it matches: both request
+   * kinds slowing together at one instant, no errors, no refusals, demand unchanged. Sampling service
+   * time, load and peers and not this would have watched the run and missed it.
+   */
+  it('reads the spendable balance, which is what a gateway pays for reads with', () => {
+    assert.equal(parseGatewaySample(HEALTHY_OUTPUT, 0).chequebookAvailableBzz, 8);
+  });
+
+  it('reads a chequebook drained to nothing as nothing, not as missing', () => {
+    const drained = ['0.001 200', '1.0', '{"totalBalance":"147039111999998600","availableBalance":"6999983500"}', '{}'];
+
+    const sample = parseGatewaySample(drained.join('\n'), 0);
+
+    assert.equal(sample.answered, true, 'a node with no BZZ still answers, which is the whole problem');
+    assert.ok(
+      sample.chequebookAvailableBzz !== null && sample.chequebookAvailableBzz < 0.001,
+      `read ${sample.chequebookAvailableBzz} BZZ where the node had 0.0000007`,
+    );
+  });
+
+  it('keeps the rest when the chequebook read is the one that failed', () => {
+    const sample = parseGatewaySample('0.03 200\n0.5\n\n{"connected":7}', 0);
+
+    assert.equal(sample.answered, true);
+    assert.equal(sample.connectedPeers, 7);
+    assert.equal(sample.chequebookAvailableBzz, null);
   });
 
   /**
@@ -59,11 +97,11 @@ describe('reading a gateway sample off the host', () => {
    * would carry the ssh latency to the host, which is the one term guaranteed to move on its own.
    */
   it('takes the service time from curl on the host, not from the round trip to it', () => {
-    assert.equal(parseGatewaySample('2.500 200\n0.1\n{}', 0).serviceMs, 2_500);
+    assert.equal(parseGatewaySample('2.500 200\n0.1\n{}\n{}', 0).serviceMs, 2_500);
   });
 
   it('reads a bee that answered something other than 200 as not answering', () => {
-    const sample = parseGatewaySample('0.004 503\n0.5\n{}', 0);
+    const sample = parseGatewaySample('0.004 503\n0.5\n{}\n{}', 0);
 
     assert.equal(sample.answered, false);
     assert.equal(sample.serviceMs, 4, 'a refusal is still a timing, and a fast refusal is worth seeing');
@@ -76,7 +114,7 @@ describe('reading a gateway sample off the host', () => {
   for (const [name, output] of [
     ['a curl that timed out and printed nothing', ''],
     ['ssh output that is not the three lines', 'Connection closed by remote host'],
-    ['a timing field that is not a number', 'slow 200\n0.5\n{}'],
+    ['a timing field that is not a number', 'slow 200\n0.5\n{}\n{}'],
   ] as const) {
     it(`survives ${name}`, () => {
       const sample = parseGatewaySample(output, 7);
@@ -93,7 +131,7 @@ describe('reading a gateway sample off the host', () => {
    * HTML is one shape a node too busy to serve `/topology` takes, which is the case being measured.
    */
   it('keeps the timing when topology comes back as something other than JSON', () => {
-    const sample = parseGatewaySample('0.03 200\n0.5\n<html>502 Bad Gateway</html>', 7);
+    const sample = parseGatewaySample('0.03 200\n0.5\n{}\n<html>502 Bad Gateway</html>', 7);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.serviceMs, 30);
@@ -101,7 +139,7 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the bee reading when only the host load is missing', () => {
-    const sample = parseGatewaySample('0.03 200\n\n{"connected":5}', 0);
+    const sample = parseGatewaySample('0.03 200\n\n{}\n{"connected":5}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, 5);
@@ -109,7 +147,7 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the timing when topology is empty, since a node can answer and report nothing', () => {
-    const sample = parseGatewaySample('0.03 200\n0.5\n{}', 0);
+    const sample = parseGatewaySample('0.03 200\n0.5\n{}\n{}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, null);
@@ -297,6 +335,39 @@ describe('summarizing what the gateway did during a run', () => {
     assert.equal(summary.minutes[0].connectedPeers, 90);
     assert.equal(summary.minutes[1].connectedPeers, 12, 'a minute that ended healthy hid the peers it lost');
     assert.match(summary.warnings.join(' '), /peers/i);
+  });
+
+  /**
+   * ⛔ The warning worth having above all the others here, because it names a cause rather than a
+   * symptom. A gateway whose spendable balance reaches zero stops issuing cheques and is throttled by
+   * its peers to the free tier, which is a read path slowing down with every other signal healthy.
+   */
+  it('warns when the spendable balance ran out during the run', () => {
+    const samples = [at(0, { chequebookAvailableBzz: 0.4 }), at(60_000, { chequebookAvailableBzz: 0.0000007 })];
+
+    const summary = summarizeGateway(samples);
+
+    assert.equal(summary.minutes[1].chequebookAvailableBzz, 0.0000007);
+    assert.match(summary.warnings.join(' '), /pay|chequebook|balance/i);
+  });
+
+  it('says nothing about a balance that stayed comfortable', () => {
+    const summary = summarizeGateway([
+      at(0, { chequebookAvailableBzz: 8 }),
+      at(60_000, { chequebookAvailableBzz: 7.9 }),
+    ]);
+
+    assert.doesNotMatch(summary.warnings.join(' '), /chequebook/i);
+  });
+
+  it('takes the minute low, so a balance that ran out inside a minute is not hidden', () => {
+    const samples = [
+      at(0, { chequebookAvailableBzz: 5 }),
+      at(60_000, { chequebookAvailableBzz: 5 }),
+      at(90_000, { chequebookAvailableBzz: 0 }),
+    ];
+
+    assert.equal(summarizeGateway(samples).minutes[1].chequebookAvailableBzz, 0);
   });
 
   it('says nothing at all about a run it has no samples for', () => {
