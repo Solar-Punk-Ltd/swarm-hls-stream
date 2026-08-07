@@ -2,6 +2,7 @@ import { Bee } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { ErrorHandler } from '../src/libs/ErrorHandler.js';
 import { ManifestManager } from '../src/libs/ManifestManager.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
@@ -736,5 +737,103 @@ describe('segments the live window outran before anything published them', () =>
     }
 
     assert.equal(uploader.getSegmentsNeverNamed(), 0);
+  });
+});
+
+interface HandledError {
+  error: unknown;
+  context?: string;
+}
+
+/**
+ * Collect what the shared `ErrorHandler` was told, and put it back afterwards.
+ *
+ * Every uploader in the process reports through `ErrorHandler.getInstance()`, so replacing the method
+ * on that one object is enough to see the calls. The assignment shadows the prototype rather than
+ * overwriting it, which is why restoring is a delete and not a second assignment.
+ */
+function captureHandledErrors(): { handled: HandledError[]; restore: () => void } {
+  const handler = ErrorHandler.getInstance();
+  const handled: HandledError[] = [];
+
+  handler.handleError = (error: unknown, context?: string) => {
+    handled.push({ error, context });
+  };
+
+  return {
+    handled,
+    restore: () => {
+      Reflect.deleteProperty(handler, 'handleError');
+    },
+  };
+}
+
+/**
+ * What an operator is told when a Swarm write fails, and which of the two writes it was.
+ *
+ * Both writes turn a failure into a falsy return so the caller can mark a discontinuity instead of
+ * losing its queue task to a rejection, and the blocks above cover that half. The other half, the
+ * report, had nothing at all: the Stryker run of 2026-08-04 emptied either catch block and blanked
+ * the context label, and all three mutants survived the entire suite.
+ *
+ * The label is the only thing in a log line that separates the two, and they are not the same
+ * incident. A lost segment leaves a hole the next manifest marks as a discontinuity and a player
+ * skips past. A lost manifest leaves every viewer holding the last one that landed, watching a
+ * stream that has moved on without them.
+ *
+ * The labels are written out here rather than imported from the source. Importing them would assert
+ * each against itself, which is the trap `e2e/src/bench/clientTuning.ts` records.
+ */
+describe('StreamUploader reporting which Swarm write failed', () => {
+  it('names the segment write, and carries the error Bee refused it with', async () => {
+    const capture = captureHandledErrors();
+    try {
+      const uploader = newUploader({ fail: permanentError });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      assert.deepEqual(
+        capture.handled.map((h) => h.context),
+        ['StreamUploader.uploadDataToBee'],
+      );
+      assert.equal((capture.handled[0].error as Error).message, '402 payment required');
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it('names the manifest write, which fails the same way and costs a viewer something else', async () => {
+    const capture = captureHandledErrors();
+    try {
+      const uploader = newUploader({}, { feedWriteFails: true });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      assert.deepEqual(
+        capture.handled.map((h) => h.context),
+        ['StreamUploader.uploadDataAsSoc'],
+      );
+      assert.equal((capture.handled[0].error as Error).message, '402 payment required');
+    } finally {
+      capture.restore();
+    }
+  });
+
+  // The control the two above need. Without it a capture that reported on every publish would pass
+  // both of them, and the label would stop meaning that anything went wrong.
+  it('reports nothing when both writes land', async () => {
+    const capture = captureHandledErrors();
+    try {
+      const uploader = newUploader();
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      assert.deepEqual(capture.handled, []);
+    } finally {
+      capture.restore();
+    }
   });
 });
