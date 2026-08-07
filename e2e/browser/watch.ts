@@ -12,6 +12,13 @@
  *   deploy/scripts/browser-on-host.sh -- BROWSER_WATCH_SECONDS=180
  */
 
+import {
+  DEFAULT_GATEWAY_SAMPLE_INTERVAL_MS,
+  gatewayReader,
+  type GatewaySample,
+  startGatewaySampling,
+  summarizeGateway,
+} from '../src/browser/gatewayHealth.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { renderBrowserReport } from '../src/browser/report.js';
@@ -55,6 +62,15 @@ async function main(): Promise<void> {
   let watched: SampledStretch | undefined;
   let watchUrl = clientUrl;
 
+  // Started before the page opens and stopped in the same `finally` as the browser, so the node-side
+  // series brackets the browser one rather than being a subset of it. A slowdown that begins during
+  // startup is one the viewer-facing numbers cannot attribute at all.
+  const gatewaySampling = startGatewaySampling({
+    read: gatewayReader(host, cfg),
+    intervalMs: envNumber('BROWSER_GATEWAY_SAMPLE_INTERVAL_MS', DEFAULT_GATEWAY_SAMPLE_INTERVAL_MS),
+  });
+  let gatewaySamples: GatewaySample[] = [];
+
   try {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
@@ -69,6 +85,7 @@ async function main(): Promise<void> {
       startIndex: 0,
     });
   } finally {
+    gatewaySamples = await gatewaySampling.stop();
     await browser.close();
   }
 
@@ -78,6 +95,7 @@ async function main(): Promise<void> {
 
   const network = summarizeNetwork(requests);
   const cost = judgeCost(resourcesBefore, await readResources(host, cfg), network.segmentBytesDelivered);
+  const gateway = summarizeGateway(gatewaySamples);
 
   const run = {
     measuredAt,
@@ -90,6 +108,8 @@ async function main(): Promise<void> {
     samples: watched.samples,
     screenshots: watched.screenshots,
     cost,
+    gateway,
+    gatewaySamples,
   };
 
   const stem = await writeRunArtifacts('browser-watch', runId, {
@@ -110,6 +130,11 @@ async function main(): Promise<void> {
       `${cost.minutes.toFixed(1)} min`,
   );
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
+  console.log(
+    `browser: gateway answered ${gatewaySamples.length - gateway.unanswered}/${gatewaySamples.length} samples, ` +
+      `service time step ${gateway.serviceStepRatio?.toFixed(2) ?? '—'}x`,
+  );
+  gateway.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 }
 
 main().catch((error) => {

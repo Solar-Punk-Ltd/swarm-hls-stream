@@ -9,6 +9,7 @@
 
 import { LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
 
+import { type GatewayHealth, gatewaySection } from './gatewayHealth.js';
 import type { InstrumentVerdict } from './instrument.js';
 import type { NetworkSummary } from './network.js';
 import { costSection, type ResourceCost } from './resources.js';
@@ -27,6 +28,13 @@ export interface BrowserRun {
   screenshots: readonly string[];
   /** What the run took out of the postage batch and the chequebook, when it was measured. */
   cost?: ResourceCost;
+  /**
+   * What the gateway node itself was doing, when a run sampled it.
+   *
+   * Optional because every run recorded before 2026-08-07 has none, and a report that cannot be
+   * rendered for the archive is a report that cannot be re-derived.
+   */
+  gateway?: GatewayHealth;
 }
 
 /**
@@ -317,6 +325,7 @@ export function renderBrowserReport(run: BrowserRun): string {
     ...playbackSection(run),
     ...stabilitySection(judgeStability(run.samples)),
     ...networkSection(run),
+    ...(run.gateway ? gatewaySection(run.gateway) : []),
     ...(run.cost ? costSection(run.cost) : []),
     everyNth === 1 ? '## Every sample' : `## Every ${ordinal(everyNth)} sample`,
     '',
