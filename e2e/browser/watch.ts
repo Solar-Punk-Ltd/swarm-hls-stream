@@ -76,7 +76,8 @@ async function main(): Promise<void> {
     throw new Error('no samples collected');
   }
 
-  const cost = judgeCost(resourcesBefore, await readResources(host, cfg));
+  const network = summarizeNetwork(requests);
+  const cost = judgeCost(resourcesBefore, await readResources(host, cfg), network.segmentBytesDelivered);
 
   const run = {
     measuredAt,
@@ -85,7 +86,7 @@ async function main(): Promise<void> {
     gopSeconds,
     summary: summarize(watched.samples),
     instrument: judgeRun(watched.readings),
-    network: summarizeNetwork(requests),
+    network,
     samples: watched.samples,
     screenshots: watched.screenshots,
     cost,

@@ -301,6 +301,61 @@ function declaredSamples(run: BenchRun): DeclaredSample[] {
  * truncated 0.067s gives +2333ms. **So a mis-measured span makes LAT-9's symptom look resolved**, and
  * this line is the only thing in the report that would show it.
  */
+/**
+ * The share of the configured frame rate a run actually delivered, below which it is called throttled.
+ *
+ * A throttled run does not degrade a little. `#76` measured 12.0 fps and 23.7 fps against a configured
+ * 30, and healthy runs came in at 28.1 to 30.1, so there is a wide gap to put a line in. 0.9 sits
+ * inside it and clears the 28.1 that a good run produced.
+ */
+const DELIVERED_FPS_FLOOR = 0.9;
+
+/**
+ * Whether the publisher kept up, which is not visible from any single row.
+ *
+ * ⛔ **Bytes are the wrong signal here and the task that asked for this said bytes.** The mechanism,
+ * measured in `docs/bench/publisher-backpressure.md`, is that `wallclockEncodeArgs` stamps timestamps
+ * at the demuxer and paces in the filter graph, so when anything downstream of the muxer blocks, **no
+ * frames are stamped while the wall clock keeps running**. Media time stretches to match the consumer.
+ * The encoder still hits its bitrate per second of media it produced, so a byte rate barely moves.
+ *
+ * What moves is the frame rate. `-g` is set in frames and honoured exactly: 8 packets a segment in
+ * every run, good and bad. A run at 12fps takes 0.666s to make those 8 frames, so the segment is
+ * 0.666s long and nothing is dropped, nothing is wrong, and nothing warns.
+ *
+ * The per-sample table has carried this column all along. It had no summary, so reading it meant
+ * reading every row, and two runs in six went unnoticed that way.
+ */
+function deliveredFpsLine(run: BenchRun): string {
+  const rates = run.samples
+    .map((sample) => sample.videoPacketCount / sample.split.instants.segmentDurationS)
+    .filter((rate) => Number.isFinite(rate) && rate > 0);
+
+  if (rates.length === 0) {
+    return '- **delivered frame rate: not measured**, which needs at least one sample holding video packets.';
+  }
+
+  const sorted = [...rates].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const share = median / run.knobs.fps;
+
+  if (share >= DELIVERED_FPS_FLOOR) {
+    return (
+      `- the publisher delivered **${median.toFixed(1)} fps** against the ${run.knobs.fps} it was configured for, ` +
+      `across ${rates.length} samples. Nothing was throttling it.`
+    );
+  }
+
+  return (
+    `- ⛔ **the publisher delivered only ${median.toFixed(1)} fps against the ${run.knobs.fps} it was ` +
+    `configured for**, ${Math.round(share * 100)}% of it, with a slowest sample of ${sorted[0].toFixed(1)}. ` +
+    'The encoder is not at fault and no frame was dropped: `-g` is set in frames and is honoured exactly, so ' +
+    'something downstream of the muxer blocked and media time stretched to match it. **Every latency figure ' +
+    'in this run is measured against a media clock that ran slow**, and the run is not comparable with one ' +
+    'that kept up. See `docs/bench/publisher-backpressure.md`.'
+  );
+}
+
 function declaredDurationLine(run: BenchRun): string {
   const compared = declaredSamples(run);
   if (compared.length === 0) {
@@ -449,7 +504,15 @@ export function renderReport(run: BenchRun): string {
     );
   }
 
-  lines.push('', '## Self-checks', '', trendLine(run.trend), declaredDurationLine(run), leadLine(run));
+  lines.push(
+    '',
+    '## Self-checks',
+    '',
+    trendLine(run.trend),
+    deliveredFpsLine(run),
+    declaredDurationLine(run),
+    leadLine(run),
+  );
 
   const impossible = run.samples.flatMap((sample) =>
     impossibleHops(sample.split).map(

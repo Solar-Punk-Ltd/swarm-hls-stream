@@ -110,6 +110,14 @@ export interface NetworkSummary {
   /** Total wall time lost sitting between a refusal and the next ask. High means the retry delay is. */
   totalWaitedBetweenAttemptsMs: number;
   segmentBytesPerSecond: number;
+  /**
+   * Segment bytes that actually arrived, summed over served requests.
+   *
+   * The rate above is this divided by the run's span, which makes it a property of the run's length
+   * as well as of the stream. The total is what a cost is paid against, so it is reported separately
+   * rather than left to be multiplied back out.
+   */
+  segmentBytesDelivered: number;
   maxConcurrent: number;
 }
 
@@ -136,6 +144,7 @@ export function summarizeNetwork(records: readonly RequestRecord[]): NetworkSumm
     medianTransferMs: median(served.map((record) => record.endedAtMs - record.startedAtMs)),
     totalWaitedBetweenAttemptsMs: refused.reduce((total, segment) => total + segment.waitedBetweenAttemptsMs, 0),
     segmentBytesPerSecond: spanMs > 0 ? (segmentBytes * 1000) / spanMs : 0,
+    segmentBytesDelivered: segmentBytes,
     maxConcurrent: maxOverlap(segments),
   };
 }

@@ -114,6 +114,21 @@ describe('summarizing what the network cost the viewer', () => {
     assert.equal(summary.segmentBytesPerSecond, 500_000, '50kB delivered over a 100ms span');
   });
 
+  /**
+   * The total as well as the rate, because a cost is paid against bytes rather than against bytes
+   * per second, and dividing the rate back out by the span reintroduces the run's length into a
+   * figure that should not carry it.
+   */
+  it('reports the delivered total, not only the rate', () => {
+    const summary = summarizeNetwork([segment('a', 0, 100, 200, 50_000), segment('b', 0, 100, 404, 0)]);
+
+    assert.equal(summary.segmentBytesDelivered, 50_000);
+  });
+
+  it('leaves a refused segment out of the delivered total', () => {
+    assert.equal(summarizeNetwork([segment('a', 0, 100, 404, 0)]).segmentBytesDelivered, 0);
+  });
+
   it('has something to say about an empty log rather than dividing by zero', () => {
     const summary = summarizeNetwork([]);
 

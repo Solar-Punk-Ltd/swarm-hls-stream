@@ -69,6 +69,22 @@ export interface ResourceCost {
   bzzSpent: number;
   bucketsPerMinute: number;
   bzzPerMinute: number;
+  /**
+   * BZZ per megabyte of segment delivered, or null when the run counted no bytes.
+   *
+   * ⛔ **The per-minute rate above is not a property of the deployment**, and reading it as one has
+   * already produced a wrong runway. Measured 2026-08-07 across seventeen recorded runs at a fixed
+   * 0.25s segment: 0.0179 BZZ/min at 720p and **0.0389 at 1080p**, so a projection made at the first
+   * while running the second is out by 2.2x. Normalised by bytes the same seventeen runs sit inside
+   * 0.00081 to 0.00096 across that whole 2.5x spread in bitrate.
+   *
+   * ⚠️ It is not constant either, and the scope matters. Every one of those runs was at a 0.25s
+   * segment. A sixty-minute run at 1.0s delivering the same bitrate came in at 0.00062, a 1.39x
+   * move, and a controlled ABA put the per-minute gap at 23.5%. **So this figure carries across
+   * bitrates and not across segment lengths**, which is still one more dimension than a per-minute
+   * rate carries across.
+   */
+  bzzPerMegabyte: number | null;
   /** Broadcast minutes left before the batch refuses uploads, at this run's own rate. */
   minutesOfPostageLeft: number | null;
   /** Broadcast minutes left before the uploader's chequebook is empty, at this run's own rate. */
@@ -102,7 +118,18 @@ function runwayAt(remaining: number, perMinute: number): number | null {
   return perMinute > 0 ? remaining / perMinute : null;
 }
 
-export function judgeCost(before: ResourceReading, after: ResourceReading): ResourceCost {
+const BYTES_PER_MEGABYTE = 1_000_000;
+
+/**
+ * @param segmentBytesDelivered What actually arrived, from `summarizeNetwork`. Omitted by a caller
+ *   that watched nothing, in which case the per-byte figure is null rather than zero: a run with no
+ *   viewer has not shown that bytes are free, it has shown that it cannot answer.
+ */
+export function judgeCost(
+  before: ResourceReading,
+  after: ResourceReading,
+  segmentBytesDelivered?: number,
+): ResourceCost {
   const minutes = (after.atMs - before.atMs) / 60_000;
   const bucketsUsed = after.postageUtilization - before.postageUtilization;
   const bzzSpent = before.uploaderBzz - after.uploaderBzz;
@@ -140,6 +167,10 @@ export function judgeCost(before: ResourceReading, after: ResourceReading): Reso
     bzzSpent,
     bucketsPerMinute,
     bzzPerMinute,
+    bzzPerMegabyte:
+      segmentBytesDelivered !== undefined && segmentBytesDelivered > 0
+        ? bzzSpent / (segmentBytesDelivered / BYTES_PER_MEGABYTE)
+        : null,
     minutesOfPostageLeft: runwayAt(bucketsLeft, bucketsPerMinute),
     minutesOfBzzLeft: runwayAt(after.uploaderBzz, bzzPerMinute),
     warnings,
@@ -167,9 +198,21 @@ export function costSection(cost: ResourceCost): string[] {
       `**${runway(cost.minutesOfBzzLeft)} of BZZ**, and the batch expires in ` +
       `${cost.after.postageTtlDays.toFixed(1)} days.`,
     '',
+    ...(cost.bzzPerMegabyte === null
+      ? []
+      : [
+          `**${cost.bzzPerMegabyte.toFixed(5)} BZZ per megabyte delivered.** Carry this one to another ` +
+            'bitrate, never the per-minute rate: seventeen runs at a fixed 0.25s segment measured ' +
+            '0.0179 BZZ/min at 720p against 0.0389 at 1080p, and sat inside 0.00081 to 0.00096 per ' +
+            'megabyte across that same 2.5x spread. It does **not** carry across segment lengths, ' +
+            'where a controlled comparison put the gap at 23.5%.',
+          '',
+        ]),
     'The postage runway is a **floor**. `utilization` is the fullest of sixty-five thousand buckets, and ' +
       'a maximum grows fastest while the batch is nearly empty and then flattens, so an early run ' +
-      'overstates the long-run rate. Later runs on the same batch are the ones to believe.',
+      'overstates the long-run rate. **Two runs at different fullness are not comparable at all**, which ' +
+      'is what retracted the postage half of the 2026-08-07 segment-length comparison. Later runs on ' +
+      'the same batch, at similar fullness, are the ones to believe.',
     '',
     ...(cost.warnings.length > 0
       ? ['⚠️ **Before planning the next run:**', '', ...cost.warnings.map((w) => `- ${w}`), '']
