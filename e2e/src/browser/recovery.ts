@@ -92,6 +92,16 @@ export interface RecoveryVerdict {
   /** Where the player sat before the fault and where it ended up, so a resume in the past is visible. */
   latencyBeforeS: number | null;
   latencyAfterS: number | null;
+  /**
+   * How much of the gap between those two the fault bought by moving the player's own latency target.
+   *
+   * ⚠️ A fault exists to make the player stall, and a stall raises hls.js's target by up to a target
+   * duration and never lowers it. So latency after a fault is legitimately higher than before by that
+   * much, with nothing having failed to recover. Without this, the increase and the reason for it are
+   * the same number and a reader cannot separate a player that came back late from one that came back
+   * exactly where hls.js now wants it.
+   */
+  targetRaisedByS: number;
 }
 
 interface Phase {
@@ -193,5 +203,22 @@ export function judgeRecovery(samples: readonly ViewerSample[], fault: FaultWind
     explainedTheFreeze: freeze === 0 || saidWhileFrozen.length > 0,
     latencyBeforeS: lastLatency(before.samples),
     latencyAfterS: lastLatency(after.samples),
+    targetRaisedByS: targetRaisedBetween(before.samples, after.samples),
   };
+}
+
+/** How far the player's own latency target moved across the fault, floored at zero. */
+function targetRaisedBetween(before: readonly ViewerSample[], after: readonly ViewerSample[]): number {
+  const last = (samples: readonly ViewerSample[]): number | null => {
+    for (let i = samples.length - 1; i >= 0; i -= 1) {
+      if (samples[i].liveTargetLatencyS !== null) {
+        return samples[i].liveTargetLatencyS;
+      }
+    }
+    return null;
+  };
+
+  const start = last(before);
+  const end = last(after);
+  return start === null || end === null ? 0 : Math.max(0, end - start);
 }

@@ -130,10 +130,19 @@ function verdictSection(run: CrashRun): string[] {
   }
 
   if (r.latencyBeforeS !== null && r.latencyAfterS !== null && r.latencyAfterS > r.latencyBeforeS + 2) {
+    const lost = r.latencyAfterS - r.latencyBeforeS - r.targetRaisedByS;
     lines.push(
       `⚠️ **It resumed in the past.** ${orDash(r.latencyBeforeS)}s behind live before the fault, ` +
         `${orDash(r.latencyAfterS)}s after it. Playback is running and the viewer is watching something ` +
         'that already happened, which the advance ratio cannot show because both play at 1.0.',
+      '',
+      r.targetRaisedByS > 0
+        ? `⚠️ **${r.targetRaisedByS.toFixed(2)}s of that is not lost latency, it is the player's own ` +
+            `target moving.** The stall this fault caused raised hls.js's \`targetLatency\`, which nothing ` +
+            `lowers again for the rest of the session, so the recovery is charged with ` +
+            `**${lost.toFixed(2)}s** rather than ${(r.latencyAfterS - r.latencyBeforeS).toFixed(2)}s.`
+        : '**None of that is the latency target moving**, which held across the fault, so the whole ' +
+            'increase is latency the recovery did not get back.',
       '',
     );
   }
