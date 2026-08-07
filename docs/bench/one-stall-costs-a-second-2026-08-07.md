@@ -82,6 +82,55 @@ All three arms report **0 rebuffers, 0 stalled samples, 0 fatal errors.** None o
 A fault whose every symptom lands in a gap between the signals that exist, which is the fourth of
 these this project has hit.
 
+## How often, and how much: every archived run, re-read
+
+The same inversion runs on all **35** archived browser runs, and it needs nothing they were not
+already recording. 27 of them nudged often enough to invert confidently. The rest only give a lower
+bound, since a run that never nudged says only that its target was above the highest latency it
+tolerated.
+
+⭐ **The two ABAs come out exactly as the mechanism predicts, on data neither was designed to
+produce:**
+
+| | arm 1 | arm 2 | arm 3 | controls agreed to |
+| --- | ---: | ---: | ---: | ---: |
+| **720p ABA** | 5.94 | 6.05 | 5.97 | **0.00s** ✅ |
+| **1080p ABA** | 5.98 | 6.06 | **7.01** | **0.92s** ⛔ |
+
+Six of the 35 ran against a raised target. Among the 27 confidently inverted, three did, and the size
+tracks how much the run stalled:
+
+| run | rebuffers reported | target | raised by |
+| --- | ---: | ---: | ---: |
+| `2026-08-06T02-08-12` | 1 | 6.87 | +0.87s |
+| `2026-08-06T06-47-38` | 3 | 7.36 | +1.36s |
+| `2026-08-06T06-58-18` | **17** | 8.26 | **+2.26s** |
+| `2026-08-07T05-58-55` (1080p arm 3) | **0** | 7.01 | **+1.01s** |
+
+⭐ **That last row is the whole point.** Every run whose rebuffer counter moved shows a raise roughly
+in proportion to it, which is the counter working. **The one run with a raised target and a zero
+counter is the one that voided the control.** A stall that fires no `waiting` event is invisible to
+every existing signal and costs exactly as much.
+
+### ⚠️ The cap is not one second, it is up to three
+
+`maxLiveSyncOnStallIncrease` is `targetduration`, and `ManifestManager.addSegment` computes it as
+
+```ts
+const newTarget = Math.ceil(duration);
+if (newTarget > this.targetDuration) { this.targetDuration = newTarget; }
+```
+
+a running **maximum that never comes back down**. SRS force-cuts a segment at
+`hls_fragment * hls_aof_ratio`, which is `0.25 * 10 = 2.5s` on this deployment, so **one long segment
+sets `EXT-X-TARGETDURATION` to 3 for the rest of the broadcast** and raises the ceiling on every stall
+after it. The measured +2.26s is only reachable that way, and it is a floor rather than a point
+estimate: `edgeStalled` is omitted from the inversion, and omitting it biases the recovered target
+**down**.
+
+So a viewer can lose up to three seconds, and a stream that hiccups once makes every later stall more
+expensive.
+
 ## What changed
 
 **Client.** Two rows under `Live` in the QoE overlay: the target hls.js is actually steering to,
