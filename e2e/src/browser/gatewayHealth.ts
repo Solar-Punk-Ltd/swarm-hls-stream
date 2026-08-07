@@ -19,8 +19,8 @@
  *   signal available for the price of one request.
  * - **The host's load average.** Separates a busy node from a busy box. The deployment shares a host
  *   with five other compose projects, so a neighbour is a live hypothesis and an untestable one today.
- * - **Connected peers and neighbourhood depth.** Retrieval goes through peers, and losing them is a
- *   way for retrieval to get slower with the node itself perfectly healthy.
+ * - **Connected peers and reachability.** Retrieval goes through peers, and losing them is a way for
+ *   retrieval to get slower with the node itself perfectly healthy.
  *
  * ⚠️ **Deliberately not `/metrics`.** Parsing a Prometheus dump is version-coupled work with no
  * hypothesis behind it yet. If a captured occurrence is not explained by the three above, that dump
@@ -35,6 +35,8 @@
 
 import { type E2EConfig } from '../config.js';
 import { type Host } from '../harness/host.js';
+
+import { PLUR_PER_BZZ } from './resources.js';
 
 /** How often to sample. Fine enough to place a step inside the minute it happened, coarse enough that
  *  the ssh round trips are a rounding error against a twenty-minute run. */
@@ -52,6 +54,14 @@ const SERVICE_STEP_WORTH_NAMING = 2;
 /** Share of the starting peer count below which the node has lost the peers it retrieves through. */
 const PEER_LOSS_SHARE = 0.5;
 
+/**
+ * Spendable balance below which the gateway is about to stop paying for reads.
+ *
+ * Not zero, because zero is the state to be warned *before* reaching. At the 0.123 BZZ per thirty
+ * minutes of 720p measured on this deployment, this is roughly two hours of warning.
+ */
+const CHEQUEBOOK_FLOOR_BZZ = 0.5;
+
 const MS_PER_MINUTE = 60_000;
 
 export interface GatewaySample {
@@ -61,11 +71,22 @@ export interface GatewaySample {
   /** What the request took **on the host**, so the figure carries no ssh latency. Null if unknown. */
   serviceMs: number | null;
   connectedPeers: number | null;
-  population: number | null;
-  neighbourhoodDepth: number | null;
-  reachability: string | null;
+  neighbourhoodSize: number | null;
+  isReachable: boolean | null;
+  /** A node still warming up is slow for a reason that is neither a fault nor worth chasing. */
+  isWarmingUp: boolean | null;
   /** The host's own one-minute load average, which is about the box rather than about bee. */
   hostLoad1: number | null;
+  /**
+   * What the node has left to pay for reads with, in BZZ.
+   *
+   * ⛔ Added after this module shipped, because checking the deployment before its first proving run
+   * found this at **0.0000007 BZZ** against a 14.7 BZZ chequebook, all of it committed to outstanding
+   * cheques. Every other signal here was healthy: `/health` in 1.1ms, 134 peers, reachability Public.
+   * A gateway in that state cannot issue cheques and is throttled by its peers to the free tier, which
+   * is a read path slowing down for a reason no amount of node health would show.
+   */
+  chequebookAvailableBzz: number | null;
 }
 
 export interface GatewayMinute {
@@ -77,6 +98,8 @@ export interface GatewayMinute {
   /** The lowest count seen in the minute, since losing peers is what matters and regaining them hides it. */
   connectedPeers: number | null;
   maxHostLoad1: number | null;
+  /** The lowest seen in the minute, since running out is what matters and a top-up would hide it. */
+  chequebookAvailableBzz: number | null;
 }
 
 export interface GatewayHealth {
@@ -90,11 +113,18 @@ export interface GatewayHealth {
 }
 
 /**
- * The one remote command a sample costs, emitting three lines.
+ * The one remote command a sample costs, emitting four lines.
  *
  * Line-oriented rather than assembled into JSON on the host: quoting a JSON document through a shell
- * through ssh is how a sampler starts reporting its own escaping. The topology document goes last so
- * that a stray newline inside it cannot displace anything.
+ * through ssh is how a sampler starts reporting its own escaping. Both JSON documents have their
+ * newlines stripped so the lines stay aligned, and the status document goes last so that anything it
+ * emits beyond one line cannot displace a field.
+ *
+ * ⚠️ `/status` rather than `/topology`, which was the first version and was measured at **390 kB a
+ * sample** because it carries every peer's metrics. At one sample every five seconds that is around
+ * 94 MB over a twenty-minute run, moved across the same host the run is measuring. `/status` is 351
+ * bytes and names the same things more directly. An instrument that perturbs its subject is the
+ * failure this whole file exists downstream of.
  *
  * `|| true` on each, because a curl that fails must still leave the later lines in place. A sample
  * that lost only its host load is worth more than one that lost everything.
@@ -105,7 +135,9 @@ function sampleCommand(gatewayPort: number): string {
     `curl -s -o /dev/null -m ${CURL_TIMEOUT_S} -w '%{time_total} %{http_code}' ${bee}/health || true`,
     `echo`,
     `cut -d' ' -f1 /proc/loadavg 2>/dev/null || true`,
-    `curl -s -m ${CURL_TIMEOUT_S} ${bee}/topology 2>/dev/null | tr -d '\\n' || true`,
+    `curl -s -m ${CURL_TIMEOUT_S} ${bee}/chequebook/balance 2>/dev/null | tr -d '\\n' || true`,
+    `echo`,
+    `curl -s -m ${CURL_TIMEOUT_S} ${bee}/status 2>/dev/null | tr -d '\\n' || true`,
   ].join('; ');
 }
 
@@ -113,10 +145,11 @@ const UNANSWERED = {
   answered: false,
   serviceMs: null,
   connectedPeers: null,
-  population: null,
-  neighbourhoodDepth: null,
-  reachability: null,
+  neighbourhoodSize: null,
+  isReachable: null,
+  isWarmingUp: null,
   hostLoad1: null,
+  chequebookAvailableBzz: null,
 } as const;
 
 function finiteOrNull(value: unknown): number | null {
@@ -130,22 +163,22 @@ function numberOrNull(text: string | undefined): number | null {
   return finiteOrNull(Number(text));
 }
 
-interface Topology {
-  connected?: unknown;
-  population?: unknown;
-  depth?: unknown;
-  reachability?: unknown;
+interface NodeStatus {
+  connectedPeers?: unknown;
+  neighborhoodSize?: unknown;
+  isReachable?: unknown;
+  isWarmingUp?: unknown;
 }
 
-function parseTopology(line: string | undefined): Topology {
+function parseJsonLine(line: string | undefined): NodeStatus {
   if (line === undefined || line.trim() === '') {
     return {};
   }
   try {
     const parsed: unknown = JSON.parse(line);
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Topology) : {};
+    return typeof parsed === 'object' && parsed !== null ? (parsed as NodeStatus) : {};
   } catch {
-    // A node too busy to serve `/topology` is exactly the case being measured, and its reverse proxy
+    // A node too busy to serve `/status` is exactly the case being measured, and its reverse proxy
     // answering with HTML is one shape that takes. Losing the peer counts does not cost the timing.
     return {};
   }
@@ -153,7 +186,7 @@ function parseTopology(line: string | undefined): Topology {
 
 /** Read one sample out of what {@link sampleCommand} printed. Never throws. */
 export function parseGatewaySample(stdout: string, atMs: number): GatewaySample {
-  const [timing = '', load = '', ...rest] = stdout.split('\n');
+  const [timing = '', load = '', chequebook = '', ...rest] = stdout.split('\n');
   const [seconds, status] = timing.trim().split(/\s+/);
   const serviceMs = numberOrNull(seconds);
 
@@ -163,17 +196,33 @@ export function parseGatewaySample(stdout: string, atMs: number): GatewaySample 
     return { ...UNANSWERED, atMs, serviceMs: serviceMs === null ? null : Math.round(serviceMs * 1_000) };
   }
 
-  const topology = parseTopology(rest.join(''));
+  const nodeStatus = parseJsonLine(rest.join(''));
   return {
     atMs,
     answered: true,
     serviceMs: Math.round(serviceMs * 1_000),
-    connectedPeers: finiteOrNull(topology.connected),
-    population: finiteOrNull(topology.population),
-    neighbourhoodDepth: finiteOrNull(topology.depth),
-    reachability: typeof topology.reachability === 'string' ? topology.reachability : null,
+    connectedPeers: finiteOrNull(nodeStatus.connectedPeers),
+    neighbourhoodSize: finiteOrNull(nodeStatus.neighborhoodSize),
+    isReachable: typeof nodeStatus.isReachable === 'boolean' ? nodeStatus.isReachable : null,
+    isWarmingUp: typeof nodeStatus.isWarmingUp === 'boolean' ? nodeStatus.isWarmingUp : null,
     hostLoad1: numberOrNull(load),
+    chequebookAvailableBzz: availableBzz(chequebook),
   };
+}
+
+/**
+ * Spendable balance in BZZ, from what bee quotes in PLUR.
+ *
+ * A string rather than a number in bee's own reply, because the values overflow what a double holds
+ * exactly. Read through `Number` here deliberately: the question this answers is whether the node can
+ * still pay, and the ~0.0000007 BZZ that prompted this reading is not a figure precision changes.
+ */
+function availableBzz(line: string): number | null {
+  const balance = parseJsonLine(line) as { availableBalance?: unknown };
+  if (typeof balance.availableBalance !== 'string') {
+    return null;
+  }
+  return finiteOrNull(Number(balance.availableBalance) / PLUR_PER_BZZ);
 }
 
 /** How a sample reaches the host. Injected so the loop above it is testable without one. */
@@ -278,6 +327,9 @@ function minuteOf(samples: GatewaySample[], minute: number): GatewayMinute {
   const answered = samples.filter((sample) => sample.answered);
   const peers = answered.map((sample) => sample.connectedPeers).filter((value): value is number => value !== null);
   const loads = samples.map((sample) => sample.hostLoad1).filter((value): value is number => value !== null);
+  const balances = samples
+    .map((sample) => sample.chequebookAvailableBzz)
+    .filter((value): value is number => value !== null);
 
   return {
     minute,
@@ -286,6 +338,7 @@ function minuteOf(samples: GatewaySample[], minute: number): GatewayMinute {
     unanswered: samples.length - answered.length,
     connectedPeers: peers.length > 0 ? Math.min(...peers) : null,
     maxHostLoad1: loads.length > 0 ? Math.max(...loads) : null,
+    chequebookAvailableBzz: balances.length > 0 ? Math.min(...balances) : null,
   };
 }
 
@@ -368,6 +421,18 @@ function warningsFor(
     warnings.push(`the node did not answer ${unanswered} of ${minutes.reduce((n, m) => n + m.samples, 0)} samples`);
   }
 
+  const lowestBalance = minutes
+    .map((m) => m.chequebookAvailableBzz)
+    .filter((value): value is number => value !== null)
+    .reduce<number | null>((lowest, bzz) => (lowest === null || bzz < lowest ? bzz : lowest), null);
+  if (lowestBalance !== null && lowestBalance < CHEQUEBOOK_FLOOR_BZZ) {
+    warnings.push(
+      `the gateway had ${lowestBalance.toFixed(4)} BZZ left to pay for reads with, against a floor of ` +
+        `${CHEQUEBOOK_FLOOR_BZZ}. A node that cannot issue cheques is throttled by its peers to the free tier, ` +
+        'which slows the read path with every other signal here still healthy',
+    );
+  }
+
   const peerCounts = minutes.map((m) => m.connectedPeers).filter((value): value is number => value !== null);
   if (peerCounts.length > 1 && Math.min(...peerCounts) < peerCounts[0] * PEER_LOSS_SHARE) {
     warnings.push(
@@ -388,8 +453,8 @@ export function gatewaySection(health: GatewayHealth): string[] {
   }
 
   lines.push(
-    '| minute | samples | median /health | unanswered | peers | host load |',
-    '| ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| minute | samples | median /health | unanswered | peers | host load | BZZ to spend |',
+    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...health.minutes.map(
       (m) =>
         [
@@ -399,6 +464,7 @@ export function gatewaySection(health: GatewayHealth): string[] {
           m.unanswered,
           m.connectedPeers ?? '—',
           m.maxHostLoad1?.toFixed(2) ?? '—',
+          m.chequebookAvailableBzz?.toFixed(4) ?? '—',
         ].join(' | ') + ' |',
     ),
     '',
