@@ -111,6 +111,73 @@ export async function quoteStamp(bee: Bee, options: StampOptions): Promise<Stamp
   }
 }
 
+/**
+ * The fields of a Bee postage batch this module reads, so a caller need not hold a whole one.
+ *
+ * `usage` and `duration` are bee-js's own, deliberately. `usage` is `utilization / 2^(depth -
+ * bucketDepth)` and this module used to compute that itself, which put a second copy of the library's
+ * formula in a place nothing would have noticed drifting.
+ */
+export interface BatchLimits {
+  depth: number;
+  bucketDepth: number;
+  utilization: number;
+  usage: number;
+  duration: Duration;
+  immutableFlag: boolean;
+}
+
+/**
+ * Chunks one bucket of this batch holds, which is the denominator `utilization` is counted against.
+ *
+ * ⚠️ `utilization` is the count in the **fullest** bucket, not an average and not a total, so a batch
+ * is out of room long before its nominal `2^depth` chunks are used. Depth 22 gives 65,536 buckets of
+ * 64 chunks, and the first bucket to reach 64 is the end of the batch. bee-js documents the
+ * relationship on `PostageBatch.utilization` but does not expose the number, so it is derived here to
+ * be shown beside the count rather than to be compared against anything.
+ */
+export function bucketCapacity(batch: Pick<BatchLimits, 'depth' | 'bucketDepth'>): number {
+  return 2 ** (batch.depth - batch.bucketDepth);
+}
+
+/**
+ * The owner's thresholds for stopping and asking, rather than anything Bee enforces. A sweep's rows
+ * are only comparable inside one sitting, so a batch that runs out halfway wastes the runs already
+ * in it, and both of these are set to fire before that rather than during it.
+ */
+const CROWDED_USAGE = 0.75;
+const SHORT_TTL_DAYS = 2;
+
+/**
+ * Why this batch wants attention, or null while it wants none.
+ *
+ * ⛔ Measured 2026-08-04, and the reason this exists: batch `01cc77f9` at depth 22 read 9.4% used on
+ * 08-03 and 64/64 on 08-04. One day of sweep traffic took it from nearly empty to full while its TTL,
+ * the only thing anything watched, still had days on it.
+ *
+ * A mutable batch is the dangerous one and it is also the quiet one: a full bucket **overwrites its
+ * oldest chunk** rather than refusing the upload, so a live stream carries on exactly as before while
+ * its earliest segments stop being retrievable. Nothing logs it and every health signal stays green.
+ * An immutable batch refuses the upload instead, which stops a broadcast and is far easier to notice.
+ */
+export function batchWarning(batch: BatchLimits): string | null {
+  const reasons: string[] = [];
+  const full = `${Math.round(batch.usage * 100)}% full`;
+
+  if (batch.usage >= CROWDED_USAGE) {
+    reasons.push(
+      batch.immutableFlag
+        ? `${full}, so it will start refusing uploads`
+        : `${full} and mutable, so a full bucket overwrites its oldest chunk and older segments stop being retrievable with nothing logged`,
+    );
+  }
+  if (batch.duration.toDays() < SHORT_TTL_DAYS) {
+    reasons.push(`${batch.duration.toDays().toFixed(2)} days left`);
+  }
+
+  return reasons.length > 0 ? reasons.join(', and ') : null;
+}
+
 export function printStampQuote(options: StampOptions, quote: StampQuote): void {
   table('Amount', options.amount);
   table('Depth', String(options.depth));
