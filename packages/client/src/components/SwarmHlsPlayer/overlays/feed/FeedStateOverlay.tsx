@@ -1,6 +1,7 @@
 import React from 'react';
 
 import {
+  FEED_STATE_DEGRADED,
   FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
@@ -13,12 +14,14 @@ import './FeedStateOverlay.scss';
 /**
  * What each state is called on screen. One message per situation rather than one for all of them,
  * because they ask different things of the viewer: a gateway that is not answering usually comes
- * back on its own, a feed that has stopped advancing while its gateway answers usually does not, and
- * a broadcast that has ended is never coming back.
+ * back on its own, a feed that has stopped advancing while its gateway answers usually does not, a
+ * connection too slow to keep up is neither of those and often recovers, and a broadcast that has
+ * ended is never coming back.
  */
 const MESSAGE: Record<Exclude<FeedState, typeof FEED_STATE_LIVE>, string> = {
   [FEED_STATE_RECONNECTING]: 'Reconnecting to the stream',
   [FEED_STATE_STALLED]: 'Waiting for the broadcast to continue',
+  [FEED_STATE_DEGRADED]: 'The stream is struggling to keep up',
   [FEED_STATE_ENDED]: 'This broadcast has ended',
 };
 

@@ -8,6 +8,12 @@ export const FEED_STATE_RECONNECTING = 'reconnecting';
 export const FEED_STATE_STALLED = 'stalled';
 
 /**
+ * The gateway is answering, and serving what it is asked for, more slowly than the player consumes
+ * it. Nothing has failed and the picture keeps stopping anyway.
+ */
+export const FEED_STATE_DEGRADED = 'degraded';
+
+/**
  * The broadcaster ended the stream. The only terminal state here: the other three describe something
  * still being retried, and this one describes there being nothing left to retry.
  */
@@ -17,6 +23,7 @@ export type FeedState =
   | typeof FEED_STATE_LIVE
   | typeof FEED_STATE_RECONNECTING
   | typeof FEED_STATE_STALLED
+  | typeof FEED_STATE_DEGRADED
   | typeof FEED_STATE_ENDED;
 
 export type FeedStateListener = (state: FeedState) => void;
@@ -74,6 +81,30 @@ export const MANIFEST_RETRY_CAP_MS = 30_000;
 export const UNSERVED_SLOT_POLL_LIMIT = 30;
 
 /**
+ * How many times the picture may stop inside {@link PLAYBACK_STALL_WINDOW_MS} before the stream is
+ * called degraded.
+ *
+ * Counted from the viewer's own symptom rather than from a transfer time, which is what makes one
+ * pair of numbers work across every profile. A read slow enough to matter is one the buffer stops
+ * absorbing, and how slow that is depends on the segment length, the bitrate and the deployment. How
+ * often the picture stops does not.
+ *
+ * ⭐ **Both numbers are measured rather than chosen**, by replaying every archived browser run's
+ * rebuffer counter through candidate rules. Within a rolling twenty seconds and after the first
+ * frame, the fourteen-minute collapse of `docs/bench/the-fourteen-minute-collapse-2026-08-07.md`
+ * reaches 4 stalls, the one other run with viewer-visible degradation reaches 4, and the worst run a
+ * viewer would call healthy reaches 1, including four separate clean hours. The next rule down, 3
+ * stalls in fifteen seconds, fires 2786 seconds into one of those hours.
+ *
+ * On the collapse this is reached 9 seconds after the picture first stopped, against the six minutes
+ * of silence that run actually shipped.
+ */
+export const PLAYBACK_STALL_BURST = 4;
+
+/** The span the burst is counted over. See {@link PLAYBACK_STALL_BURST} for where the pair comes from. */
+export const PLAYBACK_STALL_WINDOW_MS = 20_000;
+
+/**
  * How many topics may be tracked at once.
  *
  * Only topics in trouble are held, and a topic is dropped the moment its gateway answers, so this
@@ -92,13 +123,35 @@ interface TopicHealth {
   unservedSlotPolls: number;
   /** Whether the broadcaster published a manifest that ends the playlist. Never goes back to false. */
   hasEnded: boolean;
+  /** When the picture last stopped, most recent last, trimmed by {@link recentStalls}. */
+  stallsAtMs: readonly number[];
 }
 
-const HEALTHY: TopicHealth = { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: 0, hasEnded: false };
+const HEALTHY: TopicHealth = {
+  gatewayFailures: 0,
+  retryAtMs: 0,
+  unservedSlotPolls: 0,
+  hasEnded: false,
+  stallsAtMs: [],
+};
 
 /** How long to hold off after `failures` consecutive failures, doubling and then flat at the cap. */
 export function backoffDelayMs(failures: number): number {
   return Math.min(MANIFEST_RETRY_CAP_MS, MANIFEST_RETRY_BASE_MS * 2 ** (failures - 1));
+}
+
+/**
+ * The stalls still inside the window, and never more of them than it takes to reach the burst.
+ *
+ * Both halves matter. The window is what makes this a burst rather than a lifetime total, so that a
+ * stream which stalls four times in an hour is not described as struggling for the rest of the
+ * session. The cap is what stops a stream that never recovers from accumulating a timestamp per
+ * stall for as long as the tab is open, and it costs nothing: if more than a burst's worth sit in
+ * the window, the most recent burst's worth are all in it too.
+ */
+function recentStalls(stallsAtMs: readonly number[], nowMs: number): readonly number[] {
+  const inWindow = stallsAtMs.filter((at) => nowMs - at < PLAYBACK_STALL_WINDOW_MS);
+  return inWindow.slice(-PLAYBACK_STALL_BURST);
 }
 
 /**
@@ -107,10 +160,10 @@ export function backoffDelayMs(failures: number): number {
  * before then is dropping the count that decides when that is.
  */
 function isWorthTracking(health: TopicHealth): boolean {
-  return health.gatewayFailures > 0 || health.unservedSlotPolls > 0 || health.hasEnded;
+  return health.gatewayFailures > 0 || health.unservedSlotPolls > 0 || health.hasEnded || health.stallsAtMs.length > 0;
 }
 
-function stateOfHealth(health: TopicHealth | undefined): FeedState {
+function stateOfHealth(health: TopicHealth | undefined, nowMs: number): FeedState {
   if (!health) {
     return FEED_STATE_LIVE;
   }
@@ -124,6 +177,12 @@ function stateOfHealth(health: TopicHealth | undefined): FeedState {
   }
   if (health.unservedSlotPolls >= UNSERVED_SLOT_POLL_LIMIT) {
     return FEED_STATE_STALLED;
+  }
+  // Last of the four, because it is the least specific. Each of the others names why the picture
+  // stopped, and this one only names that it did, so a viewer whose gateway has gone away entirely
+  // would be told the smaller half of the truth.
+  if (recentStalls(health.stallsAtMs, nowMs).length >= PLAYBACK_STALL_BURST) {
+    return FEED_STATE_DEGRADED;
   }
   return FEED_STATE_LIVE;
 }
@@ -146,6 +205,19 @@ export class FeedHealthTracker {
   private readonly listeners = new Map<string, Set<FeedStateListener>>();
 
   /**
+   * What subscribers were last told, for topics not currently live.
+   *
+   * The comparison that decides whether to publish cannot be made by reading the state twice around
+   * a change, because one of the four states is a function of the clock as well as of the entry: a
+   * burst of stalls that ages out changes the state with nothing recorded. Read that way the state
+   * before the change is already the state after it, so the one transition nothing else can announce
+   * is the one that gets swallowed, and the overlay stays up until the next real fault.
+   *
+   * Holds only topics in a non-live state, so it is bounded by the same limit the entries are.
+   */
+  private readonly lastPublished = new Map<string, FeedState>();
+
+  /**
    * @param now A monotonic clock. `Date.now` is not one: a system clock correction during an outage
    *   moves every deadline already scheduled against it, either releasing the backoff at once or
    *   holding it for as long as the correction was large.
@@ -153,7 +225,18 @@ export class FeedHealthTracker {
   constructor(private readonly now: () => number = () => performance.now()) {}
 
   state(topicId: string): FeedState {
-    return stateOfHealth(this.topics.get(topicId));
+    return stateOfHealth(this.topics.get(topicId), this.now());
+  }
+
+  /**
+   * How many stalls are held against a topic right now.
+   *
+   * Read by tests only, and there because the bound on {@link recentStalls} is otherwise invisible:
+   * a stream that stalls without pause reports the same state whether four timestamps are kept or
+   * four hundred thousand.
+   */
+  stallsRecorded(topicId: string): number {
+    return this.topics.get(topicId)?.stallsAtMs.length ?? 0;
   }
 
   /**
@@ -237,9 +320,23 @@ export class FeedHealthTracker {
    *
    * An ended broadcast is kept rather than forgotten. Forgetting it would read as `live` again, and
    * the last thing a finished stream does is serve the manifest that finished it.
+   *
+   * ⭐ A run of playback stalls is kept for the opposite reason: serving a slot does not disprove it.
+   * Through the whole of the fourteen-minute collapse the gateway kept serving, 384 slots against 34
+   * empty ones after the onset, while the picture stopped every couple of seconds. Clearing the
+   * stalls here would make the state that run exists to add unreachable on the run itself.
    */
   recordGatewayResponse(topicId: string): void {
-    this.update(topicId, (health) => (health.hasEnded ? { ...HEALTHY, hasEnded: true } : null));
+    this.update(topicId, (health) => ({ ...HEALTHY, hasEnded: health.hasEnded, stallsAtMs: health.stallsAtMs }));
+  }
+
+  /** The picture stopped, after having started. See {@link PLAYBACK_STALL_BURST}. */
+  recordPlaybackStall(topicId: string): void {
+    const stalledAtMs = this.now();
+    this.update(topicId, (health) => ({
+      ...health,
+      stallsAtMs: recentStalls([...health.stallsAtMs, stalledAtMs], stalledAtMs),
+    }));
   }
 
   /** The broadcaster published a manifest that ends the playlist. Terminal, and not a fault. */
@@ -279,8 +376,12 @@ export class FeedHealthTracker {
   }
 
   private update(topicId: string, change: (health: TopicHealth) => TopicHealth | null): void {
-    const before = this.state(topicId);
-    const next = change(this.topics.get(topicId) ?? HEALTHY);
+    const changed = change(this.topics.get(topicId) ?? HEALTHY);
+    // Aged out here as well as when a stall is recorded, so that the entry stops being worth
+    // tracking on the first poll after its window empties. Nothing schedules a re-read, and nothing
+    // needs to: the fetcher records against this on every poll, so a topic whose only remaining
+    // reason to be held is a burst that has expired is dropped within a poll of expiring.
+    const next = changed === null ? null : { ...changed, stallsAtMs: recentStalls(changed.stallsAtMs, this.now()) };
 
     // Deleted before every write as well as instead of one, so that a re-insert moves the topic to
     // the end of the map and eviction below takes the least recently updated rather than the oldest.
@@ -290,10 +391,7 @@ export class FeedHealthTracker {
       this.evictOverflow();
     }
 
-    const after = this.state(topicId);
-    if (after !== before) {
-      this.publish(topicId, after);
-    }
+    this.publish(topicId, this.state(topicId));
   }
 
   private evictOverflow(): void {
@@ -321,7 +419,17 @@ export class FeedHealthTracker {
     }
   }
 
+  /** Says a state once. A subscriber hearing the same thing twice reads as a second fault. */
   private publish(topicId: string, state: FeedState): void {
+    if ((this.lastPublished.get(topicId) ?? FEED_STATE_LIVE) === state) {
+      return;
+    }
+    if (state === FEED_STATE_LIVE) {
+      this.lastPublished.delete(topicId);
+    } else {
+      this.lastPublished.set(topicId, state);
+    }
+
     for (const listener of this.listeners.get(topicId) ?? []) {
       this.notify(listener, state);
     }

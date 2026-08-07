@@ -3,12 +3,15 @@ import { describe, it } from 'vitest';
 
 import {
   backoffDelayMs,
+  FEED_STATE_DEGRADED,
   FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FEED_STATE_STALLED,
   FeedHealthTracker,
   type FeedState,
+  PLAYBACK_STALL_BURST,
+  PLAYBACK_STALL_WINDOW_MS,
   TRACKED_TOPIC_LIMIT,
   UNSERVED_SLOT_POLL_LIMIT,
 } from '../src/components/SwarmHlsPlayer/feedState';
@@ -517,5 +520,212 @@ describe('FeedHealthTracker on a broadcast that has ended', () => {
     tracker.recordFeedEnded('some-other-broadcast');
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+});
+
+/**
+ * The fault the other three states cannot describe, from
+ * `docs/bench/the-fourteen-minute-collapse-2026-08-07.md`.
+ *
+ * A gateway answered every request it was given, correctly, for twenty minutes. For the last six of
+ * them it answered about five times more slowly than it had, the player's buffer never recovered, and
+ * the viewer watched a picture that stopped every couple of seconds. `feedStateMessage` was empty in
+ * all 1185 samples, because the other three states all describe a gateway failing to deliver and this
+ * one delivered.
+ *
+ * Counted from the viewer's own symptom rather than from a transfer time, so there is no threshold to
+ * pick per profile: the picture stopping is the thing worth saying, and a slow read the buffer
+ * absorbs is not.
+ */
+/** A run of stalls close enough together to be one bad patch, at whatever the clock currently reads. */
+function stall(tracker: FeedHealthTracker, times: number): void {
+  for (let count = 0; count < times; count++) {
+    tracker.recordPlaybackStall(TOPIC);
+  }
+}
+
+describe('FeedHealthTracker on a gateway that is slow rather than absent', () => {
+  /**
+   * Pinned against the archived runs rather than against the implementation, the way the two
+   * constants above are, and for the same reason: a test that loops `PLAYBACK_STALL_BURST` times
+   * against a comparison to `PLAYBACK_STALL_BURST` only ever compares a constant to itself.
+   *
+   * Both numbers come from replaying every archived browser run's rebuffer counter through candidate
+   * rules. In a rolling twenty seconds, excluding startup, the collapse run reaches 4 stalls and the
+   * only other degraded run reaches 4, while the worst run a viewer would call healthy reaches 1. The
+   * next rule down, 3 stalls in fifteen seconds, fires 2786 seconds into a clean hour.
+   */
+  it('is set to the burst that separated a degraded run from a healthy one', () => {
+    assert.equal(PLAYBACK_STALL_BURST, 4);
+    assert.equal(PLAYBACK_STALL_WINDOW_MS, 20_000);
+  });
+
+  /**
+   * Written in seconds and stalls rather than against the two constants, which is the discipline the
+   * backoff schedule above is written under and the one this block needed most. Every one of these
+   * driven off `PLAYBACK_STALL_BURST` passes at a burst of 1, where a single stall on any stream puts
+   * the overlay up, because a loop of `BURST - 1` runs zero times. Only the pin above failed it.
+   */
+  it('says nothing about the three stalls in a row a healthy stream can have', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    stall(tracker, 3);
+
+    assert.deepEqual(seen, [FEED_STATE_LIVE]);
+  });
+
+  it('calls the stream degraded on the fourth stall in twenty seconds', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    stall(tracker, 4);
+
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_DEGRADED]);
+  });
+
+  it('says it once, not once per stall in the burst', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    stall(tracker, 12);
+
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_DEGRADED]);
+  });
+
+  /**
+   * The window is what makes this a burst rather than a total. Without it a stream that stalls four
+   * times in an hour wears the overlay for the rest of the session, which describes nothing.
+   *
+   * Spaced by a real duration rather than by the window constant, which the first version of this
+   * test used. Advancing by the same value the implementation compares against passes at any window
+   * length at all, including one longer than a broadcast.
+   */
+  it('forgets a stall old enough to have been a different problem', () => {
+    const { tracker, clock } = makeTracker();
+
+    for (let stall = 0; stall < 16; stall++) {
+      tracker.recordPlaybackStall(TOPIC);
+      clock.advance(21_000);
+    }
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  /** The other side of the window: four stalls spread thinly are not the burst four together are. */
+  it('does not add up stalls a viewer would not have felt as one bad patch', () => {
+    const { tracker, clock } = makeTracker();
+
+    for (let stall = 0; stall < 4; stall++) {
+      tracker.recordPlaybackStall(TOPIC);
+      clock.advance(7_000);
+    }
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  /**
+   * ⭐ The case the collapse actually was, and the one the other states get wrong. Slots kept being
+   * served all the way through: 384 served against 34 empty after the onset, and the longest run of
+   * consecutive unserved slots in the whole run was 2. A served slot ends a stalled feed and a run of
+   * failures, because it disproves both. It disproves nothing about a player that cannot keep up.
+   */
+  it('is not cleared by the gateway serving a slot, because it never stopped serving them', () => {
+    const { tracker } = makeTracker();
+
+    for (let poll = 0; poll < 4; poll++) {
+      tracker.recordPlaybackStall(TOPIC);
+      tracker.recordGatewayResponse(TOPIC);
+      tracker.recordUnservedSlot(TOPIC);
+      tracker.recordGatewayReachable(TOPIC);
+    }
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_DEGRADED);
+  });
+
+  /**
+   * Clears itself off the back of the polling the fetcher is already doing, rather than off a timer.
+   * Every poll records something, and every record re-reads the clock, so a window that has emptied
+   * is noticed within a poll of emptying without this class ever having to schedule anything.
+   */
+  it('goes back to live on the first poll after the burst has aged out', () => {
+    const { tracker, clock, seen, watch } = makeTracker();
+    watch();
+
+    stall(tracker, 4);
+    clock.advance(PLAYBACK_STALL_WINDOW_MS + 1);
+    tracker.recordGatewayResponse(TOPIC);
+
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_DEGRADED, FEED_STATE_LIVE]);
+  });
+
+  it('forgets the stalls along with the topic when the tracker is cleared', () => {
+    const { tracker } = makeTracker();
+
+    stall(tracker, 4);
+    tracker.clear(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  /**
+   * The weakest of the four, deliberately. Each of the other three names something more specific
+   * about why the picture stopped, and a viewer told the stream is unsteady when the gateway has gone
+   * away entirely has been told the smaller half of the truth.
+   */
+  for (const [name, escalate] of [
+    ['a gateway that stopped answering', (tracker: FeedHealthTracker) => tracker.recordGatewayFailure(TOPIC)],
+    [
+      'a feed that stopped advancing',
+      (tracker: FeedHealthTracker) => {
+        for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
+          tracker.recordUnservedSlot(TOPIC);
+        }
+      },
+    ],
+    ['a broadcast that ended', (tracker: FeedHealthTracker) => tracker.recordFeedEnded(TOPIC)],
+  ] as const) {
+    it(`is outranked by ${name}`, () => {
+      const { tracker } = makeTracker();
+      stall(tracker, 4);
+
+      escalate(tracker);
+
+      assert.notEqual(tracker.state(TOPIC), FEED_STATE_DEGRADED);
+    });
+  }
+
+  it('is still there underneath once the stronger fault clears', () => {
+    const { tracker } = makeTracker();
+    stall(tracker, 4);
+
+    tracker.recordGatewayFailure(TOPIC);
+    tracker.recordGatewayReachable(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_DEGRADED);
+  });
+
+  it('keeps a degraded topic tracked, so the burst survives a poll that found nothing wrong', () => {
+    const { tracker } = makeTracker();
+    stall(tracker, 4);
+
+    tracker.recordGatewayResponse(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_DEGRADED);
+  });
+
+  /** The window is bounded by time, and the memory it costs must be bounded by the burst. */
+  it('does not grow its record of a stream that stalls without pause', () => {
+    const { tracker, clock } = makeTracker();
+
+    for (let stall = 0; stall < 10_000; stall++) {
+      tracker.recordPlaybackStall(TOPIC);
+      clock.advance(1);
+    }
+
+    assert.ok(
+      tracker.stallsRecorded(TOPIC) <= PLAYBACK_STALL_BURST,
+      `kept ${tracker.stallsRecorded(TOPIC)} stalls, which is a leak on any stream that never recovers`,
+    );
   });
 });
