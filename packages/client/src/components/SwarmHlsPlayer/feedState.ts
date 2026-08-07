@@ -53,10 +53,23 @@ export const MANIFEST_RETRY_CAP_MS = 30_000;
  * profile thirty polls is therefore on the order of thirty seconds rather than sixty, and the
  * measured live slot-read rate suggests faster still.
  *
- * The number is left where it is deliberately. It was chosen against how long a viewer will sit
- * through a frozen picture, which is a fact about viewers rather than about the arithmetic above,
- * and moving it on the strength of a corrected derivation would be changing measured behaviour
- * without a measurement. Re-deriving it wants a run, not an edit.
+ * ⚠️ **The run happened, and it says the unit is the problem rather than the number.** Two recorded
+ * uploader crashes, task #100 and `docs/bench/overlay-silence-during-a-crash-2026-08-07.md`. The
+ * poll rate is not a constant and does not vary randomly: it collapses during exactly the stall this
+ * counts. Feed reads went from a 264ms gap before the crash to **1064ms during the freeze**, because
+ * each read takes about three times as long and the client also spaces unserved reads about four
+ * times wider. So thirty polls is about **8 seconds while healthy and about 32 during a stall**, and
+ * the delay before a viewer is told anything is a by-product rather than a decision.
+ *
+ * What that costs, measured: a 12.4 second freeze accumulated 13 polls and never reached this
+ * threshold, so the viewer watched a dead picture for twelve seconds and was told nothing, while a
+ * 54.9 second freeze in the same scenario was announced 14.4 seconds in.
+ *
+ * The number is still left where it is, and now for a different reason. It was chosen against how
+ * long a viewer will sit through a frozen picture, which is a fact about viewers, and the fix
+ * indicated is to denominate this in elapsed milliseconds on the unserved slot rather than to move
+ * the count. That changes when the overlay appears on every deployment, so it is a product decision
+ * and not a correction.
  */
 export const UNSERVED_SLOT_POLL_LIMIT = 30;
 
