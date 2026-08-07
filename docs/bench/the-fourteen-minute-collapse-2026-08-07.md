@@ -86,15 +86,33 @@ on a 0.25s arm would have crossed a 2.8x margin sooner and harder.
 This is a fourth independent reason favouring the longer segment, after cost, postage and refusals,
 and like those three it does not go through the player's latency target.
 
-## ⛔ The viewer was told nothing, for six minutes
+## ⛔ The viewer was told nothing, for six minutes, and it is not the reason it looks like
 
 `feedStateMessage` is empty for every one of the 1185 samples, including the 296 taken while the
 buffer sat under 0.7s with 144 rebuffers behind it. A broadcast degraded to the point of stalling
 every few seconds showed the same interface as a healthy one.
 
-This is the mechanism `#100` already names: the overlay's threshold counts polls, and the poll rate
-collapses during exactly the stall it is supposed to report. **This run is a clean second sighting of
-it**, on a fault the overlay was built for.
+⛔ **This is not the `#100` mechanism, and reading it as one sends the fix to the wrong place.** That
+one says the overlay's threshold counts polls and the poll rate collapses during the stall it is
+meant to report, so the message arrives late. Here the message could not arrive at all:
+
+| | over the whole run |
+| --- | ---: |
+| longest run of consecutive unserved slots | **2** |
+| what `UNSERVED_SLOT_POLL_LIMIT` requires | 30 |
+| slot reads served after the onset | 384 |
+| slot reads empty after the onset | 34 |
+| gateway failures, refusals, segments never served | 0 |
+
+⭐ **The counter never got past 2, in twenty minutes.** No value of the threshold would have produced
+the overlay here without also producing it on a healthy stream, and the longest run of 2 landed at
+t = 28s while the stream was perfect. The tracker was **right**: the gateway was answering, and it was
+answering with content.
+
+⭐ **The gap is in the vocabulary, not the threshold.** `FeedHealthTracker` has three fault states,
+and all three describe the gateway failing to deliver: not answering, answering with nothing, and
+finished. A gateway that answers everything it is asked, correctly, but more slowly than the player
+consumes it, is none of those. It is the fault this run had, and there is no state for it.
 
 ## What a reader should take from this
 
@@ -110,6 +128,7 @@ it**, on a fault the overlay was built for.
    against a chequebook that is the binding budget. **Instrument instead, and let it be caught the
    next time it happens on a run that was going to happen anyway.**
 5. ⭐ **Two changes cost nothing and turn the next occurrence into an answer**: sample the gateway
-   node's own service metrics alongside the browser during a run, and fix the overlay so a viewer is
-   told. The second one is worth doing whatever happens to the first, because it is the viewer-facing
-   half.
+   node's own service metrics alongside the browser during a run, and give the overlay a state for a
+   gateway that is slow rather than absent. The second one is worth doing whatever happens to the
+   first, because it is the viewer-facing half, and it is a hole rather than a setting: the reason
+   nothing was said is that nothing could be.
