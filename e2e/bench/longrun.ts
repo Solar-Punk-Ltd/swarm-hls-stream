@@ -201,12 +201,18 @@ function stallLines(
   runStartedAtMs: number,
   medianPollGapMs: number,
 ): string[] {
-  const observed = feed.stallPolls >= 2;
+  // Polls that came back naming something. A poll that brought no answer spans the stall without
+  // confirming it, and attributing a stall to the feed on the strength of silence is exactly what
+  // this paragraph exists not to do.
+  const confirming = feed.stallPolls - feed.stallPollsWithoutAnswer;
+  const observed = confirming >= 2;
   const atMinute = ((feed.stallStartedAtMs - runStartedAtMs) / 60_000).toFixed(1);
+  const unanswered =
+    feed.stallPollsWithoutAnswer > 0 ? `, ${feed.stallPollsWithoutAnswer} of which brought no answer at all` : '';
 
   return [
     `- the feed named the same newest segment for **${seconds(feed.stallMs)}**, across ${feed.stallPolls} ` +
-      `poll(s), starting ${atMinute} minutes in.`,
+      `poll(s)${unanswered}, starting ${atMinute} minutes in.`,
     // The MEASURED gap, not the configured backoff. This line used to quote the constant and claim
     // nothing shorter was observable, which was false whenever the stream was healthy: the loop does
     // not sleep when a poll finds something, so it runs far faster than its own backoff.
@@ -214,11 +220,11 @@ function stallLines(
       `${seconds(medianPollGapMs)} typically. **Both are measured rather than configured**, and the ` +
       'pair is what bounds the resolution here: the gaps are bimodal, so neither alone describes it.',
     observed
-      ? `- **that stall is the feed's**: the bench asked ${feed.stallPolls} times inside it and got the same ` +
-        'answer every time, so a viewer polling at this cadence saw the stream stop for that long.'
-      : `- **that gap is this instrument's, not the feed's.** Only one poll fell inside it, so the feed may ` +
-        'have advanced any number of times unobserved. Read it as the resolution of the measurement rather ' +
-        'than as a stall.',
+      ? `- **that stall is the feed's**: ${confirming} polls inside it came back naming the same segment, so a ` +
+        'viewer polling at this cadence saw the stream stop for that long.'
+      : `- **that gap is this instrument's, not the feed's.** Fewer than two polls inside it came back with an ` +
+        'answer, so the feed may have advanced any number of times unobserved. Read it as the resolution of ' +
+        'the measurement rather than as a stall.',
     observed
       ? `- a player holding ${seconds(bufferMs)} ` +
         (feed.stallMs > bufferMs + segmentMs

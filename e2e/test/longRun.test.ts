@@ -384,6 +384,59 @@ describe('whether a gap belongs to the feed or to the bench watching it', () => 
   it('refuses to judge a feed off fewer than two polls', () => {
     assert.throws(() => feedProgress([{ atMs: 0, newestRef: 'a', resolvedIndex: null }]), /at least two polls/);
   });
+
+  /**
+   * Task #103, and the sharpest version of it. `run.ts` records a poll that failed as
+   * `newestRef: null` on purpose, and says in its own comment that a feed poll slow enough to time
+   * out is the strongest sample of LAT-10 there is. This function then read that null as a change of
+   * newest segment, so the strongest evidence of a stall ended the stall it was evidence of, and a
+   * long freeze was reported as its largest uninterrupted piece.
+   *
+   * A poll that brought no answer is the absence of an observation, not the observation of a change.
+   */
+  describe('a poll that answered nothing', () => {
+    it('does not break the stall it is sitting inside', () => {
+      const refs = ['a', 'b', 'b', 'b', null, null, 'b', 'b', 'c'];
+      const polls = refs.map((newestRef, i) => ({ atMs: i * 2_000, newestRef, resolvedIndex: null }));
+
+      const progress = feedProgress(polls);
+
+      assert.equal(progress.stallMs, 14_000, 'the stall ran from poll 1 to poll 8 and was reported in pieces');
+      assert.equal(progress.stallPolls, 7);
+    });
+
+    it('is counted apart, so a stall nobody confirmed is not read as one that was', () => {
+      const refs = ['a', 'b', 'b', null, null, 'b', 'c'];
+      const polls = refs.map((newestRef, i) => ({ atMs: i * 2_000, newestRef, resolvedIndex: null }));
+
+      const progress = feedProgress(polls);
+
+      assert.equal(progress.stallPolls, 5);
+      assert.equal(progress.stallPollsWithoutAnswer, 2);
+    });
+
+    /** Nothing was ever learned, so there is nothing to say and no stall to report. */
+    it('reports no stall at all when every poll came back empty', () => {
+      const polls = [0, 1, 2].map((i) => ({ atMs: i * 2_000, newestRef: null, resolvedIndex: null }));
+
+      const progress = feedProgress(polls);
+
+      assert.equal(progress.stallMs, 0);
+      assert.equal(progress.stallPolls, 0);
+      assert.equal(progress.longestPollGapMs, 2_000, 'the poll cadence is observable even when nothing else is');
+    });
+
+    /** The prologue case: the run had not yet seen a segment, so those seconds belong to nobody. */
+    it('does not charge the first segment for the silence before it appeared', () => {
+      const polls = [
+        { atMs: 0, newestRef: null, resolvedIndex: null },
+        { atMs: 30_000, newestRef: 'a', resolvedIndex: null },
+        { atMs: 32_000, newestRef: 'b', resolvedIndex: null },
+      ];
+
+      assert.equal(feedProgress(polls).stallMs, 2_000);
+    });
+  });
 });
 
 /**

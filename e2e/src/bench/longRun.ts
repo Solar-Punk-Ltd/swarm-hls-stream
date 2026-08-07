@@ -280,6 +280,15 @@ export interface FeedProgress {
    * have advanced any number of times unobserved.
    */
   stallPolls: number;
+  /**
+   * How many of those polls brought back no answer at all, so they confirm nothing.
+   *
+   * `stallPolls` minus this is what actually saw the same segment still newest. A stall spanned
+   * mostly by failures is one the bench cannot attribute, and saying so is the point: `run.ts`
+   * records a failed poll deliberately, because a feed read slow enough to time out is the strongest
+   * sample of LAT-10 there is, and a reader needs to know how much of a stall rests on it.
+   */
+  stallPollsWithoutAnswer: number;
   /** Bench clock, when that segment first appeared. */
   stallStartedAtMs: number;
   /**
@@ -354,11 +363,27 @@ export function feedProgress(polls: readonly FeedPoll[]): FeedProgress {
   let best: Omit<FeedProgress, 'longestPollGapMs'> = {
     stallMs: 0,
     stallPolls: 0,
+    stallPollsWithoutAnswer: 0,
     stallStartedAtMs: ordered[0].atMs,
     stallSkippedUpdates: null,
   };
-  let runStart = 0;
-  for (let i = 1; i < ordered.length; i += 1) {
+
+  // Anchored on the first poll that named something, so the silence before a run's first segment is
+  // charged to nobody rather than to that segment.
+  let runStart = ordered.findIndex((poll) => poll.newestRef !== null);
+  if (runStart === -1) {
+    return { ...best, longestPollGapMs };
+  }
+
+  let withoutAnswer = 0;
+  for (let i = runStart + 1; i < ordered.length; i += 1) {
+    // A poll that brought no answer is the absence of an observation, not the observation of a
+    // change, so it spans the stall rather than ending it. Reading it as a change let the strongest
+    // evidence of a freeze break the freeze it was evidence of. See task #103.
+    if (ordered[i].newestRef === null) {
+      withoutAnswer += 1;
+      continue;
+    }
     if (ordered[i].newestRef === ordered[runStart].newestRef) {
       continue;
     }
@@ -369,11 +394,13 @@ export function feedProgress(polls: readonly FeedPoll[]): FeedProgress {
       best = {
         stallMs,
         stallPolls: i - runStart,
+        stallPollsWithoutAnswer: withoutAnswer,
         stallStartedAtMs: ordered[runStart].atMs,
         stallSkippedUpdates: before === null || after === null ? null : after - before,
       };
     }
     runStart = i;
+    withoutAnswer = 0;
   }
 
   return { ...best, longestPollGapMs };
