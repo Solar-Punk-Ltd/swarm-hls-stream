@@ -40,8 +40,20 @@ Read off the deployment either side of each run rather than estimated.
 | per broadcast-minute | 0.25s GOP | 1.0s GOP | change |
 | --- | ---: | ---: | ---: |
 | **uploader BZZ** | 0.0179 | **0.0128** | **-28%** |
-| postage, fullest bucket | 0.22 | **0.15** | **-32%** |
+| ~~postage, fullest bucket~~ | ~~0.22~~ | ~~0.15~~ | ⛔ **RETRACTED** |
 | BZZ per MB delivered | 0.00086 | **0.00062** | **-28%** |
+
+⛔ **The postage row is withdrawn, 2026-08-07.** `utilization` is the fullest of 65,536 buckets, so it
+is a maximum, and a maximum grows fastest while the batch is empty. The 0.25s run measured it at
+**3.5% full** and the 1.0s run at **33.2% full**, so the fall from 0.216 to 0.150 could be entirely the
+batch filling up rather than anything about segment length. The ABA of the same day cannot rescue it
+either: its three arms all ran at 36 to 38% full, and twenty minutes moved the counter by 1, 2 and 0.
+**The postage effect of segment length is unmeasured.** See
+`a-quarter-second-buys-nothing-2026-08-07.md`. The BZZ rows are unaffected, because a chequebook
+balance is a continuous quantity read directly rather than a maximum over buckets.
+
+✅ **The BZZ row survived its control**: the ABA measured 0.0163 and 0.0169 against 0.0127 inside one
+sitting, a 23.5% reduction against the 28% claimed here.
 
 ⭐ **Segment length is a cost lever at constant bitrate, worth about a quarter of the write cost.**
 Both runs pushed the same bytes, so this is not a bandwidth saving. Four times fewer segments means
@@ -90,6 +102,12 @@ profile decision needs the two run back to back in one sitting.
 What it does establish is that such a sitting is worth paying for. If 1.0s holds an hour as well as
 0.25s does, delivers the same picture, and costs 28% less to write, then the case for 0.25s rests on a
 latency advantage this run did not see.
+
+✅ **That sitting was run the same day and the latency advantage was not there.** Three twenty-minute
+arms, 0.25s / 1.0s / 0.25s, with the control arms agreeing to 0.00s at the median: **5.86s behind live
+at 0.25s against 5.52s at 1.0s**, and no overlap between any window of one and any window of the other.
+The short profile is a third of a second **further** from live. The 149 refusals also turned out to be
+the profile rather than the night. See `a-quarter-second-buys-nothing-2026-08-07.md`.
 
 ⚠️ **Dropped frames went from 333 to 1479.** For 1.0s that is an exact **1.35%** of 108,040 decoded.
 For 0.25s it can only be estimated, because **`decodedFrames` did not exist in that run's samples**:
