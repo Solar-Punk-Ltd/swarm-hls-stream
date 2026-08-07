@@ -2,6 +2,27 @@ import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import { feedSlotPath, nextFeedRequest } from '@swarm-hls-stream/shared';
 
 /**
+ * The one media line in a preview's playlist, always absolute against the gateway.
+ *
+ * A preview playlist is handed to hls.js as a blob, and hls.js resolves a relative media line against
+ * the playlist's own URL. Resolving `/bytes/<ref>` against `blob:http://viewer/<uuid>` returns
+ * `blob:http:/bytes/<ref>`, measured against hls.js 1.6.15's own resolver: the page origin and the
+ * blob id are both consumed, so nothing downstream can work out which gateway was meant. The line has
+ * to name it here or it cannot be named at all.
+ *
+ * The two relative shapes both come from the uploader's `buildSegmentUri`. A bare reference is what it
+ * writes with `MANIFEST_ACCESS_URL` unset, and a rooted path is what it writes when that variable is a
+ * path rather than a full URL. Only the second reached hls.js unresolved, because the caller used to
+ * pass it through untouched.
+ */
+export function previewSegmentUrl(uri: string, gatewayUrl: string): string {
+  if (uri.startsWith('http://') || uri.startsWith('https://')) {
+    return uri;
+  }
+  return uri.startsWith('/') ? `${gatewayUrl}${uri}` : `${gatewayUrl}/bytes/${uri}`;
+}
+
+/**
  * Where a stream card fetches the manifest it builds its thumbnail from.
  *
  * **A finished stream's catalog entry already carries the SOC index of its own final manifest**, set

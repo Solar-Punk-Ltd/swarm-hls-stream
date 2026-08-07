@@ -19,7 +19,7 @@ import { useAppContext } from '@/providers/App';
 import { MediaType, StreamState } from '@/types/stream';
 import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
 import { formatDuration } from '@/utils/format';
-import { thumbnailManifestUrl } from '@/utils/thumbnailManifest';
+import { previewSegmentUrl, thumbnailManifestUrl } from '@/utils/thumbnailManifest';
 
 import './StreamPreview.scss';
 
@@ -68,8 +68,7 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title,
         }
 
         const seg = segments[0];
-        const segUrl =
-          seg.uri.startsWith('http') || seg.uri.startsWith('/bytes/') ? seg.uri : `${gatewayUrl}/bytes/${seg.uri}`;
+        const segUrl = previewSegmentUrl(seg.uri, gatewayUrl);
 
         // Spelled from the shared constants rather than by hand. These six literals were the last
         // place a tag rename could pass every type check and every test and still leave the preview
