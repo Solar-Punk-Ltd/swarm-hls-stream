@@ -91,9 +91,16 @@ What it does establish is that such a sitting is worth paying for. If 1.0s holds
 0.25s does, delivers the same picture, and costs 28% less to write, then the case for 0.25s rests on a
 latency advantage this run did not see.
 
-⚠️ **Dropped frames went from 333 to 1479**, 0.3% to 1.4% of the roughly 108,000 frames in an hour.
-Neither run rebuffered and both held 1.000, so nothing reached the viewer's picture. Not investigated,
-and worth a look before anyone reads the frame counter as a quality signal.
+⚠️ **Dropped frames went from 333 to 1479.** For 1.0s that is an exact **1.35%** of 108,040 decoded.
+For 0.25s it can only be estimated, because **`decodedFrames` did not exist in that run's samples**:
+0.5b's `deliveredFps` is null for the same reason, so frames per second cannot be compared between
+these two runs at all. Against the ~108,000 frames an hour of 30fps implies, 333 is about 0.3%.
+
+The drops are diffuse in both rather than bunched: the largest single-sample jump is 5 frames at 0.25s
+and 15 at 1.0s, so neither is one stall. Neither run rebuffered, both held 1.000 and 1.0s delivered
+30.00 fps, so nothing reached the viewer's picture. A larger segment arriving at once on a software
+display is the obvious suspect and it is **not investigated**. Worth settling before anyone reads the
+frame counter as a quality signal.
 
 ## What it consumed
 
