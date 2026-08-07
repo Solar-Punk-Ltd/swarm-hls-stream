@@ -27,3 +27,26 @@ packages/*/test/**/*.js
 # Stryker copies the whole tree into a sandbox per run and writes its report beside it.
 .stryker-tmp/
 reports/mutation/
+
+# Frame captures written per run by `e2e/src/browser/runFiles.ts`. `bench-on-host.sh` rsyncs
+# `docs/bench/` back wholesale after every run, so anything a harness leaves there is staged
+# without anyone choosing to keep it. Each run's own report carries the numbers these show.
+docs/bench/browser-screenshots/
+
+# Per-run output from the bench and browser harnesses: a raw JSON capture, the markdown report
+# summarising it, and the sweep logs, all named after the run's timestamp and all rsynced back by
+# the same wholesale copy. What is worth keeping is the analysis written across many runs, which
+# lives in the hand-written documents beside these. A per-run file that a document cites as
+# evidence is tracked deliberately with `git add -f`.
+docs/bench/latency-*.json
+docs/bench/longrun-*.json
+docs/bench/browser-watch-*.json
+docs/bench/browser-crash-*.json
+docs/bench/latency-*.md
+docs/bench/longrun-*.md
+docs/bench/browser-watch-*.md
+docs/bench/browser-crash-*.md
+docs/bench/profiles-*.log
+docs/bench/sweep-*.log
+docs/bench/browser-vod-*.json
+docs/bench/browser-vod-*.md

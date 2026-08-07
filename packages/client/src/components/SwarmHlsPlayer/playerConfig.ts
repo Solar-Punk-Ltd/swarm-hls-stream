@@ -6,27 +6,75 @@ const MB = 1024 * 1024;
  * How far behind the live edge playback aims to sit, in seconds.
  *
  * Every segment here is fetched from Swarm rather than from an origin next to the viewer, so the
- * budget covers a feed lookup plus a chunk download, not one HTTP round trip. Lowering it is the
- * largest client-side latency lever there is, and it is still not being lowered, but the reason has
- * changed: there is a baseline now, and it does not say this number is free to cut.
- *
- * Measured 2026-08-02 by `pnpm bench:latency` (LAT-1) against a real deployment, SRS at 1280x720 and
- * a 2s GOP: **capture to fetchable was 5.94s median, and a viewer of it sits 13.30s behind live**, so
- * roughly three quarters of what a viewer waits is this constant. That is the split the old note
- * asked for, and taken alone it makes this look like the obvious thing to cut.
+ * budget covers a feed lookup plus a chunk download, not one HTTP round trip. It is the largest
+ * client-side latency lever there is, and it was 10 until 2026-08-03.
  *
  * Behind-live is not the total plus this buffer. The total is anchored on a segment's first frame
  * and the buffer is measured back from the live edge, which is that same segment's last, so adding
  * them counts one segment twice.
  *
- * What stops that being the conclusion is the spread. Across five samples the pipeline ranged from
- * 4.21s to 7.60s, so it varied by 3.4s inside one short run, and a live buffer has to absorb that
- * variance or it converts into rebuffering. Ten seconds against a pipeline with a 3.4s spread is not
- * obviously generous. The number to cut this against is the spread over a long run rather than a
- * median over five segments, and per-hop attribution is not usable yet either, because the run's own
- * breakdown reports an impossible upload hop on every sample (LAT-9).
+ * ## What the number has to cover
+ *
+ * A player stalls unless its buffer covers the largest edge-to-fetchable delay, which is
+ * `totalMs - segmentMs` per segment, plus the cadence it asks at, since a segment becomes fetchable
+ * before the player has asked for it. hls.js reloads a live playlist once per target duration and
+ * the uploader declares `ceil(segment duration)`, so that cadence is one second at every segment
+ * length below a second. One segment of margin covers an arrival later than any measured.
+ *
+ * ## Re-derived 2026-08-05, and it stays at six
+ *
+ * The four clean runs of `docs/bench/quarter-second-2026-08-05.md`, which are the first arrivals
+ * measured with the bench's follower reaching the live edge:
+ *
+ * | segment | samples | observed floor | so this constant needs |
+ * | ------- | ------: | -------------: | ---------------------: |
+ * | 0.25s   |      33 |          1.42s |                  2.67s |
+ * | 0.25s   |      37 |          1.80s |                  3.05s |
+ * | 0.5s    |      67 |          2.92s |                  4.42s |
+ * | 0.5s    |     107 |          3.41s |                  4.91s |
+ *
+ * **Six covers the worst of them by 1.09s.** The value did not move, and only the derivation under
+ * it did: the table this replaces came from the sweep of 2026-08-03, and every figure from before
+ * 2026-08-05 was taken through an instrument with six known defects, two of which made a faster
+ * deployment report worse.
+ *
+ * The floor is not proportional to the segment length across those rows, and two segment lengths are
+ * not a scaling law, so **a deployment running segments longer than 0.5s has no fresh measurement
+ * here** and the old table put the 2.0s floor at 4.45s. Raising this is what such a deployment
+ * would need, and the coupling is the same one {@link LIVE_MAX_LATENCY_DURATION_S} describes: the
+ * target duration is whatever the uploader's segment length makes it, and this side does not choose
+ * it.
+ *
+ * ## The uploader has to name enough media for this to be reachable
+ *
+ * hls.js clamps its sync position to the start of the playlist, so a first manifest holding less
+ * media than this asks for puts a joining viewer at the live edge with no runway, whatever this says.
+ * Against the requirements above, the uploader's old ten-segment window held 2.5s at a 0.25s segment
+ * and was short in **both** clean runs, by 172ms and 550ms, while clearing the worst 0.5s run by 91ms.
+ * The window is now budgeted against one chunk rather than counted in segments, which is 9.0s at
+ * 0.25s on the deployment these numbers were measured on and 12.5s where `MANIFEST_ACCESS_URL` is
+ * left empty, and `ManifestManager.test.ts` reads this constant out of this file and fails if the
+ * window stops covering it.
+ *
+ * ## What this is not
+ *
+ * A floor over observed samples is not a proof, and these are 244 arrivals over four three-minute
+ * runs rather than a steady state. The claim is that the arrivals measured would not have stalled a
+ * player configured this way, not that no arrival ever will.
+ *
+ * It **has** now been played in a real browser, which is what task #48 asked for and what the
+ * sentence here used to deny. Across 27 recorded sessions, 16 sat with a median live latency between
+ * 5.32s and 7.40s, which is this value, and 19 held at or above it. The joins split into two groups
+ * and neither is a fault: about 5.7 to 6.3s where the first manifest reached exactly this far back,
+ * and about 11.5 to 11.6s where it reached further and hls.js left the viewer there because that is
+ * still inside {@link LIVE_MAX_LATENCY_DURATION_S}.
+ *
+ * A paragraph here used to say that a player on this deployment rebuffers every 63 seconds whatever
+ * this number is. That was LAT-10 and it is **retracted**: the freeze was bee's sequential feed head
+ * lookup, which the bench polled every cycle and a player calls only on mount. See
+ * `docs/reviews/freeze-elimination-plan.md`.
  */
-export const LIVE_SYNC_DURATION_S = 10;
+export const LIVE_SYNC_DURATION_S = 6;
 
 /**
  * The latency at which hls.js stops trying to recover gradually and seeks to the live edge instead.

@@ -14,7 +14,7 @@ overrides:
   follow-redirects: ^1.16.0
   form-data: ^4.0.6
   immutable: ^5.1.8
-  js-yaml@4: ^4.3.0
+  js-yaml@4: ^4.3.1
   minimatch@9: ^9.0.7
   postcss: ^8.5.18
   qs: ^6.15.2
@@ -66,6 +66,9 @@ importers:
       '@swarm-hls-stream/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      cafe-utility:
+        specifier: 31.1.1
+        version: 31.1.1
     devDependencies:
       '@types/node':
         specifier: ^22.8.1
@@ -88,6 +91,9 @@ importers:
       eslint-plugin-simple-import-sort:
         specifier: ^10.0.0
         version: 10.0.0(eslint@8.57.1)
+      playwright-core:
+        specifier: 1.61.1
+        version: 1.61.1
       tsx:
         specifier: ^4.23.1
         version: 4.23.1
@@ -170,9 +176,6 @@ importers:
       '@swarm-hls-stream/shared':
         specifier: workspace:*
         version: link:../shared
-      cafe-utility:
-        specifier: ^27.16.2
-        version: 27.18.0
       hls.js:
         specifier: ^1.6.2
         version: 1.6.15
@@ -290,6 +293,13 @@ importers:
         version: 6.0.2
 
   packages/shared:
+    dependencies:
+      '@ethersphere/bee-js':
+        specifier: ^9.0.3
+        version: 9.8.1
+      cafe-utility:
+        specifier: 31.1.1
+        version: 31.1.1
     devDependencies:
       '@types/node':
         specifier: ^22.8.1
@@ -324,6 +334,9 @@ importers:
       '@ethersphere/bee-js':
         specifier: ^9.0.3
         version: 9.8.1
+      cafe-utility:
+        specifier: 31.1.1
+        version: 31.1.1
       dotenv:
         specifier: ^16.4.7
         version: 16.6.1
@@ -1879,9 +1892,6 @@ packages:
     resolution: {integrity: sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==}
     engines: {node: '>= 0.8'}
 
-  cafe-utility@27.18.0:
-    resolution: {integrity: sha512-aGcLjeOmy8mw5d0eDIB2SrvbRswRSCUIZFIlmhS1u7RXGeHLge+FmCV6AvEbTVbuNN2P9ZKJMbB8osJJOich8g==}
-
   cafe-utility@31.1.1:
     resolution: {integrity: sha512-1GZGghv6wi5Yfb6DGR02aIwPKH1/ny9w8nlUZM0Mo+dUf0BpmPmy9wKMZZEeaY72LPmDWQtfyoGGgaG5kINsNw==}
 
@@ -2902,8 +2912,8 @@ packages:
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
-  js-yaml@4.3.0:
-    resolution: {integrity: sha512-1td788aAnnZ5qs7V2QIRl1owjtYpbKt749Y3xauqQgwIIGF/xXWz1wMTEBx5O3LK3lXLVuqXPdPxj2BoFHaW9Q==}
+  js-yaml@4.3.1:
+    resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
     hasBin: true
 
   jsesc@3.1.0:
@@ -3420,6 +3430,11 @@ packages:
   pkg-dir@5.0.0:
     resolution: {integrity: sha512-NPE8TDbzl/3YQYY7CSS228s3g2ollTFnc+Qi3tqmqJp9Vg2ovUpixcJEo2HJScN2Ez+kEaal6y70c0ehqJBJeA==}
     engines: {node: '>=10'}
+
+  playwright-core@1.61.1:
+    resolution: {integrity: sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   possible-typed-array-names@1.1.0:
     resolution: {integrity: sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg==}
@@ -4676,7 +4691,7 @@ snapshots:
       globals: 13.24.0
       ignore: 5.3.2
       import-fresh: 3.3.1
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
       minimatch: 3.1.5
       strip-json-comments: 3.1.1
     transitivePeerDependencies:
@@ -5744,8 +5759,6 @@ snapshots:
 
   bytes@3.1.2: {}
 
-  cafe-utility@27.18.0: {}
-
   cafe-utility@31.1.1: {}
 
   call-bind-apply-helpers@1.0.2:
@@ -5876,7 +5889,7 @@ snapshots:
     dependencies:
       env-paths: 2.2.1
       import-fresh: 3.3.1
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
       parse-json: 5.2.0
     optionalDependencies:
       typescript: 6.0.2
@@ -6338,7 +6351,7 @@ snapshots:
       imurmurhash: 0.1.4
       is-glob: 4.0.3
       is-path-inside: 3.0.3
-      js-yaml: 4.3.0
+      js-yaml: 4.3.1
       json-stable-stringify-without-jsonify: 1.0.1
       levn: 0.4.1
       lodash.merge: 4.6.2
@@ -6945,7 +6958,7 @@ snapshots:
 
   js-tokens@4.0.0: {}
 
-  js-yaml@4.3.0:
+  js-yaml@4.3.1:
     dependencies:
       argparse: 2.0.1
 
@@ -7432,6 +7445,8 @@ snapshots:
   pkg-dir@5.0.0:
     dependencies:
       find-up: 5.0.0
+
+  playwright-core@1.61.1: {}
 
   possible-typed-array-names@1.1.0: {}
 

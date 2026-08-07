@@ -7,15 +7,23 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
-    "test": "tsx --test test/*.test.ts",
-    "test:e2e": "tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' 'suites/scenarios/*.test.ts' 'suites/service/*.test.ts'",
-    "test:e2e:smoke": "tsx --test 'suites/smoke/*.test.ts'",
+    "test": "TSX_DISABLE_CACHE=1 tsx --test test/*.test.ts",
+    "test:e2e": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' 'suites/scenarios/*.test.ts' 'suites/service/*.test.ts'",
+    "test:e2e:smoke": "TSX_DISABLE_CACHE=1 tsx --test 'suites/smoke/*.test.ts'",
     "bench:latency": "tsx bench/latency.ts",
-    "bench:recipe": "tsx bench/recipeReliability.ts"
+    "bench:longrun": "tsx bench/longrun.ts",
+    "bench:recipe": "tsx bench/recipeReliability.ts",
+    "bench:sweep-report": "tsx bench/sweep.ts",
+    "browser:selfcheck": "tsx browser/selfcheck.ts",
+    "browser:watch": "tsx browser/watch.ts",
+    "browser:crash": "tsx browser/crash.ts",
+    "probe:ahead": "node src/probes/feed-ahead-probe.mjs",
+    "browser:vod": "tsx browser/vod.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
-    "@swarm-hls-stream/shared": "workspace:*"
+    "@swarm-hls-stream/shared": "workspace:*",
+    "cafe-utility": "31.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",
@@ -25,6 +33,7 @@
     "eslint-import-resolver-typescript": "^4.3.4",
     "eslint-plugin-import": "^2.29.1",
     "eslint-plugin-simple-import-sort": "^10.0.0",
+    "playwright-core": "1.61.1",
     "tsx": "^4.23.1",
     "typescript": "^6.0.2"
   }

@@ -1,0 +1,100 @@
+{
+  "runTag": "5c9eb9dc",
+  "owner": "e8327d747d65bdfac01fb2f011f30b30ba82111d",
+  "readUrl": "http://127.0.0.1:10077",
+  "rounds": 30,
+  "report": [
+    {
+      "slots": 1,
+      "topic": "bffe5bda78b8a2124021ff4443bd6604291489c688b27d2bfd1a185cf1817246",
+      "failures": 0,
+      "head": {
+        "n": 30,
+        "min": 896,
+        "median": 1008,
+        "p95": 2395,
+        "max": 2427,
+        "mean": 1245
+      },
+      "slot": {
+        "n": 30,
+        "min": 3,
+        "median": 4,
+        "p95": 9,
+        "max": 11,
+        "mean": 4
+      },
+      "firstHeadMs": 1160,
+      "firstSlotMs": 9
+    },
+    {
+      "slots": 10,
+      "topic": "2925318aef060af25df67ee7c4b7219a98f5e9f3f3cd7b27302c67fb6069175d",
+      "failures": 0,
+      "head": {
+        "n": 30,
+        "min": 1731,
+        "median": 2008,
+        "p95": 2031,
+        "max": 2052,
+        "mean": 1982
+      },
+      "slot": {
+        "n": 30,
+        "min": 2,
+        "median": 4,
+        "p95": 6,
+        "max": 8,
+        "mean": 4
+      },
+      "firstHeadMs": 1972,
+      "firstSlotMs": 6
+    },
+    {
+      "slots": 100,
+      "topic": "e67e387748fcdebb89da7d65a03ee1fb67f139a037fbbf54a6ac7a6e3ce096d7",
+      "failures": 0,
+      "head": {
+        "n": 30,
+        "min": 3164,
+        "median": 4011,
+        "p95": 4536,
+        "max": 4771,
+        "mean": 3972
+      },
+      "slot": {
+        "n": 30,
+        "min": 2,
+        "median": 4,
+        "p95": 8,
+        "max": 11,
+        "mean": 4
+      },
+      "firstHeadMs": 3946,
+      "firstSlotMs": 6
+    },
+    {
+      "slots": 1000,
+      "topic": "12983d930e03bbed31d6833180f33014197c7079d1faa7b8c9f07d32d0ed75e4",
+      "failures": 0,
+      "head": {
+        "n": 30,
+        "min": 4366,
+        "median": 5011,
+        "p95": 5017,
+        "max": 5043,
+        "mean": 4876
+      },
+      "slot": {
+        "n": 30,
+        "min": 2,
+        "median": 4,
+        "p95": 7,
+        "max": 9,
+        "mean": 4
+      },
+      "firstHeadMs": 4679,
+      "firstSlotMs": 9
+    }
+  ]
+}

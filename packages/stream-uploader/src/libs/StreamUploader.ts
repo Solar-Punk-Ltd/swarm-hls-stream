@@ -79,6 +79,15 @@ export class StreamUploader {
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
   private consecutiveSegmentFailures = 0;
+  /**
+   * The newest segment index a published live manifest has named, or null before the first publish.
+   *
+   * Null rather than restored from persisted state after a crash: the window a recovered uploader
+   * publishes is built from segments it did reload, so a restored value would report the whole
+   * outage as segments this uploader failed to name when nothing here failed at all.
+   */
+  private announcedThrough: number | null = null;
+  private segmentsNeverNamed = 0;
   /** Whether the recovery entry under this stream id still describes this uploader. See `retire`. */
   private ownsRecoveryEntry = true;
   /** The one finalize this session gets, so a second caller joins it rather than repeating it. */
@@ -286,6 +295,20 @@ export class StreamUploader {
       return;
     }
 
+    // Published first, and to its own slot, because the VOD manifest below renumbers the playlist
+    // from zero into the same feed that live viewers are still walking. They read whatever is newest,
+    // and a media sequence moving backwards restarts their player at the beginning of the recording.
+    // This one ends the playlist they are already on, so they play out what they hold and stop.
+    const closingManifest = this.manifestManager.buildClosingLiveManifest();
+    if ((await this.manifestQueue.add(() => this.commitManifest(closingManifest))) === null) {
+      // Not fatal to finalization. The recording below is what the catalog points at and it is still
+      // worth publishing; what is lost is the clean ending for whoever is watching right now.
+      this.logger.warn(
+        `Failed to publish the closing live manifest for stream ${this.streamId}; viewers watching ` +
+          'live will restart at the beginning of the recording rather than stopping at the end',
+      );
+    }
+
     const vodManifest = this.manifestManager.buildVODManifest();
     const vodIndex = (await this.manifestQueue.add(() => this.commitManifest(vodManifest))) ?? null;
     if (vodIndex === null) {
@@ -377,6 +400,13 @@ export class StreamUploader {
       if (!manifest) {
         return;
       }
+      // Both read here, beside the build and before anything is awaited. `handleSegment` runs between
+      // awaits, so either read taken after the publish returns would describe a manifest other than
+      // the one being published.
+      const newestNamed = this.manifestManager.liveWindowNewestIndex();
+      const neverNamed =
+        this.announcedThrough === null ? 0 : this.manifestManager.segmentsNeverNamed(this.announcedThrough);
+
       const index = await this.commitManifest(manifest);
       if (index === null) {
         this.consecutiveManifestFailures += 1;
@@ -384,10 +414,45 @@ export class StreamUploader {
         this.logger.warn(
           `Live manifest for stream ${this.streamId} is stale: ${this.consecutiveManifestFailures} consecutive publish failure(s)`,
         );
-      } else {
-        this.consecutiveManifestFailures = 0;
+        return;
       }
+
+      this.consecutiveManifestFailures = 0;
+      this.reportSegmentsNeverNamed(neverNamed);
+      this.announcedThrough = newestNamed;
     });
+  }
+
+  /**
+   * Segments that were uploaded and that no manifest will ever name.
+   *
+   * Their bytes are in Swarm and any viewer handed the address could fetch them. A viewer learns of a
+   * segment only from a manifest, and the window slid past these before one naming them was
+   * published, so the media is simply missing from every playlist with no discontinuity to mark it.
+   * That makes this the quietest way this uploader can lose a piece of a broadcast, and until now
+   * nothing counted it: `recordSegmentDropped` answers a failed upload and `recordSegmentsLost`
+   * answers segments the engine never had.
+   *
+   * The window has to outrun its own publishing for this to happen, which
+   * `MANIFEST_UPLOAD_RETRY_WINDOW_MS` permits for {@link MANIFEST_UPLOAD_RETRY_WINDOW_MS}ms while the
+   * segment queue keeps running.
+   */
+  private reportSegmentsNeverNamed(count: number): void {
+    if (count === 0) {
+      return;
+    }
+    this.segmentsNeverNamed += count;
+    this.metrics?.recordSegmentsNeverNamed(count);
+    this.logger.warn(
+      `Stream ${this.streamId} published a live manifest that skipped ${count} uploaded segment(s): ` +
+        `the window advanced past them before a manifest naming them was published, so no viewer can ` +
+        `reach them. ${this.segmentsNeverNamed} total this stream.`,
+    );
+  }
+
+  /** Segments uploaded but never named in any published manifest, for the life of this stream. */
+  public getSegmentsNeverNamed(): number {
+    return this.segmentsNeverNamed;
   }
 
   private async commitManifest(manifestContent: string): Promise<number | null> {
@@ -478,11 +543,22 @@ export class StreamUploader {
   private async uploadDataAsSoc(index: number, data: Uint8Array) {
     try {
       const { uploadPayload } = this.bee.makeFeedWriter(Topic.fromString(this.streamRawTopic), this.streamSigner);
-      // deferred: bee acks the SOC from its local store and push-syncs in the background (honored
-      // since bee 2.8.1). A direct /soc write blocks until push-sync completes, which held manifest
-      // publishes for ~80s behind the segment backlog after a node restart.
+      // NOT deferred, unlike the segment write below, and the asymmetry is deliberate.
+      //
+      // Deferred means bee acks the SOC from its own local store and push-syncs it in the
+      // background, so the publish reports success while the chunk is still only local and a
+      // viewer's gateway is told about a segment it cannot yet resolve. This was deferred until
+      // LAT-10 measured what that costs: worst capture-to-fetchable 14.04s and 14.53s over two
+      // 30-minute broadcasts, against 9.04s and 9.27s with the synchronous write, and the buffer a
+      // player needs 12.08s against 7.08s.
+      //
+      // The comment this replaces justified deferring as avoiding an ~80s block behind the segment
+      // backlog. That was a post-restart condition. In steady state the synchronous push costs
+      // about 300ms and logs no retries at all.
+      //
+      // Safe to block: retryUntilDeadlineAsync bounds retries, not one slow call.
       return await retryUntilDeadlineAsync(
-        () => uploadPayload(this.stamp, data, { index, deferred: true }),
+        () => uploadPayload(this.stamp, data, { index, deferred: false }),
         MANIFEST_UPLOAD_RETRY_WINDOW_MS,
         UPLOAD_RETRY_BASE_MS,
         UPLOAD_RETRY_CAP_MS,

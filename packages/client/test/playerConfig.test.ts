@@ -43,8 +43,14 @@ describe('SwarmHlsPlayer hls.js tuning', () => {
     assert.deepEqual(
       { ...SHIPPED_TUNING },
       {
-        liveSyncDuration: 10,
-        liveMaxLatencyDuration: 20,
+        // 6, and `playerConfig.ts` carries the derivation and its history. Do not restate it here:
+        // this comment used to cite the sweep of 2026-08-03, which is retracted, and a number
+        // quoted in two places drifts in one of them. `HLS_FRAGMENT` defaults to 1.0 for this exact
+        // value, and a deployment running longer segments has to raise both.
+        liveSyncDuration: 6,
+        // Derived as twice the above rather than written, so it moves with it. hls.js throws from
+        // the constructor when this is at or below `liveSyncDuration`.
+        liveMaxLatencyDuration: 12,
         maxLiveSyncPlaybackRate: 1.1,
         maxBufferLength: 60,
         maxMaxBufferLength: 120,

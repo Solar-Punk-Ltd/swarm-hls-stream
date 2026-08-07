@@ -329,6 +329,7 @@ sync_to_remote() {
     rsync -az --delete \
       "$ROOT_DIR/engines/srs/srs.conf.template" \
       "$ROOT_DIR/engines/srs/entrypoint.sh" \
+      "$ROOT_DIR/engines/srs/healthcheck.sh" \
       "$target:$REMOTE_BASE/engines/srs/"
   fi
 

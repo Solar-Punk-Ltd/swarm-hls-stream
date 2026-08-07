@@ -94,7 +94,9 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
 
     const result = orch.handleSegment(id, 7, 2, Buffer.from('seg7'));
     assert.equal(result.accepted, true, 'segments for a recovered stream must be accepted');
-    assert.equal(clock.pendingCount(), 0, 'and resuming cancels that timer rather than racing it');
+    // One timer, not none: resuming cancels the finalize timer and arms the #86 orphan watchdog in its
+    // place. Counting them still pins the cancel, because a build that failed to cancel would leave two.
+    assert.equal(clock.pendingCount(), 1, 'resuming replaces the finalize timer with the orphan watchdog');
 
     await clock.advance(RECOVERY_TIMEOUT_MS * 3);
     assert.equal(
@@ -763,9 +765,17 @@ describe('StreamOrchestrator recovery finalization on an injected clock (S0.5)',
     await orch.recoverStreams();
     assert.equal(clock.pendingCount(), 1, 'the finalize timer was scheduled on the injected clock');
     assert.equal(orch.startStream('live/stream', MEDIA_TYPE_VIDEO), true, 'the re-announce resumes the stream');
-    assert.equal(clock.pendingCount(), 0, 'resuming cancels the pending finalize timer');
+    // As above: the finalize timer is replaced by the orphan watchdog rather than leaving nothing.
+    assert.equal(clock.pendingCount(), 1, 'resuming replaces the finalize timer with the orphan watchdog');
 
-    await clock.advance(RECOVERY_TIMEOUT_60S * 10);
+    // Fed across the whole span, because a stream receiving nothing for this long is now finalized by
+    // the #86 orphan watchdog and the test would stop being about the timer it names. Feeding does not
+    // weaken it: `scheduleRecoveryFinalize` does not consult ingest, so an uncancelled recovery timer
+    // would still end this stream at the first window.
+    for (let elapsed = 0; elapsed < RECOVERY_TIMEOUT_60S * 10; elapsed += RECOVERY_TIMEOUT_60S / 2) {
+      orch.handleSegment('live/stream', elapsed, 2, Buffer.from(`seg${elapsed}`));
+      await clock.advance(RECOVERY_TIMEOUT_60S / 2);
+    }
     // advance yields a macrotask per fired timer, so a finalize that wrongly started has had room to
     // land by now. Asserting immediately after a synchronous advance could not see it at all.
     await waitAndConfirmNothingHappened(() => catalogEntries.length === 0, 200);
@@ -904,6 +914,57 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
       orchestrator.handleSegmentLoss('live/never-started', 0, 1),
       false,
       'the caller has to learn nothing recorded the gap, or it steps over indexes with no trace',
+    );
+  });
+
+  /**
+   * OBS-19. `segmentLossAt` was written on a loss and deleted nowhere. `getMsSinceSegmentLoss` reads
+   * it for every id in `activeStreams`, so the entry was invisible while the stream was gone and
+   * came back the moment a new session announced on the same id, which is the ordinary case for a
+   * broadcaster reconnecting. `/health` then reads `degraded` with `segment_loss` for a broadcast
+   * that has lost nothing, and the compose healthcheck turns that into `(unhealthy)` on `docker ps`.
+   */
+  it('does not report a dead session’s loss against the stream that replaces it', async () => {
+    const clock = new FakeClock();
+    const orchestrator = makeTestOrchestrator({ clock });
+
+    orchestrator.startStream('live/one', MEDIA_TYPE_VIDEO);
+    orchestrator.handleSegmentLoss('live/one', 0, 1);
+    await orchestrator.stopStream('live/one');
+    clock.advance(5_000);
+    orchestrator.startStream('live/one', MEDIA_TYPE_VIDEO);
+
+    assert.equal(
+      orchestrator.getMsSinceSegmentLoss(),
+      null,
+      'the new session has lost nothing, and a loss it inherits reads as degraded on a healthy broadcast',
+    );
+  });
+
+  /**
+   * The other half, and the reason a delete in one place is not enough. Every other per-stream map is
+   * cleared in `retireSession`, so a leak here is only visible by comparison: reporting the count
+   * against a map that is known to be cleared is what makes the assertion about retirement rather
+   * than about an arbitrary size.
+   */
+  it('does not grow one entry per stream that ever reported a loss', async () => {
+    const orchestrator = makeTestOrchestrator();
+
+    for (let i = 0; i < 50; i += 1) {
+      const id = `live/cycle-${i}`;
+      orchestrator.startStream(id, MEDIA_TYPE_VIDEO);
+      orchestrator.handleSegmentLoss(id, 0, 1);
+      await orchestrator.stopStream(id);
+    }
+
+    const maps = orchestrator as unknown as {
+      segmentLossAt: Map<string, number>;
+      streamActivityAt: Map<string, number>;
+    };
+    assert.equal(
+      maps.segmentLossAt.size,
+      maps.streamActivityAt.size,
+      'segmentLossAt outlived every session while streamActivityAt did not, so retirement is skipping it',
     );
   });
 
@@ -1121,11 +1182,14 @@ describe('StreamOrchestrator stall signal during a drain', () => {
 
     // The broadcaster is back while the outgoing session is still finalizing, and then goes quiet.
     orch.startStream(id, MEDIA_TYPE_VIDEO);
-    clock.advance(90_000);
+    // Comfortably past the stall window and inside the #86 reap window, which is a different question:
+    // a replacement quiet for longer than the reap window is finalized, and this test is about whether
+    // the signal can see it at all rather than about how long it is allowed to stay.
+    clock.advance(45_000);
 
     assert.equal(
       orch.getMsSinceStreamActivity(),
-      90_000,
+      45_000,
       'a live stream sending nothing has to reach the stall signal even while its predecessor drains',
     );
 

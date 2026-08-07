@@ -13,10 +13,10 @@
  * `segmentSpan.ts` for the two ways the arithmetic over those packets goes quietly wrong.
  */
 
+import { measureSpanTicks } from '@swarm-hls-stream/shared';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { measureSpanTicks } from './segmentSpan.js';
 import { type FramePts, MPEGTS_WRAP_TICKS } from './wallclock.js';
 
 const execFileAsync = promisify(execFile);

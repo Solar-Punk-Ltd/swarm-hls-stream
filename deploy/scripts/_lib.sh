@@ -57,28 +57,30 @@ STAMP_ID_OVERRIDE=""
 # Populated by parse_profile_args with the argv minus the --profile / --portSlot flags.
 REST_ARGS=()
 
-# Origins for the --portSlot arithmetic. Each service occupies a unique last digit (0-8) so
-# apply_port_slot can compute `base + slot*10` without collisions across services.
+# Host ports, as `NAME:stock:base`.
 #
-# These are NOT the docker-compose.yml `:-NNNN` fallbacks and NOT the .env.sample values, which this
-# comment claimed until the PR #64 gate checked it. Not one of the nine agreed with either, and they
-# do not need to: at slot 0 apply_port_slot leaves an already-set variable alone, so wherever a sample
-# carries a value that value wins and these numbers are never reached.
+# The two numbers are different questions and used to be one. `stock` is what a plain deploy falls
+# back to when the variable is unset, and it matches the `${NAME:-NNNN}` fallback in the compose file
+# that publishes it. `base` is the origin of the `base + slot*10` arithmetic, where each service
+# holds a unique last digit (0-8) so slots cannot collide.
 #
-# SRS_RTMP_PORT and SRS_HTTP_PORT carry none, in .env.sample or engines/srs/.env.sample. A stock
-# deploy takes 10002 and 10003 from here instead of the 1935 and 8080 that engines/srs's compose file
-# falls back to, and since d6394a3 passed these into SRS's own config that is what SRS binds. It is
-# consistent end to end and it is not what the ports are documented as. Filed as OPS-27.
+# Collapsing them hid a real divergence for seven of the nine, because `apply_port_slot` leaves an
+# already-set variable alone at slot 0 and those seven carry a value in `.env.sample`. SRS_RTMP_PORT
+# and SRS_HTTP_PORT carry none, in `.env.sample` or `engines/srs/.env.sample`, so a stock deploy took
+# 10002 and 10003 from the arithmetic origin while `engines/srs/docker-compose.yml` documents 1935
+# and 8080. Since d6394a3 passed these into SRS's own config, that is what SRS bound: consistent end
+# to end, and not what the ports are documented as, so an operator opening 1935 for a broadcaster
+# opened a port nothing listened on. Filed as OPS-27.
 readonly PORT_VARS=(
-  "API_PORT:10000"
-  "SRS_SRT_PORT:10001"
-  "SRS_RTMP_PORT:10002"
-  "SRS_HTTP_PORT:10003"
-  "CLIENT_PORT:10004"
-  "BEE_UPLOADER_API_PORT:10005"
-  "BEE_UPLOADER_P2P_PORT:10006"
-  "BEE_GATEWAY_API_PORT:10007"
-  "BEE_GATEWAY_P2P_PORT:10008"
+  "API_PORT:3000:10000"
+  "SRS_SRT_PORT:10080:10001"
+  "SRS_RTMP_PORT:1935:10002"
+  "SRS_HTTP_PORT:8080:10003"
+  "CLIENT_PORT:5173:10004"
+  "BEE_UPLOADER_API_PORT:1633:10005"
+  "BEE_UPLOADER_P2P_PORT:1634:10006"
+  "BEE_GATEWAY_API_PORT:1733:10007"
+  "BEE_GATEWAY_P2P_PORT:1734:10008"
 )
 
 # Parse profile + portSlot flags from argv.
@@ -232,20 +234,22 @@ PORT_OVERRIDES_TEXT=""
 #
 # Also keeps SRS_ADAPTER_PORT in lock-step with the resolved API_PORT.
 apply_port_slot() {
-  local entry name default current shifted
+  local entry name stock base current shifted rest
   PORT_OVERRIDES_TEXT=""
   for entry in "${PORT_VARS[@]}"; do
     name="${entry%%:*}"
-    default="${entry##*:}"
+    rest="${entry#*:}"
+    stock="${rest%%:*}"
+    base="${rest##*:}"
     current="${!name:-}"
 
     if [ "$PORT_SLOT" = "0" ]; then
       if [ -n "$current" ]; then
         continue
       fi
-      shifted="$default"
+      shifted="$stock"
     else
-      shifted=$((default + PORT_SLOT * 10))
+      shifted=$((base + PORT_SLOT * 10))
     fi
 
     if ! [[ "$shifted" =~ ^[1-9][0-9]*$ ]]; then
@@ -621,13 +625,21 @@ shell_quote() {
 # which is the UTF-16 code units `String.length` uses, so a non-ASCII secret could pass here and
 # throw at service startup.
 #
-# node is a fair requirement: this runs where the operator's env file is, `deploy.sh` does not ship
-# `config.json` to a remote target so it cannot run there anyway, and every other task in this repo
-# already needs pnpm.
-derive_publish_key() {
-  local stream_id="$1"
-
-  PUBLISH_KEY_SECRET="${PUBLISH_KEY_SECRET:-}" node -e '
+# **node is not on a deploy target**, which is where an operator issues keys from, and this used to
+# say the requirement was fair because `deploy.sh` did not ship `config.json` "so it cannot run there
+# anyway". OPS-29 removed that premise, and what was left underneath was `node: command not found`
+# on the one machine the script exists for. Measured on `manager-host`: no node, docker present.
+#
+# So node if it is here, and node in a container if it is not. The derivation itself is written once
+# and handed to whichever runs it, because two copies of an HMAC is two chances to issue keys the
+# service refuses.
+#
+# The secret stays out of argv on both paths. `docker run -e NAME` with no `=value` passes the value
+# through from this shell's environment, so the container's command line carries only the name. What
+# it does add is that the value is visible to anyone who can `docker inspect`, which on this host is
+# anyone in the docker group, and membership of that group is already root-equivalent.
+readonly PUBLISH_KEY_NODE_IMAGE="node:22-alpine"
+readonly PUBLISH_KEY_DERIVATION='
     const { createHmac } = require("node:crypto");
     const secret = process.env.PUBLISH_KEY_SECRET || "";
     if (secret.length < 32) {
@@ -635,7 +647,26 @@ derive_publish_key() {
       process.exit(1);
     }
     process.stdout.write(createHmac("sha256", secret).update(process.argv[1], "utf8").digest("hex").slice(0, 32));
-  ' "$stream_id"
+  '
+
+derive_publish_key() {
+  local stream_id="$1"
+
+  if command -v node >/dev/null 2>&1; then
+    PUBLISH_KEY_SECRET="${PUBLISH_KEY_SECRET:-}" node -e "$PUBLISH_KEY_DERIVATION" "$stream_id"
+    return $?
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    PUBLISH_KEY_SECRET="${PUBLISH_KEY_SECRET:-}" docker run --rm -e PUBLISH_KEY_SECRET \
+      "$PUBLISH_KEY_NODE_IMAGE" node -e "$PUBLISH_KEY_DERIVATION" "$stream_id"
+    return $?
+  fi
+
+  echo "Deriving a publish key needs node, or docker to run ${PUBLISH_KEY_NODE_IMAGE}, and this host has" >&2
+  echo "neither. openssl is deliberately not used: it takes an HMAC key only from its command line," >&2
+  echo "and one leaked master secret is every stream's key forever, with no per-stream revocation." >&2
+  return 1
 }
 
 # --- Bee data dirs ---
@@ -740,6 +771,23 @@ load_engine_envs() {
   for engine in "${ENGINE_SERVICES[@]}"; do
     if is_enabled "$(get_target "$engine")"; then
       load_env_file "$(engine_env_file "$engine")"
+    fi
+  done
+}
+
+# Load whatever engine env files this tree has, without asking which engines are enabled.
+#
+# `load_engine_envs` answers a different question and needs `config.json` to answer it, through
+# `get_target`. A remote deploy target does not have that file: `deploy.sh` ships the compose files,
+# the Dockerfiles, `.env` and `deploy/scripts/`, and neither `config.json` nor `config.sample.json`.
+# So a script that wants an engine's port only to print a URL must not be gated on it, and the
+# question it actually has is which env files are here. See OPS-29.
+load_engine_envs_present() {
+  local engine file
+  for engine in "${ENGINE_SERVICES[@]}"; do
+    file="$(engine_env_file "$engine")"
+    if [ -f "$file" ]; then
+      load_env_file "$file"
     fi
   done
 }

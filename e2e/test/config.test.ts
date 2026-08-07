@@ -106,7 +106,7 @@ describe('port resolution through a profile', () => {
   it('ignores those values once a port slot is given', () => {
     const rootDir = fixtureRoot({ root: 'API_PORT=3000\n' });
     const cfg = loadConfig({ env: { E2E_PORT_SLOT: '3' }, rootDir });
-    assert.equal(cfg.ports.uploaderApi, PORT_DEFAULTS.API_PORT + 30);
+    assert.equal(cfg.ports.uploaderApi, PORT_DEFAULTS.API_PORT.base + 30);
     assert.equal(cfg.portSlot, 3);
   });
 
@@ -136,7 +136,7 @@ describe('OME ports come from the engine env, not the slot', () => {
     const rootDir = fixtureRoot({ engines: { ome: 'OME_SRT_PORT=10081\n' } });
     const cfg = loadConfig({ env: { E2E_ENGINE: 'ome', E2E_PORT_SLOT: '5' }, rootDir });
     assert.equal(cfg.omeSrtPort, 10081, 'the OME SRT port must not follow the slot');
-    assert.equal(cfg.ports.srt, PORT_DEFAULTS.SRS_SRT_PORT + 50, 'while the profile SRT port does');
+    assert.equal(cfg.ports.srt, PORT_DEFAULTS.SRS_SRT_PORT.base + 50, 'while the profile SRT port does');
   });
 
   it('accepts an explicit override for a standalone OME', () => {

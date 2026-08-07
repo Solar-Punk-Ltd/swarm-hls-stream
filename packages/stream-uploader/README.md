@@ -115,11 +115,14 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone     |
 | `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin      |
 | `swarm_hls_segments_skipped_total`          | counter | Segments discarded on purpose at a puller handover          |
+| `swarm_hls_segments_never_named_total`      | counter | Segments in Swarm that no published manifest named          |
 | `swarm_hls_auth_rejections_total`           | counter | Requests refused by a credential gate                       |
 | `swarm_hls_takeovers_refused_total`         | counter | Announces refused because a live session still holds the id |
 | `swarm_hls_manifest_publish_failures_total` | counter | Live manifest publishes that failed                         |
 | `swarm_hls_streams_finalized_total`         | counter | Stops that published a VOD                                  |
 | `swarm_hls_streams_failed_total`            | counter | Stops that did not. Those broadcasts have no recording      |
+| `swarm_hls_streams_reaped_total`            | counter | Broadcasts finalized because their engine went silent       |
+| `swarm_hls_segment_durations_unread_total`  | counter | Segments published on the engine's word, unreadable here    |
 | `swarm_hls_last_segment_timestamp_seconds`  | gauge   | Unix time of the newest segment that landed, 0 while none   |
 | `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing             |
 | `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream              |
@@ -227,9 +230,16 @@ Engines are thin adapters that translate media server events into `StreamOrchest
 
 Each engine owns its configuration: a `create<Name>EngineFromEnv()` factory reads the engine's env vars, and `src/engines/registry.ts` maps the `ENGINE` value to that factory. To add an engine, create its module under `src/engines/`, register it in the registry, and add an `engines/<name>/.env.sample` with its variables — the uploader loads `engines/<name>/.env` automatically when the engine is selected.
 
-Currently supported: **SRS** (SRT/RTMP to HLS) and **OME** (OvenMediaEngine, LLHLS).
+Currently supported: **SRS** (SRT/RTMP to HLS) and **OME** (OvenMediaEngine, MPEG-TS HLS).
 
-## Supported Transcoding Engines
+## Supported Engines
+
+Neither engine transcodes as this repository configures them. OME's output profile sets
+`<Bypass>true</Bypass>` on both the video and the audio encode, and the SRS config carries no
+`transcode` section at all, so both engines remux the broadcaster's own elementary streams into HLS
+and the picture a viewer gets is the picture that was published. Changing the resolution or the
+bitrate is therefore the broadcaster's to do, not the deployment's, which is the same fact
+`docs/bench/profiles.md` records from the other direction.
 
 ### OME Engine - OvenMediaEngine :
 
@@ -239,9 +249,11 @@ When `ENGINE=ome`, webhook endpoints are mounted:
 | ----------------------------- | ------------------------------------- |
 | `POST /engines/ome/admission` | Publish start and stop, HMAC-verified |
 
-1. **Ingest** — broadcaster pushes SRT into OvenMediaEngine, which transcodes and publishes LLHLS.
+1. **Ingest** — broadcaster pushes SRT into OvenMediaEngine, which remuxes it into MPEG-TS HLS.
 2. **Admission** — OME calls the `/engines/ome/admission` webhook on publish start/stop; the uploader verifies the HMAC signature and starts/stops the stream.
-3. **Pull** — an `HlsPuller` polls OME's HLS playlist and fetches new segments over HTTP (one puller per stream).
+3. **Pull** — an `HlsPuller` polls `{app}/{stream}/ts:playlist.m3u8` and fetches new segments over HTTP (one
+   puller per stream). That is OME's **MPEG-TS** playlist, not its fMP4 one, so the segments are
+   `.ts` and nothing downstream ever sees LL-HLS.
 4. **Upload** — the orchestrator uploads segments to Swarm, updates the live manifest feed (SOC), and finalizes a VOD manifest + catalog entry on stop.
 
 ### SRS Engine

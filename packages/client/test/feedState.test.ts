@@ -3,6 +3,7 @@ import { describe, it } from 'vitest';
 
 import {
   backoffDelayMs,
+  FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FEED_STATE_STALLED,
@@ -238,6 +239,104 @@ describe('FeedHealthTracker states', () => {
   });
 });
 
+describe('FeedHealthTracker proof that did not come from a feed read', () => {
+  const OTHER_TOPIC = 'another-topic-on-the-same-gateway';
+
+  /**
+   * The measured defect this exists for. A viewer's gateway was stopped for 20.5 seconds on
+   * 2026-08-06 and the feed was not asked for again until 30 seconds, because the backoff doubles
+   * from the failure that set it and nothing shortens it. All the while hls.js was fetching segments
+   * through that same gateway and those started succeeding the moment it returned, so the client
+   * held the answer and threw it away. 16.2 of the 30.6 second freeze was that wait.
+   * `docs/bench/browser-crash-2026-08-06T05-31-04-624Z.md`.
+   */
+  it('ends the wait on every topic held off, since one gateway serves them all', () => {
+    const clock = makeClock();
+    const tracker = new FeedHealthTracker(clock.now);
+
+    tracker.recordGatewayFailure(TOPIC);
+    tracker.recordGatewayFailure(OTHER_TOPIC);
+    assert.ok(tracker.backoffRemainingMs(TOPIC) > 0 && tracker.backoffRemainingMs(OTHER_TOPIC) > 0);
+
+    tracker.recordGatewayReachable();
+
+    assert.equal(tracker.backoffRemainingMs(TOPIC), 0);
+    assert.equal(tracker.backoffRemainingMs(OTHER_TOPIC), 0, 'only the first topic was released');
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+    assert.equal(tracker.state(OTHER_TOPIC), FEED_STATE_LIVE);
+  });
+
+  /**
+   * The reason this clears the backoff and not the unserved run, and the reason it is not
+   * `recordGatewayResponse`. A segment is fetched by chunk address, so it proves the gateway is
+   * serving bytes and says nothing at all about whether any publisher is still writing. A feed that
+   * stopped an hour ago goes on delivering the segments it already announced, and treating that as
+   * the feed advancing would erase a stall the viewer has already been told about.
+   */
+  it('leaves a stalled feed stalled, because a segment says nothing about a publisher', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
+      tracker.recordUnservedSlot(TOPIC);
+    }
+    assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
+
+    tracker.recordGatewayReachable();
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED]);
+  });
+
+  /**
+   * This runs once per segment loaded, which is four times a second at the shipping profile, so the
+   * healthy case has to be free. Nothing is in trouble, so there is nothing to release and nothing
+   * to say.
+   */
+  it('starts tracking nothing when no topic is in trouble', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    tracker.recordGatewayReachable();
+    tracker.recordGatewayReachable();
+
+    assert.deepEqual(seen, [FEED_STATE_LIVE]);
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  // Named, it stays one topic's business. A feed read only ever proves the gateway served that feed.
+  it('releases only the topic named, when one is', () => {
+    const clock = makeClock();
+    const tracker = new FeedHealthTracker(clock.now);
+
+    tracker.recordGatewayFailure(TOPIC);
+    tracker.recordGatewayFailure(OTHER_TOPIC);
+    tracker.recordGatewayReachable(TOPIC);
+
+    assert.equal(tracker.backoffRemainingMs(TOPIC), 0);
+    assert.equal(tracker.backoffRemainingMs(OTHER_TOPIC), 2_000);
+  });
+
+  /**
+   * Releasing a topic rewrites the map entry that is being walked. The tracker deletes before every
+   * write so that eviction takes the least recently updated, so an unguarded walk drops entries
+   * partway through and leaves some viewers held off by an outage that is over.
+   */
+  it('releases all of them, however many were held off at once', () => {
+    const clock = makeClock();
+    const tracker = new FeedHealthTracker(clock.now);
+    const topics = Array.from({ length: TRACKED_TOPIC_LIMIT }, (_, i) => `topic-${i}`);
+
+    for (const topic of topics) {
+      tracker.recordGatewayFailure(topic);
+    }
+    tracker.recordGatewayReachable();
+
+    const stillWaiting = topics.filter((topic) => tracker.backoffRemainingMs(topic) > 0);
+    assert.deepEqual(stillWaiting, [], `${stillWaiting.length} topics were left waiting out a finished outage`);
+  });
+});
+
 describe('FeedHealthTracker subscribers', () => {
   /**
    * The finding this exists for. A player mounting into an outage already under way is the common
@@ -350,5 +449,73 @@ describe('FeedHealthTracker bounds', () => {
 
     assert.equal(tracker.state('topic-0'), FEED_STATE_RECONNECTING, 'the topic still failing was evicted');
     assert.equal(tracker.state('topic-1'), FEED_STATE_LIVE);
+  });
+});
+
+/**
+ * A broadcast that ends is not a fault, and it is the one state here that never resolves. The other
+ * two describe something being retried behind the overlay; this one describes there being nothing
+ * left to retry, so it has to survive everything that would otherwise clear or overwrite it.
+ */
+describe('FeedHealthTracker on a broadcast that has ended', () => {
+  it('says the broadcast ended', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    tracker.recordFeedEnded(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_ENDED]);
+  });
+
+  it('says it once however many finalized manifests arrive', () => {
+    const { tracker, seen, watch } = makeTracker();
+    watch();
+
+    tracker.recordFeedEnded(TOPIC);
+    tracker.recordFeedEnded(TOPIC);
+    tracker.recordFeedEnded(TOPIC);
+
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_ENDED]);
+  });
+
+  /** A gateway going down after the broadcast finished does not make the broadcast unfinished. */
+  it('outranks a gateway that stops answering afterwards', () => {
+    const { tracker } = makeTracker();
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.recordGatewayFailure(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+  });
+
+  it('outranks a feed that then sits on an unserved slot', () => {
+    const { tracker } = makeTracker();
+    tracker.recordFeedEnded(TOPIC);
+
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT + 5; poll++) {
+      tracker.recordUnservedSlot(TOPIC);
+    }
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+  });
+
+  /** `recordGatewayReachable` clears the other two states. It must not un-end a broadcast. */
+  it('is not cleared by the gateway answering again', () => {
+    const { tracker } = makeTracker();
+    tracker.recordFeedEnded(TOPIC);
+
+    tracker.recordGatewayReachable(TOPIC);
+    tracker.recordGatewayResponse(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
+  });
+
+  it('leaves a topic that never ended alone', () => {
+    const { tracker } = makeTracker();
+
+    tracker.recordFeedEnded('some-other-broadcast');
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
   });
 });

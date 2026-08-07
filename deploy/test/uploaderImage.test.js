@@ -85,8 +85,27 @@ describe('the vendored shared manifest keeps every advertised entry point', () =
     'packages/stream-uploader/dist/node_modules/@swarm-hls-stream/shared/package.json',
   );
 
+  /**
+   * Says which precondition is missing rather than surfacing a bare ENOENT.
+   *
+   * These two read a build artifact, and for a while CI ran `pnpm test` before `pnpm build`. The
+   * result was two failures on every clean checkout and none on any machine that had built once,
+   * reported as an unreadable path error. The ordering is fixed in both `verify` and the workflow,
+   * so this should now be unreachable, and it is here to name the cause if it ever is not.
+   */
+  function readVendored() {
+    if (!existsSync(vendoredPath)) {
+      throw new Error(
+        `${vendoredPath} does not exist, so the uploader has not been built in this tree. ` +
+          'Run `pnpm build` first. These tests assert a property of the build output and cannot ' +
+          'run without it.',
+      );
+    }
+    return JSON.parse(readFileSync(vendoredPath, 'utf8'));
+  }
+
   it('exports the same subpaths the source package does', () => {
-    const vendored = JSON.parse(readFileSync(vendoredPath, 'utf8'));
+    const vendored = readVendored();
 
     assert.deepEqual(
       Object.keys(vendored.exports).sort(),
@@ -100,8 +119,42 @@ describe('the vendored shared manifest keeps every advertised entry point', () =
    * emitted fails identically from the outside, and `.ts` surviving into the manifest is the exact
    * shape that would do it, since the source really does point its `exports` at TypeScript.
    */
+  /**
+   * What the vendored copy needs at runtime, which is a different question from what it exports.
+   *
+   * `packages/shared` gained its first runtime dependencies in this branch, `@ethersphere/bee-js` and
+   * `cafe-utility`, and its first module importing them, which `index.js` re-exports eagerly. The
+   * image installs from the **uploader's** manifest alone: `Dockerfile.uploader` copies only that one
+   * file and runs `npm install --omit=dev`, and nothing ever runs an install inside
+   * `dist/node_modules`. So a package shared imports but the uploader does not declare reaches the
+   * image only if something else happens to pull it in.
+   *
+   * `cafe-utility` was exactly that. It resolved because `@ethersphere/bee-js` declares a compatible
+   * range of it and npm hoists flat, which is not a guarantee: the image ships no lockfile, so that
+   * range is re-resolved on every build, and a bee-js release that moved off it would have taken the
+   * uploader down at its first import on the ingest path.
+   */
+  it('declares in the uploader manifest every package the vendored copy imports', () => {
+    for (const [name, range] of Object.entries(sourceManifest.dependencies ?? {})) {
+      assert.equal(
+        manifest.dependencies?.[name],
+        range,
+        `shared needs ${name}@${range} at runtime and the image installs only from the uploader's ` +
+          'manifest, so it has to be declared there too, at the same version the workspace resolved',
+      );
+    }
+  });
+
+  it('carries the source package dependencies into the vendored manifest', () => {
+    assert.deepEqual(
+      readVendored().dependencies ?? {},
+      sourceManifest.dependencies ?? {},
+      'the vendored copy has to state what it needs, or nothing in the image records the requirement',
+    );
+  });
+
   it('points every export at a file that exists next to it', () => {
-    const vendored = JSON.parse(readFileSync(vendoredPath, 'utf8'));
+    const vendored = readVendored();
     const vendorDir = dirname(vendoredPath);
 
     for (const [subpath, entry] of Object.entries(vendored.exports)) {

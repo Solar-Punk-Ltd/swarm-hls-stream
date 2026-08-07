@@ -1,17 +1,25 @@
 import React from 'react';
 
-import { FEED_STATE_LIVE, FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FeedState } from '../../feedState';
+import {
+  FEED_STATE_ENDED,
+  FEED_STATE_LIVE,
+  FEED_STATE_RECONNECTING,
+  FEED_STATE_STALLED,
+  FeedState,
+} from '../../feedState';
 
 import './FeedStateOverlay.scss';
 
 /**
- * What each state is called on screen. Two messages rather than one, because the two situations ask
- * different things of the viewer: a gateway that is not answering usually comes back on its own, and
- * a feed that has stopped advancing while its gateway answers usually does not.
+ * What each state is called on screen. One message per situation rather than one for all of them,
+ * because they ask different things of the viewer: a gateway that is not answering usually comes
+ * back on its own, a feed that has stopped advancing while its gateway answers usually does not, and
+ * a broadcast that has ended is never coming back.
  */
 const MESSAGE: Record<Exclude<FeedState, typeof FEED_STATE_LIVE>, string> = {
   [FEED_STATE_RECONNECTING]: 'Reconnecting to the stream',
   [FEED_STATE_STALLED]: 'Waiting for the broadcast to continue',
+  [FEED_STATE_ENDED]: 'This broadcast has ended',
 };
 
 interface FeedStateOverlayProps {
@@ -33,7 +41,9 @@ export const FeedStateOverlay: React.FC<FeedStateOverlayProps> = ({ state }) => 
 
   return (
     <div className="swarm-hls-feed-state" role="status" aria-live="polite">
-      <span className="swarm-hls-feed-state__dot" aria-hidden="true" />
+      {/* The pulsing dot means something is still being attempted, so an ended broadcast does not
+          get one. It is the only state here that a viewer can act on by leaving. */}
+      {state !== FEED_STATE_ENDED && <span className="swarm-hls-feed-state__dot" aria-hidden="true" />}
       {MESSAGE[state]}
     </div>
   );

@@ -49,6 +49,12 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.segmentsSkippedTotal,
     },
     {
+      name: 'segments_never_named_total',
+      type: 'counter',
+      help: 'Segments uploaded to Swarm that no published manifest ever named, so no viewer can reach them.',
+      value: snapshot.segmentsNeverNamedTotal,
+    },
+    {
       name: 'auth_rejections_total',
       type: 'counter',
       help: 'Requests refused by a credential gate. Rising with no ingest means a secret this deployment holds is wrong.',
@@ -77,6 +83,18 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       type: 'counter',
       help: 'Streams whose stop did not publish a VOD. There is no recording of those broadcasts.',
       value: snapshot.streamsFailedTotal,
+    },
+    {
+      name: 'streams_reaped_total',
+      type: 'counter',
+      help: 'Streams finalized because their engine went silent, rather than because a stop was sent. A rising rate means an engine is dying without unpublishing.',
+      value: snapshot.streamsReapedTotal,
+    },
+    {
+      name: 'segment_durations_unread_total',
+      type: 'counter',
+      help: "Segments published with the engine's declared duration because their own timestamps could not be read. Both shipped engines deliver MPEG-TS, so this is expected to stay at zero. Any rise means those segments' durations are the engine's claim, which on SRS measured 20 to 25% long.",
+      value: snapshot.segmentDurationsUnreadTotal,
     },
     {
       name: 'last_segment_timestamp_seconds',

@@ -10,7 +10,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { requireGatewayReachable } from '../src/bench/gateway.js';
+import { parseFeedReaderMode, requireGatewayReachable } from '../src/bench/gateway.js';
 import { renderReport } from '../src/bench/report.js';
 import { measureLatency } from '../src/bench/run.js';
 import { checkInstrumentLocally } from '../src/bench/selfCheck.js';
@@ -72,6 +72,10 @@ async function main(): Promise<void> {
       // operator cannot tell the check ran, let alone what it ran against.
       `apart, media spans ${check.mediaSpansMs.map((ms) => Math.round(ms)).join('/')}ms`,
   );
+  console.log(
+    `bench: the publisher's timestamps run ${Math.round(check.mediaTimelineLeadMs)}ms ahead of wall clock ` +
+      `(spread ${Math.round(check.leadSpreadMs)}ms), and that much comes off every capture instant below`,
+  );
 
   await requireGatewayReachable(gatewayUrl);
   console.log('bench: viewer gateway reachable from this machine');
@@ -86,7 +90,16 @@ async function main(): Promise<void> {
   const health = await uploaderHealth(host, cfg);
   console.log(`bench: uploader ${health.status}, ${health.activeStreams} active stream(s), LOG_LEVEL=${level}`);
 
-  const run = await measureLatency({ cfg, host, gatewayUrl, knobs, samples, pollIntervalMs: DEFAULT_POLL_MS });
+  const run = await measureLatency({
+    cfg,
+    host,
+    gatewayUrl,
+    knobs,
+    samples,
+    idlePollIntervalMs: DEFAULT_POLL_MS,
+    feedReader: parseFeedReaderMode(process.env.BENCH_FEED_READER),
+    mediaTimelineLeadMs: check.mediaTimelineLeadMs,
+  });
   const report = renderReport(run);
 
   await mkdir(REPORT_DIR, { recursive: true });

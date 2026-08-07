@@ -18,7 +18,10 @@ export class ServiceMetrics {
   private manifestPublishFailures = 0;
   private streamsFinalized = 0;
   private streamsFailed = 0;
+  private streamsReaped = 0;
+  private segmentDurationsUnread = 0;
   private segmentsSkipped = 0;
+  private segmentsNeverNamed = 0;
   private authRejections = 0;
   private takeoversRefused = 0;
   private lastSegmentAt: number | null = null;
@@ -57,6 +60,34 @@ export class ServiceMetrics {
   }
 
   /**
+   * A broadcast finalized because its engine went silent, rather than because anything asked. See #86.
+   *
+   * Worth a counter of its own rather than folding into the finalize total, because every one of these
+   * is an engine that died without sending `on_unpublish`. A deployment where this is routine has a
+   * sick engine, and before the reaper existed that condition was invisible: the stream simply stayed
+   * live forever and nothing counted it.
+   */
+  public recordStreamReaped(): void {
+    this.streamsReaped += 1;
+  }
+
+  /**
+   * A segment whose own timestamps could not be read, so the engine's claim about it was published.
+   *
+   * Counted rather than only logged because **no shipped deployment should ever reach it**, and a
+   * thing that should never happen needs a rate rather than a line. Both engines deliver MPEG-TS:
+   * SRS writes it, and OME is pulled from `ts:playlist.m3u8` rather than its fMP4 playlist. So any
+   * rise means `readVideoPts` found no video PES where there should be one, and every `#EXTINF`
+   * since is the engine's claim rather than the media. On SRS that claim measured 20 to 25% long.
+   *
+   * The log line beside this fires once per stream, so it says a stream had the problem and cannot
+   * say for how much of it. That is what this counter is for.
+   */
+  public recordSegmentDurationUnread(): void {
+    this.segmentDurationsUnread += 1;
+  }
+
+  /**
    * Segments the CON-20 handover floor discarded on purpose, counted once per playlist index.
    *
    * The floor deliberately leaves the high-water where it is during a handover, so the same indexes
@@ -64,6 +95,19 @@ export class ServiceMetrics {
    */
   public recordSegmentsSkipped(count: number): void {
     this.segmentsSkipped += count;
+  }
+
+  /**
+   * Segments uploaded successfully that no published manifest ever named.
+   *
+   * Distinct from all three counters above, and the distinction is the whole reason it exists. These
+   * were not dropped, the engine did have them, and nothing chose to discard them: they are in Swarm
+   * and retrievable, and the live window advanced past them before a manifest naming them was
+   * published, so no viewer is ever told the address. Nothing else in this class can be non-zero when
+   * this is, which is what makes it worth reading on its own.
+   */
+  public recordSegmentsNeverNamed(count: number): void {
+    this.segmentsNeverNamed += count;
   }
 
   /** A request a credential gate refused. Never reset, so a scraper can take a rate over it. */
@@ -103,9 +147,12 @@ export class ServiceMetrics {
       segmentsDroppedTotal: this.segmentsDropped,
       segmentsLostTotal: this.segmentsLost,
       segmentsSkippedTotal: this.segmentsSkipped,
+      segmentsNeverNamedTotal: this.segmentsNeverNamed,
       manifestPublishFailuresTotal: this.manifestPublishFailures,
       streamsFinalizedTotal: this.streamsFinalized,
       streamsFailedTotal: this.streamsFailed,
+      streamsReapedTotal: this.streamsReaped,
+      segmentDurationsUnreadTotal: this.segmentDurationsUnread,
       authRejectionsTotal: this.authRejections,
       takeoversRefusedTotal: this.takeoversRefused,
       lastSegmentAt: this.lastSegmentAt,
@@ -119,9 +166,14 @@ export interface MetricsCounters {
   segmentsLostTotal: number;
   /** Segments the CON-20 handover floor discarded on purpose. Correct behaviour, not a failure. */
   segmentsSkippedTotal: number;
+  segmentsNeverNamedTotal: number;
   manifestPublishFailuresTotal: number;
   streamsFinalizedTotal: number;
   streamsFailedTotal: number;
+  /** Broadcasts finalized because their engine went silent rather than because anything asked. See #86. */
+  streamsReapedTotal: number;
+  /** Segments published with the engine's declared duration because their own timestamps were unreadable. */
+  segmentDurationsUnreadTotal: number;
   /** Requests refused by a credential gate, across every gate in the process. */
   authRejectionsTotal: number;
   /** Announces refused because a live session on that stream id is still producing. See SEC-26. */

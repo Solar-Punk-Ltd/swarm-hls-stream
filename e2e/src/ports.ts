@@ -10,20 +10,25 @@
 import type { EnvBag } from './envFile.js';
 
 /**
- * `PORT_VARS` from `_lib.sh`, defaults included. Each service holds a unique last digit (0-8) so
- * that `base + slot*10` gives every slot its own non-overlapping band of ten.
+ * `PORT_VARS` from `_lib.sh`, both numbers.
+ *
+ * `stock` is what a plain deploy falls back to when the variable is unset, matching the
+ * `${NAME:-NNNN}` fallback in the compose file that publishes it. `base` is the origin of the
+ * `base + slot*10` arithmetic, where each service holds a unique last digit (0-8) so slots cannot
+ * collide. They were one number until OPS-27, which is why a stock deploy bound SRS's RTMP listener
+ * on 10002 while the compose file documented 1935.
  */
 export const PORT_DEFAULTS = {
-  API_PORT: 10000,
-  SRS_SRT_PORT: 10001,
-  SRS_RTMP_PORT: 10002,
-  SRS_HTTP_PORT: 10003,
-  CLIENT_PORT: 10004,
-  BEE_UPLOADER_API_PORT: 10005,
-  BEE_UPLOADER_P2P_PORT: 10006,
-  BEE_GATEWAY_API_PORT: 10007,
-  BEE_GATEWAY_P2P_PORT: 10008,
-} as const;
+  API_PORT: { stock: 3000, base: 10000 },
+  SRS_SRT_PORT: { stock: 10080, base: 10001 },
+  SRS_RTMP_PORT: { stock: 1935, base: 10002 },
+  SRS_HTTP_PORT: { stock: 8080, base: 10003 },
+  CLIENT_PORT: { stock: 5173, base: 10004 },
+  BEE_UPLOADER_API_PORT: { stock: 1633, base: 10005 },
+  BEE_UPLOADER_P2P_PORT: { stock: 1634, base: 10006 },
+  BEE_GATEWAY_API_PORT: { stock: 1733, base: 10007 },
+  BEE_GATEWAY_P2P_PORT: { stock: 1734, base: 10008 },
+} as const satisfies Record<string, { stock: number; base: number }>;
 
 export type PortVar = keyof typeof PORT_DEFAULTS;
 
@@ -57,13 +62,12 @@ export type OmePortVar = keyof typeof OME_PORT_DEFAULTS;
  * An env value that is set but empty counts as unset, matching the shell's `-n` test.
  */
 export function resolvePort(name: PortVar, slot: number, env: EnvBag): number {
-  const fromSlot = PORT_DEFAULTS[name] + slot * PORT_SLOT_STRIDE;
   if (slot !== 0) {
-    return requireUsablePort(name, fromSlot);
+    return requireUsablePort(name, PORT_DEFAULTS[name].base + slot * PORT_SLOT_STRIDE);
   }
   const configured = env[name];
   if (configured === undefined || configured === '') {
-    return requireUsablePort(name, PORT_DEFAULTS[name]);
+    return requireUsablePort(name, PORT_DEFAULTS[name].stock);
   }
   return requireUsablePort(name, Number(configured));
 }

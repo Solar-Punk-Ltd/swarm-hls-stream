@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { type ProbedCheckSegment, requireSpansMeetEndToEnd } from '../src/bench/selfCheck.js';
+import { measureMediaTimelineLead, type ProbedCheckSegment, requireSpansMeetEndToEnd } from '../src/bench/selfCheck.js';
 
 /**
  * The local instrument check's contiguity rule, driven directly.
@@ -18,12 +18,22 @@ import { type ProbedCheckSegment, requireSpansMeetEndToEnd } from '../src/bench/
 const FRAME_MS = 1_000 / 30;
 const SPAN_MS = 2_000;
 
-/** Segments starting `startsAtMs` apart, each claiming to hold `spans[i]` of media. */
-function probed(startsAtMs: readonly number[], spans: readonly number[]): ProbedCheckSegment[] {
-  return startsAtMs.map((capturedAtMs, index) => ({
-    capturedAtMs,
+/**
+ * Segments starting `startsAtMs` apart, each claiming to hold `spans[i]` of media.
+ *
+ * `closedAtMs` defaults to the instant the span says the segment finished, which is a lead of zero.
+ * The contiguity tests below are indifferent to it, and the lead tests pass their own.
+ */
+function probed(
+  startsAtMs: readonly number[],
+  spans: readonly number[],
+  closedAtMs?: readonly number[],
+): ProbedCheckSegment[] {
+  return startsAtMs.map((capturedAt, index) => ({
+    capturedAtMs: capturedAt,
     mediaSpanMs: spans[index],
     frameDurationMs: FRAME_MS,
+    closedAtMs: closedAtMs?.[index] ?? capturedAt + spans[index],
   }));
 }
 
@@ -96,5 +106,80 @@ describe('the local check that each span reaches the next segment', () => {
   it('has nothing to say about one segment or none', () => {
     requireSpansMeetEndToEnd([]);
     requireSpansMeetEndToEnd(probed([0], [SPAN_MS]));
+  });
+});
+
+/**
+ * The quantity that turned five impossible `upload` hops into five possible ones.
+ *
+ * Measured on 2026-08-03: the publisher emits about 1.4 seconds of media faster than real time while
+ * ffmpeg starts up, and its output timeline never resyncs, so every timestamp afterwards claims a
+ * later capture instant than the truth. The two runs taken before this existed reported 1.4s less
+ * latency than they had measured, and every `upload` reading in both was negative.
+ *
+ * These drive the arithmetic directly. Producing the inputs needs a publish; comparing them is
+ * subtraction over three numbers, which is the same split the contiguity check above sits on.
+ */
+describe('measuring how far the publisher runs ahead of wall clock', () => {
+  const LEAD_MS = 1_393;
+
+  it('reports the lead as the gap between where the media says it ended and when it was written', () => {
+    const starts = [0, SPAN_MS, 2 * SPAN_MS];
+    const spans = [SPAN_MS, SPAN_MS, SPAN_MS];
+    const closes = starts.map((start) => start + SPAN_MS - LEAD_MS);
+
+    const { leadMs, spreadMs } = measureMediaTimelineLead(probed(starts, spans, closes));
+
+    assert.equal(leadMs, LEAD_MS);
+    assert.equal(spreadMs, 0);
+  });
+
+  /**
+   * The degenerate case, and the one that makes the test above mean anything. A publisher whose
+   * timeline keeps time has nothing to correct, and a function that returned any fixed quantity
+   * would pass the first test and fail this one.
+   */
+  it('reports no lead when the media timeline agrees with the wall clock', () => {
+    const starts = [0, SPAN_MS, 2 * SPAN_MS];
+
+    const { leadMs } = measureMediaTimelineLead(probed(starts, [SPAN_MS, SPAN_MS, SPAN_MS]));
+
+    assert.equal(leadMs, 0);
+  });
+
+  /** A timeline that lags rather than leads is a real reading too, and it has to keep its sign. */
+  it('reports a negative lead for a timeline that runs behind the wall clock', () => {
+    const starts = [0, SPAN_MS];
+    const closes = [SPAN_MS + 300, 2 * SPAN_MS + 300];
+
+    const { leadMs } = measureMediaTimelineLead(probed(starts, [SPAN_MS, SPAN_MS], closes));
+
+    assert.equal(leadMs, -300);
+  });
+
+  it('takes the median, so one outlying segment does not move the correction', () => {
+    const starts = [0, SPAN_MS, 2 * SPAN_MS];
+    const spans = [SPAN_MS, SPAN_MS, SPAN_MS];
+    const closes = [SPAN_MS - LEAD_MS, 2 * SPAN_MS - LEAD_MS - 100, 3 * SPAN_MS - LEAD_MS + 100];
+
+    const { leadMs } = measureMediaTimelineLead(probed(starts, spans, closes));
+
+    assert.equal(leadMs, LEAD_MS);
+  });
+
+  /**
+   * Refused rather than averaged. This is subtracted from every capture instant a run measures, so an
+   * estimate that scatters moves every latency in the report by however wrong it is, and it would do
+   * so silently. Across 44 real segments the quantity held to within 2ms.
+   */
+  it('refuses an estimate too scattered to subtract', () => {
+    const starts = [0, SPAN_MS, 2 * SPAN_MS];
+    const spans = [SPAN_MS, SPAN_MS, SPAN_MS];
+    const closes = [SPAN_MS - LEAD_MS, 2 * SPAN_MS - LEAD_MS - 4_000, 3 * SPAN_MS - LEAD_MS + 4_000];
+
+    assert.throws(
+      () => measureMediaTimelineLead(probed(starts, spans, closes)),
+      /ahead of wall clock across 3 segment\(s\), a spread of 4000ms/,
+    );
   });
 });

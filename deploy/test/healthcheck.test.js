@@ -6,7 +6,15 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { classifySpawn, SPAWN_ABSENT, SPAWN_OK, SPAWN_TIMED_OUT } from './helpers/spawnOutcome.js';
+
 const here = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * Generous against a command that parses one file, and finite, which is the whole point. Sized so a
+ * cold docker CLI on a loaded machine still answers, and so a docker that is not going to answer
+ * costs this suite half a minute rather than twelve.
+ */
+const COMPOSE_CONFIG_TIMEOUT_MS = 30_000;
 const COMPOSE_PATH = path.join(here, '..', 'docker-compose.yml');
 const UPLOADER_DOCKERFILE = path.join(here, '..', 'Dockerfile.uploader');
 
@@ -79,14 +87,28 @@ describe('stream-uploader healthcheck (OBS-17)', () => {
       cwd: path.join(here, '..'),
       encoding: 'utf-8',
       env: { ...process.env, STAMP: 'x', STREAM_KEY: 'x', API_AUTH_TOKEN: 'x' },
+      // `docker compose config` parses a file and does not talk to the daemon, verified by running
+      // it with DOCKER_HOST pointed at a socket that does not exist. So there is no legitimate slow
+      // path here, and without this bound one unresponsive docker holds the whole suite: on
+      // 2026-08-03 it ran 742 seconds against a nominal 12.8. See OPS-28.
+      timeout: COMPOSE_CONFIG_TIMEOUT_MS,
     });
 
-    if (check.error) {
+    const outcome = classifySpawn(check);
+    if (outcome.kind === SPAWN_ABSENT) {
       t.skip('docker is not available on this host');
       return;
     }
-
-    assert.equal(check.status, 0, `docker compose refused the file: ${check.stderr}`);
+    // Named separately from refusal because they call for opposite responses. A refused file is this
+    // repository's defect and the reader should go and read the compose file; a docker that never
+    // answered says nothing at all about it.
+    assert.notEqual(
+      outcome.kind,
+      SPAWN_TIMED_OUT,
+      `docker compose config did not answer in ${COMPOSE_CONFIG_TIMEOUT_MS}ms, so this says nothing about ` +
+        `the compose file: ${outcome.detail}`,
+    );
+    assert.equal(outcome.kind, SPAWN_OK, `docker compose refused the file: ${outcome.detail}`);
     assert.ok(
       check.stdout.includes(readHealthcheckProbe()),
       'compose rewrote the probe on its way through, so the container runs something else',

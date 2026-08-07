@@ -24,7 +24,19 @@ const SKEW: ClockSkew = { offsetMs: 120, uncertaintyMs: 8 };
  * and a fixture that produced one by accident would put it under tests that never asked for it.
  */
 function sampleOf(index: number, split: LatencySplit, declaredDurationS: number | null = 2): SegmentSample {
-  return { index, ref: `ref${index}`.padEnd(16, '0'), split, declaredDurationS, videoPacketCount: 60 };
+  return {
+    index,
+    ref: `ref${index}`.padEnd(16, '0'),
+    split,
+    declaredDurationS,
+    videoPacketCount: 60,
+    // 60 packets over the fixtures' 2s segment is 30fps, and 750kB over 2s is 3000kbps, so the two
+    // per-second columns come out as round numbers a test can name.
+    segmentBytes: 750_000,
+    // Served on the first ask, which is what a run that does not wait out a refusal always records.
+    unservedForMs: 0,
+    fetchAttempts: 1,
+  };
 }
 
 /** A sample whose total is `totalMs`, with the slack taken out of the fetch so the rows still sum. */
@@ -44,6 +56,7 @@ function runWith(
   samples: readonly SegmentSample[],
   trend: LatencyTrend | null = { msPerMinute: 4, scatterMsPerMinute: 40 },
   discarded: readonly DiscardedSegment[] = [],
+  mediaTimelineLeadMs = 1_393,
 ): BenchRun {
   return {
     measuredAt: '2026-08-02T20:00:00.000Z',
@@ -52,7 +65,11 @@ function runWith(
     knobs: DEFAULT_KNOBS,
     samples,
     discarded,
+    // Empty because nothing this file asserts reads them: the markdown report is about the segments a
+    // run carried, and the polls that carried none are the long run's question.
+    feedPolls: [],
     trend,
+    mediaTimelineLeadMs,
   };
 }
 
@@ -175,10 +192,13 @@ describe('the report an operator reads', () => {
     const report = renderReport(runWith(samples));
 
     assert.match(report, /capture to fetchable \| \*\*5\.80s\*\*/);
-    // 5.80s total, less the 2s segment already inside the buffer's reach, plus the 10s buffer. Not
-    // 15.80s: the total is anchored on a segment's first frame and the buffer is measured back from
+    // 5.80s total, less the 2s segment already inside the buffer's reach, plus the 6s buffer. Not
+    // 11.80s: the total is anchored on a segment's first frame and the buffer is measured back from
     // the live edge, which is its last, so adding the two counts one segment twice.
-    assert.match(report, /behind live\*\* \| \*\*13\.80s\*\*/);
+    //
+    // The buffer was 10 until the sweep of 2026-08-03 cut it to 6, which is why this figure moved by
+    // exactly four seconds and nothing else here did.
+    assert.match(report, /behind live\*\* \| \*\*9\.80s\*\*/);
   });
 
   /**
@@ -220,6 +240,17 @@ describe('the report an operator reads', () => {
 
     assert.match(report, /\*\*Not the skew estimate\.\*\*/);
     assert.doesNotMatch(report, /The totals are unaffected/);
+  });
+
+  // A throttled publisher carries its full complement of frames and bytes over a stretched span, so
+  // both per-second columns fall together and neither alone would say which fault it was.
+  // See `docs/bench/publisher-backpressure.md`.
+  it('reports frames and bytes per second of media, not per segment', () => {
+    const report = renderReport(runWith([sampleWithTotal(1, 7_000)]));
+
+    const row = report.split('\n').find((line) => line.startsWith('| 1 |'));
+    assert.ok(row, `no sample row in:\n${report}`);
+    assert.match(row, /\| 30\.0 \| 375\.0 \|$/, `60 packets and 750kB over a 2s segment: ${row}`);
   });
 
   it('names which segment the split came from, so it can be found in the sample list', () => {

@@ -103,6 +103,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'msSinceAuthRejection',
         'hasIngestedMedia',
         'segmentsSkipped',
+        'segmentsNeverNamed',
         'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',

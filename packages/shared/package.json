@@ -15,10 +15,14 @@
       "default": "./src/publishKey.ts"
     }
   },
+  "dependencies": {
+    "@ethersphere/bee-js": "^9.0.3",
+    "cafe-utility": "31.1.1"
+  },
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
-    "test": "tsx --test --test-force-exit test/*.test.ts"
+    "test": "TSX_DISABLE_CACHE=1 tsx --test --test-force-exit test/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",

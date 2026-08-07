@@ -7,7 +7,17 @@ export const FEED_STATE_RECONNECTING = 'reconnecting';
 /** The gateway is answering, but has not served the slot the player waits on, for a long run. */
 export const FEED_STATE_STALLED = 'stalled';
 
-export type FeedState = typeof FEED_STATE_LIVE | typeof FEED_STATE_RECONNECTING | typeof FEED_STATE_STALLED;
+/**
+ * The broadcaster ended the stream. The only terminal state here: the other three describe something
+ * still being retried, and this one describes there being nothing left to retry.
+ */
+export const FEED_STATE_ENDED = 'ended';
+
+export type FeedState =
+  | typeof FEED_STATE_LIVE
+  | typeof FEED_STATE_RECONNECTING
+  | typeof FEED_STATE_STALLED
+  | typeof FEED_STATE_ENDED;
 
 export type FeedStateListener = (state: FeedState) => void;
 
@@ -30,10 +40,36 @@ export const MANIFEST_RETRY_BASE_MS = 2_000;
 export const MANIFEST_RETRY_CAP_MS = 30_000;
 
 /**
- * How many consecutive polls may sit on an unserved slot before the feed is called stalled. hls.js
- * reloads a live playlist about once per target duration, which is 2 seconds here, so this is
- * roughly a minute of a feed that is not advancing. Low enough to reach a viewer while they are
- * still watching, high enough that a viewer who has merely caught up with the publisher stays quiet.
+ * How many consecutive polls may sit on an unserved slot before the feed is called stalled.
+ *
+ * Counted in polls rather than in seconds, because the poll is what observes the slot. Low enough to
+ * reach a viewer while they are still watching, high enough that a viewer who has merely caught up
+ * with the publisher stays quiet, since that viewer is refused on nearly every poll.
+ *
+ * ⚠️ **What this is worth in seconds is not what this comment used to claim.** It said hls.js
+ * reloads "about once per target duration, which is 2 seconds here, so this is roughly a minute".
+ * The uploader declares `ceil(segment duration)`, so the target is **1 second** at every segment
+ * length below a second, which `playerConfig.ts` states correctly and this did not. At the shipping
+ * profile thirty polls is therefore on the order of thirty seconds rather than sixty, and the
+ * measured live slot-read rate suggests faster still.
+ *
+ * ⚠️ **The run happened, and it says the unit is the problem rather than the number.** Two recorded
+ * uploader crashes, task #100 and `docs/bench/overlay-silence-during-a-crash-2026-08-07.md`. The
+ * poll rate is not a constant and does not vary randomly: it collapses during exactly the stall this
+ * counts. Feed reads went from a 264ms gap before the crash to **1064ms during the freeze**, because
+ * each read takes about three times as long and the client also spaces unserved reads about four
+ * times wider. So thirty polls is about **8 seconds while healthy and about 32 during a stall**, and
+ * the delay before a viewer is told anything is a by-product rather than a decision.
+ *
+ * What that costs, measured: a 12.4 second freeze accumulated 13 polls and never reached this
+ * threshold, so the viewer watched a dead picture for twelve seconds and was told nothing, while a
+ * 54.9 second freeze in the same scenario was announced 14.4 seconds in.
+ *
+ * The number is still left where it is, and now for a different reason. It was chosen against how
+ * long a viewer will sit through a frozen picture, which is a fact about viewers, and the fix
+ * indicated is to denominate this in elapsed milliseconds on the unserved slot rather than to move
+ * the count. That changes when the overlay appears on every deployment, so it is a product decision
+ * and not a correction.
  */
 export const UNSERVED_SLOT_POLL_LIMIT = 30;
 
@@ -54,9 +90,11 @@ interface TopicHealth {
   retryAtMs: number;
   /** Consecutive polls spent on a slot the gateway answered for, but had nothing in. */
   unservedSlotPolls: number;
+  /** Whether the broadcaster published a manifest that ends the playlist. Never goes back to false. */
+  hasEnded: boolean;
 }
 
-const HEALTHY: TopicHealth = { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: 0 };
+const HEALTHY: TopicHealth = { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: 0, hasEnded: false };
 
 /** How long to hold off after `failures` consecutive failures, doubling and then flat at the cap. */
 export function backoffDelayMs(failures: number): number {
@@ -69,12 +107,17 @@ export function backoffDelayMs(failures: number): number {
  * before then is dropping the count that decides when that is.
  */
 function isWorthTracking(health: TopicHealth): boolean {
-  return health.gatewayFailures > 0 || health.unservedSlotPolls > 0;
+  return health.gatewayFailures > 0 || health.unservedSlotPolls > 0 || health.hasEnded;
 }
 
 function stateOfHealth(health: TopicHealth | undefined): FeedState {
   if (!health) {
     return FEED_STATE_LIVE;
+  }
+  // First, and deliberately. A gateway going down after the broadcast finished does not make the
+  // broadcast unfinished, and a feed that stops advancing because it ended is not stalled.
+  if (health.hasEnded) {
+    return FEED_STATE_ENDED;
   }
   if (health.gatewayFailures > 0) {
     return FEED_STATE_RECONNECTING;
@@ -152,9 +195,9 @@ export class FeedHealthTracker {
     this.update(topicId, (health) => {
       const gatewayFailures = health.gatewayFailures + 1;
       return {
+        ...health,
         gatewayFailures,
         retryAtMs: this.now() + backoffDelayMs(gatewayFailures),
-        unservedSlotPolls: health.unservedSlotPolls,
       };
     });
   }
@@ -168,14 +211,40 @@ export class FeedHealthTracker {
    * progress and one that stopped an hour ago. Anything that clears the unserved run on the strength
    * of reaching the gateway erases a stall the player has already reported, and the path that would
    * do it is the one every restart takes.
+   *
+   * @param topicId The feed whose own read proved it, or every topic being held off when the proof
+   *   was not a feed read at all. A segment is fetched by chunk address through the one gateway all
+   *   these feeds are read from, so its arrival is a fact about that gateway rather than about any
+   *   one feed, and a viewer of another topic on the same page has learned it too.
    */
-  recordGatewayReachable(topicId: string): void {
-    this.update(topicId, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
+  recordGatewayReachable(topicId?: string): void {
+    const release = (id: string): void =>
+      this.update(id, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
+
+    if (topicId !== undefined) {
+      release(topicId);
+      return;
+    }
+    // Snapshotted because releasing a topic rewrites the entry being walked: `update` deletes before
+    // it writes, so that eviction takes the least recently updated rather than the oldest.
+    for (const held of [...this.topics.keys()]) {
+      release(held);
+    }
   }
 
-  /** A slot was served. Forgets both runs, since serving one ends either. */
+  /**
+   * A slot was served. Forgets both runs, since serving one ends either.
+   *
+   * An ended broadcast is kept rather than forgotten. Forgetting it would read as `live` again, and
+   * the last thing a finished stream does is serve the manifest that finished it.
+   */
   recordGatewayResponse(topicId: string): void {
-    this.update(topicId, () => null);
+    this.update(topicId, (health) => (health.hasEnded ? { ...HEALTHY, hasEnded: true } : null));
+  }
+
+  /** The broadcaster published a manifest that ends the playlist. Terminal, and not a fault. */
+  recordFeedEnded(topicId: string): void {
+    this.update(topicId, (health) => ({ ...health, hasEnded: true }));
   }
 
   /**
@@ -193,7 +262,7 @@ export class FeedHealthTracker {
     let polls = 0;
     this.update(topicId, (health) => {
       polls = health.unservedSlotPolls + 1;
-      return { gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: polls };
+      return { ...health, gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: polls };
     });
     return polls;
   }

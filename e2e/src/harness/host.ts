@@ -61,8 +61,26 @@ export interface UploaderHealth {
 }
 
 /**
- * Thin ssh wrapper around a deployed host — the transport for attach-mode tests. Every method
- * shells out to `ssh <target> <cmd>`, so it needs the target in ~/.ssh/config (same as manual use).
+ * The `E2E_SSH_TARGET` value meaning "this machine", so commands run through a shell rather than ssh.
+ *
+ * The bench has to publish and fetch from one machine, because that is what keeps the capture instant
+ * and the fetch instant on one clock. Measured on 2026-08-03, publishing from a laptop to the
+ * deployment cost about 15% of SRT packets, which lands almost entirely in the `segment` hop and made
+ * the largest row in the report a property of the uplink. Running the whole bench on the deployment
+ * host removes that path, and the host has no private key with which to ssh to itself.
+ *
+ * A distinct token rather than treating `localhost` this way, and the difference is not cosmetic.
+ * `localhost` is the documented default of `E2E_SSH_TARGET`, so an operator who set nothing would go
+ * from a failing `ssh localhost` to `docker stop` and `docker kill` running against whatever their own
+ * machine happens to be running. This suite injects faults, so that default has to stay loud, and the
+ * local transport has to be asked for.
+ */
+export const LOCAL_TARGET = 'local';
+
+/**
+ * Thin wrapper around a deployed host — the transport for attach-mode tests. Every method funnels
+ * through `run`, which shells out to `ssh <target> <cmd>`, so it needs the target in ~/.ssh/config
+ * (same as manual use). With `LOCAL_TARGET` it runs the same command line through `bash -c` instead.
  */
 export class Host {
   constructor(
@@ -88,6 +106,18 @@ export class Host {
   }
 
   async run(remoteCommand: string, timeoutMs: number = DEFAULT_RUN_TIMEOUT_MS): Promise<RunResult> {
+    if (this.sshTarget === LOCAL_TARGET) {
+      // `bash -c` rather than a bare spawn, because every command built above is a shell line:
+      // redirections, `||` fallbacks and `{{...}}` format strings all reach here unparsed. Not
+      // retried either, since the retry above exists for a dropped ssh connection and there is no
+      // connection to drop, so a non-zero exit here is the command's own and must surface at once.
+      const { stdout, stderr } = await execFileAsync('bash', ['-c', remoteCommand], {
+        timeout: timeoutMs,
+        maxBuffer: MAX_BUFFER_BYTES,
+      });
+      return { stdout, stderr };
+    }
+
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {

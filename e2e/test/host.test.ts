@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
 
-import { Host } from '../src/harness/host.js';
+import { Host, LOCAL_TARGET } from '../src/harness/host.js';
 
 /**
  * `Host.run` retries, and what it retries is the whole point. ssh answers 255 for its own transport
@@ -178,4 +178,63 @@ describe('Host container controls', () => {
       assert.match(sandbox.invocations()[0], new RegExp(`${expected}$`));
     });
   }
+});
+
+/**
+ * The local transport, which exists so the bench can run on the deployment host itself.
+ *
+ * A bench that publishes from one machine and fetches from another cannot share a clock, so it runs
+ * whole on the host, and the host has no private key with which to ssh to itself. Measured on
+ * 2026-08-03, publishing from a laptop instead cost ~15% of SRT packets and put that loss inside the
+ * largest hop in the report.
+ *
+ * These run real commands through a real shell. There is no host and no ssh in any of them, which is
+ * the property under test.
+ */
+describe('the local transport', () => {
+  it('runs the command through a shell instead of ssh', async () => {
+    const host = new Host(LOCAL_TARGET);
+
+    const { stdout } = await host.run('echo hello-from-shell');
+
+    assert.equal(stdout.trim(), 'hello-from-shell');
+  });
+
+  /**
+   * Every command the harness builds is a shell line: `2>&1`, `||` fallbacks and `{{...}}` format
+   * strings all arrive unparsed. A bare spawn would pass them to the program as literal arguments and
+   * `isRunning` would report every container missing.
+   */
+  it('interprets the shell syntax the harness builds', async () => {
+    const host = new Host(LOCAL_TARGET);
+
+    const { stdout } = await host.run('(exit 3) 2>/dev/null || echo fallback-taken');
+
+    assert.equal(stdout.trim(), 'fallback-taken');
+  });
+
+  /** A failing command is the command's own failure, so it surfaces rather than being retried away. */
+  it('surfaces a non-zero exit', async () => {
+    const host = new Host(LOCAL_TARGET);
+
+    await assert.rejects(
+      () => host.run('exit 7'),
+      (error: { code?: number }) => error.code === 7,
+    );
+  });
+
+  /**
+   * The degenerate case, and the reason the sentinel is not `localhost`. `localhost` is the documented
+   * default of `E2E_SSH_TARGET`, so treating it as local would turn a failed `ssh localhost` into
+   * `docker stop` against whatever the operator's own machine is running, and this suite injects
+   * faults. Anything but the sentinel has to still reach for ssh.
+   */
+  it('leaves every other target on ssh, localhost included', async () => {
+    stubSsh([0], 'ssh-was-used');
+    const host = new Host('localhost');
+
+    const { stdout } = await host.run('echo hello-from-shell');
+
+    assert.equal(stdout.trim(), 'ssh-was-used');
+  });
 });

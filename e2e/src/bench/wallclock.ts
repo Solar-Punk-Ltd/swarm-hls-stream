@@ -59,6 +59,22 @@ export interface CaptureWindow {
   publishStartedAtMs: number;
   /** When the segment carrying this frame finished downloading. Nothing can be observed before capture. */
   observedAtMs: number;
+  /**
+   * How far the publisher's media timeline runs ahead of wall clock, from the run's own self-check.
+   *
+   * **Required rather than defaulted, and it is the anchor rather than a correction applied after.**
+   * A stamp carries `capture + lead`, so the latest value a real one can hold is `observedAtMs +
+   * lead`, not `observedAtMs`. Folding against the observation instead throws any frame that beat the
+   * lead a whole wrap period into the past, where it is rejected as "captured before the publisher
+   * started".
+   *
+   * That is not a corner case, it is a censor aimed at the best configurations. Measured 2026-08-05
+   * against a lead of 1386ms: at a 2.0s GOP the fastest segment measured 3028ms and nothing was lost,
+   * while at a 0.5s GOP the fastest surviving segment measured 1432ms, **46ms above the lead**, and
+   * 79% of a three-minute run was discarded. The survivors were the slow tail, so the faster a
+   * deployment got, the worse this instrument reported it.
+   */
+  mediaTimelineLeadMs: number;
 }
 
 /**
@@ -90,9 +106,12 @@ export function impliedCaptureInstantMs(frame: FramePts, window: CaptureWindow):
   if (periodMs === null) {
     return stampMs;
   }
-  // The congruent instant at or before the observation, which is the only one a real capture can be.
-  const sinceCapture = (((window.observedAtMs - stampMs) % periodMs) + periodMs) % periodMs;
-  return window.observedAtMs - sinceCapture;
+  // Folded against the latest value a real stamp can carry, which is the observation plus however far
+  // the publisher's timeline runs ahead of it. Folding against the observation alone puts the fold
+  // line inside the range of stamps a fast deployment legitimately produces. See `CaptureWindow`.
+  const latestStampMs = window.observedAtMs + window.mediaTimelineLeadMs;
+  const sinceCapture = (((latestStampMs - stampMs) % periodMs) + periodMs) % periodMs;
+  return latestStampMs - sinceCapture;
 }
 
 /**
@@ -125,9 +144,15 @@ export function latencyMsFromPts(frame: FramePts, window: CaptureWindow): number
     );
   }
 
-  if (latencyMs < 0 || latencyMs > elapsedMs) {
+  // Bounded on the wall-clock latency rather than on the timeline one, because the two differ by the
+  // lead and only the first has bounds that are true by construction. A frame cannot be captured
+  // before the publisher started, and cannot be observed before it was captured. Comparing the
+  // timeline latency against zero instead rejects everything faster than the lead, which is a real
+  // and reachable region rather than an impossible one.
+  const wallClockLatencyMs = latencyMs + window.mediaTimelineLeadMs;
+  if (wallClockLatencyMs < 0 || wallClockLatencyMs > elapsedMs) {
     throw new UnusableTimestampsError(
-      `the segment's first frame implies it was captured ${describeOffset(latencyMs, elapsedMs)}, ` +
+      `the segment's first frame implies it was captured ${describeOffset(wallClockLatencyMs, elapsedMs)}, ` +
         'which cannot happen. The wall-clock timestamps the publisher wrote did not survive the ' +
         'pipeline, most likely because the media engine rebased the stream to start at zero when it ' +
         'repackaged. Latency cannot be measured this way against this deployment; the per-hop split ' +
@@ -138,6 +163,24 @@ export function latencyMsFromPts(frame: FramePts, window: CaptureWindow): number
   }
 
   return latencyMs;
+}
+
+/**
+ * When a segment's picture was really taken, which is the last step of the conversion above.
+ *
+ * `latencyMsFromPts` answers how far behind the *publisher's timeline* a frame arrived, and that
+ * timeline is not wall clock: it is measured to run a fixed distance ahead of it, because ffmpeg
+ * emits about 1.4s of media faster than real time as it starts and the output timeline never
+ * resyncs. See `measureMediaTimelineLead`, which is where the quantity comes from.
+ *
+ * A function rather than an expression at the one call site, so the correction can be asserted. Left
+ * inline it was a term nothing could see the absence of: drop it and every test in the repository
+ * still passes, while every latency in every report quietly reads 1.4 seconds fast.
+ *
+ * @param leadMs how far the publisher's timeline runs ahead of wall clock. Zero for a publisher that keeps time.
+ */
+export function captureInstantMs(observedAtMs: number, latencyMs: number, leadMs: number): number {
+  return observedAtMs - latencyMs - leadMs;
 }
 
 function describeOffset(latencyMs: number, elapsedMs: number): string {

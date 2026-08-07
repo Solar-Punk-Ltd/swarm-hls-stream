@@ -2,6 +2,7 @@ import { Bee } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { ManifestManager } from '../src/libs/ManifestManager.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
@@ -223,8 +224,20 @@ describe('StreamUploader discontinuity lifecycle', () => {
   });
 });
 
+/**
+ * The two writes take opposite `deferred` values, deliberately, and the asymmetry is the point.
+ *
+ * A segment is bytes nothing refers to yet, so deferring it costs a viewer nothing: by the time a
+ * manifest names it, bee has pushed it (measured at 0.8s mean to a second node).
+ *
+ * The manifest SOC is the announcement. Deferring that one means the publish reports success while
+ * the chunk is still only in the writer's local store, so a viewer's gateway is told about a
+ * segment it cannot yet resolve. LAT-10: two 30-minute broadcasts with the synchronous write put
+ * the worst capture-to-fetchable at 9.04s and 9.27s against 14.04s and 14.53s deferred, and the
+ * buffer a player needs at 7.08s against 12.08s. The synchronous push itself costs about 300ms.
+ */
 describe('StreamUploader Swarm write options', () => {
-  it('requests deferred uploads for segment and manifest feed writes', async () => {
+  it('defers the segment upload but not the manifest feed write', async () => {
     const dataOptions: unknown[] = [];
     const payloadOptions: unknown[] = [];
     let refCounter = 0;
@@ -256,7 +269,7 @@ describe('StreamUploader Swarm write options', () => {
     await drain(uploader);
 
     assert.deepEqual(dataOptions, [{ redundancyLevel: 1, deferred: true }]);
-    assert.deepEqual(payloadOptions, [{ index: 0, deferred: true }]);
+    assert.deepEqual(payloadOptions, [{ index: 0, deferred: false }]);
   });
 });
 
@@ -359,6 +372,9 @@ describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
 });
 
 describe('StreamUploader finalization (CON-25)', () => {
+  const ENDLIST_TAG = '#EXT-X-ENDLIST';
+  const PLAYLIST_TYPE_VOD_TAG = '#EXT-X-PLAYLIST-TYPE:VOD';
+
   /**
    * Two callers reach `notifyStop` for one session and neither can see the other. A reconnect during a
    * drain retires the live session and hands it to `finalizeRetiredSession`, which deliberately stays
@@ -413,9 +429,53 @@ describe('StreamUploader finalization (CON-25)', () => {
     );
     assert.deepEqual(
       socWrites,
-      [0, 1],
-      'the second finalize committed another VOD manifest at the next index, paid for and identical',
+      [0, 1, 2],
+      'the live manifest, then one closing manifest and one VOD however many times finalize is asked',
     );
+  });
+
+  /**
+   * The VOD manifest renumbers the playlist from zero, and it lands in the feed live viewers are
+   * still walking. hls.js merges a live playlist against its predecessor and reads a media sequence
+   * moving backwards as a parsing error, which its error controller escalates to fatal on a
+   * single-variant stream, and the client answers a fatal parsing error by remounting the player.
+   * That is how the end of a broadcast used to send a viewer back to its first second.
+   *
+   * So the broadcast ends on a manifest a live viewer can merge, and the recording follows it.
+   */
+  it('ends the live playlist before publishing the VOD that renumbers it', async () => {
+    const written: string[] = [];
+    const bee = {
+      uploadData: async () => ({ reference: { toHex: () => 'ref0' } }),
+      makeFeedWriter: () => ({
+        uploadPayload: async (_stamp: string, data: Uint8Array, opts: { index: number }) => {
+          written.push(Buffer.from(data).toString('utf-8'));
+          return { reference: { toHex: () => `soc${opts.index}` } };
+        },
+      }),
+    } as unknown as Bee;
+
+    const uploader = new StreamUploader(
+      bee,
+      '',
+      makeFakeCatalog(),
+      makeFakeRecoveryStore(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+    await uploader.notifyStop();
+
+    const [live, closing, vod] = written;
+    assert.equal(written.length, 3, `expected live, closing and VOD manifests, got ${written.length}`);
+    assert.ok(!live.includes(ENDLIST_TAG), 'the live manifest is open while the broadcast runs');
+    assert.ok(closing.includes(ENDLIST_TAG), 'the broadcast ends on a playlist a live viewer can merge');
+    assert.ok(!closing.includes(PLAYLIST_TYPE_VOD_TAG), 'and that playlist is still the live one');
+    assert.ok(vod.includes(PLAYLIST_TYPE_VOD_TAG), 'the recording is published after it, not instead of it');
   });
 });
 
@@ -567,5 +627,114 @@ describe('StreamUploader recovery persist failures (OBS-4)', () => {
     await drain(uploader);
 
     assert.equal(uploader.getMsSinceStatePersistFailed(), null, 'a save that landed must clear the signal');
+  });
+});
+
+/**
+ * A segment line long enough that only a few fit in one chunk, so a modest fixture overflows the
+ * window. The real deployment reaches the same state with 36 segments and a 0.25s GOP, which is nine
+ * seconds of a stalled publish, and a publish may retry for fifteen.
+ */
+const WIDE_MANIFEST_URL = `http://bee.test/${'p'.repeat(1_000)}`;
+
+/** How many of `count` segments a live manifest built the same way would actually name. */
+function liveWindowSize(count: number, manifestBeeUrl: string): number {
+  const probe = new ManifestManager(manifestBeeUrl);
+  for (let i = 0; i < count; i++) {
+    probe.addSegment(i, 2, `ref${i}`);
+  }
+  return probe
+    .buildLiveManifest()
+    .split('\n')
+    .filter((line) => line.length > 0 && !line.startsWith('#')).length;
+}
+
+/** A bee whose first feed write blocks until released, so segments pile up behind one publish. */
+function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void): Bee {
+  let refCounter = 0;
+  let publishes = 0;
+  const bee = {
+    uploadData: async () => ({ reference: { toHex: () => `ref${refCounter++}` } }),
+    makeFeedWriter: () => ({
+      uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => {
+        publishes += 1;
+        if (publishes === 1) {
+          entered();
+          await held;
+        }
+        return { reference: { toHex: () => `soc${opts.index}` } };
+      },
+    }),
+  };
+  return bee as unknown as Bee;
+}
+
+/**
+ * The quietest way this uploader can lose a piece of a broadcast.
+ *
+ * A viewer learns of a segment only from a manifest naming it. `uploadLiveManifest` coalesces behind
+ * `liveManifestQueued` while a publish is in flight, and the segment queue is a separate queue that
+ * keeps running, so a publish slow enough lets the window advance past segments that were uploaded
+ * perfectly well. Their bytes are in Swarm. No playlist names them, and `pendingDiscontinuity`
+ * answers a failed upload rather than this, so not even a discontinuity marks the hole.
+ */
+describe('segments the live window outran before anything published them', () => {
+  function uploaderWith(bee: Bee, manifestBeeUrl: string): StreamUploader {
+    return new StreamUploader(
+      bee,
+      manifestBeeUrl,
+      makeFakeCatalog(),
+      makeFakeRecoveryStore(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+      {},
+    );
+  }
+
+  it('counts the segments no published manifest ever named', async () => {
+    let release = (): void => {};
+    let entered = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const firstPublishStarted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+
+    const uploader = uploaderWith(
+      beeWithHeldFirstPublish(held, () => entered()),
+      WIDE_MANIFEST_URL,
+    );
+
+    // The first publish names segment 0 alone, and is held there.
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await firstPublishStarted;
+
+    // Nine more upload while it is held, so the next publish is built from all ten.
+    for (let index = 1; index <= 9; index++) {
+      uploader.handleSegment(index, 2, Buffer.from('a'));
+    }
+    await uploader.segmentQueue.onIdle();
+
+    release();
+    await drain(uploader);
+
+    const named = liveWindowSize(10, WIDE_MANIFEST_URL);
+    assert.ok(named < 9, `fixture must overflow the window, but it named ${named} of 10`);
+    // Everything after segment 0 and before the window: ten segments, less the window, less segment 0.
+    assert.equal(uploader.getSegmentsNeverNamed(), 10 - named - 1);
+  });
+
+  it('counts nothing while every segment still reaches a manifest', async () => {
+    const uploader = uploaderWith(makeBee({}), '');
+
+    for (let index = 0; index < 5; index++) {
+      uploader.handleSegment(index, 2, Buffer.from('a'));
+      await drain(uploader);
+    }
+
+    assert.equal(uploader.getSegmentsNeverNamed(), 0);
   });
 });

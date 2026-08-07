@@ -1,0 +1,82 @@
+# Runs `pnpm browser:watch` on the deployment host, in a browser that is genuinely foregrounded.
+#
+# ## Why this image is not the bench image with a browser added
+#
+# The blocker this exists to clear is not "there was no browser". A browser was driven against this
+# client on 2026-08-03 and it reported the player 578 seconds behind live, which was the harness and
+# not the deployment: the page was permanently `visibilityState: hidden`, and Chromium responds to a
+# hidden page by pausing muted video and throttling timers to about one a minute once playback
+# stalls. hls.js loads fragments off those timers.
+#
+# So the requirement is a page that is really visible, and that is what the Xvfb entrypoint below
+# buys. A headless browser would report `visible` too, and would be the easier thing to build, but
+# then the harness's own visibility check would be attesting to a default rather than to the
+# arrangement that makes the run valid.
+#
+# ## Why Google Chrome and not Playwright's Chromium
+#
+# Playwright's bundled Chromium is the open-source build, without H.264 or AAC. It loads the page,
+# runs hls.js, fetches every segment out of Swarm and decodes none of them. The failure surfaces as a
+# blank picture and a player that never advances, which is what a delivery failure looks like, so it
+# would be a day's investigation pointed at the wrong layer. `e2e/src/browser/instrument.ts` asserts
+# the codecs at runtime rather than trusting this comment.
+FROM node:22-bookworm-slim
+
+# Chrome from Google's own repository, verified against their signing key. `xvfb` is the display the
+# browser is foregrounded on, and `fonts-liberation` is what stops the clock overlay and the client's
+# own text rendering as boxes in the screenshots the run is read from.
+#
+# `xauth` is listed because `--no-install-recommends` does not pull it and `xvfb-run` shells out to
+# it for every invocation. Without it the entrypoint fails before Chrome is reached, which reads as
+# the harness being broken rather than as a missing package.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+  && wget -qO /usr/share/keyrings/google-chrome.asc https://dl-ssl.google.com/linux/linux_signing_key.pub \
+  && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] https://dl-ssl.google.com/linux/chrome/deb/ stable main" \
+     > /etc/apt/sources.list.d/google-chrome.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends google-chrome-stable xvfb xauth fonts-liberation \
+  && rm -rf /var/lib/apt/lists/* \
+  && google-chrome-stable --version
+
+# Deliberately not pinned. Google's apt repository keeps only current stable, so a pin here would
+# break the image on their release cadence rather than on ours. The version that actually ran is read
+# off the browser at runtime and printed in every report, which is the property that matters: a
+# reading can always be attributed to a build, even though the build is not chosen here.
+
+# `curl` is what `Host.localJson` shells out to, and the docker client is how a crash scenario stops
+# and starts the container it is injecting a fault into. Both talk to the host over what
+# `bench-on-host.sh` already mounts, so this adds a client and no daemon. Pinned, and taken from the
+# static tarball for the reason `Dockerfile.bench` gives: the alternative is adding docker's apt
+# repository to pull one binary.
+#
+# A crash scenario has to watch the viewer and move the infrastructure in the same program, because
+# what it measures is the interval between the two. Split across a shell script and a report reader,
+# the fault's time and the sample's time come from different clocks on different machines, and the
+# quantity being measured is a few seconds.
+ARG DOCKER_CLI_VERSION=27.3.1
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
+  | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
+  && docker --version
+
+# Pinned to what the repository is developed against, for the reasons `Dockerfile.bench` records at
+# length: pnpm 11 reads this workspace's overrides as absent and refuses a frozen install, and a
+# corepack activation done as root at build time is invisible to the invoking user at run time.
+ARG PNPM_VERSION=9.12.0
+RUN npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version
+
+# The X server puts its socket here and cannot create the directory itself, because the container
+# runs as the invoking user rather than as root. Created at build time, when there is still a root to
+# create it with.
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
+WORKDIR /repo
+
+# Every command runs on a real X display. As an entrypoint rather than something each call has to
+# remember, so that forgetting it is not a way to get a plausible-looking reading out of a browser
+# that was never foregrounded.
+COPY browser-entrypoint.sh /usr/local/bin/browser-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/browser-entrypoint.sh"]

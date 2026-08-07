@@ -59,6 +59,17 @@ export class CustomFragmentLoader extends FragmentLoader {
       context.url = `${window.location.origin}${resolved}`;
     }
 
-    super.load(context, config, callbacks);
+    super.load(context, config, {
+      ...callbacks,
+      // A segment that arrived is proof the gateway is answering, and the manifest side is the only
+      // half that ever holds off on the belief that it is not. Its backoff doubles from the failure
+      // that set it, so an outage of twenty seconds went unnoticed for thirty: the gateway was back
+      // for ten of them and the one thing still talking to it was this. Reported here because the
+      // player fetches segments anyway on hls.js's own retry cadence, so the signal is free.
+      onSuccess: (response, stats, ctx, networkDetails) => {
+        manifestFetcher.feedHealth.recordGatewayReachable();
+        callbacks.onSuccess(response, stats, ctx, networkDetails);
+      },
+    });
   }
 }

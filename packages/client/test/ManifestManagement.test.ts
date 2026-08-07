@@ -85,6 +85,36 @@ describe('ManifestStateManager serialize', () => {
     assert.ok(!out.includes(`${DISCONTINUITY}\n${EXTINF_2S}\nseg0.ts`), 'seg0 must not carry a discontinuity');
   });
 
+  it('serves a playable playlist when the first manifest a viewer ever sees is a finished one', () => {
+    // How a recording is opened: nothing has been watched, so the feed head is the VOD manifest and
+    // it arrives finalized on the first fetch. Every live path reaches `serialize` having taken a
+    // manifest that was still open first, which is the only route that ever set the headers.
+    const recording = [
+      M3U,
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '',
+      EXTINF_2S,
+      'seg0.ts',
+      EXTINF_2S,
+      'seg1.ts',
+      '#EXT-X-ENDLIST',
+    ].join('\n');
+    const parsed = parseManifest(recording);
+    manager.updateManifest(TOPIC, parsed.headers, parsed.segments, parsed.isFinalized);
+
+    const out = manager.serialize(TOPIC, '');
+
+    // hls.js refuses a playlist whose first line is not this, with `Missing format identifier
+    // #EXTM3U`, and reports it as a fatal error rather than as a bad playlist.
+    assert.ok(out.startsWith(M3U), `a playlist must open with ${M3U}, got:\n${out}`);
+    assert.ok(out.includes('#EXT-X-TARGETDURATION:2'), `the target duration must survive, got:\n${out}`);
+    assert.ok(out.includes('seg0.ts') && out.includes('seg1.ts'), `both segments must be named, got:\n${out}`);
+    assert.ok(out.includes('#EXT-X-ENDLIST'), `a finished playlist must be closed, got:\n${out}`);
+  });
+
   it('preserves discontinuity flag when the same segment is reparsed without the tag (dedup across polls)', () => {
     // Poll 1: manifest with discontinuity on seg1
     const manifest1 = [M3U, EXTINF_2S, 'seg0.ts', DISCONTINUITY, EXTINF_2S, 'seg1.ts'].join('\n');

@@ -8,6 +8,7 @@
  * measured against a baseline, so the baseline has to be a thing that occurred.
  */
 
+import type { FeedPoll } from './longRun.js';
 import { HOPS_CROSSING_CLOCKS, impossibleHops, type LatencySplit } from './split.js';
 import type { PublishKnobs } from './wallclockPublisher.js';
 
@@ -29,6 +30,12 @@ export interface SegmentSample {
    * Null where the entry carried no readable `#EXTINF`, which costs the comparison and not the sample.
    */
   declaredDurationS: number | null;
+  /** The segment's size on the wire, which is what makes a throttled publisher readable. */
+  segmentBytes: number;
+  /** How long the gateway refused the bytes before serving them. Zero unless the run waited. */
+  unservedForMs: number;
+  /** Asks the segment took. One unless the gateway refused it and the run waited. */
+  fetchAttempts: number;
   /** How many video packets the span was measured across, so a thin reading can be seen as thin. */
   videoPacketCount: number;
 }
@@ -54,8 +61,25 @@ export interface BenchRun {
    * thin result and a broken pipeline, and only this field can tell them apart afterwards.
    */
   discarded: readonly DiscardedSegment[];
+  /**
+   * Every completed read of the feed, including the ones that named a segment already measured.
+   *
+   * A run's samples cannot say whether a gap between two of them was the feed standing still or this
+   * process not asking, because both produce the same absence. The polls that yielded nothing are
+   * what separate them, and they are only knowable while the run is happening. See `feedProgress`.
+   */
+  feedPolls: readonly FeedPoll[];
   /** How the run's own latency moved while it was being taken, or null with too few samples. */
   trend: LatencyTrend | null;
+  /**
+   * How much was taken off every capture instant, because the publisher's timestamps run that far
+   * ahead of wall clock. See `measureMediaTimelineLead`.
+   *
+   * In the artifact rather than only in the console, because the runs of 2026-08-02 and 2026-08-03
+   * were taken without it and read 1.4s fast. A reader comparing an old report against a new one has
+   * no other way to tell which of the two they are holding.
+   */
+  mediaTimelineLeadMs: number;
 }
 
 /**
@@ -227,6 +251,18 @@ function medianFlaggedNotice(median: SegmentSample): string[] {
  * call site works over the already-filtered list, and a zero gap from a segment carrying no
  * declaration would have been indistinguishable from perfect agreement.
  */
+/**
+ * A per-segment quantity over the media it holds, to one decimal.
+ *
+ * Frames and bytes are both read against media time rather than wall time, because that is what
+ * separates a throttled publisher from a healthy one: media time stretches to match a slow consumer,
+ * so a throttled segment carries its full complement of frames and bytes over a longer span and both
+ * rates fall together. See `docs/bench/publisher-backpressure.md`.
+ */
+function perSecond(amount: number, mediaS: number): string {
+  return mediaS > 0 ? (amount / mediaS).toFixed(1) : 'n/a';
+}
+
 function declaredGapMs(declaredDurationS: number, sample: SegmentSample): number {
   return (declaredDurationS - sample.split.instants.segmentDurationS) * 1_000;
 }
@@ -308,6 +344,31 @@ function knobLine(knobs: PublishKnobs): string {
   return `${knobs.size} @ ${knobs.fps}fps, ${knobs.videoBitrateKbps}kbps, ${knobs.gopSeconds}s GOP`;
 }
 
+/**
+ * What the media-timeline correction did to this run, in the terms a reader compares runs in.
+ *
+ * Spelled out with the direction, because the sign is the part that is easy to get backwards: the
+ * timestamps run ahead, so the picture was taken *earlier* than they claim, so removing the lead
+ * makes the measured latency **larger**. A reader comparing against the uncorrected runs of
+ * 2026-08-02 and 2026-08-03 has to add this to their headline figures, not subtract it.
+ */
+function leadLine(run: BenchRun): string {
+  if (run.mediaTimelineLeadMs === 0) {
+    return (
+      "- **no correction was applied for the publisher's timestamps running ahead of wall clock.** Every " +
+      'figure here is therefore a lower bound on the real latency, and the `upload` hop a lower bound on ' +
+      'its real value.'
+    );
+  }
+  return (
+    `- the publisher's timestamps run ${Math.round(run.mediaTimelineLeadMs)}ms ahead of wall clock, measured ` +
+    'locally before this run started, and that much has been taken off every capture instant. It reaches ' +
+    '`capture to fetchable`, `behind live` and the `upload` hop, and no other row. Runs taken before this ' +
+    'correction existed report that much *less* latency than they measured, because a timestamp that runs ' +
+    'ahead makes the picture look newer than it is.'
+  );
+}
+
 export function renderReport(run: BenchRun): string {
   const median = medianSample(run.samples);
   if (!median) {
@@ -374,19 +435,21 @@ export function renderReport(run: BenchRun): string {
     '',
     '## Every sample',
     '',
-    '| segment | ref | total | media held | declared | packets |',
-    '| ---: | --- | ---: | ---: | ---: | ---: |',
+    '| segment | ref | total | media held | declared | packets | fps | kB/s |',
+    '| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
   );
 
   for (const sample of run.samples) {
     const declared = sample.declaredDurationS === null ? 'unreadable' : seconds(sample.declaredDurationS * 1_000);
+    const mediaS = sample.split.instants.segmentDurationS;
     lines.push(
       `| ${sample.index} | \`${sample.ref.slice(0, 12)}\` | ${seconds(sample.split.totalMs)} | ` +
-        `${seconds(sample.split.instants.segmentDurationS * 1_000)} | ${declared} | ${sample.videoPacketCount} |`,
+        `${seconds(mediaS * 1_000)} | ${declared} | ${sample.videoPacketCount} | ` +
+        `${perSecond(sample.videoPacketCount, mediaS)} | ${perSecond(sample.segmentBytes / 1_000, mediaS)} |`,
     );
   }
 
-  lines.push('', '## Self-checks', '', trendLine(run.trend), declaredDurationLine(run));
+  lines.push('', '## Self-checks', '', trendLine(run.trend), declaredDurationLine(run), leadLine(run));
 
   const impossible = run.samples.flatMap((sample) =>
     impossibleHops(sample.split).map(
