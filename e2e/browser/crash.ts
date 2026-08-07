@@ -201,7 +201,8 @@ async function main(): Promise<void> {
     throw new Error('no samples collected');
   }
 
-  const cost = judgeCost(resourcesBefore, await readResources(host, cfg));
+  const network = summarizeNetwork(requests);
+  const cost = judgeCost(resourcesBefore, await readResources(host, cfg), network.segmentBytesDelivered);
 
   const run = {
     measuredAt,
@@ -214,7 +215,7 @@ async function main(): Promise<void> {
     summary: summarize(samples),
     recovery: judgeRecovery(samples, { injectedAtMs, liftedAtMs, servingAtMs }),
     instrument: judgeRun(stretches.flatMap((stretch) => stretch.readings)),
-    network: summarizeNetwork(requests),
+    network,
     samples,
     screenshots: stretches.flatMap((stretch) => stretch.screenshots),
     cost,

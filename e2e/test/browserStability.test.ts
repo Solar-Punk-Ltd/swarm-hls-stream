@@ -152,6 +152,44 @@ describe('what a run cost the deployment', () => {
   });
 
   /**
+   * The figure that carries to another bitrate, which the per-minute rate does not.
+   *
+   * ⛔ Measured 2026-08-07 across seventeen recorded runs at a fixed 0.25s segment: **0.0179 BZZ per
+   * broadcast-minute at 720p against 0.0389 at 1080p**, so a runway projected at the first while
+   * running the second is out by 2.2x. Normalised by bytes those same runs sit inside 0.00081 to
+   * 0.00096 across the whole 2.5x spread in bitrate.
+   */
+  it('prices the run per megabyte delivered, not only per minute', () => {
+    const cost = judgeCost(reading(0, 10, 10), reading(10 * 60_000, 14, 9.8), 250_000_000);
+
+    assert.ok(cost.bzzPerMegabyte !== null);
+    // 0.2 BZZ spent over 250 MB.
+    assert.ok(Math.abs(cost.bzzPerMegabyte - 0.0008) < 1e-12);
+  });
+
+  /**
+   * The same spend at half the bitrate is the same price per byte and half the price per minute.
+   * Asserting both directions in one test is the point: it is the pair that carries the lesson.
+   */
+  it('holds per megabyte where the per-minute rate moves with the bitrate', () => {
+    const lean = judgeCost(reading(0, 10, 10), reading(10 * 60_000, 12, 9.9), 125_000_000);
+    const rich = judgeCost(reading(0, 10, 10), reading(10 * 60_000, 14, 9.8), 250_000_000);
+
+    assert.ok(lean.bzzPerMegabyte !== null && rich.bzzPerMegabyte !== null);
+    assert.ok(Math.abs(lean.bzzPerMegabyte - rich.bzzPerMegabyte) < 1e-12, 'per megabyte should not move');
+    assert.ok(Math.abs(rich.bzzPerMinute - 2 * lean.bzzPerMinute) < 1e-9, 'per minute should double');
+  });
+
+  /**
+   * Null rather than zero. A crash run that watched nothing has not shown that bytes are free, it has
+   * shown that it cannot answer, and those two read very differently beside a funding decision.
+   */
+  it('reports no price per byte when the run counted no bytes', () => {
+    assert.equal(judgeCost(reading(0, 10, 10), reading(10 * 60_000, 14, 9.8)).bzzPerMegabyte, null);
+    assert.equal(judgeCost(reading(0, 10, 10), reading(10 * 60_000, 14, 9.8), 0).bzzPerMegabyte, null);
+  });
+
+  /**
    * Null rather than Infinity. A run too short to move a counter has not shown the resource is
    * plentiful, it has shown that this run cannot answer, and those read very differently in a report.
    */
