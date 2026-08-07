@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
 import { latencySection } from '../src/browser/report.js';
-import { judgeLatencyTarget, summarize, type ViewerSample } from '../src/browser/session.js';
+import { judgeLatency, judgeLatencyTarget, summarize, type ViewerSample } from '../src/browser/session.js';
 
 const BASE: ViewerSample = {
   atMs: 0,
@@ -239,5 +239,58 @@ describe('what the latency section says about the target it was measured against
 
     assert.match(section, /never reported a latency target/);
     assert.doesNotMatch(section, /Measured against the configured target throughout/);
+  });
+});
+
+/**
+ * The join is read off the first sample that had a latency, and until 2026-08-07 that included
+ * samples taken before playback began.
+ *
+ * `browser-watch-2026-08-07T09-47-47-623Z` is the run that exposed it. Its first sample sits at
+ * `readyState 1` with 0.99s buffered and reports **37.00s** behind live, which is the whole live
+ * window: `hls.latency` is computed against the playlist edge whether or not the player has picked a
+ * position yet. One second later the same run reads 6.28s at `readyState 4`.
+ *
+ * ⛔ **Nothing seeked.** `currentTime` goes 31.01 to 32.17 across that pair, a normal 1.16s step at
+ * the catch-up rate. The report nonetheless printed "the join was a jump, so hls.js seeked to the
+ * edge", which describes an event that did not happen, and `a-quarter-second-buys-nothing` drew a
+ * conclusion about segment length from joins measured this way.
+ */
+describe('reading the join from a player that had actually started', () => {
+  it('skips samples taken before the player could play, however large their latency', () => {
+    const verdict = judgeLatency(
+      run(
+        { liveLatencyS: 37, readyState: 1, bufferAheadS: 0.99 },
+        { liveLatencyS: 6.28, readyState: 4 },
+        { liveLatencyS: 6.1, readyState: 4 },
+      ),
+    );
+
+    assert.equal(verdict.joinLatencyS, 6.28);
+    assert.equal(verdict.joinedPastSeekThreshold, false, 'no seek happened, and none should be claimed');
+  });
+
+  it('still reports a genuine jump, where the player was playing when it read one', () => {
+    const verdict = judgeLatency(run({ liveLatencyS: 37, readyState: 4 }, { liveLatencyS: 6.28, readyState: 4 }));
+
+    assert.equal(verdict.joinLatencyS, 37);
+    assert.equal(verdict.joinedPastSeekThreshold, true);
+  });
+
+  // Falling back rather than reporting nothing: a run where the player never reached a playable state
+  // still has a first latency, and it is the only thing there is to say about the join.
+  it('falls back to the first latency when the player never became playable', () => {
+    const verdict = judgeLatency(run({ liveLatencyS: 9.5, readyState: 1 }, { liveLatencyS: 9.4, readyState: 2 }));
+
+    assert.equal(verdict.joinLatencyS, 9.5);
+  });
+
+  it('leaves the median alone, which is over every sample that had a latency', () => {
+    const verdict = judgeLatency(
+      run({ liveLatencyS: 37, readyState: 1 }, { liveLatencyS: 6, readyState: 4 }, { liveLatencyS: 6, readyState: 4 }),
+    );
+
+    assert.equal(verdict.medianLatencyS, 6);
+    assert.equal(verdict.maxLatencyS, 37, 'the excursion is still visible, it is just not called a join');
   });
 });

@@ -246,17 +246,45 @@ export function judgeLatency(samples: readonly ViewerSample[]): LatencyVerdict {
 
   const floor = LIVE_SYNC_DURATION_S - LATENCY_TARGET_TOLERANCE_S;
   const medianLatencyS = median(observed);
+  const joinLatencyS = joinLatency(samples) ?? observed[0];
   const afterJoin = observed.slice(1);
   return {
-    joinLatencyS: observed[0],
+    joinLatencyS,
     medianLatencyS,
     minLatencyS: Math.min(...observed),
     maxLatencyS: Math.max(...observed),
-    reachedTargetAtJoin: observed[0] >= floor,
+    reachedTargetAtJoin: joinLatencyS >= floor,
     heldTarget: medianLatencyS >= floor,
-    joinedPastSeekThreshold: observed[0] > LIVE_MAX_LATENCY_DURATION_S,
+    joinedPastSeekThreshold: joinLatencyS > LIVE_MAX_LATENCY_DURATION_S,
     ranLong: afterJoin.some((latency) => latency > LIVE_MAX_LATENCY_DURATION_S),
   };
+}
+
+/**
+ * `readyState` at which the player has enough to play forward, which is `HAVE_FUTURE_DATA`.
+ *
+ * Below it the element has a position but nothing to move to, and `hls.latency` is computed against
+ * the playlist edge regardless, so it reports the whole live window rather than where a viewer
+ * landed.
+ */
+const PLAYABLE_READY_STATE = 3;
+
+/**
+ * Where the viewer actually started, taken from the first sample the player could play from.
+ *
+ * ⛔ **Not the first sample with a latency**, which is what this used to be. On 2026-08-07 a 1.0s arm
+ * took its first sample at `readyState 1` with 0.99s buffered and reported **37.00s** behind live,
+ * the entire live window. One second later the same run read 6.28s at `readyState 4`, and
+ * `currentTime` moved 31.01 to 32.17 across that pair, which is an ordinary step at the catch-up
+ * rate. **Nothing seeked.** The report nonetheless announced that the join was a jump and that hls.js
+ * had seeked to the edge, and `joinedPastSeekThreshold` is derived from the same number.
+ *
+ * Null when the player never reached a playable state, which leaves the caller to fall back rather
+ * than deciding here that such a run has no join at all.
+ */
+function joinLatency(samples: readonly ViewerSample[]): number | null {
+  const started = samples.find((sample) => sample.readyState >= PLAYABLE_READY_STATE && sample.liveLatencyS !== null);
+  return started?.liveLatencyS ?? null;
 }
 
 export interface SessionSummary {
