@@ -52,9 +52,7 @@ describe('whether the run was measured against the target it was configured with
   });
 
   it('catches a target raised part way through, which is the shape a stall makes', () => {
-    const verdict = judgeLatencyTarget(
-      run({}, {}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 }),
-    );
+    const verdict = judgeLatencyTarget(run({}, {}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 }));
 
     assert.equal(verdict.held, false);
     assert.equal(verdict.raisedByS, 1);
@@ -79,9 +77,7 @@ describe('whether the run was measured against the target it was configured with
   });
 
   it('reports the worst target the run ever steered to, not the last one', () => {
-    const verdict = judgeLatencyTarget(
-      run({}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 }, {}),
-    );
+    const verdict = judgeLatencyTarget(run({}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 }, {}));
 
     assert.equal(verdict.worstS, LIVE_SYNC_DURATION_S + 1);
     assert.equal(verdict.raisedByS, 1);
@@ -124,6 +120,54 @@ describe('whether the run was measured against the target it was configured with
     const verdict = judgeLatencyTarget(run({ liveTargetLatencyS: LIVE_SYNC_DURATION_S + 0.5 }));
 
     assert.equal(verdict.held, false);
+  });
+
+  /**
+   * The measure that survives a stall, and the reason it is worth carrying.
+   *
+   * Subtracting each sample's own target collapses the two 1080p control arms from 0.92s apart to
+   * 0.08s (5.89 against a 6.0 target, 6.81 against about 7.0) while leaving the 0.81s effect intact.
+   * ⚠️ That arithmetic is a **reconstruction**, since arm 3's target was inverted out of a single
+   * catch-up sample rather than recorded, so it is the reason for the measure and not a result.
+   */
+  it('measures latency against the target the player was steering to, per sample', () => {
+    const verdict = judgeLatencyTarget(
+      run(
+        { liveLatencyS: 6.81, liveTargetLatencyS: 7 },
+        { liveLatencyS: 6.81, liveTargetLatencyS: 7 },
+        { liveLatencyS: 6.81, liveTargetLatencyS: 7 },
+      ),
+    );
+
+    assert.equal(verdict.medianPastTargetS?.toFixed(2), '-0.19');
+  });
+
+  /**
+   * Per sample rather than median-minus-median, pinned by a case where the two disagree.
+   *
+   * ⚠️ Most shapes cannot tell them apart. A run that sits flat either side of a target step gives
+   * the same answer both ways, which is how the first version of this test passed against a
+   * deliberately median-minus-median implementation. Separating them needs latency and target to move
+   * out of step, which is exactly what a stall does: latency spikes in the same moment the target is
+   * raised, so the two medians come from different samples and pairing them is the whole point.
+   */
+  it('is not a difference of medians, pinned where the two definitions disagree', () => {
+    const verdict = judgeLatencyTarget(
+      run(
+        { liveLatencyS: 6.05, liveTargetLatencyS: 6 },
+        { liveLatencyS: 9.33, liveTargetLatencyS: 7 },
+        { liveLatencyS: 6.9, liveTargetLatencyS: 7 },
+      ),
+    );
+
+    // Per sample: +0.05, +2.33, -0.10, median +0.05.
+    // Median of latencies 6.90 minus median of targets 7.00 would be -0.10.
+    assert.equal(verdict.medianPastTargetS?.toFixed(2), '0.05');
+  });
+
+  it('says nothing about the distance when a sample is missing either half', () => {
+    assert.equal(judgeLatencyTarget(run({ liveLatencyS: null })).medianPastTargetS, null);
+    assert.equal(judgeLatencyTarget(run({ liveTargetLatencyS: null })).medianPastTargetS, null);
   });
 
   it('counts stalls across a restart, which resets the player counter to zero', () => {

@@ -104,6 +104,21 @@ export interface LatencyTargetVerdict {
   stalls: number;
   /** Whether the run was measured against the target it was configured with, throughout. */
   held: boolean;
+  /**
+   * Median of `latency - target` taken per sample, or null where no sample had both.
+   *
+   * ⭐ **The figure to compare across runs when {@link held} is false.** Raw latency is what a viewer
+   * got and is the right number for a viewer-facing claim, but it carries the stall penalty, so two
+   * runs of one configuration whose stalls differed are not comparable on it. This is what the
+   * segment length did, with the penalty subtracted out.
+   *
+   * Negative means nearer live than the player was steering for, which is ordinary: the catch-up
+   * only pushes latency down and overshoots, so a healthy session sawtooths just below its target.
+   *
+   * Per sample rather than median-minus-median, because the target can move part way through a run
+   * and a difference of medians would then describe neither half.
+   */
+  medianPastTargetS: number | null;
 }
 
 /**
@@ -133,9 +148,14 @@ export function judgeLatencyTarget(samples: readonly ViewerSample[]): LatencyTar
     .filter((value): value is number => value !== null);
   const worstS = observed.length > 0 ? Math.max(...observed) : null;
 
+  const pastTarget = samples
+    .filter((sample) => sample.liveLatencyS !== null && sample.liveTargetLatencyS !== null)
+    .map((sample) => sample.liveLatencyS! - sample.liveTargetLatencyS!);
+
   return {
     configuredS: LIVE_SYNC_DURATION_S,
     worstS,
+    medianPastTargetS: pastTarget.length > 0 ? median(pastTarget) : null,
     raisedByS: worstS === null ? 0 : Math.max(0, worstS - LIVE_SYNC_DURATION_S),
     stalls: totalAcrossRestarts(samples, (sample) => sample.bufferStalls),
     // Null rather than true when nothing was observed: a run that never read a target has not shown

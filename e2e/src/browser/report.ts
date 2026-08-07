@@ -169,12 +169,21 @@ function latencyTargetLines(target: LatencyTargetVerdict): string[] {
     ];
   }
 
+  const pastTarget =
+    target.medianPastTargetS === null
+      ? 'not measurable from this run'
+      : `**${target.medianPastTargetS >= 0 ? '+' : ''}${target.medianPastTargetS.toFixed(2)}s** against the ` +
+        "player's own target, taken per sample";
+
   if (target.held) {
     return [
       `✅ **Measured against the configured target throughout.** The player steered to ` +
         `${target.worstS.toFixed(2)}s for the whole run, with ${target.stalls} buffer ` +
         `${target.stalls === 1 ? 'stall' : 'stalls'}, so the figures above are comparable with any other ` +
         'run that says the same.',
+      '',
+      `Median ${pastTarget}. Negative is ordinary: the catch-up only pushes latency down and overshoots, ` +
+        'so a healthy session sawtooths just below its target.',
       '',
     ];
   }
@@ -191,6 +200,10 @@ function latencyTargetLines(target: LatencyTargetVerdict): string[] {
       'that would have pulled it back measures itself against the raised value and stops firing. ' +
       '**Nothing else in this report shows it**: a stall is not fatal, and it need not fire a `waiting` ' +
       'event, so the rebuffer, stalled-sample and fatal-error rows can all read zero.',
+    '',
+    `⭐ **What is still comparable is ${pastTarget}.** Raw latency is what this viewer got and is the ` +
+      'right number for a viewer-facing claim, but it carries the stall penalty. This one has the ' +
+      'penalty subtracted out, so it is the figure to put beside another run when the targets differed.',
     '',
   ];
 }
