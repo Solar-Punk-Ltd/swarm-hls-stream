@@ -19,8 +19,8 @@
  *   signal available for the price of one request.
  * - **The host's load average.** Separates a busy node from a busy box. The deployment shares a host
  *   with five other compose projects, so a neighbour is a live hypothesis and an untestable one today.
- * - **Connected peers and neighbourhood depth.** Retrieval goes through peers, and losing them is a
- *   way for retrieval to get slower with the node itself perfectly healthy.
+ * - **Connected peers and reachability.** Retrieval goes through peers, and losing them is a way for
+ *   retrieval to get slower with the node itself perfectly healthy.
  *
  * ⚠️ **Deliberately not `/metrics`.** Parsing a Prometheus dump is version-coupled work with no
  * hypothesis behind it yet. If a captured occurrence is not explained by the three above, that dump
@@ -71,9 +71,10 @@ export interface GatewaySample {
   /** What the request took **on the host**, so the figure carries no ssh latency. Null if unknown. */
   serviceMs: number | null;
   connectedPeers: number | null;
-  population: number | null;
-  neighbourhoodDepth: number | null;
-  reachability: string | null;
+  neighbourhoodSize: number | null;
+  isReachable: boolean | null;
+  /** A node still warming up is slow for a reason that is neither a fault nor worth chasing. */
+  isWarmingUp: boolean | null;
   /** The host's own one-minute load average, which is about the box rather than about bee. */
   hostLoad1: number | null;
   /**
@@ -116,8 +117,14 @@ export interface GatewayHealth {
  *
  * Line-oriented rather than assembled into JSON on the host: quoting a JSON document through a shell
  * through ssh is how a sampler starts reporting its own escaping. Both JSON documents have their
- * newlines stripped so the lines stay aligned, and topology goes last so that anything it emits
- * beyond one line cannot displace a field.
+ * newlines stripped so the lines stay aligned, and the status document goes last so that anything it
+ * emits beyond one line cannot displace a field.
+ *
+ * ⚠️ `/status` rather than `/topology`, which was the first version and was measured at **390 kB a
+ * sample** because it carries every peer's metrics. At one sample every five seconds that is around
+ * 94 MB over a twenty-minute run, moved across the same host the run is measuring. `/status` is 351
+ * bytes and names the same things more directly. An instrument that perturbs its subject is the
+ * failure this whole file exists downstream of.
  *
  * `|| true` on each, because a curl that fails must still leave the later lines in place. A sample
  * that lost only its host load is worth more than one that lost everything.
@@ -130,7 +137,7 @@ function sampleCommand(gatewayPort: number): string {
     `cut -d' ' -f1 /proc/loadavg 2>/dev/null || true`,
     `curl -s -m ${CURL_TIMEOUT_S} ${bee}/chequebook/balance 2>/dev/null | tr -d '\\n' || true`,
     `echo`,
-    `curl -s -m ${CURL_TIMEOUT_S} ${bee}/topology 2>/dev/null | tr -d '\\n' || true`,
+    `curl -s -m ${CURL_TIMEOUT_S} ${bee}/status 2>/dev/null | tr -d '\\n' || true`,
   ].join('; ');
 }
 
@@ -138,9 +145,9 @@ const UNANSWERED = {
   answered: false,
   serviceMs: null,
   connectedPeers: null,
-  population: null,
-  neighbourhoodDepth: null,
-  reachability: null,
+  neighbourhoodSize: null,
+  isReachable: null,
+  isWarmingUp: null,
   hostLoad1: null,
   chequebookAvailableBzz: null,
 } as const;
@@ -156,22 +163,22 @@ function numberOrNull(text: string | undefined): number | null {
   return finiteOrNull(Number(text));
 }
 
-interface Topology {
-  connected?: unknown;
-  population?: unknown;
-  depth?: unknown;
-  reachability?: unknown;
+interface NodeStatus {
+  connectedPeers?: unknown;
+  neighborhoodSize?: unknown;
+  isReachable?: unknown;
+  isWarmingUp?: unknown;
 }
 
-function parseTopology(line: string | undefined): Topology {
+function parseJsonLine(line: string | undefined): NodeStatus {
   if (line === undefined || line.trim() === '') {
     return {};
   }
   try {
     const parsed: unknown = JSON.parse(line);
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Topology) : {};
+    return typeof parsed === 'object' && parsed !== null ? (parsed as NodeStatus) : {};
   } catch {
-    // A node too busy to serve `/topology` is exactly the case being measured, and its reverse proxy
+    // A node too busy to serve `/status` is exactly the case being measured, and its reverse proxy
     // answering with HTML is one shape that takes. Losing the peer counts does not cost the timing.
     return {};
   }
@@ -189,15 +196,15 @@ export function parseGatewaySample(stdout: string, atMs: number): GatewaySample 
     return { ...UNANSWERED, atMs, serviceMs: serviceMs === null ? null : Math.round(serviceMs * 1_000) };
   }
 
-  const topology = parseTopology(rest.join(''));
+  const nodeStatus = parseJsonLine(rest.join(''));
   return {
     atMs,
     answered: true,
     serviceMs: Math.round(serviceMs * 1_000),
-    connectedPeers: finiteOrNull(topology.connected),
-    population: finiteOrNull(topology.population),
-    neighbourhoodDepth: finiteOrNull(topology.depth),
-    reachability: typeof topology.reachability === 'string' ? topology.reachability : null,
+    connectedPeers: finiteOrNull(nodeStatus.connectedPeers),
+    neighbourhoodSize: finiteOrNull(nodeStatus.neighborhoodSize),
+    isReachable: typeof nodeStatus.isReachable === 'boolean' ? nodeStatus.isReachable : null,
+    isWarmingUp: typeof nodeStatus.isWarmingUp === 'boolean' ? nodeStatus.isWarmingUp : null,
     hostLoad1: numberOrNull(load),
     chequebookAvailableBzz: availableBzz(chequebook),
   };
@@ -211,7 +218,7 @@ export function parseGatewaySample(stdout: string, atMs: number): GatewaySample 
  * still pay, and the ~0.0000007 BZZ that prompted this reading is not a figure precision changes.
  */
 function availableBzz(line: string): number | null {
-  const balance = parseTopology(line) as { availableBalance?: unknown };
+  const balance = parseJsonLine(line) as { availableBalance?: unknown };
   if (typeof balance.availableBalance !== 'string') {
     return null;
   }

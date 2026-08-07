@@ -14,7 +14,7 @@ const HEALTHY_OUTPUT = [
   '0.031 200',
   '1.42',
   '{"totalBalance":"227039111999998600","availableBalance":"80000000000000000"}',
-  '{"connected":92,"population":1204,"depth":8,"reachability":"Public"}',
+  '{"connectedPeers":92,"neighborhoodSize":135,"isReachable":true,"isWarmingUp":false}',
 ].join('\n');
 
 const at = (atMs: number, overrides: Partial<GatewaySample> = {}): GatewaySample => ({
@@ -22,9 +22,9 @@ const at = (atMs: number, overrides: Partial<GatewaySample> = {}): GatewaySample
   answered: true,
   serviceMs: 30,
   connectedPeers: 92,
-  population: 1204,
-  neighbourhoodDepth: 8,
-  reachability: 'Public',
+  neighbourhoodSize: 135,
+  isReachable: true,
+  isWarmingUp: false,
   hostLoad1: 1.4,
   chequebookAvailableBzz: 8,
   ...overrides,
@@ -47,9 +47,9 @@ describe('reading a gateway sample off the host', () => {
       answered: true,
       serviceMs: 31,
       connectedPeers: 92,
-      population: 1204,
-      neighbourhoodDepth: 8,
-      reachability: 'Public',
+      neighbourhoodSize: 135,
+      isReachable: true,
+      isWarmingUp: false,
       hostLoad1: 1.42,
       chequebookAvailableBzz: 8,
     });
@@ -83,7 +83,7 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the rest when the chequebook read is the one that failed', () => {
-    const sample = parseGatewaySample('0.03 200\n0.5\n\n{"connected":7}', 0);
+    const sample = parseGatewaySample('0.03 200\n0.5\n\n{"connectedPeers":7}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, 7);
@@ -139,7 +139,7 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the bee reading when only the host load is missing', () => {
-    const sample = parseGatewaySample('0.03 200\n\n{}\n{"connected":5}', 0);
+    const sample = parseGatewaySample('0.03 200\n\n{}\n{"connectedPeers":5}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, 5);
