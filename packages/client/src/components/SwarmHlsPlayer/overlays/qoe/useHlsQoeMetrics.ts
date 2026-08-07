@@ -1,4 +1,4 @@
-import Hls, { ErrorTypes, Events } from 'hls.js';
+import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
 export interface QoeMetrics {
   // Startup
@@ -29,6 +29,19 @@ export interface QoeMetrics {
 
   // Live
   liveLatencySec: number | null;
+  /**
+   * The latency hls.js is actually steering to, which is **not** always the configured one.
+   *
+   * `LatencyController` adds `min(stallCount * liveSyncOnStallIncrease, targetduration)` to the
+   * configured `liveSyncDuration`, `liveSyncOnStallIncrease` defaults to 1, and `stallCount` falls
+   * back to zero only when a fresh manifest loads. So one stall raises this by as much as a target
+   * duration for the rest of the session, and the catch-up measures itself against the raised value
+   * and stops pulling latency down. Two viewers on the same broadcast can sit a second apart for an
+   * hour with nothing else about them differing.
+   */
+  liveTargetLatencySec: number | null;
+  /** Non-fatal stalls, which are what move {@link liveTargetLatencySec} and nothing else counts. */
+  bufferStallCount: number;
 
   // Session
   playbackTimeMs: number;
@@ -54,6 +67,8 @@ export const initialMetrics = (): QoeMetrics => ({
   reconnectSuccessRate: 0,
   lastRecoveryTimeMs: null,
   liveLatencySec: null,
+  liveTargetLatencySec: null,
+  bufferStallCount: 0,
   playbackTimeMs: 0,
 });
 
@@ -150,7 +165,13 @@ export const attachQoeTracking = (
     }
   };
 
-  const onHlsError = (_event: unknown, data: { fatal: boolean; type: string }) => {
+  const onHlsError = (_event: unknown, data: { fatal: boolean; type: string; details?: string }) => {
+    // Counted above the fatal guard, not below it. A stall is never fatal, so everything this
+    // function used to do skipped the one error that permanently costs the viewer latency.
+    if (data.details === ErrorDetails.BUFFER_STALLED_ERROR) {
+      metrics.bufferStallCount += 1;
+      flush();
+    }
     if (!data.fatal) return;
     metrics.fatalErrorCount += 1;
     if (!firstPlaying) {
@@ -197,6 +218,8 @@ export const attachQoeTracking = (
     if (hls) {
       const latency = hls.latency;
       metrics.liveLatencySec = typeof latency === 'number' && Number.isFinite(latency) && latency > 0 ? latency : null;
+      const target = hls.targetLatency;
+      metrics.liveTargetLatencySec = typeof target === 'number' && Number.isFinite(target) ? target : null;
     }
 
     flush();
