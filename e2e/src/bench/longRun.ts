@@ -15,9 +15,13 @@
  * instant of every sample is recovered from the media timestamps. So a publisher running a percent
  * slow produces a latency that climbs by that percent of elapsed time forever, with no viewer of a
  * real camera ever seeing it. Over fifty seconds that is half a second and invisible under the
- * scatter. Over half an hour it is eighteen seconds and would be the headline. {@link mediaPacing}
- * is the only thing separating that from a pipeline genuinely falling behind, and it is measured
- * rather than assumed away.
+ * scatter. Over half an hour it is eighteen seconds and would be the headline.
+ * {@link MediaPacing.deliveredPerWallSecond} is the one reading that separates that from a pipeline
+ * genuinely falling behind, and it is measured rather than assumed away.
+ *
+ * Which member does the separating is the correction task #101 made. It used to be
+ * {@link MediaPacing.timelinePerWallSecond}, and that one is the drift itself written as a rate, so
+ * it agreed with the drift in every run and was read as confirming it.
  */
 
 import { median } from './sweepAnalysis.js';
@@ -45,15 +49,30 @@ export interface MediaPacing {
    *
    * Below 1 means a viewer playing at 1x runs out of media, whatever the cause, and falls further
    * behind for as long as it stays there.
+   *
+   * **This is the instrument's honesty check, and it is the only one of the three that can be.** Its
+   * numerator is the uploader's own segment counter times the media measured out of the packets, so
+   * nothing in it comes from the capture instants the latency is built on. A publisher pacing slow
+   * drags it below 1. A pipeline merely running late does not, because the counter reports what the
+   * uploader produced rather than when the bench received it.
    */
   deliveredPerWallSecond: number;
   /**
    * Seconds the media timeline advanced, per second of wall clock.
    *
-   * **This is the instrument's own honesty check.** Below 1 means the publisher is not producing in
-   * real time, and a latency climbing at exactly `(1 - this) x elapsed` is the publisher rather than
-   * the pipeline. A real broadcaster's camera does not do this, so a run where it is below 1 measures
-   * the bench.
+   * ⚠️ **This is the latency drift restated, and cannot corroborate it.** Latency is
+   * `fetchedAtMs - capturedAtMs`, so across the run the change in it is exactly
+   * `wallMs - timelineMs`, and this reduces to `1 - drift / wallSpan` identically. Reading a latency
+   * that climbs at `(1 - this) x elapsed` as evidence of anything is reading an identity: it always
+   * does, whatever the cause. The claim that it separates a slow publisher from a slow pipeline was
+   * wrong, and {@link deliveredPerWallSecond} is what actually separates them. Task #101.
+   *
+   * It stays because {@link holeMs} needs the timeline distance, and because agreeing with the
+   * separately fitted drift is a real arithmetic check on the fit. It is not evidence about the
+   * publisher.
+   *
+   * Determined by the first and last sample alone, like everything here, so a run that held still
+   * for 29 minutes and then jumped reads the same as one that drifted evenly throughout.
    */
   timelinePerWallSecond: number;
   /**

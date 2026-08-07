@@ -102,6 +102,63 @@ describe('how fast media time advanced against wall clock', () => {
 
     assert.throws(() => mediaPacing([sample]), /spans no wall time/);
   });
+
+  /**
+   * Task #101, pinned as arithmetic so the claim cannot be made again.
+   *
+   * `timelinePerWallSecond` used to be documented as the check that told a slow publisher from a
+   * slow pipeline, and as evidence when a latency climbed at `(1 - it) x elapsed`. Latency is
+   * `fetchedAtMs - capturedAtMs`, so its change across a run is `wallMs - timelineMs` and the ratio
+   * is `1 - drift / wallMs` identically. It climbs at that rate in every run there has ever been,
+   * because it is that rate, so agreeing with it confirmed nothing.
+   */
+  describe('what the timeline rate is actually made of', () => {
+    const latencyMs = (sample: { fetchedAtMs: number; capturedAtMs: number }) =>
+      sample.fetchedAtMs - sample.capturedAtMs;
+
+    const shapes = [
+      { name: 'keeping pace', captureStepMs: 1_000, fetchStepMs: 1_000 },
+      { name: 'a publisher pacing slow', captureStepMs: 1_000, fetchStepMs: 1_020 },
+      { name: 'a run catching up', captureStepMs: 1_000, fetchStepMs: 980 },
+    ];
+
+    for (const { name, captureStepMs, fetchStepMs } of shapes) {
+      it(`is exactly one minus the latency drift over the span, ${name}`, () => {
+        const samples = Array.from({ length: 10 }, (_, i) => ({
+          index: i,
+          capturedAtMs: 100_000 + i * captureStepMs,
+          fetchedAtMs: 103_000 + i * fetchStepMs,
+          segmentMs: 1_000,
+        }));
+        const driftMs = latencyMs(samples[samples.length - 1]) - latencyMs(samples[0]);
+        const wallMs = samples[samples.length - 1].fetchedAtMs - samples[0].fetchedAtMs;
+
+        assert.equal(mediaPacing(samples).timelinePerWallSecond, 1 - driftMs / wallMs);
+      });
+    }
+
+    /**
+     * And it reads only the ends, so it says nothing about when the drift happened. A run that held
+     * still for most of its length and then jumped is the same number as one that slid the whole
+     * way, which is the other half of why it cannot be read as a diagnosis.
+     */
+    it('cannot tell a steady slide from a single jump, because it reads only the ends', () => {
+      const ends = { first: { captured: 100_000, fetched: 103_000 }, last: { captured: 109_000, fetched: 112_180 } };
+      const steady = Array.from({ length: 10 }, (_, i) => ({
+        index: i,
+        capturedAtMs: ends.first.captured + i * 1_000,
+        fetchedAtMs: ends.first.fetched + i * 1_020,
+        segmentMs: 1_000,
+      }));
+      const jumped = steady.map((sample, i) => ({
+        ...sample,
+        // Perfect until the last step, which absorbs the whole 180ms at once.
+        fetchedAtMs: i === steady.length - 1 ? ends.last.fetched : ends.first.fetched + i * 1_000,
+      }));
+
+      assert.equal(mediaPacing(jumped).timelinePerWallSecond, mediaPacing(steady).timelinePerWallSecond);
+    });
+  });
 });
 
 /**

@@ -74,8 +74,22 @@ itself, and both are reported before any drift figure:
 | 720p 2.0s, 8 min | 0.9985 | 0.9990 | 0.24s |
 | 1080p 1.0s, 10 min | 0.9984 | 1.0010 | 1.53s |
 
-The two agreeing means the publisher was real-time; a gap between them would mean media the timeline
-crossed that no segment carried, which a viewer would see as a jump and which no latency column shows.
+**The first column is the check. The second is the result restated, and was wrongly read as a second
+check.** ⛔ Corrected 2026-08-07, task #101.
+
+`media delivered per wall second` earns the name: its numerator is the uploader's own segment
+counter times the media measured out of the packets, so nothing in it comes from the capture
+instants the latency is built on. Near 1 says the publisher produced in real time. That is what these
+four runs establish, and it holds.
+
+`timeline per wall second` is not independent of anything. Latency is `fetchedAtMs - capturedAtMs`,
+so across a run its change is exactly `wallMs - timelineMs`, and the column reduces to
+`1 - drift / span` identically. Reading 0.9991 there is the same statement as "the latency moved by
+0.09% of the run", which is the report's conclusion rather than a precondition for it. It agreed with
+the drift in every run because it could not do anything else.
+
+The **gap** between the two columns is real and is the last column: media the timeline crossed that
+no segment carried, which a viewer sees as a jump and no latency column shows.
 
 ## LAT-10: what the runs actually found
 
