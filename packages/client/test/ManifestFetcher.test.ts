@@ -387,14 +387,31 @@ describe('keeping up with a publisher that writes faster than hls.js reloads (#8
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // The second of two guards on the same failure. An assertion that throws mid-test never reaches
+    // the next `poll`, so the walk it left running would record its next request against whichever
+    // test runs after it. Drained before the stub is restored, so a walk still in flight is answered
+    // by the fixture rather than by the network.
+    await fetcher.settled();
     globalThis.fetch = realFetch;
     console.error = realConsoleError;
   });
 
+  /**
+   * Awaits the walk rather than pumping ticks at it.
+   *
+   * The stalled-feed loop below runs 35 rounds, and at the 50-tick budget {@link settle} defaults to
+   * that was 1750 macrotask round trips of real time, which Node floors at about a millisecond each
+   * and vitest then cut off at its 5000ms timeout. The abandoned walk that outlived the cut off is
+   * what recorded an extra request against the test that ran next.
+   *
+   * Shortening the budget is the wrong knob: the test that timed out asserts that no report fired,
+   * so a budget too short to let the walk report would make it pass for the wrong reason. Waiting on
+   * the walk itself is both faster and the stronger assertion.
+   */
   const poll = async () => {
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-    await settle();
+    await fetcher.settled();
   };
 
   // The defect itself. One poll used to be worth one segment however many the publisher had written,

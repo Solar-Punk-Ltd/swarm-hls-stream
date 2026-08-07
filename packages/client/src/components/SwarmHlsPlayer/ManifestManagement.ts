@@ -278,8 +278,13 @@ export class ManifestStateManager {
 export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
 
-  /** Topics with a follow-up fetch outstanding. Keyed by hex topic, since each feed advances alone. */
-  private readonly inFlight = new Set<string>();
+  /**
+   * Topics with a follow-up fetch outstanding, each mapped to the walk itself. Keyed by hex topic,
+   * since each feed advances alone. The walk is held rather than just its name so {@link settled}
+   * can await it, which is the only way anything outside this class can observe a walk that
+   * {@link handleFollowupFetch} deliberately does not return.
+   */
+  private readonly inFlight = new Map<string, Promise<void>>();
 
   constructor(
     private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance(),
@@ -310,6 +315,23 @@ export class ManifestFetcher {
       return this.handleInitialFetch(owner, topic);
     }
     return this.handleFollowupFetch(owner, topic, knownIndex);
+  }
+
+  /**
+   * Resolves once no walk is outstanding.
+   *
+   * Injected only by tests, like {@link delay}, and for the same reason: a walk is fire and forget by
+   * design, so a test that cannot await one has to guess a duration instead. A guess that runs short
+   * lets an abandoned walk record its next request against whichever test runs next, and a guess that
+   * runs long is what makes it run short, because a loop of them outruns the test timeout.
+   */
+  async settled(): Promise<void> {
+    // Cannot spin: each stored promise resolves only after its own entry is deleted, so a second lap
+    // means a new walk started while this one was waiting, which is a thing that happened rather than
+    // a thing to re-check.
+    while (this.inFlight.size > 0) {
+      await Promise.all(this.inFlight.values());
+    }
   }
 
   /**
@@ -397,8 +419,7 @@ export class ManifestFetcher {
     // already serialised state at once and leaves the walk running, so hls.js schedules its next
     // level reload on the ordinary cadence while the previous one is still open. See CON-29.
     if (!this.inFlight.has(hexTopic) && this.feedHealth.backoffRemainingMs(hexTopic) === 0) {
-      this.inFlight.add(hexTopic);
-      this.walkToPublisher(owner, topic, fromIndex)
+      const walk = this.walkToPublisher(owner, topic, fromIndex)
         .catch((error) => console.error('Error following the feed:', error))
         // Released only once the walk has finished, on the failure path as well, or one poll that
         // outran the publisher would end the broadcast for this viewer, and a caught-up viewer gets
@@ -406,6 +427,11 @@ export class ManifestFetcher {
         .finally(() => {
           this.inFlight.delete(hexTopic);
         });
+      // Recorded after the chain is built rather than before, so what is stored is the promise that
+      // resolves after the release above. Nothing can observe the gap: a promise callback is a
+      // microtask and this runs to completion first, so neither the guard nor the release can land
+      // between the walk starting and it being recorded.
+      this.inFlight.set(hexTopic, walk);
     }
 
     return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
