@@ -59,9 +59,15 @@ const MB = 1024 * 1024;
  * ## What this is not
  *
  * A floor over observed samples is not a proof, and these are 244 arrivals over four three-minute
- * runs rather than a steady state. Nothing here has been played in a real browser at this setting,
- * which is task #48, so the claim is that the arrivals measured would not have stalled a player
- * configured this way, not that no arrival ever will.
+ * runs rather than a steady state. The claim is that the arrivals measured would not have stalled a
+ * player configured this way, not that no arrival ever will.
+ *
+ * It **has** now been played in a real browser, which is what task #48 asked for and what the
+ * sentence here used to deny. Across 27 recorded sessions, 16 sat with a median live latency between
+ * 5.32s and 7.40s, which is this value, and 19 held at or above it. The joins split into two groups
+ * and neither is a fault: about 5.7 to 6.3s where the first manifest reached exactly this far back,
+ * and about 11.5 to 11.6s where it reached further and hls.js left the viewer there because that is
+ * still inside {@link LIVE_MAX_LATENCY_DURATION_S}.
  *
  * A paragraph here used to say that a player on this deployment rebuffers every 63 seconds whatever
  * this number is. That was LAT-10 and it is **retracted**: the freeze was bee's sequential feed head
