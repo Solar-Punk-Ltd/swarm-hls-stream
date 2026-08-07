@@ -124,31 +124,43 @@ describe('the SRS latency knobs', () => {
    * to the whole match. Under `restart: unless-stopped` a corrupt config is a crash loop rather than
    * a message, so the guard refuses instead of splicing.
    */
+  /**
+   * The entrypoint's own `require_number`, lifted out of the shipped script.
+   *
+   * It used to be pasted in here as a second copy of the same bash, which meant these cases proved
+   * the copy rejected bad input and never touched the guard that ships: breaking the real one left
+   * every case green. That is the failure `logLevel.ts` records about asserting a constant against
+   * the same constant the implementation returns. Task #104.
+   */
+  function shippedGuard() {
+    const declared = /^require_number\(\) \{\n[\s\S]*?\n\}$/m.exec(readFileSync(ENTRYPOINT, 'utf8'));
+    assert.ok(declared, `${ENTRYPOINT} no longer declares require_number, so there is no guard to test`);
+    return declared[0];
+  }
+
+  const runGuard = (name, value) =>
+    execFileSync('bash', ['-c', `${shippedGuard()}\nrequire_number ${name} "$${name}"`], {
+      env: { ...process.env, [name]: value },
+      stdio: 'pipe',
+    });
+
   for (const [name, bad] of [
     ['HLS_FRAGMENT', '1/2'],
     ['HLS_WINDOW', '22.5&'],
     ['SRT_LATENCY', '200; rm -rf /'],
   ]) {
     it(`refuses a ${name} that is not a number`, () => {
-      const script = readFileSync(ENTRYPOINT, 'utf8');
-      const guard = script
-        .split('\n')
-        .filter((line) => line.startsWith('require_number ') || line.includes('case "$2"'));
-      assert.ok(guard.length > 0, 'the entrypoint has no require_number guard to test');
+      assert.throws(() => runGuard(name, bad), /must be a positive number/);
+    });
+  }
 
-      assert.throws(
-        () =>
-          execFileSync(
-            'bash',
-            [
-              '-c',
-              'require_number() { case "$2" in \'\' | *[!0-9.]* | *.*.*) echo "$1 must be a positive number, got \'$2\'" >&2; exit 1 ;; esac; }\n' +
-                `require_number ${name} "$${name}"`,
-            ],
-            { env: { ...process.env, [name]: bad }, stdio: 'pipe' },
-          ),
-        /must be a positive number/,
-      );
+  /**
+   * Without this, a guard that refused everything would pass every case above, and a deployment
+   * setting a perfectly good fragment length would crash-loop instead of starting.
+   */
+  for (const good of ['0.5', '1', '22.5', '200']) {
+    it(`lets a value of ${good} through`, () => {
+      assert.doesNotThrow(() => runGuard('HLS_FRAGMENT', good));
     });
   }
 });
