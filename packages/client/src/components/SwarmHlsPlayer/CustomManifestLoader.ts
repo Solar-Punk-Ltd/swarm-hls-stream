@@ -50,13 +50,23 @@ export class CustomFragmentLoader extends FragmentLoader {
   load(context: FragmentLoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<LoaderContext>) {
     const url = context.url;
 
-    // If the URL is a blob: or broken protocol, it means HLS.js resolved a relative path
-    // against a blob manifest URL. Reresolve it using the actual path.
-    if (url.startsWith('blob:') || !url.startsWith('http')) {
-      const path = url.replace(/^blob:.*?\//, '/').replace(/^[^/]*/, '');
-      const resolved = path.startsWith('/') ? path : `/${path}`;
-
-      context.url = `${window.location.origin}${resolved}`;
+    // Every playlist this client hands hls.js names its segments absolutely, so anything else here is
+    // a bug upstream rather than a URL to repair, and it is not repairable anyway. A preview playlist
+    // is a blob, and hls.js resolving `/bytes/<ref>` against `blob:http://viewer/<uuid>` returns
+    // `blob:http:/bytes/<ref>`: the origin and the blob id are gone, so there is no gateway left to
+    // resolve against.
+    //
+    // This used to rebuild the path against `window.location.origin`, which is the client. Its nginx
+    // proxies `/bee/` and not `/bytes/`, so the fragment 404'd at a host that never had it and
+    // nothing said the fallback was the reason. Failing here costs the same fragment and says why.
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      callbacks.onError?.(
+        { code: 0, text: `fragment url is not absolute, so it names no gateway: ${url}` },
+        context,
+        undefined,
+        this.stats,
+      );
+      return;
     }
 
     super.load(context, config, {

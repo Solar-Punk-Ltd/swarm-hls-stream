@@ -94,20 +94,77 @@ describe('CustomFragmentLoader reporting the gateway it just reached', () => {
     assert.equal(manifestFetcher.feedHealth.state(TOPIC), FEED_STATE_RECONNECTING);
     assert.equal((fromHls.onError as unknown as { mock: { calls: unknown[][] } }).mock.calls.length, 1);
   });
+});
 
-  /**
-   * The other branch through `load`, for a fragment hls.js resolved against the blob URL its
-   * manifest was served from. It rewrites the url before delegating, so it has its own hand-off to
-   * the transport and its own chance to drop the reporting.
-   *
-   * What that branch rewrites the url *to* is deliberately not asserted here: it is wrong, and
-   * fixing it is not this change. See task #90.
-   */
-  it('reports the gateway on the blob-resolved path too', () => {
-    vi.stubGlobal('window', { location: { origin: 'http://viewer.example' } });
+/**
+ * The other branch through `load`, for a url hls.js could not resolve to a gateway.
+ *
+ * `blob:http:/bytes/abc123` is not a hand-written example. It is what hls.js 1.6.15's own resolver
+ * returns for the media line `/bytes/abc123` against the blob base a preview playlist is served
+ * from, measured on 2026-08-07: the page origin and the blob id are both consumed, leaving a url
+ * that names no host at all.
+ *
+ * This used to be rebuilt against `window.location.origin` and handed to the transport. That is the
+ * client, whose nginx proxies `/bee/` and not `/bytes/`, so the fragment 404'd at a host that never
+ * held it and no message connected the failure to the fallback. See task #90.
+ */
+describe('CustomFragmentLoader meeting a url that names no gateway', () => {
+  const UNRESOLVABLE = 'blob:http:/bytes/abc123';
+
+  /** Drive one url through the loader, and report both what the transport saw and what hls.js was told. */
+  function offer(url: string) {
+    const reachedTransport = vi.spyOn(transport, 'load').mockImplementation(() => {});
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    const fromHls = {
+      onSuccess: vi.fn(),
+      onError: vi.fn(),
+      onTimeout: vi.fn(),
+    } as unknown as LoaderCallbacks<LoaderContext>;
+
+    loader.load({ url } as FragmentLoaderContext, {} as LoaderConfiguration, fromHls);
+
+    const errors = (fromHls.onError as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    return {
+      transportCalls: reachedTransport.mock.calls.length,
+      errors: errors.map((call) => call[0] as { code: number; text: string }),
+    };
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  it('refuses it instead of fetching an origin that never held the segment', () => {
+    const { transportCalls, errors } = offer(UNRESOLVABLE);
+
+    assert.equal(transportCalls, 0, 'an unresolvable url was still sent to the network');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].text, /not absolute/);
+  });
+
+  // The url is the whole of what a reader has to go on, so it has to survive into the message.
+  it('names the url it refused', () => {
+    assert.match(offer(UNRESOLVABLE).errors[0].text, /blob:http:\/bytes\/abc123/);
+  });
+
+  // A refusal must not read as the gateway answering, which is the one thing this loader reports.
+  it('leaves the feed backoff alone, since nothing was fetched from anywhere', () => {
     manifestFetcher.feedHealth.recordGatewayFailure(TOPIC);
 
-    const { transport: toTransport } = loadFragment('blob:http://viewer.example/9f2c-1a/bytes/abc123');
+    offer(UNRESOLVABLE);
+
+    assert.ok(manifestFetcher.feedHealth.backoffRemainingMs(TOPIC) > 0);
+    assert.equal(manifestFetcher.feedHealth.state(TOPIC), FEED_STATE_RECONNECTING);
+  });
+
+  // The control. Without it the block above passes on a loader that refuses everything.
+  it('lets an absolute gateway url through to the transport', () => {
+    const { transport: toTransport } = loadFragment();
     toTransport.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
 
     assert.equal(manifestFetcher.feedHealth.state(TOPIC), FEED_STATE_LIVE);
