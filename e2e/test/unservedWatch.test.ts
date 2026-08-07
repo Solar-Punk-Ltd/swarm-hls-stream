@@ -47,8 +47,25 @@ describe('timing a refused segment off the collection loop', () => {
     await watch.settle();
 
     assert.equal(watch.resolutions.length, 1);
-    // Refused on the first two rechecks and served on the third, at one second each.
-    assert.deepEqual(watch.resolutions[0], { ref: 'ref-a', resolvedAfterMs: 3_000, asks: 3 });
+    // Asked at once, refused, then twice more a second apart. Served at two seconds, not three: the
+    // watcher used to sleep before its first ask and charged that sleep to the gateway.
+    assert.deepEqual(watch.resolutions[0], { ref: 'ref-a', resolvedAfterMs: 2_000, asks: 3 });
+  });
+
+  /**
+   * Task #103. The watcher slept `recheckMs` before asking anything, so the smallest number it could
+   * ever report was one whole recheck interval, and at the shipped 1000ms that is the same 1 second
+   * the report uses as its threshold. Every resolution was overstated by exactly one interval, and a
+   * segment that was there all along was indistinguishable from one that took a second to appear.
+   */
+  it('can report a segment that was there all along, rather than charging it a recheck', async () => {
+    const clock = drivenClock();
+    const watch = new UnservedSegmentWatch(gatewayRefusing(0).ask, OPTIONS, clock.now, clock.wait);
+
+    watch.observe('ref-there');
+    await watch.settle();
+
+    assert.deepEqual(watch.resolutions[0], { ref: 'ref-there', resolvedAfterMs: 0, asks: 1 });
   });
 
   it('reports a segment the gateway never served as null rather than as a number', async () => {

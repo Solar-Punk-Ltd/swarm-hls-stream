@@ -88,8 +88,11 @@ export class UnservedSegmentWatch {
     const deadlineMs = refusedAtMs + this.options.budgetMs;
     let asks = 0;
 
+    // Ask before waiting, not after. Sleeping first made one whole recheck interval the smallest
+    // number this could ever report, which at the shipped 1000ms is the same 1 second the report
+    // uses as its threshold: every resolution was overstated by an interval, and a segment that was
+    // already there was indistinguishable from one that took a second to arrive. See task #103.
     while (this.now() < deadlineMs) {
-      await this.wait(this.options.recheckMs);
       asks += 1;
       try {
         await this.ask(ref);
@@ -98,6 +101,7 @@ export class UnservedSegmentWatch {
       } catch {
         // Still refused, which is the ordinary case this exists to time.
       }
+      await this.wait(this.options.recheckMs);
     }
 
     this.results.push({ ref, resolvedAfterMs: null, asks });
