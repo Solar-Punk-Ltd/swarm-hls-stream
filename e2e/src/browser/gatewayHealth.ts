@@ -464,6 +464,7 @@ export function gatewaySection(health: GatewayHealth): string[] {
           m.unanswered,
           m.connectedPeers ?? '—',
           m.maxHostLoad1?.toFixed(2) ?? '—',
+          m.chequebookAvailableBzz?.toFixed(4) ?? '—',
         ].join(' | ') + ' |',
     ),
     '',

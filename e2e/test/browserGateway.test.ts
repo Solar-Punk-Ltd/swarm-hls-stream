@@ -386,6 +386,31 @@ describe('summarizing what the gateway did during a run', () => {
     assert.match(lines, /200/);
   });
 
+  /**
+   * ⛔ The defect this was written for, found by the first real run rather than by any fixture. A
+   * column was added to the header and not to the row, because a prettier reflow had moved the anchor
+   * the edit matched on, and the report shipped a seven-column header over six-column rows with the
+   * spendable balance silently absent. Every assertion here passed: they checked that certain values
+   * appeared, and none checked that the table was a table.
+   *
+   * Pinned as a relation between the rows rather than as a count, so it holds for any future column.
+   */
+  it('renders every row with as many cells as the header names', () => {
+    const rows = gatewaySection(summarizeGateway([at(0), at(60_000, { serviceMs: 200 })])).filter((line) =>
+      line.startsWith('|'),
+    );
+    const widths = new Set(rows.map((row) => row.split('|').length));
+
+    assert.ok(rows.length >= 3, 'no table was rendered, so this asserted nothing');
+    assert.equal(widths.size, 1, `the table mixes ${[...widths].join(' and ')} cell rows:\n${rows.join('\n')}`);
+  });
+
+  it('renders the spendable balance it went to the host to read', () => {
+    const lines = gatewaySection(summarizeGateway([at(0, { chequebookAvailableBzz: 8 })])).join('\n');
+
+    assert.match(lines, /8\.0000/);
+  });
+
   it('renders the reason rather than an empty table when there are no samples', () => {
     const lines = gatewaySection(summarizeGateway([])).join('\n');
 
