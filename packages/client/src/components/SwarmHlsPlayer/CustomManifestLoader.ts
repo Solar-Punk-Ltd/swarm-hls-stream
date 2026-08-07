@@ -59,8 +59,13 @@ export class CustomFragmentLoader extends FragmentLoader {
     // This used to rebuild the path against `window.location.origin`, which is the client. Its nginx
     // proxies `/bee/` and not `/bytes/`, so the fragment 404'd at a host that never had it and
     // nothing said the fallback was the reason. Failing here costs the same fragment and says why.
+    //
+    // Not optional-chained, unlike the manifest loader above. hls.js declares `onError` required, and
+    // this is the one path that returns without reaching the transport: chaining it would turn a
+    // missing callback into a fragment that never succeeds and never fails, which is the silent hang
+    // this change exists to remove. A thrown TypeError is the louder answer and the correct one.
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      callbacks.onError?.(
+      callbacks.onError(
         { code: 0, text: `fragment url is not absolute, so it names no gateway: ${url}` },
         context,
         undefined,
