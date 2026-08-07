@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'vitest';
 
 import {
+  FEED_STATE_DEGRADED,
   FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
@@ -90,6 +91,35 @@ describe('FeedStateOverlay', () => {
     assert.equal(props.role, 'status');
     assert.equal(props['aria-live'], 'polite');
   });
+
+  /**
+   * The state added for the fourteen-minute collapse, where the gateway answered everything asked of
+   * it and the picture stopped every couple of seconds anyway. Telling that viewer the player is
+   * reconnecting or waiting on the broadcaster points them at two things that are both fine.
+   */
+  it('says the stream is struggling, distinctly from a gateway that is absent or empty', () => {
+    const degraded = textOf(render(FEED_STATE_DEGRADED));
+
+    assert.notEqual(degraded, '');
+    for (const other of [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_ENDED]) {
+      assert.notEqual(degraded, textOf(render(other)));
+    }
+  });
+
+  /** Something is still being attempted, and unlike the other two recoverable states it is playing. */
+  it('keeps the pulsing dot while the stream is struggling', () => {
+    assert.match(renderToStaticMarkup(render(FEED_STATE_DEGRADED)), /swarm-hls-feed-state__dot/);
+  });
+
+  /**
+   * Every state but `live` reaches `MESSAGE`, and a missing key renders the overlay's chrome around
+   * nothing: a backdrop and a pulsing dot over the picture, saying less than showing nothing would.
+   */
+  it('has a message for every state that is not live', () => {
+    for (const state of [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_ENDED, FEED_STATE_DEGRADED]) {
+      assert.notEqual(textOf(render(state)), '', `${state} rendered an empty overlay`);
+    }
+  });
 });
 
 /**
@@ -122,5 +152,20 @@ describe('the player component is wired to it', () => {
       source,
       /return manifestFetcher\.feedHealth\.subscribe\(hexTopic, setFeedState\);\s*\}, \[topicString\]\);/,
     );
+  });
+
+  /**
+   * The other half of the seam. `playbackHealth.ts` is covered against a fake element and
+   * `feedState.ts` against a fake clock, and neither notices if nothing joins them: the reporter
+   * would count stalls into a callback the tracker never hears, and the state it feeds would be
+   * unreachable in the running player while every test stayed green.
+   */
+  it('reports the stalls it counts into the tracker, under the topic being watched', () => {
+    assert.match(source, /attachPlaybackStallReporter\(\s*video,[\s\S]{0,200}?recordPlaybackStall\(/);
+  });
+
+  /** Attached with the player rather than with the subscription, since it is the player that stalls. */
+  it('detaches the reporter when the player is torn down', () => {
+    assert.match(source, /detachStallReporter\?\.\(\);/);
   });
 });

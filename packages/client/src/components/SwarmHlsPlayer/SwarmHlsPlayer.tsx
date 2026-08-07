@@ -11,6 +11,7 @@ import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './C
 import { FEED_STATE_LIVE, FeedState } from './feedState';
 import { attachLivePlaybackRateGuard } from './livePlaybackRate';
 import { ManifestStateManager } from './ManifestManagement';
+import { attachPlaybackStallReporter } from './playbackHealth';
 import { buildPlayerConfig } from './playerConfig';
 
 import './SwarmHlsPlayer.scss';
@@ -133,11 +134,20 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     const detachQoe = enableQoeOverlay ? attachQoeTracking(video, hls, setMetrics) : null;
     const detachRateGuard = hls ? attachLivePlaybackRateGuard(video, hls) : null;
 
+    // Attached with the player rather than with the subscription above, because it is the player
+    // that stalls: a restart builds a fresh media pipeline and the stalls of the one before it are
+    // not the new one's. The burst they feed lives in the tracker, which does outlive the restart.
+    const stallTopic = toHexTopic(topicString);
+    const detachStallReporter = stallTopic
+      ? attachPlaybackStallReporter(video, () => manifestFetcher.feedHealth.recordPlaybackStall(stallTopic))
+      : null;
+
     return () => {
       video.removeEventListener('pause', onHlsPause);
       video.removeEventListener('play', onHlsPlay);
       detachQoe?.();
       detachRateGuard?.();
+      detachStallReporter?.();
 
       if (hls) {
         // The destroy runs whatever the clear does. Losing it leaks the loaders and the media
