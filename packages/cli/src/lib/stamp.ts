@@ -181,7 +181,15 @@ export function batchWarning(batch: BatchLimits): string | null {
 export function printStampQuote(options: StampOptions, quote: StampQuote): void {
   table('Amount', options.amount);
   table('Depth', String(options.depth));
-  table('Immutable', String(options.immutable));
+  // Spelled out rather than shown as a boolean, because this is the moment the choice is paid for
+  // and the two failure modes are nothing alike. `STAMP_IMMUTABLE` defaults to false, so an operator
+  // who passes no flag is buying the quiet one without being told which one that is.
+  table(
+    'Immutable',
+    options.immutable
+      ? 'yes, so a full batch refuses uploads'
+      : 'no, so a full batch overwrites its own oldest chunks and older segments stop being retrievable',
+  );
   table('Cost', `${quote.cost.toSignificantDigits(6)} BZZ`);
   if (quote.duration) {
     table('Lasts for', quote.duration.represent());
