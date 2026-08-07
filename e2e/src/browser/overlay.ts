@@ -29,6 +29,8 @@ export const OVERLAY_FIELDS = {
   droppedFrames: { section: 'Quality', label: 'Dropped Frames' },
   fatalErrors: { section: 'Reliability', label: 'Fatal Errors' },
   liveLatency: { section: 'Live', label: 'E2E Live Latency' },
+  liveTargetLatency: { section: 'Live', label: 'Latency Target' },
+  bufferStalls: { section: 'Live', label: 'Buffer Stalls' },
 } as const;
 
 export interface OverlayMetrics {
@@ -39,6 +41,12 @@ export interface OverlayMetrics {
   droppedFrames: number;
   fatalErrors: number;
   liveLatencyS: number | null;
+  /**
+   * The target hls.js is steering to, which a stall raises above the configured one and nothing
+   * lowers again. Read it before believing {@link liveLatencyS} is comparable with another run's.
+   */
+  liveTargetLatencyS: number | null;
+  bufferStalls: number;
 }
 
 /**
@@ -88,5 +96,7 @@ export function readOverlayMetrics(rows: readonly OverlayRow[]): OverlayMetrics 
     droppedFrames: number(OVERLAY_FIELDS.droppedFrames) ?? 0,
     fatalErrors: number(OVERLAY_FIELDS.fatalErrors) ?? 0,
     liveLatencyS: number(OVERLAY_FIELDS.liveLatency),
+    liveTargetLatencyS: number(OVERLAY_FIELDS.liveTargetLatency),
+    bufferStalls: number(OVERLAY_FIELDS.bufferStalls) ?? 0,
   };
 }

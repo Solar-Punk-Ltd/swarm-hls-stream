@@ -12,6 +12,8 @@ const PLAYING: OverlayRow[] = [
   { section: 'Quality', label: 'Dropped Frames', value: '4' },
   { section: 'Reliability', label: 'Fatal Errors', value: '0' },
   { section: 'Live', label: 'E2E Live Latency', value: '5.87 s' },
+  { section: 'Live', label: 'Latency Target', value: '6.00 s' },
+  { section: 'Live', label: 'Buffer Stalls', value: '0' },
 ];
 
 describe('reading the numbers off the shipped QoE overlay', () => {
@@ -24,7 +26,27 @@ describe('reading the numbers off the shipped QoE overlay', () => {
       droppedFrames: 4,
       fatalErrors: 0,
       liveLatencyS: 5.87,
+      liveTargetLatencyS: 6,
+      bufferStalls: 0,
     });
+  });
+
+  /**
+   * The row that says whether the latency beside it is comparable with another run's. hls.js raises
+   * its own target by up to a target duration after a stall and never lowers it, so a run reading
+   * 6.81s against a 7.00s target and one reading 5.89s against 6.00s are the same player behaving the
+   * same way, and averaging them is meaningless.
+   */
+  it('reads the target the player is steering to apart from the latency it reached', () => {
+    const stalled = PLAYING.map((row) => (row.label === 'Latency Target' ? { ...row, value: '7.00 s' } : row)).map(
+      (row) => (row.label === 'Buffer Stalls' ? { ...row, value: '1' } : row),
+    );
+
+    const metrics = readOverlayMetrics(stalled);
+
+    assert.equal(metrics.liveTargetLatencyS, 7);
+    assert.equal(metrics.bufferStalls, 1);
+    assert.equal(metrics.liveLatencyS, 5.87, 'the latency row is untouched by the target moving');
   });
 
   /**

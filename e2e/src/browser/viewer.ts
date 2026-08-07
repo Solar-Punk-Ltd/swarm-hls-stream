@@ -193,6 +193,8 @@ export async function readSample(page: Page): Promise<ViewerSample> {
     bufferAheadS: raw.bufferAheadS,
     decodedFrames: raw.decodedFrames,
     liveLatencyS: metrics.liveLatencyS,
+    liveTargetLatencyS: metrics.liveTargetLatencyS,
+    bufferStalls: metrics.bufferStalls,
     rebufferCount: metrics.rebufferCount,
     rebufferMs: metrics.rebufferMs,
     fatalErrors: metrics.fatalErrors,

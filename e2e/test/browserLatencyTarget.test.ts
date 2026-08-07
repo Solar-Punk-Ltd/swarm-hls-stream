@@ -1,0 +1,187 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
+import { latencySection } from '../src/browser/report.js';
+import { judgeLatencyTarget, summarize, type ViewerSample } from '../src/browser/session.js';
+
+const BASE: ViewerSample = {
+  atMs: 0,
+  currentTime: 0,
+  paused: false,
+  readyState: 4,
+  playbackRate: 1,
+  bufferAheadS: 8,
+  liveLatencyS: LIVE_SYNC_DURATION_S,
+  liveTargetLatencyS: LIVE_SYNC_DURATION_S,
+  bufferStalls: 0,
+  rebufferCount: 0,
+  rebufferMs: 0,
+  fatalErrors: 0,
+  decodedFrames: 0,
+  droppedFrames: 0,
+  resolution: '1920×1080',
+  feedStateMessage: null,
+};
+
+function run(...steps: readonly Partial<ViewerSample>[]): ViewerSample[] {
+  return steps.map((step, i) => ({ ...BASE, atMs: i * 1000, currentTime: i, ...step }));
+}
+
+/**
+ * The confound this exists to catch, and the run that paid for it.
+ *
+ * hls.js adds `min(stallCount, targetduration)` to the configured `liveSyncDuration` and never takes
+ * it back, so a single non-fatal stall moves the target a viewer is steered to for the rest of the
+ * session. Latency then settles around the moved target, and every latency figure in the run is
+ * against a different question from one measured without the stall.
+ *
+ * On 2026-08-07 the 1080p ABA ran two identical 0.25s control arms twenty minutes apart. They came
+ * back 5.89s and 6.81s, which voided the comparison, and the write-up could only call it an
+ * unexplained drift in the sitting. Inverting hls.js's own catch-up curve against the archived
+ * samples puts arm 1's target at 6.0 and arm 3's at about 7.0. Both arms reported zero rebuffers,
+ * zero stalled samples and zero fatal errors, so nothing in either report could have said so.
+ */
+describe('whether the run was measured against the target it was configured with', () => {
+  it('says the target held when the player never left the configured value', () => {
+    const verdict = judgeLatencyTarget(run({}, {}, {}));
+
+    assert.equal(verdict.held, true);
+    assert.equal(verdict.configuredS, LIVE_SYNC_DURATION_S);
+    assert.equal(verdict.raisedByS, 0);
+  });
+
+  it('catches a target raised part way through, which is the shape a stall makes', () => {
+    const verdict = judgeLatencyTarget(
+      run({}, {}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 }),
+    );
+
+    assert.equal(verdict.held, false);
+    assert.equal(verdict.raisedByS, 1);
+    assert.equal(verdict.stalls, 1);
+  });
+
+  /**
+   * The join case, and the one that voided the 1080p arm. The stall happened before the first sample,
+   * so there is no step to notice: every sample the run ever took was already against the raised
+   * target. A check that compared samples against each other would call this a clean run.
+   */
+  it('catches a target that was already raised on the first sample', () => {
+    const verdict = judgeLatencyTarget(
+      run(
+        { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 },
+        { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 },
+      ),
+    );
+
+    assert.equal(verdict.held, false);
+    assert.equal(verdict.raisedByS, 1);
+  });
+
+  it('reports the worst target the run ever steered to, not the last one', () => {
+    const verdict = judgeLatencyTarget(
+      run({}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 }, {}),
+    );
+
+    assert.equal(verdict.worstS, LIVE_SYNC_DURATION_S + 1);
+    assert.equal(verdict.raisedByS, 1);
+  });
+
+  // Null until hls.js has computed one, which is the first sample or two of every run.
+  it('ignores samples taken before the player had a target', () => {
+    const verdict = judgeLatencyTarget(run({ liveTargetLatencyS: null }, {}, {}));
+
+    assert.equal(verdict.held, true);
+    assert.equal(verdict.worstS, LIVE_SYNC_DURATION_S);
+  });
+
+  /**
+   * Not held, rather than held. A run that never read a target has not shown that the target was
+   * steady, and this project has been caught before by a check whose empty case reads as a pass.
+   */
+  it('refuses to call a target held when it never saw one', () => {
+    const verdict = judgeLatencyTarget(run({ liveTargetLatencyS: null }, { liveTargetLatencyS: null }));
+
+    assert.equal(verdict.held, false);
+    assert.equal(verdict.worstS, null);
+    assert.equal(verdict.raisedByS, 0);
+  });
+
+  it('has something to say about a run with no samples at all', () => {
+    const verdict = judgeLatencyTarget([]);
+
+    assert.equal(verdict.held, false);
+    assert.equal(verdict.worstS, null);
+    assert.equal(verdict.stalls, 0);
+  });
+
+  /**
+   * The overlay formats to two decimals, so a target of exactly the configured value survives the
+   * round trip as itself. A tolerance wider than that formatting would swallow the smallest raise
+   * hls.js can make, which is a whole second at every segment length this deployment runs.
+   */
+  it('does not call a raise held because the overlay rounded it', () => {
+    const verdict = judgeLatencyTarget(run({ liveTargetLatencyS: LIVE_SYNC_DURATION_S + 0.5 }));
+
+    assert.equal(verdict.held, false);
+  });
+
+  it('counts stalls across a restart, which resets the player counter to zero', () => {
+    const verdict = judgeLatencyTarget(run({ bufferStalls: 2 }, { bufferStalls: 3 }, { bufferStalls: 1 }));
+
+    assert.equal(verdict.stalls, 4);
+  });
+});
+
+/**
+ * The verdict has to reach the document, beside the numbers it governs.
+ *
+ * A run's latency figures were readable on their own and unreadable against another run's, and no
+ * reader could tell the two apart. The place that has to say so is the section that prints the
+ * figures, not a footnote further down.
+ */
+describe('what the latency section says about the target it was measured against', () => {
+  const sectionFor = (...steps: readonly Partial<ViewerSample>[]): string =>
+    latencySection({
+      measuredAt: '2026-08-07T00:00:00.000Z',
+      watchUrl: 'http://127.0.0.1/#/watch/x',
+      chromeVersion: 'Chrome test',
+      gopSeconds: 0.25,
+      summary: summarize(run(...steps)),
+      instrument: { sound: true, failures: [], soundSamples: steps.length },
+      samples: [],
+      screenshots: [],
+    }).join('\n');
+
+  it('says the figures are comparable when the target held', () => {
+    const section = sectionFor({}, {}, {});
+
+    assert.match(section, /Measured against the configured target throughout/);
+    assert.doesNotMatch(section, /not comparable/);
+  });
+
+  it('says the figures are not comparable when a stall moved the target', () => {
+    const section = sectionFor({}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 });
+
+    assert.match(section, /not comparable with another run/);
+    assert.match(section, /1\.00s past the configured 6s/);
+    assert.match(section, /1 buffer stall\b/, 'one stall, not "1 buffer stalls"');
+  });
+
+  // The failure that made this necessary: the run reads perfectly on every other row.
+  it('says so even when every other row in the report is clean', () => {
+    const section = sectionFor(
+      { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1, rebufferCount: 0, fatalErrors: 0 },
+      { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1, rebufferCount: 0, fatalErrors: 0 },
+    );
+
+    assert.match(section, /⛔ \*\*The latency figures above are against a target that moved/);
+  });
+
+  it('says it could not tell, rather than saying it held, when no target was reported', () => {
+    const section = sectionFor({ liveTargetLatencyS: null }, { liveTargetLatencyS: null });
+
+    assert.match(section, /never reported a latency target/);
+    assert.doesNotMatch(section, /Measured against the configured target throughout/);
+  });
+});
