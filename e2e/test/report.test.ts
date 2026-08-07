@@ -495,3 +495,68 @@ describe('reporting the manifest against the bytes', () => {
     assert.match(renderReport(runWith([declaring(7, null)])), /\| 2\.00s \| unreadable \| 60 \|/);
   });
 });
+
+/**
+ * Whether the publisher kept up, which is the one thing a run cannot be compared without.
+ *
+ * ⛔ **This is a frame-rate check and not a byte-rate one, and the task that asked for it asked for
+ * bytes.** `docs/bench/publisher-backpressure.md` measured the mechanism: `wallclockEncodeArgs` stamps
+ * timestamps at the demuxer, so when anything downstream of the muxer blocks, no frames are stamped
+ * while the wall clock keeps running and media time stretches to match. The encoder still hits its
+ * bitrate per second of media it produced, so **a byte rate barely moves** and would have caught
+ * nothing. What moves is the frame rate: `-g` is set in frames and honoured exactly, so a throttled
+ * run makes its 8 packets in 0.666s rather than 0.266s.
+ *
+ * The numbers below are that document's: 12.0 and 23.7 fps on the two bad runs of six, 28.1 to 30.1 on
+ * the four good ones, against a configured 30.
+ */
+describe('whether the publisher kept up', () => {
+  /** A sample holding `packets` frames across `spanS` seconds, which is a delivered rate of one over the other. */
+  function atRate(index: number, packets: number, spanS: number): SegmentSample {
+    const base = sampleWithTotal(index, 5_600);
+    return {
+      ...base,
+      videoPacketCount: packets,
+      split: { ...base.split, instants: { ...base.split.instants, segmentDurationS: spanS } },
+    };
+  }
+
+  it('says so when the delivered rate is the configured one', () => {
+    const report = renderReport(runWith([atRate(1, 8, 0.266), atRate(2, 8, 0.266)]));
+
+    assert.match(report, /delivered \*\*30\.1 fps\*\* against the 30 it was configured for/);
+    assert.doesNotMatch(report, /Nothing was throttling it[\s\S]*⛔ \*\*the publisher delivered only/);
+  });
+
+  // Run 08-45 of 2026-08-05: eight packets a segment, exactly as asked, taking 0.666s to make them.
+  it('calls out a throttled run, and says the encoder is not at fault', () => {
+    const report = renderReport(runWith([atRate(1, 8, 0.666), atRate(2, 8, 0.666), atRate(3, 8, 0.666)]));
+
+    assert.match(report, /⛔ \*\*the publisher delivered only 12\.0 fps against the 30 it was configured for\*\*/);
+    assert.match(report, /40% of it/);
+    assert.match(report, /The encoder is not at fault and no frame was dropped/);
+    assert.match(report, /publisher-backpressure\.md/);
+  });
+
+  /**
+   * The boundary matters more than usual because a run either side of it is or is not comparable with
+   * every other run. 28.1 fps is what a healthy run of that sweep actually produced, so the floor has
+   * to clear it, and 23.7 is what a bad one produced, so the floor has to catch it.
+   */
+  it('clears the slowest healthy run of the sweep and catches its slowest bad one', () => {
+    assert.doesNotMatch(renderReport(runWith([atRate(1, 281, 10)])), /delivered only/, '28.1 fps was healthy');
+    assert.match(renderReport(runWith([atRate(1, 237, 10)])), /delivered only 23\.7 fps/, '23.7 fps was not');
+  });
+
+  /**
+   * The guard against dividing by a zero span. A run with no samples at all cannot reach it, because
+   * `renderReport` answers "No segment was measured" long before the self-checks, so the case that
+   * matters is a sample present and unusable rather than absent.
+   */
+  it('says it is not measured rather than reporting an infinite frame rate', () => {
+    const report = renderReport(runWith([atRate(1, 8, 0)]));
+
+    assert.match(report, /\*\*delivered frame rate: not measured\*\*/);
+    assert.doesNotMatch(report, /Infinity/);
+  });
+});
