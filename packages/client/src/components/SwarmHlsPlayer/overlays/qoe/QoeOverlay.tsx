@@ -3,6 +3,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { BarChartIcon } from '@/components/Icons/BarChartIcon';
 import { MoveIcon } from '@/components/Icons/MoveIcon';
 
+import { LIVE_SYNC_DURATION_S } from '../../playerConfig';
+
 import { QoeMetrics } from './useHlsQoeMetrics';
 
 import './QoeOverlay.scss';
@@ -169,6 +171,12 @@ const QoePanel: React.FC<{ metrics: QoeMetrics }> = ({ metrics: m }) => (
 
     <Section title="Live">
       <Row label="E2E Live Latency" value={m.liveLatencySec != null ? `${m.liveLatencySec.toFixed(2)} s` : '—'} />
+      <Row
+        label="Latency Target"
+        value={m.liveTargetLatencySec != null ? `${m.liveTargetLatencySec.toFixed(2)} s` : '—'}
+        bad={m.liveTargetLatencySec != null && m.liveTargetLatencySec > LIVE_SYNC_DURATION_S}
+      />
+      <Row label="Buffer Stalls" value={String(m.bufferStallCount)} bad={m.bufferStallCount > 0} />
     </Section>
 
     <div className="qoe-overlay__footer">Playback: {fmtMs(m.playbackTimeMs)}</div>

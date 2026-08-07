@@ -17,6 +17,8 @@ const BASE: ViewerSample = {
   playbackRate: 1,
   bufferAheadS: 5,
   liveLatencyS: LIVE_SYNC_DURATION_S,
+  liveTargetLatencyS: LIVE_SYNC_DURATION_S,
+  bufferStalls: 0,
   rebufferCount: 0,
   rebufferMs: 0,
   fatalErrors: 0,
@@ -188,6 +190,44 @@ describe('what a viewer experienced across a fault', () => {
 
     assert.equal(verdict.latencyBeforeS, 6);
     assert.equal(verdict.latencyAfterS, 41, 'a viewer who resumed in the past reads as a clean recovery');
+  });
+
+  /**
+   * ⚠️ The crash report is where this matters most, and it is the one place a stall is **guaranteed**:
+   * the whole point of a fault is to make the player stall.
+   *
+   * hls.js raises its own latency target by up to a target duration after a stall and never lowers it,
+   * so latency after a fault is legitimately higher than before by that much, with no drift and no
+   * failure to recover. `renderCrashReport` warns "it resumed in the past" above a **two second**
+   * increase, which sits inside the penalty range, so the warning could not tell a player that came
+   * back late from a player that came back exactly where hls.js now wants it.
+   */
+  it('separates a target the fault raised from latency the recovery lost', () => {
+    const samples = run([1, 1, 0, 1, 1], {
+      0: { liveLatencyS: 6, liveTargetLatencyS: 6 },
+      4: { liveLatencyS: 8.5, liveTargetLatencyS: 7, bufferStalls: 1 },
+    });
+
+    const verdict = judgeRecovery(samples, {
+      injectedAtMs: 2 * SAMPLE_MS,
+      liftedAtMs: 3 * SAMPLE_MS,
+      servingAtMs: null,
+    });
+
+    assert.equal(verdict.targetRaisedByS, 1, 'the fault moved the target, and that is not lost latency');
+    assert.equal(verdict.latencyAfterS, 8.5);
+  });
+
+  it('reports no raise when the fault left the target where it was', () => {
+    const samples = run([1, 1, 0, 1, 1], { 4: { liveLatencyS: 41 } });
+
+    const verdict = judgeRecovery(samples, {
+      injectedAtMs: 2 * SAMPLE_MS,
+      liftedAtMs: 3 * SAMPLE_MS,
+      servingAtMs: null,
+    });
+
+    assert.equal(verdict.targetRaisedByS, 0, 'a 35s excursion with the target untouched is all real');
   });
 });
 

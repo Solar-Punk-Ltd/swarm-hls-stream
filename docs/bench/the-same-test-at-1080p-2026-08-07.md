@@ -86,7 +86,18 @@ say so and it agrees with the retraction made this morning.
 
 ## Why the sitting drifted, which is not established
 
-Not known. What can be said:
+⭐ **ANSWERED, same day, by replay.** It is not the sitting and it is not drift. Arm 3 took one
+non-fatal stall at its join, which raised the latency target hls.js was steering to from 6.0s to
+about 7.0s **for the rest of the run**, and nothing lowers it again. The 0.92s between the arms is
+that one second. See `one-stall-costs-a-second-2026-08-07.md` for the library source, the inversion
+of hls.js's catch-up curve that recovers each arm's target from its playback rates, and the check
+added so a run says this about itself.
+
+Everything below was written before that and is kept as the record of what had been ruled out. The
+five bullets remain true and are exactly why the cause was not in the series: the picture never
+froze, the join was identical, and the player was playing perfectly, from further back.
+
+Not known at the time. What could be said:
 
 - **It is not within-arm noise.** Both control arms are flat to 0.01-0.04s across four windows each.
 - **It is not the join.** Both 0.25s arms joined at exactly **9.33s**, the same to two decimals. Only
@@ -99,10 +110,25 @@ Not known. What can be said:
 Candidates not separated: ambient load on the host, which runs a permanent unrelated encode, and the
 postage batch filling from 97 to 111 of 256 across the sitting.
 
-⭐ **Incidentally confirmed:** the joins are exactly what the byte-budgeted live window predicts.
+⛔ ~~**Incidentally confirmed:** the joins are exactly what the byte-budgeted live window predicts.
 `9.33s` at a 0.25s segment matches the roughly 9.0s of media the window holds at that length, and
 `6.23s` at 1.0s matches `LIVE_SYNC_DURATION_S = 6` with the window no longer the binding constraint.
-The two profiles join differently by design rather than by fault.
+The two profiles join differently by design rather than by fault.~~
+
+⛔ **RETRACTED the same day.** `joinLatencyS` was the first sample that carried a latency, whatever
+state the player was in, and `hls.latency` is computed against the playlist edge whether or not the
+player has picked a position. So a sample taken before playback began reports the **whole live
+window** rather than where a viewer landed.
+
+The 1.0s profile joined at `6.23s` here and at `37.00s` on the evening of the same day, so the join is
+not a property of the profile at all: it depends on whether the first sample happened to land before
+the player was playable. In that evening run the first sample sits at `readyState 1` with 0.99s
+buffered reading 37.00s, the next reads 6.28s at `readyState 4`, and `currentTime` moves 31.01 to
+32.17 between them, which is an ordinary step at the catch-up rate. **Nothing seeked**, and the
+"⚠️ the join was a jump" paragraph above describes an event that did not happen.
+
+`joinLatencyS` now comes from the first sample at `readyState >= 3`. Nothing else in this document
+depends on it: the medians, the cost and the refusals are unaffected.
 
 ## What a reader should take from this
 

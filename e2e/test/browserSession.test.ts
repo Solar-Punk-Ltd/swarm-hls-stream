@@ -12,6 +12,8 @@ const BASE: ViewerSample = {
   playbackRate: 1,
   bufferAheadS: 8,
   liveLatencyS: LIVE_SYNC_DURATION_S,
+  liveTargetLatencyS: LIVE_SYNC_DURATION_S,
+  bufferStalls: 0,
   rebufferCount: 0,
   rebufferMs: 0,
   fatalErrors: 0,

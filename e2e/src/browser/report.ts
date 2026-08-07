@@ -12,7 +12,7 @@ import { LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
 import type { InstrumentVerdict } from './instrument.js';
 import type { NetworkSummary } from './network.js';
 import { costSection, type ResourceCost } from './resources.js';
-import type { SessionSummary, ViewerSample } from './session.js';
+import type { LatencyTargetVerdict, SessionSummary, ViewerSample } from './session.js';
 import { judgeStability, stabilitySection } from './stability.js';
 
 export interface BrowserRun {
@@ -149,7 +149,67 @@ export function latencySection(run: BrowserRun): string[] {
     lines.push(`✅ **And it held it.** Median ${orDash(latency.medianLatencyS)}s across the session.`, '');
   }
 
-  return lines;
+  return [...lines, ...latencyTargetLines(run.summary.latencyTarget)];
+}
+
+/**
+ * Whether every figure above was measured against the target the client asked for.
+ *
+ * Printed inside the latency section rather than beside it, because it is a precondition for reading
+ * that section rather than another result. See {@link judgeLatencyTarget} for the mechanism and for
+ * the run that paid for it.
+ */
+function latencyTargetLines(target: LatencyTargetVerdict): string[] {
+  if (target.worstS === null) {
+    return [
+      `⚠️ **The player never reported a latency target.** Every figure above is being read against ` +
+        `\`LIVE_SYNC_DURATION_S = ${target.configuredS}\` on the assumption that is what the player was ` +
+        'steering to, and this run cannot confirm it. Do not compare these numbers with another run.',
+      '',
+    ];
+  }
+
+  const pastTarget =
+    target.medianPastTargetS === null
+      ? 'not measurable from this run'
+      : `**${target.medianPastTargetS >= 0 ? '+' : ''}${target.medianPastTargetS.toFixed(2)}s** against the ` +
+        "player's own target, taken per sample";
+
+  if (target.held) {
+    return [
+      `✅ **Measured against the configured target throughout.** The player steered to ` +
+        `${target.worstS.toFixed(2)}s for the whole run, with ${target.stalls} buffer ` +
+        `${target.stalls === 1 ? 'stall' : 'stalls'}, so the figures above are comparable with any other ` +
+        'run that says the same.',
+      '',
+      `Median ${pastTarget}. Negative is ordinary: the catch-up only pushes latency down and overshoots, ` +
+        'so a healthy session sawtooths just below its target.',
+      '',
+    ];
+  }
+
+  return [
+    `⛔ **The latency figures above are against a target that moved, and are not comparable with ` +
+      `another run's.** The player steered to ${target.worstS.toFixed(2)}s at its worst, which is ` +
+      `**${target.raisedByS.toFixed(2)}s past the configured ${target.configuredS}s**, after ` +
+      `${target.stalls} buffer ${target.stalls === 1 ? 'stall' : 'stalls'}.`,
+    '',
+    'hls.js adds `min(stallCount * liveSyncOnStallIncrease, targetduration)` to the configured ' +
+      '`liveSyncDuration`, and `stallCount` falls back to zero only when a fresh manifest loads. So the ' +
+      'raise lasts the rest of the session, latency settles around the raised target, and the catch-up ' +
+      'that would have pulled it back measures itself against the raised value and stops firing. ' +
+      '**Nothing else in this report shows it**: a stall is not fatal, and it need not fire a `waiting` ' +
+      'event, so the rebuffer, stalled-sample and fatal-error rows can all read zero.',
+    '',
+    target.medianPastTargetS === null
+      ? '⛔ **And nothing here is comparable instead.** No sample carried both a latency and a target, ' +
+        'so the distance that would have had the penalty subtracted out could not be taken either.'
+      : `⭐ **What is still comparable is ${pastTarget}.** Raw latency is what this viewer got and is ` +
+        'the right number for a viewer-facing claim, but it carries the stall penalty. This one has ' +
+        'the penalty subtracted out, so it is the figure to put beside another run when the targets ' +
+        'differed.',
+    '',
+  ];
 }
 
 export function playbackSection(run: BrowserRun): string[] {
