@@ -171,6 +171,46 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     }
   });
 
+  /**
+   * What the re-entry guard is actually for, which the test above does not reach.
+   *
+   * That one asserts every consumed slot was fetched, and two concurrent walks each fetch what they
+   * consume, so it holds either way: deleting `!this.inFlight.has(hexTopic) &&` from the guard left
+   * all 47 tests in this file green, on the current code and on pristine pre-fix code alike. What the
+   * guard buys is cost. hls.js reloads a live playlist on its own cadence and does not wait for the
+   * last reload's walk to finish, so without it a viewer whose gateway is answering slowly opens a
+   * fresh walk per reload, each re-requesting slots the ones already running are mid-flight on. That
+   * is a viewer paying more the worse their gateway gets, which is the direction it must not go.
+   *
+   * ⚠️ **Asserted as the sequence, and a count would not have worked.** Four overlapping polls issue
+   * four requests for the same first slot and then get correspondingly less far, so the totals
+   * coincide: measured with the guard deleted, this run asks `[6, 6, 6, 6, 7]` where one walk asks
+   * `[6, 7, 8, 9, 10]`, five requests either way. The count also varies between runs, since the extra
+   * walks interleave, so a length assertion here would be flaky rather than merely weak. The sequence
+   * is deterministic whenever it passes, and it pins the other direction too: a guard that never
+   * released would ask for fewer slots than one walk does.
+   */
+  it('opens one walk per topic however many polls overlap, rather than one per poll', async () => {
+    publishedThrough = START_INDEX + 4n;
+    const gate = deferred<void>();
+    stubFetch(gate.promise);
+
+    // Every one of these lands while the first walk is still held on its first request, which is what
+    // an hls.js reload does to a gateway slower than the reload cadence.
+    for (let poll = 0; poll < 4; poll++) {
+      await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    }
+    gate.resolve();
+    await fetcher.settled();
+
+    assert.deepEqual(
+      requested,
+      [START_INDEX + 1n, START_INDEX + 2n, START_INDEX + 3n, START_INDEX + 4n, START_INDEX + 5n],
+      `four overlapping polls asked for ${requested}, rather than each slot once and then one past the publisher: ` +
+        'a poll opened its own walk instead of joining the one already running',
+    );
+  });
+
   // The half a re-entry guard can quietly break. Refusing the overlapping call is only correct if
   // the topic is released afterwards, and a guard that never released would stop the player
   // following the feed at all while every assertion above stayed green.
