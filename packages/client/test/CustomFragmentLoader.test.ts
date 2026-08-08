@@ -2,7 +2,11 @@ import type { FragmentLoaderContext, HlsConfig, LoaderCallbacks, LoaderConfigura
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 
-import { CustomFragmentLoader, manifestFetcher } from '../src/components/SwarmHlsPlayer/CustomManifestLoader';
+import {
+  CustomFragmentLoader,
+  manifestFetcher,
+  requestJitter,
+} from '../src/components/SwarmHlsPlayer/CustomManifestLoader';
 import { FEED_STATE_LIVE, FEED_STATE_RECONNECTING } from '../src/components/SwarmHlsPlayer/feedState';
 
 const TOPIC = 'a-topic-being-watched';
@@ -11,6 +15,8 @@ const FRAGMENT_URL = 'http://127.0.0.1:1633/bytes/0123456789abcdef';
 /** hls.js's own loader, which `CustomFragmentLoader` extends and hands the transfer down to. */
 const transport = Object.getPrototypeOf(CustomFragmentLoader.prototype) as {
   load: (context: LoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<LoaderContext>) => void;
+  abort: () => void;
+  destroy: () => void;
 };
 
 /**
@@ -37,11 +43,24 @@ function loadFragment(url = FRAGMENT_URL) {
   return { fromHls, transport: handed as LoaderCallbacks<LoaderContext> };
 }
 
+/**
+ * Take the stagger out of the way for the blocks that are about what the loader hands the transport
+ * rather than about when it hands it over. Every one of them reads synchronously, and a real stagger
+ * would make them all sleep. The stagger has its own block, which does not call this.
+ */
+function runStaggerInline(): void {
+  vi.spyOn(requestJitter, 'stagger').mockImplementation((task) => {
+    task();
+    return { cancel: () => {} };
+  });
+}
+
 const arrived = () => ({ url: FRAGMENT_URL, data: new ArrayBuffer(8), code: 200 });
 
 describe('CustomFragmentLoader reporting the gateway it just reached', () => {
   beforeEach(() => {
     manifestFetcher.feedHealth.clear();
+    runStaggerInline();
   });
 
   afterEach(() => {
@@ -132,6 +151,7 @@ describe('CustomFragmentLoader meeting a url that names no gateway', () => {
 
   beforeEach(() => {
     manifestFetcher.feedHealth.clear();
+    runStaggerInline();
   });
 
   afterEach(() => {
@@ -168,5 +188,118 @@ describe('CustomFragmentLoader meeting a url that names no gateway', () => {
     toTransport.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
 
     assert.equal(manifestFetcher.feedHealth.state(TOPIC), FEED_STATE_LIVE);
+  });
+});
+
+/**
+ * ⛔ The block that does NOT call {@link runStaggerInline}, because the stagger is what it is about.
+ *
+ * hls.js abandons fragments as a matter of course: on a level switch, on a seek, and on every
+ * teardown. Before the stagger existed the transport had already been handed the fragment by the
+ * time any of that happened, and hls.js's own loader owned the cancellation. Holding the request
+ * back opens a window where it has not, and a stagger that fired anyway would start a transfer for a
+ * fragment nobody is waiting for, on a loader hls.js has finished with. The gateway pays for that
+ * request and nothing consumes it, which is the shape of every leak this project has found.
+ */
+describe('CustomFragmentLoader holding a fragment back', () => {
+  let staggered: (() => void)[] = [];
+  let cancelled = 0;
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    staggered = [];
+    cancelled = 0;
+    vi.spyOn(requestJitter, 'stagger').mockImplementation((task) => {
+      staggered.push(task);
+      return {
+        cancel: () => {
+          cancelled++;
+        },
+      };
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  /** Stubs the transport and the two teardown paths, none of which survive outside a browser. */
+  function stubbedLoader() {
+    const reachedTransport = vi.spyOn(transport, 'load').mockImplementation(() => {});
+    vi.spyOn(transport, 'abort').mockImplementation(() => {});
+    vi.spyOn(transport, 'destroy').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    loader.load(
+      { url: FRAGMENT_URL } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      {
+        onSuccess: vi.fn(),
+        onError: vi.fn(),
+        onTimeout: vi.fn(),
+      } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+
+    return { loader, reachedTransport };
+  }
+
+  it('does not reach the transport until the stagger is up', () => {
+    const { reachedTransport } = stubbedLoader();
+
+    assert.equal(reachedTransport.mock.calls.length, 0, 'the fragment went straight out, unstaggered');
+    assert.equal(staggered.length, 1, 'the fragment was never staggered');
+
+    staggered[0]();
+    assert.equal(reachedTransport.mock.calls.length, 1);
+  });
+
+  it('cancels a fragment that hls.js aborted before the stagger was up', () => {
+    const { loader, reachedTransport } = stubbedLoader();
+
+    loader.abort();
+
+    assert.equal(cancelled, 1, 'aborting left the stagger armed');
+    assert.equal(reachedTransport.mock.calls.length, 0, 'an aborted fragment still reached the network');
+  });
+
+  it('cancels a fragment that hls.js destroyed before the stagger was up', () => {
+    const { loader, reachedTransport } = stubbedLoader();
+
+    loader.destroy();
+
+    assert.equal(cancelled, 1, 'destroying left the stagger armed');
+    assert.equal(reachedTransport.mock.calls.length, 0, 'a destroyed fragment still reached the network');
+  });
+
+  /**
+   * The counterpart, and the reason cancelling is not just "always cancel". A loader that cancelled a
+   * stagger it no longer owned would be reaching for a timer some later fragment had armed.
+   */
+  it('has nothing left to cancel once the fragment is away', () => {
+    const { loader } = stubbedLoader();
+    staggered[0]();
+
+    loader.abort();
+
+    assert.equal(cancelled, 0, 'a fragment already handed over was cancelled anyway');
+  });
+
+  // Without this the block above passes on a loader that refuses every url before staggering at all.
+  it('never staggers a url it is going to refuse, since nothing would be fetched', () => {
+    vi.spyOn(transport, 'load').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    loader.load(
+      { url: '/bytes/0123456789abcdef' } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      {
+        onSuccess: vi.fn(),
+        onError: vi.fn(),
+        onTimeout: vi.fn(),
+      } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+
+    assert.equal(staggered.length, 0, 'a url that names no gateway was queued for a stagger anyway');
   });
 });
