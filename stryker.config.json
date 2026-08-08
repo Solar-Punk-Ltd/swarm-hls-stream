@@ -3,7 +3,7 @@
   "packageManager": "pnpm",
   "testRunner": "command",
   "commandRunner": {
-    "command": "./node_modules/.bin/tsx --test --test-force-exit packages/stream-uploader/test/*.test.ts"
+    "command": "./node_modules/.bin/tsx --test --test-force-exit --test-reporter=dot packages/stream-uploader/test/*.test.ts > .stryker-test-output.log 2>&1"
   },
   "coverageAnalysis": "off",
   "mutate": ["packages/stream-uploader/src/**/*.ts"],
