@@ -109,6 +109,15 @@ trap restore_gateway EXIT
 
 acct() { bash "${ACCT}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
 
+# One retrieval whose timing is thrown away, so the arm is measured against a node that has its peers
+# rather than one that is still finding them.
+warmup_fetch() {
+  local ref took
+  ref="$(head -1 "${REFS}")"
+  took="$(curl -s -o /dev/null -m 60 -w '%{time_total}' "http://127.0.0.1:${GATEWAY_BEE_PORT}/bytes/${ref}")"
+  say "  discarded a warm-up retrieval of ${took}s before timing anything"
+}
+
 # One arm: the same references in the same order every time, so the work is identical and only the
 # node's ability to pay for it differs.
 run_arm() {
@@ -122,6 +131,13 @@ run_arm() {
   before="$(acct)"
   [ -n "${before}" ] || before="NONE"
   say "  accounting before: ${before}"
+
+  # ⛔ Discarded, and it is not optional. Every arm of the first run opened with a segment that took
+  # 8.2 to 9.9 seconds, in the funded arms as much as the unfunded ones, because the arm begins with a
+  # container recreate and bee answers `/health` well before its retrieval path has peers again. It is
+  # an artifact of flipping the arm, present in both, and left in the sample it moves every maximum,
+  # every p99 and every elapsed figure the run reports.
+  warmup_fetch
 
   : >"${OUT_DIR}/times-${round}-${label}.txt"
   started="$(date +%s)"
