@@ -349,6 +349,49 @@ freshness.**
 inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
 limits.
 
+### ⭐⭐ 2.3b Size it above the working set, or it does nothing at all
+
+✅ **Measured 2026-08-08**, twelve arms sweeping `--cache-capacity` against a fixed working set of
+10,489 chunks, read off the node's own retrieval counter.
+[Full report.](../bench/a-cache-that-does-not-fit-does-nothing-2026-08-08.md)
+
+|   capacity | share of the working set | retrieval operations | vs cache off | pass 2 median |
+| ---------: | -----------------------: | -------------------: | -----------: | ------------: |
+|          0 |                          |      20,978 / 20,978 |              |     107-120ms |
+|      1,000 |                     9.5% |      20,953 / 20,953 |     **0.1%** |   126 / 104ms |
+|      4,800 |                **45.8%** |      20,978 / 20,953 |     **0.1%** |   112 / 111ms |
+| **20,000** |                 **191%** |  **11,240 / 11,253** |    **46.4%** |   **3 / 3ms** |
+
+⛔⛔ **A cache holding 46% of the working set removes 0.1% of the retrievals.** Both rounds, on the
+counter and on the median. **Under-sizing does not buy a partial win. It buys nothing, and still costs
+the disk.**
+
+⭐ **The shape identifies the policy.** A cyclic scan larger than the cache is the worst case for LRU,
+because the walk returns to each reference exactly when it has just been evicted. Random eviction at
+46% would have given roughly a 46% hit rate.
+
+### ⭐ How much to size it, and live is nothing like DVR
+
+⚠️ **`--cache-capacity` is in CHUNKS, not bytes.** At the ~3.6 KB per chunk measured here, a gigabyte
+is roughly 280,000. Sizing it as if it were megabytes is off by three orders of magnitude, in the
+direction that silently does nothing.
+
+|                                       | what has to fit | at 26.2 chunks per 267ms segment |
+| ------------------------------------- | --------------- | -------------------------------: |
+| **live edge**, viewers within ~10s    | the live window |         **~980 chunks, ~3.5 MB** |
+| **live edge**, viewers within ~60s    | the live window |            ~5,900 chunks, ~21 MB |
+| **DVR or VOD**, one re-watchable hour | the whole span  |    **~353,000 chunks, ~1.26 GB** |
+
+⭐ **A live audience needs almost nothing**, because it only ever wants the newest segments. Any
+non-zero capacity worth setting clears it.
+
+⛔ **An audience that scrubs needs the whole re-watchable span**, and that is where the cliff bites.
+
+⚠️ **The cyclic scan measured is the worst case on purpose.** A real DVR audience re-reads recent
+segments more than old ones, which is what LRU is for, so real hit rates at under-sized capacities will
+beat 0.1%. **By how much is not measured**, and the safe assumption when sizing is that a cache smaller
+than the hot set is worth nothing.
+
 ### ⭐⭐ 2.4b Sixteen viewers cost the network what one viewer costs
 
 ✅ **Measured 2026-08-08**, concurrency alternated 1, 2, 1, 4, 1, 8, 1, 16 against an unfunded gateway,
@@ -873,11 +916,10 @@ Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **
 time-scattered audience behaves like the synchronised one measured here**, since scattered viewers lose
 the pooling that carried these arms and should lean on the cache instead.
 
-⬅ **Whether cache eviction bites at event scale.** The cache arms here fetched 100 to 400 references
-twice inside a minute, a working set of a few megabytes against a `--cache-capacity` of a million
-chunks. A real event's is the whole live window across a whole broadcast, roughly **1.3 GB per
-stream-hour** at 720p, and nothing has measured what happens when it exceeds the capacity. ⛔ **Every
-cache benefit in this document is measured on a working set that always fits.**
+✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3b. It is a cliff: a
+cache holding 46% of the working set removes 0.1% of the retrievals. ⬅ **Where inside 46% to 191% the
+cliff sits was not measured**, and neither was how much a real re-read pattern beats the cyclic scan
+that was.
 
 ⬅ **Whether ultra-light's ~0.5s higher median latency is real.** Not established: the one comparable
 funded arm took a non-fatal stall, so per 5.3 it has no valid control.
@@ -901,9 +943,11 @@ funded arm took a non-fatal stall, so per 5.3 it has no valid control.
   the same 128 in cohorts of 8 drain none and cost half the network contacts. ⛔ **You cannot jitter
   your way out of it**: what matters is how many want the same chunk, not how many arrive in the same
   instant, and 60ms of jitter was measured to do nothing. The cache and pooling are the fix.
-- **Turn the cache on.** It halves network retrievals and cuts CPU 2.3 to 3.4x, and with a scattered
-  audience it reaches one network fetch per distinct chunk for 128 viewers. It is off by default in
-  everything this repo has ever run.
+- **Turn the cache on, and size it above the working set or do not bother.** It halves network
+  retrievals and cuts CPU 2.3 to 3.4x, and with a scattered audience it reaches one network fetch per
+  distinct chunk for 128 viewers. But at 46% of the working set it removes **0.1%** of retrievals, not
+  46%: under-sizing buys nothing at all. It is off by default in everything this repo has ever run,
+  and the units are **chunks, not bytes**.
 - **Do not ship an unfunded viewer gateway.** Not because it always breaks, but because the variation
   an operator cannot control is wider than the margin a viewer needs.
 - **A 1.0s GOP is the one reliable mitigation** for every retrieval problem in this document.
