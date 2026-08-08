@@ -10,80 +10,31 @@ import path from 'path';
 // `test/envLoadOrder.test.ts` fails if it stops holding.
 import './utils/env.js';
 
-import { ApiServerHandle, startApiServer } from './api/server.js';
-import { engineRegistry } from './engines/registry.js';
-import { EnginePlugin } from './engines/types.js';
+import { startApiServer } from './api/server.js';
+import { loadEngines } from './engines/load.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
+import { type CrashLine, uncaughtExceptionLines, unhandledRejectionLines } from './libs/crashReport.js';
 import { Logger } from './libs/Logger.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
+import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
 import { config } from './utils/config.js';
-import { loadEngineEnv } from './utils/env.js';
 
 const logger = Logger.getInstance();
+const lifecycle = new ServiceLifecycle((code) => process.exit(code), logger);
 
-let apiServer: ApiServerHandle | undefined;
-let streamOrchestrator: StreamOrchestrator | undefined;
-let isShuttingDown = false;
+process.on('SIGTERM', () => void lifecycle.shutdown('SIGTERM'));
+process.on('SIGINT', () => void lifecycle.shutdown('SIGINT'));
 
-async function gracefulShutdown(signal: string) {
-  if (isShuttingDown) {
-    logger.warn('Shutdown already in progress...');
-    return;
+const report = (lines: CrashLine[]): void => {
+  for (const { label, value } of lines) {
+    logger.error(label, value);
   }
+};
 
-  isShuttingDown = true;
-  logger.info(`Received ${signal}. Shutting down gracefully...`);
-
-  try {
-    if (streamOrchestrator) {
-      await streamOrchestrator.cleanup();
-      logger.info('All streams stopped');
-    }
-
-    if (apiServer) {
-      await apiServer.close();
-      apiServer = undefined;
-    }
-
-    logger.info('Graceful shutdown completed');
-    process.exit(0);
-  } catch (error) {
-    logger.error('Error during graceful shutdown:', error);
-    process.exit(1);
-  }
-}
-
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', JSON.stringify(promise, null, 2));
-  logger.error('Rejection reason:', reason);
-  if (reason instanceof Error) {
-    logger.error('Error stack:', reason.stack);
-  }
-});
-
-function loadEngines(): EnginePlugin[] {
-  const createEngine = engineRegistry[config.engine];
-
-  if (createEngine) {
-    loadEngineEnv(config.engine);
-    return [createEngine()];
-  }
-
-  if (config.engine && config.engine !== 'none') {
-    logger.warn(`[Engine] Unknown engine: ${config.engine}, running with generic API only`);
-  }
-
-  return [];
-}
+process.on('uncaughtException', (error) => report(uncaughtExceptionLines(error)));
+process.on('unhandledRejection', (reason) => report(unhandledRejectionLines(reason)));
 
 async function start() {
   try {
@@ -101,7 +52,7 @@ async function start() {
     );
     await streamCatalog.init();
 
-    streamOrchestrator = new StreamOrchestrator(bee, streamCatalog, recoveryStore, {
+    const streamOrchestrator = new StreamOrchestrator(bee, streamCatalog, recoveryStore, {
       streamKey: config.streamKey,
       stamp: config.stamp,
       manifestBeeUrl: config.manifestAccessUrl,
@@ -112,10 +63,15 @@ async function start() {
       segmentDedupWindow: config.segmentDedupWindow,
     });
 
+    lifecycle.trackOrchestrator(streamOrchestrator);
     const recoveredStreamIds = await streamOrchestrator.recoverStreams();
 
-    const engines = loadEngines();
-    apiServer = startApiServer(streamOrchestrator, config.apiPort, { authToken: config.apiAuthToken, engines });
+    const engines = loadEngines(config.engine);
+    const apiServer = startApiServer(streamOrchestrator, config.apiPort, {
+      authToken: config.apiAuthToken,
+      engines,
+    });
+    lifecycle.trackApiServer(apiServer);
 
     // An engine that pulls segments itself must re-attach its fetch loop to recovered streams.
     // Otherwise the recovered stream produces no segments and is finalized as VOD at the timeout.
