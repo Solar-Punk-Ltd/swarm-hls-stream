@@ -32,9 +32,10 @@ care in running the test would have caught.
 
 1. **The median is the wrong statistic.** Between a night a viewer collapsed and a night it held, the
    median moved **1.18x** and the rate of one-second stalls moved **10 to 40x**. Section 3.1.
-2. **Sixteen viewers cost the network what one viewer costs.** bee fetches each distinct chunk once and
-   serves every concurrent viewer from it, so **pool viewers behind gateways rather than running one
-   node per viewer**. Throughput scaled 16.7x with a flat median. Section 2.4b.
+2. **Viewers sharing a gateway are nearly free, up to a knee at 128.** bee fetches each distinct chunk
+   once and serves every concurrent viewer from it: **128 viewers cost the network 1.85x what one
+   costs**. **Pool 32 to 64 viewers per gateway.** At 128 the median segment transfer reaches 248ms
+   against a 267ms budget and it stops working. Sections 2.4b and 2.4c.
 3. **Funding is a switch that flips at zero.** 0.05 BZZ performs exactly like 6.4 BZZ, and an empty
    chequebook performs exactly like no chequebook. So **fund each node for its burn times the event
    duration and no more**, and **alarm on the balance**, because a node that runs dry reports nothing.
