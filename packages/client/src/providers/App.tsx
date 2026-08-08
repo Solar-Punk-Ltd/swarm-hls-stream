@@ -8,6 +8,14 @@ import { config } from '@/utils/config';
 
 type AppContextState = {
   streamList: Stream[];
+  /**
+   * Whether the catalog has been read at least once, successfully or not.
+   *
+   * A stream's ABR ladder lives in the catalog, so a page opened directly on /watch knows nothing
+   * about it until this flips. Mounting the player before then would start it as single-rendition
+   * and rebuild it the moment the ladder arrived, losing playback position on every deep link.
+   */
+  isStreamListLoaded: boolean;
   setNewStreamList: (data: any) => void;
   fetchAppState: () => Promise<any>;
   gatewayUrl: string;
@@ -40,6 +48,7 @@ function loadGatewayUrl(): string {
 
 export const AppContextProvider = ({ children }: Props) => {
   const [streamList, setStreamList] = useState<Stream[]>([]);
+  const [isStreamListLoaded, setIsStreamListLoaded] = useState(false);
   const [gatewayUrl, setGatewayUrlState] = useState<string>(() => {
     const url = loadGatewayUrl();
     manifestFetcher.beeUrl = url;
@@ -88,6 +97,10 @@ export const AppContextProvider = ({ children }: Props) => {
       }
     } catch (error) {
       console.error('Failed to fetch app state:', error);
+    } finally {
+      // Also on failure: a catalog that cannot be read is not a reason to withhold the player
+      // forever, and a stream deep-linked without its ladder still plays as a single rendition.
+      setIsStreamListLoaded(true);
     }
   }, [fetchAppState]);
 
@@ -96,7 +109,9 @@ export const AppContextProvider = ({ children }: Props) => {
   }, [initAppState]);
 
   return (
-    <AppContext.Provider value={{ streamList, setNewStreamList, fetchAppState, gatewayUrl, setGatewayUrl }}>
+    <AppContext.Provider
+      value={{ streamList, isStreamListLoaded, setNewStreamList, fetchAppState, gatewayUrl, setGatewayUrl }}
+    >
       {children}
     </AppContext.Provider>
   );

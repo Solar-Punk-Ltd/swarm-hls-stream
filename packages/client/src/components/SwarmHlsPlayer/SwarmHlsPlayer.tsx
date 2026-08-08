@@ -2,14 +2,17 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Topic } from '@ethersphere/bee-js';
 import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
-import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
+import { MEDIA_TYPE_VIDEO, MediaType, Rendition } from '@/types/stream';
 
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
 import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
-import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
-import { ManifestStateManager } from './ManifestManagement';
+import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './CustomManifestLoader';
+import { buildSwarmUri, ManifestStateManager } from './ManifestManagement';
 
 import './SwarmHlsPlayer.scss';
+
+/** Pins playback to a named rung; `AUTO_LEVEL` hands the choice back to hls.js's ABR. */
+export const AUTO_LEVEL = 'auto';
 
 // TODO Consider switching to React.MediaHTMLAttributes<HTMLMediaElement> to support <audio> as well
 /**
@@ -80,11 +83,68 @@ function tuningKey(tuning: HlsTuning): string {
   return JSON.stringify(Object.fromEntries(usable));
 }
 
+/**
+ * Identity of a ladder, by the only parts of it the player has to be rebuilt for.
+ *
+ * Deliberately excludes bandwidth. The uploader keeps correcting each rung's measured bandwidth,
+ * and rebuilding the player every time it did would restart playback every half minute. A session
+ * therefore runs on the bandwidths that had landed by the time hls.js read the master — which for
+ * a live stream is once, at the start — and later corrections benefit later sessions.
+ */
+function ladderKey(renditions: Rendition[] | undefined): string {
+  if (!renditions || renditions.length === 0) {
+    return '';
+  }
+
+  return renditions.map((r) => `${r.name}:${r.topic}`).join('|');
+}
+
+/**
+ * Pins hls.js to one rung, or leaves it on auto.
+ *
+ * Rungs are matched by their feed URI rather than by height or bitrate, because that is the one
+ * attribute of a level that came from this ladder and cannot collide with another rung's.
+ * Assigning `currentLevel` is also what turns hls.js's ABR off — a `startLevel` alone only picks
+ * where it begins, and it would switch away on the first throughput sample.
+ */
+function applyLevel(hls: Hls, owner: string, renditions: Rendition[], level: string | undefined): void {
+  if (level === AUTO_LEVEL) {
+    hls.currentLevel = -1;
+    return;
+  }
+
+  const target = level ? renditions.find((r) => r.name === level) : renditions[0];
+  if (!target) {
+    console.warn(`Unknown rendition "${level}", leaving level selection on auto`);
+    return;
+  }
+
+  const uri = buildSwarmUri(owner, target.topic);
+  const index = hls.levels.findIndex((candidate) => candidate.uri === uri);
+  if (index < 0) {
+    console.warn(`Rendition "${target.name}" is not among the parsed levels, leaving selection on auto`);
+    return;
+  }
+
+  hls.currentLevel = index;
+}
+
 interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   owner: string;
   topicString: string;
   mediaType: MediaType;
   enableQoeOverlay?: boolean;
+  /**
+   * The stream's ABR ladder. Absent or empty, the player reads `topicString` as a single media
+   * playlist exactly as it always has.
+   */
+  renditions?: Rendition[];
+  /**
+   * Rung to pin playback to, by name, or {@link AUTO_LEVEL} to let ABR choose. Ignored without a
+   * ladder. Defaults to the lowest rung — deliberate while ABR is unproven, since it makes every
+   * session reproducible and lets each rung be verified on its own.
+   */
+  level?: string;
   /**
    * Overrides merged over {@link DEFAULT_HLS_TUNING}.
    *
@@ -102,6 +162,8 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   autoPlay = true,
   controls = true,
   enableQoeOverlay = false,
+  renditions,
+  level,
   hlsConfig,
   ...videoProps
 }) => {
@@ -109,11 +171,30 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   const [metrics, setMetrics] = useState<QoeMetrics>(initialMetrics);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsConfigKey = tuningKey(hlsConfig ?? {});
+  const renditionKey = ladderKey(renditions);
+
+  // Read through a ref, not a dependency. The catalog is polled every few seconds and hands back
+  // a fresh array each time, so depending on it directly would tear the player down and rebuild
+  // it on every poll. `renditionKey` is what the effect actually reacts to.
+  const renditionsRef = useRef(renditions);
+  renditionsRef.current = renditions;
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) {
       return;
+    }
+
+    const sourceUrl = buildSwarmUri(owner, topicString);
+    const ladder = renditionsRef.current;
+    const isLadder = renditionKey.length > 0 && !!ladder;
+    const ladderTopics = isLadder ? ladder.map((r) => r.topic) : [topicString];
+
+    if (isLadder) {
+      manifestFetcher.registerLadder(sourceUrl, () => ({
+        owner,
+        renditions: renditionsRef.current ?? ladder,
+      }));
     }
 
     let hls: Hls | null = null;
@@ -176,15 +257,19 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       });
 
       hls.attachMedia(video);
-      hls.loadSource(`${owner}/${topicString}`);
+      hls.loadSource(sourceUrl);
 
-      if (autoPlay) {
-        hls.on(Events.MANIFEST_PARSED, () => {
+      hls.on(Events.MANIFEST_PARSED, () => {
+        if (isLadder) {
+          applyLevel(hls!, owner, renditionsRef.current ?? ladder, level);
+        }
+
+        if (autoPlay) {
           video.play().catch((err) => {
             console.warn('Auto-play failed:', err);
           });
-        });
-      }
+        }
+      });
     } else {
       console.error('HLS is not supported in this browser.');
     }
@@ -195,20 +280,25 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       video.removeEventListener('pause', onHlsPause);
       video.removeEventListener('play', onHlsPlay);
       detachQoe?.();
+      manifestFetcher.unregisterLadder(sourceUrl);
 
       if (hls) {
-        try {
-          const topic = Topic.fromString(topicString);
-          ManifestStateManager.getInstance().clear(topic.toString());
-        } catch (error) {
-          console.warn('Failed to clear manifest state for topic:', topicString, error);
-        } finally {
-          hls.destroy();
-          hls = null;
+        // Every rung, not just the one that was playing: the others hold accumulated segment
+        // state too, and leaving it behind would have the next session resume someone else's
+        // playlist.
+        for (const topicString of ladderTopics) {
+          try {
+            ManifestStateManager.getInstance().clear(Topic.fromString(topicString).toString());
+          } catch (error) {
+            console.warn('Failed to clear manifest state for topic:', topicString, error);
+          }
         }
+
+        hls.destroy();
+        hls = null;
       }
     };
-  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString, hlsConfigKey]);
+  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString, hlsConfigKey, renditionKey, level]);
 
   const videoEl =
     mediaType === MEDIA_TYPE_VIDEO ? (

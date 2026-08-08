@@ -54,6 +54,14 @@ In production builds or when pointing to a remote gateway, requests go directly 
 
 Append `?qoe=1` to a stream watcher URL to enable a draggable overlay with playback quality metrics (startup time, rebuffering, bitrate, dropped frames, live latency, etc.). Press `Q` to toggle visibility.
 
+## ABR ladder
+
+A stream published with the SRS ABR ladder carries a `renditions` array in the catalog: one entry per rung, each with its own feed topic and its measured bandwidth. The player turns that into a multivariant playlist locally — the master is four URIs that never change, so it is built rather than fetched, and no fifth feed exists for it.
+
+Feed URIs use a `swarm://<owner>/<topic>` scheme. That is not cosmetic: hls.js resolves every playlist URI through url-toolkit against the playlist's own URL, and a URI with a scheme is the one case it returns untouched — a bare `owner/topic` comes back as `owner/owner/topic`.
+
+Append `?level=<rung>` to a stream watcher URL to pin playback to one rung (`?level=720p`), or `?level=auto` to hand the choice to hls.js's ABR. A stream with no ladder ignores the parameter and plays its single rendition as before.
+
 ## Custom hls.js Loaders
 
 Standard hls.js expects static manifest URLs. On Swarm, every manifest update produces a new content hash. The client solves this with custom loaders:

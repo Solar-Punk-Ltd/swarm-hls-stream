@@ -1,13 +1,29 @@
 import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import Pqueue from 'p-queue';
 
+import { Rendition } from '@/types/stream';
 import { makeFeedIdentifier } from '@/utils/bee';
 import { config } from '@/utils/config';
 
-export interface Segment {
-  extinf: string;
-  uri: string;
+import { buildMasterPlaylist, parseManifest, parseSwarmUri, Segment } from './playlist';
+
+export type { Segment } from './playlist';
+export { buildMasterPlaylist, buildSwarmUri, parseManifest, parseSwarmUri } from './playlist';
+
+/** A stream's ABR ladder, as the loader needs it: who owns the feeds, and what the rungs are. */
+export interface LadderSource {
+  owner: string;
+  renditions: Rendition[];
 }
+
+/**
+ * Resolved when the master is actually asked for, not when the ladder is registered.
+ *
+ * The uploader keeps correcting each rung's measured bandwidth, and those corrections are worth
+ * having — but only up to the moment hls.js reads the master, which for a live stream is once. A
+ * supplier picks up whatever has landed by then; a snapshot taken at registration could not.
+ */
+export type LadderResolver = () => LadderSource;
 
 interface TopicState {
   index: FeedIndex | null;
@@ -20,46 +36,12 @@ interface TopicState {
 }
 
 const HLS_ENDLIST = '#EXT-X-ENDLIST';
-const HLS_EXTINF = '#EXTINF';
 const HLS_PLAYLIST_TYPE = '#EXT-X-PLAYLIST-TYPE';
 const HLS_PLAYLIST_TYPE_EVENT = '#EXT-X-PLAYLIST-TYPE:EVENT';
 const HLS_MEDIA_SEQUENCE = '#EXT-X-MEDIA-SEQUENCE';
 const HLS_MEDIA_SEQUENCE_ZERO = '#EXT-X-MEDIA-SEQUENCE:0';
 
 const manifestQueue = new Pqueue({ concurrency: 1 });
-
-export function parseManifest(text: string): { headers: string[]; segments: Segment[]; isFinalized: boolean } {
-  const lines = text.trim().split('\n');
-  const headers: string[] = [];
-  const segments: Segment[] = [];
-  let isFinalized = false;
-  let headersDone = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-
-    if (line === HLS_ENDLIST) {
-      isFinalized = true;
-      continue;
-    }
-
-    if (line.startsWith(HLS_EXTINF)) {
-      headersDone = true;
-      const uri = lines[i + 1]?.trim();
-      if (uri && !uri.startsWith('#')) {
-        segments.push({ extinf: line, uri });
-        i++;
-      }
-      continue;
-    }
-
-    if (!headersDone && line) {
-      headers.push(line);
-    }
-  }
-
-  return { headers, segments, isFinalized };
-}
 
 export class ManifestStateManager {
   private static instance: ManifestStateManager;
@@ -189,6 +171,7 @@ export class ManifestStateManager {
 
 export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
+  private ladders = new Map<string, LadderResolver>();
 
   constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {}
 
@@ -200,8 +183,30 @@ export class ManifestFetcher {
     this._beeUrl = url;
   }
 
+  /**
+   * Declares that the stream loaded from `sourceUrl` is a ladder, so the loader answers its
+   * top-level playlist request with a master rather than with that feed's media playlist.
+   */
+  registerLadder(sourceUrl: string, resolve: LadderResolver): void {
+    this.ladders.set(sourceUrl, resolve);
+  }
+
+  unregisterLadder(sourceUrl: string): void {
+    this.ladders.delete(sourceUrl);
+  }
+
+  /** The master playlist for a registered ladder, or null when this source is single-rendition. */
+  masterFor(sourceUrl: string): string | null {
+    const ladder = this.ladders.get(sourceUrl)?.();
+    if (!ladder || ladder.renditions.length === 0) {
+      return null;
+    }
+
+    return buildMasterPlaylist(ladder.owner, ladder.renditions);
+  }
+
   async fetch(url: string): Promise<string> {
-    const [owner, topicPart] = url.split('/');
+    const { owner, topic: topicPart } = parseSwarmUri(url);
     const topic = Topic.fromString(topicPart);
 
     if (!this.stateManager.getIndex(topic.toString())) {

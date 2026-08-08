@@ -23,18 +23,25 @@ export class CustomManifestLoader extends PlaylistLoader {
   }
 
   load(context: PlaylistLoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<PlaylistLoaderContext>) {
-    if (['manifest', 'level'].includes(context.type)) {
-      manifestFetcher
-        .fetch(context.url)
-        .then((manifest) => {
-          callbacks.onSuccess({ url: context.url, data: manifest, code: 200 }, this.stats, context, undefined);
-        })
-        .catch((error) => {
-          callbacks.onError?.({ code: 0, text: error.message }, context, undefined, this.stats);
-        });
-    } else {
+    if (!['manifest', 'level'].includes(context.type)) {
       super.load(context, config, callbacks);
+      return;
     }
+
+    // `manifest` is the top-level request, and for a ladder it has to be answered with the
+    // multivariant playlist; `level` is one rung, and is a feed like any other. A single-rendition
+    // stream registers no ladder, so its `manifest` request falls through to the same feed read it
+    // has always been.
+    const source = context.type === 'manifest' ? manifestFetcher.masterFor(context.url) : null;
+    const manifest = source !== null ? Promise.resolve(source) : manifestFetcher.fetch(context.url);
+
+    manifest
+      .then((data) => {
+        callbacks.onSuccess({ url: context.url, data, code: 200 }, this.stats, context, undefined);
+      })
+      .catch((error) => {
+        callbacks.onError?.({ code: 0, text: error.message }, context, undefined, this.stats);
+      });
   }
 }
 
