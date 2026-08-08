@@ -17,18 +17,29 @@
  * up **after a common shock**, when an outage clears or an encoder restarts and every player recovers
  * at once. So the herd forms on the recovery path, when the system is already degraded.
  *
- * ## Why this number
+ * ## ⛔ Why this is 0, having shipped at 60ms and been measured
  *
- * ⚠️ **Chosen, not measured.** What was measured is the safe cohort size, not the delay that produces
- * it. 60ms is under a quarter of the 267ms segment budget at the shipping profile, so a segment
- * request that waits the full bound still has three quarters of its budget left. Spread uniformly
- * across it, a hundred-odd viewers land a couple per millisecond, which is the order of the cohort
- * size that held.
+ * **60ms was measured and it does nothing.** Eight arms at 128 paced viewers put a jittered herd at
+ * 8041 and 10826ms of ending lag against an unjittered one at 9437 and 9711, in both rounds, inside
+ * the spread an unfunded node shows on identical work. See
+ * `docs/bench/jitter-is-not-what-breaks-a-herd-2026-08-08.md`.
  *
- * Raising it buys a wider spread and spends buffer headroom. Lowering it to 0 disables the stagger
- * entirely and restores the previous behaviour exactly.
+ * ⭐⭐ **The reason is that the cohort finding above is about chunk diversity, not arrival instant, and
+ * jitter buys no chunk diversity.** Viewers at sixteen playback positions want sixteen different
+ * chunks, so the gateway has something to spread the work across. Viewers moved a few tens of
+ * milliseconds are still at one playback position wanting one chunk. A whole segment duration of
+ * jitter is where the two start to converge, and even that disagreed between rounds.
+ *
+ * So a client cannot jitter its way out of a live herd at any bound it can afford to add to the live
+ * edge. What does mitigate one is the gateway's cache, which takes network contacts to one fetch per
+ * distinct chunk for 128 viewers, and pooling viewers so that fetch is shared. Neither is a client
+ * change.
+ *
+ * The mechanism, its configurability and its tests all stay, because an operator with evidence for a
+ * regime this was not measured in can turn it on. 0 runs every staggered task synchronously, which is
+ * exactly what happened before any of this existed rather than approximately.
  */
-export const GATEWAY_REQUEST_JITTER_MS = 60;
+export const GATEWAY_REQUEST_JITTER_MS = 0;
 
 /**
  * The fraction of a manifest backoff that is randomised, on top of the stagger above.
@@ -40,6 +51,11 @@ export const GATEWAY_REQUEST_JITTER_MS = 60;
  *
  * Proportional rather than absolute because the point of doubling a backoff is that later attempts
  * spread wider, and a fixed 60ms on top of a 30 second wait would not.
+ *
+ * ⚠️ **This stays on where the stagger above was turned off, and the difference is scale.** A quarter
+ * of a 2 to 30 second backoff is 0.5 to 7.5 seconds of separation, which is the order that was
+ * measured to work, where 60ms is the order that was measured not to. ⬅ **Not itself measured**, and
+ * kept as standard practice for a retry storm rather than as a result of this project's.
  */
 export const MANIFEST_BACKOFF_JITTER_FRACTION = 0.25;
 
