@@ -145,8 +145,33 @@ segment budget large enough to swallow a 2-4x transfer cost.
 [0.25s, 2026-08-06](../bench/light-vs-ultra-light-2026-08-06.md),
 [1.0s, 2026-08-07](../bench/light-vs-ultra-light-at-a-viewer-2026-08-07.md).
 
-⚠️ **What is genuinely open** is why the unfunded node was 24% faster on one night than another.
-Nothing here explains it, and it is the term the deployment decision turns on.
+### ✅ The mechanism, measured 2026-08-08 for 0.184 BZZ and thirteen minutes
+
+[What throttles an unfunded gateway](../bench/what-throttles-an-unfunded-gateway-2026-08-08.md). Six
+arms retrieving the **same 800 segments in the same order**, no encoder, no publisher, no upload and no
+postage, because the segments were already on Swarm from the sitting above.
+
+⭐ **A funded node settles what it owes and an unfunded one cannot.** Across three unfunded arms the
+debt carried grew every time, by 604, 721 and 479 million PLUR. Across three funded arms doing
+identical work it **fell** in two and grew in the third by a sixth as much. Nothing else differs.
+
+⭐ **The tail is far worse than the median, and no live sitting ever reported it.** Median penalty
+**2.9x** (37.3 → 108.3ms). At p90, **7.7x** (54.3 → 419.3ms). A buffer is drained by the slow segment,
+not the typical one, so the figure that decides a stall is the one nothing had looked at.
+
+⛔ **The unfunded node saturates in about forty seconds and then holds.** Debt climbs steeply, then
+oscillates around -1.3 billion for the rest of the arm: an allowance consumed to its limit and spent
+at the rate it refills. **The first forty seconds of an unfunded arm are a different regime**, so a
+short arm measures the approach rather than the steady state.
+
+⚠️ **What is still genuinely open** is why the unfunded node was 24% faster on one night than another.
+It is **not** the debt carried into the arm: starting at -376M, -647M and -850M gave 102, 117 and 106ms
+with no ordering. It is the term the deployment decision turns on.
+
+⭐ **The method is the transferable part.** The question was about retrieval, so everything that was
+not retrieval was dropped, and the price fell from ~1.3 BZZ and two and a half hours to 0.184 BZZ and
+thirteen minutes, with the binding uploader chequebook untouched. Ask what the question actually needs
+before booking a sitting for it.
 
 ⚠️ **One open difference, deliberately not called an effect.** Ultra-light's median latency sat about
 half a second above light's in both comparable pairs. It is not established: round 2's funded arm took

@@ -14,6 +14,7 @@ const HEALTHY_OUTPUT = [
   '0.031 200',
   '1.42',
   '{"totalBalance":"227039111999998600","availableBalance":"80000000000000000"}',
+  '335 120 -430250000 -12570000 -1990000',
   '{"connectedPeers":92,"neighborhoodSize":135,"isReachable":true,"isWarmingUp":false}',
 ].join('\n');
 
@@ -27,6 +28,13 @@ const at = (atMs: number, overrides: Partial<GatewaySample> = {}): GatewaySample
   isWarmingUp: false,
   hostLoad1: 1.4,
   chequebookAvailableBzz: 8,
+  accounting: {
+    peers: 335,
+    inDebt: 120,
+    totalDebtPlur: -430_250_000,
+    deepestDebtPlur: -12_570_000,
+    medianDebtPlur: -1_990_000,
+  },
   ...overrides,
 });
 
@@ -39,7 +47,7 @@ const at = (atMs: number, overrides: Partial<GatewaySample> = {}): GatewaySample
  * whether the node had lost the peers it retrieves through.
  */
 describe('reading a gateway sample off the host', () => {
-  it('reads the four lines the remote command emits', () => {
+  it('reads the five lines the remote command emits', () => {
     const sample = parseGatewaySample(HEALTHY_OUTPUT, 1_000);
 
     assert.deepEqual(sample, {
@@ -52,6 +60,13 @@ describe('reading a gateway sample off the host', () => {
       isWarmingUp: false,
       hostLoad1: 1.42,
       chequebookAvailableBzz: 8,
+      accounting: {
+        peers: 335,
+        inDebt: 120,
+        totalDebtPlur: -430_250_000,
+        deepestDebtPlur: -12_570_000,
+        medianDebtPlur: -1_990_000,
+      },
     });
   });
 
@@ -71,7 +86,13 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('reads a chequebook drained to nothing as nothing, not as missing', () => {
-    const drained = ['0.001 200', '1.0', '{"totalBalance":"147039111999998600","availableBalance":"6999983500"}', '{}'];
+    const drained = [
+      '0.001 200',
+      '1.0',
+      '{"totalBalance":"147039111999998600","availableBalance":"6999983500"}',
+      '',
+      '{}',
+    ];
 
     const sample = parseGatewaySample(drained.join('\n'), 0);
 
@@ -83,11 +104,77 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the rest when the chequebook read is the one that failed', () => {
-    const sample = parseGatewaySample('0.03 200\n0.5\n\n{"connectedPeers":7}', 0);
+    const sample = parseGatewaySample('0.03 200\n0.5\n\n1 0 0 0 0\n{"connectedPeers":7}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, 7);
     assert.equal(sample.chequebookAvailableBzz, null);
+  });
+
+  /**
+   * ⭐ The reading Phase 0.6 asked for and no sitting ever took.
+   *
+   * `docs/bench/ultra-light-at-the-shipping-profile-2026-08-08.md` closed on one open term: an unfunded
+   * gateway moved segments 2 to 4x slower than a funded one, and on one night it was 24% faster than on
+   * another with no measured reason. The node's own samples ruled out three candidates — it held 134
+   * peers and a 135-node neighbourhood in every arm, answered `/health` in 1ms throughout, and the host
+   * load moved the wrong way. What none of them can see is **what the node owes the peers it retrieves
+   * through**, which is the one mechanism that separates "ultra-light is slower" from "ultra-light is
+   * starved". An unfunded node cannot issue a cheque, so its debt with each peer can only grow until
+   * that peer stops serving it, and the signature of that is peers clustered against a common ceiling.
+   *
+   * ⚠️ **Reduced on the host to four figures**, deliberately. `/balances` is 45 kB on this deployment
+   * because it carries all 323 peers, and shipping it per sample would repeat the `/topology` mistake
+   * this module already carries a warning about. The reduction is self-calibrating: bee reports
+   * `thresholdreceived` as null, so the ceiling is found as the deepest debt rather than assumed.
+   */
+  describe('reading what the gateway owes the peers it reads through', () => {
+    it('reads the five figures the host reduces the balance list to', () => {
+      assert.deepEqual(parseGatewaySample(HEALTHY_OUTPUT, 0).accounting, {
+        peers: 335,
+        inDebt: 120,
+        totalDebtPlur: -430_250_000,
+        deepestDebtPlur: -12_570_000,
+        medianDebtPlur: -1_990_000,
+      });
+    });
+
+    /**
+     * ⛔ The failure this instrument would otherwise have in silence. `/balances` is reached on the same
+     * port as the chequebook, and `/chequebook/balance` answers **405** on an ultra-light node, which is
+     * the arm this exists to measure. If accounting is refused the same way, four zeroes would read as a
+     * node that owes nobody anything — the exact opposite of being starved — and the column would look
+     * measured rather than missing.
+     */
+    it('reads a refused accounting endpoint as missing, not as a node that owes nobody', () => {
+      const sample = parseGatewaySample('0.03 200\n0.5\n{}\n\n{"connectedPeers":7}', 0);
+
+      assert.equal(sample.answered, true);
+      assert.equal(sample.accounting, null);
+      assert.equal(sample.connectedPeers, 7, 'losing accounting must not cost the reading beside it');
+    });
+
+    it('reads a line that is not five figures as missing', () => {
+      for (const line of [
+        '335 120 -430250000 -12570000',
+        '335 120 -430250000 -12570000 -1990000 7',
+        'no peers found',
+        '335 120 x -12570000 -1990000',
+      ]) {
+        assert.equal(parseGatewaySample(`0.03 200\n0.5\n{}\n${line}\n{}`, 0).accounting, null, `parsed "${line}"`);
+      }
+    });
+
+    /** A node holding balances with nobody is a real reading and a different one from a failed read. */
+    it('reads a node with no balances at all as zero rather than as missing', () => {
+      assert.deepEqual(parseGatewaySample('0.03 200\n0.5\n{}\n0 0 0 0 0\n{}', 0).accounting, {
+        peers: 0,
+        inDebt: 0,
+        totalDebtPlur: 0,
+        deepestDebtPlur: 0,
+        medianDebtPlur: 0,
+      });
+    });
   });
 
   /**
@@ -97,11 +184,11 @@ describe('reading a gateway sample off the host', () => {
    * would carry the ssh latency to the host, which is the one term guaranteed to move on its own.
    */
   it('takes the service time from curl on the host, not from the round trip to it', () => {
-    assert.equal(parseGatewaySample('2.500 200\n0.1\n{}\n{}', 0).serviceMs, 2_500);
+    assert.equal(parseGatewaySample('2.500 200\n0.1\n{}\n\n{}', 0).serviceMs, 2_500);
   });
 
   it('reads a bee that answered something other than 200 as not answering', () => {
-    const sample = parseGatewaySample('0.004 503\n0.5\n{}\n{}', 0);
+    const sample = parseGatewaySample('0.004 503\n0.5\n{}\n\n{}', 0);
 
     assert.equal(sample.answered, false);
     assert.equal(sample.serviceMs, 4, 'a refusal is still a timing, and a fast refusal is worth seeing');
@@ -114,7 +201,7 @@ describe('reading a gateway sample off the host', () => {
   for (const [name, output] of [
     ['a curl that timed out and printed nothing', ''],
     ['ssh output that is not the three lines', 'Connection closed by remote host'],
-    ['a timing field that is not a number', 'slow 200\n0.5\n{}\n{}'],
+    ['a timing field that is not a number', 'slow 200\n0.5\n{}\n\n{}'],
   ] as const) {
     it(`survives ${name}`, () => {
       const sample = parseGatewaySample(output, 7);
@@ -131,7 +218,7 @@ describe('reading a gateway sample off the host', () => {
    * HTML is one shape a node too busy to serve `/topology` takes, which is the case being measured.
    */
   it('keeps the timing when topology comes back as something other than JSON', () => {
-    const sample = parseGatewaySample('0.03 200\n0.5\n{}\n<html>502 Bad Gateway</html>', 7);
+    const sample = parseGatewaySample('0.03 200\n0.5\n{}\n\n<html>502 Bad Gateway</html>', 7);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.serviceMs, 30);
@@ -139,7 +226,7 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the bee reading when only the host load is missing', () => {
-    const sample = parseGatewaySample('0.03 200\n\n{}\n{"connectedPeers":5}', 0);
+    const sample = parseGatewaySample('0.03 200\n\n{}\n\n{"connectedPeers":5}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, 5);
@@ -147,7 +234,7 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the timing when topology is empty, since a node can answer and report nothing', () => {
-    const sample = parseGatewaySample('0.03 200\n0.5\n{}\n{}', 0);
+    const sample = parseGatewaySample('0.03 200\n0.5\n{}\n\n{}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, null);
@@ -371,6 +458,72 @@ describe('summarizing what the gateway did during a run', () => {
   });
 
   /**
+   * The debt columns exist to be read **against the browser's own minute table**, which is why they are
+   * per minute and why each takes the worst of its minute rather than the last. A node that spent a
+   * minute pinned against its ceiling and settled in the final sample of it was pinned for that minute.
+   */
+  it('takes the worst debt of a minute, not the one it happened to end on', () => {
+    const light = { peers: 300, inDebt: 10, totalDebtPlur: -10_000, deepestDebtPlur: -1_000, medianDebtPlur: -900 };
+    const heavy = {
+      peers: 300,
+      inDebt: 200,
+      totalDebtPlur: -99_000_000,
+      deepestDebtPlur: -2_000_000,
+      medianDebtPlur: -480_000,
+    };
+    const samples = [
+      at(0, { accounting: light }),
+      at(60_000, { accounting: heavy }),
+      at(90_000, { accounting: light }),
+    ];
+
+    const minutes = summarizeGateway(samples).minutes;
+
+    assert.equal(minutes[1].totalDebtPlur, -99_000_000, 'a minute that settled at its end hid the debt it carried');
+    assert.equal(minutes[1].medianDebtPlur, -480_000);
+    assert.equal(minutes[1].deepestDebtPlur, -2_000_000);
+    assert.equal(minutes[1].peersInDebt, 200);
+  });
+
+  /**
+   * ⛔ The way this instrument fails without saying so. `/balances` shares a port with the chequebook
+   * endpoint, and that one answers 405 on an ultra-light node, which is the arm this was built for. A
+   * run where every accounting read was refused must say the column is missing, not print dashes that
+   * read as a node with nothing to report.
+   */
+  it('says the run measured no accounting at all rather than printing an empty column', () => {
+    const summary = summarizeGateway([at(0, { accounting: null }), at(60_000, { accounting: null })]);
+
+    assert.equal(summary.minutes[0].deepestDebtPlur, null);
+    assert.match(summary.warnings.join(' '), /accounting/i);
+  });
+
+  it('says nothing about accounting when the node reported it', () => {
+    assert.doesNotMatch(summarizeGateway([at(0), at(60_000)]).warnings.join(' '), /accounting/i);
+  });
+
+  it('warns about accounting once, not once per minute that lost it', () => {
+    const samples = Array.from({ length: 5 }, (_, i) => at(i * 60_000, { accounting: null }));
+
+    const accountingWarnings = summarizeGateway(samples).warnings.filter((w) => /accounting/i.test(w));
+
+    assert.equal(accountingWarnings.length, 1);
+  });
+
+  /**
+   * A run that lost accounting for part of itself still measured the part it has, and saying nothing
+   * would be the same silence as losing all of it. Pinned as a partial reading rather than a warning,
+   * because the minutes that did land are exactly what a collapse would be read against.
+   */
+  it('keeps the minutes that did carry accounting when only some did', () => {
+    const summary = summarizeGateway([at(0), at(60_000, { accounting: null })]);
+
+    assert.equal(summary.minutes[0].peersInDebt, 120);
+    assert.equal(summary.minutes[1].peersInDebt, null);
+    assert.doesNotMatch(summary.warnings.join(' '), /accounting/i);
+  });
+
+  /**
    * The four tests below were written against surviving mutants rather than against the code.
    *
    * Every threshold in this module was already covered by a fixture that cleared it comfortably, so
@@ -469,6 +622,21 @@ describe('summarizing what the gateway did during a run', () => {
     const lines = gatewaySection(summarizeGateway([at(0, { chequebookAvailableBzz: 8 })])).join('\n');
 
     assert.match(lines, /8\.0000/);
+  });
+
+  it('renders the debt the node carries, in the same minutes as everything else', () => {
+    const accounting = {
+      peers: 300,
+      inDebt: 200,
+      totalDebtPlur: -99_000_000,
+      deepestDebtPlur: -2_000_000,
+      medianDebtPlur: -480_000,
+    };
+    const lines = gatewaySection(summarizeGateway([at(0, { accounting })])).join('\n');
+
+    assert.match(lines, /-99000000/, 'the debt the node was carrying never reached the table');
+    assert.match(lines, /-480000/, 'the middle debt never reached the table');
+    assert.match(lines, /\| 200 \|/, 'the count of peers owed never reached the table');
   });
 
   it('renders the reason rather than an empty table when there are no samples', () => {

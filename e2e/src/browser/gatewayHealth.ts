@@ -55,6 +55,18 @@ const SERVICE_STEP_WORTH_NAMING = 2;
 const PEER_LOSS_SHARE = 0.5;
 
 /**
+ * ⛔ There was a `pinnedPeers` figure here, counting peers within a tenth of the deepest debt, on the
+ * theory that a ceiling looks like peers clustered against a common depth. A proving run against the
+ * live node refuted it before it reached a report: the deepest debt sat at exactly -12,570,000 PLUR
+ * across every reading and 50 MB of retrieval on both arms, and **exactly one peer holds that value**,
+ * with a smooth tail below it. It is a stale balance with an inactive peer, so a metric calibrated
+ * against it was calibrated against noise and would have moved for reasons no arm controlled.
+ *
+ * What replaced it is the sum and the median, which are not anchored to an extreme. If a ceiling ever
+ * does exist, the median rises to meet the deepest, which is visible in the numbers already reported.
+ */
+
+/**
  * Spendable balance below which the gateway is about to stop paying for reads.
  *
  * Not zero, because zero is the state to be warned *before* reaching. At the 0.123 BZZ per thirty
@@ -63,6 +75,32 @@ const PEER_LOSS_SHARE = 0.5;
 const CHEQUEBOOK_FLOOR_BZZ = 0.5;
 
 const MS_PER_MINUTE = 60_000;
+
+/**
+ * What the node owes the peers it retrieves through, reduced to the shape of the distribution.
+ *
+ * A negative balance is data taken and not yet paid for. A node that cannot settle accumulates those
+ * until each peer stops serving it, so the signature of a starved node is not one deep debt but many
+ * peers at a **common** depth: the ceiling, seen from below.
+ */
+export interface PeerAccounting {
+  /** Peers bee holds a balance for. Larger than the connected count, since a balance outlives a link. */
+  peers: number;
+  /** Peers this node owes, having taken more than it has given. */
+  inDebt: number;
+  /**
+   * Every debt added together, in PLUR, at or below zero.
+   *
+   * The headline of the five. It is the unsettled consumption the node is carrying, so it rises while
+   * retrieval outruns settlement and falls when cheques clear, and unlike a count it cannot be flat
+   * while the debts behind it double.
+   */
+  totalDebtPlur: number;
+  /** The largest single debt. A maximum, so one inactive peer can hold it still for a whole run. */
+  deepestDebtPlur: number;
+  /** The middle debt among the peers in debt, which moves with the distribution rather than its tail. */
+  medianDebtPlur: number;
+}
 
 export interface GatewaySample {
   atMs: number;
@@ -87,6 +125,17 @@ export interface GatewaySample {
    * is a read path slowing down for a reason no amount of node health would show.
    */
   chequebookAvailableBzz: number | null;
+  /**
+   * ⭐ The one mechanism the rest of this file cannot see, and the term Phase 0.6 closed on.
+   *
+   * An unfunded gateway moved segments 2 to 4x slower than a funded one and was 24% faster on one
+   * night than another for no measured reason. Everything else here was **identical** across both
+   * arms: 134 peers, a 135-node neighbourhood, `/health` in 1ms, host load overlapping and moving the
+   * wrong way. Retrieval is paid for per peer, so what the node owes them is where a difference that
+   * large can hide while every health signal stays green. Null when the read failed, which is a
+   * different statement from a node that owes nobody anything.
+   */
+  accounting: PeerAccounting | null;
 }
 
 export interface GatewayMinute {
@@ -100,6 +149,14 @@ export interface GatewayMinute {
   maxHostLoad1: number | null;
   /** The lowest seen in the minute, since running out is what matters and a top-up would hide it. */
   chequebookAvailableBzz: number | null;
+  /** The most peers owed at once in the minute. */
+  peersInDebt: number | null;
+  /** The most debt carried at once in the minute, since a debt settled inside it was still carried. */
+  totalDebtPlur: number | null;
+  /** The deepest single debt reached in the minute. */
+  deepestDebtPlur: number | null;
+  /** The deepest the middle debt reached in the minute. */
+  medianDebtPlur: number | null;
 }
 
 export interface GatewayHealth {
@@ -113,7 +170,32 @@ export interface GatewayHealth {
 }
 
 /**
- * The one remote command a sample costs, emitting four lines.
+ * Reduce bee's balance list to four figures **on the host**, before it crosses the wire.
+ *
+ * ⚠️ `/balances` is 45 kB on this deployment because it carries all 323 peers, against `/status`'s 351
+ * bytes. Shipped whole at one sample every five seconds that is around 11 MB over a twenty-minute run,
+ * moved across the host the run is measuring, which is the `/topology` mistake this module already
+ * carries a warning about. Reduced here it is under forty bytes and the 45 kB never leaves localhost.
+ * Measured on the node itself: `/balances` answers in 8-9ms against `/health`'s 1.1ms, so at this
+ * cadence the instrument occupies the node for under two parts in a thousand.
+ *
+ * Emits nothing at all when there are no balances to read, so a refused endpoint reads as a failed
+ * sample rather than as a node that owes nobody anything.
+ */
+function balancesReduction(): string {
+  return [
+    `grep -o '"balance":"-\\{0,1\\}[0-9]\\{1,\\}"'`,
+    `tr -dc '0-9\\n-'`,
+    // Sorted ascending, so every debt leads and the median of them is an index rather than a second pass.
+    `sort -n`,
+    `awk '{n++; v[n]=$1+0; if(v[n]<0){d++; s+=v[n]}} ` +
+      `END{if(n==0) exit; ` +
+      `print n, d+0, s+0, (d>0)?v[1]:0, (d>0)?v[int(d/2)+1]:0}'`,
+  ].join(' | ');
+}
+
+/**
+ * The one remote command a sample costs, emitting five lines.
  *
  * Line-oriented rather than assembled into JSON on the host: quoting a JSON document through a shell
  * through ssh is how a sampler starts reporting its own escaping. Both JSON documents have their
@@ -137,6 +219,8 @@ function sampleCommand(gatewayPort: number): string {
     `cut -d' ' -f1 /proc/loadavg 2>/dev/null || true`,
     `curl -s -m ${CURL_TIMEOUT_S} ${bee}/chequebook/balance 2>/dev/null | tr -d '\\n' || true`,
     `echo`,
+    `curl -s -m ${CURL_TIMEOUT_S} ${bee}/balances 2>/dev/null | ${balancesReduction()} | tr -d '\\n' || true`,
+    `echo`,
     `curl -s -m ${CURL_TIMEOUT_S} ${bee}/status 2>/dev/null | tr -d '\\n' || true`,
   ].join('; ');
 }
@@ -150,6 +234,7 @@ const UNANSWERED = {
   isWarmingUp: null,
   hostLoad1: null,
   chequebookAvailableBzz: null,
+  accounting: null,
 } as const;
 
 function finiteOrNull(value: unknown): number | null {
@@ -184,9 +269,25 @@ function parseJsonLine(line: string | undefined): NodeStatus {
   }
 }
 
+/**
+ * The four figures {@link balancesReduction} printed, or null when it printed anything else.
+ *
+ * Null rather than zeroes for every failure shape, because `/balances` is reached on the same port as
+ * `/chequebook/balance`, which answers **405** on an ultra-light node. Four zeroes there would read as
+ * a node that owes nobody, which is the precise opposite of the state this exists to catch.
+ */
+function parseAccounting(line: string | undefined): PeerAccounting | null {
+  const figures = (line ?? '').trim().split(/\s+/).map(numberOrNull);
+  if (figures.length !== 5 || figures.some((figure) => figure === null)) {
+    return null;
+  }
+  const [peers, inDebt, totalDebtPlur, deepestDebtPlur, medianDebtPlur] = figures as number[];
+  return { peers, inDebt, totalDebtPlur, deepestDebtPlur, medianDebtPlur };
+}
+
 /** Read one sample out of what {@link sampleCommand} printed. Never throws. */
 export function parseGatewaySample(stdout: string, atMs: number): GatewaySample {
-  const [timing = '', load = '', chequebook = '', ...rest] = stdout.split('\n');
+  const [timing = '', load = '', chequebook = '', accounting = '', ...rest] = stdout.split('\n');
   const [seconds, status] = timing.trim().split(/\s+/);
   const serviceMs = numberOrNull(seconds);
 
@@ -207,6 +308,7 @@ export function parseGatewaySample(stdout: string, atMs: number): GatewaySample 
     isWarmingUp: typeof nodeStatus.isWarmingUp === 'boolean' ? nodeStatus.isWarmingUp : null,
     hostLoad1: numberOrNull(load),
     chequebookAvailableBzz: availableBzz(chequebook),
+    accounting: parseAccounting(accounting),
   };
 }
 
@@ -330,6 +432,17 @@ function minuteOf(samples: GatewaySample[], minute: number): GatewayMinute {
   const balances = samples
     .map((sample) => sample.chequebookAvailableBzz)
     .filter((value): value is number => value !== null);
+  const accounting = samples
+    .map((sample) => sample.accounting)
+    .filter((value): value is PeerAccounting => value !== null);
+
+  // The worst of the minute rather than its last, in every accounting column: a node that spent a
+  // minute pinned against its ceiling and settled in the final sample of it was pinned for that
+  // minute, and the browser table this is read beside reports the minute a buffer fell in.
+  const owed = accounting.map((a) => a.inDebt);
+  const totals = accounting.map((a) => a.totalDebtPlur);
+  const deepest = accounting.map((a) => a.deepestDebtPlur);
+  const medians = accounting.map((a) => a.medianDebtPlur);
 
   return {
     minute,
@@ -339,6 +452,10 @@ function minuteOf(samples: GatewaySample[], minute: number): GatewayMinute {
     connectedPeers: peers.length > 0 ? Math.min(...peers) : null,
     maxHostLoad1: loads.length > 0 ? Math.max(...loads) : null,
     chequebookAvailableBzz: balances.length > 0 ? Math.min(...balances) : null,
+    peersInDebt: owed.length > 0 ? Math.max(...owed) : null,
+    totalDebtPlur: totals.length > 0 ? Math.min(...totals) : null,
+    deepestDebtPlur: deepest.length > 0 ? Math.min(...deepest) : null,
+    medianDebtPlur: medians.length > 0 ? Math.min(...medians) : null,
   };
 }
 
@@ -433,6 +550,18 @@ function warningsFor(
     );
   }
 
+  // ⛔ Not a threshold on how pinned is too pinned. No sitting has measured what an unfunded gateway's
+  // debt distribution looks like yet, so any number here would be a guess dressed as a gate. What is
+  // worth catching before then is the instrument reporting nothing at all: `/balances` shares a port
+  // with `/chequebook/balance`, which answers 405 on an ultra-light node, and a column of dashes reads
+  // like a node with nothing to report rather than a node that was never successfully asked.
+  if (minutes.every((m) => m.deepestDebtPlur === null)) {
+    warnings.push(
+      'no sample carried peer accounting, so this run says nothing about whether the node was starved of ' +
+        'credit. /balances is reached on the same port as the chequebook, which answers 405 on an ultra-light node',
+    );
+  }
+
   const peerCounts = minutes.map((m) => m.connectedPeers).filter((value): value is number => value !== null);
   if (peerCounts.length > 1 && Math.min(...peerCounts) < peerCounts[0] * PEER_LOSS_SHARE) {
     warnings.push(
@@ -453,8 +582,8 @@ export function gatewaySection(health: GatewayHealth): string[] {
   }
 
   lines.push(
-    '| minute | samples | median /health | unanswered | peers | host load | BZZ to spend |',
-    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| minute | samples | median /health | unanswered | peers | host load | BZZ to spend | owed | total debt | median debt |',
+    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...health.minutes.map(
       (m) =>
         [
@@ -465,6 +594,9 @@ export function gatewaySection(health: GatewayHealth): string[] {
           m.connectedPeers ?? '—',
           m.maxHostLoad1?.toFixed(2) ?? '—',
           m.chequebookAvailableBzz?.toFixed(4) ?? '—',
+          m.peersInDebt ?? '—',
+          m.totalDebtPlur ?? '—',
+          m.medianDebtPlur ?? '—',
         ].join(' | ') + ' |',
     ),
     '',
