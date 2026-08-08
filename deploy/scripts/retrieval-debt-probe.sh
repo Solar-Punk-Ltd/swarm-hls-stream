@@ -36,7 +36,7 @@ METRICS="${METRICS:-/home/solarpunk/phase06/metrics.sh}"
 SEGMENTS="${SEGMENTS:-400}"
 ROUNDS="${ROUNDS:-2}"
 
-# The arms of one round, as `label:swap:idleSecondsBefore[:cacheCapacity[:viewers[:paceMs]]]`, in order.
+# The arms of one round, as `label:swap:idleSecondsBefore[:cacheCapacity[:viewers[:paceMs[:spread]]]]`, in order.
 #
 # ⭐ The cache field exists because every arm this project has ever run set `--cache-capacity=0`, so
 # nothing cached and every chunk was re-fetched. It was excluded on purpose while the funding question
@@ -121,6 +121,25 @@ VIEWERS="${VIEWERS:-1}"
 # told from drift. The arm field is the 6th:
 #   ARM_PLAN='F:false:0:0:32:0 P:false:0:0:32:267 F:false:0:0:32:0 P:false:0:0:32:267'
 PACE_MS="${PACE_MS:-0}"
+
+# How many distinct playback positions the viewers are spread across. 1 is every viewer watching the
+# same instant, which is what every arm before this measured.
+#
+# ⛔ This decides whether "pool viewers behind gateways" is true for a real audience. Synchronised
+# viewers all ask for the same chunk at the same moment, so bee merges them into ONE network retrieval,
+# and that merging is what made sixteen viewers cost the network what one costs. A real audience is
+# offset by join time, poll interval and buffer depth, so its viewers ask for DIFFERENT chunks at any
+# instant and there is nothing to merge.
+#
+# ⭐ The prediction this exists to test: with the cache off, spreading N viewers across S positions
+# should cost about S times the network retrievals, because the cohorts arrive too far apart to be
+# merged in flight. With the cache on it should cost one, because the first cohort leaves the chunk
+# behind for the rest. **That would make the cache the mechanism a scattered audience runs on, where a
+# synchronised one runs on pooling.**
+#
+# Viewer v starts `((v-1) mod spread) * pace` milliseconds late, so it is one segment behind the cohort
+# before it. Requires a pace: without one there is no playback position to be spread across.
+SPREAD="${SPREAD:-1}"
 
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/probe.log"
@@ -344,8 +363,14 @@ summarise_lag() {
 # because N concurrent samplers would be load of their own.
 fetch_walk() {
   local timesFile="$1" bytesFile="$2" seriesRound="$3" tag="$4" startedAt="$5" writeSeries="$6"
-  local lagFile="$7" pace="$8"
-  local n=0 sum=0 out ms b nextAt=0 nowMs
+  local lagFile="$7" pace="$8" viewerIndex="${9:-1}" spread="${10:-1}"
+  local n=0 sum=0 out ms b nextAt=0 nowMs offsetMs
+  # Held back so this viewer sits a whole number of segments behind the cohort in front of it, which is
+  # what an audience that joined at different moments looks like.
+  if [ "${pace}" -gt 0 ] && [ "${spread}" -gt 1 ]; then
+    offsetMs=$(((viewerIndex - 1) % spread * pace))
+    [ "${offsetMs}" -gt 0 ] && sleep_until_ms "$(($(epoch_ms) + offsetMs))"
+  fi
   while read -r ref; do
     n=$((n + 1))
     [ "${n}" -gt "${SEGMENTS}" ] && break
@@ -384,10 +409,12 @@ fetch_walk() {
 # node's ability to pay for it differs.
 run_arm() {
   local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}" viewers="${6:-}" pace="${7:-}"
+  local spread="${8:-}"
   [ -n "${cache}" ] || cache="${CURRENT_ARM_CACHE}"
   [ -n "${viewers}" ] || viewers="${VIEWERS}"
   [ -n "${pace}" ] || pace="${PACE_MS}"
-  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s), pace ${pace}ms"
+  [ -n "${spread}" ] || spread="${SPREAD}"
+  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s), pace ${pace}ms, spread ${spread}"
 
   local was="${CURRENT_ARM_SWAP}/${CURRENT_ARM_CACHE}"
   [ "${FORCE_RECREATE:-0}" = "1" ] && was="forced"
@@ -453,7 +480,8 @@ run_arm() {
       : >"${passFile}.v${v}"
       : >"${passFile}.l${v}"
       fetch_walk "${passFile}.v${v}" "${passFile}.b${v}" "${round}" "${label}.${pass}.v${v}" \
-        "${started}" "$([ "${v}" = 1 ] && echo 1 || echo 0)" "${passFile}.l${v}" "${pace}" &
+        "${started}" "$([ "${v}" = 1 ] && echo 1 || echo 0)" "${passFile}.l${v}" "${pace}" \
+        "${v}" "${spread}" &
     done
     wait
     for v in $(seq 1 "${viewers}"); do
@@ -501,8 +529,8 @@ run_arm() {
   fi
   say "  ⭐ gateway CPU ${cpuUsed}s total, ${cpuRetrieval}s above idle = ${cpuPerMb}s per MB retrieved"
   say "  accounting after:  ${after}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${count}" "${bytes}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${spread}" "${count}" "${bytes}" \
     "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${behindShare}" "${maxLag}" \
     "${worstFinal}" "${cpuUsed}" "${cpuIdleRate}" \
     "${cpuRetrieval}" "${cpuPerMb}" "${before}" "${after}" >>"${STATE}"
@@ -512,13 +540,13 @@ run_arm() {
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
-    IFS=':' read -r label swap idle cache viewers pace <<<"${spec}"
-    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" ||
+    IFS=':' read -r label swap idle cache viewers pace spread <<<"${spec}"
+    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" "${spread:-}" ||
       say "round ${round} arm ${label} did not complete"
   done
 done
