@@ -32,12 +32,15 @@ care in running the test would have caught.
 
 1. **The median is the wrong statistic.** Between a night a viewer collapsed and a night it held, the
    median moved **1.18x** and the rate of one-second stalls moved **10 to 40x**. Section 3.1.
-2. **An unfunded node's 38 attempts per chunk are local, not on the wire.** It puts ~13% more load on
-   the network and burns ~34x the peer-selection work inside its own process. So a fleet of them is
-   bounded by **host CPU and node density**, not by network capacity. Section 2.2.
-3. **Sixteen viewers cost the network what one viewer costs.** bee fetches each distinct chunk once and
+2. **Sixteen viewers cost the network what one viewer costs.** bee fetches each distinct chunk once and
    serves every concurrent viewer from it, so **pool viewers behind gateways rather than running one
    node per viewer**. Throughput scaled 16.7x with a flat median. Section 2.4b.
+3. **Funding is a switch that flips at zero.** 0.05 BZZ performs exactly like 6.4 BZZ, and an empty
+   chequebook performs exactly like no chequebook. So **fund each node for its burn times the event
+   duration and no more**, and **alarm on the balance**, because a node that runs dry reports nothing.
+   Section 2.1b.
+4. **An unfunded node's ~23 skips per distinct chunk are local, not on the wire**, so a fleet of them
+   is bounded by host CPU rather than network capacity. Section 2.2.
 
 ---
 
@@ -91,6 +94,38 @@ thresholds, and bee then skips those peers rather than be disconnected.
 | **share over the 267ms budget**     |     **0.0-0.3%** |                        **11.6-15.0%** |
 
 ⭐ **It is not failing more often. It is doing 34x the work to fail at the same rate.**
+
+### ⭐⭐ 2.1b The funding cliff is a switch, and it flips at exactly zero
+
+✅ **Measured 2026-08-08**, the chequebook drained to a known balance and sampled every five seconds
+beside the retrieval counters. [Full report.](../bench/the-funding-cliff-is-at-zero-2026-08-08.md)
+
+| chequebook available |    median | over 267ms | **first-peer service** | **skips per chunk** |
+| -------------------: | --------: | ---------: | ---------------------: | ------------------: |
+|         **0.05 BZZ** |  **43ms** |   **0.1%** |              **87.6%** |            **1.56** |
+|    **0.0000004 BZZ** | **109ms** |  **10.6%** |              **12.5%** |            **39.8** |
+
+⭐ **0.05 BZZ performs exactly like 6.4 BZZ.** A hundred-and-twenty-eighth of the balance buys the same
+retrieval.
+
+⭐ **A chequebook with nothing in it is worth nothing.** The drained arm is indistinguishable from a
+node with no chequebook at all. `--swap-enable=true` plus an empty balance is not a partly-funded node.
+
+⭐⭐ **So balance level buys nothing except time, and sizing is arithmetic:**
+
+```
+BZZ per node = burn rate x event duration
+```
+
+At the measured **0.0102 BZZ/min** for 720p / 2500 kbps, a two-hour event is **1.22 BZZ per gateway**.
+Combined with 2.4b, a thousand viewers at sixteen per gateway is 63 gateways, so about **77 BZZ** for
+the event against **1,220 BZZ** for one node per viewer.
+
+⛔ **This is the failure mode with no alarm.** A gateway that runs dry does not error, does not
+disconnect and reports nothing: on 2026-08-07 one was found at 0.0000007 BZZ spendable with `/health`
+answering in 1.1ms, 134 peers and reachability Public. Every viewer behind it goes from 0.1% late
+segments to 10.6%. **Alarm on `chequebookAvailableBzz` approaching zero, because no other signal
+moves.**
 
 ⛔ **Two hypotheses that sound right and are refuted:**
 
@@ -402,11 +437,8 @@ request sequence is more faithful than any synthetic pattern you will write.
 
 ### 4.2 The arms worth spending on, in order
 
-1. **The funding cliff.** ⬅ **Open, and it is the highest-value question for a large event.** The
-   mechanism is _cannot settle_, not _is poor_, and debt level is demonstrably not the dial. **If any
-   ability to issue a cheque restores 1.14 iterations per chunk, a thousand-node event needs a trivial
-   deposit per node instead of a funded chequebook per node.** That is the difference between an
-   affordable event and an unaffordable one, and nobody has tested an intermediate funding level.
+1. **The funding cliff.** ✅ **Answered 2026-08-08, see 2.1b.** It is a switch at zero. Fund each node
+   for its burn times the event duration and no more.
 2. **Cache on against off**, in the pooled topology. Section 2.3.
 3. **Fleet size**, to find the knee. Section 2.4.
 4. **Thundering herd against staggered join.** ⬅ Entirely open. A thousand nodes joining at once ask

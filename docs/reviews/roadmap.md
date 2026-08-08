@@ -560,7 +560,24 @@ load, and its 37 wasted iterations per chunk are **local**.
 ⭐ **Therefore the constraint on running many unfunded nodes is host CPU and node density, not network
 capacity.** Nothing has measured that spin's CPU cost, and it is now the first thing worth measuring.
 
-### 0.9a Find the funding cliff — is settling a switch or a dial?
+### 0.9a ✅ DONE 2026-08-08 — it is a switch, and it flips at zero
+
+[Report.](../bench/the-funding-cliff-is-at-zero-2026-08-08.md) The chequebook was drained to a known
+balance by the owner and sampled every five seconds beside the retrieval counters.
+
+| chequebook available |    median | over 267ms | first-peer service | skips per chunk |
+| -------------------: | --------: | ---------: | -----------------: | --------------: |
+|         **0.05 BZZ** |  **43ms** |   **0.1%** |          **87.6%** |        **1.56** |
+|    **0.0000004 BZZ** | **109ms** |  **10.6%** |          **12.5%** |        **39.8** |
+
+⭐ **0.05 BZZ performs exactly like 6.4 BZZ**, and an empty chequebook performs exactly like no
+chequebook. **Balance buys nothing except time**, so `BZZ per node = burn rate x duration`, which at
+0.0102 BZZ/min is 1.22 BZZ for a two-hour 720p gateway.
+
+⛔ **It is the failure with no alarm.** A node that runs dry answers `/health` in 1.1ms with 134 peers
+and takes its viewers from 0.1% late to 10.6%. **Alarm on `chequebookAvailableBzz`.**
+
+### 0.9a-ii Superseded design notes
 
 The mechanism is **cannot settle**, not **is poor**. Debt saturates near -1.4 billion PLUR and the
 three arms **pegged at that ceiling were the best of eleven**, so the balance is demonstrably not the
