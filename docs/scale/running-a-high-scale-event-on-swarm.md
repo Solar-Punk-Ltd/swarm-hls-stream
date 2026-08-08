@@ -10,11 +10,23 @@ no context on this codebase.
 
 ## 0. Read this before anything else
 
-### ⛔ This repository has never exceeded eight concurrent viewers
+### ⛔ This repository has never exceeded eight viewers actually watching video
 
-Every figure below was measured with **one to eight** viewers against **one** gateway. Nothing here has
-run a hundred nodes, let alone a thousand. Where this document talks about a fleet, it is reasoning
-from a measured mechanism to a predicted consequence, and it says so every time.
+**One** gateway, throughout. Nothing here has run a hundred nodes, let alone a thousand. Where this
+document talks about a fleet it is reasoning from a measured mechanism to a predicted consequence, and
+it says so every time.
+
+⛔ **Two different things are called a viewer below and they are not interchangeable:**
+
+|                    |                                                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **a real viewer**  | a browser running hls.js, decoding and displaying. **Never more than 8**, and every latency, stall and quality figure comes from these                           |
+| **a probe viewer** | a paced fetcher walking a list of already-published segment references. **Up to 128**, and every concurrency, CPU, throughput and cohort figure comes from these |
+
+⚠️ **A probe viewer is a good model of retrieval load and no model at all of playback.** It has no
+decoder, no buffer and no player state machine, so it cannot stall, cannot rebuffer and cannot tell you
+what a picture looked like. The lag it reports is what a buffer _would_ have absorbed, not what a
+viewer saw.
 
 **Three labels are used throughout and they are not decoration:**
 
@@ -32,10 +44,12 @@ care in running the test would have caught.
 
 1. **The median is the wrong statistic.** Between a night a viewer collapsed and a night it held, the
    median moved **1.18x** and the rate of one-second stalls moved **10 to 40x**. Section 3.1.
-2. **Viewers sharing a gateway are nearly free, up to a knee at 128.** bee fetches each distinct chunk
-   once and serves every concurrent viewer from it: **128 viewers cost the network 1.85x what one
-   costs**. **Pool 32 to 64 viewers per gateway.** At 128 the median segment transfer reaches 248ms
-   against a 267ms budget and it stops working. Sections 2.4b and 2.4c.
+2. **Viewers sharing a gateway are nearly free, and what limits it is how many arrive at the same
+   instant.** bee fetches each distinct chunk once and serves every concurrent viewer from it. **128
+   viewers in cohorts of 8 run comfortably on one unfunded gateway** at 57-68ms median with 1.7% late
+   and no buffer drain at all. **The same 128 viewers firing on the same tick drain 12.8 seconds of
+   buffer.** ⭐ **So keep simultaneous arrivals under about 8 to 16 per gateway, and jitter the client's
+   request schedule to get it.** Sections 2.4b, 2.4c and **2.4f**.
 3. **Funding is a switch that flips at zero.** 0.05 BZZ performs exactly like 6.4 BZZ, and an empty
    chequebook performs exactly like no chequebook. So **fund each node for its burn times the event
    duration and no more**, and **alarm on the balance**, because a node that runs dry reports nothing.
@@ -206,20 +220,40 @@ within it still holds.
 | unfunded, **cache on** |             **0.33** |                  **~145** |
 | funded, cache on       |                 0.17 |                      ~280 |
 
-⚠️ **The caveat is real.** The probe fetches back to back with no think time, where a live viewer paces
-at real time. Per-MB is the right normalisation and should carry, but **confirm it against your own
-duty cycle before sizing hosts on it.**
+⛔ **That table is a per-node cost divided by one viewer. Do not size anything on it.** It is left
+standing because it is quoted elsewhere and because the funded-against-unfunded ratio inside it holds.
+The number you want is in section 2.4d.
 
-⭐ **If you pack nodes onto hosts without measuring this, you will saturate CPU long before the network
-notices and you will be measuring your own harness.**
+### ✅ The duty-cycle caveat, now answered
 
-⛔ **And one assumption underneath this whole subsection is unverified.**
-`bee_accounting_accounting_blocks_count` lives in the accounting package, which serves pushsync and
-pullsync as well as retrieval, so it may count more than the retrieval loop's skips. Across a 15x
-change in workload it behaved like a **fixed rate** (4,715 to 6,317 per second) rather than a per-chunk
-cost, which is consistent with that. **Do not quote any figure that subtracts skips from attempts until
-somebody has read that part of the source.** Section 5.2 is about exactly this class of mistake, and
-this document made it twice in one day.
+Every arm above fetched flat out, which is a load generator rather than a viewer. A player asks for one
+segment per segment duration because that is the rate the encoder makes them at.
+[Paced arms measured the same day](../bench/what-a-paced-viewer-costs-2026-08-08.md) settle it, and the
+answer splits in two:
+
+- ✅ **Per-MB survives.** Paced and flat-out CPU per MB agree within 20% with no consistent sign, at 1,
+  16, 64 and 128 viewers. CPU tracks bytes, and a paced viewer just moves fewer of them per second.
+  **Every per-MB figure in this document stands.**
+- ⛔ **Per-viewer does not.** A paced fleet costs about **half** the cores of a flat-out one at every
+  concurrency below saturation: 0.70 against 1.75 at one viewer, 1.34 against 2.84 at sixteen, 3.62
+  against 5.97 at sixty-four. **Any cores-per-viewer or viewers-per-host figure taken from a flat-out
+  arm is about 2x pessimistic.**
+
+⭐ The control that makes that credible: the same sitting's own flat-out arms **reproduce the published
+flat-out model exactly** (fitted slope 0.067 and intercept 1.68 against the published 0.07 and 1.5), so
+the gap is pacing rather than a re-measurement.
+
+⭐ **If you pack one node per viewer onto a host, you will saturate CPU long before the network notices,
+because the ~0.67 core fixed cost is paid per node rather than once.** Pooled, the opposite is true and
+section 2.4d gives the chain.
+
+⚠️ **The source was read, and it half-settles an assumption underneath this subsection.**
+`bee_accounting_accounting_blocks_count` increments in exactly one place, `PrepareCredit`, once per call
+on overdraft. ✅ **So it is event-driven and not time-driven**, which was the worry. ⚠️ **But pushsync
+calls `PrepareCredit` too**, so the counter is not retrieval-only and a skip figure derived from it is
+an upper bound rather than a measurement. Across a 15x change in workload it behaved like a **fixed
+rate** (4,715 to 6,317 per second) rather than a per-chunk cost. Section 5.2 is about exactly this class
+of mistake, and this document made it twice in one day.
 
 ### 2.3 Caching, which nothing had ever turned on
 
@@ -378,6 +412,10 @@ unfunded node shows on identical work). **45.1% is not inside that spread.**
 ⭐ **Pool 32 to 64 viewers per gateway.** Below that the fixed CPU cost is wasted, above 64 throughput
 efficiency falls to 70%.
 
+⛔ **Superseded by 2.4f.** That rule came from arms where every viewer fired on the same tick. **128
+viewers in cohorts of 8 are comfortable on one unfunded gateway**, so 32-64 is conservative by at least
+2x and the real limit is on simultaneous arrivals rather than on total viewers.
+
 ⚠️ **The knee is a property of the BUDGET, not the node.** At a 1.0s GOP a 248ms median sits at a
 quarter of the budget rather than at its edge, so a longer segment moves the knee out.
 
@@ -395,11 +433,94 @@ quarter of the budget rather than at its edge, so a longer segment moves the kne
 16 against 2.17 measured and 6.5 at 128 against 6.82. **Below 16 the fixed term dominates, which is why
 2.4b looked flat and why the per-viewer figures in 2.2 are wrong for a pooled topology.**
 
-⬅ **Open, and the first things your simulation should establish:** whether the 128-viewer arm was
-**bandwidth-limited rather than bee-limited** (1,201 MB in 36s is 267 Mbps and nothing measured the
-host's network capacity), what happens above 128, and **the thing no reference-list probe can see**,
-which is that LAT-11 measured feed staleness at 1.30x with eight viewers. **Retrieval scales. Whether
-the feed does is a separate question and the answer there was no.**
+⛔ **Those are flat-out arms. For a paced fleet halve them:** about **0.67 cores fixed plus 0.046 per
+viewer**, fitted on paced arms the same day and predicting 1.41 at 16 against 1.34 measured and 3.61 at
+64 against 3.62. See 2.2's duty-cycle subsection for why the correction is real.
+
+### ⚠️ 2.4e Where the ceiling looked to be, before 2.4f moved it
+
+⛔ **Read 2.4f before using any number in this subsection.** Everything here was measured with every
+viewer firing on the same tick, which turned out to be the worst case rather than the normal one. The
+wall below is a **burst** limit, not a capacity.
+
+Every 128-viewer arm delivered **1201 MB in 36 to 41 seconds whether paced or flat out**, about
+**32 MB/s**. The paced arm _demanded_ 45 MB/s and did not get it, so both are pinned against one wall.
+
+At 720p on a 0.25s profile one viewer needs **0.352 MB/s (2.81 Mbps)**, which puts that wall at about
+**91 viewers**. 64 viewers is 22 MB/s, 69% of it, and 64 is exactly the concurrency that recovers from
+its wobbles while 128 does not.
+
+| bound, one gateway, 720p, 0.25s | viewers |                                                     |
+| ------------------------------- | ------: | --------------------------------------------------- |
+| retrieval path, cache off       | **~91** | ✅ measured, bracketed by 64 keeping up and 128 not |
+| serving path, cache warm        |    ~122 | ⚠️ derived from 43 MB/s measured warm               |
+| host NIC, 1 Gbps                |    ~355 | ⚠️ derived, never tested                            |
+| host CPU, 48 cores, pooled      |   ~1000 | ⚠️ extrapolated far past measurement                |
+
+✅ **It is not host CPU and not the local link.** At 128 viewers bee used ~6 of 48 cores and 256 Mbps of
+a 1000 Mbps NIC.
+
+⭐⭐ **A warm cache moves the wall to ~43 MB/s and collapses the buffer a viewer needs from 8.3 seconds
+to 0.3.** Served from local chunks bee does 1201 MB in 28s against an ideal 26.7, so 128 paced viewers
+run ~5% behind real time and **hold there instead of draining**. So the 32 MB/s wall is in the retrieval
+path, not in bee's request handling.
+
+### ⭐⭐ 2.4f What actually limits a gateway is how many viewers arrive at once
+
+✅ **Measured 2026-08-08**, eighteen arms sweeping how far apart paced viewers sit in playback position.
+[Full report.](../bench/a-synchronised-audience-is-the-failure-2026-08-08.md) **This is the most
+important subsection in section 2 and it corrects 2.4c and 2.4e.**
+
+The prediction going in was that scattering viewers would be **worse**, since bee merges simultaneous
+requests for one chunk and that merging is what pooling rests on. It was wrong in every direction.
+
+| 128 viewers           | spread |     over 267ms |   **ended behind** |  network contacts |
+| --------------------- | -----: | -------------: | -----------------: | ----------------: |
+| synchronised          |      1 |   43.3 / 32.1% | **25652 / 5618ms** |   17,140 / 10,757 |
+| **scattered**         | **16** | **1.7 / 1.7%** |        **0 / 0ms** | **7,956 / 6,688** |
+| **scattered + cache** | **16** | **0.0 / 0.0%** |        **0 / 0ms** | **2,451 / 1,691** |
+
+⭐⭐ **What decides it is the cohort size, meaning how many viewers land in the same instant**, not how
+far the audience is spread in time:
+
+| viewers arriving together | verdict                                                    |
+| ------------------------: | ---------------------------------------------------------- |
+|                     **8** | ✅ works at both 64 and 128 total viewers, zero ending lag |
+|                        32 | ⚠️ unstable, 3133ms in one round and 502ms in the other    |
+|                        64 | ⛔ drains 7 to 13 seconds                                  |
+|                   **128** | ⛔ **failed in all six arms ever run that way**            |
+
+⭐ **Scattering costs about HALF the network contacts, not more.** Firing 64 requests for one chunk at
+the same instant does not get them merged, it gets them raced: **47 retrieval operations per distinct
+chunk synchronised, against 8.4 for eight cohorts**, which is one fetch per cohort exactly as intended.
+
+⭐⭐ **Scattered plus cached reaches the floor**: 1,691 to 2,451 contacts against ~2,300 distinct chunks
+is **one network fetch per chunk serving 128 viewers.** That is what pooling promised, and it needs a
+cache and a scattered audience together.
+
+### ⛔ Which case is real, and what to do about it
+
+**A real audience is scattered.** Players join at different moments, hold different buffer depths and
+poll on timers that started whenever they started. Nothing lines them up.
+
+⛔ **So synchronisation is a failure mode rather than a baseline, and it forms after a common shock:**
+an upstream outage clearing, an encoder restart, a manifest gap every player recovers from at once.
+**The recovery path is where the herd forms.** This is what one looks like: 40% of segments late and a
+buffer 12.8 seconds down, on a node that carries the same viewers comfortably when they are 4 seconds
+apart.
+
+⭐⭐ **Jitter the client's request schedule by a random fraction of a segment duration.** On this
+evidence it is worth more than any amount of gateway provisioning, and it costs nothing.
+
+⚠️ **Cohorts of 8 are what was proven, not 4.3 seconds of spread specifically**, and the cohorts here
+are exact and evenly sized where a real audience is random and will throw up larger ones by chance.
+
+⬅ **Open, and the first things your simulation should establish:** where the knee actually is now that
+128 scattered viewers are comfortable, what a **randomly** distributed audience does rather than an
+evenly cohorted one, whether the burst limit is bee or the harness's own capacity (the curl clients
+share the gateway's host), and **the thing no reference-list probe can see**, which is that LAT-11
+measured feed staleness at 1.30x with eight viewers. **Retrieval scales. Whether the feed does is a
+separate question and the answer there was no.**
 
 ---
 
@@ -713,10 +834,10 @@ container's own arguments.
 
 ## 7. What we could not answer here
 
-⬅ **The funding cliff.** Whether settling is a switch or a dial. Section 4.2. **This is the one worth
-answering first.**
+✅ **The funding cliff. Answered 2026-08-08**, see 2.1b. It is a switch and it flips at zero.
 
-⬅ **Anything above eight concurrent viewers.** The knee, the shape, whether it is linear.
+✅ **Concurrency to 128. Answered 2026-08-08**, see 2.4b through 2.4e. ⬅ **Above 128 is still open**,
+and so is the shape past the ~32 MB/s wall.
 
 ⬅ **The retry timer's wall-clock shape at the node.** It is inferred from the client side. Bee's
 `bee_retrieval_request_duration_time` histogram now reaches the sampler here but has not been read
@@ -726,12 +847,16 @@ during an unfunded arm.
 idle, debt level nor arm order accounts for it. A container recreate is the strongest lead and does not
 explain every arm.
 
-⬅ **How the CPU cost behaves under a realistic duty cycle.** The per-MB figure in 2.2 came from a
-probe fetching flat out. A live viewer paces at real time and may cost differently per MB.
+✅ **How the CPU cost behaves under a realistic duty cycle. Answered 2026-08-08**, see 2.2 and 2.4e.
+Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **whether a
+time-scattered audience behaves like the synchronised one measured here**, since scattered viewers lose
+the pooling that carried these arms and should lean on the cache instead.
 
-⬅ **Whether cache eviction bites at event scale.** The cache arms here fetched 400 references twice
-inside a minute. A real event's working set is the whole live window across a whole broadcast, and
-nothing has measured what happens when it exceeds `--cache-capacity`.
+⬅ **Whether cache eviction bites at event scale.** The cache arms here fetched 100 to 400 references
+twice inside a minute, a working set of a few megabytes against a `--cache-capacity` of a million
+chunks. A real event's is the whole live window across a whole broadcast, roughly **1.3 GB per
+stream-hour** at 720p, and nothing has measured what happens when it exceeds the capacity. ⛔ **Every
+cache benefit in this document is measured on a working set that always fits.**
 
 ⬅ **Whether ultra-light's ~0.5s higher median latency is real.** Not established: the one comparable
 funded arm took a non-fatal stall, so per 5.3 it has no valid control.
@@ -741,15 +866,22 @@ funded arm took a non-fatal stall, so per 5.3 it has no valid control.
 ## 8. If you read nothing else
 
 - **Measure rate-of-crossing, not medians.** The budget is the segment duration.
+- **Pace your load like a player, and measure the lag it accumulates.** A flat-out fetcher is a load
+  generator: it overstates a viewer's CPU by 2x, and the share of late segments cannot tell a viewer
+  that recovers from one whose buffer is draining. The lag a viewer _ends_ on can, and it was zero at
+  64 viewers and 8 to 11 seconds at 128.
 - **Split retrieval capacity (thousands, headless) from playback quality (a handful, real browsers).**
 - **Warm every node before the clock starts**, and interleave arms within one sitting.
 - **Establish your noise floor by mislabelling data where nothing happened**, before trusting a design.
 - **Read bee's own counters**, and read the source of any counter a conclusion rests on.
 - **Price runs in bytes.** Unfunded nodes are free.
-- **Pool viewers behind gateways.** Sixteen on one node cost the network what one costs, and bee's CPU
-  is a per-node figure rather than a per-viewer one.
-- **Turn the cache on.** It halves network retrievals and cuts CPU 2.3 to 3.4x, and it is off by
-  default in everything this repo has ever run.
+- **Pool viewers behind gateways, and never let them arrive together.** Sixteen on one node cost the
+  network what one costs. But 128 viewers firing on the same tick drain 12.8 seconds of buffer where
+  the same 128 in cohorts of 8 drain none and cost half the network contacts. **Jitter the client's
+  request schedule by a random fraction of a segment duration.**
+- **Turn the cache on.** It halves network retrievals and cuts CPU 2.3 to 3.4x, and with a scattered
+  audience it reaches one network fetch per distinct chunk for 128 viewers. It is off by default in
+  everything this repo has ever run.
 - **Do not ship an unfunded viewer gateway.** Not because it always breaks, but because the variation
   an operator cannot control is wider than the margin a viewer needs.
 - **A 1.0s GOP is the one reliable mitigation** for every retrieval problem in this document.
