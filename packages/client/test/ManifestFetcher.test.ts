@@ -502,6 +502,40 @@ describe('keeping up with a publisher that writes faster than hls.js reloads (#8
     );
   });
 
+  /**
+   * The teardown the comment above the cap test describes, actually made.
+   *
+   * That the write is refused is well covered: three tests kill a mutant that removes the index guard
+   * in `applySlot`. What the walk does *afterwards* is a separate question, and it was covered only by
+   * accident, through the end-of-stream test that happens to share the same `return`. A walk that read
+   * a refusal and carried on would keep asking, up to the cap, against a topic the player has already
+   * destroyed, and every one of those reads is paid for by the viewer's gateway.
+   *
+   * Torn down when the walk asks for its second slot, which is the window `SwarmHlsPlayer`'s effect
+   * cleanup fires in: it clears the topic and destroys the player on unmount and on every
+   * `restartTrigger` bump, and the bump is the recovery path for a fatal error, so it lands exactly
+   * when a walk is already in flight.
+   */
+  it('stops the walk when the topic is torn down between slots', async () => {
+    publishedThrough = START_INDEX + BigInt(MAX_SLOTS_PER_POLL);
+    const answerFromFixture = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      if (requestedIndex(String(input)) === START_INDEX + 2n) {
+        manager.clear(hexTopic);
+      }
+      return answerFromFixture(input);
+    };
+
+    await poll();
+
+    assert.deepEqual(
+      requested,
+      [START_INDEX + 1n, START_INDEX + 2n],
+      'the walk kept reading slots for a topic the player had already torn down',
+    );
+    assert.equal(manager.getIndex(hexTopic), null, 'a torn-down topic was resurrected mid-walk');
+  });
+
   // Every poll of a healthy feed now ends on the 404 that says the publisher has been caught. That
   // is the same status code a feed stuck on a slot no gateway will serve answers with, and counting
   // the two the same way would report every advancing feed as stalled.
