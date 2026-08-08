@@ -578,7 +578,23 @@ Every arm ever run sets `--cache-capacity=0`, so nothing caches and every chunk 
 excluded deliberately, because two variables at once answers neither. It is now the untested lever
 most likely to matter when many viewers sit behind one gateway, and **an unfunded arm costs nothing**.
 
-### 0.9c The concurrent-viewer knee above eight
+### 0.9c ✅ DONE 2026-08-08, free — sixteen viewers cost the network what one costs
+
+[Report.](../bench/sixteen-viewers-cost-what-one-costs-2026-08-08.md) Concurrency alternated 1, 2, 1,
+4, 1, 8, 1, 16 against an unfunded gateway. **Network peer contacts held at 3,167 to 3,287 while
+retrieval operations moved 15x**, so bee fetches each distinct chunk once and serves every concurrent
+viewer from it. Throughput scaled **16.7x** with a flat median. The late share roughly doubled, 4.0%
+to 8.9%, and that is the real cost.
+
+⭐⭐ **Pool viewers behind gateways, never one bee node per viewer**: ~25-30 viewers per 48-core host
+one-node-each against **~400** at sixteen-per-node.
+
+⛔ **It corrected two figures from earlier the same day.** "37 skips per chunk" and "1.28 contacts per
+chunk" are rates divided by whatever throughput their arm ran at. Valid for the single-viewer arms
+they came from, not general. ⬅ Nothing above 16 is measured, and this sweep cannot see feed staleness,
+which LAT-11 found goes 1.30x at eight.
+
+### 0.9c-ii The concurrent-viewer knee above sixteen
 
 LAT-11 measured 1 against 8 on one gateway: **1.30x staler, but only 1.09x more chunk retrieval**, at
 30.6% CPU on a 48-core host. The ceiling is inside bee's request handling, so **more BZZ does not help
