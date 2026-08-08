@@ -9,9 +9,20 @@ import type {
 } from 'hls.js';
 import Hls from 'hls.js';
 
+import { RequestJitter, StaggeredTask } from '@/utils/requestJitter';
+
 import { ManifestFetcher } from './ManifestManagement';
 
 export const manifestFetcher = new ManifestFetcher();
+
+/**
+ * The stagger every fragment request goes through, shared by every player on the page.
+ *
+ * A module singleton beside {@link manifestFetcher} and for the same reason: hls.js constructs
+ * loaders itself, passing only its own config, so there is no constructor to inject through. Tests
+ * reach it by spying on the instance.
+ */
+export const requestJitter = new RequestJitter();
 
 const PlaylistLoader = Hls.DefaultConfig.loader as unknown as {
   new (config: HlsConfig): Loader<PlaylistLoaderContext>;
@@ -43,6 +54,16 @@ const FragmentLoader = Hls.DefaultConfig.loader as unknown as {
 };
 
 export class CustomFragmentLoader extends FragmentLoader {
+  /**
+   * The stagger waiting to hand this fragment to the transport, if one is.
+   *
+   * ⛔ Held so {@link abort} and {@link destroy} can cancel it. hls.js abandons in-flight fragments
+   * routinely, on a level switch, a seek and every teardown, and a stagger that fired anyway would
+   * start a transfer for a fragment nobody is waiting for any more, against the loader hls.js has
+   * already finished with. That is a request the gateway pays for and nothing consumes.
+   */
+  private pendingStagger: StaggeredTask | null = null;
+
   constructor(config: HlsConfig) {
     super(config);
   }
@@ -74,17 +95,40 @@ export class CustomFragmentLoader extends FragmentLoader {
       return;
     }
 
-    super.load(context, config, {
-      ...callbacks,
-      // A segment that arrived is proof the gateway is answering, and the manifest side is the only
-      // half that ever holds off on the belief that it is not. Its backoff doubles from the failure
-      // that set it, so an outage of twenty seconds went unnoticed for thirty: the gateway was back
-      // for ten of them and the one thing still talking to it was this. Reported here because the
-      // player fetches segments anyway on hls.js's own retry cadence, so the signal is free.
-      onSuccess: (response, stats, ctx, networkDetails) => {
-        manifestFetcher.feedHealth.recordGatewayReachable();
-        callbacks.onSuccess(response, stats, ctx, networkDetails);
-      },
+    // Held back by a bounded random delay, because at the live edge every viewer of one broadcast is
+    // chasing the same newest segment and asks for it as soon as their playlist reload lands. The
+    // gateway is limited by how many ask in the same instant rather than by how many ask at all, so
+    // this is the request most worth taking off the shared tick. A zero bound calls the transport
+    // synchronously, exactly as it did before this existed.
+    this.pendingStagger = requestJitter.stagger(() => {
+      this.pendingStagger = null;
+      super.load(context, config, {
+        ...callbacks,
+        // A segment that arrived is proof the gateway is answering, and the manifest side is the only
+        // half that ever holds off on the belief that it is not. Its backoff doubles from the failure
+        // that set it, so an outage of twenty seconds went unnoticed for thirty: the gateway was back
+        // for ten of them and the one thing still talking to it was this. Reported here because the
+        // player fetches segments anyway on hls.js's own retry cadence, so the signal is free.
+        onSuccess: (response, stats, ctx, networkDetails) => {
+          manifestFetcher.feedHealth.recordGatewayReachable();
+          callbacks.onSuccess(response, stats, ctx, networkDetails);
+        },
+      });
     });
+  }
+
+  abort(): void {
+    this.cancelStagger();
+    super.abort();
+  }
+
+  destroy(): void {
+    this.cancelStagger();
+    super.destroy();
+  }
+
+  private cancelStagger(): void {
+    this.pendingStagger?.cancel();
+    this.pendingStagger = null;
   }
 }
