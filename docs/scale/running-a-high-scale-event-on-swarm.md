@@ -361,24 +361,39 @@ limits.
 
 ### ⭐⭐ 2.3b Size it above the working set, or it does nothing at all
 
-✅ **Measured 2026-08-08**, twelve arms sweeping `--cache-capacity` against a fixed working set of
-10,489 chunks, read off the node's own retrieval counter.
-[Full report.](../bench/a-cache-that-does-not-fit-does-nothing-2026-08-08.md)
+✅ **Measured 2026-08-08**, thirty-six arms in two sittings sweeping `--cache-capacity` against a fixed
+working set of 10,489 chunks, read off the node's own retrieval counter.
+[First report](../bench/a-cache-that-does-not-fit-does-nothing-2026-08-08.md),
+[the bisect that located the cliff](../bench/the-cache-cliff-is-at-one-hundred-percent-2026-08-08.md).
 
-|   capacity | share of the working set | retrieval operations | vs cache off | pass 2 median |
-| ---------: | -----------------------: | -------------------: | -----------: | ------------: |
-|          0 |                          |      20,978 / 20,978 |              |     107-120ms |
-|      1,000 |                     9.5% |      20,953 / 20,953 |     **0.1%** |   126 / 104ms |
-|      4,800 |                **45.8%** |      20,978 / 20,953 |     **0.1%** |   112 / 111ms |
-| **20,000** |                 **191%** |  **11,240 / 11,253** |    **46.4%** |   **3 / 3ms** |
+|      capacity | share of the working set | retrieval operations | vs cache off | pass 2 median |
+| ------------: | -----------------------: | -------------------: | -----------: | ------------: |
+|             0 |                          |      20,978 / 20,978 |              |     106-119ms |
+|         1,000 |                     9.5% |      20,953 / 20,953 |     **0.1%** |   126 / 104ms |
+|         4,800 |                **45.8%** |      20,978 / 20,978 |     **0.1%** |   100 / 117ms |
+|     **8,000** |                **76.3%** |  **20,978 / 20,978** |     **0.0%** | **114/111ms** |
+|    **10,500** |               **100.1%** |  **11,224 / 11,248** |    **46.5%** |     **3/4ms** |
+| 13,000-20,000 |                 124-191% |      11,234 - 11,248 |        46.5% |         3-4ms |
 
-⛔⛔ **A cache holding 46% of the working set removes 0.1% of the retrievals.** Both rounds, on the
-counter and on the median. **Under-sizing does not buy a partial win. It buys nothing, and still costs
-the disk.**
+⛔⛔ **A cache holding 76% of the working set is byte-identical to no cache at all.** The same 20,978
+operations, both rounds. Not reduced, not slightly reduced.
 
-⭐ **The shape identifies the policy.** A cyclic scan larger than the cache is the worst case for LRU,
-because the walk returns to each reference exactly when it has just been evicted. Random eviction at
-46% would have given roughly a 46% hit rate.
+⭐⭐ **10,500 chunks is eleven chunks above the working set and it buys the entire benefit**, taking the
+second pass from ~110ms to 3ms. ⭐ **Everything at or above the working set is indistinguishable**, a
+0.2% spread across four capacities and two rounds, so **over-provisioning buys nothing on top**.
+
+⭐ **The shape identifies the policy and the bisect confirms it.** A cyclic scan larger than the cache is
+the worst case for LRU, because the walk returns to each reference exactly when it has just been
+evicted, and the pathology is **total rather than proportional**. Random eviction at 76% would have
+given roughly a 76% hit rate. **The hit rate is not a function of capacity at all, only of whether
+capacity clears the working set.**
+
+⚠️ **The margin that worked was 0.1%, which is not a margin to design against.** A live working set is
+not a fixed number the way this probe's is, so **size above the largest working set the deployment can
+produce**, not above its typical one.
+
+⚠️ **A cache does not raise the throughput ceiling.** Cache-off and cache-warm both cap at 43 to 44 MB/s
+(2.4e), so this is a cost and latency lever rather than a capacity one.
 
 ### ⭐ How much to size it, and live is nothing like DVR
 
@@ -959,10 +974,10 @@ Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **
 time-scattered audience behaves like the synchronised one measured here**, since scattered viewers lose
 the pooling that carried these arms and should lean on the cache instead.
 
-✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3b. It is a cliff: a
-cache holding 46% of the working set removes 0.1% of the retrievals. ⬅ **Where inside 46% to 191% the
-cliff sits was not measured**, and neither was how much a real re-read pattern beats the cyclic scan
-that was.
+✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3b. It is a cliff, and
+the cliff has since been located: **a cache at 76% of the working set is byte-identical to no cache, one
+at 100.1% buys the entire benefit, and anything above that buys nothing more.** ⬅ **Still open: how much
+a real re-read pattern beats the cyclic scan that was measured**, which is the worst case on purpose.
 
 ⬅ **Whether ultra-light's ~0.5s higher median latency is real.** Not established: the one comparable
 funded arm took a non-fatal stall, so per 5.3 it has no valid control.
@@ -986,11 +1001,11 @@ funded arm took a non-fatal stall, so per 5.3 it has no valid control.
   the same 128 in cohorts of 8 drain none and cost half the network contacts. ⛔ **You cannot jitter
   your way out of it**: what matters is how many want the same chunk, not how many arrive in the same
   instant, and 60ms of jitter was measured to do nothing. The cache and pooling are the fix.
-- **Turn the cache on, and size it above the working set or do not bother.** It halves network
+- **Turn the cache on, and size it at or above the working set or do not bother.** It halves network
   retrievals and cuts CPU 2.3 to 3.4x, and with a scattered audience it reaches one network fetch per
-  distinct chunk for 128 viewers. But at 46% of the working set it removes **0.1%** of retrievals, not
-  46%: under-sizing buys nothing at all. It is off by default in everything this repo has ever run,
-  and the units are **chunks, not bytes**.
+  distinct chunk for 128 viewers. But the benefit is a **step, not a slope**: at 76% of the working set
+  it is byte-identical to no cache, at 100.1% it buys everything, and above that it buys nothing more.
+  It is off by default in everything this repo has ever run, and the units are **chunks, not bytes**.
 - **Do not ship an unfunded viewer gateway.** Not because it always breaks, but because the variation
   an operator cannot control is wider than the margin a viewer needs.
 - **A 1.0s GOP is the one reliable mitigation** for every retrieval problem in this document.
