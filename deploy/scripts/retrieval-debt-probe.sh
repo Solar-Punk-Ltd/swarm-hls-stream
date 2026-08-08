@@ -94,7 +94,12 @@ set_arm() {
   # An arm the node is already in needs no recreate, and skipping it is not only faster: a recreate
   # drops every peer connection, which is the whole of the warm-up artifact this script now discards.
   # A plan whose arms share a swap setting is measured on one continuous node.
-  if [ "$1" = "${CURRENT_ARM_SWAP}" ] && arm_confirmed_on_node; then
+  #
+  # FORCE_RECREATE exists to make the recreate itself the variable. A sweep of unfunded arms found
+  # 1.9-3.4% of segments late where an interleaved sitting found 8.4-19.5%, and two things differed:
+  # those arms idled before measuring, and they were not preceded by a funded arm. Recreating every
+  # arm and varying only the idle separates them, and still costs nothing.
+  if [ "${FORCE_RECREATE:-0}" = "0" ] && [ "$1" = "${CURRENT_ARM_SWAP}" ] && arm_confirmed_on_node; then
     say "  gateway is already at BEE_GATEWAY_SWAP_ENABLE=$1, leaving it up"
     return 0
   fi
@@ -156,6 +161,7 @@ run_arm() {
   say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first"
 
   local was="${CURRENT_ARM_SWAP}"
+  [ "${FORCE_RECREATE:-0}" = "1" ] && was="forced"
   set_arm "${swap}" || return 1
   arm_confirmed_on_node || return 1
 
