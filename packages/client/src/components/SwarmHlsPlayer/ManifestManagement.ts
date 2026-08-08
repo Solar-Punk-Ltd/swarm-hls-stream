@@ -15,6 +15,7 @@ import Pqueue from 'p-queue';
 
 import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
+import { RequestJitter } from '@/utils/requestJitter';
 
 import { FeedHealthTracker, UNSERVED_SLOT_POLL_LIMIT } from './feedState';
 
@@ -292,6 +293,11 @@ export class ManifestFetcher {
     readonly feedHealth: FeedHealthTracker = new FeedHealthTracker(),
     /** Injected only by tests, so a backoff is asserted rather than waited out. */
     private readonly delay: (ms: number) => Promise<void> = waitMs,
+    /**
+     * Keeps this viewer's requests off the instant every other viewer picked. Injected only by
+     * tests, so a stagger is asserted rather than sampled.
+     */
+    private readonly jitter: RequestJitter = new RequestJitter(),
   ) {}
 
   get beeUrl(): string {
@@ -346,7 +352,12 @@ export class ManifestFetcher {
   private async handleInitialFetch(owner: string, topic: Topic): Promise<string> {
     const hexTopic = topic.toString();
 
-    const backoffMs = this.feedHealth.backoffRemainingMs(hexTopic);
+    // Jittered, and this is the one wait where alignment is guaranteed rather than merely possible.
+    // The backoff is a pure function of the failure count, so every viewer that lost the same gateway
+    // at the same moment waits the identical 2s, then 4s, then 8s, and arrives back together every
+    // time. Spreading it costs nothing, since the viewer is already waiting, and it only ever brings
+    // the attempt forward.
+    const backoffMs = this.jitter.spread(this.feedHealth.backoffRemainingMs(hexTopic));
     if (backoffMs > 0) {
       await this.delay(backoffMs);
     }
@@ -405,6 +416,22 @@ export class ManifestFetcher {
   }
 
   /**
+   * `run` held back by the request stagger, as one promise that covers both the wait and the work.
+   *
+   * A zero stagger runs `run` synchronously, so turning the jitter off leaves the walk starting in
+   * exactly the tick it started in before this existed. A teardown landing during the wait needs no
+   * handling of its own: the walk still checks the topic generation before it writes anything, which
+   * is the same guard that already covered a teardown landing mid-walk.
+   */
+  private afterStagger(run: () => Promise<void>): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.jitter.stagger(() => {
+        run().then(resolve, reject);
+      });
+    });
+  }
+
+  /**
    * @param fromIndex The newest slot already read, taken by the caller in the same tick that routed
    *   here rather than read again inside the walk. Two walks that each advance from whatever index
    *   they find advance twice for one slot fetched, and the slot in between is never requested at
@@ -419,7 +446,12 @@ export class ManifestFetcher {
     // already serialised state at once and leaves the walk running, so hls.js schedules its next
     // level reload on the ordinary cadence while the previous one is still open. See CON-29.
     if (!this.inFlight.has(hexTopic) && this.feedHealth.backoffRemainingMs(hexTopic) === 0) {
-      const walk = this.walkToPublisher(owner, topic, fromIndex)
+      // Staggered, because hls.js derives its reload cadence from the playlist's target duration and
+      // its newest segment, and every viewer of one broadcast reads the same two. So the cadence that
+      // is nobody's to control is also the one every viewer shares, and the walk it triggers is what
+      // actually reaches the gateway. Registered below on the same tick either way, so one walk per
+      // topic still holds while a stagger is outstanding.
+      const walk = this.afterStagger(() => this.walkToPublisher(owner, topic, fromIndex))
         .catch((error) => console.error('Error following the feed:', error))
         // Released only once the walk has finished, on the failure path as well, or one poll that
         // outran the publisher would end the broadcast for this viewer, and a caught-up viewer gets

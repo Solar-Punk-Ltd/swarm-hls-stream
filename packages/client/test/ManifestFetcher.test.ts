@@ -19,6 +19,19 @@ import {
   UNSERVED_POLLS_BEFORE_PROBE,
   waitMs,
 } from '../src/components/SwarmHlsPlayer/ManifestManagement';
+import { MANIFEST_BACKOFF_JITTER_FRACTION, RequestJitter } from '../src/utils/requestJitter';
+
+/**
+ * Neither staggers nor spreads, so every assertion in this file measures what it measured before the
+ * request jitter existed. A zero bound runs a staggered walk synchronously, and a random that always
+ * returns zero leaves a backoff at exactly the length the fetcher asked for.
+ *
+ * ⛔ Not the production default, which is a real delay off `Math.random`. The tests that cover the
+ * jitter itself build their own, and one below deliberately uses the shipped defaults, for the same
+ * reason `waitMs` is exercised directly: every test injecting over a thing is how a thing that does
+ * nothing stays green.
+ */
+const NO_JITTER = new RequestJitter(0, () => 0);
 
 const BEE_URL = 'http://bee.test';
 const OWNER = '0x1111111111111111111111111111111111111111';
@@ -107,7 +120,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     );
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
 
-    fetcher = new ManifestFetcher(manager);
+    fetcher = new ManifestFetcher(manager, undefined, undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
     publishedThrough = START_INDEX + 1n;
@@ -406,7 +419,7 @@ describe('keeping up with a publisher that writes faster than hls.js reloads (#8
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
 
     health = new FeedHealthTracker(() => 0);
-    fetcher = new ManifestFetcher(manager, health);
+    fetcher = new ManifestFetcher(manager, health, undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
     publishedThrough = START_INDEX;
@@ -632,10 +645,15 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     health = new FeedHealthTracker(() => clockMs);
     waited = [];
     requested = [];
-    fetcher = new ManifestFetcher(manager, health, async (ms) => {
-      waited.push(ms);
-      clockMs += ms;
-    });
+    fetcher = new ManifestFetcher(
+      manager,
+      health,
+      async (ms) => {
+        waited.push(ms);
+        clockMs += ms;
+      },
+      NO_JITTER,
+    );
     fetcher.beeUrl = BEE_URL;
   });
 
@@ -999,7 +1017,7 @@ describe('following the feed costs one head lookup (LAT-10)', () => {
 
   beforeEach(() => {
     manager.clear(hexTopic);
-    fetcher = new ManifestFetcher(manager);
+    fetcher = new ManifestFetcher(manager, undefined, undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
     publishedThrough = START_INDEX + 3n;
@@ -1103,7 +1121,7 @@ describe('a refused slot that later slots are already behind (#71)', () => {
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
 
     health = new FeedHealthTracker(() => 0);
-    fetcher = new ManifestFetcher(manager, health);
+    fetcher = new ManifestFetcher(manager, health, undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
     publishedThrough = START_INDEX;
@@ -1353,7 +1371,7 @@ describe('the probe landing on the recording instead of the manifest that ended 
     manager.clear(hexTopic);
     manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
-    fetcher = new ManifestFetcher(manager, new FeedHealthTracker(() => 0));
+    fetcher = new ManifestFetcher(manager, new FeedHealthTracker(() => 0), undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
 
@@ -1409,5 +1427,136 @@ describe('the probe landing on the recording instead of the manifest that ended 
     }
 
     assert.match(manager.serialize(hexTopic, ''), /#EXT-X-ENDLIST/);
+  });
+});
+
+/**
+ * ⛔ Every other block in this file injects {@link NO_JITTER}, so the fetcher's two uses of the
+ * stagger could both be deleted with the suite still green. These are the tests that fail.
+ *
+ * They are separate from the backoff block above on purpose: that one asserts the wait the fetcher
+ * asks for, and this one asserts that the wait it asks for is not the one every other viewer was
+ * given.
+ */
+describe('ManifestFetcher keeping its requests off the instant every other viewer picked', () => {
+  const hexTopic = Topic.fromString(TOPIC_NAME).toString();
+  const manager = ManifestStateManager.getInstance();
+  const realFetch = globalThis.fetch;
+  const realConsoleError = console.error;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    console.error = realConsoleError;
+    manager.clear(hexTopic);
+  });
+
+  /**
+   * ⛔ The herd this exists for. `backoffDelayMs` is a pure function of the failure count, so a
+   * hundred viewers that lost one gateway in the same second ask it again in the same millisecond,
+   * every time, for as long as it stays down. Spreading the wait is what breaks that up, and it is
+   * free because the viewer was already waiting.
+   */
+  it('spreads a backoff that every viewer computed identically', async () => {
+    manager.clear(hexTopic);
+    console.error = () => {};
+    const health = new FeedHealthTracker(() => 0);
+    const waited: number[] = [];
+    // Half of the quarter that is spread, so the wait comes back an eighth short of the raw backoff.
+    const fetcher = new ManifestFetcher(
+      manager,
+      health,
+      async (ms) => void waited.push(ms),
+      new RequestJitter(0, () => 0.5),
+    );
+    fetcher.beeUrl = BEE_URL;
+
+    health.recordGatewayFailure(hexTopic);
+    const raw = health.backoffRemainingMs(hexTopic);
+    assert.ok(raw > 0, 'the fixture never set a backoff to spread');
+
+    globalThis.fetch = async () => new Response('bad gateway', { status: 502 });
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`).catch(() => {});
+
+    assert.equal(waited.length, 1, 'the initial fetch did not wait out a backoff at all');
+    assert.ok(waited[0] < raw, `waited the raw ${raw}ms, so every viewer still returns together`);
+    assert.equal(waited[0], raw - raw * MANIFEST_BACKOFF_JITTER_FRACTION * 0.5);
+  });
+
+  /**
+   * The follow-up path has no wait of its own to spread, so the stagger is a delay this adds. hls.js
+   * derives its reload cadence from the playlist's target duration and its newest segment, and every
+   * viewer of one broadcast reads the same two.
+   */
+  it('staggers the walk that a level reload triggers', async () => {
+    manager.clear(hexTopic);
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
+
+    const staggered: (() => void)[] = [];
+    const fetcher = new ManifestFetcher(
+      manager,
+      new FeedHealthTracker(() => 0),
+      undefined,
+      new RequestJitter(
+        60,
+        () => 0.5,
+        (task) => {
+          staggered.push(task);
+          return { cancel: () => {} };
+        },
+      ),
+    );
+    fetcher.beeUrl = BEE_URL;
+
+    let requests = 0;
+    globalThis.fetch = async () => {
+      requests++;
+      return new Response('not found', { status: 404 });
+    };
+
+    fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await settle(5);
+
+    assert.equal(requests, 0, 'the walk went straight to the gateway, unstaggered');
+    assert.equal(staggered.length, 1, 'the walk was never staggered');
+
+    staggered[0]();
+    await settle(5);
+    assert.ok(requests > 0, 'the walk never ran once its stagger was up');
+  });
+
+  /**
+   * The guarantee a stagger could plausibly have broken. `inFlight` is what stops two walks
+   * advancing the same feed, and it used to be registered in the same tick the walk started in.
+   * Holding the walk back opens a window between the two, and a second reload landing inside it
+   * would start a walk that the first one's index has already been taken for.
+   */
+  it('still allows only one walk per topic while a stagger is outstanding', async () => {
+    manager.clear(hexTopic);
+    manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
+    manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
+
+    const staggered: (() => void)[] = [];
+    const fetcher = new ManifestFetcher(
+      manager,
+      new FeedHealthTracker(() => 0),
+      undefined,
+      new RequestJitter(
+        60,
+        () => 0.5,
+        (task) => {
+          staggered.push(task);
+          return { cancel: () => {} };
+        },
+      ),
+    );
+    fetcher.beeUrl = BEE_URL;
+    globalThis.fetch = async () => new Response('not found', { status: 404 });
+
+    fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+
+    assert.equal(staggered.length, 1, `${staggered.length} walks were queued for one topic`);
   });
 });
