@@ -206,6 +206,37 @@ gateway_cpu_seconds() {
   awk -v t="${ticks:-0}" -v h="$(getconf CLK_TCK)" 'BEGIN{printf "%.2f", (h>0)?t/h:0}'
 }
 
+# The host's own run queue, which the gateway's CPU counter cannot see. Two different things need it.
+#
+# ⛔ A probe client is a process too. Past ~one runnable task per core the box starts descheduling the
+# curl loops as readily as the node, and an arm that read slow because its own clients were starved is
+# not a measurement of the gateway at all. Recording it per arm is what makes that visible afterwards
+# instead of inferring a knee that was really the harness.
+#
+# ⛔ It is also the only thing keeping a high-concurrency sweep off the machine's other tenants. This
+# host carries forty other bee nodes and eight unrelated stacks, and they are not ours to slow down.
+host_load() { awk '{print $1}' /proc/loadavg; }
+
+# Above this one-minute load average the run stops between arms rather than starting a hotter one.
+# Ordering an arm plan by ascending viewer count is what makes that a real guard: the first arm to push
+# the box too far is the last one that runs.
+LOAD_CEILING="${LOAD_CEILING:-40}"
+LOAD_SAMPLE_S="${LOAD_SAMPLE_S:-5}"
+
+# Samples until the flag file goes away. The flag rather than a kill, so the sampler can never outlive
+# the arm and leak into the next one's reading.
+#
+# The parent check is the backstop for the path the flag cannot cover: a run killed mid-arm never gets
+# to remove it, and a sampler looping on a flag nobody will ever clear is a process left on a shared
+# host. It notices within one sample interval.
+sample_host_load() {
+  local out="$1" flag="$2" parent="$$"
+  while [ -e "${flag}" ] && kill -0 "${parent}" 2>/dev/null; do
+    host_load >>"${out}"
+    sleep "${LOAD_SAMPLE_S}"
+  done
+}
+
 recreate_gateway() {
   (
     cd "${COMPOSE_DIR}" || exit 1
@@ -498,21 +529,35 @@ run_arm() {
   local finalsFile="${OUT_DIR}/lag-final-${round}-${label}.txt"
   : >"${lagFile}"
   : >"${finalsFile}"
+
+  local loadFile="${OUT_DIR}/load-${round}-${label}.txt" loadFlag loadBefore loadMax
+  loadFlag="${loadFile}.on"
+  : >"${loadFile}"
+  : >"${loadFlag}"
+  loadBefore="$(host_load)"
+  say "  host load before the arm: ${loadBefore} across $(nproc) cores"
+  sample_host_load "${loadFile}" "${loadFlag}" &
+  local loadSampler=$!
+
   started="$(date +%s)"
-  local pass v
+  local pass v walkers
   for pass in $(seq 1 "${PASSES}"); do
     local passFile="${OUT_DIR}/times-${round}-${label}-p${pass}.txt"
     : >"${passFile}"
     # Concurrent viewers walk the SAME list, because that is the topology a live event has: many
     # viewers behind one gateway asking for the same segments at the same moment.
+    walkers=()
     for v in $(seq 1 "${viewers}"); do
       : >"${passFile}.v${v}"
       : >"${passFile}.l${v}"
       fetch_walk "${passFile}.v${v}" "${passFile}.b${v}" "${round}" "${label}.${pass}.v${v}" \
         "${started}" "$([ "${v}" = 1 ] && echo 1 || echo 0)" "${passFile}.l${v}" "${pace}" \
         "${v}" "${spread}" "${jitterMs}" &
+      walkers+=("$!")
     done
-    wait
+    # ⛔ The viewers by name, not a bare `wait`. A bare one also waits for the load sampler, which does
+    # not exit until the arm is over, so the arm would be waiting on the thing waiting for the arm.
+    wait "${walkers[@]}"
     for v in $(seq 1 "${viewers}"); do
       cat "${passFile}.v${v}" >>"${passFile}"
       cat "${passFile}.l${v}" >>"${lagFile}"
@@ -526,6 +571,12 @@ run_arm() {
     say_times "pass ${pass}" "${passFile}"
   done
   ended="$(date +%s)"
+  rm -f "${loadFlag}"
+  wait "${loadSampler}" 2>/dev/null || true
+  # The peak rather than the mean: a box that spent thirty seconds saturated descheduled the probe's
+  # clients for thirty seconds, and an average over a long arm hides exactly that.
+  loadMax="$(sort -g "${loadFile}" 2>/dev/null | tail -1)"
+  [ -n "${loadMax}" ] || loadMax=0
   cpuAfter="$(gateway_cpu_seconds)"
   cpuUsed="$(awk -v a="${cpuBefore}" -v b="${cpuAfter}" 'BEGIN{printf "%.2f", b-a}')"
   local cpuRetrieval
@@ -557,26 +608,40 @@ run_arm() {
     say "  ⭐⭐ deepest lag ${maxLag}ms, worst viewer ended ${worstFinal}ms behind = the buffer this needs"
   fi
   say "  ⭐ gateway CPU ${cpuUsed}s total, ${cpuRetrieval}s above idle = ${cpuPerMb}s per MB retrieved"
+  say "  ⭐ host load ${loadBefore} before, peaked ${loadMax} of $(nproc) cores"
   say "  accounting after:  ${after}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${spread}" "${jitterMs}" "${count}" "${bytes}" \
     "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${behindShare}" "${maxLag}" \
     "${worstFinal}" "${cpuUsed}" "${cpuIdleRate}" \
-    "${cpuRetrieval}" "${cpuPerMb}" "${before}" "${after}" >>"${STATE}"
+    "${cpuRetrieval}" "${cpuPerMb}" "${loadBefore}" "${loadMax}" "${before}" "${after}" >>"${STATE}"
   printf '%s\t%s\t%s\tbefore\t%s\n%s\t%s\t%s\tafter\t%s\n' \
     "${round}" "${label}" "${swap}" "${mBefore}" "${round}" "${label}" "${swap}" "${mAfter}" >>"${METRICS_TSV}"
 }
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
+
+say "host load ceiling ${LOAD_CEILING} across $(nproc) cores, currently $(host_load)"
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
     IFS=':' read -r label swap idle cache viewers pace spread jitterMs <<<"${spec}"
     run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" "${spread:-}" "${jitterMs:-}" ||
       say "round ${round} arm ${label} did not complete"
+
+    # ⛔ Between arms, on the load the arm just produced. This machine is shared with forty other bee
+    # nodes and eight unrelated stacks, and an unattended sweep that keeps climbing would degrade all of
+    # them. Order an arm plan by ascending viewer count and this makes the first arm to push the box too
+    # far the last one that runs.
+    nowLoad="$(host_load)"
+    if awk -v n="${nowLoad}" -v c="${LOAD_CEILING}" 'BEGIN{exit !(n>c)}'; then
+      say "⛔ host load ${nowLoad} is over the ${LOAD_CEILING} ceiling: stopping before the next arm"
+      # The EXIT trap restores the gateway on this path as on every other, so no restore here.
+      exit 3
+    fi
   done
 done
 
