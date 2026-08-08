@@ -2,7 +2,7 @@ import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, u
 import { Topic } from '@ethersphere/bee-js';
 
 import { manifestFetcher } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
-import { ManifestStateManager } from '@/components/SwarmHlsPlayer/ManifestManagement';
+import { ManifestStateManager } from '@/components/SwarmHlsPlayer/ManifestState';
 import { Stream } from '@/types/stream';
 import { config } from '@/utils/config';
 

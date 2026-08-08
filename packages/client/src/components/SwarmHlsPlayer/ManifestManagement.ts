@@ -1,14 +1,13 @@
-import { FeedIndex, Topic } from '@ethersphere/bee-js';
+import { Topic } from '@ethersphere/bee-js';
 import Pqueue from 'p-queue';
 
 import { Rendition } from '@/types/stream';
-import { makeFeedIdentifier } from '@/utils/bee';
+import { extractFeedIndex, makeFeedIdentifier } from '@/utils/bee';
 import { config } from '@/utils/config';
 
-import { buildMasterPlaylist, parseManifest, parseSwarmUri, Segment } from './playlist';
-
-export type { Segment } from './playlist';
-export { buildMasterPlaylist, buildSwarmUri, parseManifest, parseSwarmUri } from './playlist';
+import { LadderFeedPoller } from './LadderFeedPoller';
+import { ManifestStateManager } from './ManifestState';
+import { buildMasterPlaylist, parseManifest, parseSwarmUri } from './playlist';
 
 /** A stream's ABR ladder, as the loader needs it: who owns the feeds, and what the rungs are. */
 export interface LadderSource {
@@ -25,155 +24,18 @@ export interface LadderSource {
  */
 export type LadderResolver = () => LadderSource;
 
-interface TopicState {
-  index: FeedIndex | null;
-  headers: string[];
-  segments: Segment[];
-  segmentUris: Set<string>;
-  isFinalized: boolean;
-  dirty: boolean;
-  cachedManifest: string;
-}
-
-const HLS_ENDLIST = '#EXT-X-ENDLIST';
-const HLS_PLAYLIST_TYPE = '#EXT-X-PLAYLIST-TYPE';
-const HLS_PLAYLIST_TYPE_EVENT = '#EXT-X-PLAYLIST-TYPE:EVENT';
-const HLS_MEDIA_SEQUENCE = '#EXT-X-MEDIA-SEQUENCE';
-const HLS_MEDIA_SEQUENCE_ZERO = '#EXT-X-MEDIA-SEQUENCE:0';
-
 const manifestQueue = new Pqueue({ concurrency: 1 });
-
-export class ManifestStateManager {
-  private static instance: ManifestStateManager;
-  private topics: Map<string, TopicState> = new Map();
-
-  private constructor() {}
-
-  static getInstance(): ManifestStateManager {
-    if (!ManifestStateManager.instance) {
-      ManifestStateManager.instance = new ManifestStateManager();
-    }
-    return ManifestStateManager.instance;
-  }
-
-  getIndex(topicId: string): FeedIndex | null {
-    return this.topics.get(topicId)?.index ?? null;
-  }
-
-  setIndex(topicId: string, index: FeedIndex | null): void {
-    this.getOrCreateTopicState(topicId).index = index;
-  }
-
-  updateManifest(topicId: string, headers: string[], segments: Segment[], isFinalized: boolean): boolean {
-    const state = this.getOrCreateTopicState(topicId);
-
-    if (state.isFinalized) {
-      return false;
-    }
-
-    if (isFinalized) {
-      state.headers = headers;
-      state.segments = segments;
-      state.segmentUris = new Set(segments.map((s) => s.uri));
-      state.isFinalized = true;
-      state.dirty = true;
-      return false;
-    }
-
-    if (state.headers.length === 0) {
-      state.headers = this.normalizeHeaders(headers);
-    }
-
-    const newSegments = segments.filter((s) => !state.segmentUris.has(s.uri));
-    if (newSegments.length === 0) {
-      return true;
-    }
-
-    for (const seg of newSegments) {
-      state.segments.push(seg);
-      state.segmentUris.add(seg.uri);
-    }
-    state.dirty = true;
-
-    return true;
-  }
-
-  serialize(topicId: string, bytesUrl: string): string {
-    const state = this.topics.get(topicId);
-    if (!state || state.segments.length === 0) {
-      return '';
-    }
-
-    if (!state.dirty) {
-      return state.cachedManifest;
-    }
-
-    const lines: string[] = [...state.headers];
-
-    if (!state.headers.some((h) => h.startsWith(HLS_PLAYLIST_TYPE))) {
-      lines.push(HLS_PLAYLIST_TYPE_EVENT);
-    }
-
-    for (const seg of state.segments) {
-      lines.push(seg.extinf);
-      lines.push(this.buildUri(seg.uri, bytesUrl));
-    }
-
-    if (state.isFinalized) {
-      lines.push(HLS_ENDLIST);
-    }
-
-    state.cachedManifest = lines.join('\n');
-    state.dirty = false;
-    return state.cachedManifest;
-  }
-
-  markAllDirty(): void {
-    for (const state of this.topics.values()) {
-      state.dirty = true;
-    }
-  }
-
-  clear(topicId?: string): void {
-    if (topicId) {
-      this.topics.delete(topicId);
-    } else {
-      this.topics.clear();
-    }
-  }
-
-  private getOrCreateTopicState(topicId: string): TopicState {
-    if (!this.topics.has(topicId)) {
-      this.topics.set(topicId, {
-        index: null,
-        headers: [],
-        segments: [],
-        segmentUris: new Set(),
-        isFinalized: false,
-        dirty: true,
-        cachedManifest: '',
-      });
-    }
-    return this.topics.get(topicId)!;
-  }
-
-  private normalizeHeaders(headers: string[]): string[] {
-    return headers.map((h) => (h.startsWith(HLS_MEDIA_SEQUENCE) ? HLS_MEDIA_SEQUENCE_ZERO : h));
-  }
-
-  private buildUri(uri: string, bytesUrl: string): string {
-    if (!bytesUrl || uri.startsWith('http://') || uri.startsWith('https://') || uri.startsWith('/bytes/')) {
-      return uri;
-    }
-    return `${bytesUrl}/${uri}`;
-  }
-}
 
 export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
   private ladders = new Map<string, LadderResolver>();
+  private poller: LadderFeedPoller;
 
-  constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {}
+  constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {
+    // The poller fetches through this instance rather than holding a URL of its own, so switching
+    // gateway mid-session moves the walk with it.
+    this.poller = new LadderFeedPoller(stateManager, (path) => this.fetchResource(path));
+  }
 
   get beeUrl(): string {
     return this._beeUrl;
@@ -184,15 +46,26 @@ export class ManifestFetcher {
   }
 
   /**
-   * Declares that the stream loaded from `sourceUrl` is a ladder, so the loader answers its
-   * top-level playlist request with a master rather than with that feed's media playlist.
+   * Declares that the stream loaded from `sourceUrl` is a ladder.
+   *
+   * Two things follow. The loader answers that source's top-level playlist request with a master
+   * rather than with a media playlist, and every rung's feed starts being walked immediately —
+   * including the three hls.js is not playing, which is what makes switching to one of them cheap.
    */
   registerLadder(sourceUrl: string, resolve: LadderResolver): void {
     this.ladders.set(sourceUrl, resolve);
+
+    const ladder = resolve();
+    this.poller.start(ladder.owner, ladderTopics(ladder));
   }
 
   unregisterLadder(sourceUrl: string): void {
+    const ladder = this.ladders.get(sourceUrl)?.();
     this.ladders.delete(sourceUrl);
+
+    if (ladder) {
+      this.poller.stop(ladderTopics(ladder));
+    }
   }
 
   /** The master playlist for a registered ladder, or null when this source is single-rendition. */
@@ -208,8 +81,16 @@ export class ManifestFetcher {
   async fetch(url: string): Promise<string> {
     const { owner, topic: topicPart } = parseSwarmUri(url);
     const topic = Topic.fromString(topicPart);
+    const hexTopic = topic.toString();
 
-    if (!this.stateManager.getIndex(topic.toString())) {
+    // A rung the poller owns is already being kept current, so a playlist request is a read of
+    // what is there — the only wait is for the very first response to arrive.
+    if (this.poller.isPolling(hexTopic)) {
+      await this.poller.ready(hexTopic);
+      return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+    }
+
+    if (!this.stateManager.getIndex(hexTopic)) {
       return this.handleInitialFetch(owner, topic);
     }
     return this.handleFollowupFetch(owner, topic);
@@ -228,7 +109,7 @@ export class ManifestFetcher {
       parsed.isFinalized,
     );
     if (shouldContinue) {
-      this.stateManager.setIndex(hexTopic, this.extractIndex(res));
+      this.stateManager.setIndex(hexTopic, extractFeedIndex(res));
     }
 
     return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
@@ -274,12 +155,8 @@ export class ManifestFetcher {
     }
     return response;
   }
+}
 
-  private extractIndex(response: Response): FeedIndex {
-    const hex = response.headers.get('Swarm-Feed-Index');
-    if (!hex) {
-      throw new Error('Missing feed index header');
-    }
-    return FeedIndex.fromBigInt(BigInt(`0x${hex}`));
-  }
+function ladderTopics(ladder: LadderSource): Topic[] {
+  return ladder.renditions.map((rendition) => Topic.fromString(rendition.topic));
 }

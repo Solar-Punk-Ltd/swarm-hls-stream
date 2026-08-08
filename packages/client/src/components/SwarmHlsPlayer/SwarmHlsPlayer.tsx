@@ -7,7 +7,8 @@ import { MEDIA_TYPE_VIDEO, MediaType, Rendition } from '@/types/stream';
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
 import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
 import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './CustomManifestLoader';
-import { buildSwarmUri, ManifestStateManager } from './ManifestManagement';
+import { ManifestStateManager } from './ManifestState';
+import { buildSwarmUri } from './playlist';
 
 import './SwarmHlsPlayer.scss';
 

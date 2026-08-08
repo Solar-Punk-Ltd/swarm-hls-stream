@@ -7,7 +7,7 @@ import Pqueue from 'p-queue';
 import playIcon from '@/assets/icons/playIcon.png';
 import DefaultPreviewImage from '@/assets/images/defaultPreviewImage.png';
 import { CustomFragmentLoader } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
-import { parseManifest } from '@/components/SwarmHlsPlayer/ManifestManagement';
+import { parseManifest } from '@/components/SwarmHlsPlayer/playlist';
 import { useAppContext } from '@/providers/App';
 import { MediaType, StreamState } from '@/types/stream';
 import { formatDuration } from '@/utils/format';
