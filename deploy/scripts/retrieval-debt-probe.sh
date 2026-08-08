@@ -31,6 +31,29 @@ ACCT="${ACCT:-/home/solarpunk/phase06/acct2.sh}"
 SEGMENTS="${SEGMENTS:-400}"
 ROUNDS="${ROUNDS:-2}"
 
+# The arms of one round, as `label:swap:idleSecondsBefore`, in order.
+#
+# The idle field exists because of what the first sitting could not explain. Three unfunded arms
+# differed by 15% at the median and by **2.3x** in the share of segments missing the segment budget, so
+# whatever varies run to run lives in the tail. The leading hypothesis is a refill rate: an unfunded
+# node saturates its allowance in about forty seconds and then runs at the rate that allowance refills,
+# which would make **time spent idle beforehand** the term that moves it.
+#
+# ⭐ A plan of unfunded arms only costs **nothing at all**, because a node with no chequebook cannot
+# spend, and it needs no recreate between arms either, which removes the peer-reconnect artifact along
+# with the cost. Interleave long and short idles rather than ordering them, so drift across the sitting
+# separates from the effect:
+#   ARM_PLAN='U:false:60 U:false:600 U:false:60 U:false:600'
+ARM_PLAN="${ARM_PLAN:-L:true:0 U:false:0}"
+
+# The per-segment budget a retrieval has to land inside. Default is 267ms, which is what an eight-frame
+# GOP at 30fps gives a 0.25s profile, the one that ships.
+#
+# ⛔ This is the headline the first sitting nearly missed. Across six arms the median penalty was 2.9x
+# and the share of segments over budget was **45x**, 0.3% against 15.0%. A buffer drains on late
+# segments, not on typical ones, so a median is the wrong statistic for the failure being predicted.
+BUDGET_MS="${BUDGET_MS:-267}"
+
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/probe.log"
 STATE="${OUT_DIR}/probe-state.tsv"
@@ -68,6 +91,14 @@ wait_for_gateway_api() {
 }
 
 set_arm() {
+  # An arm the node is already in needs no recreate, and skipping it is not only faster: a recreate
+  # drops every peer connection, which is the whole of the warm-up artifact this script now discards.
+  # A plan whose arms share a swap setting is measured on one continuous node.
+  if [ "$1" = "${CURRENT_ARM_SWAP}" ] && arm_confirmed_on_node; then
+    say "  gateway is already at BEE_GATEWAY_SWAP_ENABLE=$1, leaving it up"
+    return 0
+  fi
+
   CURRENT_ARM_SWAP="$1"
   say "  setting BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP} and recreating the gateway"
   sed -i "s/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP}/" "${ENV_FILE}" || return 1
@@ -121,11 +152,20 @@ warmup_fetch() {
 # One arm: the same references in the same order every time, so the work is identical and only the
 # node's ability to pay for it differs.
 run_arm() {
-  local round="$1" label="$2" swap="$3"
-  say "round ${round} arm ${label}: ${SEGMENTS} segments"
+  local round="$1" label="$2" swap="$3" idle="${4:-0}"
+  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first"
 
+  local was="${CURRENT_ARM_SWAP}"
   set_arm "${swap}" || return 1
   arm_confirmed_on_node || return 1
+
+  # After the recreate rather than before it, so the idle is time the node spent up and unfunded, which
+  # is the quantity under test. Idling and then restarting would measure nothing.
+  if [ "${idle}" -gt 0 ]; then
+    say "  idling ${idle}s with the node up, then measuring"
+    sleep "${idle}"
+    say "  accounting after the idle: $(acct)"
+  fi
 
   local before after n=0 bytes=0 started ended
   before="$(acct)"
@@ -137,7 +177,9 @@ run_arm() {
   # container recreate and bee answers `/health` well before its retrieval path has peers again. It is
   # an artifact of flipping the arm, present in both, and left in the sample it moves every maximum,
   # every p99 and every elapsed figure the run reports.
-  warmup_fetch
+  if [ "${was}" != "${CURRENT_ARM_SWAP}" ]; then
+    warmup_fetch
+  fi
 
   : >"${OUT_DIR}/times-${round}-${label}.txt"
   started="$(date +%s)"
@@ -160,26 +202,34 @@ run_arm() {
   after="$(acct)"
   [ -n "${after}" ] || after="NONE"
 
-  local median p90 count
+  local median p90 count late lateShare
   count="$(wc -l <"${OUT_DIR}/times-${round}-${label}.txt")"
   median="$(sort -n "${OUT_DIR}/times-${round}-${label}.txt" | awk -v c="${count}" 'NR==int(c/2)+1')"
   p90="$(sort -n "${OUT_DIR}/times-${round}-${label}.txt" | awk -v c="${count}" 'NR==int(c*0.9)')"
+  late="$(awk -v b="${BUDGET_MS}" '$1>b' "${OUT_DIR}/times-${round}-${label}.txt" | wc -l)"
+  lateShare="$(awk -v l="${late}" -v c="${count}" 'BEGIN{printf "%.1f", (c>0)?100*l/c:0}')"
 
   say "  ${count} segments, $((bytes / 1000000)) MB, $((ended - started))s, median ${median}ms, p90 ${p90}ms"
+  say "  ⭐ ${late} of ${count} missed the ${BUDGET_MS}ms budget = ${lateShare}%"
   say "  accounting after:  ${after}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "${round}" "${label}" "${swap}" "${count}" "${bytes}" "$((ended - started))" \
-    "${median}" "${p90}" "${before}" "${after}" >>"${STATE}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${round}" "${label}" "${swap}" "${idle}" "${count}" "${bytes}" "$((ended - started))" \
+    "${median}" "${p90}" "${lateShare}" "${before}" "${after}" >>"${STATE}"
 }
 
-say "=== retrieval debt probe: ${ROUNDS} rounds of L/U at ${SEGMENTS} segments ==="
+say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tsegments\tbytes\tseconds\tmedianMs\tp90Ms\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tidle\tsegments\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 for round in $(seq 1 "${ROUNDS}"); do
-  run_arm "${round}" "L" "true" || say "round ${round} arm L did not complete"
-  run_arm "${round}" "U" "false" || say "round ${round} arm U did not complete"
+  for spec in ${ARM_PLAN}; do
+    label="${spec%%:*}"
+    rest="${spec#*:}"
+    swap="${rest%%:*}"
+    idle="${rest##*:}"
+    run_arm "${round}" "${label}" "${swap}" "${idle}" || say "round ${round} arm ${label} did not complete"
+  done
 done
 
 say "=== done ==="
