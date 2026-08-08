@@ -200,6 +200,33 @@ bigger buffer would cover. It is **bursts of second-long stalls at a rate that v
 nothing controls**. A 1.0s GOP still absorbs it, and now for a legible reason: one second against a
 1000ms budget costs one segment rather than four.
 
+### ⭐ Eleven unfunded arms: no setting makes it reliable
+
+[Eleven unfunded arms](../bench/eleven-unfunded-arms-2026-08-08.md), one node, two hours, the same 800
+references every time. The eight arms after the first sitting **cost nothing at all**.
+
+⛔ **The refill hypothesis is refuted twice over.** Debt read -1,357,400,000 PLUR at the end of an arm
+and -1,357,270,000 at the start of the next, **fifteen minutes of idle later**: there is no time-based
+settlement at this timescale. And idle changes nothing a viewer would feel, 15 minutes being
+indistinguishable from one and 90 seconds from none.
+
+⛔ **Debt level is not the dial either.** Debt saturates near -1.4 billion, and the three arms **pegged
+at that ceiling were the best of the eleven** at 1.9-3.4% late.
+
+⭐ **The late share ranged 1.9% to 19.5% across eleven arms of identical work in under two hours.** A
+tenfold spread that none of idle, debt or arm order accounts for.
+
+⚠️ A container recreate is the strongest lead: the three arms on a continuously running node are the
+three best, and every arm above 8% followed a recreate. One recreated arm at 3.0% does not fit, so it
+is a lead rather than a finding.
+
+⛔ **This answers the deployment question more firmly than a cause would. There is no operator setting
+that makes an unfunded gateway reliable**, and the spread is wider than the margin a viewer needs.
+
+**What would settle the mechanism** is a node-side measurement during a bad arm: every figure so far
+is taken at the client, so a one-second stall cannot be attributed to a peer refusing, a retry timer,
+or a route being re-established.
+
 ⭐ **The method is the transferable part.** The question was about retrieval, so everything that was
 not retrieval was dropped, and the price fell from ~1.3 BZZ and two and a half hours to 0.184 BZZ and
 thirteen minutes, with the binding uploader chequebook untouched. Ask what the question actually needs
