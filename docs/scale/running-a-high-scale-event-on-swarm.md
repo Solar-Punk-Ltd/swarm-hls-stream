@@ -247,6 +247,40 @@ reference is a real network retrieval either way.
 still swung 0.2% to 11.8% across four arms of identical work, and a cache only ever helps a chunk
 somebody already fetched. **It changes what a fleet costs to host, not what a first viewer sees.**
 
+### ⭐⭐ 2.3b Caching and pooling are orthogonal, and they compose
+
+The obvious worry: if sixteen concurrent viewers already collapse to one network fetch (2.4b), does a
+cache add anything? ✅ **Measured 2026-08-08**, four arms at **16 viewers each**, cache alternated, two
+passes per arm, free. [Full report.](../bench/pooling-and-caching-are-orthogonal-2026-08-08.md)
+
+| cache  | pass 1 median | **pass 2 median** | retrieval ops | **network contacts** |   **CPU per MB** | arm seconds |
+| ------ | ------------: | ----------------: | ------------: | -------------------: | ---------------: | ----------: |
+| off    |    116, 106ms |        122, 113ms |       ~79,000 |     **7,301, 6,744** |     0.309, 0.281 |      28, 35 |
+| **on** |    102, 110ms |        **5, 4ms** |   **~40,000** |     **2,664, 3,340** | **0.176, 0.192** |  **17, 16** |
+
+⭐⭐ **Pooling collapses requests across VIEWERS. Caching collapses requests across TIME.**
+
+- **Pooling** merges the sixteen viewers asking for chunk X **at the same instant** into one fetch.
+- **Caching** merges the request for chunk X **now** with the request for chunk X **later**. No amount
+  of concurrency helps that, which is exactly what pass 2 measures.
+
+A live event has both: many viewers watching together is the pooling case, and a viewer who joins late,
+re-fetches after a stall or scrubs the DVR window is the caching case. **Take both.**
+
+|                          | CPU per MB | against a lone unfunded viewer |
+| ------------------------ | ---------: | -----------------------------: |
+| 1 viewer, no cache       |       ~3.5 |                             1x |
+| 16 viewers pooled        |      0.295 |              **11.9x cheaper** |
+| **16 pooled and cached** |  **0.184** |                **19x cheaper** |
+
+⚠️ **It does not show the cache reducing the late share** (1.0% and 10.7% off, 1.2% and 0.0% on), which
+with two arms each and an unfunded node's tenfold spread carries no weight. **Retrievals, contacts, CPU
+and wall clock all moved consistently in both rounds, and those are the claim.**
+
+⬅ **The working set here is 100 references fetched twice inside a minute.** A real broadcast's working
+set is the whole live window across the whole event, and **nothing has measured what happens when it
+exceeds `--cache-capacity`.**
+
 ⭐ **This matters most in exactly the topology a large event uses**: many viewers behind few gateways,
 all fetching the same segments.
 
