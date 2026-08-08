@@ -1,7 +1,13 @@
 # Light against ultra-light, at a viewer
 
 **2026-08-07, 15:21 to 17:50 UTC.** Six arms interleaved in one sitting on `latbench`, 720p 2500kbps
-at a 1.0s GOP, watched in Chrome on the deployment host through the shipped client.
+at a **1.0s GOP**, watched in Chrome on the deployment host through the shipped client.
+
+> ⛔ **Read the reconciliation at the bottom before quoting the headline.** This sitting ran at a 1.0s
+> GOP. **The profile that ships is 0.25s.** Ultra-light quadrupled segment transfer time here too, and
+> the only reason no viewer felt it is that a 1.0s segment budget absorbs the penalty. At 0.25s it does
+> not, which is what [the 2026-08-06 sitting](light-vs-ultra-light-2026-08-06.md) measured. The first
+> version of this report claimed the funding question was settled generally. It is not.
 
 The question is whether a viewer's gateway has to be funded. An ultra-light bee node
 (`--full-node=false` with `--swap-enable=false`) has no chequebook and no way to pay a peer for
@@ -26,8 +32,9 @@ itself: a funded node returns a chequebook balance and an ultra-light one has no
 
 All six instrument-sound, 297 to 1778 samples each, every sample from a foregrounded page.
 
-✅ **An unfunded gateway delivers the same picture as a funded one.** Three U arms, all clean:
-advance 1.000 to 1.002, nothing stalled, nothing rebuffered, 30.0fps throughout.
+✅ **At a 1.0s GOP, an unfunded gateway delivers the same picture as a funded one.** Three U arms, all
+clean: advance 1.000 to 1.002, nothing stalled, nothing rebuffered, 30.0fps throughout. The
+qualification is not decoration, see the reconciliation below.
 
 ✅ **And it served every byte.** 1807 segment requests in each 30-minute arm, **0 refused and 0 never
 served, in the unfunded arms as much as the funded ones**, with the same 0.0006 BZZ per megabyte
@@ -58,6 +65,51 @@ it reaches it just as low and sits above it slightly more often.
 So: **a candidate effect of about half a second in the median, on two pairs, with no within-arm
 control on the funded side.** What would settle it is two more 30-minute L arms in one sitting, which
 costs about 0.62 BZZ on the gateway and an hour, and the answer only matters if half a second matters.
+
+## ⛔ The reconciliation, which changes what this sitting is worth
+
+This report first said the funding question was settled. It is not, and the number that says so was in
+this sitting's own reports the whole time, in a field it did not read.
+
+| | median segment transfer | buffer held |
+| --- | ---: | ---: |
+| L funded, rounds 1 and 2 | 103ms, 100ms | 4.44s, 5.07s |
+| **U ultra-light, rounds 1 and 2** | **458.5ms, 407ms** | 4.31s, 4.48s |
+
+**Ultra-light multiplied segment transfer time by about four here too.** The penalty
+[the 2026-08-06 sitting](light-vs-ultra-light-2026-08-06.md) found is not absent from this one. It is
+absorbed, and what absorbs it is the segment budget.
+
+| GOP | budget per segment | light | ultra-light |
+| ---: | ---: | ---: | ---: |
+| 0.25s, **the profile that ships** | 250ms | 26-36% of budget | **62-69% of budget** |
+| 1.0s, this sitting | 1000ms | 10% of budget | 41-46% of budget |
+
+A player needs the next segment before the current one finishes playing. At 1.0s an ultra-light
+transfer eats under half the budget and the buffer never notices. At 0.25s it eats two thirds, and a
+distribution whose median is at two thirds crosses the whole budget often enough to starve the buffer,
+which is precisely the collapse 2026-08-06 recorded: buffer 4.60s to 1.46s, seventeen rebuffers in
+three minutes, delivered frame rate below what was encoded.
+
+**So the two sittings do not disagree about anything.** They measured the same mechanism at two
+segment lengths and it is the segment length that decides whether a viewer feels it. The absolute
+transfer times are not comparable across them, because a 1.0s segment carries four times the bytes of
+a 0.25s one at the same bitrate; the fraction of budget is the comparable quantity, and it is the one
+that predicts the outcome in both.
+
+### What this sitting actually establishes
+
+- ✅ At **1.0s GOP**, an unfunded gateway costs a viewer nothing measurable over 30 minutes.
+- ⛔ It says **nothing in favour of** running unfunded at 0.25s, which is what ships, and the transfer
+  figures above are evidence **against** it.
+- ✅ The mechanism is now measured twice, independently, at two segment lengths, and it is a
+  **per-segment transfer cost** rather than freezing.
+
+### What would settle the shipping profile
+
+The same six arms at 0.25s, which is where the decision actually lives, at about the same cost as this
+sitting. Until then the operating assumption stays: **a viewer's gateway has to be funded at the
+profile this project ships.**
 
 ## LAT-10 does not reproduce
 
