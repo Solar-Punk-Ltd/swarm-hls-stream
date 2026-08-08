@@ -60,7 +60,13 @@ A stream published with the SRS ABR ladder carries a `renditions` array in the c
 
 Feed URIs use a `swarm://<owner>/<topic>` scheme. That is not cosmetic: hls.js resolves every playlist URI through url-toolkit against the playlist's own URL, and a URI with a scheme is the one case it returns untouched — a bare `owner/topic` comes back as `owner/owner/topic`.
 
-Append `?level=<rung>` to a stream watcher URL to pin playback to one rung (`?level=720p`), or `?level=auto` to hand the choice to hls.js's ABR. A stream with no ladder ignores the parameter and plays its single rendition as before.
+Append `?level=<rung>` to a stream watcher URL to pin playback to one rung (`?level=720p`), which is how you tell a bad rung apart from a bad switch. Without it, hls.js's ABR chooses. A stream with no ladder ignores the parameter and plays its single rendition as before.
+
+### Tuning
+
+`DEFAULT_HLS_TUNING` carries the ABR settings, and the ones that differ from hls.js's own defaults do so for one reason: hls.js measures throughput as `bytes / (loading.end - loading.first)`, which over a CDN is a pipe and over Swarm is mostly retrieval latency. So the EWMA half-lives are lengthened well past the defaults to stop that noise becoming level flapping, the startup bandwidth probe is off because what it measures here is not bandwidth, and the cold-start estimate is seeded mid-ladder rather than at hls.js's 500 kbps. `abrBandWidthFactor`, `abrBandWidthUpFactor` and `maxStarvationDelay` are exposed at hls.js's defaults so they can be swept without editing the component.
+
+Combine with `?qoe=1` to watch what those settings do: the overlay's ABR section shows the selected rung, hls.js's live bandwidth estimate, and **switch latency** — the time from hls.js committing to a rung until the first fragment of it is buffered. That last number is the one this POC exists to produce.
 
 ## Custom hls.js Loaders
 

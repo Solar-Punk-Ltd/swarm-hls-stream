@@ -157,6 +157,19 @@ const QoePanel: React.FC<{ metrics: QoeMetrics }> = ({ metrics: m }) => (
       <Row label="Dropped Frames" value={String(m.droppedFrames)} bad={m.droppedFrames > 0} />
     </Section>
 
+    <Section title="ABR">
+      <Row label="Level Selection" value={m.abrEnabled ? 'auto' : 'pinned'} />
+      <Row label="Selected Rung" value={m.selectedHeight != null ? `${m.selectedHeight}p` : '—'} />
+      <Row
+        label="Bandwidth Estimate"
+        value={m.bandwidthEstimateKbps != null ? `${m.bandwidthEstimateKbps} kbps` : '—'}
+      />
+      <Row label="Switch Latency" value={fmtMs(m.lastSwitchLatencyMs)} />
+      <Row label="Switch Latency (avg)" value={fmtMs(m.avgSwitchLatencyMs)} />
+      <Row label="Switch Latency (max)" value={fmtMs(m.maxSwitchLatencyMs)} bad={(m.maxSwitchLatencyMs ?? 0) > 5000} />
+      <Row label="Switches Measured" value={String(m.switchLatencySamples)} />
+    </Section>
+
     <Section title="Reliability">
       <Row label="Fatal Errors" value={String(m.fatalErrorCount)} bad={m.fatalErrorCount > 0} />
       <Row label="Fatal Error Rate" value={m.fatalErrorCount > 0 ? 'yes' : 'none'} bad={m.fatalErrorCount > 0} />

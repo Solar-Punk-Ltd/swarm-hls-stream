@@ -30,6 +30,14 @@ export interface HlsTuning {
   maxMaxBufferLength?: number;
   maxBufferSize?: number;
   maxBufferHole?: number;
+  abrEwmaFastLive?: number;
+  abrEwmaSlowLive?: number;
+  abrEwmaDefaultEstimate?: number;
+  abrBandWidthFactor?: number;
+  abrBandWidthUpFactor?: number;
+  maxStarvationDelay?: number;
+  capLevelToPlayerSize?: boolean;
+  testBandwidth?: boolean;
 }
 
 /**
@@ -59,6 +67,38 @@ export const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
   maxMaxBufferLength: 120,
   maxBufferSize: 60 * 1024 * 1024, // 60MB
   maxBufferHole: 1,
+
+  // --- ABR ---
+  //
+  // hls.js computes throughput as `bytes / (loading.end - loading.first)`. Over a CDN that is a
+  // measurement of a pipe. Over Swarm it is not: a 2s 1080p segment is a few hundred chunks fanned
+  // out across neighbourhoods, and the elapsed time is dominated by retrieval latency rather than
+  // by any rate. Consecutive samples therefore swing hard, and hls.js's default half-lives turn
+  // that swing into level flapping — so both are lengthened well past them (3 and 9).
+  abrEwmaFastLive: 9,
+  abrEwmaSlowLive: 27,
+
+  // Where a cold session starts, since there is nothing measured yet. hls.js seeds 500 kbps, which
+  // with this ladder parks every viewer on the bottom rung and then needs a long stretch of EWMA to
+  // climb out. Starting mid-ladder and letting the buffer loop pull down is the better trade here,
+  // because buffer occupancy is a real signal on Swarm and measured throughput largely is not.
+  // This number is a starting guess, and is exactly what the POC exists to replace.
+  abrEwmaDefaultEstimate: 2_000_000,
+
+  // hls.js's startup probe fetches the first fragment at a low level to measure throughput. That
+  // measurement is retrieval latency here, so it produces a number that is not bandwidth; the
+  // seeded estimate above is the more honest input.
+  testBandwidth: false,
+
+  // Do not pull 1080p into a 400px box. Cheap, and it matters most on the small screens the ladder
+  // exists for.
+  capLevelToPlayerSize: true,
+
+  // Restated at hls.js's own defaults rather than changed. They are here to be swept from a caller
+  // during the POC without editing this file; there is no evidence yet for moving them.
+  abrBandWidthFactor: 0.95,
+  abrBandWidthUpFactor: 0.7,
+  maxStarvationDelay: 4,
 });
 
 /**
@@ -72,6 +112,7 @@ export const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
  * `Infinity` into `null`, and a `null` here does not fall back to the default, it replaces it.
  * `maxBufferLength: null` reaches hls.js as `Math.max(null, …)`, which is zero, and a player that
  * buffers nothing stalls forever. `Number(searchParams.get('buf'))` on bad input hits exactly this.
+ * Booleans have no such hazard and survive the round trip as themselves.
  *
  * Sorted, so a config assembled in a different key order is still the same config and does not
  * tear the player down and rebuild it mid-playback.
@@ -79,7 +120,10 @@ export const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
 function tuningKey(tuning: HlsTuning): string {
   const tunable = new Set(Object.keys(DEFAULT_HLS_TUNING));
   const usable = Object.entries(tuning)
-    .filter((entry): entry is [string, number] => tunable.has(entry[0]) && Number.isFinite(entry[1]))
+    .filter((entry): entry is [string, number | boolean] => {
+      const [key, value] = entry;
+      return tunable.has(key) && (typeof value === 'boolean' || Number.isFinite(value));
+    })
     .sort(([a], [b]) => a.localeCompare(b));
   return JSON.stringify(Object.fromEntries(usable));
 }
@@ -101,20 +145,15 @@ function ladderKey(renditions: Rendition[] | undefined): string {
 }
 
 /**
- * Pins hls.js to one rung, or leaves it on auto.
+ * Pins hls.js to one rung. Called only when a rung was asked for; otherwise ABR chooses.
  *
  * Rungs are matched by their feed URI rather than by height or bitrate, because that is the one
  * attribute of a level that came from this ladder and cannot collide with another rung's.
- * Assigning `currentLevel` is also what turns hls.js's ABR off — a `startLevel` alone only picks
- * where it begins, and it would switch away on the first throughput sample.
+ * Assigning `currentLevel` is also what turns ABR off — a `startLevel` alone only picks where it
+ * begins, and it would switch away on the first throughput sample.
  */
-function applyLevel(hls: Hls, owner: string, renditions: Rendition[], level: string | undefined): void {
-  if (level === AUTO_LEVEL) {
-    hls.currentLevel = -1;
-    return;
-  }
-
-  const target = level ? renditions.find((r) => r.name === level) : renditions[0];
+function applyLevel(hls: Hls, owner: string, renditions: Rendition[], level: string): void {
+  const target = renditions.find((r) => r.name === level);
   if (!target) {
     console.warn(`Unknown rendition "${level}", leaving level selection on auto`);
     return;
@@ -141,9 +180,9 @@ interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
    */
   renditions?: Rendition[];
   /**
-   * Rung to pin playback to, by name, or {@link AUTO_LEVEL} to let ABR choose. Ignored without a
-   * ladder. Defaults to the lowest rung — deliberate while ABR is unproven, since it makes every
-   * session reproducible and lets each rung be verified on its own.
+   * Rung to pin playback to, by name. Omitted, or {@link AUTO_LEVEL}, leaves the choice to ABR,
+   * which is the default. Pinning is for isolating one rung — comparing it against the others, or
+   * telling a bad rung apart from a bad switch. Ignored without a ladder.
    */
   level?: string;
   /**
@@ -261,7 +300,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       hls.loadSource(sourceUrl);
 
       hls.on(Events.MANIFEST_PARSED, () => {
-        if (isLadder) {
+        if (isLadder && level && level !== AUTO_LEVEL) {
           applyLevel(hls!, owner, renditionsRef.current ?? ladder, level);
         }
 
