@@ -110,9 +110,19 @@ recovers from at once. **The recovery path is exactly where a herd forms**, and 
 like: 40% of segments late, and a buffer draining 12.8 seconds deep on a node that handles the same
 load comfortably when the same viewers are 4 seconds apart.
 
-⭐⭐ **A client can buy the whole effect for free by jittering its own request schedule** by a random
-fraction of a segment duration. On this evidence that is worth more than any amount of gateway
-provisioning.
+⛔ **A client CANNOT buy this by jittering its own request schedule, and this report originally said
+it could.** [Measured hours later](jitter-is-not-what-breaks-a-herd-2026-08-08.md): 60ms of
+per-request jitter at 128 viewers is indistinguishable from none, in both rounds.
+
+⭐⭐ **The reason corrects the framing above.** What limits the gateway is not how many viewers arrive
+in the same *instant*, it is how many want the same *chunk* at the same time. Positional spread gives
+chunk diversity, so the gateway has something to spread the work across. Jitter leaves every viewer at
+one playback position wanting one chunk a few tens of milliseconds later, and buys none. The two only
+converge once the jitter approaches a whole segment duration, which is a latency cost at the live edge
+and which disagreed between rounds anyway.
+
+⭐ **What does mitigate a herd is the gateway cache and pooling**, both measured the same day, and
+neither is a client change.
 
 ## ⚠️ What this does not show
 

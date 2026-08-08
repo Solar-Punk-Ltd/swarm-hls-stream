@@ -56,13 +56,18 @@ describe('RequestJitter picking a delay', () => {
     }
   });
 
-  /** The shipped source, rather than an injected one, because that is what a viewer runs. */
+  /**
+   * The shipped `Math.random`, rather than an injected one. An explicit bound rather than
+   * {@link GATEWAY_REQUEST_JITTER_MS}, which is 0: this is about the source being a spread, and a
+   * bound of zero would make every assertion below pass on a source that always answered the same.
+   */
   it('stays inside its bound on the real random source', () => {
-    const jitter = new RequestJitter(GATEWAY_REQUEST_JITTER_MS);
+    const bound = 60;
+    const jitter = new RequestJitter(bound);
     const seen = new Set<number>();
     for (let i = 0; i < 2_000; i++) {
       const delay = jitter.delayMs();
-      assert.ok(delay >= 0 && delay < GATEWAY_REQUEST_JITTER_MS, `${delay} is outside the bound`);
+      assert.ok(delay >= 0 && delay < bound, `${delay} is outside the bound`);
       seen.add(delay);
     }
     // The whole point is decorrelation, so a source that kept answering the same thing would defeat
@@ -161,16 +166,36 @@ describe('RequestJitter staggering the work itself', () => {
  * cadence with everything passing.
  */
 describe('the shipped defaults, which nothing else in this file exercises', () => {
-  it('staggers by a real, non-zero amount', () => {
-    assert.ok(GATEWAY_REQUEST_JITTER_MS > 0, 'the shipped stagger is off, so no request is ever moved');
+  /**
+   * ⛔ Pinned deliberately, and this assertion is the only thing standing between a reader and
+   * repeating a measurement that has already been paid for. It shipped at 60ms on the reasoning that
+   * spreading viewers across it would land them in cohorts of the size that held. Eight arms at 128
+   * paced viewers then put a jittered herd at 8041 and 10826ms of ending lag against an unjittered one
+   * at 9437 and 9711: no effect, in both rounds.
+   *
+   * The reason is that the cohort finding is about chunk diversity and jitter buys none. Turning this
+   * back on is a fine thing to do with evidence from a regime that was not measured. It is not a fine
+   * thing to do because it looks like it should help.
+   */
+  it('does not stagger, because 60ms was measured and did nothing', () => {
+    assert.equal(
+      GATEWAY_REQUEST_JITTER_MS,
+      0,
+      'see docs/bench/jitter-is-not-what-breaks-a-herd-2026-08-08.md before turning this on',
+    );
   });
 
-  it('leaves most of a segment budget intact at the shipping profile', () => {
+  it('would leave most of a segment budget intact if it were turned on', () => {
     // 267ms is an eight-frame GOP at 30fps, the 0.25s profile that ships. A stagger that could eat a
-    // large share of it would be spending the budget it is meant to protect.
+    // large share of it would be spending the budget it is meant to protect. Still asserted with the
+    // stagger off, because the bound is what a reader turning it on would reach for first.
     assert.ok(GATEWAY_REQUEST_JITTER_MS < 267 / 3, `${GATEWAY_REQUEST_JITTER_MS}ms is a large share of a 267ms budget`);
   });
 
+  /**
+   * The half that does ship live. A quarter of a 2 to 30 second backoff is 0.5 to 7.5 seconds of
+   * separation, which is the order that was measured to work where 60ms is the order that was not.
+   */
   it('spreads a backoff by a real fraction', () => {
     assert.ok(MANIFEST_BACKOFF_JITTER_FRACTION > 0, 'aligned backoffs are not spread at all');
     assert.ok(MANIFEST_BACKOFF_JITTER_FRACTION <= 1);

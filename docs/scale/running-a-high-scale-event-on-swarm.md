@@ -48,8 +48,9 @@ care in running the test would have caught.
    instant.** bee fetches each distinct chunk once and serves every concurrent viewer from it. **128
    viewers in cohorts of 8 run comfortably on one unfunded gateway** at 57-68ms median with 1.7% late
    and no buffer drain at all. **The same 128 viewers firing on the same tick drain 12.8 seconds of
-   buffer.** ⭐ **So keep simultaneous arrivals under about 8 to 16 per gateway, and jitter the client's
-   request schedule to get it.** Sections 2.4b, 2.4c and **2.4f**.
+   buffer.** ⛔ **What you cannot do is jitter the client out of it**: 60ms of per-request jitter was
+   measured and does nothing, because the constraint is chunk diversity rather than arrival instant.
+   ⭐ **Turn the gateway cache on and pool viewers.** Sections 2.4b, 2.4c and **2.4f**.
 3. **Funding is a switch that flips at zero.** 0.05 BZZ performs exactly like 6.4 BZZ, and an empty
    chequebook performs exactly like no chequebook. So **fund each node for its burn times the event
    duration and no more**, and **alarm on the balance**, because a node that runs dry reports nothing.
@@ -509,8 +510,28 @@ an upstream outage clearing, an encoder restart, a manifest gap every player rec
 buffer 12.8 seconds down, on a node that carries the same viewers comfortably when they are 4 seconds
 apart.
 
-⭐⭐ **Jitter the client's request schedule by a random fraction of a segment duration.** On this
-evidence it is worth more than any amount of gateway provisioning, and it costs nothing.
+### ⛔ 2.4g Jitter does not fix it, and this document said it would
+
+✅ **Measured 2026-08-08**, eight arms at 128 paced viewers.
+[Full report.](../bench/jitter-is-not-what-breaks-a-herd-2026-08-08.md) This section originally
+recommended jittering the client's request schedule. **That was wrong and it was implemented before it
+was measured.**
+
+| 128 viewers                       |     over 267ms |               **ended behind** |
+| --------------------------------- | -------------: | -----------------------------: |
+| no jitter, one tick               |   41.5 / 32.7% |                  9437 / 9711ms |
+| **60ms of per-request jitter**    |   28.9 / 31.0% |             **8041 / 10826ms** |
+| a whole segment of jitter         |    28.4 / 0.0% | 6774 / 9ms, ⚠️ rounds disagree |
+| **positional spread, 16 cohorts** | **1.3 / 0.1%** |                    **0 / 0ms** |
+
+⭐⭐ **The mechanism is chunk diversity, not arrival instant.** Viewers at sixteen playback positions
+want sixteen different chunks, so the gateway has work to spread. Viewers moved sixty milliseconds are
+still at one position wanting one chunk. Jitter only starts to help where it approaches a whole
+segment duration and stops meaning "the same chunk, later", and that arm disagreed between its rounds.
+
+⛔ **So do not plan on client-side jitter.** A bound large enough to matter is a latency cost at the
+live edge, and it was not reliable even then. **Turn the cache on and pool viewers**, which is 2.4f's
+last row and needs no client change at all.
 
 ⚠️ **Cohorts of 8 are what was proven, not 4.3 seconds of spread specifically**, and the cohorts here
 are exact and evenly sized where a real audience is random and will throw up larger ones by chance.
@@ -877,8 +898,9 @@ funded arm took a non-fatal stall, so per 5.3 it has no valid control.
 - **Price runs in bytes.** Unfunded nodes are free.
 - **Pool viewers behind gateways, and never let them arrive together.** Sixteen on one node cost the
   network what one costs. But 128 viewers firing on the same tick drain 12.8 seconds of buffer where
-  the same 128 in cohorts of 8 drain none and cost half the network contacts. **Jitter the client's
-  request schedule by a random fraction of a segment duration.**
+  the same 128 in cohorts of 8 drain none and cost half the network contacts. ⛔ **You cannot jitter
+  your way out of it**: what matters is how many want the same chunk, not how many arrive in the same
+  instant, and 60ms of jitter was measured to do nothing. The cache and pooling are the fix.
 - **Turn the cache on.** It halves network retrievals and cuts CPU 2.3 to 3.4x, and with a scattered
   audience it reaches one network fetch per distinct chunk for 128 viewers. It is off by default in
   everything this repo has ever run.
