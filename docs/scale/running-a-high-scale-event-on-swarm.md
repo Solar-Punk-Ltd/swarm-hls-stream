@@ -517,12 +517,12 @@ apart.
 recommended jittering the client's request schedule. **That was wrong and it was implemented before it
 was measured.**
 
-| 128 viewers | over 267ms | **ended behind** |
-| --- | ---: | ---: |
-| no jitter, one tick | 41.5 / 32.7% | 9437 / 9711ms |
-| **60ms of per-request jitter** | 28.9 / 31.0% | **8041 / 10826ms** |
-| a whole segment of jitter | 28.4 / 0.0% | 6774 / 9ms, ⚠️ rounds disagree |
-| **positional spread, 16 cohorts** | **1.3 / 0.1%** | **0 / 0ms** |
+| 128 viewers                       |     over 267ms |               **ended behind** |
+| --------------------------------- | -------------: | -----------------------------: |
+| no jitter, one tick               |   41.5 / 32.7% |                  9437 / 9711ms |
+| **60ms of per-request jitter**    |   28.9 / 31.0% |             **8041 / 10826ms** |
+| a whole segment of jitter         |    28.4 / 0.0% | 6774 / 9ms, ⚠️ rounds disagree |
+| **positional spread, 16 cohorts** | **1.3 / 0.1%** |                    **0 / 0ms** |
 
 ⭐⭐ **The mechanism is chunk diversity, not arrival instant.** Viewers at sixteen playback positions
 want sixteen different chunks, so the gateway has work to spread. Viewers moved sixty milliseconds are
