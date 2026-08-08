@@ -10,11 +10,23 @@ no context on this codebase.
 
 ## 0. Read this before anything else
 
-### ⛔ This repository has never exceeded eight concurrent viewers
+### ⛔ This repository has never exceeded eight viewers actually watching video
 
-Every figure below was measured with **one to eight** viewers against **one** gateway. Nothing here has
-run a hundred nodes, let alone a thousand. Where this document talks about a fleet, it is reasoning
-from a measured mechanism to a predicted consequence, and it says so every time.
+**One** gateway, throughout. Nothing here has run a hundred nodes, let alone a thousand. Where this
+document talks about a fleet it is reasoning from a measured mechanism to a predicted consequence, and
+it says so every time.
+
+⛔ **Two different things are called a viewer below and they are not interchangeable:**
+
+|                    |                                                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **a real viewer**  | a browser running hls.js, decoding and displaying. **Never more than 8**, and every latency, stall and quality figure comes from these                           |
+| **a probe viewer** | a paced fetcher walking a list of already-published segment references. **Up to 128**, and every concurrency, CPU, throughput and cohort figure comes from these |
+
+⚠️ **A probe viewer is a good model of retrieval load and no model at all of playback.** It has no
+decoder, no buffer and no player state machine, so it cannot stall, cannot rebuffer and cannot tell you
+what a picture looked like. The lag it reports is what a buffer _would_ have absorbed, not what a
+viewer saw.
 
 **Three labels are used throughout and they are not decoration:**
 
