@@ -52,6 +52,15 @@ never asked. The requests that actually leave the node are **attempts minus skip
 | 1 unfunded | 825,931 | 799,072 | **26,859** | **1.281** |
 | 2 unfunded | 801,062 | 773,898 | **27,164** | **1.296** |
 
+⛔ **READ THIS BEFORE QUOTING THE TABLE BELOW.** Both columns behave like **rates** rather than
+per-chunk costs. Across a later sweep whose workload varied 15x, skips held at 4,715 to 6,317 per
+second and network contacts held at 3,167 to 3,287 **in absolute count**, so dividing either by a
+chunk count gives whatever the throughput of that arm happened to make it. **These figures are valid
+for the single-viewer arms they were taken from and do not generalise.** And
+`bee_accounting_accounting_blocks_count` lives in the accounting package, which serves pushsync and
+pullsync too, so it may count more than the retrieval loop's skips. Nobody has read that part of the
+source. See [the concurrency sweep](sixteen-viewers-cost-what-one-costs-2026-08-08.md).
+
 ⭐ **An unfunded node puts about 13% more load on the network, not 34x.** Two independent arms landing
 at 1.281 and 1.296 against a funded 1.142 is not a coincidence, and it is corroborated by rate: 825,931
 requests in 151 seconds would be **5,470 per second**, which is a peer-selection loop spinning rather

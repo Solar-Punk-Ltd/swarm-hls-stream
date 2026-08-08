@@ -35,9 +35,9 @@ care in running the test would have caught.
 2. **An unfunded node's 38 attempts per chunk are local, not on the wire.** It puts ~13% more load on
    the network and burns ~34x the peer-selection work inside its own process. So a fleet of them is
    bounded by **host CPU and node density**, not by network capacity. Section 2.2.
-3. **A viewer adds load rather than sharing it, and the ceiling is inside bee.** Eight viewers on one
-   gateway cost only 1.09x the chunk retrieval but 1.84x the CPU, at 30.6% of a 48-core host. More BZZ
-   does not help. Section 2.4.
+3. **Sixteen viewers cost the network what one viewer costs.** bee fetches each distinct chunk once and
+   serves every concurrent viewer from it, so **pool viewers behind gateways rather than running one
+   node per viewer**. Throughput scaled 16.7x with a flat median. Section 2.4b.
 
 ---
 
@@ -153,8 +153,15 @@ byte-identical work: 3.32 and 3.75 CPU-seconds per MB against 1.26 and 1.31. The
 same fact: **a funded node is served by the first peer it considers 9 times in 10, an unfunded node
 fewer than 1 time in 10** (92.9% and 91.0% against 8.6% and 9.6%).
 
-⚠️ **Derived, and this is the number to size hosts with.** At 720p / 2500 kbps a viewer pulls
-0.3125 MB/s:
+⛔ **SUPERSEDED THE SAME DAY, and the table below is wrong for any pooled topology.** These figures come
+from **single-viewer** arms, where each retrieval is a distinct chunk and per-chunk arithmetic means
+what it says. [A concurrency sweep hours later](../bench/sixteen-viewers-cost-what-one-costs-2026-08-08.md)
+found bee's CPU is roughly **flat at 1.4 to 2.2 cores from 1 to 16 concurrent viewers**, so CPU is a
+per-**node** cost, not a per-viewer one, and dividing it by one viewer overstates a pooled deployment
+by up to 16x. Read section 2.4 before sizing anything. Kept because the funded-against-unfunded ratio
+within it still holds.
+
+⚠️ **Derived.** At 720p / 2500 kbps a viewer pulls 0.3125 MB/s:
 
 |                        | CPU-cores per viewer | viewers on a 48-core host |
 | ---------------------- | -------------------: | ------------------------: |
@@ -169,6 +176,14 @@ duty cycle before sizing hosts on it.**
 
 ⭐ **If you pack nodes onto hosts without measuring this, you will saturate CPU long before the network
 notices and you will be measuring your own harness.**
+
+⛔ **And one assumption underneath this whole subsection is unverified.**
+`bee_accounting_accounting_blocks_count` lives in the accounting package, which serves pushsync and
+pullsync as well as retrieval, so it may count more than the retrieval loop's skips. Across a 15x
+change in workload it behaved like a **fixed rate** (4,715 to 6,317 per second) rather than a per-chunk
+cost, which is consistent with that. **Do not quote any figure that subtracts skips from attempts until
+somebody has read that part of the source.** Section 5.2 is about exactly this class of mistake, and
+this document made it twice in one day.
 
 ### 2.3 Caching, which nothing had ever turned on
 
@@ -229,8 +244,47 @@ freshness.**
 inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
 limits.
 
-⬅ **Open, and it is the first thing your simulation should establish:** nothing between 2 and 8, and
-nothing above 8, has ever been measured. Linear or a knee is unknown.
+### ⭐⭐ 2.4b Sixteen viewers cost the network what one viewer costs
+
+✅ **Measured 2026-08-08**, concurrency alternated 1, 2, 1, 4, 1, 8, 1, 16 against an unfunded gateway,
+every viewer walking the same reference list at the same moment.
+[Full report.](../bench/sixteen-viewers-cost-what-one-costs-2026-08-08.md) It cost nothing.
+
+| viewers | retrieval operations | **network peer contacts** | bee CPU-cores |
+| ------: | -------------------: | ------------------------: | ------------: |
+|       1 |                2,638 |         **3,189 - 3,260** |   1.37 - 2.21 |
+|       2 |                5,028 |                 **3,167** |          1.48 |
+|       4 |               10,028 |                 **3,287** |          1.58 |
+|       8 |               20,078 |                 **3,227** |          1.90 |
+|  **16** |           **38,968** |                 **3,250** |      **2.17** |
+
+⭐ **Network peer contacts vary 3.7% while the workload moves 15x.** That figure is one viewer's worth
+of distinct chunks. **bee fetches each distinct chunk once and serves every concurrent viewer from that
+fetch.**
+
+✅ **Throughput scaled 16.7x** (9 MB in 15s at one viewer, 150 MB in 15s at sixteen) and **the median
+did not degrade** (reference arms 88, 82, 75, 72ms against loaded arms 66, 72, 70, 80ms).
+
+⚠️ **The late share roughly doubles**, 4.0% mean across the reference arms against 8.9% at sixteen.
+That is the real cost and it is modest.
+
+⭐⭐ **So the design rule is: pool viewers behind gateways, do not run one bee node per viewer.**
+
+| topology            | network contacts            | bee CPU                | viewers per 48-core host |
+| ------------------- | --------------------------- | ---------------------- | -----------------------: |
+| one node per viewer | ~1 viewer's worth **each**  | ~1.5-2 cores **each**  |            **~25 to 30** |
+| 16 viewers per node | ~1 viewer's worth **total** | ~1.5-2 cores **total** |                 **~400** |
+
+⭐ **It also amortises the unfunded penalty**, since the skip rate is fixed per node and sixteen
+viewers each carry a sixteenth of it.
+
+⚠️ **Derived from a four-minute sweep.** Arms were 13 to 15 seconds, the concurrent `curl` processes
+consume host CPU that is not counted (only bee's PID is), and nothing was tested above 16.
+
+⬅ **Open, and the first thing your simulation should establish:** where this stops. Nothing above 16
+has been measured, and **what this sweep cannot see is the thing LAT-11 found**, which is that feed
+staleness went 1.30x at eight viewers. **Retrieval scales. Whether the feed does is a separate
+question and the answer there was no.**
 
 ---
 
@@ -548,6 +602,8 @@ funded arm took a non-fatal stall, so per 5.3 it has no valid control.
 - **Establish your noise floor by mislabelling data where nothing happened**, before trusting a design.
 - **Read bee's own counters**, and read the source of any counter a conclusion rests on.
 - **Price runs in bytes.** Unfunded nodes are free.
+- **Pool viewers behind gateways.** Sixteen on one node cost the network what one costs, and bee's CPU
+  is a per-node figure rather than a per-viewer one.
 - **Turn the cache on.** It halves network retrievals and cuts CPU 2.3 to 3.4x, and it is off by
   default in everything this repo has ever run.
 - **Do not ship an unfunded viewer gateway.** Not because it always breaks, but because the variation

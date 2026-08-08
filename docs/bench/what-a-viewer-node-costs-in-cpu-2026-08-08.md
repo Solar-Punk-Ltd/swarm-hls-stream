@@ -24,6 +24,13 @@ capacity. That is a number, and until now it was not measured.
 than 1 time in 10.** That single pair of numbers is the mechanism in its plainest form: the funded
 node picks a peer and asks it, the unfunded node picks a peer, is told it cannot pay, and picks again.
 
+⛔ **SUPERSEDED THE SAME DAY for any pooled topology.** Every arm here has **one** viewer, so per-chunk
+and per-viewer arithmetic means what it says. [A concurrency sweep two hours
+later](sixteen-viewers-cost-what-one-costs-2026-08-08.md) found bee's CPU roughly **flat at 1.4 to 2.2
+cores from 1 to 16 concurrent viewers**, so CPU is a per-**node** cost. The table below therefore
+overstates a pooled deployment by up to 16x. **The funded-against-unfunded ratio still holds. The
+absolute per-viewer figures do not.**
+
 **Converted to what a deployment plans with**, at 720p / 2500 kbps (0.3125 MB/s):
 
 | | CPU-cores per viewer | viewers on a 48-core host |
