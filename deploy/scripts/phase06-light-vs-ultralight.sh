@@ -85,6 +85,9 @@ CLIENT_PORT="${CLIENT_PORT:-$((10004 + PORT_SLOT * 10))}"
 SIZE="${SIZE:-1280x720}"
 BITRATE_KBPS="${BITRATE_KBPS:-2500}"
 GOP_SECONDS="${GOP_SECONDS:-1.0}"
+# Only used to reproduce the publisher's integer frame rounding in the axis guard. `publish-clock.sh`
+# has its own default and this must match it, or the guard reports its own arithmetic as a fault.
+FPS="${FPS:-30}"
 
 PROVING_WATCH_SECONDS="${PROVING_WATCH_SECONDS:-300}"
 FULL_WATCH_SECONDS="${FULL_WATCH_SECONDS:-1800}"
@@ -385,10 +388,10 @@ newest_report() {
 # degraded its own subject still exits zero and still writes a report full of plausible numbers, which
 # is the failure this harness was rebuilt to report as VOID rather than as a figure.
 validate_report() {
-  local path="$1" want_samples="$2"
-  python3 - "${path}" "${want_samples}" <<'PY'
+  local path="$1" want_samples="$2" gop="$3" fps="$4"
+  python3 - "${path}" "${want_samples}" "${gop}" "${fps}" <<'PY'
 import json, sys
-path, want = sys.argv[1], int(sys.argv[2])
+path, want, gop, fps = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
 try:
     d = json.load(open(path))
 except Exception as exc:
@@ -397,7 +400,7 @@ except Exception as exc:
 # caller with an empty verdict that reads like a run nobody judged.
 if not isinstance(d, dict):
     print(f"NOT-A-REPORT({type(d).__name__})"); sys.exit(0)
-ins, sm = d.get("instrument", {}), d.get("summary", {})
+ins, sm, net = d.get("instrument", {}), d.get("summary", {}), d.get("network", {})
 if not ins.get("sound"):
     print(f"VOID(instrument: {'; '.join(ins.get('failures') or ['unstated'])})"); sys.exit(0)
 n = sm.get("samples") or 0
@@ -406,9 +409,34 @@ if n < want:
 ratio, stalled = sm.get("overallAdvanceRatio"), sm.get("stalledSamples")
 if ratio is None:
     print("NO-ADVANCE-RATIO"); sys.exit(0)
+
+# The axis guard. A segment length is requested through the publisher's GOP and delivered by SRS, and
+# on 2026-08-05 twelve runs swept a GOP that never reached the segment because the fragment forced
+# every cut early. A run at the wrong segment length is not this configuration measured badly, it is a
+# different configuration reported under this one's name, and the arithmetic that catches it is one
+# line: segments per second is 1/segment, and the browser counted both terms.
+#
+# `-g` takes an integer frame count, so a 0.25s GOP at 30fps is 8 frames and 0.267s rather than 0.250.
+# Comparing against the request rather than against the rounding is how a guard reports a fault that
+# is only its own arithmetic.
+requested_s = round(fps * gop) / fps
+span_s = (net.get("spanMs") or sm.get("spanMs") or 0) / 1000
+reqs = net.get("segmentRequests") or 0
+if span_s <= 0 or reqs <= 0:
+    print("NO-SEGMENT-RATE"); sys.exit(0)
+measured_s = span_s / reqs
+if not 0.7 * requested_s <= measured_s <= 1.4 * requested_s:
+    print(f"AXIS-FAIL(asked {requested_s:.3f}s segments, got {measured_s:.3f}s over {reqs} requests)"); sys.exit(0)
+
+# `medianTransferMs` is carried into the verdict because the 1.0s sitting had it in every report and
+# read none of them, then published a conclusion the field contradicts. It is the mechanism here, so
+# it belongs where the rows are read rather than three levels into a JSON document.
 print(
     f"ok advance={ratio:.3f} stalled={stalled} rebuffers={sm.get('rebufferCount')} "
-    f"fps={(sm.get('deliveredFps') or 0):.1f} median-latency={(sm.get('latency') or {}).get('medianLatencyS')}"
+    f"fps={(sm.get('deliveredFps') or 0):.1f} seg={measured_s:.3f}s "
+    f"transfer={net.get('medianTransferMs')}ms buffer={(sm.get('medianBufferAheadS') or 0):.2f}s "
+    f"latency={(sm.get('latency') or {}).get('medianLatencyS')}"
+    f"/target{(sm.get('latencyTarget') or {}).get('worstS')}"
 )
 PY
 }
@@ -479,7 +507,7 @@ run_arm() {
     else
       # A tenth of the samples a full-rate run would take, which catches a run that opened and
       # collapsed without failing a run that merely lost a few samples to a slow minute.
-      verdict="$(validate_report "${report}" "$((watch_seconds / 10))")"
+      verdict="$(validate_report "${report}" "$((watch_seconds / 10))" "${GOP_SECONDS}" "${FPS}")"
       # A validator that dies prints nothing, and an empty verdict is indistinguishable from a run
       # nobody judged once it is in the state file. Name it instead.
       [ -n "${verdict}" ] || verdict="UNVALIDATED(the validator produced no verdict)"
