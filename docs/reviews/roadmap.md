@@ -223,9 +223,33 @@ is a lead rather than a finding.
 ⛔ **This answers the deployment question more firmly than a cause would. There is no operator setting
 that makes an unfunded gateway reliable**, and the spread is wider than the margin a viewer needs.
 
-**What would settle the mechanism** is a node-side measurement during a bad arm: every figure so far
-is taken at the client, so a one-second stall cannot be attributed to a peer refusing, a retry timer,
-or a route being re-established.
+### ⭐⭐ SETTLED: it is starved, and bee counts it
+
+[Why an unfunded gateway is slow](../bench/why-an-unfunded-gateway-is-slow-2026-08-08.md), read from
+**bee's own counters** rather than from the browser.
+
+| arm      |  chunk requests | **peers skipped for accounting** | **attempts per request** |
+| -------- | --------------: | -------------------------------: | -----------------------: |
+| funded   | 20,940 / 20,957 |                 **5** and **22** |                 **1.14** |
+| unfunded |          20,957 |      **799,072** and **773,898** |  **39.41** and **38.22** |
+
+`bee_accounting_accounting_blocks_count` is bee's own words for it: _"temporarily skipping a peer to
+avoid crossing their disconnect thresholds"_.
+
+⭐ **An unfunded node skips a peer for accounting reasons ~37 times per chunk, and must ask 38 peers
+where a funded node asks one.** A 34x increase in the work of finding somebody willing to serve.
+
+⚠️ **It is not failure, it is the work of avoiding failure**: request failure rates are
+indistinguishable, 7.1% funded against 7.4% unfunded.
+
+⚠️ **Time-settlement is demand-driven, not idle-driven.** Unfunded arms sent 10,512 and 10,332
+pseudo-settlements against 909 and 1,005. That is why fifteen minutes of idle refills nothing: bee
+settles when it needs headroom with a peer, so an idle node settles nothing because it needs nothing.
+
+✅ **"Slower" versus "starved" is now separated, and it is starved.** The chain is complete and every
+step has a number: cannot settle → sits at every peer's disconnect threshold → 786,000 skips per arm →
+38 attempts per chunk → usually one answers fast (so the median barely moves) → sometimes they run out
+and a retry timer fires at 1.0-1.1s → bursts of those drain a 4.8s buffer.
 
 ⭐ **The method is the transferable part.** The question was about retrieval, so everything that was
 not retrieval was dropped, and the price fell from ~1.3 BZZ and two and a half hours to 0.184 BZZ and

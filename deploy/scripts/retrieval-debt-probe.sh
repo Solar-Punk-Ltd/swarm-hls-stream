@@ -27,6 +27,11 @@ COMPOSE_PROJECT="${COMPOSE_PROJECT:-latbench}"
 GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT:-10077}"
 REFS="${REFS:-/home/solarpunk/phase06/refs.txt}"
 ACCT="${ACCT:-/home/solarpunk/phase06/acct2.sh}"
+# The node's own view of why a retrieval was slow, which nothing measured at the client can supply.
+# `bee_accounting_accounting_blocks_count` is bee's own words for the mechanism under test: "temporarily
+# skipping a peer to avoid crossing their disconnect thresholds". With the attempt histogram beside it,
+# a one-second stall can finally be attributed to a peer refusing rather than to a slow network.
+METRICS="${METRICS:-/home/solarpunk/phase06/metrics.sh}"
 
 SEGMENTS="${SEGMENTS:-400}"
 ROUNDS="${ROUNDS:-2}"
@@ -58,6 +63,7 @@ mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/probe.log"
 STATE="${OUT_DIR}/probe-state.tsv"
 SERIES="${OUT_DIR}/probe-series.tsv"
+METRICS_TSV="${OUT_DIR}/probe-metrics.tsv"
 
 say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 
@@ -144,6 +150,7 @@ restore_gateway() {
 trap restore_gateway EXIT
 
 acct() { bash "${ACCT}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
+metrics() { bash "${METRICS}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
 
 # One retrieval whose timing is thrown away, so the arm is measured against a node that has its peers
 # rather than one that is still finding them.
@@ -173,10 +180,12 @@ run_arm() {
     say "  accounting after the idle: $(acct)"
   fi
 
-  local before after n=0 bytes=0 started ended
+  local before after mBefore mAfter n=0 bytes=0 started ended
   before="$(acct)"
   [ -n "${before}" ] || before="NONE"
   say "  accounting before: ${before}"
+  mBefore="$(metrics)"
+  [ -n "${mBefore}" ] || mBefore="NONE"
 
   # ⛔ Discarded, and it is not optional. Every arm of the first run opened with a segment that took
   # 8.2 to 9.9 seconds, in the funded arms as much as the unfunded ones, because the arm begins with a
@@ -207,6 +216,10 @@ run_arm() {
 
   after="$(acct)"
   [ -n "${after}" ] || after="NONE"
+  mAfter="$(metrics)"
+  [ -n "${mAfter}" ] || mAfter="NONE"
+  say "  node metrics before: ${mBefore}"
+  say "  node metrics after:  ${mAfter}"
 
   local median p90 count late lateShare
   count="$(wc -l <"${OUT_DIR}/times-${round}-${label}.txt")"
@@ -221,6 +234,8 @@ run_arm() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${round}" "${label}" "${swap}" "${idle}" "${count}" "${bytes}" "$((ended - started))" \
     "${median}" "${p90}" "${lateShare}" "${before}" "${after}" >>"${STATE}"
+  printf '%s\t%s\t%s\tbefore\t%s\n%s\t%s\t%s\tafter\t%s\n' \
+    "${round}" "${label}" "${swap}" "${mBefore}" "${round}" "${label}" "${swap}" "${mAfter}" >>"${METRICS_TSV}"
 }
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
