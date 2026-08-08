@@ -171,9 +171,34 @@ oscillates around -1.3 billion for the rest of the arm: an allowance consumed to
 at the rate it refills. **The first forty seconds of an unfunded arm are a different regime**, so a
 short arm measures the approach rather than the steady state.
 
-⚠️ **What is still genuinely open** is why the unfunded node was 24% faster on one night than another.
-It is **not** the debt carried into the arm: starting at -376M, -647M and -850M gave 102, 117 and 106ms
-with no ordering. It is the term the deployment decision turns on.
+### ⭐ The open term, answered from the archive for nothing
+
+[What separates a collapse from a clean run](../bench/what-separates-a-collapse-from-a-clean-run-2026-08-08.md),
+read out of the `.requests.json` companions already in this repository.
+
+**It is not the median. It is the rate of one-second retrievals.**
+
+| arm            |    median | over budget | **≥1s per 1000** | outcome                   |
+| -------------- | --------: | ----------: | ---------------: | ------------------------- |
+| 08-06 unfunded | 156-172ms |      32-33% |   **17.4, 21.7** | ⛔ 3 and **17 rebuffers** |
+| 08-08 unfunded | 132-146ms |      23-24% |     **0.5, 1.6** | ✅ clean                  |
+| either, funded |   63-91ms |    0.4-2.8% |          0.0-1.2 | ✅ clean                  |
+
+⭐ **Between the two nights the median moved 1.18x and the one-second rate moved 10 to 40x.** On
+2026-08-08 the unfunded arm had **fewer** one-second stalls than the funded arm.
+
+⚠️ **Every one of them is 1.0 to 1.1s** — a retry timer, not a slow transfer — and **they arrive in
+bursts**: six of twelve inside a 3% window of one arm. One costs a 267ms-budget player four segments,
+which a 4.8s buffer absorbs. Six in a row is a rebuffer. Twelve events in 689 requests is 1.7% of
+them, so they cannot move a median and they are the entire failure.
+
+⛔ **It is not the debt carried into an arm either**: starting at -376M, -647M and -850M gave 102, 117
+and 106ms with no ordering.
+
+✅ The standing answer is firmer, not weaker. The failure is not a uniformly slower stream, which a
+bigger buffer would cover. It is **bursts of second-long stalls at a rate that varies 40x for reasons
+nothing controls**. A 1.0s GOP still absorbs it, and now for a legible reason: one second against a
+1000ms budget costs one segment rather than four.
 
 ⭐ **The method is the transferable part.** The question was about retrieval, so everything that was
 not retrieval was dropped, and the price fell from ~1.3 BZZ and two and a half hours to 0.184 BZZ and
