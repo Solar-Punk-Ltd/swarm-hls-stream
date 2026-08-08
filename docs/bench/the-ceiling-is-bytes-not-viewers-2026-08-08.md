@@ -86,7 +86,12 @@ audience is served efficiently or wastefully, and it was measured at a fixed aud
 rate was not the binding constraint. Aggregate byte rate decides how large the audience can be at all.
 Both are real, and a deployment has to clear both.
 
-## ⭐⭐ The result nobody asked for: a cold gateway is roughly 3x more expensive
+## ⭐⭐ The result nobody asked for: a cold gateway is 2 to 3x more expensive
+
+⭐ **Replicated deliberately the same day**, with the decay curve measured and the magnitude refined to
+**2 to 3x** rather than the single 2.8x this sitting happened to see. See
+[a cold gateway needs a minute](a-cold-gateway-needs-a-minute-2026-08-08.md), which also finds that the
+CPU penalty and the viewer-visible one recover on different timescales.
 
 The first arm of round 1 is the same work as the other seven references, 7680 fetches and 725 MB, and
 it did not behave like them at all.
