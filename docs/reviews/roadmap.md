@@ -155,9 +155,16 @@ postage, because the segments were already on Swarm from the sitting above.
 debt carried grew every time, by 604, 721 and 479 million PLUR. Across three funded arms doing
 identical work it **fell** in two and grew in the third by a sixth as much. Nothing else differs.
 
-⭐ **The tail is far worse than the median, and no live sitting ever reported it.** Median penalty
-**2.9x** (37.3 → 108.3ms). At p90, **7.7x** (54.3 → 419.3ms). A buffer is drained by the slow segment,
-not the typical one, so the figure that decides a stall is the one nothing had looked at.
+⛔ **The median was the wrong statistic all along, and every figure in the table above is one.** What
+decides a stall is not how long a typical segment takes but **how many miss the budget**. Against the
+267ms an eight-frame GOP allows, the funded arms ran **0.3%** late and the unfunded ones **15.0%**: a
+**45x** penalty where the median shows 2.9x and p90 shows 7.7x. One segment in five arriving late is
+not a slower stream, it is a draining buffer.
+
+⭐ **It reframes the open term too.** The three unfunded arms differ by 15% at the median and by
+**2.3x** in late share. Whatever moves between unfunded runs moves the **tail**, not the body, so a
+comparison built on medians was never going to see it. The 24% between-night gap and this
+within-sitting spread are plausibly the same thing measured badly.
 
 ⛔ **The unfunded node saturates in about forty seconds and then holds.** Debt climbs steeply, then
 oscillates around -1.3 billion for the rest of the arm: an allowance consumed to its limit and spent

@@ -34,6 +34,49 @@ identical work the debt grew every time, by 604, 721 and 479 million. Across thr
 drained by the slow segment, not by the typical one, so the figure that matters for a stall is the one
 that had never been looked at.
 
+## ⭐ Re-read: the median was the wrong statistic all along
+
+The per-segment timings say something the medians hide. **What decides a stall is not how long a
+typical segment takes, it is how many segments miss the budget**, and against the 267ms an eight-frame
+GOP at 30fps allows:
+
+| arm | median | p90 | **segments over 267ms** |
+| --- | ---: | ---: | ---: |
+| 1 funded | 39ms | 58ms | **0.0%** |
+| 1 unfunded | 102ms | 522ms | **19.5%** |
+| 2 funded | 36ms | 49ms | **1.0%** |
+| 2 unfunded | 116ms | 243ms | **8.4%** |
+| 3 funded | 37ms | 56ms | **0.0%** |
+| 3 unfunded | 106ms | 493ms | **17.0%** |
+
+⛔ **The median penalty is 2.9x and the late-segment penalty is 45x**, 0.3% against 15.0%. Every
+figure this project has published about ultra-light is a median, so **every one of them understates
+the effect by more than an order of magnitude**. One segment in five arriving late is not a slower
+stream, it is a draining buffer.
+
+⭐ **It also reframes the open term.** The three unfunded arms differ by 15% at the median and by
+**2.3x** in late share (8.4% against 19.5%). Whatever moves between unfunded runs moves the tail, not
+the body, so a run-to-run comparison built on medians was never going to see it. The 24% between-night
+gap and this within-sitting spread are plausibly the same thing measured badly.
+
+⚠️ **This is a re-read of the same six arms, not a new run.** It costs nothing and it changes no
+measurement, only which column is the headline.
+
+## ⛔ An artifact of this probe, found in its own output
+
+**Segment 1 of every arm took 8.2 to 9.9 seconds**, funded arms included. An arm begins with a
+container recreate, and bee answers `/health` well before its retrieval path has peers again, so the
+first retrieval waits for them. It is present in both arms and is a property of flipping the arm
+rather than of either one.
+
+Left in, it moves every maximum, every p99 and every elapsed figure. The median and p90 above are
+unaffected, one sample in eight hundred, so the headline results stand. Every table in this report now
+excludes it, and the probe discards a warm-up retrieval before it times anything.
+
+⚠️ The **wall clock** column below is my loop rather than the transfer: it carries a `curl` process per
+segment, about 40ms each, in both arms equally. Summed transfer time is 33.7s against 143.6s, a
+**4.27x** ratio rather than the 2.7x the elapsed column implies.
+
 ## The unfunded node saturates in forty seconds and then holds
 
 Sampled every fifty segments through the third unfunded arm:
@@ -56,6 +99,11 @@ slowly degrading, it is running against a ceiling it reaches quickly and then st
 That has a direct consequence for how any future arm is read: **the first forty seconds of an unfunded
 arm are not the same regime as the rest of it**, and a short arm measures the approach rather than the
 steady state.
+
+✅ **The transfer times confirm it independently.** Retrievals over a second are essentially absent
+from the funded arms (one each, and that one is the warm-up) and in the unfunded arms they **cluster
+after about segment 300**, which is roughly a minute in: positions 414 onward in round 1, 296 onward in
+round 2, 303 onward in round 3. The debt series and the timings are two views of the same saturation.
 
 ## What this does not settle
 
