@@ -391,23 +391,55 @@ That is what separated "ultra-light is slower" from "ultra-light is starved", an
 
 ### 3.4 Cost, in bytes and never in minutes
 
-✅ **Measured:**
+### The per-MB figure, and why an earlier one was wrong
 
-|                                |                                                     |
-| ------------------------------ | --------------------------------------------------- |
-| retrieval                      | **~0.00085 BZZ per MB**                             |
-| gateway burn, 720p / 2500 kbps | **0.0102 BZZ/min** (sampled every 5s through a run) |
-| **an unfunded node**           | **zero. It has no chequebook, so it cannot spend**  |
+| source                                       |    BZZ | network MB | **BZZ per MB** |
+| -------------------------------------------- | -----: | ---------: | -------------: |
+| funding-cliff arm, cache off, all network    | 0.0500 |         74 |    **0.00068** |
+| cache sitting, 4 funded arms, network bytes  | 0.0848 |       ~111 |    **0.00076** |
+| **the figure this project quoted for weeks** |        |            |    **0.00085** |
 
-⚠️ **An earlier figure of 0.123 BZZ per 30 minutes was 2.5x too low**, because it came from two
-readings taken by hand at different times. **Sample continuously or do not quote a burn rate.**
+⭐ **Use ~0.0007 BZZ per MB.** The long-quoted 0.00085 is about 40% high. The cliff arm is the cleanest
+single measurement available: 0.05 BZZ bought exactly 74 MB with caching off, watched drain to zero.
 
-⭐ **Price a run in bytes, not minutes**, because the rate _is_ the bitrate. A 1080p arm costs 2.4x a
-720p arm of the same duration.
+### ⭐ The rate is the bitrate
 
-⭐ **An unfunded-only sweep is free.** Eight of the eleven unfunded arms in the definitive sweep cost
-nothing at all. If your simulation is about unfunded viewers, the viewers are free and only the
-publisher and any funded controls cost anything.
+```
+BZZ/min  ~=  MB/min x 0.0007
+```
+
+| profile           | MB/min | **derived BZZ/min** | measured                                      |
+| ----------------- | -----: | ------------------: | --------------------------------------------- |
+| 720p / 2500 kbps  |  18.75 |          **0.0131** | ✅ **0.0102**, sampled every 5s over 3.19 min |
+| 1080p / 6000 kbps |   45.0 |          **0.0315** | ⬅ **never measured**                          |
+
+⚠️ Derived and measured agree within 25% at 720p. **That is the only cross-check that exists**, and
+**1080p/6000k ships without its gateway burn ever having been measured.**
+
+⚠️ A 0.25s GOP is roughly **15% dearer per minute** than 1.0s. Two hand-read samples, not a gate.
+
+### ⛔ Three honesty notes on cost
+
+1. **An earlier gateway figure of 0.123 BZZ per 30 minutes was 2.5x too low**, because it came from two
+   readings taken by hand at different times. **Sample continuously or do not quote a burn rate.**
+2. **The uploader side is inconsistent.** Four different per-minute figures appear in this project's
+   record for what looks like the same thing (0.0134, 0.0170, 0.0179, 0.0214 BZZ/min). Nobody has
+   reconciled them. **Do not quote an uploader burn rate without naming its measurement.**
+3. **Price runs in bytes, not minutes.** A 1080p arm costs 2.4x a 720p arm of the same duration.
+
+### ⭐ An unfunded-only sweep is free
+
+**A node with no chequebook cannot spend.** Eight of the eleven unfunded arms in the definitive sweep,
+and every arm of the concurrency sweep, cost nothing at all. If your simulation is about unfunded
+viewers, **the viewers are free** and only the publisher and any funded controls cost anything.
+
+### ⭐⭐ What an event costs, with 2.1b and 2.4b applied
+
+Funding is a switch at zero, so `BZZ per node = burn x duration` and any more is idle capital. Sixteen
+viewers share one gateway's fetches, so gateways is roughly viewers over sixteen.
+
+**1,000 viewers, two hours, 720p:** 63 gateways x 0.0102 x 120 = **about 77 BZZ**, against about
+**1,220 BZZ** for one node per viewer.
 
 ---
 
