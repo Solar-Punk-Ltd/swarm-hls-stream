@@ -10,6 +10,7 @@ import {
   SRS_WEBHOOK_TOKEN_PARAM,
 } from '../src/engines/srs/webhookToken.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
+import { StreamClaimant } from '../src/types.js';
 import { redactUrlSecrets } from '../src/utils/urlSecrets.js';
 
 import { startTestApi } from './helpers/apiTestServer.js';
@@ -459,5 +460,75 @@ describe('SRS webhook token redaction', () => {
   it('does not throw on a malformed query string', () => {
     assert.equal(redactUrlSecrets('/x?%'), '/x?%');
     assert.equal(redactUrlSecrets(`/x?${SRS_WEBHOOK_TOKEN_PARAM}=%E0%A4`), '/x?token=REDACTED');
+  });
+});
+
+/**
+ * The seam between two halves that are each well tested on their own.
+ *
+ * `StreamOrchestrator`'s takeover rules have twenty tests in `StreamTakeover.test.ts`, and every one
+ * of them builds its claimant by hand. Nothing exercised the engine turning a webhook body into that
+ * claimant, so a mutation making `publisherAddress` always answer null survived all 730 tests.
+ *
+ * That mutant is not cosmetic. `reasonToRefuseTakeover` allows a takeover whenever the two publishers
+ * cannot be **proved** different, which is deliberate so an unidentifiable owner is not locked out of
+ * their own id. An address that never arrives makes that proof impossible every time, so every
+ * unauthenticated takeover is permitted and the address check is decorative.
+ *
+ * `StreamClaimant`'s own doc states the contract these assert: an omitted field arrives as null, and
+ * an empty string is not an address, because no evidence must not read as evidence.
+ */
+describe('the address SRS reports reaches the claimant', () => {
+  const claimantFrom = async (payload: Record<string, unknown>): Promise<StreamClaimant | undefined> => {
+    let seen: StreamClaimant | undefined;
+    const orchestrator = makeFakeOrchestrator({
+      startStream: (_streamId: string, _mediatype: string, claimant: StreamClaimant) => {
+        seen = claimant;
+        return true;
+      },
+    });
+
+    const engine = createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN });
+    const app = express();
+    app.use(express.json());
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+
+    const { server, baseUrl } = await listenOnLoopback(app);
+    try {
+      await fetch(`${baseUrl}${engine.prefix}/streams?${SRS_WEBHOOK_TOKEN_PARAM}=${TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'on_publish', app: 'live', stream: 'demo', ...payload }),
+      });
+    } finally {
+      server.close();
+    }
+    return seen;
+  };
+
+  it('carries the publisher address through to the claimant', async () => {
+    const claimant = await claimantFrom({ ip: '203.0.113.7' });
+
+    assert.equal(claimant?.address, '203.0.113.7', 'the address SRS reported never reached the takeover check');
+  });
+
+  it('reports no address when the webhook did not carry one', async () => {
+    const claimant = await claimantFrom({});
+
+    assert.equal(claimant?.address, null);
+  });
+
+  // Null and an empty string take different branches in `reasonToRefuseTakeover`, so an empty address
+  // arriving as itself is evidence of a publisher where there is none.
+  it('treats an empty address as no address', async () => {
+    const claimant = await claimantFrom({ ip: '' });
+
+    assert.equal(claimant?.address, null, 'an empty string was carried through as if it identified a publisher');
+  });
+
+  it('treats an address that is not a string as no address', async () => {
+    const claimant = await claimantFrom({ ip: 203 });
+
+    assert.equal(claimant?.address, null);
   });
 });
