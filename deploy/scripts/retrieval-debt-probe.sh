@@ -36,7 +36,7 @@ METRICS="${METRICS:-/home/solarpunk/phase06/metrics.sh}"
 SEGMENTS="${SEGMENTS:-400}"
 ROUNDS="${ROUNDS:-2}"
 
-# The arms of one round, as `label:swap:idleSecondsBefore[:cacheCapacity]`, in order.
+# The arms of one round, as `label:swap:idleSecondsBefore[:cacheCapacity[:viewers[:paceMs]]]`, in order.
 #
 # ⭐ The cache field exists because every arm this project has ever run set `--cache-capacity=0`, so
 # nothing cached and every chunk was re-fetched. It was excluded on purpose while the funding question
@@ -90,6 +90,37 @@ PASSES="${PASSES:-1}"
 # happening, so a ladder cannot resolve anything under ~2x:
 #   ARM_PLAN='U1:false:0:0:1 U8:false:0:0:8 U1:false:0:0:1 U8:false:0:0:8'
 VIEWERS="${VIEWERS:-1}"
+
+# The interval between the STARTS of one viewer's consecutive fetches, in milliseconds. Set it to the
+# segment duration to make a walk behave like a player rather than a load generator.
+#
+# ⛔ Every arm this project ran before 2026-08-08 fetched flat out, which is not what a viewer does. A
+# player asks for one segment per segment duration because that is the rate the encoder produces them
+# at, so a flat-out walk overstates the load one viewer places on a gateway and understates how many
+# viewers a gateway can hold. Every per-MB and per-second figure the probe has ever reported carries
+# that error.
+#
+# ⭐ Start-to-start, not a sleep between fetches. The next segment appears one duration after the last
+# one did no matter how long the fetch took, so a fetch that overruns eats its own slack and the next
+# one starts immediately. `nextAt` therefore advances by exactly PACE_MS whatever happens, and
+# `now - nextAt` at the start of a fetch is the viewer's accumulated lag behind real time. ⭐⭐ That
+# lag IS buffer depletion in milliseconds, and it is the quantity that decides whether a viewer
+# stalls. A late segment share cannot see it, because a run of late segments and one late segment
+# repeated far apart give the same share and only the first empties a buffer.
+#
+# ⚠️ Every viewer in a paced arm fires on the same schedule, so N viewers arrive as a burst of N every
+# interval rather than spread across it. For live HLS that is the honest shape, because a segment
+# becomes available to everyone at the same instant and every player asks for it then. A VOD or DVR
+# audience is scattered instead, and this will read harsher than that case.
+#
+# 0 keeps the flat-out behaviour, so every earlier arm stays reproducible.
+#
+# ⛔ Set this PER ARM and interleave, never one sitting paced against another sitting flat out. That is
+# the ladder mistake the viewer sweep already paid for: relabelling eight unchanged runs moved the
+# metric by up to 1.95x with nothing happening, so a difference measured across sittings cannot be
+# told from drift. The arm field is the 6th:
+#   ARM_PLAN='F:false:0:0:32:0 P:false:0:0:32:267 F:false:0:0:32:0 P:false:0:0:32:267'
+PACE_MS="${PACE_MS:-0}"
 
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/probe.log"
@@ -278,15 +309,63 @@ say_times() {
   say "  ${label}: ${c} segments, median ${m}ms, p90 ${p}ms, ⭐ ${l} over ${BUDGET_MS}ms = ${s}%"
 }
 
+epoch_ms() { date +%s%3N; }
+
+# Sleep until an absolute epoch-millisecond deadline, or return 1 immediately if it has already passed.
+# A caller that gets 1 back is behind real time, which is the signal rather than an error.
+sleep_until_ms() {
+  local deadline="$1" now wait secs
+  now="$(epoch_ms)"
+  wait=$((deadline - now))
+  [ "${wait}" -le 0 ] && return 1
+  # Formatted in bash rather than through awk, because this runs once per fetch and a fork per fetch
+  # would be load the probe is supposed to be measuring.
+  printf -v secs '%d.%03d' $((wait / 1000)) $((wait % 1000))
+  sleep "${secs}"
+  return 0
+}
+
+# `count maxLagMs finalLagMs behind behindShare` for one file of per-fetch lag milliseconds.
+#
+# ⭐ maxLag is how deep a buffer has to be for this viewer never to stall. finalLag says whether the
+# viewer was still losing ground when the walk ended: a large max that returns to zero is a viewer that
+# recovered, and one that ends at its maximum is a viewer heading for a stall.
+summarise_lag() {
+  awk '
+    {v=$1; if(v>max) max=v; if(v>0) behind++; last=v; n++}
+    END{
+      if(n==0){print "0 0 0 0 0.0"; exit}
+      printf "%d %d %d %d %.1f", n, max+0, last+0, behind+0, 100*(behind+0)/n
+    }' "$1"
+}
+
 # One viewer's walk of the reference list. Runs in a subshell when VIEWERS > 1, so it hands its byte
 # total back through a file rather than a variable. Only the first viewer writes the accounting series,
 # because N concurrent samplers would be load of their own.
 fetch_walk() {
   local timesFile="$1" bytesFile="$2" seriesRound="$3" tag="$4" startedAt="$5" writeSeries="$6"
-  local n=0 sum=0 out ms b
+  local lagFile="$7" pace="$8"
+  local n=0 sum=0 out ms b nextAt=0 nowMs
   while read -r ref; do
     n=$((n + 1))
     [ "${n}" -gt "${SEGMENTS}" ] && break
+    if [ "${pace}" -gt 0 ]; then
+      if [ "${nextAt}" -eq 0 ]; then
+        # The first fetch defines t=0 rather than being measured against a deadline set just before it,
+        # which would charge every viewer a few milliseconds of lag it did not incur.
+        nextAt="$(epoch_ms)"
+        printf '0\n' >>"${lagFile}"
+      elif sleep_until_ms "${nextAt}"; then
+        printf '0\n' >>"${lagFile}"
+      else
+        # Already past the deadline, so the viewer is behind by exactly this much and starts at once.
+        nowMs="$(epoch_ms)"
+        printf '%s\n' "$((nowMs - nextAt))" >>"${lagFile}"
+      fi
+      # Advances by the segment duration whether or not the last fetch kept up. That is what makes the
+      # gap cumulative, and a viewer that never catches up is a viewer whose buffer drains to nothing.
+      nextAt=$((nextAt + pace))
+    fi
     out="$(curl -s -o /dev/null -m 30 -w '%{time_total} %{size_download}' "http://127.0.0.1:${GATEWAY_BEE_PORT}/bytes/${ref}")"
     ms="$(printf '%s\n' "${out}" | awk '{printf "%d", $1*1000}')"
     b="$(printf '%s\n' "${out}" | awk '{print $2}')"
@@ -304,10 +383,11 @@ fetch_walk() {
 # One arm: the same references in the same order every time, so the work is identical and only the
 # node's ability to pay for it differs.
 run_arm() {
-  local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}" viewers="${6:-}"
+  local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}" viewers="${6:-}" pace="${7:-}"
   [ -n "${cache}" ] || cache="${CURRENT_ARM_CACHE}"
   [ -n "${viewers}" ] || viewers="${VIEWERS}"
-  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s)"
+  [ -n "${pace}" ] || pace="${PACE_MS}"
+  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s), pace ${pace}ms"
 
   local was="${CURRENT_ARM_SWAP}/${CURRENT_ARM_CACHE}"
   [ "${FORCE_RECREATE:-0}" = "1" ] && was="forced"
@@ -358,6 +438,10 @@ run_arm() {
   cpuBefore="$(gateway_cpu_seconds)"
 
   : >"${OUT_DIR}/times-${round}-${label}.txt"
+  local lagFile="${OUT_DIR}/lag-${round}-${label}.txt"
+  local finalsFile="${OUT_DIR}/lag-final-${round}-${label}.txt"
+  : >"${lagFile}"
+  : >"${finalsFile}"
   started="$(date +%s)"
   local pass v
   for pass in $(seq 1 "${PASSES}"); do
@@ -367,12 +451,17 @@ run_arm() {
     # viewers behind one gateway asking for the same segments at the same moment.
     for v in $(seq 1 "${viewers}"); do
       : >"${passFile}.v${v}"
+      : >"${passFile}.l${v}"
       fetch_walk "${passFile}.v${v}" "${passFile}.b${v}" "${round}" "${label}.${pass}.v${v}" \
-        "${started}" "$([ "${v}" = 1 ] && echo 1 || echo 0)" &
+        "${started}" "$([ "${v}" = 1 ] && echo 1 || echo 0)" "${passFile}.l${v}" "${pace}" &
     done
     wait
     for v in $(seq 1 "${viewers}"); do
       cat "${passFile}.v${v}" >>"${passFile}"
+      cat "${passFile}.l${v}" >>"${lagFile}"
+      # Each viewer's own last lag, so the final figure is one viewer's standing rather than whichever
+      # viewer happened to be concatenated last.
+      tail -1 "${passFile}.l${v}" 2>/dev/null >>"${finalsFile}"
       bytes=$((bytes + $(cat "${passFile}.b${v}" 2>/dev/null || echo 0)))
     done
     cat "${passFile}" >>"${OUT_DIR}/times-${round}-${label}.txt"
@@ -399,13 +488,23 @@ run_arm() {
   local cpuPerMb
   cpuPerMb="$(awk -v c="${cpuRetrieval}" -v b="${bytes}" 'BEGIN{printf "%.3f", (b>0)?c/(b/1000000):0}')"
 
+  local lagCount maxLag lastLag behind behindShare worstFinal=0
+  read -r lagCount maxLag lastLag behind behindShare <<<"$(summarise_lag "${lagFile}")"
+  worstFinal="$(sort -n "${finalsFile}" 2>/dev/null | tail -1)"
+  [ -n "${worstFinal}" ] || worstFinal=0
+
   say "  ${count} fetches by ${viewers} viewer(s), $((bytes / 1000000)) MB, $((ended - started))s, median ${median}ms, p90 ${p90}ms"
   say "  ⭐ ${late} of ${count} missed the ${BUDGET_MS}ms budget = ${lateShare}%"
+  if [ "${pace}" -gt 0 ]; then
+    say "  ⭐ paced at ${pace}ms: ${behind} of ${lagCount} fetches started behind = ${behindShare}%"
+    say "  ⭐⭐ deepest lag ${maxLag}ms, worst viewer ended ${worstFinal}ms behind = the buffer this needs"
+  fi
   say "  ⭐ gateway CPU ${cpuUsed}s total, ${cpuRetrieval}s above idle = ${cpuPerMb}s per MB retrieved"
   say "  accounting after:  ${after}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${count}" "${bytes}" \
-    "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${cpuUsed}" "${cpuIdleRate}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${count}" "${bytes}" \
+    "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${behindShare}" "${maxLag}" \
+    "${worstFinal}" "${cpuUsed}" "${cpuIdleRate}" \
     "${cpuRetrieval}" "${cpuPerMb}" "${before}" "${after}" >>"${STATE}"
   printf '%s\t%s\t%s\tbefore\t%s\n%s\t%s\t%s\tafter\t%s\n' \
     "${round}" "${label}" "${swap}" "${mBefore}" "${round}" "${label}" "${swap}" "${mAfter}" >>"${METRICS_TSV}"
@@ -413,13 +512,13 @@ run_arm() {
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
-    IFS=':' read -r label swap idle cache viewers <<<"${spec}"
-    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" ||
+    IFS=':' read -r label swap idle cache viewers pace <<<"${spec}"
+    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" ||
       say "round ${round} arm ${label} did not complete"
   done
 done
