@@ -32,10 +32,12 @@ care in running the test would have caught.
 
 1. **The median is the wrong statistic.** Between a night a viewer collapsed and a night it held, the
    median moved **1.18x** and the rate of one-second stalls moved **10 to 40x**. Section 3.1.
-2. **Viewers sharing a gateway are nearly free, up to a knee at 128.** bee fetches each distinct chunk
-   once and serves every concurrent viewer from it: **128 viewers cost the network 1.85x what one
-   costs**. **Pool 32 to 64 viewers per gateway.** At 128 the median segment transfer reaches 248ms
-   against a 267ms budget and it stops working. Sections 2.4b and 2.4c.
+2. **Viewers sharing a gateway are nearly free, and what limits it is how many arrive at the same
+   instant.** bee fetches each distinct chunk once and serves every concurrent viewer from it. **128
+   viewers in cohorts of 8 run comfortably on one unfunded gateway** at 57-68ms median with 1.7% late
+   and no buffer drain at all. **The same 128 viewers firing on the same tick drain 12.8 seconds of
+   buffer.** ⭐ **So keep simultaneous arrivals under about 8 to 16 per gateway, and jitter the client's
+   request schedule to get it.** Sections 2.4b, 2.4c and **2.4f**.
 3. **Funding is a switch that flips at zero.** 0.05 BZZ performs exactly like 6.4 BZZ, and an empty
    chequebook performs exactly like no chequebook. So **fund each node for its burn times the event
    duration and no more**, and **alarm on the balance**, because a node that runs dry reports nothing.
@@ -398,6 +400,10 @@ unfunded node shows on identical work). **45.1% is not inside that spread.**
 ⭐ **Pool 32 to 64 viewers per gateway.** Below that the fixed CPU cost is wasted, above 64 throughput
 efficiency falls to 70%.
 
+⛔ **Superseded by 2.4f.** That rule came from arms where every viewer fired on the same tick. **128
+viewers in cohorts of 8 are comfortable on one unfunded gateway**, so 32-64 is conservative by at least
+2x and the real limit is on simultaneous arrivals rather than on total viewers.
+
 ⚠️ **The knee is a property of the BUDGET, not the node.** At a 1.0s GOP a 248ms median sits at a
 quarter of the budget rather than at its edge, so a longer segment moves the knee out.
 
@@ -419,14 +425,18 @@ quarter of the budget rather than at its edge, so a longer segment moves the kne
 viewer**, fitted on paced arms the same day and predicting 1.41 at 16 against 1.34 measured and 3.61 at
 64 against 3.62. See 2.2's duty-cycle subsection for why the correction is real.
 
-### ✅ 2.4e Where the ceiling actually is, and it is not CPU
+### ⚠️ 2.4e Where the ceiling looked to be, before 2.4f moved it
+
+⛔ **Read 2.4f before using any number in this subsection.** Everything here was measured with every
+viewer firing on the same tick, which turned out to be the worst case rather than the normal one. The
+wall below is a **burst** limit, not a capacity.
 
 Every 128-viewer arm delivered **1201 MB in 36 to 41 seconds whether paced or flat out**, about
 **32 MB/s**. The paced arm _demanded_ 45 MB/s and did not get it, so both are pinned against one wall.
 
 At 720p on a 0.25s profile one viewer needs **0.352 MB/s (2.81 Mbps)**, which puts that wall at about
 **91 viewers**. 64 viewers is 22 MB/s, 69% of it, and 64 is exactly the concurrency that recovers from
-its wobbles while 128 does not. ⭐ **That reproduces "pool 32 to 64" by a completely unrelated route.**
+its wobbles while 128 does not.
 
 | bound, one gateway, 720p, 0.25s | viewers |                                                     |
 | ------------------------------- | ------: | --------------------------------------------------- |
@@ -443,17 +453,62 @@ to 0.3.** Served from local chunks bee does 1201 MB in 28s against an ideal 26.7
 run ~5% behind real time and **hold there instead of draining**. So the 32 MB/s wall is in the retrieval
 path, not in bee's request handling.
 
-⬅ **Open, and the first things your simulation should establish:** what happens above 128, whether the
-~32 MB/s wall is bee or the harness's own capacity (the 128 curl clients share the gateway's host), and
-**the thing no reference-list probe can see**, which is that LAT-11 measured feed staleness at 1.30x
-with eight viewers. **Retrieval scales. Whether the feed does is a separate question and the answer
-there was no.**
+### ⭐⭐ 2.4f What actually limits a gateway is how many viewers arrive at once
 
-⬅⬅ **The one that most likely changes your design: every viewer in these arms fires on the same
-schedule.** For live HLS that is honest, a segment becomes available to everyone at once. But it means
-these arms are served largely by **pooling**, bee merging simultaneous requests for the same chunk, and
-a real audience offset by join time, poll interval and buffer depth does not get that. **A scattered
-audience should depend on the cache far more than these numbers show, and nothing has measured it.**
+✅ **Measured 2026-08-08**, eighteen arms sweeping how far apart paced viewers sit in playback position.
+[Full report.](../bench/a-synchronised-audience-is-the-failure-2026-08-08.md) **This is the most
+important subsection in section 2 and it corrects 2.4c and 2.4e.**
+
+The prediction going in was that scattering viewers would be **worse**, since bee merges simultaneous
+requests for one chunk and that merging is what pooling rests on. It was wrong in every direction.
+
+| 128 viewers           | spread |     over 267ms |   **ended behind** |  network contacts |
+| --------------------- | -----: | -------------: | -----------------: | ----------------: |
+| synchronised          |      1 |   43.3 / 32.1% | **25652 / 5618ms** |   17,140 / 10,757 |
+| **scattered**         | **16** | **1.7 / 1.7%** |        **0 / 0ms** | **7,956 / 6,688** |
+| **scattered + cache** | **16** | **0.0 / 0.0%** |        **0 / 0ms** | **2,451 / 1,691** |
+
+⭐⭐ **What decides it is the cohort size, meaning how many viewers land in the same instant**, not how
+far the audience is spread in time:
+
+| viewers arriving together | verdict                                                    |
+| ------------------------: | ---------------------------------------------------------- |
+|                     **8** | ✅ works at both 64 and 128 total viewers, zero ending lag |
+|                        32 | ⚠️ unstable, 3133ms in one round and 502ms in the other    |
+|                        64 | ⛔ drains 7 to 13 seconds                                  |
+|                   **128** | ⛔ **failed in all six arms ever run that way**            |
+
+⭐ **Scattering costs about HALF the network contacts, not more.** Firing 64 requests for one chunk at
+the same instant does not get them merged, it gets them raced: **47 retrieval operations per distinct
+chunk synchronised, against 8.4 for eight cohorts**, which is one fetch per cohort exactly as intended.
+
+⭐⭐ **Scattered plus cached reaches the floor**: 1,691 to 2,451 contacts against ~2,300 distinct chunks
+is **one network fetch per chunk serving 128 viewers.** That is what pooling promised, and it needs a
+cache and a scattered audience together.
+
+### ⛔ Which case is real, and what to do about it
+
+**A real audience is scattered.** Players join at different moments, hold different buffer depths and
+poll on timers that started whenever they started. Nothing lines them up.
+
+⛔ **So synchronisation is a failure mode rather than a baseline, and it forms after a common shock:**
+an upstream outage clearing, an encoder restart, a manifest gap every player recovers from at once.
+**The recovery path is where the herd forms.** This is what one looks like: 40% of segments late and a
+buffer 12.8 seconds down, on a node that carries the same viewers comfortably when they are 4 seconds
+apart.
+
+⭐⭐ **Jitter the client's request schedule by a random fraction of a segment duration.** On this
+evidence it is worth more than any amount of gateway provisioning, and it costs nothing.
+
+⚠️ **Cohorts of 8 are what was proven, not 4.3 seconds of spread specifically**, and the cohorts here
+are exact and evenly sized where a real audience is random and will throw up larger ones by chance.
+
+⬅ **Open, and the first things your simulation should establish:** where the knee actually is now that
+128 scattered viewers are comfortable, what a **randomly** distributed audience does rather than an
+evenly cohorted one, whether the burst limit is bee or the harness's own capacity (the curl clients
+share the gateway's host), and **the thing no reference-list probe can see**, which is that LAT-11
+measured feed staleness at 1.30x with eight viewers. **Retrieval scales. Whether the feed does is a
+separate question and the answer there was no.**
 
 ---
 
@@ -808,10 +863,13 @@ funded arm took a non-fatal stall, so per 5.3 it has no valid control.
 - **Establish your noise floor by mislabelling data where nothing happened**, before trusting a design.
 - **Read bee's own counters**, and read the source of any counter a conclusion rests on.
 - **Price runs in bytes.** Unfunded nodes are free.
-- **Pool viewers behind gateways.** Sixteen on one node cost the network what one costs, and bee's CPU
-  is a per-node figure rather than a per-viewer one.
-- **Turn the cache on.** It halves network retrievals and cuts CPU 2.3 to 3.4x, and it is off by
-  default in everything this repo has ever run.
+- **Pool viewers behind gateways, and never let them arrive together.** Sixteen on one node cost the
+  network what one costs. But 128 viewers firing on the same tick drain 12.8 seconds of buffer where
+  the same 128 in cohorts of 8 drain none and cost half the network contacts. **Jitter the client's
+  request schedule by a random fraction of a segment duration.**
+- **Turn the cache on.** It halves network retrievals and cuts CPU 2.3 to 3.4x, and with a scattered
+  audience it reaches one network fetch per distinct chunk for 128 viewers. It is off by default in
+  everything this repo has ever run.
 - **Do not ship an unfunded viewer gateway.** Not because it always breaks, but because the variation
   an operator cannot control is wider than the margin a viewer needs.
 - **A 1.0s GOP is the one reliable mitigation** for every retrieval problem in this document.
