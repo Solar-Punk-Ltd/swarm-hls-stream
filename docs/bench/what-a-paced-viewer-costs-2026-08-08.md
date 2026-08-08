@@ -4,6 +4,14 @@
 alternating paced against flat-out at 1, 16, 64 and 128 viewers, and five arms separating the cache from
 the network at 128. **Cost: nothing.** The chequebook was byte-identical before and after all three.
 
+⛔ **PARTLY SUPERSEDED THE SAME DAY, and the section on where the ceiling is should be read as the
+worst case rather than the normal one.** Every viewer in every arm below fires on the same tick.
+[Scattering them across playback positions](a-synchronised-audience-is-the-failure-2026-08-08.md) makes
+128 viewers comfortable on the same node, holds ending lag at zero, sustains 37.5 MB/s instead of 32,
+and costs **half** the network contacts. **The CPU corrections below stand** and are unaffected, because
+paced and flat-out arms were compared at the same synchronisation. **The ~32 MB/s wall and the ~91
+viewer figure do not: they are a burst limit.**
+
 Every arm this project had ever run fetched flat out. That is a load generator, not a viewer. A player
 asks for one segment per segment duration because that is the rate the encoder makes them at, so a
 flat-out walk measures a queue draining as fast as it can rather than a person watching television.
