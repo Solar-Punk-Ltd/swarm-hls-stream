@@ -14,7 +14,7 @@ const HEALTHY_OUTPUT = [
   '0.031 200',
   '1.42',
   '{"totalBalance":"227039111999998600","availableBalance":"80000000000000000"}',
-  '323 131 -12570000 4',
+  '335 120 -430250000 -12570000 -1990000',
   '{"connectedPeers":92,"neighborhoodSize":135,"isReachable":true,"isWarmingUp":false}',
 ].join('\n');
 
@@ -28,7 +28,13 @@ const at = (atMs: number, overrides: Partial<GatewaySample> = {}): GatewaySample
   isWarmingUp: false,
   hostLoad1: 1.4,
   chequebookAvailableBzz: 8,
-  accounting: { peers: 323, inDebt: 131, deepestDebtPlur: -12_570_000, pinnedPeers: 4 },
+  accounting: {
+    peers: 335,
+    inDebt: 120,
+    totalDebtPlur: -430_250_000,
+    deepestDebtPlur: -12_570_000,
+    medianDebtPlur: -1_990_000,
+  },
   ...overrides,
 });
 
@@ -54,7 +60,13 @@ describe('reading a gateway sample off the host', () => {
       isWarmingUp: false,
       hostLoad1: 1.42,
       chequebookAvailableBzz: 8,
-      accounting: { peers: 323, inDebt: 131, deepestDebtPlur: -12_570_000, pinnedPeers: 4 },
+      accounting: {
+        peers: 335,
+        inDebt: 120,
+        totalDebtPlur: -430_250_000,
+        deepestDebtPlur: -12_570_000,
+        medianDebtPlur: -1_990_000,
+      },
     });
   });
 
@@ -92,7 +104,7 @@ describe('reading a gateway sample off the host', () => {
   });
 
   it('keeps the rest when the chequebook read is the one that failed', () => {
-    const sample = parseGatewaySample('0.03 200\n0.5\n\n1 0 0 0\n{"connectedPeers":7}', 0);
+    const sample = parseGatewaySample('0.03 200\n0.5\n\n1 0 0 0 0\n{"connectedPeers":7}', 0);
 
     assert.equal(sample.answered, true);
     assert.equal(sample.connectedPeers, 7);
@@ -117,12 +129,13 @@ describe('reading a gateway sample off the host', () => {
    * `thresholdreceived` as null, so the ceiling is found as the deepest debt rather than assumed.
    */
   describe('reading what the gateway owes the peers it reads through', () => {
-    it('reads the four figures the host reduces the balance list to', () => {
+    it('reads the five figures the host reduces the balance list to', () => {
       assert.deepEqual(parseGatewaySample(HEALTHY_OUTPUT, 0).accounting, {
-        peers: 323,
-        inDebt: 131,
+        peers: 335,
+        inDebt: 120,
+        totalDebtPlur: -430_250_000,
         deepestDebtPlur: -12_570_000,
-        pinnedPeers: 4,
+        medianDebtPlur: -1_990_000,
       });
     });
 
@@ -141,19 +154,25 @@ describe('reading a gateway sample off the host', () => {
       assert.equal(sample.connectedPeers, 7, 'losing accounting must not cost the reading beside it');
     });
 
-    it('reads a line that is not four figures as missing', () => {
-      for (const line of ['323 131', '323 131 -12570000 4 9', 'no peers found', '323 131 x 4']) {
+    it('reads a line that is not five figures as missing', () => {
+      for (const line of [
+        '335 120 -430250000 -12570000',
+        '335 120 -430250000 -12570000 -1990000 7',
+        'no peers found',
+        '335 120 x -12570000 -1990000',
+      ]) {
         assert.equal(parseGatewaySample(`0.03 200\n0.5\n{}\n${line}\n{}`, 0).accounting, null, `parsed "${line}"`);
       }
     });
 
     /** A node holding balances with nobody is a real reading and a different one from a failed read. */
     it('reads a node with no balances at all as zero rather than as missing', () => {
-      assert.deepEqual(parseGatewaySample('0.03 200\n0.5\n{}\n0 0 0 0\n{}', 0).accounting, {
+      assert.deepEqual(parseGatewaySample('0.03 200\n0.5\n{}\n0 0 0 0 0\n{}', 0).accounting, {
         peers: 0,
         inDebt: 0,
+        totalDebtPlur: 0,
         deepestDebtPlur: 0,
-        pinnedPeers: 0,
+        medianDebtPlur: 0,
       });
     });
   });
@@ -443,17 +462,26 @@ describe('summarizing what the gateway did during a run', () => {
    * per minute and why each takes the worst of its minute rather than the last. A node that spent a
    * minute pinned against its ceiling and settled in the final sample of it was pinned for that minute.
    */
-  it('takes the deepest debt of a minute, not the one it happened to end on', () => {
+  it('takes the worst debt of a minute, not the one it happened to end on', () => {
+    const light = { peers: 300, inDebt: 10, totalDebtPlur: -10_000, deepestDebtPlur: -1_000, medianDebtPlur: -900 };
+    const heavy = {
+      peers: 300,
+      inDebt: 200,
+      totalDebtPlur: -99_000_000,
+      deepestDebtPlur: -2_000_000,
+      medianDebtPlur: -480_000,
+    };
     const samples = [
-      at(0, { accounting: { peers: 300, inDebt: 10, deepestDebtPlur: -1_000, pinnedPeers: 1 } }),
-      at(60_000, { accounting: { peers: 300, inDebt: 200, deepestDebtPlur: -99_000_000, pinnedPeers: 180 } }),
-      at(90_000, { accounting: { peers: 300, inDebt: 12, deepestDebtPlur: -2_000, pinnedPeers: 2 } }),
+      at(0, { accounting: light }),
+      at(60_000, { accounting: heavy }),
+      at(90_000, { accounting: light }),
     ];
 
     const minutes = summarizeGateway(samples).minutes;
 
-    assert.equal(minutes[1].deepestDebtPlur, -99_000_000, 'a minute that settled at its end hid the ceiling it hit');
-    assert.equal(minutes[1].pinnedPeers, 180, 'a minute that settled at its end hid the peers pinned against it');
+    assert.equal(minutes[1].totalDebtPlur, -99_000_000, 'a minute that settled at its end hid the debt it carried');
+    assert.equal(minutes[1].medianDebtPlur, -480_000);
+    assert.equal(minutes[1].deepestDebtPlur, -2_000_000);
     assert.equal(minutes[1].peersInDebt, 200);
   });
 
@@ -490,8 +518,8 @@ describe('summarizing what the gateway did during a run', () => {
   it('keeps the minutes that did carry accounting when only some did', () => {
     const summary = summarizeGateway([at(0), at(60_000, { accounting: null })]);
 
-    assert.equal(summary.minutes[0].pinnedPeers, 4);
-    assert.equal(summary.minutes[1].pinnedPeers, null);
+    assert.equal(summary.minutes[0].peersInDebt, 120);
+    assert.equal(summary.minutes[1].peersInDebt, null);
     assert.doesNotMatch(summary.warnings.join(' '), /accounting/i);
   });
 
@@ -597,14 +625,18 @@ describe('summarizing what the gateway did during a run', () => {
   });
 
   it('renders the debt the node carries, in the same minutes as everything else', () => {
-    const lines = gatewaySection(
-      summarizeGateway([
-        at(0, { accounting: { peers: 300, inDebt: 200, deepestDebtPlur: -99_000_000, pinnedPeers: 180 } }),
-      ]),
-    ).join('\n');
+    const accounting = {
+      peers: 300,
+      inDebt: 200,
+      totalDebtPlur: -99_000_000,
+      deepestDebtPlur: -2_000_000,
+      medianDebtPlur: -480_000,
+    };
+    const lines = gatewaySection(summarizeGateway([at(0, { accounting })])).join('\n');
 
-    assert.match(lines, /-99000000/, 'the deepest debt never reached the table');
-    assert.match(lines, /180/, 'the pinned peer count never reached the table');
+    assert.match(lines, /-99000000/, 'the debt the node was carrying never reached the table');
+    assert.match(lines, /-480000/, 'the middle debt never reached the table');
+    assert.match(lines, /\| 200 \|/, 'the count of peers owed never reached the table');
   });
 
   it('renders the reason rather than an empty table when there are no samples', () => {

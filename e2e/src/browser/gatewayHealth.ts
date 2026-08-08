@@ -55,14 +55,16 @@ const SERVICE_STEP_WORTH_NAMING = 2;
 const PEER_LOSS_SHARE = 0.5;
 
 /**
- * How deep a peer's debt must be, against the deepest one the node holds, to count as pinned.
+ * ⛔ There was a `pinnedPeers` figure here, counting peers within a tenth of the deepest debt, on the
+ * theory that a ceiling looks like peers clustered against a common depth. A proving run against the
+ * live node refuted it before it reached a report: the deepest debt sat at exactly -12,570,000 PLUR
+ * across every reading and 50 MB of retrieval on both arms, and **exactly one peer holds that value**,
+ * with a smooth tail below it. It is a stale balance with an inactive peer, so a metric calibrated
+ * against it was calibrated against noise and would have moved for reasons no arm controlled.
  *
- * Self-calibrating on purpose. Bee reports `thresholdreceived` and `thresholdgiven` as null on this
- * deployment, so the ceiling cannot be read off the node and assuming a default would make every
- * reading a statement about the assumption. What a ceiling looks like from below is peers *clustered*
- * at a common depth, and that shape is visible without knowing where the ceiling is.
+ * What replaced it is the sum and the median, which are not anchored to an extreme. If a ceiling ever
+ * does exist, the median rises to meet the deepest, which is visible in the numbers already reported.
  */
-const PINNED_SHARE_OF_DEEPEST_DEBT = 0.9;
 
 /**
  * Spendable balance below which the gateway is about to stop paying for reads.
@@ -86,10 +88,18 @@ export interface PeerAccounting {
   peers: number;
   /** Peers this node owes, having taken more than it has given. */
   inDebt: number;
-  /** The largest single debt in PLUR, always at or below zero. Zero means the node owes nobody. */
+  /**
+   * Every debt added together, in PLUR, at or below zero.
+   *
+   * The headline of the five. It is the unsettled consumption the node is carrying, so it rises while
+   * retrieval outruns settlement and falls when cheques clear, and unlike a count it cannot be flat
+   * while the debts behind it double.
+   */
+  totalDebtPlur: number;
+  /** The largest single debt. A maximum, so one inactive peer can hold it still for a whole run. */
   deepestDebtPlur: number;
-  /** How many peers sit within {@link PINNED_SHARE_OF_DEEPEST_DEBT} of that deepest debt. */
-  pinnedPeers: number;
+  /** The middle debt among the peers in debt, which moves with the distribution rather than its tail. */
+  medianDebtPlur: number;
 }
 
 export interface GatewaySample {
@@ -141,10 +151,12 @@ export interface GatewayMinute {
   chequebookAvailableBzz: number | null;
   /** The most peers owed at once in the minute. */
   peersInDebt: number | null;
-  /** The deepest debt reached in the minute, since a debt settled inside it was still reached. */
+  /** The most debt carried at once in the minute, since a debt settled inside it was still carried. */
+  totalDebtPlur: number | null;
+  /** The deepest single debt reached in the minute. */
   deepestDebtPlur: number | null;
-  /** The most peers seen pinned against that depth at once. */
-  pinnedPeers: number | null;
+  /** The deepest the middle debt reached in the minute. */
+  medianDebtPlur: number | null;
 }
 
 export interface GatewayHealth {
@@ -174,10 +186,11 @@ function balancesReduction(): string {
   return [
     `grep -o '"balance":"-\\{0,1\\}[0-9]\\{1,\\}"'`,
     `tr -dc '0-9\\n-'`,
-    `awk '{n++; v[n]=$1+0; if(n==1||v[n]<m) m=v[n]; if(v[n]<0) d++} ` +
-      `END{if(n==0) exit; if(m>0) m=0; p=0; ` +
-      `if(m<0){t=m*${PINNED_SHARE_OF_DEEPEST_DEBT}; for(i=1;i<=n;i++) if(v[i]<=t) p++} ` +
-      `print n, d+0, m, p}'`,
+    // Sorted ascending, so every debt leads and the median of them is an index rather than a second pass.
+    `sort -n`,
+    `awk '{n++; v[n]=$1+0; if(v[n]<0){d++; s+=v[n]}} ` +
+      `END{if(n==0) exit; ` +
+      `print n, d+0, s+0, (d>0)?v[1]:0, (d>0)?v[int(d/2)+1]:0}'`,
   ].join(' | ');
 }
 
@@ -265,11 +278,11 @@ function parseJsonLine(line: string | undefined): NodeStatus {
  */
 function parseAccounting(line: string | undefined): PeerAccounting | null {
   const figures = (line ?? '').trim().split(/\s+/).map(numberOrNull);
-  if (figures.length !== 4 || figures.some((figure) => figure === null)) {
+  if (figures.length !== 5 || figures.some((figure) => figure === null)) {
     return null;
   }
-  const [peers, inDebt, deepestDebtPlur, pinnedPeers] = figures as number[];
-  return { peers, inDebt, deepestDebtPlur, pinnedPeers };
+  const [peers, inDebt, totalDebtPlur, deepestDebtPlur, medianDebtPlur] = figures as number[];
+  return { peers, inDebt, totalDebtPlur, deepestDebtPlur, medianDebtPlur };
 }
 
 /** Read one sample out of what {@link sampleCommand} printed. Never throws. */
@@ -427,8 +440,9 @@ function minuteOf(samples: GatewaySample[], minute: number): GatewayMinute {
   // minute pinned against its ceiling and settled in the final sample of it was pinned for that
   // minute, and the browser table this is read beside reports the minute a buffer fell in.
   const owed = accounting.map((a) => a.inDebt);
-  const debts = accounting.map((a) => a.deepestDebtPlur);
-  const pinned = accounting.map((a) => a.pinnedPeers);
+  const totals = accounting.map((a) => a.totalDebtPlur);
+  const deepest = accounting.map((a) => a.deepestDebtPlur);
+  const medians = accounting.map((a) => a.medianDebtPlur);
 
   return {
     minute,
@@ -439,8 +453,9 @@ function minuteOf(samples: GatewaySample[], minute: number): GatewayMinute {
     maxHostLoad1: loads.length > 0 ? Math.max(...loads) : null,
     chequebookAvailableBzz: balances.length > 0 ? Math.min(...balances) : null,
     peersInDebt: owed.length > 0 ? Math.max(...owed) : null,
-    deepestDebtPlur: debts.length > 0 ? Math.min(...debts) : null,
-    pinnedPeers: pinned.length > 0 ? Math.max(...pinned) : null,
+    totalDebtPlur: totals.length > 0 ? Math.min(...totals) : null,
+    deepestDebtPlur: deepest.length > 0 ? Math.min(...deepest) : null,
+    medianDebtPlur: medians.length > 0 ? Math.min(...medians) : null,
   };
 }
 
@@ -567,7 +582,7 @@ export function gatewaySection(health: GatewayHealth): string[] {
   }
 
   lines.push(
-    '| minute | samples | median /health | unanswered | peers | host load | BZZ to spend | owed | deepest debt | pinned |',
+    '| minute | samples | median /health | unanswered | peers | host load | BZZ to spend | owed | total debt | median debt |',
     '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
     ...health.minutes.map(
       (m) =>
@@ -580,8 +595,8 @@ export function gatewaySection(health: GatewayHealth): string[] {
           m.maxHostLoad1?.toFixed(2) ?? '—',
           m.chequebookAvailableBzz?.toFixed(4) ?? '—',
           m.peersInDebt ?? '—',
-          m.deepestDebtPlur ?? '—',
-          m.pinnedPeers ?? '—',
+          m.totalDebtPlur ?? '—',
+          m.medianDebtPlur ?? '—',
         ].join(' | ') + ' |',
     ),
     '',
