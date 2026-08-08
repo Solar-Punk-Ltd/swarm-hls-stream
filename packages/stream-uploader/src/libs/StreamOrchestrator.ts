@@ -71,16 +71,21 @@ export class StreamOrchestrator {
     // create two groups for the same source.
     const match = this.config.ladder?.match(streamId) ?? null;
     let ladder: LadderMembership | undefined;
-    let streamTopic: string;
+
+    // A fresh topic per uploader, ladder or not. Deriving a rung's topic from (group, rung) would
+    // be tidier to read, but a rung that stops and restarts while its siblings keep the ladder
+    // alive would be handed the topic it just finished writing — and, with no state to resume
+    // from, would start overwriting it at SOC index 0. What has to be stable across the ladder is
+    // the group, not the topics.
+    const streamTopic = crypto.randomUUID();
 
     if (match) {
       const group = this.groupFor(match.baseStreamId);
       ladder = { group, rung: match.rung };
-      streamTopic = ladderTopic(group, match.rung.name);
       this.streamBases.set(streamId, match.baseStreamId);
-      this.logger.info(`[StreamOrchestrator] ${streamId} is rung ${match.rung.name} of ladder ${group}`);
-    } else {
-      streamTopic = crypto.randomUUID();
+      this.logger.info(
+        `[StreamOrchestrator] ${streamId} is rung ${match.rung.name} of ladder ${group}, topic ${streamTopic}`,
+      );
     }
 
     this.queue.add(() => {
@@ -196,7 +201,7 @@ export class StreamOrchestrator {
       this.activeStreams.set(streamId, uploader);
 
       // Rebuild processed segments set from state
-      const processed = new Set(state.segments.map(s => s.index));
+      const processed = new Set(state.segments.map((s) => s.index));
       this.processedSegments.set(streamId, processed);
 
       // Set recovery timeout — if engine doesn't reconnect, finalize as VOD
@@ -259,7 +264,7 @@ export class StreamOrchestrator {
     // Stop all active streams
     const streamIds = Array.from(this.activeStreams.keys());
     await Promise.all(
-      streamIds.map(async streamId => {
+      streamIds.map(async (streamId) => {
         try {
           await this.stopStream(streamId);
         } catch (error) {
@@ -295,7 +300,7 @@ export class StreamOrchestrator {
 
     // The group only dies once its last rung has. A source that restarts while a sibling is
     // still draining must not be handed a second group for the same ladder.
-    const stillRunning = [...this.streamBases.values()].some(other => other === base);
+    const stillRunning = [...this.streamBases.values()].some((other) => other === base);
     if (!stillRunning) {
       this.ladderGroups.delete(base);
     }
@@ -329,16 +334,6 @@ export class StreamOrchestrator {
 
     this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
   }
-}
-
-/**
- * The rung's feed topic, derived from the ladder id rather than drawn fresh.
- *
- * Deriving it means every rung's topic is known the moment the ladder exists, which is what lets
- * the catalog entry stay one entry with a stable identity while its rungs come up one by one.
- */
-function ladderTopic(group: string, rung: string): string {
-  return `${group}-${rung}`;
 }
 
 function baseStreamId(streamId: string, rung: string): string {

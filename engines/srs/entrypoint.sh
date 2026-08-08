@@ -64,10 +64,20 @@ SRS_ADAPTER_PORT="${SRS_ADAPTER_PORT:-3000}"
 # Swarm feeds at all. TODO: split audio once the ladder is proven.
 # ---------------------------------------------------------------------------------------------
 
+# ABR_ENABLED is read by the stream-uploader as well, through a parser that accepts only
+# true/1/false/0 and quietly falls back to its default for anything else. Accepting a wider
+# spelling here than it does would let one value turn the ladder on for SRS and off for the
+# uploader — four encodes published as four unrelated streams, with no ladder for anyone. So
+# refuse what the other side cannot read, rather than guess.
 abr_enabled() {
   case "${ABR_ENABLED:-false}" in
-    true | 1 | on | yes) return 0 ;;
-    *) return 1 ;;
+    true | 1) return 0 ;;
+    false | 0) return 1 ;;
+    *)
+      echo "ABR_ENABLED must be one of true, 1, false, 0 — got '$ABR_ENABLED'." >&2
+      echo "The stream-uploader reads this same value and accepts only those four." >&2
+      exit 1
+      ;;
   esac
 }
 

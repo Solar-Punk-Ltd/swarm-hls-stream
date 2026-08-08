@@ -33,6 +33,10 @@ function socPath(topic: Topic, index: number): string {
 class FakeGateway {
   public readonly responses = new Map<string, string>();
   public readonly requests: string[] = [];
+  /** Reproduces a proxy that drops the header extractFeedIndex needs, which makes it throw. */
+  public stripFeedIndexHeader = false;
+
+  private readonly held = new Map<string, Promise<void>>();
 
   publishFeedHead(topic: Topic, index: number, body: string): void {
     this.responses.set(`feeds/${OWNER}/${topic.toString()}`, body);
@@ -43,8 +47,28 @@ class FakeGateway {
     this.responses.set(socPath(topic, index), body);
   }
 
+  /** Blocks one path until the returned function is called, to pin a request in flight. */
+  hold(path: string): () => void {
+    let release = () => {};
+    this.held.set(
+      path,
+      new Promise<void>((resolve) => {
+        release = () => {
+          this.held.delete(path);
+          resolve();
+        };
+      }),
+    );
+    return () => release();
+  }
+
   fetchResource = async (path: string): Promise<Response> => {
     this.requests.push(path);
+
+    const blocked = this.held.get(path);
+    if (blocked) {
+      await blocked;
+    }
 
     const body = this.responses.get(path);
     if (body === undefined) {
@@ -53,7 +77,7 @@ class FakeGateway {
 
     const headers = new Headers();
     const feedMatch = /^feeds\/[^/]+\/(.+)$/.exec(path);
-    if (feedMatch) {
+    if (feedMatch && !this.stripFeedIndexHeader) {
       headers.set('Swarm-Feed-Index', this.responses.get(`__index__${feedMatch[1]}`) ?? '0');
     }
 
@@ -201,6 +225,65 @@ describe('LadderFeedPoller', () => {
     poller.stop([stalled, topic]);
 
     await pending;
+  });
+
+  it('survives a throw that is not a failed fetch, rather than dying silently', async () => {
+    // A gateway behind a proxy that strips Swarm-Feed-Index, or a truncated body, throws from
+    // outside the fetch. Before this was handled, the walk's promise rejected, the rung stayed in
+    // `polled` so nothing restarted it, and ready() never settled — the loader then awaited a
+    // level that would never load or error.
+    const topic = Topic.fromString('group-1-720p');
+    const gateway = new FakeGateway();
+    gateway.publishFeedHead(topic, 0, manifest(1));
+    gateway.stripFeedIndexHeader = true;
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS);
+    poller.start(OWNER, [topic]);
+
+    try {
+      await waitFor(() => gateway.requests.length >= 3, 'the walk to keep retrying');
+
+      gateway.stripFeedIndexHeader = false;
+      gateway.publishSoc(topic, 1, manifest(2));
+      await waitFor(() => segmentCount(state, topic) === 2, 'recovery once the gateway behaves');
+    } finally {
+      poller.stop([topic]);
+    }
+  });
+
+  it('does not write state from a response that lands after teardown', async () => {
+    // The player stops the walk and clears the topic synchronously. A response still in flight
+    // must not recreate that state: a resurrected index makes the next session skip bootstrap and
+    // resume minutes behind live, replaying the previous session's segments.
+    const topic = Topic.fromString('group-1-480p');
+    const gateway = new FakeGateway();
+    gateway.publishFeedHead(topic, 0, manifest(1));
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS);
+    poller.start(OWNER, [topic]);
+
+    await waitFor(() => state.getIndex(topic.toString()) !== null, 'bootstrap');
+
+    // Arm the block before publishing, so the walk cannot consume index 1 before it is held —
+    // otherwise there is nothing in flight at teardown and the test proves nothing.
+    const held = socPath(topic, 1);
+    const attemptsBeforeHold = gateway.requests.filter((p) => p === held).length;
+    const release = gateway.hold(held);
+    gateway.publishSoc(topic, 1, manifest(2));
+
+    await waitFor(
+      () => gateway.requests.filter((p) => p === held).length > attemptsBeforeHold,
+      'a request pinned in flight',
+    );
+
+    poller.stop([topic]);
+    state.clear(topic.toString());
+
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(state.getIndex(topic.toString()), null, 'teardown must stay torn down');
+    assert.equal(segmentCount(state, topic), 0);
   });
 
   it('reports a topic as unpolled once stopped, so the loader falls back to reading it itself', () => {

@@ -24,11 +24,17 @@ export interface LadderSource {
  */
 export type LadderResolver = () => LadderSource;
 
+/** What was registered, alongside the topics that were actually handed to the poller. */
+interface RegisteredLadder {
+  resolve: LadderResolver;
+  topics: Topic[];
+}
+
 const manifestQueue = new Pqueue({ concurrency: 1 });
 
 export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
-  private ladders = new Map<string, LadderResolver>();
+  private ladders = new Map<string, RegisteredLadder>();
   private poller: LadderFeedPoller;
 
   constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {
@@ -53,24 +59,29 @@ export class ManifestFetcher {
    * including the three hls.js is not playing, which is what makes switching to one of them cheap.
    */
   registerLadder(sourceUrl: string, resolve: LadderResolver): void {
-    this.ladders.set(sourceUrl, resolve);
-
     const ladder = resolve();
-    this.poller.start(ladder.owner, ladderTopics(ladder));
+    const topics = ladderTopics(ladder);
+
+    // The topics are recorded, not re-derived on the way out. React assigns refs during render,
+    // which happens before the previous effect's cleanup runs, so a resolver read at unregister
+    // time already sees the *next* stream's ladder — which would stop the rungs just started and
+    // leave the previous stream's walk loops running forever.
+    this.ladders.set(sourceUrl, { resolve, topics });
+    this.poller.start(ladder.owner, topics);
   }
 
   unregisterLadder(sourceUrl: string): void {
-    const ladder = this.ladders.get(sourceUrl)?.();
+    const registered = this.ladders.get(sourceUrl);
     this.ladders.delete(sourceUrl);
 
-    if (ladder) {
-      this.poller.stop(ladderTopics(ladder));
+    if (registered) {
+      this.poller.stop(registered.topics);
     }
   }
 
   /** The master playlist for a registered ladder, or null when this source is single-rendition. */
   masterFor(sourceUrl: string): string | null {
-    const ladder = this.ladders.get(sourceUrl)?.();
+    const ladder = this.ladders.get(sourceUrl)?.resolve();
     if (!ladder || ladder.renditions.length === 0) {
       return null;
     }

@@ -108,7 +108,18 @@ export class LadderFeedPoller {
 
   private async walk(owner: string, entry: PolledTopic): Promise<void> {
     while (!entry.stopped) {
-      const advanced = await this.advance(owner, entry);
+      let advanced = 0;
+
+      // Nothing thrown in here may end the walk. A rung whose loop dies is not merely stale, it is
+      // unrecoverable for the session: it stays in `polled`, so nothing re-starts it, and anything
+      // awaiting its `ready()` waits for a promise that will never settle — which for the loader
+      // means an hls.js level request that never succeeds and never fails. Reading a truncated
+      // body, or a gateway that drops the Swarm-Feed-Index header, is enough to get there.
+      try {
+        advanced = await this.advance(owner, entry);
+      } catch (error) {
+        this.recordMiss(entry, error);
+      }
 
       if (entry.stopped) {
         return;
@@ -157,8 +168,17 @@ export class LadderFeedPoller {
       }
 
       entry.misses = 0;
+      const text = await response.text();
 
-      if (!this.ingest(entry, await response.text())) {
+      // Re-checked after every await, not just at the top of the loop. Teardown clears this
+      // topic's state synchronously right after stopping the walk, so a response still in flight
+      // would otherwise land afterwards and recreate what was cleared — leaving a stale index
+      // behind that the next session would resume from instead of bootstrapping to the live edge.
+      if (entry.stopped) {
+        return steps;
+      }
+
+      if (!this.ingest(entry, text)) {
         return steps;
       }
 
@@ -187,6 +207,10 @@ export class LadderFeedPoller {
     entry.misses = 0;
     const text = await response.text();
     const index = extractFeedIndex(response);
+
+    if (entry.stopped) {
+      return false;
+    }
 
     if (!this.ingest(entry, text)) {
       return false;
