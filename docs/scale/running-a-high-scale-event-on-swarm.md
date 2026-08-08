@@ -316,10 +316,55 @@ viewers each carry a sixteenth of it.
 ⚠️ **Derived from a four-minute sweep.** Arms were 13 to 15 seconds, the concurrent `curl` processes
 consume host CPU that is not counted (only bee's PID is), and nothing was tested above 16.
 
-⬅ **Open, and the first thing your simulation should establish:** where this stops. Nothing above 16
-has been measured, and **what this sweep cannot see is the thing LAT-11 found**, which is that feed
-staleness went 1.30x at eight viewers. **Retrieval scales. Whether the feed does is a separate
-question and the answer there was no.**
+### ⭐⭐ 2.4c Where sharing stops: the knee is at 128, and the budget finds it
+
+✅ **Measured 2026-08-08**, concurrency alternated 1, 32, 1, 64, 1, 128 on an unfunded gateway. It cost
+nothing. [Full report.](../bench/where-sharing-a-gateway-stops-2026-08-08.md)
+
+| viewers |    median |   p90 | **over 267ms** | **MB/s** | **network contacts** | first-peer |
+| ------: | --------: | ----: | -------------: | -------: | -------------------: | ---------: |
+|       1 |  **78ms** | 239ms |       **2-7%** |      0.6 |      **3,207-3,234** |        17% |
+|  **32** | **118ms** | 544ms |      **24.4%** | **12.5** |            **4,565** |  **95.0%** |
+|  **64** | **141ms** | 445ms |      **17.8%** | **24.0** |            **4,584** |  **96.3%** |
+| **128** | **248ms** | 685ms |      **45.1%** | **33.4** |            **5,972** |  **95.0%** |
+
+⛔ **At 128 the median segment transfer is 248ms against a 267ms budget.** The typical segment barely
+fits, and that is the ceiling.
+
+⭐ **Sharing does not break, it only softens: 128 viewers cost the network 1.85x what one costs.**
+
+⭐⭐ **First-peer service goes UP with concurrency, 17% to 95%.** An unfunded gateway serving 32+
+concurrent viewers reaches the peer-selection loop for so few requests that it beats a **funded** node
+serving one (91-93%). The penalty is per distinct chunk and sharing spreads it across everyone.
+
+⚠️ **32 and 64 cannot be ranked** (24.4% against 17.8% is backwards, and well inside the spread an
+unfunded node shows on identical work). **45.1% is not inside that spread.**
+
+⭐ **Pool 32 to 64 viewers per gateway.** Below that the fixed CPU cost is wasted, above 64 throughput
+efficiency falls to 70%.
+
+⚠️ **The knee is a property of the BUDGET, not the node.** At a 1.0s GOP a 248ms median sits at a
+quarter of the budget rather than at its edge, so a longer segment moves the knee out.
+
+### ⛔ 2.4d The CPU model, which corrects 2.2
+
+| viewers | bee CPU-cores |
+| ------: | ------------: |
+|       1 |     1.4 - 1.5 |
+|      16 |          2.17 |
+|      32 |          2.27 |
+|      64 |      **4.54** |
+|     128 |      **6.82** |
+
+⭐ **`fixed + marginal`: about 1.5 cores fixed plus about 0.07 cores per viewer.** It predicts 2.6 at
+16 against 2.17 measured and 6.5 at 128 against 6.82. **Below 16 the fixed term dominates, which is why
+2.4b looked flat and why the per-viewer figures in 2.2 are wrong for a pooled topology.**
+
+⬅ **Open, and the first things your simulation should establish:** whether the 128-viewer arm was
+**bandwidth-limited rather than bee-limited** (1,201 MB in 36s is 267 Mbps and nothing measured the
+host's network capacity), what happens above 128, and **the thing no reference-list probe can see**,
+which is that LAT-11 measured feed staleness at 1.30x with eight viewers. **Retrieval scales. Whether
+the feed does is a separate question and the answer there was no.**
 
 ---
 
