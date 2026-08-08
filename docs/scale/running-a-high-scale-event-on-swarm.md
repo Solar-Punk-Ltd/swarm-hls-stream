@@ -137,6 +137,16 @@ At the measured **0.0102 BZZ/min** for 720p / 2500 kbps, a two-hour event is **1
 Combined with 2.4b, a thousand viewers at sixteen per gateway is 63 gateways, so about **77 BZZ** for
 the event against **1,220 BZZ** for one node per viewer.
 
+⚠️ **That 77 BZZ is a deliberately conservative ceiling, and 2.4e says by how much.** Sixteen per
+gateway is the concurrency at which sharing was measured, not a limit. **The measured limit is ~123
+viewers per gateway**, and because bee fetches each distinct chunk once no matter how many local viewers
+want it, **a gateway's burn barely moves with the viewers behind it**. Pooling at a sane 60% of the
+measured capacity is roughly 14 gateways and **about 17 BZZ**, four to five times cheaper.
+
+⛔ **Do not budget against the 17.** It is arithmetic on two measured numbers and has never been run,
+whereas the 77 is the figure that has slack in it. Size the wallet with the 77 and treat the difference
+as headroom until somebody measures a pooled fleet.
+
 ⛔ **This is the failure mode with no alarm.** A gateway that runs dry does not error, does not
 disconnect and reports nothing: on 2026-08-07 one was found at 0.0000007 BZZ spendable with `/health`
 answering in 1.1ms, 134 peers and reachability Public. Every viewer behind it goes from 0.1% late
@@ -456,9 +466,11 @@ unfunded node shows on identical work). **45.1% is not inside that spread.**
 ⭐ **Pool 32 to 64 viewers per gateway.** Below that the fixed CPU cost is wasted, above 64 throughput
 efficiency falls to 70%.
 
-⛔ **Superseded by 2.4f.** That rule came from arms where every viewer fired on the same tick. **128
-viewers in cohorts of 8 are comfortable on one unfunded gateway**, so 32-64 is conservative by at least
-2x and the real limit is on simultaneous arrivals rather than on total viewers.
+⛔ **Superseded twice.** That rule came from arms where every viewer fired on the same tick. **128
+viewers in cohorts of 8 are comfortable on one unfunded gateway** (2.4f), and 2.4e now measures the
+actual limit directly: **~123 viewers at 2.83 Mbps, bracketed by 128 holding and 192 not**. So 32-64 is
+conservative by roughly 2 to 4x, and the binding constraint is **aggregate byte rate**, with cohort size
+deciding how efficiently that rate is spent.
 
 ⚠️ **The knee is a property of the BUDGET, not the node.** At a 1.0s GOP a 248ms median sits at a
 quarter of the budget rather than at its edge, so a longer segment moves the knee out.
@@ -483,31 +495,57 @@ viewer**, fitted on paced arms the same day and predicting 1.41 at 16 against 1.
 
 ### ⚠️ 2.4e Where the ceiling looked to be, before 2.4f moved it
 
-⛔ **Read 2.4f before using any number in this subsection.** Everything here was measured with every
-viewer firing on the same tick, which turned out to be the worst case rather than the normal one. The
-wall below is a **burst** limit, not a capacity.
+✅ **Measured directly 2026-08-08**, sixteen arms scaling 128 to 512 viewers with the cohort size held
+constant at 8. `docs/bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md`.
 
-Every 128-viewer arm delivered **1201 MB in 36 to 41 seconds whether paced or flat out**, about
-**32 MB/s**. The paced arm _demanded_ 45 MB/s and did not get it, so both are pinned against one wall.
+⭐⭐ **Throughput plateaus at 43 to 44 MB/s.** Four concurrencies, both rounds, while demand at those
+concurrencies runs 59 to 88 MB/s. Every arm above the plateau falls behind by roughly the amount it
+exceeds it, so they are not failing at different points, they are failing against one wall.
 
-At 720p on a 0.25s profile one viewer needs **0.352 MB/s (2.81 Mbps)**, which puts that wall at about
-**91 viewers**. 64 viewers is 22 MB/s, 69% of it, and 64 is exactly the concurrency that recovers from
-its wobbles while 128 does not.
+⛔ **The earlier 32 MB/s figure in this section was measured with every viewer firing on the same tick**,
+which is the worst case rather than the normal one. It was a burst limit. **The sustained figure is
+43 to 44 MB/s.**
 
-| bound, one gateway, 720p, 0.25s | viewers |                                                     |
-| ------------------------------- | ------: | --------------------------------------------------- |
-| retrieval path, cache off       | **~91** | ✅ measured, bracketed by 64 keeping up and 128 not |
-| serving path, cache warm        |    ~122 | ⚠️ derived from 43 MB/s measured warm               |
-| host NIC, 1 Gbps                |    ~355 | ⚠️ derived, never tested                            |
-| host CPU, 48 cores, pooled      |   ~1000 | ⚠️ extrapolated far past measurement                |
+At this sitting's 94.4 KB per 267ms segment, one viewer needs **0.354 MB/s (2.83 Mbps)**, which puts the
+wall at about **123 viewers** and brackets it exactly: 128 held at zero buffer drain in all seven of its
+clean arms, 192 drained in both rounds.
 
-✅ **It is not host CPU and not the local link.** At 128 viewers bee used ~6 of 48 cores and 256 Mbps of
-a 1000 Mbps NIC.
+| bound, one gateway, 720p, 0.25s |  viewers |                                                       |
+| ------------------------------- | -------: | ----------------------------------------------------- |
+| **bee throughput, cache off**   | **~123** | ✅ **measured**, bracketed by 128 holding and 192 not |
+| bee throughput, cache warm      |     ~122 | ✅ measured warm, at the same 43 MB/s                 |
+| host NIC, 1 Gbps                |     ~355 | ⚠️ derived, never tested                              |
+| host CPU, 48 cores, pooled      |    ~1000 | ⚠️ extrapolated far past measurement                  |
 
-⭐⭐ **A warm cache moves the wall to ~43 MB/s and collapses the buffer a viewer needs from 8.3 seconds
-to 0.3.** Served from local chunks bee does 1201 MB in 28s against an ideal 26.7, so 128 paced viewers
-run ~5% behind real time and **hold there instead of draining**. So the 32 MB/s wall is in the retrieval
-path, not in bee's request handling.
+⭐⭐ **The first two rows agreeing is the finding.** A warm cache does not raise the ceiling, it reduces
+the work done under it. **43 to 44 MB/s is bee's ceiling wherever the bytes come from**, which is why a
+cache is worth having for cost and for buffer depth and not for capacity.
+
+✅ **It is not host CPU, not host load, and not the local link.** At **512** viewers bee used ~6 of 48
+cores, host load peaked at 31.6 to 35.9 of 48, and 43 MB/s is 344 Mbps of a gigabit NIC. All three have
+headroom, so the ceiling is internal to bee and **is not a capacity that can be bought**.
+
+⭐⭐ **So a gateway's capacity is a bitrate, not a viewer count.** ⚠️ **1080p at 6000k ships and would
+land near 60 viewers per gateway on the same arithmetic**, which is division rather than a measurement.
+
+⛔ **Holding the cohort at 8 did not save any arm above 128.** 2.4f is still true and is now bounded:
+cohort size decides whether an audience is served efficiently, **aggregate byte rate decides how large
+it can be**, and a deployment has to clear both.
+
+### ⛔⛔ 2.4e-bis A gateway restarted mid-event is out of service for minutes
+
+✅ **Measured 2026-08-08**, incidentally, because the sweep above alternated an identical reference arm.
+
+**The same work costs about three times as much on a freshly recreated node**: 194 CPU-seconds against
+70 warm, 47% of segments over budget against 0.0%, and viewers ending 13 seconds behind rather than
+level. At 128 viewers, which is comfortably inside capacity.
+
+⭐ It takes **three to four arms, roughly two minutes**, to decay. Peer count is flat throughout, so it
+is not a node short of peers.
+
+⛔ **So warm a newly provisioned gateway before pointing viewers at it**, and treat a restart during a
+live event as taking that gateway out for minutes rather than seconds. ⬅ The exact decay curve is being
+measured separately.
 
 ### ⭐⭐ 2.4f What actually limits a gateway is how many viewers arrive at once
 
@@ -900,16 +938,21 @@ container's own arguments.
 
 ✅ **The funding cliff. Answered 2026-08-08**, see 2.1b. It is a switch and it flips at zero.
 
-✅ **Concurrency to 128. Answered 2026-08-08**, see 2.4b through 2.4e. ⬅ **Above 128 is still open**,
-and so is the shape past the ~32 MB/s wall.
+✅ **Concurrency to 512. Answered 2026-08-08**, see 2.4b through 2.4f. The wall is **43 to 44 MB/s
+sustained**, which is ~123 viewers at 2.83 Mbps, and it is internal to bee rather than host or link.
+⬅ **Still open: the same plateau on a FUNDED gateway.** Saturating arms means bytes, and N256 plus N384
+at two rounds is about 7,250 MB, roughly **5.1 BZZ**, which is most of a 6.32 BZZ chequebook. Probably
+not worth buying.
 
 ⬅ **The retry timer's wall-clock shape at the node.** It is inferred from the client side. Bee's
 `bee_retrieval_request_duration_time` histogram now reaches the sampler here but has not been read
 during an unfunded arm.
 
-⬅ **What varies between identical unfunded runs.** Eleven arms spanned 1.9% to 19.5% late and neither
-idle, debt level nor arm order accounts for it. A container recreate is the strongest lead and does not
-explain every arm.
+⚠️ **What varies between identical unfunded runs. The strongest lead is now confirmed.** Eleven arms
+spanned 1.9% to 19.5% late and neither idle, debt level nor arm order accounted for it, with a container
+recreate named as the likeliest cause. **2.4e-bis measures it: the arm after a recreate cost 3x the CPU
+and put 47% of segments over budget against 0.0% warm.** ⬅ It still does not explain every arm, so
+treat it as the largest known term rather than the whole answer.
 
 ✅ **How the CPU cost behaves under a realistic duty cycle. Answered 2026-08-08**, see 2.2 and 2.4e.
 Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **whether a
