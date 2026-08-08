@@ -20,5 +20,15 @@ services:
       SRS_ADAPTER_PORT: ${SRS_ADAPTER_PORT:-3000}
       HLS_FRAGMENT: ${HLS_FRAGMENT:-1.5}
       HLS_WINDOW: ${HLS_WINDOW:-22.5}
+      ABR_ENABLED: ${ABR_ENABLED:-false}
+      ABR_LADDER: ${ABR_LADDER:-}
+      ABR_VHOST: ${ABR_VHOST:-abr}
+      ABR_FPS: ${ABR_FPS:-30}
+      ABR_PRESET: ${ABR_PRESET:-veryfast}
+      ABR_PROFILE: ${ABR_PROFILE:-main}
+      ABR_THREADS: ${ABR_THREADS:-0}
+      ABR_ACODEC: ${ABR_ACODEC:-copy}
+      ABR_AUDIO_BITRATE: ${ABR_AUDIO_BITRATE:-128}
+      ABR_RTMP_PORT: ${ABR_RTMP_PORT:-1935}
     extra_hosts:
       - "host.docker.internal:host-gateway"

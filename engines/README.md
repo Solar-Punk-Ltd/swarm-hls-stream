@@ -23,6 +23,39 @@ The plugin registers engine-specific HTTP routes on the uploader's server. No se
 3. The engine plugin reads segments from disk and passes them to the upload pipeline
 4. The uploader handles everything else (Swarm upload, manifests, feed management)
 
+## ABR ladder (SRS only)
+
+Set `ABR_ENABLED=true` in `engines/srs/.env` and SRS produces four renditions instead of one.
+Each rung is a stream in its own right, so the flow above is unchanged — it just happens four
+times, and the uploader gets four feeds it groups back into one ladder.
+
+```
+                     transcode (4x ffmpeg)         republish, RTMP 127.0.0.1
+SRT ingest ──▶ __defaultVhost__ ──────────────▶ vhost abr ──▶ HLS + webhooks ──▶ uploader
+               hls: off                         no transcode
+```
+
+Two things about this shape are load-bearing:
+
+**The second vhost is what stops a transcode loop.** Transcode scope is matched at vhost, app and
+stream level and the matches are cumulative (`parse_scope_engines` in SRS's `srs_app_encoder.cpp`).
+A rung republished into the vhost that transcodes matches the same rule and gets transcoded again,
+and so does *its* output. A vhost with no transcode block terminates that. If `?vhost=` ever fails
+to match, SRS silently falls back to `__defaultVhost__` and the loop starts — which is why the
+ingest vhost keeps its webhooks even though it segments nothing, so the uploader can see a
+rendition arrive on the wrong vhost and say so.
+
+**Every rung must cut segments at the same media timestamps.** `ABR_FPS x HLS_FRAGMENT` is the GOP
+and has to be a whole number of frames; the entrypoint refuses to start rather than round it,
+because a fractional GOP drifts the rungs apart and every switch then lands mid-GOP.
+
+Verify a running ladder with `curl http://localhost:1985/api/v1/streams` — five streams (one
+source, four rungs) and *stable*. A count that keeps climbing is the loop.
+
+Audio is muxed into each rung rather than split into an `EXT-X-MEDIA` rendition group. With
+`ABR_ACODEC=copy` the four copies are bit-identical and cost no CPU. Splitting it is the right
+production answer and is left as a TODO.
+
 ## Generic API
 
 The stream-uploader also exposes a generic API that works without any engine plugin:
