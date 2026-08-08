@@ -77,6 +77,20 @@ CPU_IDLE_WINDOW_S="${CPU_IDLE_WINDOW_S:-15}"
 # actually poses: does the second viewer benefit from what the first one fetched.
 PASSES="${PASSES:-1}"
 
+# How many viewers walk the list at once, against one gateway.
+#
+# ⭐ This is the cheap half of the concurrency question. LAT-11 measured 1 against 8 viewers on a live
+# broadcast and found the gateway serves the extra seven almost for free in retrieval (1.09x chunks)
+# and expensively in request handling (1.84x CPU), with the ceiling inside bee rather than in the
+# network or the wallet. Nothing between 2 and 8, or above 8, has ever been measured, and here it needs
+# no broadcast and no postage at all.
+#
+# ⛔ Sweep this by ALTERNATING against a reference concurrency, never as a ladder. Relabelling eight
+# unchanged past runs as if the viewer count had varied moved the metric by up to 1.95x with nothing
+# happening, so a ladder cannot resolve anything under ~2x:
+#   ARM_PLAN='U1:false:0:0:1 U8:false:0:0:8 U1:false:0:0:1 U8:false:0:0:8'
+VIEWERS="${VIEWERS:-1}"
+
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/probe.log"
 STATE="${OUT_DIR}/probe-state.tsv"
@@ -264,12 +278,36 @@ say_times() {
   say "  ${label}: ${c} segments, median ${m}ms, p90 ${p}ms, ⭐ ${l} over ${BUDGET_MS}ms = ${s}%"
 }
 
+# One viewer's walk of the reference list. Runs in a subshell when VIEWERS > 1, so it hands its byte
+# total back through a file rather than a variable. Only the first viewer writes the accounting series,
+# because N concurrent samplers would be load of their own.
+fetch_walk() {
+  local timesFile="$1" bytesFile="$2" seriesRound="$3" tag="$4" startedAt="$5" writeSeries="$6"
+  local n=0 sum=0 out ms b
+  while read -r ref; do
+    n=$((n + 1))
+    [ "${n}" -gt "${SEGMENTS}" ] && break
+    out="$(curl -s -o /dev/null -m 30 -w '%{time_total} %{size_download}' "http://127.0.0.1:${GATEWAY_BEE_PORT}/bytes/${ref}")"
+    ms="$(printf '%s\n' "${out}" | awk '{printf "%d", $1*1000}')"
+    b="$(printf '%s\n' "${out}" | awk '{print $2}')"
+    printf '%s\n' "${ms}" >>"${timesFile}"
+    sum=$((sum + b))
+    # A time series rather than only endpoints, so a debt that grows and then settles is visible.
+    if [ "${writeSeries}" = 1 ] && [ $((n % 50)) = 0 ]; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "${seriesRound}" "${tag}" "${n}" \
+        "$(($(date +%s) - startedAt))" "$(acct)" >>"${SERIES}"
+    fi
+  done <"${REFS}"
+  printf '%s\n' "${sum}" >"${bytesFile}"
+}
+
 # One arm: the same references in the same order every time, so the work is identical and only the
 # node's ability to pay for it differs.
 run_arm() {
-  local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}"
+  local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}" viewers="${6:-}"
   [ -n "${cache}" ] || cache="${CURRENT_ARM_CACHE}"
-  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}"
+  [ -n "${viewers}" ] || viewers="${VIEWERS}"
+  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s)"
 
   local was="${CURRENT_ARM_SWAP}/${CURRENT_ARM_CACHE}"
   [ "${FORCE_RECREATE:-0}" = "1" ] && was="forced"
@@ -321,25 +359,22 @@ run_arm() {
 
   : >"${OUT_DIR}/times-${round}-${label}.txt"
   started="$(date +%s)"
-  local pass
+  local pass v
   for pass in $(seq 1 "${PASSES}"); do
     local passFile="${OUT_DIR}/times-${round}-${label}-p${pass}.txt"
     : >"${passFile}"
-    n=0
-    while read -r ref; do
-      n=$((n + 1))
-      [ "${n}" -gt "${SEGMENTS}" ] && break
-      local out ms b
-      out="$(curl -s -o /dev/null -m 30 -w '%{time_total} %{size_download}' "http://127.0.0.1:${GATEWAY_BEE_PORT}/bytes/${ref}")"
-      ms="$(printf '%s\n' "${out}" | awk '{printf "%d", $1*1000}')"
-      b="$(printf '%s\n' "${out}" | awk '{print $2}')"
-      printf '%s\n' "${ms}" >>"${passFile}"
-      bytes=$((bytes + b))
-      # A time series rather than only endpoints, so a debt that grows and then settles is visible.
-      if [ $((n % 50)) = 0 ]; then
-        printf '%s\t%s\t%s\t%s\t%s\n' "${round}" "${label}.${pass}" "${n}" "$(($(date +%s) - started))" "$(acct)" >>"${SERIES}"
-      fi
-    done <"${REFS}"
+    # Concurrent viewers walk the SAME list, because that is the topology a live event has: many
+    # viewers behind one gateway asking for the same segments at the same moment.
+    for v in $(seq 1 "${viewers}"); do
+      : >"${passFile}.v${v}"
+      fetch_walk "${passFile}.v${v}" "${passFile}.b${v}" "${round}" "${label}.${pass}.v${v}" \
+        "${started}" "$([ "${v}" = 1 ] && echo 1 || echo 0)" &
+    done
+    wait
+    for v in $(seq 1 "${viewers}"); do
+      cat "${passFile}.v${v}" >>"${passFile}"
+      bytes=$((bytes + $(cat "${passFile}.b${v}" 2>/dev/null || echo 0)))
+    done
     cat "${passFile}" >>"${OUT_DIR}/times-${round}-${label}.txt"
     # Each pass reported on its own, because the whole point of a second pass is that it should differ.
     say_times "pass ${pass}" "${passFile}"
@@ -364,27 +399,27 @@ run_arm() {
   local cpuPerMb
   cpuPerMb="$(awk -v c="${cpuRetrieval}" -v b="${bytes}" 'BEGIN{printf "%.3f", (b>0)?c/(b/1000000):0}')"
 
-  say "  ${count} segments, $((bytes / 1000000)) MB, $((ended - started))s, median ${median}ms, p90 ${p90}ms"
+  say "  ${count} fetches by ${viewers} viewer(s), $((bytes / 1000000)) MB, $((ended - started))s, median ${median}ms, p90 ${p90}ms"
   say "  ⭐ ${late} of ${count} missed the ${BUDGET_MS}ms budget = ${lateShare}%"
   say "  ⭐ gateway CPU ${cpuUsed}s total, ${cpuRetrieval}s above idle = ${cpuPerMb}s per MB retrieved"
   say "  accounting after:  ${after}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${count}" "${bytes}" "$((ended - started))" \
-    "${median}" "${p90}" "${lateShare}" "${cpuUsed}" "${cpuIdleRate}" "${cpuRetrieval}" "${cpuPerMb}" \
-    "${before}" "${after}" >>"${STATE}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${count}" "${bytes}" \
+    "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${cpuUsed}" "${cpuIdleRate}" \
+    "${cpuRetrieval}" "${cpuPerMb}" "${before}" "${after}" >>"${STATE}"
   printf '%s\t%s\t%s\tbefore\t%s\n%s\t%s\t%s\tafter\t%s\n' \
     "${round}" "${label}" "${swap}" "${mBefore}" "${round}" "${label}" "${swap}" "${mAfter}" >>"${METRICS_TSV}"
 }
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tsegments\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
-    IFS=':' read -r label swap idle cache <<<"${spec}"
-    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" ||
+    IFS=':' read -r label swap idle cache viewers <<<"${spec}"
+    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" ||
       say "round ${round} arm ${label} did not complete"
   done
 done
