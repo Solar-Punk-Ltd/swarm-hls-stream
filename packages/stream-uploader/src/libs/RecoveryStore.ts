@@ -52,9 +52,10 @@ export class RecoveryStore {
       return [];
     }
 
+    // `save` writes `<id>.json.tmp`, so the suffix check excludes a write caught in flight on its own.
     return fs
       .readdirSync(this.stateDir)
-      .filter((f) => f.endsWith('.json') && !f.endsWith('.tmp'))
+      .filter((f) => f.endsWith('.json'))
       .map((f) => f.replace(/\.json$/, ''));
   }
 
