@@ -117,9 +117,25 @@ themselves are the check on it.
 |     | run | why it is on the list | broadcast-min |
 | --- | --- | --------------------- | ------------- |
 
-## Phase 0.6 — light against ultra-light, at a viewer
+## Phase 0.6 ✅ DONE 2026-08-07 — light against ultra-light, at a viewer
 
-**The question: does a viewer's gateway have to be funded?** An ultra-light bee node (`--full-node=false`
+✅ **No. A viewer's gateway does not have to be funded.** Six arms interleaved in one sitting: three
+ultra-light arms ran **clean**, advance 1.000 to 1.002, nothing stalled, nothing rebuffered, 30.0fps,
+and **0 refused and 0 never-served segments out of 1807 requests** per arm, at the same 0.0006 BZZ per
+megabyte. The only stall in the sitting was in the **funded** arm. The unfunded arms cost the gateway
+nothing at all. [Report](../bench/light-vs-ultra-light-at-a-viewer-2026-08-07.md).
+
+⚠️ **One open difference, deliberately not called an effect.** Ultra-light's median latency sat about
+half a second above light's in both comparable pairs. It is not established: round 2's funded arm took
+a non-fatal stall, which raises hls.js's latency target permanently (its target reached 7s against
+everything else's 6), so the sitting has only **one** comparable 30-minute funded arm and therefore no
+within-arm control to weigh the gap against. The latency **floor** was identical across all six arms.
+Two more funded arms in one sitting would settle it, for about 0.62 BZZ.
+
+⛔ **LAT-10's 37%-frozen ultra-light figure does not reproduce**, as the reader A/B predicted: across
+65 minutes of ultra-light playback at a viewer, nothing froze at all.
+
+**The original question and the design that answered it:** An ultra-light bee node (`--full-node=false`
 plus `--swap-enable=false`) has no chequebook and no way to pay a peer for bandwidth, so it lives on
 the free allowance alone. If a stream holds on one, an operator can run the viewer path with no chain,
 no wallet and no on-chain funding at all, which is a large difference in what it costs to deploy this.
