@@ -1,8 +1,16 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
-import crypto from 'crypto';
 import PQueue from 'p-queue';
 
-import { MediaType, SegmentEntry, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamState } from '../types.js';
+import {
+  BitrateSample,
+  LadderMembership,
+  MediaType,
+  Rendition,
+  SegmentEntry,
+  STREAM_STATUS_LIVE,
+  STREAM_STATUS_VOD,
+  StreamState,
+} from '../types.js';
 import { retryAwaitableAsync } from '../utils/common.js';
 
 import { ErrorHandler } from './ErrorHandler.js';
@@ -11,6 +19,18 @@ import { ManifestManager } from './ManifestManager.js';
 import { RecoveryStore } from './RecoveryStore.js';
 import { StreamCatalog } from './StreamCatalog.js';
 
+/**
+ * How far the measured bitrate has to drift, and how long between corrections, before a rung
+ * rewrites the catalog.
+ *
+ * BANDWIDTH is the whole supply-side input to the player's ABR decision, so it has to end up
+ * honest — but the catalog is one feed shared by every stream, and republishing per segment would
+ * have four rungs contending on it every fragment. Announce on the encoder's target, then correct
+ * only when the measurement has actually moved.
+ */
+const BITRATE_REFRESH_RATIO = 0.15;
+const BITRATE_REFRESH_INTERVAL_MS = 30_000;
+
 interface RestoreState {
   streamRawTopic: string;
   socIndex: number;
@@ -18,6 +38,25 @@ interface RestoreState {
   hlsHeaders: string[];
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
+  bitrate?: BitrateSample;
+}
+
+export interface StreamUploaderOptions {
+  bee: Bee;
+  manifestBeeUrl: string;
+  streamCatalog: StreamCatalog;
+  recoveryStore: RecoveryStore;
+  streamKey: string;
+  stamp: string;
+  streamId: string;
+  /**
+   * Feed topic for this stream's manifest. Supplied rather than generated, because a ladder's
+   * rungs derive theirs from a shared group id and the orchestrator is what knows the group.
+   */
+  streamTopic: string;
+  mediatype: MediaType;
+  ladder?: LadderMembership;
+  restoreState?: RestoreState;
 }
 
 export class StreamUploader {
@@ -35,45 +74,46 @@ export class StreamUploader {
   private stamp: string;
   private socIndex: number | null = null;
   private mediatype: MediaType;
+  private ladder?: LadderMembership;
   private isFirstSegmentReady = false;
   private isFirstManifestReady = false;
 
+  private bitrate: BitrateSample = { totalBytes: 0, totalDuration: 0, peakBps: 0 };
+  private announcedBandwidth = 0;
+  private lastBandwidthAnnounceAt = 0;
+
   private manifestManager: ManifestManager;
 
-  constructor(
-    bee: Bee,
-    manifestBeeUrl: string,
-    streamCatalog: StreamCatalog,
-    recoveryStore: RecoveryStore,
-    streamKey: string,
-    stamp: string,
-    streamId: string,
-    mediatype: MediaType,
-    restoreState?: RestoreState,
-  ) {
-    this.bee = bee;
-    this.streamSigner = new PrivateKey(streamKey);
-    this.streamCatalog = streamCatalog;
-    this.recoveryStore = recoveryStore;
-    this.streamId = streamId;
-    this.stamp = stamp;
-    this.mediatype = mediatype;
+  constructor(options: StreamUploaderOptions) {
+    this.bee = options.bee;
+    this.streamSigner = new PrivateKey(options.streamKey);
+    this.streamCatalog = options.streamCatalog;
+    this.recoveryStore = options.recoveryStore;
+    this.streamId = options.streamId;
+    this.stamp = options.stamp;
+    this.mediatype = options.mediatype;
+    this.ladder = options.ladder;
+    this.streamRawTopic = options.streamTopic;
 
-    this.manifestManager = new ManifestManager(manifestBeeUrl);
+    this.manifestManager = new ManifestManager(options.manifestBeeUrl);
 
+    const restoreState = options.restoreState;
     if (restoreState) {
       this.streamRawTopic = restoreState.streamRawTopic;
       this.socIndex = restoreState.socIndex;
       this.isFirstSegmentReady = restoreState.isFirstSegmentReady;
       this.isFirstManifestReady = restoreState.isFirstManifestReady;
+      if (restoreState.bitrate) {
+        this.bitrate = restoreState.bitrate;
+      }
       this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
-      this.logger.info(`[StreamUploader] Restored stream ${streamId} at SOC index ${this.socIndex}`);
-    } else {
-      this.streamRawTopic = crypto.randomUUID();
+      this.logger.info(`[StreamUploader] Restored stream ${options.streamId} at SOC index ${this.socIndex}`);
     }
   }
 
   public handleSegment(segmentIndex: number, duration: number, data: Buffer): void {
+    this.recordBitrate(data.length, duration);
+
     this.segmentQueue.add(async () => {
       const result = await this.uploadDataToBee(data);
       if (!result) {
@@ -88,11 +128,16 @@ export class StreamUploader {
       this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
 
       await this.uploadLiveManifest();
+      await this.refreshBandwidthIfDrifted();
       this.persistState();
     });
   }
 
   public async notifyStart(): Promise<void> {
+    if (this.ladder) {
+      return this.announceRendition();
+    }
+
     const entry = {
       title: this.getFormattedDate(),
       owner: this.streamSigner.publicKey().address().toHex(),
@@ -120,6 +165,12 @@ export class StreamUploader {
     const vodManifest = this.manifestManager.buildVODManifest();
     await this.uploadManifestData(vodManifest);
     await this.manifestQueue.onIdle();
+
+    if (this.ladder) {
+      await this.announceRendition({ index: this.socIndex!, duration: this.manifestManager.getTotalDuration() });
+      this.recoveryStore.remove(this.streamId);
+      return;
+    }
 
     const entry = {
       title: this.getFormattedDate(),
@@ -150,7 +201,77 @@ export class StreamUploader {
       isFirstSegmentReady: this.isFirstSegmentReady,
       isFirstManifestReady: this.isFirstManifestReady,
       updatedAt: Date.now(),
+      ladder: this.ladder,
+      bitrate: this.bitrate,
     };
+  }
+
+  private recordBitrate(bytes: number, duration: number): void {
+    if (duration <= 0 || bytes <= 0) {
+      return;
+    }
+
+    this.bitrate.totalBytes += bytes;
+    this.bitrate.totalDuration += duration;
+    this.bitrate.peakBps = Math.max(this.bitrate.peakBps, (bytes * 8) / duration);
+  }
+
+  /**
+   * What the ladder rung looks like to a player right now.
+   *
+   * Falls back to the encoder's configured target until segments have actually been measured, so
+   * the master playlist is complete and usable from the first one rather than advertising a
+   * bandwidth of zero.
+   */
+  private buildRendition(final?: { index: number; duration: number }): Rendition {
+    const rung = this.ladder!.rung;
+    const configuredBps = rung.configuredKbps * 1000;
+    const measuredAvg = this.bitrate.totalDuration > 0 ? (this.bitrate.totalBytes * 8) / this.bitrate.totalDuration : 0;
+
+    return {
+      name: rung.name,
+      width: rung.width,
+      height: rung.height,
+      topic: this.streamRawTopic,
+      bandwidth: Math.round(this.bitrate.peakBps || configuredBps),
+      avgBandwidth: Math.round(measuredAvg || configuredBps),
+      ...(final ?? {}),
+    };
+  }
+
+  private async announceRendition(final?: { index: number; duration: number }): Promise<void> {
+    const rendition = this.buildRendition(final);
+
+    this.announcedBandwidth = rendition.bandwidth;
+    this.lastBandwidthAnnounceAt = Date.now();
+
+    this.logger.log(`Publishing rendition ${rendition.name} of ladder ${this.ladder!.group}`);
+    return this.streamCatalog.upsertRendition(
+      {
+        title: this.getFormattedDate(),
+        owner: this.streamSigner.publicKey().address().toHex(),
+        group: this.ladder!.group,
+        mediatype: this.mediatype,
+      },
+      rendition,
+    );
+  }
+
+  private async refreshBandwidthIfDrifted(): Promise<void> {
+    if (!this.ladder || !this.isFirstManifestReady || this.announcedBandwidth <= 0) {
+      return;
+    }
+
+    if (Date.now() - this.lastBandwidthAnnounceAt < BITRATE_REFRESH_INTERVAL_MS) {
+      return;
+    }
+
+    const drift = Math.abs(this.bitrate.peakBps - this.announcedBandwidth) / this.announcedBandwidth;
+    if (drift < BITRATE_REFRESH_RATIO) {
+      return;
+    }
+
+    await this.announceRendition();
   }
 
   private async uploadLiveManifest(): Promise<void> {

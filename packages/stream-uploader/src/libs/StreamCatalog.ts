@@ -1,13 +1,13 @@
 import { Bee, BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
 import PQueue from 'p-queue';
 
-import { MediaType, StreamStatus } from '../types.js';
+import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
 import { retryAwaitableAsync } from '../utils/common.js';
 
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 
-interface StreamEntry {
+export interface StreamEntry {
   title: string;
   owner: string;
   topic: string;
@@ -16,6 +16,21 @@ interface StreamEntry {
   timestamp: number;
   index?: number;
   duration?: number;
+  /**
+   * Ladder identity, absent on single-rendition streams. Present, it — not `topic` — is what
+   * makes the entry unique, because `topic` points at whichever rung is currently lowest and
+   * would otherwise split one ladder into several entries as its rungs come up.
+   */
+  group?: string;
+  renditions?: Rendition[];
+}
+
+/** Everything about a ladder that is the same for all of its rungs. */
+export interface LadderIdentity {
+  title: string;
+  owner: string;
+  group: string;
+  mediatype: MediaType;
 }
 
 export class StreamCatalog {
@@ -61,22 +76,39 @@ export class StreamCatalog {
   }
 
   public async addStream(entry: StreamEntry): Promise<void> {
-    return this.queue.add(() => this.updateFeed(entry));
+    return this.queue.add(() =>
+      this.writeFeed((previous) => [...withoutTopic(previous, entry.owner, entry.topic), entry]),
+    );
   }
 
-  private async updateFeed(entry: StreamEntry): Promise<void> {
-    let state: StreamEntry[] = [];
+  /**
+   * Folds one rung into its ladder's single catalog entry, creating the entry if this is the
+   * first rung up.
+   *
+   * Four uploaders call this concurrently for the same ladder, each holding only its own rung.
+   * The read-merge-write that reconciles them is only safe because the catalog's queue serialises
+   * every write to this feed, so the merge always sees the previous rung's result.
+   */
+  public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<void> {
+    return this.queue.add(() =>
+      this.writeFeed((previous) => [
+        ...withoutGroup(previous, identity.owner, identity.group),
+        buildLadderEntry(identity, previous, rendition),
+      ]),
+    );
+  }
+
+  private async writeFeed(update: (previous: StreamEntry[]) => StreamEntry[]): Promise<void> {
+    let previous: StreamEntry[] = [];
 
     if (this.feedIndex !== null) {
-      const previous = await this.fetchCurrentState();
-      if (previous) {
-        state = previous;
+      const fetched = await this.fetchCurrentState();
+      if (fetched) {
+        previous = fetched;
       }
     }
 
-    // Deduplicate by (owner, topic)
-    state = state.filter((e) => e.owner !== entry.owner || e.topic !== entry.topic);
-    state.push(entry);
+    const state = update(previous);
 
     const nextIndex = this.feedIndex ? this.feedIndex.next() : FeedIndex.fromBigInt(BigInt(0));
     const feedWriter = this.bee.makeFeedWriter(this.feedTopic, this.signer);
@@ -104,4 +136,52 @@ export class StreamCatalog {
       return null;
     }
   }
+}
+
+/**
+ * The ladder's entry after folding one rung's latest state into it.
+ *
+ * A ladder goes to VOD only once every rung it has announced has finalized. Doing it per rung
+ * would flip the whole entry to VOD on the first one to drain, and the other three are still live.
+ */
+export function buildLadderEntry(identity: LadderIdentity, previous: StreamEntry[], rendition: Rendition): StreamEntry {
+  const existing = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
+  const renditions = mergeRendition(existing?.renditions ?? [], rendition);
+
+  // Lowest rung first: it is the cheapest to bootstrap, and it is what a client that knows
+  // nothing about `renditions` will play when it follows `topic`.
+  const primary = renditions[0];
+  const finished = renditions.every((r) => r.index !== undefined);
+
+  const entry: StreamEntry = {
+    title: identity.title,
+    owner: identity.owner,
+    topic: primary.topic,
+    state: finished ? STREAM_STATUS_VOD : STREAM_STATUS_LIVE,
+    mediatype: identity.mediatype,
+    timestamp: Date.now(),
+    group: identity.group,
+    renditions,
+  };
+
+  if (finished) {
+    entry.index = primary.index;
+    entry.duration = Math.max(...renditions.map((r) => r.duration ?? 0));
+  }
+
+  return entry;
+}
+
+function withoutTopic(entries: StreamEntry[], owner: string, topic: string): StreamEntry[] {
+  return entries.filter((e) => e.owner !== owner || e.topic !== topic);
+}
+
+function withoutGroup(entries: StreamEntry[], owner: string, group: string): StreamEntry[] {
+  return entries.filter((e) => e.owner !== owner || e.group !== group);
+}
+
+function mergeRendition(existing: Rendition[], incoming: Rendition): Rendition[] {
+  const merged = existing.filter((r) => r.name !== incoming.name);
+  merged.push(incoming);
+  return merged.sort((a, b) => a.height - b.height);
 }

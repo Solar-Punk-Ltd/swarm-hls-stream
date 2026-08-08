@@ -76,6 +76,12 @@ services:
       RECOVERY_TIMEOUT: ${RECOVERY_TIMEOUT:-60000}
       ENGINE: ${ENGINE:-srs}
       SRS_MEDIA_PATH: /media
+      # The uploader reads the same ladder the engine was configured with: SRS's webhooks carry
+      # the stream name and nothing else, so width, height and the encoder's target bitrate — all
+      # of which the master playlist needs — only exist here.
+      ABR_ENABLED: ${ABR_ENABLED:-false}
+      ABR_LADDER: ${ABR_LADDER:-}
+      ABR_VHOST: ${ABR_VHOST:-abr}
       OME_HLS_URL: ${OME_HLS_URL:-http://ome:8081}
       OME_HLS_POLL_INTERVAL_MS: ${OME_HLS_POLL_INTERVAL_MS:-500}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}

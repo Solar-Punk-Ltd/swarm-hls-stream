@@ -1,7 +1,9 @@
 import { Bee } from '@ethersphere/bee-js';
+import crypto from 'crypto';
 import PQueue from 'p-queue';
 
 import {
+  LadderMembership,
   MediaType,
   PRESSURE_HIGH,
   PRESSURE_LOW,
@@ -12,6 +14,7 @@ import {
   SegmentResult,
 } from '../types.js';
 
+import { AbrLadder } from './AbrLadder.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -26,6 +29,7 @@ interface StreamOrchestratorConfig {
   manifestBeeUrl: string;
   maxQueueSize: number;
   recoveryTimeout: number;
+  ladder?: AbrLadder;
 }
 
 export class StreamOrchestrator {
@@ -33,6 +37,9 @@ export class StreamOrchestrator {
   private drainPromises = new Map<string, Promise<void>>();
   private processedSegments = new Map<string, Set<number>>();
   private recoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Ladder id per base stream, so the four rungs of one source share a catalog entry. */
+  private ladderGroups = new Map<string, string>();
+  private streamBases = new Map<string, string>();
   private queue = new PQueue({ concurrency: 1 });
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
@@ -59,17 +66,36 @@ export class StreamOrchestrator {
       return false;
     }
 
+    // Resolved before queueing: the rungs of one ladder publish within milliseconds of each
+    // other, and a group id assigned inside the queue's async callback would let two of them
+    // create two groups for the same source.
+    const match = this.config.ladder?.match(streamId) ?? null;
+    let ladder: LadderMembership | undefined;
+    let streamTopic: string;
+
+    if (match) {
+      const group = this.groupFor(match.baseStreamId);
+      ladder = { group, rung: match.rung };
+      streamTopic = ladderTopic(group, match.rung.name);
+      this.streamBases.set(streamId, match.baseStreamId);
+      this.logger.info(`[StreamOrchestrator] ${streamId} is rung ${match.rung.name} of ladder ${group}`);
+    } else {
+      streamTopic = crypto.randomUUID();
+    }
+
     this.queue.add(() => {
-      const uploader = new StreamUploader(
-        this.bee,
-        this.config.manifestBeeUrl,
-        this.streamCatalog,
-        this.recoveryStore,
-        this.config.streamKey,
-        this.config.stamp,
+      const uploader = new StreamUploader({
+        bee: this.bee,
+        manifestBeeUrl: this.config.manifestBeeUrl,
+        streamCatalog: this.streamCatalog,
+        recoveryStore: this.recoveryStore,
+        streamKey: this.config.streamKey,
+        stamp: this.config.stamp,
         streamId,
+        streamTopic,
         mediatype,
-      );
+        ladder,
+      });
 
       this.activeStreams.set(streamId, uploader);
       this.processedSegments.set(streamId, new Set());
@@ -136,24 +162,36 @@ export class StreamOrchestrator {
         continue;
       }
 
-      const uploader = new StreamUploader(
-        this.bee,
-        this.config.manifestBeeUrl,
-        this.streamCatalog,
-        this.recoveryStore,
-        this.config.streamKey,
-        this.config.stamp,
-        state.streamId,
-        state.mediatype,
-        {
+      // Reinstate the ladder from what was persisted, not from the current ABR_LADDER: a rung
+      // that was mid-stream keeps the group and topic its siblings already published under, even
+      // if the ladder has been reconfigured since.
+      if (state.ladder) {
+        const base = baseStreamId(streamId, state.ladder.rung.name);
+        this.ladderGroups.set(base, state.ladder.group);
+        this.streamBases.set(streamId, base);
+      }
+
+      const uploader = new StreamUploader({
+        bee: this.bee,
+        manifestBeeUrl: this.config.manifestBeeUrl,
+        streamCatalog: this.streamCatalog,
+        recoveryStore: this.recoveryStore,
+        streamKey: this.config.streamKey,
+        stamp: this.config.stamp,
+        streamId: state.streamId,
+        streamTopic: state.streamRawTopic,
+        mediatype: state.mediatype,
+        ladder: state.ladder,
+        restoreState: {
           streamRawTopic: state.streamRawTopic,
           socIndex: state.socIndex,
           segments: state.segments,
           hlsHeaders: state.hlsHeaders,
           isFirstSegmentReady: state.isFirstSegmentReady,
           isFirstManifestReady: state.isFirstManifestReady,
+          bitrate: state.bitrate,
         },
-      );
+      });
 
       this.activeStreams.set(streamId, uploader);
 
@@ -236,6 +274,33 @@ export class StreamOrchestrator {
     this.logger.info('[StreamOrchestrator] Cleanup complete');
   }
 
+  private groupFor(base: string): string {
+    const existing = this.ladderGroups.get(base);
+    if (existing) {
+      return existing;
+    }
+
+    const group = crypto.randomUUID();
+    this.ladderGroups.set(base, group);
+    return group;
+  }
+
+  private releaseLadder(streamId: string): void {
+    const base = this.streamBases.get(streamId);
+    this.streamBases.delete(streamId);
+
+    if (!base) {
+      return;
+    }
+
+    // The group only dies once its last rung has. A source that restarts while a sibling is
+    // still draining must not be handed a second group for the same ladder.
+    const stillRunning = [...this.streamBases.values()].some(other => other === base);
+    if (!stillRunning) {
+      this.ladderGroups.delete(base);
+    }
+  }
+
   private async performDrain(streamId: string): Promise<void> {
     await this.queue.onIdle();
 
@@ -243,6 +308,7 @@ export class StreamOrchestrator {
     if (!uploader) {
       this.logger.warn(`[StreamOrchestrator] No uploader found for ${streamId}`);
       this.recoveryStore.remove(streamId);
+      this.releaseLadder(streamId);
       return;
     }
 
@@ -259,7 +325,23 @@ export class StreamOrchestrator {
 
     this.activeStreams.delete(streamId);
     this.processedSegments.delete(streamId);
+    this.releaseLadder(streamId);
 
     this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
   }
+}
+
+/**
+ * The rung's feed topic, derived from the ladder id rather than drawn fresh.
+ *
+ * Deriving it means every rung's topic is known the moment the ladder exists, which is what lets
+ * the catalog entry stay one entry with a stable identity while its rungs come up one by one.
+ */
+function ladderTopic(group: string, rung: string): string {
+  return `${group}-${rung}`;
+}
+
+function baseStreamId(streamId: string, rung: string): string {
+  const suffix = `_${rung}`;
+  return streamId.endsWith(suffix) ? streamId.slice(0, -suffix.length) : streamId;
 }
