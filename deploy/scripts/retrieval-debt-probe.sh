@@ -217,11 +217,77 @@ gateway_cpu_seconds() {
 # host carries forty other bee nodes and eight unrelated stacks, and they are not ours to slow down.
 host_load() { awk '{print $1}' /proc/loadavg; }
 
-# Above this one-minute load average the run stops between arms rather than starting a hotter one.
-# Ordering an arm plan by ascending viewer count is what makes that a real guard: the first arm to push
-# the box too far is the last one that runs.
-LOAD_CEILING="${LOAD_CEILING:-40}"
-LOAD_SAMPLE_S="${LOAD_SAMPLE_S:-5}"
+# The instantaneous runnable count, which is the fourth field's numerator. The one-minute average above
+# is smooth and lags by about a minute, which a sitting of 45-second arms cannot afford.
+#
+# ⛔ Measured: four identical 128-viewer arms back to back reported peaks of 19.56, 25.12, 28.79 and
+# 44.50. The load was not climbing, the average was still converging toward it, so the early arms
+# under-read by more than 2x and the ceiling tripped two arms after the box was already full.
+host_runnable() { awk '{split($4, r, "/"); print r[1]}' /proc/loadavg; }
+
+# Above this many runnable tasks the run stops rather than starting a hotter arm. Ordering an arm plan
+# by ascending viewer count is what makes that a real guard: the first arm to push the box too far is
+# the last one that runs.
+# One runnable task per core, which is where the box stops having spare capacity and starts making
+# everything queue, the neighbours included. A number rather than a fraction of one because that is the
+# threshold that means something: below it the run queue drains, above it it grows.
+LOAD_CEILING="${LOAD_CEILING:-$(nproc)}"
+LOAD_SAMPLE_S="${LOAD_SAMPLE_S:-2}"
+
+# ⛔ The guard reads the MEAN of an arm's runnable samples, and the choice is measured rather than
+# assumed. Paced viewers fire together and then all block on the network, so the run queue is bimodal:
+# one arm's samples ran 1, 3, 5, 7, 28, 42, 65, 106, 152. The median of that is 14 and the peak is 152,
+# and neither describes the box. The mean is 31.9, and the one-minute load average for the same arm
+# converged to 35.27, so the mean estimates the same quantity the load average does while costing none
+# of its lag.
+#
+# ⚠️ A median guard would have let a saturated box through and a peak guard would have stopped a
+# comfortable one on a single transient. The peak is still reported, because for "was my own probe
+# descheduled" the worst instant is the interesting one.
+mean_of() {
+  awk '{n++; s += $1} END {if (n == 0) print 0; else printf "%d", s / n}'
+}
+
+# How far the box must quieten between arms, and how long to wait for it.
+#
+# ⭐ This is measurement hygiene before it is courtesy. Arms run back to back with no settle inherit the
+# previous arm's queue, so an arm's reading depends on what ran before it and identical arms stop being
+# comparable. Settling first is also what keeps a long sitting from holding a shared machine at capacity
+# for its whole duration rather than only during its arms.
+#
+# ⛔ The target is relative to what the machine was already doing, not a fraction of its cores. This host
+# runs forty other bee nodes and its own idle run queue sits near a third of nproc, so an absolute target
+# would never be reached and every arm would pay the full timeout for nothing.
+LOAD_SETTLE_MAX_S="${LOAD_SETTLE_MAX_S:-120}"
+
+# Median of three rather than one sample, because the instantaneous count is noisy: two reads seconds
+# apart on an idle box gave 47 and 30.
+baseline_runnable() {
+  local a b c
+  a="$(host_runnable)"
+  sleep 2
+  b="$(host_runnable)"
+  sleep 2
+  c="$(host_runnable)"
+  printf '%s\n%s\n%s\n' "${a}" "${b}" "${c}" | sort -n | sed -n 2p
+}
+
+# Waits for the box to quieten back to what the neighbours alone were doing, and says so rather than
+# silently giving up when it does not.
+settle_host() {
+  local waited=0 now target="${LOAD_SETTLE:-$((BASELINE_RUNNABLE + 8))}"
+  while [ "${waited}" -lt "${LOAD_SETTLE_MAX_S}" ]; do
+    now="$(host_runnable)"
+    if [ "${now}" -le "${target}" ]; then
+      [ "${waited}" -gt 0 ] && say "  box settled to ${now} runnable after ${waited}s"
+      return 0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  say "  ⚠️ box did not settle to ${target} runnable within ${LOAD_SETTLE_MAX_S}s, now $(host_runnable)"
+  return 0
+}
 
 # Samples until the flag file goes away. The flag rather than a kill, so the sampler can never outlive
 # the arm and leak into the next one's reading.
@@ -232,7 +298,7 @@ LOAD_SAMPLE_S="${LOAD_SAMPLE_S:-5}"
 sample_host_load() {
   local out="$1" flag="$2" parent="$$"
   while [ -e "${flag}" ] && kill -0 "${parent}" 2>/dev/null; do
-    host_load >>"${out}"
+    printf '%s %s\n' "$(host_load)" "$(host_runnable)" >>"${out}"
     sleep "${LOAD_SAMPLE_S}"
   done
 }
@@ -530,12 +596,12 @@ run_arm() {
   : >"${lagFile}"
   : >"${finalsFile}"
 
-  local loadFile="${OUT_DIR}/load-${round}-${label}.txt" loadFlag loadBefore loadMax
+  local loadFile="${OUT_DIR}/load-${round}-${label}.txt" loadFlag loadBefore loadMax runMax runMean
   loadFlag="${loadFile}.on"
   : >"${loadFile}"
   : >"${loadFlag}"
   loadBefore="$(host_load)"
-  say "  host load before the arm: ${loadBefore} across $(nproc) cores"
+  say "  host load before the arm: ${loadBefore} avg, $(host_runnable) runnable, across $(nproc) cores"
   sample_host_load "${loadFile}" "${loadFlag}" &
   local loadSampler=$!
 
@@ -575,8 +641,12 @@ run_arm() {
   wait "${loadSampler}" 2>/dev/null || true
   # The peak rather than the mean: a box that spent thirty seconds saturated descheduled the probe's
   # clients for thirty seconds, and an average over a long arm hides exactly that.
-  loadMax="$(sort -g "${loadFile}" 2>/dev/null | tail -1)"
+  loadMax="$(awk '{print $1}' "${loadFile}" 2>/dev/null | sort -g | tail -1)"
+  runMax="$(awk '{print $2}' "${loadFile}" 2>/dev/null | sort -g | tail -1)"
+  runMean="$(awk '{print $2}' "${loadFile}" 2>/dev/null | mean_of)"
   [ -n "${loadMax}" ] || loadMax=0
+  [ -n "${runMax}" ] || runMax=0
+  [ -n "${runMean}" ] || runMean=0
   cpuAfter="$(gateway_cpu_seconds)"
   cpuUsed="$(awk -v a="${cpuBefore}" -v b="${cpuAfter}" 'BEGIN{printf "%.2f", b-a}')"
   local cpuRetrieval
@@ -608,23 +678,29 @@ run_arm() {
     say "  ⭐⭐ deepest lag ${maxLag}ms, worst viewer ended ${worstFinal}ms behind = the buffer this needs"
   fi
   say "  ⭐ gateway CPU ${cpuUsed}s total, ${cpuRetrieval}s above idle = ${cpuPerMb}s per MB retrieved"
-  say "  ⭐ host load ${loadBefore} before, peaked ${loadMax} of $(nproc) cores"
+  say "  ⭐ host load ${loadBefore} before, peaked ${loadMax} avg, runnable mean ${runMean} peak ${runMax} of $(nproc) cores"
   say "  accounting after:  ${after}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  # The guard in the arm loop reads the peak this arm actually produced, rather than a between-arm
+  # sample that a settle has already quietened.
+  LAST_ARM_RUN_MEAN="${runMean}"
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${spread}" "${jitterMs}" "${count}" "${bytes}" \
     "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${behindShare}" "${maxLag}" \
     "${worstFinal}" "${cpuUsed}" "${cpuIdleRate}" \
-    "${cpuRetrieval}" "${cpuPerMb}" "${loadBefore}" "${loadMax}" "${before}" "${after}" >>"${STATE}"
+    "${cpuRetrieval}" "${cpuPerMb}" "${loadBefore}" "${loadMax}" "${runMean}" "${runMax}" "${before}" "${after}" >>"${STATE}"
   printf '%s\t%s\t%s\tbefore\t%s\n%s\t%s\t%s\tafter\t%s\n' \
     "${round}" "${label}" "${swap}" "${mBefore}" "${round}" "${label}" "${swap}" "${mAfter}" >>"${METRICS_TSV}"
 }
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
-say "host load ceiling ${LOAD_CEILING} across $(nproc) cores, currently $(host_load)"
+BASELINE_RUNNABLE="$(baseline_runnable)"
+say "ceiling ${LOAD_CEILING} runnable across $(nproc) cores, $(host_load) avg now"
+say "the neighbours alone are ${BASELINE_RUNNABLE} runnable, so arms settle to ${LOAD_SETTLE:-$((BASELINE_RUNNABLE + 8))}"
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
@@ -632,16 +708,18 @@ for round in $(seq 1 "${ROUNDS}"); do
     run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" "${spread:-}" "${jitterMs:-}" ||
       say "round ${round} arm ${label} did not complete"
 
-    # ⛔ Between arms, on the load the arm just produced. This machine is shared with forty other bee
-    # nodes and eight unrelated stacks, and an unattended sweep that keeps climbing would degrade all of
-    # them. Order an arm plan by ascending viewer count and this makes the first arm to push the box too
-    # far the last one that runs.
-    nowLoad="$(host_load)"
-    if awk -v n="${nowLoad}" -v c="${LOAD_CEILING}" 'BEGIN{exit !(n>c)}'; then
-      say "⛔ host load ${nowLoad} is over the ${LOAD_CEILING} ceiling: stopping before the next arm"
+    # ⛔ On the peak the arm actually produced, not on a sample taken after it. This machine is shared
+    # with forty other bee nodes and eight unrelated stacks, and an unattended sweep that keeps climbing
+    # would degrade all of them. Order an arm plan by ascending viewer count and this makes the first arm
+    # to push the box too far the last one that runs.
+    if [ "${LAST_ARM_RUN_MEAN:-0}" -gt "${LOAD_CEILING}" ]; then
+      say "⛔ that arm averaged ${LAST_ARM_RUN_MEAN} runnable, over the ${LOAD_CEILING} ceiling: stopping"
       # The EXIT trap restores the gateway on this path as on every other, so no restore here.
       exit 3
     fi
+
+    # Then quieten down before the next one, so an arm is never measured on top of its predecessor.
+    settle_host
   done
 done
 
