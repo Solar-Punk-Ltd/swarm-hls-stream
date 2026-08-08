@@ -233,13 +233,13 @@ the gap is pacing rather than a re-measurement.
 because the ~0.67 core fixed cost is paid per node rather than once.** Pooled, the opposite is true and
 section 2.4d gives the chain.
 
-⛔ **And one assumption underneath this whole subsection is unverified.**
-`bee_accounting_accounting_blocks_count` lives in the accounting package, which serves pushsync and
-pullsync as well as retrieval, so it may count more than the retrieval loop's skips. Across a 15x
-change in workload it behaved like a **fixed rate** (4,715 to 6,317 per second) rather than a per-chunk
-cost, which is consistent with that. **Do not quote any figure that subtracts skips from attempts until
-somebody has read that part of the source.** Section 5.2 is about exactly this class of mistake, and
-this document made it twice in one day.
+⚠️ **The source was read, and it half-settles an assumption underneath this subsection.**
+`bee_accounting_accounting_blocks_count` increments in exactly one place, `PrepareCredit`, once per call
+on overdraft. ✅ **So it is event-driven and not time-driven**, which was the worry. ⚠️ **But pushsync
+calls `PrepareCredit` too**, so the counter is not retrieval-only and a skip figure derived from it is
+an upper bound rather than a measurement. Across a 15x change in workload it behaved like a **fixed
+rate** (4,715 to 6,317 per second) rather than a per-chunk cost. Section 5.2 is about exactly this class
+of mistake, and this document made it twice in one day.
 
 ### 2.3 Caching, which nothing had ever turned on
 
@@ -767,10 +767,10 @@ container's own arguments.
 
 ## 7. What we could not answer here
 
-⬅ **The funding cliff.** Whether settling is a switch or a dial. Section 4.2. **This is the one worth
-answering first.**
+✅ **The funding cliff. Answered 2026-08-08**, see 2.1b. It is a switch and it flips at zero.
 
-⬅ **Anything above eight concurrent viewers.** The knee, the shape, whether it is linear.
+✅ **Concurrency to 128. Answered 2026-08-08**, see 2.4b through 2.4e. ⬅ **Above 128 is still open**,
+and so is the shape past the ~32 MB/s wall.
 
 ⬅ **The retry timer's wall-clock shape at the node.** It is inferred from the client side. Bee's
 `bee_retrieval_request_duration_time` histogram now reaches the sampler here but has not been read
@@ -785,9 +785,11 @@ Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **
 time-scattered audience behaves like the synchronised one measured here**, since scattered viewers lose
 the pooling that carried these arms and should lean on the cache instead.
 
-⬅ **Whether cache eviction bites at event scale.** The cache arms here fetched 400 references twice
-inside a minute. A real event's working set is the whole live window across a whole broadcast, and
-nothing has measured what happens when it exceeds `--cache-capacity`.
+⬅ **Whether cache eviction bites at event scale.** The cache arms here fetched 100 to 400 references
+twice inside a minute, a working set of a few megabytes against a `--cache-capacity` of a million
+chunks. A real event's is the whole live window across a whole broadcast, roughly **1.3 GB per
+stream-hour** at 720p, and nothing has measured what happens when it exceeds the capacity. ⛔ **Every
+cache benefit in this document is measured on a working set that always fits.**
 
 ⬅ **Whether ultra-light's ~0.5s higher median latency is real.** Not established: the one comparable
 funded arm took a non-fatal stall, so per 5.3 it has no valid control.
