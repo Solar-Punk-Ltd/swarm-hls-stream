@@ -36,7 +36,14 @@ METRICS="${METRICS:-/home/solarpunk/phase06/metrics.sh}"
 SEGMENTS="${SEGMENTS:-400}"
 ROUNDS="${ROUNDS:-2}"
 
-# The arms of one round, as `label:swap:idleSecondsBefore`, in order.
+# The arms of one round, as `label:swap:idleSecondsBefore[:cacheCapacity]`, in order.
+#
+# ⭐ The cache field exists because every arm this project has ever run set `--cache-capacity=0`, so
+# nothing cached and every chunk was re-fetched. It was excluded on purpose while the funding question
+# was open, two variables at once answering neither, and it is now the untested lever most likely to
+# matter when many viewers sit behind one gateway. Omit the field to leave the node's cache setting
+# alone. An unfunded pair costs nothing:
+#   ARM_PLAN='U0:false:0:0 UC:false:0:1000000'
 #
 # The idle field exists because of what the first sitting could not explain. Three unfunded arms
 # differed by 15% at the median and by **2.3x** in the share of segments missing the segment budget, so
@@ -59,6 +66,17 @@ ARM_PLAN="${ARM_PLAN:-L:true:0 U:false:0}"
 # segments, not on typical ones, so a median is the wrong statistic for the failure being predicted.
 BUDGET_MS="${BUDGET_MS:-267}"
 
+# How long to watch the node do nothing, to learn what it costs to do nothing, before an arm starts.
+CPU_IDLE_WINDOW_S="${CPU_IDLE_WINDOW_S:-15}"
+
+# How many times one arm walks the reference list, each pass timed on its own.
+#
+# ⛔ This exists because a cache arm without it measures nothing. One pass fetches every reference
+# exactly once, so no cache can ever hit, and a cache-on arm would come out identical to a cache-off
+# one for a reason that has nothing to do with caching. Two passes ask the question a shared gateway
+# actually poses: does the second viewer benefit from what the first one fetched.
+PASSES="${PASSES:-1}"
+
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/probe.log"
 STATE="${OUT_DIR}/probe-state.tsv"
@@ -70,6 +88,47 @@ say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 BASELINE_SWAP="$(grep '^BEE_GATEWAY_SWAP_ENABLE=' "${ENV_FILE}" | cut -d= -f2)"
 CURRENT_ARM_SWAP="${BASELINE_SWAP}"
 ARM_CHANGED=0
+
+CACHE_KEY=BEE_GATEWAY_CACHE_CAPACITY
+# Absent from the env file is a distinct state from present-and-zero, and restoring the wrong one
+# leaves the stack subtly different from how it was found.
+if grep -q "^${CACHE_KEY}=" "${ENV_FILE}"; then
+  CACHE_WAS_PRESENT=1
+  BASELINE_CACHE="$(grep "^${CACHE_KEY}=" "${ENV_FILE}" | cut -d= -f2)"
+else
+  CACHE_WAS_PRESENT=0
+  BASELINE_CACHE=0 # the compose default
+fi
+CURRENT_ARM_CACHE="${BASELINE_CACHE}"
+
+set_env_value() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "${ENV_FILE}"; then
+    sed -i "s/^${key}=.*/${key}=${value}/" "${ENV_FILE}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >>"${ENV_FILE}"
+  fi
+}
+
+CONTAINER="${COMPOSE_PROJECT}-bee-gateway-1"
+
+# CPU seconds the gateway process has burned since it started, read from /proc rather than sampled, so
+# it is an exact total and not a guess between two snapshots.
+#
+# ⭐ This is the number that sizes a fleet. An unfunded node spends ~37 extra peer-selection iterations
+# per chunk and every one of them is local, so what limits running many of these is host CPU and node
+# density rather than network capacity. Nothing had measured it.
+gateway_cpu_seconds() {
+  local pid ticks
+  pid="$(docker inspect --format '{{.State.Pid}}' "${CONTAINER}" 2>/dev/null)"
+  if [ -z "${pid}" ] || [ ! -r "/proc/${pid}/stat" ]; then
+    printf '0'
+    return
+  fi
+  # The comm field is parenthesised and may contain spaces, so count fields after the last ')'.
+  ticks="$(sed 's/.*) //' "/proc/${pid}/stat" | awk '{print $12+$13}')"
+  awk -v t="${ticks:-0}" -v h="$(getconf CLK_TCK)" 'BEGIN{printf "%.2f", (h>0)?t/h:0}'
+}
 
 recreate_gateway() {
   (
@@ -105,18 +164,34 @@ set_arm() {
   # 1.9-3.4% of segments late where an interleaved sitting found 8.4-19.5%, and two things differed:
   # those arms idled before measuring, and they were not preceded by a funded arm. Recreating every
   # arm and varying only the idle separates them, and still costs nothing.
-  if [ "${FORCE_RECREATE:-0}" = "0" ] && [ "$1" = "${CURRENT_ARM_SWAP}" ] && arm_confirmed_on_node; then
-    say "  gateway is already at BEE_GATEWAY_SWAP_ENABLE=$1, leaving it up"
+  local wantSwap="$1" wantCache="$2"
+  if [ "${FORCE_RECREATE:-0}" = "0" ] && [ "${wantSwap}" = "${CURRENT_ARM_SWAP}" ] &&
+    [ "${wantCache}" = "${CURRENT_ARM_CACHE}" ] && arm_confirmed_on_node && cache_confirmed_on_node; then
+    say "  gateway is already at swap=${wantSwap} cache=${wantCache}, leaving it up"
     return 0
   fi
 
-  CURRENT_ARM_SWAP="$1"
-  say "  setting BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP} and recreating the gateway"
+  CURRENT_ARM_SWAP="${wantSwap}"
+  CURRENT_ARM_CACHE="${wantCache}"
+  say "  setting swap=${CURRENT_ARM_SWAP} cache=${CURRENT_ARM_CACHE} and recreating the gateway"
   sed -i "s/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${CURRENT_ARM_SWAP}/" "${ENV_FILE}" || return 1
+  set_env_value "${CACHE_KEY}" "${CURRENT_ARM_CACHE}" || return 1
   ARM_CHANGED=1
   recreate_gateway || { say "  compose failed to recreate the gateway"; return 1; }
   wait_for_gateway_api || return 1
   return 0
+}
+
+# The cache setting read off the running container's own arguments, for the same reason the swap arm is
+# read off the node: an env file says what was asked for, not what is running.
+cache_confirmed_on_node() {
+  local args
+  args="$(docker inspect --format '{{join .Args " "}}' "${CONTAINER}" 2>/dev/null)"
+  case "${args}" in
+    *"--cache-capacity=${CURRENT_ARM_CACHE} "* | *"--cache-capacity=${CURRENT_ARM_CACHE}") return 0 ;;
+  esac
+  say "  the node is not running --cache-capacity=${CURRENT_ARM_CACHE}"
+  return 1
 }
 
 # The arm read off the node rather than off the intent. A funded gateway answers /chequebook/balance
@@ -133,15 +208,23 @@ arm_confirmed_on_node() {
 }
 
 restore_gateway() {
-  if [ "${ARM_CHANGED}" = "0" ] && [ "${CURRENT_ARM_SWAP}" = "${BASELINE_SWAP}" ]; then
+  if [ "${ARM_CHANGED}" = "0" ] && [ "${CURRENT_ARM_SWAP}" = "${BASELINE_SWAP}" ] &&
+    [ "${CURRENT_ARM_CACHE}" = "${BASELINE_CACHE}" ]; then
     return
   fi
-  say "restoring the gateway to BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}"
+  say "restoring the gateway to swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}"
   sed -i "s/^BEE_GATEWAY_SWAP_ENABLE=.*/BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}/" "${ENV_FILE}"
+  if [ "${CACHE_WAS_PRESENT}" = "1" ]; then
+    set_env_value "${CACHE_KEY}" "${BASELINE_CACHE}"
+  else
+    # It was never in the file, so leaving it behind at the compose default is still a change.
+    sed -i "/^${CACHE_KEY}=/d" "${ENV_FILE}"
+  fi
   CURRENT_ARM_SWAP="${BASELINE_SWAP}"
+  CURRENT_ARM_CACHE="${BASELINE_CACHE}"
   recreate_gateway
   wait_for_gateway_api
-  if arm_confirmed_on_node; then
+  if arm_confirmed_on_node && cache_confirmed_on_node; then
     say "gateway restored and confirmed on the node"
   else
     say "⛔ THE GATEWAY DID NOT COME BACK IN ITS ORIGINAL SHAPE. Check it by hand."
@@ -161,16 +244,38 @@ warmup_fetch() {
   say "  discarded a warm-up retrieval of ${took}s before timing anything"
 }
 
+# `count median p90 late lateShare` for one file of per-retrieval milliseconds, space separated.
+#
+# ⛔ The share over budget is the headline and the median is not. Across six arms the median penalty
+# was 2.9x where the share over budget was 45x, because a buffer drains on late segments rather than
+# on typical ones.
+summarise_times() {
+  sort -n "$1" | awk -v b="${BUDGET_MS}" '
+    {v[NR]=$1; if($1>b) late++}
+    END{
+      if(NR==0){print "0 0 0 0 0.0"; exit}
+      printf "%d %d %d %d %.1f", NR, v[int(NR/2)+1], v[int(NR*0.9)], late+0, 100*(late+0)/NR
+    }'
+}
+
+say_times() {
+  local label="$1" c m p l s
+  read -r c m p l s <<<"$(summarise_times "$2")"
+  say "  ${label}: ${c} segments, median ${m}ms, p90 ${p}ms, ⭐ ${l} over ${BUDGET_MS}ms = ${s}%"
+}
+
 # One arm: the same references in the same order every time, so the work is identical and only the
 # node's ability to pay for it differs.
 run_arm() {
-  local round="$1" label="$2" swap="$3" idle="${4:-0}"
-  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first"
+  local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}"
+  [ -n "${cache}" ] || cache="${CURRENT_ARM_CACHE}"
+  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}"
 
-  local was="${CURRENT_ARM_SWAP}"
+  local was="${CURRENT_ARM_SWAP}/${CURRENT_ARM_CACHE}"
   [ "${FORCE_RECREATE:-0}" = "1" ] && was="forced"
-  set_arm "${swap}" || return 1
+  set_arm "${swap}" "${cache}" || return 1
   arm_confirmed_on_node || return 1
+  cache_confirmed_on_node || return 1
 
   # After the recreate rather than before it, so the idle is time the node spent up and unfunded, which
   # is the quantity under test. Idling and then restarting would measure nothing.
@@ -184,35 +289,67 @@ run_arm() {
   before="$(acct)"
   [ -n "${before}" ] || before="NONE"
   say "  accounting before: ${before}"
-  mBefore="$(metrics)"
-  [ -n "${mBefore}" ] || mBefore="NONE"
 
   # ⛔ Discarded, and it is not optional. Every arm of the first run opened with a segment that took
   # 8.2 to 9.9 seconds, in the funded arms as much as the unfunded ones, because the arm begins with a
   # container recreate and bee answers `/health` well before its retrieval path has peers again. It is
   # an artifact of flipping the arm, present in both, and left in the sample it moves every maximum,
   # every p99 and every elapsed figure the run reports.
-  if [ "${was}" != "${CURRENT_ARM_SWAP}" ]; then
+  if [ "${was}" != "${CURRENT_ARM_SWAP}/${CURRENT_ARM_CACHE}" ]; then
     warmup_fetch
   fi
 
+  # ⛔ Read AFTER the warm-up, not before it. The warm-up's own retrieval is 8-10 seconds of a node
+  # rebuilding its peer set, and a proving run showed those chunks landing in `durLe1` as seventeen
+  # requests over a second: an 11.6% one-second-stall rate that was entirely the discarded fetch, in
+  # the counter added to measure the real one.
+  mBefore="$(metrics)"
+  [ -n "${mBefore}" ] || mBefore="NONE"
+
+  # bee burns CPU on peers, syncing and its own housekeeping whether or not anything is retrieving, and
+  # a freshly recreated node burns more. Measuring that rate first and subtracting it is what turns the
+  # arm's CPU total into a retrieval cost. Without it two identical funded arms came out 0.57s and
+  # 0.91s on startup noise alone.
+  local cpuBefore cpuAfter cpuUsed cpuIdleRate idleA idleB
+  idleA="$(gateway_cpu_seconds)"
+  sleep "${CPU_IDLE_WINDOW_S}"
+  idleB="$(gateway_cpu_seconds)"
+  cpuIdleRate="$(awk -v a="${idleA}" -v b="${idleB}" -v w="${CPU_IDLE_WINDOW_S}" \
+    'BEGIN{printf "%.4f", (w>0)?(b-a)/w:0}')"
+  say "  gateway idles at ${cpuIdleRate} CPU-seconds per second"
+  cpuBefore="$(gateway_cpu_seconds)"
+
   : >"${OUT_DIR}/times-${round}-${label}.txt"
   started="$(date +%s)"
-  while read -r ref; do
-    n=$((n + 1))
-    [ "${n}" -gt "${SEGMENTS}" ] && break
-    local out ms b
-    out="$(curl -s -o /dev/null -m 30 -w '%{time_total} %{size_download}' "http://127.0.0.1:${GATEWAY_BEE_PORT}/bytes/${ref}")"
-    ms="$(printf '%s\n' "${out}" | awk '{printf "%d", $1*1000}')"
-    b="$(printf '%s\n' "${out}" | awk '{print $2}')"
-    printf '%s\n' "${ms}" >>"${OUT_DIR}/times-${round}-${label}.txt"
-    bytes=$((bytes + b))
-    # A time series rather than only endpoints, so a debt that grows and then settles is visible.
-    if [ $((n % 50)) = 0 ]; then
-      printf '%s\t%s\t%s\t%s\t%s\n' "${round}" "${label}" "${n}" "$(($(date +%s) - started))" "$(acct)" >>"${SERIES}"
-    fi
-  done <"${REFS}"
+  local pass
+  for pass in $(seq 1 "${PASSES}"); do
+    local passFile="${OUT_DIR}/times-${round}-${label}-p${pass}.txt"
+    : >"${passFile}"
+    n=0
+    while read -r ref; do
+      n=$((n + 1))
+      [ "${n}" -gt "${SEGMENTS}" ] && break
+      local out ms b
+      out="$(curl -s -o /dev/null -m 30 -w '%{time_total} %{size_download}' "http://127.0.0.1:${GATEWAY_BEE_PORT}/bytes/${ref}")"
+      ms="$(printf '%s\n' "${out}" | awk '{printf "%d", $1*1000}')"
+      b="$(printf '%s\n' "${out}" | awk '{print $2}')"
+      printf '%s\n' "${ms}" >>"${passFile}"
+      bytes=$((bytes + b))
+      # A time series rather than only endpoints, so a debt that grows and then settles is visible.
+      if [ $((n % 50)) = 0 ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "${round}" "${label}.${pass}" "${n}" "$(($(date +%s) - started))" "$(acct)" >>"${SERIES}"
+      fi
+    done <"${REFS}"
+    cat "${passFile}" >>"${OUT_DIR}/times-${round}-${label}.txt"
+    # Each pass reported on its own, because the whole point of a second pass is that it should differ.
+    say_times "pass ${pass}" "${passFile}"
+  done
   ended="$(date +%s)"
+  cpuAfter="$(gateway_cpu_seconds)"
+  cpuUsed="$(awk -v a="${cpuBefore}" -v b="${cpuAfter}" 'BEGIN{printf "%.2f", b-a}')"
+  local cpuRetrieval
+  cpuRetrieval="$(awk -v u="${cpuUsed}" -v r="${cpuIdleRate}" -v s="$((ended - started))" \
+    'BEGIN{v=u-(r*s); printf "%.2f", (v>0)?v:0}')"
 
   after="$(acct)"
   [ -n "${after}" ] || after="NONE"
@@ -222,34 +359,33 @@ run_arm() {
   say "  node metrics after:  ${mAfter}"
 
   local median p90 count late lateShare
-  count="$(wc -l <"${OUT_DIR}/times-${round}-${label}.txt")"
-  median="$(sort -n "${OUT_DIR}/times-${round}-${label}.txt" | awk -v c="${count}" 'NR==int(c/2)+1')"
-  p90="$(sort -n "${OUT_DIR}/times-${round}-${label}.txt" | awk -v c="${count}" 'NR==int(c*0.9)')"
-  late="$(awk -v b="${BUDGET_MS}" '$1>b' "${OUT_DIR}/times-${round}-${label}.txt" | wc -l)"
-  lateShare="$(awk -v l="${late}" -v c="${count}" 'BEGIN{printf "%.1f", (c>0)?100*l/c:0}')"
+  read -r count median p90 late lateShare <<<"$(summarise_times "${OUT_DIR}/times-${round}-${label}.txt")"
+
+  local cpuPerMb
+  cpuPerMb="$(awk -v c="${cpuRetrieval}" -v b="${bytes}" 'BEGIN{printf "%.3f", (b>0)?c/(b/1000000):0}')"
 
   say "  ${count} segments, $((bytes / 1000000)) MB, $((ended - started))s, median ${median}ms, p90 ${p90}ms"
   say "  ⭐ ${late} of ${count} missed the ${BUDGET_MS}ms budget = ${lateShare}%"
+  say "  ⭐ gateway CPU ${cpuUsed}s total, ${cpuRetrieval}s above idle = ${cpuPerMb}s per MB retrieved"
   say "  accounting after:  ${after}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "${round}" "${label}" "${swap}" "${idle}" "${count}" "${bytes}" "$((ended - started))" \
-    "${median}" "${p90}" "${lateShare}" "${before}" "${after}" >>"${STATE}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${count}" "${bytes}" "$((ended - started))" \
+    "${median}" "${p90}" "${lateShare}" "${cpuUsed}" "${cpuIdleRate}" "${cpuRetrieval}" "${cpuPerMb}" \
+    "${before}" "${after}" >>"${STATE}"
   printf '%s\t%s\t%s\tbefore\t%s\n%s\t%s\t%s\tafter\t%s\n' \
     "${round}" "${label}" "${swap}" "${mBefore}" "${round}" "${label}" "${swap}" "${mAfter}" >>"${METRICS_TSV}"
 }
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
-say "gateway found at BEE_GATEWAY_SWAP_ENABLE=${BASELINE_SWAP}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tidle\tsegments\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tacctBefore\tacctAfter\n' >"${STATE}"
+say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tsegments\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
-    label="${spec%%:*}"
-    rest="${spec#*:}"
-    swap="${rest%%:*}"
-    idle="${rest##*:}"
-    run_arm "${round}" "${label}" "${swap}" "${idle}" || say "round ${round} arm ${label} did not complete"
+    IFS=':' read -r label swap idle cache <<<"${spec}"
+    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" ||
+      say "round ${round} arm ${label} did not complete"
   done
 done
 
