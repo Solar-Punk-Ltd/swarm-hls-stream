@@ -370,6 +370,66 @@ describe('summarizing what the gateway did during a run', () => {
     assert.equal(summarizeGateway(samples).minutes[1].chequebookAvailableBzz, 0);
   });
 
+  /**
+   * The four tests below were written against surviving mutants rather than against the code.
+   *
+   * Every threshold in this module was already covered by a fixture that cleared it comfortably, so
+   * flipping each `>=` to `>` and each `<` to `<=` changed nothing any test could see. A boundary that
+   * only the implementation defines is a boundary that moves the next time someone edits the line.
+   */
+  it('names a step that lands exactly on the threshold, not just one past it', () => {
+    const before = Array.from({ length: 10 }, (_, i) => at(i * 6_000, { serviceMs: 30 }));
+    const after = Array.from({ length: 10 }, (_, i) => at(60_000 + i * 6_000, { serviceMs: 60 }));
+
+    const summary = summarizeGateway([...before, ...after]);
+
+    assert.equal(summary.serviceStepRatio, 2);
+    assert.match(summary.warnings.join(' '), /stepped 2\.00x/);
+  });
+
+  it('calls a node exactly at the slow threshold slow', () => {
+    // Every minute at the same service time, so the step ratio is 1 and this can only be the slow
+    // branch talking. A fixture that also stepped would pass with the slow branch deleted.
+    const samples = Array.from({ length: 20 }, (_, i) => at(i * 6_000, { serviceMs: 250 }));
+
+    const summary = summarizeGateway(samples);
+
+    assert.equal(summary.serviceStepRatio, 1);
+    assert.match(summary.warnings.join(' '), /250ms to answer/);
+  });
+
+  /**
+   * Peers halving is not peers falling below half, and the difference is the whole of this warning's
+   * boundary. Pinned as the code reads today: exactly half does not warn.
+   */
+  it('does not call peers exactly halving a fall away', () => {
+    const samples = [at(0, { connectedPeers: 90 }), at(60_000, { connectedPeers: 45 })];
+
+    const summary = summarizeGateway(samples);
+
+    assert.deepEqual(summary.warnings, []);
+  });
+
+  /**
+   * The median is the headline of every gateway table, and its even-length branch had never run: the
+   * existing fixtures all hold an odd number of samples per minute, where the mean of the two middle
+   * values is never taken. A sampler at the default 5s interval puts twelve samples in a minute, so
+   * the even branch is the one a real run uses.
+   */
+  it('takes the mean of the middle two when a minute holds an even number of samples', () => {
+    const samples = [10, 20, 30, 40].map((serviceMs, i) => at(i * 6_000, { serviceMs }));
+
+    const summary = summarizeGateway(samples);
+
+    assert.equal(summary.minutes.length, 1);
+    assert.equal(summary.minutes[0].samples, 4);
+    assert.equal(
+      summary.minutes[0].medianServiceMs,
+      25,
+      'an even-length minute did not take the mean of the middle two',
+    );
+  });
+
   it('says nothing at all about a run it has no samples for', () => {
     const summary = summarizeGateway([]);
 
