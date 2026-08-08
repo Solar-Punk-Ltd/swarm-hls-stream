@@ -117,29 +117,36 @@ themselves are the check on it.
 |     | run | why it is on the list | broadcast-min |
 | --- | --- | --------------------- | ------------- |
 
-## Phase 0.6 ⚠️ ANSWERED AT 1.0s, OPEN AT THE PROFILE THAT SHIPS — light against ultra-light
+## Phase 0.6 ✅ MEASURED AT BOTH PROFILES — light against ultra-light
 
-⛔ **The operating assumption stays: a viewer's gateway has to be funded at 0.25s, which is what
-ships.** Two sittings now measure the same mechanism and they agree.
+⛔ **The standing answer: do not ship an unfunded viewer gateway.** Not because it breaks every time,
+it does not, but because the margin is thin and the variation an operator cannot control is wider
+than the margin.
 
-**Ultra-light multiplies segment transfer time by two to four.** Measured on 2026-08-06 at 0.25s
-(65.5-91ms funded against 156-172ms ultra) and again on 2026-08-07 at 1.0s (100-103ms against
-407-458.5ms). Whether a viewer feels it is decided by the **segment budget**, not by the node:
+**Ultra-light multiplies segment transfer time by two to four, in all three sittings.** Whether a
+viewer feels it is decided by the **segment budget**, not by the node:
 
-|              GOP | budget |  light | ultra-light | outcome at a viewer                                                |
-| ---------------: | -----: | -----: | ----------: | ------------------------------------------------------------------ |
-| **0.25s, ships** |  250ms | 26-36% |  **62-69%** | buffer 4.60s → 1.46s, **17 rebuffers in 3 min**, fps below encoded |
-|             1.0s | 1000ms |    10% |      41-46% | clean over 30 min, nothing stalled, nothing rebuffered             |
+|              GOP | budget |     light |   ultra-light | outcome at a viewer                                             |
+| ---------------: | -----: | --------: | ------------: | --------------------------------------------------------------- |
+| **0.25s, ships** |  267ms | 21-24% ✅ | **49-53%** ✅ | 2026-08-08: 45 min unfunded, **nothing stalled or rebuffered**  |
+| **0.25s, ships** |  250ms | 26-36% ✅ | **62-69%** ⛔ | 2026-08-06: buffer 4.60s → **1.46s**, **17 rebuffers in 3 min** |
+|             1.0s | 1000ms |    10% ✅ |     41-46% ✅ | 30 min clean, nothing stalled or rebuffered                     |
 
-✅ **At 1.0s an unfunded gateway costs a viewer nothing measurable**, over three arms and 65 minutes:
-advance 1.000 to 1.002, and **0 refused and 0 never-served segments out of 1807 requests** per arm.
-The only stall in that sitting was in the **funded** arm. The unfunded arms cost the gateway nothing.
-[Report](../bench/light-vs-ultra-light-at-a-viewer-2026-08-07.md),
-[the 0.25s sitting](../bench/light-vs-ultra-light-2026-08-06.md).
+⛔ **The outcome is a threshold and the two 0.25s sittings sit on opposite sides of it.** Around half
+the budget the buffer holds. Around two thirds it drains and does not recover. **The unfunded node ran
+131 to 172ms across the two sittings, a 31% spread, and only 14ms separates the worst clean arm from
+the first failing one.** The funded arm has no such problem: a quarter of the budget, three times the
+headroom, no failing arm in either sitting.
 
-⚠️ **What is left is the six arms at 0.25s**, where the decision actually lives, at about the cost of
-the 1.0s sitting. Nothing here supports running unfunded at the shipping profile, and the transfer
-figures are evidence against it.
+✅ **At 1.0s the penalty is absorbed completely**, which is the one thing that reliably fixes it: a
+segment budget large enough to swallow a 2-4x transfer cost.
+
+[0.25s, 2026-08-08](../bench/ultra-light-at-the-shipping-profile-2026-08-08.md),
+[0.25s, 2026-08-06](../bench/light-vs-ultra-light-2026-08-06.md),
+[1.0s, 2026-08-07](../bench/light-vs-ultra-light-at-a-viewer-2026-08-07.md).
+
+⚠️ **What is genuinely open** is why the unfunded node was 24% faster on one night than another.
+Nothing here explains it, and it is the term the deployment decision turns on.
 
 ⚠️ **One open difference, deliberately not called an effect.** Ultra-light's median latency sat about
 half a second above light's in both comparable pairs. It is not established: round 2's funded arm took
