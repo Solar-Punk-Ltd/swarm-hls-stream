@@ -66,3 +66,88 @@ describe('FakeClock', () => {
     assert.ok(systemClock.now() < Date.now() / 2, 'now() must be a monotonic reading, not a wall-clock date');
   });
 });
+
+/**
+ * `systemClock`'s own timer, which nothing established anything about.
+ *
+ * Three mutants lived on the `unref` guard: `if (true)`, `if (false)` and an emptied block each
+ * passed all 730 tests, so the flag was free to mean nothing in either direction. Its one caller is
+ * the drain deadline in `StreamOrchestrator`, whose comment is that a pending drain is not a reason
+ * to keep the process alive, so a flag that stopped being honoured is an uploader that will not exit
+ * until a deadline it no longer needs expires.
+ *
+ * `setTimeout` is stubbed rather than the timing observed, because "did this process stay alive"
+ * cannot be asserted from inside the process that would be staying alive.
+ */
+describe('systemClock timers', () => {
+  interface StubbedTimers {
+    unrefCalls: number;
+    clearedHandles: unknown[];
+  }
+
+  const withStubbedTimers = (run: () => void): StubbedTimers => {
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const stubbed: StubbedTimers = { unrefCalls: 0, clearedHandles: [] };
+    const handle = {
+      unref: () => {
+        stubbed.unrefCalls++;
+        return handle;
+      },
+    };
+
+    globalThis.setTimeout = (() => handle) as unknown as typeof globalThis.setTimeout;
+    globalThis.clearTimeout = ((given: unknown) => {
+      stubbed.clearedHandles.push(given);
+    }) as unknown as typeof globalThis.clearTimeout;
+    try {
+      run();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
+    return stubbed;
+  };
+
+  it('unrefs a timer that asked not to hold the process open', () => {
+    const stubbed = withStubbedTimers(() => {
+      systemClock.setTimer(() => {}, 10, { unref: true });
+    });
+
+    assert.equal(
+      stubbed.unrefCalls,
+      1,
+      'a timer asked to unref did not, so a drain deadline would hold the process open',
+    );
+  });
+
+  // The other direction, and the reason one assertion is not enough: a guard stuck open passes the
+  // test above and silently unrefs every timer, which drops deadlines that were meant to hold.
+  it('leaves a timer that said nothing about it holding the process open', () => {
+    const stubbed = withStubbedTimers(() => {
+      systemClock.setTimer(() => {}, 10);
+    });
+
+    assert.equal(stubbed.unrefCalls, 0, 'a timer that never asked to unref was unreffed anyway');
+  });
+
+  it('treats unref false as not asking', () => {
+    const stubbed = withStubbedTimers(() => {
+      systemClock.setTimer(() => {}, 10, { unref: false });
+    });
+
+    assert.equal(stubbed.unrefCalls, 0);
+  });
+
+  // Asserts the handle rather than the call count, since clearing something is not the same as
+  // clearing the timer that was made.
+  it('cancels the handle it was given, rather than one it made up', () => {
+    let made: unknown;
+    const stubbed = withStubbedTimers(() => {
+      made = globalThis.setTimeout(() => {}, 0);
+      systemClock.setTimer(() => {}, 10).cancel();
+    });
+
+    assert.deepEqual(stubbed.clearedHandles, [made], 'cancel did not clear the handle setTimeout returned');
+  });
+});
