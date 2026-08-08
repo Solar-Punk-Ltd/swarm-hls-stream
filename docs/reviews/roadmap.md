@@ -1,7 +1,35 @@
 # Roadmap
 
-**2026-08-05.** Ordered by what unblocks what, not by appeal. Every claim below is either measured and
-linked, or marked as a guess. Items already tracked carry their task number.
+**2026-08-05, re-ordered 2026-08-08.** Ordered by what unblocks what, not by appeal. Every claim below
+is either measured and linked, or marked as a guess. Items already tracked carry their task number.
+
+## Order of work, as the owner set it on 2026-08-08
+
+> "let's measure everything what we can here without scaling up then before phase3 we have to make a
+> verbose docs with all of our findings that I can give to this other repo... and we want to know how
+> the network can handle a high scale streaming event"
+
+⭐ **A second repository will run the thousands-of-viewers simulation.** This one does not scale up. It
+measures everything reachable at current scale, and then hands over findings and a method.
+
+⛔ **Nothing here has ever exceeded eight concurrent viewers on one gateway.** Every figure in this
+document is 1 to 8. Any claim about a thousand nodes is a prediction until that other repo runs it.
+
+| #     | what                                                                     | gate                    |
+| ----- | ------------------------------------------------------------------------ | ----------------------- |
+| **1** | Free work: the open defects and the instruments that cost nothing        | none                    |
+| **2** | **Phase 0.9**, scale readiness measured at current scale                 | mostly free             |
+| **3** | 0.7c, then 0.5c / 0.5e as the chequebook allows                          | broadcast-min           |
+| **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        |
+| **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   |
+| **6** | **The scale-up handover document** for the other repo                    | none, and it lands here |
+| **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         |
+| **8** | Phase 3, OME to parity and the engine comparison                         | **last**                |
+| **9** | Phase 4, LL-HLS                                                          | **last**                |
+
+⚠️ **The uploader chequebook is the binding constraint on steps 3 and 5**, at roughly 64
+broadcast-minutes against 145 the remaining measured items ask for. Postage is not binding. Which of
+them gets bought is the owner's call, never mine.
 
 ## Where the product actually is
 
@@ -12,7 +40,7 @@ linked, or marked as a guess. Items already tracked carry their task number.
 | Live latency        | **1.074s** capture-to-fetchable at 720p 2500kbps, 0.25s GOP, [gated over three 10-minute runs](../bench/ten-minute-gate-2026-08-05.md) with a 29ms spread and no drift. ✅ **Glass to glass at a viewer is 6.4 to 7.3s and flat**, read off a burned-in clock, [after the client fix](../bench/the-loop-fixed-2026-08-05.md). It was 17.9s and growing before it.                                                                                                                                                |
 | What a viewer sees  | ✅ **1.000 and 1.003 media seconds per wall second at 0.25s, nothing frozen, no rebuffers**, holding 5.86s behind live against a 6s target. It was 0.82x and 17.3% frozen: the client took one feed slot per playlist reload. [Fixed and measured](../bench/the-loop-fixed-2026-08-05.md), [diagnosed](../bench/what-starves-the-viewer-2026-08-05.md).                                                                                                                                                          |
 | Which profile ships | ✅ **0.25s GOP, and 1080p at 6000kbps with it.** Gated at ten minutes at a viewer: 30.0fps, advance 1.000, nothing stalled, nothing rebuffered. Latency across a 2.4x bitrate range differs by 70ms, so the best picture costs bandwidth (2.24x the BZZ) rather than seconds.                                                                                                                                                                                                                                    |
-| Seeking             | VOD manifests carry every segment plus `#EXT-X-ENDLIST`, so hls.js should seek natively. **Nobody has watched it work and nothing tests it.**                                                                                                                                                                                                                                                                                                                                                                    |
+| Seeking             | ✅ **A recording plays and seeks**, five runs, every seek landing in 17-48ms and resuming in 338-359ms. ⚠️ Still unreached: seeking **past a discontinuity** and into a region **whose chunks left the local gateway**, because a 27-second recording fits in the buffer whole. ⭐ The client uses `HashRouter`, so a watch URL is `#/watch/...` and the path form silently renders the catalog.                                                                                                                 |
 | Live DVR            | One chunk of manifest. On latbench at the best profile that is **9.0 seconds**, up from 2.5.                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Crash recovery      | 6 e2e scenarios pass on the **uploader's** side. ✅ **A viewer has now been watched through five**, and one of them plays through a **discontinuity** and survives it. ✅ The largest client-side cost is fixed: recovery from an uploader crash went **46.7s → 4.1s** by asking what is behind a refused slot instead of parking on it. ⛔ #92: a write outage the upload side calls clean still freezes a viewer, because lossless is the uploader's 15s retry window and invisible is the viewer's 6s buffer. |
 | Browser validation  | ✅ **Unblocked 2026-08-05.** `pnpm browser:selfcheck` proves the browser is a valid instrument in ten seconds for no cost, and `browser:watch` reports VOID rather than a number when it is not.                                                                                                                                                                                                                                                                                                                 |
@@ -228,16 +256,26 @@ that makes an unfunded gateway reliable**, and the spread is wider than the marg
 [Why an unfunded gateway is slow](../bench/why-an-unfunded-gateway-is-slow-2026-08-08.md), read from
 **bee's own counters** rather than from the browser.
 
-| arm      |  chunk requests | **peers skipped for accounting** | **attempts per request** |
-| -------- | --------------: | -------------------------------: | -----------------------: |
-| funded   | 20,940 / 20,957 |                 **5** and **22** |                 **1.14** |
-| unfunded |          20,957 |      **799,072** and **773,898** |  **39.41** and **38.22** |
+| arm      |  chunk requests | **peers skipped for accounting** | **loop iterations per request** |
+| -------- | --------------: | -------------------------------: | ------------------------------: |
+| funded   | 20,940 / 20,957 |                 **5** and **22** |                        **1.14** |
+| unfunded |          20,957 |      **799,072** and **773,898** |         **39.41** and **38.22** |
 
 `bee_accounting_accounting_blocks_count` is bee's own words for it: _"temporarily skipping a peer to
 avoid crossing their disconnect thresholds"_.
 
-⭐ **An unfunded node skips a peer for accounting reasons ~37 times per chunk, and must ask 38 peers
-where a funded node asks one.** A 34x increase in the work of finding somebody willing to serve.
+⭐ **An unfunded node skips a peer for accounting reasons ~37 times per chunk.**
+
+⛔ **CORRECTED 2026-08-08: those are loop iterations, not requests on the wire.** Bee increments
+`PeerRequestCounter` and `totalRetrieveAttempts` **before** the `prepareCredit` call that decides
+whether to contact the peer, so every skip is counted and never sent. Real peer contacts are attempts
+minus skips: **1.281 and 1.296 per chunk unfunded against 1.142 funded**, so the network sees about
+**13% more load, not 34x**. Corroborated by rate, since 825,931 requests in 151s would be 5,470 a
+second.
+
+⭐ **The 37 extra iterations are local, so a fleet of unfunded nodes is bounded by host CPU and node
+density rather than by network capacity.** That is the load-bearing input to any thousands-of-viewers
+plan, and it is the opposite of what the uncorrected reading implied.
 
 ⚠️ **It is not failure, it is the work of avoiding failure**: request failure rates are
 indistinguishable, 7.1% funded against 7.4% unfunded.
@@ -248,8 +286,9 @@ settles when it needs headroom with a peer, so an idle node settles nothing beca
 
 ✅ **"Slower" versus "starved" is now separated, and it is starved.** The chain is complete and every
 step has a number: cannot settle → sits at every peer's disconnect threshold → 786,000 skips per arm →
-38 attempts per chunk → usually one answers fast (so the median barely moves) → sometimes they run out
-and a retry timer fires at 1.0-1.1s → bursts of those drain a 4.8s buffer.
+38 peer-selection iterations per chunk, of which 1.28 reach a peer → usually an eligible peer is found
+fast (so the median barely moves) → sometimes they run out and a retry timer fires at 1.0-1.1s →
+bursts of those drain a 4.8s buffer.
 
 ⭐ **The method is the transferable part.** The question was about retrieval, so everything that was
 not retrieval was dropped, and the price fell from ~1.3 BZZ and two and a half hours to 0.184 BZZ and
@@ -435,10 +474,13 @@ the freeze length, since the freeze also contains the floor.
 was a client fix written from reading that was wrong. What is different here is that both defects are
 measured from request logs and both reproduce on demand.
 
-|
-| 0.7a | ✅ **done.** Screened all three at 3 min in one sitting: **all deliver 30.0fps at full resolution, 0 stalled, 0 rebuffers**, and latency across a 2.4x bitrate range differs by **70ms**. | 10 |
-| 0.7b | ✅ **done.** 1080p/6000k gated at 10 min: 594 samples, 30.0fps, advance **1.000**, 0 stalled, 0 rebuffers, 0 fatal. [Report](../bench/quality-at-a-viewer-2026-08-06.md). | 10 |
-| 0.7c | The best quality that holds at 0.25s against the same quality at 0.5s | 22 |
+### Phase 0.7's runs
+
+| run  | what                                                                                                                                                                                      | broadcast-min |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 0.7a | ✅ **done.** Screened all three at 3 min in one sitting: **all deliver 30.0fps at full resolution, 0 stalled, 0 rebuffers**, and latency across a 2.4x bitrate range differs by **70ms**. | 10            |
+| 0.7b | ✅ **done.** 1080p/6000k gated at 10 min: 594 samples, 30.0fps, advance **1.000**, 0 stalled, 0 rebuffers, 0 fatal. [Report](../bench/quality-at-a-viewer-2026-08-06.md).                 | 10            |
+| 0.7c | The best quality that holds at 0.25s against the same quality at 0.5s                                                                                                                     | 22            |
 
 ⭐ **Quality is bought with bandwidth, not with latency: 2.24x the BZZ (0.0170 → 0.0381 per
 broadcast-minute) and essentially no seconds.** 1080p at 6000kbps ships.
@@ -460,10 +502,16 @@ result.
 1080p cannot hold at 0.25s but holds at 0.5s, that is a real product choice between picture and
 latency, and it should be made on a measurement rather than on which one was tested first.
 
-|
-| 0.6a | 10-minute viewer runs, L U L U | 44 |
-| 0.6b | 60-minute viewer run on each arm | 126 |
-| 0.6c | `viewer-gateway-outage` and `uploader-crash` on arm U | 20 |
+### Phase 0.6's runs
+
+⚠️ **All three are superseded by what the node-side counters answered for 0.295 BZZ.** Kept because
+0.6c is still unrun and still the sharpest interaction on the list.
+
+| run  | what                                                  | broadcast-min |
+| ---- | ----------------------------------------------------- | ------------- |
+| 0.6a | 10-minute viewer runs, L U L U                        | 44            |
+| 0.6b | 60-minute viewer run on each arm                      | 126           |
+| 0.6c | `viewer-gateway-outage` and `uploader-crash` on arm U | 20            |
 
 **0.6c is the one with the sharpest interaction.** Task #71 is a viewer blocked on the oldest feed
 slot they cannot retrieve. A gateway that cannot pay for bandwidth should meet more of those, so
@@ -483,16 +531,106 @@ lookup. Whatever this phase finds, that comment gets rewritten to match it.
 re-fetched per viewer. That is a separate variable and a likely large one for concurrent viewers. Not
 in this phase, deliberately, because two variables at once answers neither.
 
-|
-| 0.5a | ✅ **done 2026-08-06.** 10-minute gate: 0.998, one stall at t=2.2s (the join). | | 13 |
-| 0.5b | ✅ **DONE 2026-08-06, and it holds.** 12 windows all at 1.000 or 0.999, **zero frozen samples**, latency drift −0.29s. The predicted manifest-growth degradation is **absent** at 13,522 accumulated segments. [Report](../bench/browser-watch-2026-08-06T02-23-11-449Z.md). | | 63 |
-| 0.5c | 60-minute run at 1.0s | The control. Same hour, a quarter of the segments, so a degradation that tracks segment count separates from one that tracks wall clock. | 63 |
-| 0.5d | #71 and #85 fixed, each verified before and after | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state. | 50 |
-| 0.5e | The five remaining crash scenarios, ×2 | Phase 2's list, now that a viewer can be watched through one. | 60 |
+### Phase 0.5's runs
+
+| run  | what                                                                                                                                                                                                                                                                         | why it is on the list                                                                                                                    | broadcast-min |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 0.5a | ✅ **done 2026-08-06.** 10-minute gate: 0.998, one stall at t=2.2s (the join).                                                                                                                                                                                               |                                                                                                                                          | 13            |
+| 0.5b | ✅ **DONE 2026-08-06, and it holds.** 12 windows all at 1.000 or 0.999, **zero frozen samples**, latency drift −0.29s. The predicted manifest-growth degradation is **absent** at 13,522 accumulated segments. [Report](../bench/browser-watch-2026-08-06T02-23-11-449Z.md). |                                                                                                                                          | 63            |
+| 0.5c | 60-minute run at 1.0s                                                                                                                                                                                                                                                        | The control. Same hour, a quarter of the segments, so a degradation that tracks segment count separates from one that tracks wall clock. | 63            |
+| 0.5d | #71 and #85 fixed, each verified before and after                                                                                                                                                                                                                            | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state.                   | 50            |
+| 0.5e | The five remaining crash scenarios, ×2                                                                                                                                                                                                                                       | Phase 2's list, now that a viewer can be watched through one.                                                                            | 60            |
 
 **Read the windows, not the median.** A run that is perfect for its first half and rebuffering
 through its second has a respectable median and is a broken stream, which is why `stability.ts` cuts
 a run into five-minute windows and reports each on its own.
+
+## Phase 0.9 — scale readiness, measured here so the other repo does not have to guess
+
+**Added 2026-08-08.** A second repository will run thousands of light nodes against a high-scale
+streaming event. This phase answers, at current scale, the questions whose answers change that design,
+and it ends in a handover document rather than in a deployment.
+
+⛔ **The premise correction that reshapes all of it.** `bee_retrieval_peer_request_count` counts
+peer-selection **loop iterations**, not requests on the wire, because bee increments it before the
+`prepareCredit` call that decides whether to contact the peer. Real contacts are attempts minus skips:
+**1.28-1.30 per chunk unfunded against 1.14 funded**. So an unfunded fleet adds about **13%** network
+load, and its 37 wasted iterations per chunk are **local**.
+
+⭐ **Therefore the constraint on running many unfunded nodes is host CPU and node density, not network
+capacity.** Nothing has measured that spin's CPU cost, and it is now the first thing worth measuring.
+
+### 0.9a ✅ DONE 2026-08-08 — it is a switch, and it flips at zero
+
+[Report.](../bench/the-funding-cliff-is-at-zero-2026-08-08.md) The chequebook was drained to a known
+balance by the owner and sampled every five seconds beside the retrieval counters.
+
+| chequebook available |    median | over 267ms | first-peer service | skips per chunk |
+| -------------------: | --------: | ---------: | -----------------: | --------------: |
+|         **0.05 BZZ** |  **43ms** |   **0.1%** |          **87.6%** |        **1.56** |
+|    **0.0000004 BZZ** | **109ms** |  **10.6%** |          **12.5%** |        **39.8** |
+
+⭐ **0.05 BZZ performs exactly like 6.4 BZZ**, and an empty chequebook performs exactly like no
+chequebook. **Balance buys nothing except time**, so `BZZ per node = burn rate x duration`, which at
+0.0102 BZZ/min is 1.22 BZZ for a two-hour 720p gateway.
+
+⛔ **It is the failure with no alarm.** A node that runs dry answers `/health` in 1.1ms with 134 peers
+and takes its viewers from 0.1% late to 10.6%. **Alarm on `chequebookAvailableBzz`.**
+
+### 0.9a-ii Superseded design notes
+
+The mechanism is **cannot settle**, not **is poor**. Debt saturates near -1.4 billion PLUR and the
+three arms **pegged at that ceiling were the best of eleven**, so the balance is demonstrably not the
+dial. If any ability to issue a cheque restores 1.14 iterations per chunk, then a thousand-node event
+needs a trivial deposit per node rather than a funded chequebook per node, and that is the single
+largest lever on what such an event costs.
+
+Arms at several deposit sizes through `retrieval-debt-probe.sh`, reading
+`gateway-retrieval-metrics.sh` per arm. ⛔ Needs owner approval before any deposit: bring exact
+commands, fund nothing.
+
+### 0.9b `--cache-capacity`, excluded on purpose until now
+
+Every arm ever run sets `--cache-capacity=0`, so nothing caches and every chunk is re-fetched. It was
+excluded deliberately, because two variables at once answers neither. It is now the untested lever
+most likely to matter when many viewers sit behind one gateway, and **an unfunded arm costs nothing**.
+
+### 0.9c ✅ DONE 2026-08-08, free — sixteen viewers cost the network what one costs
+
+[Report.](../bench/sixteen-viewers-cost-what-one-costs-2026-08-08.md) Concurrency alternated 1, 2, 1,
+4, 1, 8, 1, 16 against an unfunded gateway. **Network peer contacts held at 3,167 to 3,287 while
+retrieval operations moved 15x**, so bee fetches each distinct chunk once and serves every concurrent
+viewer from it. Throughput scaled **16.7x** with a flat median. The late share roughly doubled, 4.0%
+to 8.9%, and that is the real cost.
+
+⭐⭐ **Pool viewers behind gateways, never one bee node per viewer**: ~25-30 viewers per 48-core host
+one-node-each against **~400** at sixteen-per-node.
+
+⛔ **It corrected two figures from earlier the same day.** "37 skips per chunk" and "1.28 contacts per
+chunk" are rates divided by whatever throughput their arm ran at. Valid for the single-viewer arms
+they came from, not general. ⬅ Nothing above 16 is measured, and this sweep cannot see feed staleness,
+which LAT-11 found goes 1.30x at eight.
+
+### 0.9c-ii The concurrent-viewer knee above sixteen
+
+LAT-11 measured 1 against 8 on one gateway: **1.30x staler, but only 1.09x more chunk retrieval**, at
+30.6% CPU on a 48-core host. The ceiling is inside bee's request handling, so **more BZZ does not help
+and horizontal gateways do**. Nothing between 2 and 8, or above 8, has ever been measured.
+
+⚠️ **Use the alternating-block design, never a ladder.** Relabelling eight unchanged past runs as if
+the viewer count had varied moved the metric by up to 1.95x with nothing happening, so a ladder cannot
+resolve anything under ~2x.
+
+### 0.9d The local spin's real cost
+
+5,470 loop iterations a second is cheap or expensive depending on what `prepareCredit` does per call,
+and **no host-load sample was taken during any unfunded arm**. This is the number that sets how many
+bee nodes fit on one simulation host, so the other repo needs it before it sizes anything.
+
+### 0.9e `bee_retrieval_request_duration_time`
+
+One line more in the metrics reducer. It is the last inferred step in the whole chain: the 1.0-1.1s
+retry timer is still taken from the client side rather than from the node.
 
 ## Phase 1 — the viewer features
 
@@ -531,13 +669,18 @@ client already addresses segments by computed slot, so neither needs new informa
 lower priority than #84, because a seek feature on a stream that freezes a sixth of the time is not
 the thing to build next.
 
-### 1.2 Seeking
+### 1.2 ✅ mostly done 2026-08-06 — a recording plays and seeks
 
-The VOD path looks correct by construction: `buildVODManifest` emits every segment with `PLAYLIST-TYPE:VOD`
-and `ENDLIST`, the client resolves the head once and gets that manifest whole, and hls.js seeks
-natively over it. **That is a reading, not a result.** What is untested: seeking past a discontinuity,
-seeking into a region whose chunks have left the local gateway, and seek latency, which is a fresh
-retrieval per target and has never been measured.
+`pnpm browser:vod`, five runs against two recordings. **Every seek lands in 17-48ms and resumes in
+338-359ms**, forward and backward, with no `pause` event in the whole run.
+
+⭐ **The harness could pass by reaching less**, and did once: targets computed off `duration` (which is
+not stable) tested three positions well inside the buffer and reported a clean sweep. Compute off
+`seekable`.
+
+⚠️ **Still unreached, and both need a longer recording than 27 seconds**: seeking **past a
+discontinuity**, and seeking into a region **whose chunks have left the local gateway**. On a recording
+that fits in the buffer whole the harness asks both questions and neither is exercised.
 
 Live seeking is a different feature and belongs in 1.3.
 
@@ -554,16 +697,15 @@ uploader publishes a rolling index.
 ⚠️ Related and already known: the client's manifest state **never trims**, so a long broadcast grows
 it without bound. Fix these together.
 
-### 1.4 Resync on a stalled feed — task #71
+### 1.4 ✅ DONE — shipped as 0.8a, **46.7s → 4.1s**
 
-`handleFollowupFetch` pins its slot, and on a miss re-asks that same slot forever. After 30 polls the
-UI says `stalled` and nothing else happens. The recovery that exists (`restartStream`) fires on a
-**parse** error, which a stuck feed never produces.
+`handleFollowupFetch` pinned its slot and re-asked it forever, so a viewer's recovery was bounded by
+the oldest slot they could not retrieve rather than by the outage. Fixed by probing N+1+D after K
+consecutive 404s and jumping the index to whatever answers, which needs nothing from the head lookup.
+See 0.8a for the full reasoning.
 
-**The trigger was measured and is absent: [692 of 692 slots answered](../bench/feed-hole-scan.md), 4ms
-median, zero holes.** So this is insurance rather than a live bug, and it is ~20 lines: on `stalled`,
-drop the index and re-anchor through the head lookup, which is already proven by
-`ManifestFetcher.test.ts`. ⚠️ Still not to be edited on reading alone.
+⚠️ The older sketch here proposed re-anchoring through the head lookup on `stalled`. That works and
+was **not** what shipped: it waits 30 polls and then pays for the slowest request this deployment has.
 
 ---
 
@@ -602,7 +744,48 @@ real browser watching while the fault is injected. Two scenarios run so far
 
 ---
 
-## Phase 3 — OME, then the engine comparison
+## Phase 2.5 — the scale-up handover document
+
+**Added 2026-08-08, and it is a gate on Phase 3 rather than a nice-to-have.** The other repository
+needs to run a multi-stage, thousands-of-viewers load test, and everything it needs to avoid paying
+for the same lessons twice is in this one, scattered across twenty bench reports.
+
+⭐ **It is one verbose standalone document, readable by someone with no context on this repo**, and it
+covers four things:
+
+1. **Every finding**, with its measurement, its cost and its confidence. Including the ones that are
+   corrections: the median was the wrong statistic, the skip counter is loop iterations, SRS declares a
+   segment duration 20-25% too long, and one non-fatal stall permanently raises hls.js's latency
+   target.
+2. **How to scale up**, meaning the topology choices and what each one buys. One node per viewer
+   against pooled gateways, funded against unfunded, cache on against off.
+3. **How to design the load test**: arm selection, warm-up, interleaving, and how to establish a noise
+   floor before trusting any design.
+4. **What to measure, on the network and on the nodes**: the exact bee counters, the reduction
+   commands, the statistic definitions, and the traps that make a check report nothing and read as a
+   pass.
+
+⛔ **It must say plainly what this repo has never done.** Nothing here has exceeded eight concurrent
+viewers. Every scale claim it carries is a prediction with a mechanism behind it, not a result, and
+the document is worthless if a reader cannot tell those apart.
+
+## Phase 2.6 — can a segment be fetched without being announced?
+
+**Moved out of Phase 4 on 2026-08-08 at the owner's direction**, because it is the question Phase 4
+turns on and it can be measured long before anyone builds LL-HLS.
+
+**Measure the announcement floor first.** A reader sustains about **3.8 slot reads a second** against
+`manifestPublish` at 215-226ms and `feedPropagation` at 39-52ms. If that floor stands where it looks,
+then the read side is the ceiling, LL-HLS buys far less than its reputation, and the cheaper change
+buys more.
+
+**Then the proposal, which is a proposal rather than a finding.** Segments are content addresses today
+and therefore unpredictable, but they could be written as SOCs at computed addresses exactly as
+manifests already are. A client that walks the **segment** feed skips the manifest entirely at the live
+edge. The walk machinery already exists on both sides, and it is proven to track a publisher writing
+3.8 slots a second. Cost: a SOC write per segment instead of a plain upload.
+
+## Phase 3 — OME, then the engine comparison ⏸ **deferred to last, 2026-08-08**
 
 ### 3.1 OME to parity
 
@@ -622,7 +805,10 @@ adds over raw ffmpeg is what the engine costs.
 
 ---
 
-## Phase 4 — LL-HLS, and why it is last
+## Phase 4 — LL-HLS, and why it is last ⏸ **deferred to last, 2026-08-08**
+
+⚠️ **The question this phase turns on now lives in 2.6** and should be answered before any of the
+below is acted on.
 
 **LL-HLS attacks the `segment` hop, which today's data confirms is the largest single hop.** So it
 looks like the obvious next move. The measurements say otherwise, and the argument is now sharp enough
