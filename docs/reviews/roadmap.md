@@ -774,6 +774,20 @@ the thing to build next.
 not stable) tested three positions well inside the buffer and reported a clean sweep. Compute off
 `seekable`.
 
+⛔⛔ **And it could pass by making a recording with no picture in it, which it did.** Task #40 was
+filed as an intermittent player defect, 1 run in 3. It is neither intermittent nor a player defect:
+the three runs used three different recordings, and one of them **opens with four segments carrying 41
+AAC packets and zero video packets**. The player fixes its codec set from the first fragment it parses,
+so it built an audio-only buffer set and refused every later video sample with a warning marked
+**non-fatal**. Sound over a blank picture for 209 seconds, with nothing saying so.
+[Report](../bench/a-recording-that-opens-without-video-2026-08-09.md).
+
+⭐ The cause is old — 5 video packets in 2.51s is about 2fps against a requested 30, which is the
+publisher throttle of 0.2 and #76. What is new is that a throttle **at second zero** does not degrade
+the picture, it removes it for the whole recording. `make:recording` now refuses on it. ⬅ **Whether
+the uploader should skip leading videoless segments is a product call**, task #41: it already detects
+them and already knows its mediatype, but it changes what media a manifest names.
+
 ⚠️ **Still unreached, and both need a longer recording than 27 seconds**: seeking **past a
 discontinuity**, and seeking into a region **whose chunks have left the local gateway**. On a recording
 that fits in the buffer whole the harness asks both questions and neither is exercised.
@@ -828,15 +842,15 @@ real browser watching while the fault is injected. Two scenarios run so far
 
 **Missing, ordered by likelihood times damage:**
 
-| #   | scenario                                                | why it ranks here                                                                                                                                                                                                                                           |
-| --- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.1 | **Chequebook exhausted mid-stream**                     | **Known to occur.** It emptied at run 7 of 12 on 2026-08-05 and 64 of 247 peers went past -9.0e6 debt. Runs on either side were not comparable and nothing said so. The sweep now has a preflight, but the **uploader itself** has no behaviour for it.     |
-| 2.2 | **Postage batch full or expired mid-stream** — task #62 | A batch went 9.4% to 64/64 in one day. Mutable batches then evict **silently**.                                                                                                                                                                             |
-| 2.3 | Crash during `finalize`                                 | ✅ **scenario H.** ⛔ The window described here is wrong: `finalize` deletes the entry **last**, after the catalog write, so a crash cannot leave the entry gone with nothing published. The real window is the reverse and it costs a **second paid VOD**. |
-| 2.4 | Whole-stack restart                                     | ✅ **scenario I.** Sharpened: the interesting part is not that everything restarts, it is that the uploader's 60s recovery timer races **its own bee node's cold start**, and finalizing means uploading through it.                                        |
-| 2.5 | Recovery entry corrupt or hand-edited                   | ✅ **scenario J.** ⛔ The repair path is not the dangerous one. An **unparseable** entry is deleted on the next boot, so the recording is lost and the catalog says `live` forever, which is the end state the repair exists to avoid.                      |
-| 2.6 | Disk full                                               | ✅ **done 2026-08-09 for nothing.** ⛔ Premise stale and the answer is the opposite: `state_not_persisted` fires on the first failed write, and the broadcast **keeps running with no recovery entry**, so a crash from there loses it whole.               |
-| 2.7 | Two uploaders on one stream id                          | ✅ **scenario K.** The guard under test is `retire()`: the outgoing drain must stop owning the recovery entry, or a live broadcast runs with nothing on disk to recover it from.                                                                            |
+| #   | scenario                                                | why it ranks here                                                                                                                                                                                                                                                    |
+| --- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.1 | **Chequebook exhausted mid-stream**                     | **Known to occur.** It emptied at run 7 of 12 on 2026-08-05 and 64 of 247 peers went past -9.0e6 debt. Runs on either side were not comparable and nothing said so. The sweep now has a preflight, but the **uploader itself** has no behaviour for it.              |
+| 2.2 | **Postage batch full or expired mid-stream** — task #62 | A batch went 9.4% to 64/64 in one day. Mutable batches then evict **silently**.                                                                                                                                                                                      |
+| 2.3 | Crash during `finalize`                                 | ✅ **scenario H.** ⛔ The window described here is wrong: `finalize` deletes the entry **last**, after the catalog write, so a crash cannot leave the entry gone with nothing published. The real window is the reverse and it costs a **second paid VOD**.          |
+| 2.4 | Whole-stack restart                                     | ✅ **scenario I.** Sharpened: the interesting part is not that everything restarts, it is that the uploader's 60s recovery timer races **its own bee node's cold start**, and finalizing means uploading through it.                                                 |
+| 2.5 | Recovery entry corrupt or hand-edited                   | ✅ **scenario J, and the defect it found is fixed.** ⛔ The repair path was never the dangerous one. An **unparseable** entry was deleted on the next boot; it is now **quarantined** as `<id>.json.corrupt` and `/health` reports `unrecoverable_stream`. Task #38. |
+| 2.6 | Disk full                                               | ✅ **done 2026-08-09 for nothing.** ⛔ Premise stale and the answer is the opposite: `state_not_persisted` fires on the first failed write, and the broadcast **keeps running with no recovery entry**, so a crash from there loses it whole.                        |
+| 2.7 | Two uploaders on one stream id                          | ✅ **scenario K.** The guard under test is `retire()`: the outgoing drain must stop owning the recovery entry, or a live broadcast runs with nothing on disk to recover it from.                                                                                     |
 
 ### ✅ 2.6 is done, and it cost nothing
 
