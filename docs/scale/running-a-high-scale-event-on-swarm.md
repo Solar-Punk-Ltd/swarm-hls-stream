@@ -341,24 +341,6 @@ all fetching the same segments.
    `reqFail=737`: every network retrieval failed and it did not matter. **Order arms so a cache arm
    can only inherit from a cache-off arm, or clear the store between them.**
 
-### 2.4 Concurrency: a viewer adds load rather than sharing it
-
-✅ **Measured (LAT-11), 1 viewer against 8 on one gateway, across two 34-minute broadcasts:**
-
-| per second       | 1 viewer | 8 viewers |                  ratio |
-| ---------------- | -------: | --------: | ---------------------: |
-| chunks retrieved |     87.7 |      96.0 |              **1.09x** |
-| gateway CPU      |    16.6% |     30.6% |              **1.84x** |
-| feed staleness   |      n/a |       n/a | **1.30x** (p = 0.0129) |
-
-⭐ **Eight viewers cause nine percent more chunk retrieval than one**, because the gateway already
-holds what the extra seven ask for. **The cost of a viewer is serving requests, and it lands on feed
-freshness.**
-
-⭐ **The loaded arm sat at 30.6% CPU on a 48-core host, nowhere near saturation, so the ceiling is
-inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
-limits.
-
 ### ⭐⭐ 2.3c Size it above the working set, or it does nothing at all
 
 ✅ **Measured 2026-08-08**, thirty-six arms in two sittings sweeping `--cache-capacity` against a fixed
@@ -451,6 +433,24 @@ part of it people re-watch.** For live it changes nothing, because the live wind
 step at the hot set rather than the working set, and **nothing between was run.** 80/20 is also a chosen
 shape rather than an observed one, so **37% is not the number a real deployment gets**. What is
 established is that skew converts a step into partial credit.
+
+### 2.4 Concurrency: a viewer adds load rather than sharing it
+
+✅ **Measured (LAT-11), 1 viewer against 8 on one gateway, across two 34-minute broadcasts:**
+
+| per second       | 1 viewer | 8 viewers |                  ratio |
+| ---------------- | -------: | --------: | ---------------------: |
+| chunks retrieved |     87.7 |      96.0 |              **1.09x** |
+| gateway CPU      |    16.6% |     30.6% |              **1.84x** |
+| feed staleness   |      n/a |       n/a | **1.30x** (p = 0.0129) |
+
+⭐ **Eight viewers cause nine percent more chunk retrieval than one**, because the gateway already
+holds what the extra seven ask for. **The cost of a viewer is serving requests, and it lands on feed
+freshness.**
+
+⭐ **The loaded arm sat at 30.6% CPU on a 48-core host, nowhere near saturation, so the ceiling is
+inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
+limits.
 
 ### ⭐⭐ 2.4b Sixteen viewers cost the network what one viewer costs
 
