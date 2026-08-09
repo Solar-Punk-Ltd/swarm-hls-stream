@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
-import { containerName, type E2EConfig, loadConfig, type ServiceName,SERVICES } from '../../src/config.js';
+import { containerName, type E2EConfig, loadConfig, type ServiceName, SERVICES } from '../../src/config.js';
 import { discoverStamp, type Host, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { announcedLiveTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
@@ -108,7 +108,11 @@ describe('I — whole-stack restart: the recording survives a host reboot', () =
           return false;
         }
       },
-      { timeoutMs: REBOOT_WAIT_MS, intervalMs: 3_000, label: 'the uploader answers again after the whole-stack restart' },
+      {
+        timeoutMs: REBOOT_WAIT_MS,
+        intervalMs: 3_000,
+        label: 'the uploader answers again after the whole-stack restart',
+      },
     );
 
     // The engine took the publisher's connection with it, so nothing resumes. What has to happen is

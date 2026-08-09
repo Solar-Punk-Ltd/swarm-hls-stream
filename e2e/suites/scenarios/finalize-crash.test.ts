@@ -106,7 +106,9 @@ describe('H — killed inside finalize: one recording, and the catalog points at
     const caughtTheWindow = entriesAfterKill.length > 0;
     console.log(
       caughtTheWindow
-        ? `H: caught the window — ${entriesAfterKill.length} recovery entry(s) survived the kill: ${entriesAfterKill.join(', ')}`
+        ? `H: caught the window — ${
+            entriesAfterKill.length
+          } recovery entry(s) survived the kill: ${entriesAfterKill.join(', ')}`
         : 'H: finalize completed before the kill landed, so this run tests the clean ordering rather than the window',
     );
 
@@ -156,9 +158,7 @@ describe('H — killed inside finalize: one recording, and the catalog points at
 
     const finalLog = await log();
     const commitsAfterReboot = vodCommits(finalLog);
-    console.log(
-      `H: catalog writes — ${commitsBeforeReboot} before the reboot, ${commitsAfterReboot} in total`,
-    );
+    console.log(`H: catalog writes — ${commitsBeforeReboot} before the reboot, ${commitsAfterReboot} in total`);
 
     assert.equal(
       commitsAfterReboot,

@@ -82,9 +82,7 @@ async function resolveStateVolume(host: Host, cfg: E2EConfig): Promise<StateVolu
 export async function runInStateDir(host: Host, cfg: E2EConfig, script: string): Promise<string> {
   const { name, prefix } = await resolveStateVolume(host, cfg);
   const uploader = containerName(cfg, 'stream-uploader');
-  const { stdout } = await host.run(
-    `docker inspect -f '{{.Config.Image}}' ${uploader}`,
-  );
+  const { stdout } = await host.run(`docker inspect -f '{{.Config.Image}}' ${uploader}`);
   const image = stdout.trim();
   if (!image) {
     throw new Error(`could not read the image behind ${uploader}, so no helper container can mount its state`);
@@ -136,6 +134,8 @@ export async function writeRecoveryEntry(host: Host, cfg: E2EConfig, id: string,
   await runInStateDir(
     host,
     cfg,
-    `printf %s ${singleQuote(contents)} > ${singleQuote(`${file}.tmp`)} && mv ${singleQuote(`${file}.tmp`)} ${singleQuote(file)}`,
+    `printf %s ${singleQuote(contents)} > ${singleQuote(`${file}.tmp`)} && mv ${singleQuote(
+      `${file}.tmp`,
+    )} ${singleQuote(file)}`,
   );
 }

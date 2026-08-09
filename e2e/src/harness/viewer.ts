@@ -48,7 +48,8 @@ export async function discoverCatalogFeed(host: Host, cfg: E2EConfig, tail: numb
   const container = containerName(cfg, 'stream-uploader');
   const lastMatch = (text: string) => [...text.matchAll(RE_CATALOG_FEED)].at(-1);
 
-  const match = lastMatch(await host.logs(container, tail)) ?? lastMatch(await host.logs(container, tail * DEEP_TAIL_MULTIPLIER));
+  const match =
+    lastMatch(await host.logs(container, tail)) ?? lastMatch(await host.logs(container, tail * DEEP_TAIL_MULTIPLIER));
   if (!match) {
     throw new Error(
       `no [StreamCatalog] owner/topicHex line in the last ${tail * DEEP_TAIL_MULTIPLIER} lines of ${container} ` +

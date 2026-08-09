@@ -71,8 +71,7 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
 
   it('gives the reconnecting session its own recording and leaves its recovery entry alone', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const vodCommits = async (): Promise<number> =>
-      (await log()).match(/Updating stream in list to VOD/g)?.length ?? 0;
+    const vodCommits = async (): Promise<number> => (await log()).match(/Updating stream in list to VOD/g)?.length ?? 0;
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,
