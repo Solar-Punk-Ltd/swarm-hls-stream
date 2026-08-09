@@ -3,6 +3,7 @@ import { Bee } from '@ethersphere/bee-js';
 import {
   ANONYMOUS_CLAIMANT,
   HealthSignals,
+  MEDIA_TYPE_VIDEO,
   MediaType,
   PRESSURE_HIGH,
   PRESSURE_LOW,
@@ -27,7 +28,7 @@ import {
   StreamStatusReport,
 } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
-import { isUsableDuration, measureSegmentDuration } from '../utils/segmentDuration.js';
+import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
@@ -38,6 +39,16 @@ import { RecoveryStore } from './RecoveryStore.js';
 import { MetricsSnapshot, ServiceMetrics } from './ServiceMetrics.js';
 import { StreamCatalog } from './StreamCatalog.js';
 import { StreamUploader } from './StreamUploader.js';
+
+/**
+ * How much media a broadcast may withhold while waiting for its first video frame, before it is
+ * handed back and published as it arrives.
+ *
+ * Longer than the eight seconds the one measured case took, and short enough that a stream whose
+ * publisher will never send a frame is on the air within one HLS window rather than never. See
+ * `withholdOpeningSegment`.
+ */
+const WITHHOLD_OPENING_CEILING_SECONDS = 10;
 
 const DRAIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -141,6 +152,21 @@ export class StreamOrchestrator {
    * than counting this boot's quarantines is what keeps a restart from clearing it. See task #38.
    */
   private quarantinedRecoveryEntries = 0;
+  /**
+   * Video streams still waiting for their first frame, with how much media has been withheld so far.
+   *
+   * An entry means no segment carrying video has reached this stream yet, so nothing it is handed may
+   * be named in a manifest: **a player fixes its codec set from the first fragment it parses and never
+   * revises it**, and one built from an audio-only fragment refuses every video sample for the rest
+   * of the broadcast, non-fatally and silently. See task #41.
+   *
+   * Keyed by stream rather than latched per process, because the answer is about one broadcast's
+   * opening. Absent means the gate is off, which covers three cases deliberately: an audio stream,
+   * where every segment carries no video and withholding would publish nothing at all; a stream
+   * resumed from a manifest that already names segments, where a player has long since decided; and
+   * a stream that has produced video, where withholding costs media and fixes nothing.
+   */
+  private withheldOpeningSeconds = new Map<string, number>();
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
    * clock so a backwards NTP step cannot make an age negative and hide a stall. Registration counts
@@ -383,6 +409,9 @@ export class StreamOrchestrator {
     // says it again. Whether an engine's segments are readable is a fact about the session producing
     // them, and the id can be handed to a different engine entirely.
     this.unreadDurationReported.delete(streamId);
+    // Same reasoning as the line above, and the same hazard OBS-19 was: whether a broadcast has shown
+    // a frame is a fact about the session, and the id can be handed straight to another one.
+    this.withheldOpeningSeconds.delete(streamId);
     // Nothing can reach this session by id any more, so a pending reap would either find no ingest
     // reading and do nothing, or find its replacement's and finalize a live broadcast.
     this.stallReapers.get(streamId)?.cancel();
@@ -457,6 +486,12 @@ export class StreamOrchestrator {
     this.streamActivityAt.set(streamId, this.clock.now());
     this.streamIngestAt.set(streamId, this.clock.now());
     this.streamClaimants.set(streamId, claimant);
+    // No manifest exists yet, so the next segment carrying video is the one every player will decide
+    // its codec set from. An audio broadcast is left out: its segments all carry no video, and
+    // withholding them would publish nothing at all.
+    if (mediatype === MEDIA_TYPE_VIDEO) {
+      this.withheldOpeningSeconds.set(streamId, 0);
+    }
     this.armStallReaper(streamId);
     this.logger.info(`[StreamOrchestrator] Started stream: ${streamId}`);
   }
@@ -548,6 +583,16 @@ export class StreamOrchestrator {
 
     processed?.add(segmentIndex);
     this.streamActivityAt.set(streamId, this.clock.now());
+
+    const reading = measureSegmentDuration(data, duration);
+    if (this.withholdOpeningSegment(streamId, segmentIndex, reading)) {
+      // Accepted, because the engine must not retry: the segment reached this service intact and
+      // there is nothing for a redelivery to fix. The discontinuity that may have come with it is
+      // withheld along with the segment rather than deferred onto the next one, because no manifest
+      // names anything yet and a marker separating nothing from the first segment is noise.
+      return { accepted: true };
+    }
+
     // Carried on the segment rather than issued ahead of it, which is what the puller used to do. Every
     // path above returns without taking the segment, and a marker issued before them outlived its
     // segment and attached to the next one that was taken. A recovered stream reaches that constantly:
@@ -558,8 +603,69 @@ export class StreamOrchestrator {
     if (discontinuity) {
       uploader.markDiscontinuity();
     }
-    uploader.handleSegment(segmentIndex, this.mediaDuration(streamId, segmentIndex, duration, data), data);
+    uploader.handleSegment(segmentIndex, this.mediaDuration(streamId, segmentIndex, duration, reading), data);
     return { accepted: true };
+  }
+
+  /**
+   * Whether to hold this segment back rather than publish it, because the broadcast has not shown a
+   * frame yet.
+   *
+   * **Only the opening, and only for a video stream.** A player fixes its codec set from the first
+   * fragment it parses, so a broadcast whose first fragment carries no video plays as sound over a
+   * blank picture for its whole length, with every video sample afterwards refused non-fatally. One
+   * 209 second recording did exactly that, and its first four segments held 41 audio packets and no
+   * video at all. Withholding them costs those seconds of audio and buys the picture. See task #41
+   * and `docs/bench/a-recording-that-opens-without-video-2026-08-09.md`.
+   *
+   * ⛔ **It gives up at a ceiling, and that bound is the point rather than a detail.** A publisher
+   * that sends no video ever, under a mediatype that says it will, would otherwise have its whole
+   * broadcast withheld: a silent total outage caused by the guard, which is worse than the fault it
+   * prevents. At the ceiling the broadcast is handed back with the original behaviour and an error
+   * naming what a viewer will see.
+   *
+   * The engine's declared duration is what the ceiling counts, because a segment with no video has
+   * no timestamps of its own to measure and the claim is the only reading there is.
+   */
+  private withholdOpeningSegment(streamId: string, segmentIndex: number, reading: SegmentDurationReading): boolean {
+    const withheld = this.withheldOpeningSeconds.get(streamId);
+    if (withheld === undefined) {
+      return false;
+    }
+
+    if (reading.videoPackets > 0) {
+      this.withheldOpeningSeconds.delete(streamId);
+      return false;
+    }
+
+    // ⛔ Bytes this cannot read at all are published and leave the gate armed, rather than being
+    // withheld as if they were videoless. An engine whose container this cannot parse would otherwise
+    // have every segment held back, which is a fault with its own counter and a different remedy, and
+    // the guard would be reporting a publisher that sends no frames. See `audioWithoutVideo`.
+    if (reading.audioWithoutVideo === null) {
+      return false;
+    }
+
+    const declared = isUsableDuration(reading.seconds) ? reading.seconds : 0;
+    if (withheld + declared > WITHHOLD_OPENING_CEILING_SECONDS) {
+      this.withheldOpeningSeconds.delete(streamId);
+      this.logger.error(
+        `[StreamOrchestrator] ${streamId} has produced no video in its first ${withheld}s, so segment ` +
+          `${segmentIndex} is being published anyway. A viewer will get sound over a blank picture for ` +
+          'the whole broadcast, and the recording it becomes will play the same way. The publisher is ' +
+          'sending no frames; see task #76 for what throttles one',
+      );
+      return false;
+    }
+
+    this.withheldOpeningSeconds.set(streamId, withheld + declared);
+    this.metrics.recordOpeningSegmentWithheld();
+    this.logger.warn(
+      `[StreamOrchestrator] Segment ${segmentIndex} of ${streamId} carries no video, so it is withheld ` +
+        'rather than published: a player parsing it first would build no video buffer for the rest of ' +
+        'the broadcast. Publishing resumes at the first segment carrying a frame',
+    );
+    return true;
   }
 
   /**
@@ -571,8 +677,12 @@ export class StreamOrchestrator {
    *
    * @see measureSegmentDuration for the measurement, and what SRS declares instead
    */
-  private mediaDuration(streamId: string, segmentIndex: number, declared: number, data: Buffer): number {
-    const reading = measureSegmentDuration(data, declared);
+  private mediaDuration(
+    streamId: string,
+    segmentIndex: number,
+    declared: number,
+    reading: SegmentDurationReading,
+  ): number {
     if (reading.fellBackBecause === null) {
       return reading.seconds;
     }
@@ -807,6 +917,13 @@ export class StreamOrchestrator {
       processed.add(segment.index);
     }
     this.processedSegments.set(streamId, processed);
+
+    // Only where the crash beat the first manifest. A restored manifest that already names a segment
+    // is one players have been served, and their codec sets are fixed whatever this stream does next,
+    // so withholding here would lose media and change nothing a viewer sees.
+    if (state.mediatype === MEDIA_TYPE_VIDEO && state.segments.length === 0) {
+      this.withheldOpeningSeconds.set(streamId, 0);
+    }
 
     this.recoveryTimers.set(streamId, this.scheduleRecoveryFinalize(streamId));
 
@@ -1158,6 +1275,7 @@ export class StreamOrchestrator {
       msSinceAuthRejection: lastAuthRejectionAt === null ? null : Date.now() - lastAuthRejectionAt,
       hasIngestedMedia: counters.segmentsUploadedTotal > 0,
       segmentsSkipped: counters.segmentsSkippedTotal,
+      openingSegmentsWithheld: counters.openingSegmentsWithheldTotal,
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
       quarantinedRecoveryEntries: this.quarantinedRecoveryEntries,
     };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { readVideoPts, TS_PACKET_BYTES } from '../src/mpegTs.js';
+import { countPesPackets, readVideoPts, TS_PACKET_BYTES } from '../src/mpegTs.js';
 
 /** 90kHz, so 3000 ticks is one frame at 30fps. */
 const FRAME_TICKS = 3_000;
@@ -170,5 +170,46 @@ describe('reading a segment video timestamps out of its own bytes', () => {
     // Reading the tail would put the span at 897000 ticks, just under ten seconds, which
     // `isUsableDuration` accepts and publishes as `#EXTINF` for a segment holding one frame.
     assert.deepEqual(readVideoPts(truncated), [FRAME_TICKS]);
+  });
+});
+
+/**
+ * What kinds of media a segment carries, which is the question `readVideoPts` cannot answer on its
+ * own: an empty timestamp list is what a segment full of audio and a segment of some other format
+ * entirely both look like, and only one of those is a broadcast about to publish without a picture.
+ */
+describe('counting what kinds of packet a segment carries', () => {
+  it('separates video from audio', () => {
+    const bytes = segment(
+      packet({ pid: VIDEO_PID, streamId: VIDEO_STREAM_ID, pts: 0 }),
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: 0 }),
+      packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: FRAME_TICKS }),
+    );
+
+    assert.deepEqual(countPesPackets(bytes), { video: 1, audio: 2 });
+  });
+
+  /** The shape a real recording opened with: a video PID declared, and no video packet in it. */
+  it('reports audio without video for a segment that carries only sound', () => {
+    const bytes = segment(packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID, pts: 0 }));
+
+    assert.deepEqual(countPesPackets(bytes), { video: 0, audio: 1 });
+  });
+
+  /**
+   * ⛔ The distinction the withhold guard rests on. Bytes of any other container read as zero and
+   * zero, and a caller that treated that as "no video" would hold back every segment an engine it
+   * cannot parse produces, rather than the one segment that genuinely has no picture in it.
+   */
+  it('reports neither for bytes that are not a transport stream', () => {
+    assert.deepEqual(countPesPackets(new Uint8Array(4096)), { video: 0, audio: 0 });
+  });
+
+  /** A PES header with no timestamp still names its elementary stream, and still is media. */
+  it('counts a packet carrying no timestamp, which readVideoPts must skip', () => {
+    const bytes = segment(packet({ pid: AUDIO_PID, streamId: AUDIO_STREAM_ID }));
+
+    assert.deepEqual(readVideoPts(bytes), []);
+    assert.deepEqual(countPesPackets(bytes), { video: 0, audio: 1 });
   });
 });

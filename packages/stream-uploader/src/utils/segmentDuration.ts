@@ -1,4 +1,4 @@
-import { measureSpanTicks, readVideoPts, TS_TIMESCALE_HZ } from '@swarm-hls-stream/shared';
+import { countPesPackets, measureSpanTicks, readVideoPts, TS_TIMESCALE_HZ } from '@swarm-hls-stream/shared';
 
 /** A segment longer than this is not a segment. An hour is far beyond any HLS target duration. */
 const MAX_SEGMENT_SECONDS = 3600;
@@ -28,10 +28,40 @@ export interface SegmentDurationReading {
    * instead, so a deployment falling back on every segment can be told from one that never does.
    */
   fellBackBecause: string | null;
+  /**
+   * How many video packets the segment holds. Zero is not on its own a fault: it is also what bytes
+   * of any container this cannot parse look like, which is why {@link audioWithoutVideo} exists.
+   */
+  videoPackets: number;
+  /**
+   * How many audio packets the segment carries when it carries no video, and `null` whenever it does
+   * carry video or is not a transport stream this can read at all.
+   *
+   * A different question from whether the duration could be read, with a consequence nothing else
+   * here can see: **a player parsing such a fragment first fixes an audio-only codec set and never
+   * revises it**, so the rest of the broadcast arrives as sound over a blank picture and every video
+   * sample is refused non-fatally.
+   *
+   * ⛔ **Null for bytes that are not a transport stream**, which is deliberate rather than a gap.
+   * That is a segment this service cannot read, already counted by `segment_durations_unread_total`,
+   * and treating it as videoless would let an engine this cannot parse be mistaken for a publisher
+   * sending no frames. See task #41.
+   */
+  audioWithoutVideo: number | null;
 }
 
 function whyItFailed(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read only for a segment holding no video timestamps, which is the rare path, so the common one
+ * still walks the packets once. Both counts at zero means bytes this cannot read rather than media
+ * without a picture, and the two must not be answered the same way.
+ */
+function audioWithoutVideoIn(segment: Uint8Array): number | null {
+  const { video, audio } = countPesPackets(segment);
+  return video === 0 && audio > 0 ? audio : null;
 }
 
 /**
@@ -57,17 +87,24 @@ function whyItFailed(error: unknown): string {
  *   the engine claimed. See `segment_durations_unread_total`.
  */
 export function measureSegmentDuration(segment: Uint8Array, declared: number): SegmentDurationReading {
+  const pts = readVideoPts(segment);
+  const audioWithoutVideo = pts.length === 0 ? audioWithoutVideoIn(segment) : null;
   try {
-    const span = measureSpanTicks(readVideoPts(segment), 'this segment');
+    const span = measureSpanTicks(pts, 'this segment');
     const seconds = span.total / TS_TIMESCALE_HZ;
     // The same bound the engine's claim is held to. It also catches the one failure the arithmetic
     // cannot see: timestamps are 33 bits and wrap about every 26.5 hours, and a segment straddling
     // that reads as most of the range rather than as a fraction of a second.
     if (!isUsableDuration(seconds)) {
-      return { seconds: declared, fellBackBecause: `its timestamps span ${seconds}s, which is not a segment` };
+      return {
+        seconds: declared,
+        fellBackBecause: `its timestamps span ${seconds}s, which is not a segment`,
+        videoPackets: pts.length,
+        audioWithoutVideo,
+      };
     }
-    return { seconds, fellBackBecause: null };
+    return { seconds, fellBackBecause: null, videoPackets: pts.length, audioWithoutVideo };
   } catch (error) {
-    return { seconds: declared, fellBackBecause: whyItFailed(error) };
+    return { seconds: declared, fellBackBecause: whyItFailed(error), videoPackets: pts.length, audioWithoutVideo };
   }
 }

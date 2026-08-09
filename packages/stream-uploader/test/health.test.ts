@@ -41,6 +41,7 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     // default. The OBS-15 cases below set both fields explicitly.
     hasIngestedMedia: true,
     segmentsSkipped: 0,
+    openingSegmentsWithheld: 0,
     segmentsNeverNamed: 0,
     quarantinedRecoveryEntries: 0,
     ...overrides,

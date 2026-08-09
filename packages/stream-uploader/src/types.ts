@@ -231,6 +231,17 @@ export interface HealthSignals {
    */
   segmentsSkipped: number;
   /**
+   * Opening segments withheld because the broadcast had not produced video yet, for this process's
+   * lifetime.
+   *
+   * Carries no threshold and raises no reason, for the same reason {@link segmentsSkipped} does not:
+   * withholding is the guard working, and the compose healthcheck acts on the status this feeds. What
+   * it is here for is the pair. Withheld climbing while `segmentsUploadedTotal` stays at zero is a
+   * publisher that has sent no frames at all, and those two readings were indistinguishable from
+   * outside before this existed. See task #41.
+   */
+  openingSegmentsWithheld: number;
+  /**
    * Segments uploaded that no manifest will ever name, for this process's lifetime.
    *
    * The quietest way a broadcast loses a piece of itself. The bytes are in Swarm and any caller
