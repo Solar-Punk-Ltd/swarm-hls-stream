@@ -617,14 +617,16 @@ per-request component.
 ⛔⛔ **Every failure we have found hid inside a mean.** Measured service times, all from this
 repository:
 
-| path                            | shape                                                                                                 |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **browser node, 95 KB segment** | **bimodal**: ~2–9ms when already prefetched, **p50 246ms / p90 2,771ms / max 3,152ms** when retrieved |
-| **feed slot, hit**              | 1–2 ms                                                                                                |
-| **feed slot, miss** (not-found) | **~426–480 ms**, and **~45% of live-edge reads are misses**                                           |
-| **our gateway, warm, 95 KB**    | 24–66 ms, median 44                                                                                   |
-| **public gateway, 95 KB**       | ~1,110 ms — **instrument, not network. Do not use**                                                   |
-| **public gateway, 4.4 MB**      | 4.7–6.8 s                                                                                             |
+| path                              | shape                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **browser node, 95 KB segment**   | ⭐ **n=500: min 784 / p50 807 / p90 1,186 / p99 1,581 / max 2,184 ms.** Do NOT model this as a smooth distribution: it is **base 790ms + k x 194ms**, a quantised retry ladder with empty valleys between the modes. Sampling from a fitted lognormal will understate the modes and invent values that never occur |
+| **browser node, local cache hit** | **1 ms.** The node serves anything it already holds essentially free                                                                                                                                                                                                                                               |
+| **browser node, not-found**       | ⛔ **11.7–14.5 s, median 13.5 s** (`RETRIEVE_ATTEMPT_TIMEOUT_MS = 10_000`). 28x a bee gateway's miss                                                                                                                                                                                                               |
+| **feed slot, hit**                | 1–2 ms                                                                                                                                                                                                                                                                                                             |
+| **feed slot, miss** (not-found)   | **~426–480 ms**, and **~45% of live-edge reads are misses**                                                                                                                                                                                                                                                        |
+| **our gateway, warm, 95 KB**      | 24–66 ms, median 44                                                                                                                                                                                                                                                                                                |
+| **public gateway, 95 KB**         | ~1,110 ms — **instrument, not network. Do not use**                                                                                                                                                                                                                                                                |
+| **public gateway, 4.4 MB**        | 4.7–6.8 s                                                                                                                                                                                                                                                                                                          |
 
 ⭐ **A miss costs ~480ms and ZERO BZZ.** Speculative reads are free in money and expensive in time,
 and read-ahead by N costs N misses, linearly.
@@ -638,6 +640,29 @@ and read-ahead by N costs N misses, linearly.
 
 **Model this as an explicit sharing factor per viewer class.** It is the single largest lever in the
 whole simulation: at 20,000 viewers it is the difference between ~160 retrievals and 20,000.
+
+### c2) ⛔⛔⛔ Browser nodes are DEMAND ONLY. Do not model them as network participants.
+
+This is the parameter most likely to be got wrong, because "peer-to-peer" implies mutual aid and here
+there is none. **[SOURCE]**
+
+| parameter                             | value                                                                              |
+| ------------------------------------- | ---------------------------------------------------------------------------------- |
+| inbound protocols a browser accepts   | **pricing and gossip only.** Never retrieval, pushsync or swap                     |
+| chunks a browser node serves to peers | **zero, structurally**                                                             |
+| cache it contributes to the network   | **zero.** Also no persistent state across sessions                                 |
+| **peers asked per chunk**             | ⛔ **6** (`RETRIEVE_CHECK_CONFIRMATION_PEERS`), a confirmation quorum, not a retry |
+| chunks in flight per retrieval        | 8 (`RETRIEVE_DATA_GROUP_CONCURRENCY`)                                              |
+| **peer requests per 95 KB segment**   | ⛔ **~150** (~25 chunks x 6 confirmations)                                         |
+
+**So a browser audience is a pure load multiplier on the storer neighbourhood.** Model N viewers as
+N x 150 peer requests per segment period, with **no** term for browser-side supply, and **no** decay
+from browsers caching for each other. If the simulation shows browser nodes relieving the network, the
+model is wrong.
+
+⚠️ The counterfactual worth simulating alongside it: **a browser node that did accept retrieval.** That
+single protocol change flips the sign of the whole model, and knowing how much it would help is
+exactly the kind of question a simulator answers better than a measurement.
 
 ### d) Arrival-time distribution is a first-class input, not a detail
 
