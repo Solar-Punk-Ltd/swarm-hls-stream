@@ -397,8 +397,14 @@ gap between a tail statistic and the sample size a tail statistic needs.
 ⭐ **Last session a warm re-fetch cost exactly what a cold one cost, and that killed a published
 figure.** Here the same control does the opposite job: it proves the ~790 ms floor **is retrieval**,
 and that the service worker hop, the WASM boundary and the 90 KB copy together cost **single-digit
-milliseconds**. An `/hls/bytes/` versus `/bytes/` route arm (20 each, alternating, matched) agreed
-within noise, so the routing machinery is not the floor either.
+milliseconds**. An `/hls/bytes/` versus `/bytes/` route arm (20 each, alternating, matched) puts
+**both minima on the same base rung, 790 ms and 788 ms**, so the routing machinery is not the floor
+either.
+
+⚠️ Their **medians** differ by 170 ms, and that is not noise, it is most of one ladder step. It is
+also not resolvable at n=20 per arm: on a quantised distribution a single sample crossing a rung
+moves the median by a whole rung. **The minima carry this claim. The medians do not, and must not be
+quoted as agreeing.**
 
 ### ⭐⭐⭐ The tail is QUANTISED. It is retry rounds, not slow peers.
 
