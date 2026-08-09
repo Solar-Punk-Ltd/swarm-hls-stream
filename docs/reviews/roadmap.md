@@ -23,7 +23,7 @@ document is 1 to 8. Any claim about a thousand nodes is a prediction until that 
 | **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ⏸ **owner's call**          |
 | **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ⏸ **owner's call**          |
 | **6** | **The scale-up handover document** for the other repo                    | none, and it lands here | ✅ **written, and revised** |
-| **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         | ⬅ **next, and it is free**  |
+| **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         | ✅ **floor measured, free** |
 | **8** | Phase 3, OME to parity and the engine comparison                         | **last**                | ⏸ deferred                  |
 | **9** | Phase 4, LL-HLS                                                          | **last**                | ⏸ deferred                  |
 
@@ -33,7 +33,13 @@ because the free work kept producing findings that belonged in it.
 ⛔ **Steps 3, 4 and 5 all need broadcast minutes against a chequebook that binds at roughly 64 of
 them.** They are not blocked on work, they are blocked on a spending decision that is the owner's.
 
-⬅ **Step 7 is the next thing that costs nothing**, and it is the question Phase 4 turns on.
+✅ **Step 7's floor is measured, for nothing, off the archived request logs.** It is a **miss** floor:
+at the live edge a not-found slot read costs 4.5x a successful one and about 45% of reads are
+not-founds. ⛔ **That is a problem for the proposal it was meant to support**, because a computed-address
+segment feed pays the same cost. See Phase 2.6.
+
+⬅ **What is left of step 7 costs nothing either**: whether the not-found cost grows with how far past the
+head you ask, which decides whether reading ahead is viable at all.
 
 ⚠️ **The uploader chequebook is the binding constraint on steps 3 and 5**, at roughly 64
 broadcast-minutes against 145 the remaining measured items ask for. Postage is not binding. Which of
