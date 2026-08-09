@@ -835,26 +835,37 @@ real browser watching while the fault is injected. Two scenarios run so far
 | 2.3 | Crash during `finalize`                                 | ✅ **scenario H.** ⛔ The window described here is wrong: `finalize` deletes the entry **last**, after the catalog write, so a crash cannot leave the entry gone with nothing published. The real window is the reverse and it costs a **second paid VOD**. |
 | 2.4 | Whole-stack restart                                     | ✅ **scenario I.** Sharpened: the interesting part is not that everything restarts, it is that the uploader's 60s recovery timer races **its own bee node's cold start**, and finalizing means uploading through it.                                        |
 | 2.5 | Recovery entry corrupt or hand-edited                   | ✅ **scenario J.** ⛔ The repair path is not the dangerous one. An **unparseable** entry is deleted on the next boot, so the recording is lost and the catalog says `live` forever, which is the end state the repair exists to avoid.                      |
-| 2.6 | Disk full                                               | ⏸ **not built, and the premise is stale.** See below.                                                                                                                                                                                                       |
+| 2.6 | Disk full                                               | ✅ **done 2026-08-09 for nothing.** ⛔ Premise stale and the answer is the opposite: `state_not_persisted` fires on the first failed write, and the broadcast **keeps running with no recovery entry**, so a crash from there loses it whole.               |
 | 2.7 | Two uploaders on one stream id                          | ✅ **scenario K.** The guard under test is `retire()`: the outgoing drain must stop owning the recovery entry, or a live broadcast runs with nothing on disk to recover it from.                                                                            |
 
-### ⏸ 2.6 is the one of the five I did not build, and why
+### ✅ 2.6 is done, and it cost nothing
 
-**Its premise is stale.** "`persistState` swallows it, which is the quietest way to lose a broadcast"
-was true when it was written and is not now. The failure sets `statePersistFailedAt`, which reaches
-`getHealthSignals()` and raises `HEALTH_REASON_STATE_NOT_PERSISTED` **with no threshold**, so `/health`
-degrades on the first failed write. The quiet failure has a loud signal.
+`docs/bench/what-a-full-disk-costs-a-broadcast-2026-08-09.md`. Two arms differing only in free space:
 
-**And the faithful injection is the expensive kind.** The uploader runs as **root**, so permissions
-cannot make its state directory unwritable, and its `STATE_DIR` is a volume mount point, so it cannot
-be replaced with a file. A genuine `ENOSPC` needs the container recreated with a bounded tmpfs, which
-mutates a deployment shared with the rest of this measurement programme. ⛔ **Filling the volume is not
-an option**: it is backed by the host disk, and the host carries forty other bee nodes and five other
-compose projects.
+|                        | **space available**      | **0 bytes free**                                    |
+| ---------------------- | ------------------------ | --------------------------------------------------- |
+| recovery entry written | ✅                       | ⛔ **no**                                           |
+| `/health` reasons      | `segment_upload_failure` | `segment_upload_failure`, **`state_not_persisted`** |
 
-**What is left unproven is a confirmation rather than a discovery**: that the health reason fires under
-a real `ENOSPC` rather than the injected error the unit test uses. Worth doing on a disposable
-deployment, not on this one.
+⭐ `segment_upload_failure` is in **both** arms by design, so the only reason that moves is the one under
+test. **The premise was stale and the answer is the opposite of the worry**: the failure is loud, not
+quiet.
+
+⛔ **What a scale reader needs from this**: the broadcast **keeps running** with no recovery entry on
+disk. `state_not_persisted` does not mean "something failed a moment ago", it means **a crash from here
+loses this broadcast whole**. Page on it.
+
+**How it was run without touching anything.** The uploader runs as **root**, so permissions cannot make
+its state directory unwritable, and `STATE_DIR` is a volume mount point, so it cannot be replaced with a
+file. ⛔ Filling that volume would fill the **host disk**, and the host carries forty other bee nodes and
+five other compose projects. ⛔ Pointing the deployed uploader at an empty state directory is out too,
+because the same directory holds the catalog feed index and losing it is the fork `CatalogIndexStore`
+exists to prevent.
+
+⭐ So the probe is a **throwaway container**, not the deployment: the uploader's own image with a **1 MB
+tmpfs** state dir, a **freshly generated signer key** and its own list topic so it cannot reach the real
+catalog, and an **unusable stamp** so nothing can be spent. `persistState` runs on the segment
+**failure** path as well as the success path, which is what makes the whole thing free.
 
 ---
 
