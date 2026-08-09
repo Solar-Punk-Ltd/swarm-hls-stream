@@ -1025,10 +1025,29 @@ not-found delivers no bytes, so no peer is owed. ⛔ A whole-run delta said the 
 because spending is lumpy and quantised. **So speculative reads are free in money and expensive in
 time**, and ⚠️ the 43-44 MB/s throughput ceiling cannot see them at all, because they move no bytes.
 
-## Phase 2.7 — in-browser viewer nodes, phase 1 🔎 **assessed 2026-08-09, measurement not started**
+## Phase 2.7 — in-browser viewer nodes, phase 1 🔎 **assessed and measured 2026-08-09, steps 1, 3, 7, 8 done**
 
-Full write-up: [in-browser phase 1](../scale/in-browser-phase-1.md). **Assessment cost nothing**: source
-reading, one browser session against a public deployment, four reads from a **public** gateway.
+Full write-up: [in-browser phase 1](../scale/in-browser-phase-1.md). Raw data
+[service time n=500](../bench/in-browser-service-time-2026-08-09.tsv), harness
+`deploy/scripts/in-browser-service-time.js`. **Total cost 0.0019231 BZZ and no broadcast minutes.**
+
+⛔⛔⛔ **The measured answer is worse than the assessment predicted, in two independent ways.**
+
+**A browser node cannot comfortably sustain even our best-fitting profile.** At n=500 on our own
+2.86 Mbps recording, per-segment service time is **min 784 / p50 807 / p90 1,186 ms** against a
+**266 ms** segment, a **100% crossing rate**. At weeb-3's own concurrency of 3 that is **0.99x of
+realtime at the median and 0.67x at the p90**, on an idle laptop with nothing decoding. A warm
+re-fetch returns in **1 ms**, which is what proves the 790 ms floor is retrieval and not plumbing.
+
+**And a browser node gives nothing back.** It accepts inbound libp2p streams for **pricing and gossip
+only**, never retrieval, so it serves no chunks and contributes no cache. Each one asks **six peers per
+chunk** by design (`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`), roughly **150 peer requests per 95 KB
+segment**. An audience of browser nodes is **all demand and no supply**.
+
+⭐ **The tail is a mechanism, not noise.** It is quantised: base 790 ms plus multiples of **194 ms**,
+with empty valleys between the modes. That step is `RETRIEVE_CHECK_RETRY_WAIT_MS = 160` on the
+**overdraft** path, so the tail is the unfunded node waiting out its own credit exhaustion. A
+**not-found costs 13.5 s**, 28x a bee gateway's, which disqualifies speculative read-ahead.
 
 ⛔⛔ **This is not another viewer feature, it is a different scaling model.** Every result we hold about
 serving an audience is a result about **pooling behind a gateway**, and the strongest of them is that

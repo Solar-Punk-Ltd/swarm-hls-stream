@@ -1,0 +1,179 @@
+# In-browser (weeb-3) per-segment service time, 2026-08-09
+#
+# Node: weeb-3 0.0.327001 on the public deployment, app shell only (NO stream attached, so nothing
+# is prefetched). Connected: 200 peers, Connecting: 0, observed rising 143 -> 200 before the run.
+# Content: our own recording 8d8a30ff... / 38699de1-..., 3444 segments of 0.266s, mean ~92.9 KB.
+# Segments were fetched SEQUENTIALLY (concurrency 1) through /weeb-3/hls/bytes/<ref>, cache no-store.
+# Corpus index refers to the segment's position in the VOD playlist read from the feed head.
+#
+# Idle time between consecutive fetches was p50 0ms / max 18ms in every arm, so the recorded ms is
+# wall time and the page was not throttled between requests.
+#
+# Cost: the browser node is unfunded and cost nothing. The gateway control cost 0.0019231 BZZ.
+
+## arm summary (ms)
+arm	n	min	p50	p90	p99	max	note
+warmup	50	788	968	1330	1601	1601	first 50, node still warming
+cold	500	784	807	1186	1581	2184	THE PRIMARY READING
+route_hls	20	790	~980	1207	1672	1672	alternating with route_plain
+route_plain	20	788	810	986	1010	1010	no in-flight dedup on this route
+warm	40	1	1	2	4	4	re-fetch of cold's last 40, immediately after
+null	20	11679	13503	14242	14474	14474	random refs that do not exist, all HTTP 503
+gateway_onhost	40	20.5	41.1	56.9	60.8	60.8	our funded bee, curl on the host, same 40 refs
+
+## cold arm percentiles (n=500)
+p0	784
+p5	790
+p10	792
+p25	797
+p50	807
+p75	980
+p90	1186
+p95	1288
+p99	1581
+max	2184
+
+## cold arm: crossing rate against the segment's own 266ms duration
+over_266ms	500	of 500	= 100.0%
+
+## cold arm histogram, 25ms bins -- note the EMPTY valleys, this is not a smooth tail
+bin_ms	count
+775	158
+800	160
+825	14
+850	3
+875	3
+900	2
+925	2
+950	22
+975	60
+1000	3
+1025	2
+1050	0
+1075	0
+1100	1
+1150	7
+1175	26
+1200	6
+1225	1
+1250	2
+1275	6
+1300	6
+1325	2
+1350	3
+1375	3
+1400	1
+1425	1
+1450	0
+1475	0
+1500	0
+1525	0
+1550	0
+1575	2
+1600	1
+1675	1
+1925	1
+2175	1
+
+## ladder fit: is the tail quantised?
+# Scanned step sizes 120..320ms for the base+k*step ladder minimising mean residual.
+best_step_ms	194
+mean_residual_ms	15.52
+expected_residual_if_unrelated_ms	48.5	# = step/4 for residuals uniform over the step
+base_ms	790
+predicted_modes	790	984	1178	1372	1566	1760	1954
+observed_modes	790	975-1000	1175	1350-1375	1575	-	1925
+
+## null arm, all 20 (ms), every one HTTP 503 with a 32-byte body
+11679	12018	12484	12556	12620	12997	13072	13092	13314	13503
+13615	13899	13956	13964	14001	14009	14014	14151	14242	14474
+
+## cold arm tail rows >= 1000ms (corpus_index, ms, bytes) -- 76 of 500
+1064	1178	96068
+1065	1181	87796
+1067	1173	88548
+1072	1181	87608
+1074	1184	89488
+1082	1303	94752
+1090	1178	93436
+1093	1185	98136
+1098	1375	93624
+1102	1178	94000
+1113	1168	89300
+1118	1332	90992
+1123	1188	91556
+1126	1357	90052
+1129	1177	87608
+1135	1392	94940
+1137	1580	97196
+1139	2184	97196
+1142	1366	96632
+1147	1680	90052
+1150	1364	92308
+1169	1300	89864
+1175	1219	93436
+1183	1167	97384
+1195	1272	92872
+1201	1006	93060
+1202	1581	89488
+1208	1205	94940
+1210	1430	94752
+1214	1284	86292
+1216	1336	86668
+1226	1283	97196
+1229	1279	96444
+1255	1216	90052
+1283	1192	96068
+1292	1295	93624
+1296	1186	90428
+1304	1304	91744
+1307	1213	94188
+1310	1202	89676
+1313	1193	97384
+1320	1178	94376
+1323	1003	95692
+1329	1191	95692
+1330	1304	94940
+1332	1175	97572
+1339	1186	93812
+1344	1193	90240
+1346	1184	91180
+1350	1150	88548
+1360	1621	93060
+1367	1319	91744
+1375	1191	94376
+1382	1180	92684
+1391	1044	92496
+1392	1007	89676
+1394	1192	89488
+1412	1293	94376
+1418	1410	97760
+1430	1195	94376
+1443	1274	90616
+1462	1187	91932
+1463	1304	94000
+1465	1945	93248
+1474	1170	94188
+1478	1110	95692
+1483	1288	93436
+1487	1243	91368
+1504	1180	93060
+1514	1166	93812
+1524	1040	94752
+1527	1174	88924
+1543	1197	94188
+1550	1375	92120
+1553	1188	97196
+1557	1215	93436
+
+## gateway control, our funded bee, run ON THE HOST (127.0.0.1:10077), same 40 refs as the warm arm
+# Run from a laptop this would have measured the laptop's round trip to the host instead, which is
+# the mistake the retired ~600 KB/s figure was built on.
+idx	ref	bytes	seconds	http
+0	b021b1efa5	89864	0.030993	200
+1	f43640c7f8	92308	0.024961	200
+38	a70e8754e2	94188	0.033621	200
+39	571ff6d71d	92120	0.057348	200
+# balance before	61138133999976100
+# balance after 	61118902999976100
+# delta          	19231000000000 wei = 0.0019231 BZZ over 3.72 MB = 0.000517 BZZ/MB
