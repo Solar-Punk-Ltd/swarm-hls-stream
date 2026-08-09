@@ -67,6 +67,7 @@ describe('metrics exposition format', () => {
     segmentsSkippedTotal: 5,
     segmentsNeverNamedTotal: 5,
     manifestPublishFailuresTotal: 2,
+    openingSegmentsWithheldTotal: 8,
     streamsFinalizedTotal: 1,
     streamsFailedTotal: 1,
     streamsReapedTotal: 2,
@@ -83,7 +84,7 @@ describe('metrics exposition format', () => {
     const body = renderPrometheusMetrics(SNAPSHOT);
 
     const samples = parseExposition(body);
-    assert.equal(samples.size, 16, `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`);
+    assert.equal(samples.size, 17, `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`);
     for (const name of samples.keys()) {
       assert.ok(body.includes(`# HELP ${name} `), `${name} has no HELP line`);
       assert.ok(body.includes(`# TYPE ${name} `), `${name} has no TYPE line`);

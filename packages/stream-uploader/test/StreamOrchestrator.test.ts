@@ -7,6 +7,8 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
   MEDIA_TYPE_VIDEO,
   PRESSURE_HIGH,
+  RECOVERY_ENTRY_LOADED,
+  RECOVERY_ENTRY_UNREADABLE,
   REJECT_DRAINING,
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
@@ -252,6 +254,96 @@ describe('StreamOrchestrator recovery-timer cancellation (F: uploader crash reco
     const recovered = await orch.recoverStreams();
 
     assert.deepEqual(recovered, [id], 'recoverStreams must return the real stream ids it restored');
+    await orch.cleanup();
+  });
+});
+
+/**
+ * ⛔ Task #38. An entry the store cannot parse used to be deleted on the next boot, which is the one
+ * action nothing can undo: the entry is the only record the broadcast was live, so the recording it
+ * was building is stranded unfinalized, its catalog entry says `live` for good, and the bytes that
+ * could have been repaired by hand are gone. Demonstrated on the deployment on 2026-08-09.
+ */
+describe('StreamOrchestrator recovering an entry it cannot read', () => {
+  const DAMAGED = 'live_damaged';
+
+  interface StoreWithADamagedEntry {
+    store: RecoveryStore;
+    quarantined: string[];
+    removed: string[];
+  }
+
+  /** A store whose listing holds one entry nobody can parse, plus whatever readable ones are named. */
+  function storeOverADamagedEntry(readable: readonly StreamState[] = []): StoreWithADamagedEntry {
+    const quarantined: string[] = [];
+    const removed: string[] = [];
+    const byFileId = new Map(readable.map((state) => [toRecoveryFileId(state.streamId), state]));
+    const store = makeFakeRecoveryStore({
+      listActive: () => [DAMAGED, ...byFileId.keys()],
+      read: (fileId: string) => {
+        const state = byFileId.get(fileId);
+        return state === undefined ? { kind: RECOVERY_ENTRY_UNREADABLE } : { kind: RECOVERY_ENTRY_LOADED, state };
+      },
+      quarantine: (fileId: string) => {
+        quarantined.push(fileId);
+        return `/state/${fileId}.json.corrupt`;
+      },
+      // As the real store answers: off what is on disk, so it holds whatever this pass moved aside.
+      listQuarantined: () => quarantined.map((fileId) => `${fileId}.json.corrupt`),
+      remove: (fileId: string) => removed.push(fileId),
+    });
+    return { store, quarantined, removed };
+  }
+
+  it('quarantines the entry instead of deleting it', async () => {
+    const { store, quarantined, removed } = storeOverADamagedEntry();
+    const orch = makeOrchestrator(store);
+
+    await orch.recoverStreams();
+
+    assert.deepEqual(removed, [], 'the only record that a broadcast existed was deleted');
+    assert.deepEqual(quarantined, [DAMAGED]);
+    await orch.cleanup();
+  });
+
+  it('degrades health for as long as the process runs, since nothing later makes it untrue', async () => {
+    const { store } = storeOverADamagedEntry();
+    const orch = makeOrchestrator(store);
+
+    assert.equal(orch.getHealthSignals().quarantinedRecoveryEntries, 0, 'a boot with nothing damaged must read zero');
+    await orch.recoverStreams();
+
+    assert.equal(orch.getHealthSignals().quarantinedRecoveryEntries, 1);
+    await orch.cleanup();
+  });
+
+  // Same reason the throwing-entry cases above exist: one entry nobody can read costs one broadcast,
+  // not every broadcast listed behind it.
+  it('recovers the streams behind it', async () => {
+    const healthy = 'live/healthy';
+    const { store } = storeOverADamagedEntry([makeRecoveredState(healthy)]);
+    const orch = makeOrchestrator(store);
+
+    assert.deepEqual(await orch.recoverStreams(), [healthy]);
+    await orch.cleanup();
+  });
+
+  /**
+   * ⛔ The signal is read off disk, not accumulated from this pass, and that is the whole difference
+   * between an alarm an operator sees and one a restart erases. Nothing in this deployment restarts a
+   * container for a degraded status, so a signal that outlives the process costs nothing.
+   */
+  it('reports entries an earlier process quarantined, on a boot that found nothing new', async () => {
+    const orch = makeOrchestrator(
+      makeFakeRecoveryStore({
+        listActive: () => [],
+        listQuarantined: () => ['live_yesterday.json.corrupt', 'live_older.json.corrupt.2'],
+      }),
+    );
+
+    await orch.recoverStreams();
+
+    assert.equal(orch.getHealthSignals().quarantinedRecoveryEntries, 2, 'a restart erased what an operator must see');
     await orch.cleanup();
   });
 });

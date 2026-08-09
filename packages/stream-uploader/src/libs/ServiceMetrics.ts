@@ -21,6 +21,7 @@ export class ServiceMetrics {
   private streamsReaped = 0;
   private segmentDurationsUnread = 0;
   private segmentsSkipped = 0;
+  private openingSegmentsWithheld = 0;
   private segmentsNeverNamed = 0;
   private authRejections = 0;
   private takeoversRefused = 0;
@@ -98,6 +99,18 @@ export class ServiceMetrics {
   }
 
   /**
+   * A segment withheld because the broadcast had not produced any video yet, counted once per index.
+   *
+   * Read it next to `segments_uploaded_total`, which is the whole reason it is separate from
+   * `segments_skipped_total`. Climbing for a few seconds at the start of a broadcast and then
+   * stopping is the guard working. Climbing while uploads stay flat is a publisher that never sent a
+   * frame, and the ceiling below it will hand the broadcast back within ten seconds either way.
+   */
+  public recordOpeningSegmentWithheld(): void {
+    this.openingSegmentsWithheld += 1;
+  }
+
+  /**
    * Segments uploaded successfully that no published manifest ever named.
    *
    * Distinct from all three counters above, and the distinction is the whole reason it exists. These
@@ -147,6 +160,7 @@ export class ServiceMetrics {
       segmentsDroppedTotal: this.segmentsDropped,
       segmentsLostTotal: this.segmentsLost,
       segmentsSkippedTotal: this.segmentsSkipped,
+      openingSegmentsWithheldTotal: this.openingSegmentsWithheld,
       segmentsNeverNamedTotal: this.segmentsNeverNamed,
       manifestPublishFailuresTotal: this.manifestPublishFailures,
       streamsFinalizedTotal: this.streamsFinalized,
@@ -166,6 +180,8 @@ export interface MetricsCounters {
   segmentsLostTotal: number;
   /** Segments the CON-20 handover floor discarded on purpose. Correct behaviour, not a failure. */
   segmentsSkippedTotal: number;
+  /** Opening segments withheld because the broadcast had produced no video yet. See task #41. */
+  openingSegmentsWithheldTotal: number;
   segmentsNeverNamedTotal: number;
   manifestPublishFailuresTotal: number;
   streamsFinalizedTotal: number;

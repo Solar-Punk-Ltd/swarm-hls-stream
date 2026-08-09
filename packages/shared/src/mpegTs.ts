@@ -28,6 +28,16 @@ const SYNC_BYTE = 0x47;
  */
 const VIDEO_STREAM_ID_FIRST = 0xe0;
 const VIDEO_STREAM_ID_LAST = 0xef;
+const AUDIO_STREAM_ID_FIRST = 0xc0;
+const AUDIO_STREAM_ID_LAST = 0xdf;
+
+function isVideoStreamId(streamId: number): boolean {
+  return streamId >= VIDEO_STREAM_ID_FIRST && streamId <= VIDEO_STREAM_ID_LAST;
+}
+
+function isAudioStreamId(streamId: number): boolean {
+  return streamId >= AUDIO_STREAM_ID_FIRST && streamId <= AUDIO_STREAM_ID_LAST;
+}
 
 /** How many bits a timestamp occupies, which is more than a bitwise operator in this language has. */
 const PTS_BITS = 33n;
@@ -61,9 +71,14 @@ function readPts(bytes: Uint8Array, at: number): number {
  * to do about a segment that says nothing is the caller's decision, and it is a different decision
  * from what to do about one that says too little, which `measureSpanTicks` refuses on its own.
  */
-export function readVideoPts(segment: Uint8Array): number[] {
-  const timestamps: number[] = [];
-
+/**
+ * Every PES header the segment opens, as an offset and the elementary stream it names.
+ *
+ * Shared by the two readers below so that only one of them holds the packet walk. The walk is the
+ * part with the byte offsets in it, and having it twice is how the two would come to disagree about
+ * what counts as a packet.
+ */
+function forEachPesHeader(segment: Uint8Array, visit: (streamId: number, at: number) => void): void {
   for (let start = 0; start + TS_PACKET_BYTES <= segment.length; start += TS_PACKET_BYTES) {
     if (segment[start] !== SYNC_BYTE) {
       continue;
@@ -94,19 +109,57 @@ export function readVideoPts(segment: Uint8Array): number[] {
       continue;
     }
 
-    const streamId = segment[at + 3];
-    if (streamId < VIDEO_STREAM_ID_FIRST || streamId > VIDEO_STREAM_ID_LAST) {
-      continue;
+    visit(segment[at + 3], at);
+  }
+}
+
+export function readVideoPts(segment: Uint8Array): number[] {
+  const timestamps: number[] = [];
+
+  forEachPesHeader(segment, (streamId, at) => {
+    if (!isVideoStreamId(streamId)) {
+      return;
     }
     // The top two bits of this byte say which of PTS and DTS follow. A PES header is allowed to
     // carry neither, and the bytes sitting where a timestamp would be are then something else.
-    const carriesPts = (segment[at + 7] & 0x80) !== 0;
-    if (!carriesPts) {
-      continue;
+    if ((segment[at + 7] & 0x80) === 0) {
+      return;
     }
-
     timestamps.push(readPts(segment, at + 9));
-  }
+  });
 
   return timestamps;
+}
+
+/** How many elementary stream packets of each kind a segment opens. */
+export interface PesPacketCounts {
+  video: number;
+  audio: number;
+}
+
+/**
+ * What kinds of media a segment actually carries, as opposed to what its program map declares.
+ *
+ * The two are not the same thing, and the gap between them cost a whole broadcast: a real SRS
+ * recording's first four segments declared a video stream and carried 41 audio packets and no video
+ * packets at all. A player parsing one of those first builds an audio-only codec set and never
+ * revises it. See `docs/bench/a-recording-that-opens-without-video-2026-08-09.md`.
+ *
+ * ⛔ **Audio at zero does not mean silence, it means this is not a transport stream this can read.**
+ * Both counts at zero is what bytes of any other format look like from here, so a caller
+ * distinguishing "media with no picture" from "not media at all" has to read both.
+ */
+export function countPesPackets(segment: Uint8Array): PesPacketCounts {
+  let video = 0;
+  let audio = 0;
+
+  forEachPesHeader(segment, (streamId) => {
+    if (isVideoStreamId(streamId)) {
+      video += 1;
+    } else if (isAudioStreamId(streamId)) {
+      audio += 1;
+    }
+  });
+
+  return { video, audio };
 }

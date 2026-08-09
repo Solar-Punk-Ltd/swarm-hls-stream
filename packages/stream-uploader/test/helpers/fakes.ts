@@ -8,6 +8,9 @@ import {
   HealthSignals,
   MEDIA_TYPE_VIDEO,
   PRESSURE_LOW,
+  RECOVERY_ENTRY_LOADED,
+  RECOVERY_ENTRY_MISSING,
+  RecoveryEntry,
   STREAM_LIFECYCLE_UNKNOWN,
   StreamState,
 } from '../../src/types.js';
@@ -123,7 +126,9 @@ export function makeHealthSignals(overrides: Partial<HealthSignals> = {}): Healt
     msSinceAuthRejection: null,
     hasIngestedMedia: false,
     segmentsSkipped: 0,
+    openingSegmentsWithheld: 0,
     segmentsNeverNamed: 0,
+    quarantinedRecoveryEntries: 0,
     ...overrides,
   };
 }
@@ -135,6 +140,7 @@ export function makeMetricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): M
     segmentsDroppedTotal: 0,
     segmentsLostTotal: 0,
     segmentsSkippedTotal: 0,
+    openingSegmentsWithheldTotal: 0,
     segmentsNeverNamedTotal: 0,
     manifestPublishFailuresTotal: 0,
     streamsFinalizedTotal: 0,
@@ -152,11 +158,22 @@ export function makeMetricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): M
 }
 
 export function makeFakeRecoveryStore(overrides: Partial<Record<keyof RecoveryStore, unknown>> = {}): RecoveryStore {
+  const load = (overrides.load as ((fileId: string) => StreamState | null) | undefined) ?? (() => null);
+
   return {
     save: () => {},
-    load: () => null,
     remove: () => {},
     listActive: () => [],
+    listQuarantined: () => [],
+    quarantine: () => null,
+    load,
+    // Recovery reads through `read`, so deriving it from `load` keeps every fake that names only
+    // `load` describing one store. A test that needs a damaged entry overrides `read` itself, since
+    // that is exactly the distinction `load` cannot express.
+    read: (fileId: string): RecoveryEntry => {
+      const state = load(fileId);
+      return state === null ? { kind: RECOVERY_ENTRY_MISSING } : { kind: RECOVERY_ENTRY_LOADED, state };
+    },
     ...overrides,
   } as unknown as RecoveryStore;
 }

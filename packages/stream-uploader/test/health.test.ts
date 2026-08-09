@@ -12,6 +12,7 @@ import {
   HEALTH_REASON_STALE_MANIFEST,
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
+  HEALTH_REASON_UNRECOVERABLE_STREAM,
   HealthSignals,
   PRESSURE_HIGH,
   PRESSURE_LOW,
@@ -40,7 +41,9 @@ function signals(overrides: Partial<HealthSignals> = {}): HealthSignals {
     // default. The OBS-15 cases below set both fields explicitly.
     hasIngestedMedia: true,
     segmentsSkipped: 0,
+    openingSegmentsWithheld: 0,
     segmentsNeverNamed: 0,
+    quarantinedRecoveryEntries: 0,
     ...overrides,
   };
 }
@@ -173,6 +176,7 @@ describe('health wire contract', () => {
         HEALTH_REASON_UNLISTED_STREAM,
         HEALTH_REASON_STATE_NOT_PERSISTED,
         HEALTH_REASON_INGEST_REFUSED,
+        HEALTH_REASON_UNRECOVERABLE_STREAM,
       ],
       [
         'segment_upload_failure',
@@ -183,6 +187,7 @@ describe('health wire contract', () => {
         'unlisted_stream',
         'state_not_persisted',
         'ingest_refused',
+        'unrecoverable_stream',
       ],
     );
   });
@@ -454,5 +459,41 @@ describe('deriveHealthStatus deliberate discards (OBS-16)', () => {
 
     assert.equal(report.status, HEALTH_OK);
     assert.deepEqual(report.reasons, []);
+  });
+});
+
+/**
+ * ⛔ Task #38. One entry the recovery store could not parse is one whole broadcast that this process
+ * cannot finalize: its recording is stranded and its catalog entry says `live` until someone
+ * intervenes by hand. It is reported by an operator's standards, which is why it needs no threshold
+ * and no window.
+ */
+describe('deriveHealthStatus quarantined recovery entries', () => {
+  it('is ok while every entry on disk could be read', () => {
+    const report = deriveHealthStatus(signals({ quarantinedRecoveryEntries: 0 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_OK);
+    assert.deepEqual(report.reasons, []);
+  });
+
+  it('degrades on the first entry it could not read', () => {
+    const report = deriveHealthStatus(signals({ quarantinedRecoveryEntries: 1 }), STALL_MS);
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_UNRECOVERABLE_STREAM]);
+  });
+
+  /**
+   * Nothing this process does later makes a stranded recording recoverable, so unlike every aged
+   * signal here it must not fade back to `ok` while the entry is still sitting in quarantine.
+   */
+  it('stays degraded on an otherwise idle uploader with nothing running', () => {
+    const report = deriveHealthStatus(
+      signals({ quarantinedRecoveryEntries: 2, activeStreams: 0, msSinceStreamActivity: null }),
+      STALL_MS,
+    );
+
+    assert.equal(report.status, HEALTH_DEGRADED);
+    assert.deepEqual(report.reasons, [HEALTH_REASON_UNRECOVERABLE_STREAM]);
   });
 });

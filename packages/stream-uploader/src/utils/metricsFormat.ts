@@ -49,6 +49,12 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
       value: snapshot.segmentsSkippedTotal,
     },
     {
+      name: 'opening_segments_withheld_total',
+      type: 'counter',
+      help: 'Segments withheld from the manifest because the broadcast had produced no video yet, so a player would have fixed an audio-only codec set from the first one and kept it for the whole stream. Read next to segments_uploaded_total: a few at the start is the guard working, climbing while uploads stay flat is a publisher sending no frames.',
+      value: snapshot.openingSegmentsWithheldTotal,
+    },
+    {
       name: 'segments_never_named_total',
       type: 'counter',
       help: 'Segments uploaded to Swarm that no published manifest ever named, so no viewer can reach them.',

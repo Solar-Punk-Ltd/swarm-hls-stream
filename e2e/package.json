@@ -18,7 +18,8 @@
     "browser:watch": "tsx browser/watch.ts",
     "browser:crash": "tsx browser/crash.ts",
     "probe:ahead": "node src/probes/feed-ahead-probe.mjs",
-    "browser:vod": "tsx browser/vod.ts"
+    "browser:vod": "tsx browser/vod.ts",
+    "make:recording": "tsx browser/make-recording.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",

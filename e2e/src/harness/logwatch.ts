@@ -35,6 +35,20 @@ export interface UploaderEvents {
   manifestSocIndices: number[];
   staleWarnings: number;
   retries: number;
+  /**
+   * Segment indices the uploader found to hold **no video packets at all**, from its own duration
+   * warning. Empty on any ordinary broadcast.
+   *
+   * ⛔ This is not a cosmetic complaint about a duration. A recording whose opening segments carry
+   * only audio plays as sound over a blank picture **for its whole length**, because the player fixes
+   * its codec set from the first fragment it parses and never revises it. Measured 2026-08-09: four
+   * opening segments with 0 video packets and 41 AAC packets, and every later video sample refused
+   * with a non-fatal warning. See task #40.
+   *
+   * ⚠️ The uploader reports this **once per stream**, so this names the first one and not all of them.
+   * Presence is the signal; the length is not a rate.
+   */
+  videolessSegments: number[];
 }
 
 const RE_UPLOADED = /Segment (\d+) uploaded/g;
@@ -61,6 +75,12 @@ const RE_MANIFEST = /Manifest uploaded at SOC index (\d+)/g;
 const RE_STALE = /is stale: \d+ consecutive/g;
 const RE_RETRY = /Retrying in ~/g;
 const RE_STREAM_ANNOUNCE = /Adding stream to list: (\{[^\n]*\})/g;
+/**
+ * The uploader's own words for a segment carrying no video, from `measureSegmentDuration`'s
+ * fallback. Anchored on the reason and not on the warning, because the same warning also fires for a
+ * segment whose timestamps are unusable, which is a different fault with a different consequence.
+ */
+const RE_VIDEOLESS_SEGMENT = /Cannot read how much media segment (\d+) of [^\n]*holds no video packets/g;
 
 /** One line of `LOG_FORMAT=json` output, as `Logger` writes it. */
 interface StructuredLogLine {
@@ -172,6 +192,7 @@ export function parseUploaderLog(text: string): UploaderEvents {
     manifestSocIndices: captureNumbers(messages, RE_MANIFEST),
     staleWarnings: countMatches(messages, RE_STALE),
     retries: countMatches(messages, RE_RETRY),
+    videolessSegments: captureNumbers(messages, RE_VIDEOLESS_SEGMENT),
   };
 }
 

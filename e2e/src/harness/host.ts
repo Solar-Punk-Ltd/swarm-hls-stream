@@ -54,9 +54,12 @@ export interface Stamp {
 
 export interface UploaderHealth {
   status: string;
+  /** Why the status is what it is, as `deriveHealthStatus` named them. Empty on a healthy service. */
+  reasons: string[];
   activeStreams: number;
   staleManifestStreams: number;
   queuePressure: string;
+  quarantinedRecoveryEntries: number;
   engines: string[];
 }
 

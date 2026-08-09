@@ -5,7 +5,7 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
-import { StreamState } from '../src/types.js';
+import { RECOVERY_ENTRY_LOADED, RECOVERY_ENTRY_MISSING, RECOVERY_ENTRY_UNREADABLE, StreamState } from '../src/types.js';
 
 import { makeRecoveredState } from './helpers/fakes.js';
 
@@ -114,8 +114,11 @@ describe('RecoveryStore', () => {
 
   /**
    * The branch that keeps a damaged file from taking the uploader down with it. A state truncated by
-   * the crash it was recording is the expected shape here, not an exotic one, and the caller's only
-   * useful answer is the same one it gets for a stream it never saw.
+   * the crash it was recording is the expected shape here, not an exotic one.
+   *
+   * ⛔ This is `load`'s answer and it is deliberately lossy: absence and damage collapse to `null`.
+   * That collapse is what task #38 was — recovery read `null` and deleted the file. Anything deciding
+   * what to *do* with an entry asks {@link RecoveryStore.read} instead, which keeps them apart.
    */
   it('treats a state it cannot parse as no state at all', () => {
     const { store, dir } = storeIn(makeTempRoot(), 'state');
@@ -306,6 +309,163 @@ describe('RecoveryStore', () => {
 
       assert.equal(fs.readdirSync(dir).length, 1);
       assert.equal(store.load('live/stream')?.streamId, 'live_stream', 'the second save took the first one over');
+    });
+  });
+
+  /**
+   * ⛔ Task #38, at the layer that caused it.
+   *
+   * `load` answers `null` for a stream that was never saved and for one whose file is damaged, and
+   * the recovery pass read that single `null` as permission to delete. A recovery entry is the only
+   * record that a broadcast was live and the only route back to the recording it was building, so
+   * deleting it strands the recording, leaves the catalog saying `live` for good, and destroys the
+   * evidence that any of it happened.
+   */
+  describe('telling damage apart from absence', () => {
+    it('reports a stream it never saved as missing', () => {
+      const { store } = storeIn(makeTempRoot(), 'state');
+
+      assert.deepEqual(store.read('never-seen'), { kind: RECOVERY_ENTRY_MISSING });
+    });
+
+    it('reports a state it cannot parse as unreadable, not as missing', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      fs.writeFileSync(path.join(dir, 'stream-1.json'), '{"streamId":"stream-1","segm');
+
+      capture(() => {
+        assert.deepEqual(store.read('stream-1'), { kind: RECOVERY_ENTRY_UNREADABLE });
+      });
+    });
+
+    it('hands back the state it holds', () => {
+      const { store } = storeIn(makeTempRoot(), 'state');
+      const state = makeRecoveredState('stream-1');
+      store.save('stream-1', state);
+
+      assert.deepEqual(store.read('stream-1'), { kind: RECOVERY_ENTRY_LOADED, state });
+    });
+  });
+
+  describe('quarantining an entry that cannot be read', () => {
+    /** A damaged entry that is still on disk can be repaired by hand. A deleted one cannot. */
+    it('keeps every byte of the entry it moves aside', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      const damaged = '{"streamId":"stream-1","segm';
+      fs.writeFileSync(path.join(dir, 'stream-1.json'), damaged);
+
+      capture(() => store.quarantine('stream-1'));
+
+      const kept = fs.readdirSync(dir);
+      assert.equal(kept.length, 1, 'the damaged entry was deleted rather than kept');
+      assert.equal(fs.readFileSync(path.join(dir, kept[0]), 'utf-8'), damaged);
+      assert.notEqual(kept[0], 'stream-1.json', 'the entry was left where the next boot reads it again');
+    });
+
+    it('answers with the path it moved the entry to', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      fs.writeFileSync(path.join(dir, 'stream-1.json'), 'not json');
+
+      const moved: (string | null)[] = [];
+      capture(() => void moved.push(store.quarantine('stream-1')));
+
+      assert.deepEqual(moved, [path.join(dir, 'stream-1.json.corrupt')]);
+    });
+
+    /**
+     * The move has to take it out of the listing as well as off the recovery path, or the next boot
+     * reads it, fails again, and quarantines a file that is already quarantined.
+     */
+    it('takes the entry out of the recovery listing', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      fs.writeFileSync(path.join(dir, 'stream-1.json'), 'not json');
+      store.save('stream-2', makeRecoveredState('stream-2'));
+
+      capture(() => store.quarantine('stream-1'));
+
+      assert.deepEqual(store.listActive(), ['stream-2']);
+    });
+
+    it('says which stream it quarantined and where it put it', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      fs.writeFileSync(path.join(dir, 'stream-1.json'), 'not json');
+
+      const said = capture(() => store.quarantine('stream-1')).join(' ');
+
+      assert.match(said, /stream-1/, 'an operator was told an entry was quarantined but not which one');
+    });
+
+    /**
+     * A second damaged entry under the same id must not land on top of the first. Overwriting would
+     * destroy exactly the evidence this whole path exists to keep.
+     */
+    it('does not overwrite a damaged copy it already kept', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      fs.writeFileSync(path.join(dir, 'stream-1.json'), 'first');
+      capture(() => store.quarantine('stream-1'));
+      fs.writeFileSync(path.join(dir, 'stream-1.json'), 'second');
+
+      capture(() => store.quarantine('stream-1'));
+
+      const kept = fs
+        .readdirSync(dir)
+        .map((f) => fs.readFileSync(path.join(dir, f), 'utf-8'))
+        .sort();
+      assert.deepEqual(kept, ['first', 'second'], 'a damaged entry landed on top of the one kept before it');
+    });
+
+    /**
+     * ⛔ Leaves the original where it is rather than deleting it. Refusing to move it means the next
+     * boot reads it and complains again, which is the correct end state for a directory an operator
+     * has stopped looking after: loud and lossless, rather than quiet and lossy.
+     */
+    it('leaves the entry in place once it has kept as many damaged copies as it will', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      for (let attempt = 0; attempt < 12; attempt++) {
+        fs.writeFileSync(path.join(dir, 'stream-1.json'), `damaged ${attempt}`);
+        capture(() => store.quarantine('stream-1'));
+      }
+
+      assert.equal(fs.existsSync(path.join(dir, 'stream-1.json')), true, 'the ceiling deleted what it would not move');
+      assert.deepEqual(store.listActive(), ['stream-1']);
+    });
+
+    /**
+     * Read off disk rather than remembered, so the alarm survives the restart that would otherwise
+     * erase it: the entry is still damaged and the broadcast it stands for is still unfinalized.
+     */
+    it('lists what it is holding, including copies an earlier process put there', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      store.save('stream-2', makeRecoveredState('stream-2'));
+      fs.writeFileSync(path.join(dir, 'stream-1.json.corrupt'), 'left by an earlier boot');
+      fs.writeFileSync(path.join(dir, 'stream-1.json.corrupt.2'), 'and the boot after that');
+
+      assert.deepEqual(store.listQuarantined().sort(), ['stream-1.json.corrupt', 'stream-1.json.corrupt.2']);
+    });
+
+    it('holds nothing on a directory where every entry is readable', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      store.save('stream-1', makeRecoveredState('stream-1'));
+      fs.writeFileSync(path.join(dir, 'stream-2.json.tmp'), 'a save caught in flight');
+      fs.writeFileSync(path.join(dir, 'corrupt-notes.txt'), 'a name that merely mentions it');
+
+      assert.deepEqual(store.listQuarantined(), []);
+    });
+
+    it('reports nothing, rather than throwing, when its directory is taken away underneath it', () => {
+      const { store, dir } = storeIn(makeTempRoot(), 'state');
+      fs.rmSync(dir, { recursive: true, force: true });
+
+      assert.deepEqual(store.listQuarantined(), []);
+    });
+
+    it('answers null rather than throwing when there is nothing to quarantine', () => {
+      const { store } = storeIn(makeTempRoot(), 'state');
+
+      const answered: (string | null)[] = [];
+      const said = capture(() => void answered.push(store.quarantine('never-seen')));
+
+      assert.deepEqual(answered, [null]);
+      assert.notDeepEqual(said, [], 'a quarantine that could not happen passed in silence');
     });
   });
 
