@@ -19,9 +19,9 @@ document is 1 to 8. Any claim about a thousand nodes is a prediction until that 
 | ----- | ------------------------------------------------------------------------ | ----------------------- | --------------------------- |
 | **1** | Free work: the open defects and the instruments that cost nothing        | none                    | ✅ **done**                 |
 | **2** | **Phase 0.9**, scale readiness measured at current scale                 | mostly free             | ✅ **done, a-e**            |
-| **3** | 0.5e. **0.7c is struck and 0.5c is demoted**, see below                  | broadcast-min           | ▶ **authorised 2026-08-09** |
-| **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ⏸ **owner's call**          |
-| **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ⏸ **owner's call**          |
+| **3** | 0.5e. **0.7c is struck and 0.5c is demoted**, see below                  | 0.0357 BZZ, spent       | ✅ **done 2026-08-09**      |
+| **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ▶ **authorised 2026-08-09** |
+| **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ✅ **4 of 5, see step 3**   |
 | **6** | **The scale-up handover document** for the other repo                    | none, and it lands here | ✅ **written, and revised** |
 | **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         | ✅ **answered**             |
 | **8** | Phase 3, OME to parity and the engine comparison                         | **last**                | ⏸ deferred                  |
