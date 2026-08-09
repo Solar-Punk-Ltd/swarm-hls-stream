@@ -23,7 +23,7 @@ document is 1 to 8. Any claim about a thousand nodes is a prediction until that 
 | **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ⏸ **owner's call**          |
 | **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ⏸ **owner's call**          |
 | **6** | **The scale-up handover document** for the other repo                    | none, and it lands here | ✅ **written, and revised** |
-| **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         | ⬅ **next, and it is free**  |
+| **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         | ✅ **floor measured, free** |
 | **8** | Phase 3, OME to parity and the engine comparison                         | **last**                | ⏸ deferred                  |
 | **9** | Phase 4, LL-HLS                                                          | **last**                | ⏸ deferred                  |
 
@@ -33,7 +33,13 @@ because the free work kept producing findings that belonged in it.
 ⛔ **Steps 3, 4 and 5 all need broadcast minutes against a chequebook that binds at roughly 64 of
 them.** They are not blocked on work, they are blocked on a spending decision that is the owner's.
 
-⬅ **Step 7 is the next thing that costs nothing**, and it is the question Phase 4 turns on.
+✅ **Step 7's floor is measured, for nothing, off the archived request logs.** It is a **miss** floor:
+at the live edge a not-found slot read costs 4.5x a successful one and about 45% of reads are
+not-founds. ⛔ **That is a problem for the proposal it was meant to support**, because a computed-address
+segment feed pays the same cost. See Phase 2.6.
+
+⬅ **What is left of step 7 costs nothing either**: whether the not-found cost grows with how far past the
+head you ask, which decides whether reading ahead is viable at all.
 
 ⚠️ **The uploader chequebook is the binding constraint on steps 3 and 5**, at roughly 64
 broadcast-minutes against 145 the remaining measured items ask for. Postage is not binding. Which of
@@ -811,16 +817,54 @@ the document is worthless if a reader cannot tell those apart.
 **Moved out of Phase 4 on 2026-08-08 at the owner's direction**, because it is the question Phase 4
 turns on and it can be measured long before anyone builds LL-HLS.
 
-**Measure the announcement floor first.** A reader sustains about **3.8 slot reads a second** against
-`manifestPublish` at 215-226ms and `feedPropagation` at 39-52ms. If that floor stands where it looks,
-then the read side is the ceiling, LL-HLS buys far less than its reputation, and the cheaper change
-buys more.
+### ✅ The floor is measured 2026-08-09, and it is a MISS floor
 
-**Then the proposal, which is a proposal rather than a finding.** Segments are content addresses today
-and therefore unpredictable, but they could be written as SOCs at computed addresses exactly as
-manifests already are. A client that walks the **segment** feed skips the manifest entirely at the live
-edge. The walk machinery already exists on both sides, and it is proven to track a publisher writing
-3.8 slots a second. Cost: a SOC write per segment instead of a plain upload.
+[Full report.](../bench/the-announcement-floor-is-a-miss-floor-2026-08-09.md) **78,482 feed slot reads
+taken from the 70 archived request logs. No run, and nothing spent.**
+
+The floor on record was about **3.8 slot reads a second** because a slot read costs roughly 260ms. What
+that 260ms is made of turns out to decide the whole question.
+
+| regime, by miss rate      | logs | hit, median of medians | miss, median of medians |  miss/hit |    slower in |
+| ------------------------- | ---: | ---------------------: | ----------------------: | --------: | -----------: |
+| **behind the edge**, <10% |   29 |              **244ms** |               **215ms** |     0.87x |      8 of 29 |
+| **at the edge**, >30%     |   14 |              **118ms** |               **496ms** | **4.51x** | **14 of 14** |
+
+⭐⭐ **At the live edge a miss costs 4.5x a hit, in every one of fourteen logs, and behind the edge it
+costs slightly less than a hit.** A walk finds the head by reading until it 404s, so a viewer at the edge
+misses about **45%** of the time. At `0.454 x 496 + 0.546 x 118` that is **~289ms per read, or 3.5 a
+second**, which reconstructs the 3.62 to 3.77 measured directly.
+
+⭐ **Not-found has a characteristic cost of about 490ms**, with 66.4% of misses in a single 400-599ms
+band. A bounded search rather than a timeout or an unbounded one.
+
+⛔ **So the floor is not the price of reading a feed. It is the price of asking for a slot nobody has
+written**, roughly every other read at the live edge.
+
+### ⛔⛔ Which is a problem for the proposal, and it was not obvious
+
+**The proposal, which is still a proposal.** Segments are content addresses today and therefore
+unpredictable, but they could be written as SOCs at computed addresses exactly as manifests already are.
+A client that walks the **segment** feed skips the manifest entirely at the live edge. Cost: a SOC write
+per segment instead of a plain upload.
+
+⛔ **It does not remove the dominant cost, because predictable addresses are precisely what let a client
+ask for something that does not exist yet.** A segment feed walked at the live edge does the ~490ms
+not-found thing at least as often as the manifest feed does. **The floor moves across unchanged.**
+
+⭐ **What the proposal does buy is a hop, not a rate**: the manifest read leaves the critical path. Worth
+having, and not what the floor is made of.
+
+⭐⭐ **The way past a miss floor is not a cheaper poll, it is not polling.** A push primitive lets a
+publisher say "slot N exists" instead of every viewer discovering it by failing to find slot N+1.
+⚠️ Swarm has GSOC and **nothing here has measured it**, so that is a direction rather than a finding.
+
+⚠️ **It also sharpens Phase 4.** If the read floor is speculative misses at the edge, cutting segments
+into smaller parts **increases the number of speculative reads**. ⬅ Whether that is a wash or a loss is
+the thing to measure before anyone builds LL-HLS.
+
+⬅ **Open and cheap:** whether the ~490ms grows with how far past the head you ask, which decides whether
+reading ahead by more than one slot is viable at all.
 
 ## Phase 3 — OME, then the engine comparison ⏸ **deferred to last, 2026-08-08**
 
