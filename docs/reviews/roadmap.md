@@ -1025,6 +1025,50 @@ not-found delivers no bytes, so no peer is owed. ⛔ A whole-run delta said the 
 because spending is lumpy and quantised. **So speculative reads are free in money and expensive in
 time**, and ⚠️ the 43-44 MB/s throughput ceiling cannot see them at all, because they move no bytes.
 
+## Phase 2.7 — in-browser viewer nodes, phase 1 🔎 **assessed 2026-08-09, measurement not started**
+
+Full write-up: [in-browser phase 1](../scale/in-browser-phase-1.md). **Assessment cost nothing**: source
+reading, one browser session against a public deployment, four reads from a **public** gateway.
+
+⛔⛔ **This is not another viewer feature, it is a different scaling model.** Every result we hold about
+serving an audience is a result about **pooling behind a gateway**, and the strongest of them is that
+**16 viewers cost the network what 1 costs**. An in-browser node removes the gateway, so the pooling
+saving goes with it: 20,000 browser viewers are 20,000 independent retrievals of the same chunks, and
+the load lands on the storer neighbourhood instead of on our fleet. **We have never measured that
+side.** In exchange the 128-viewer knee and the 43-44 MB/s plateau stop existing, and our
+infrastructure cost goes to roughly zero.
+
+⭐⭐ **weeb-3 speaks our dialect.** Its feed topic derivation is byte-identical to bee-js
+`Topic.fromString`, verified against the live deployment's own log. The topic in the link Abel is
+testing with is a v4 UUID, the exact shape our uploader's `streamRawTopic` produces. ⚠️ The POC
+repository reports that weeb-3's **native** feed reader still cannot read bee-js sequential feeds, so
+topic and index encoding have to be settled separately.
+
+⛔⛔ **The reason Abel's link struggles is the content, and a public gateway cannot serve it either.**
+That stream is 2560x1600 at ~8.5 Mbps with 4.17s segments. A public gateway delivered its segments at
+a median **665 KB/s**, the POC measured weeb-3 at ~580, and the research handoff's ultra-light bee
+baseline is ~670. **Three independent numbers inside 15% of each other, and the content needs 1.6x the
+fastest of them.** ⭐ The discriminating control is what makes this a finding: both segments that
+failed in the browser fetched fine from a public gateway, so the chunks are alive and the delivery
+path is the limit.
+
+⭐ **Design against roughly 600 KB/s per browser viewer.** 2.83 Mbps needs 354 KB/s and fits with
+~1.7x headroom. **1080p/6000k needs 750 KB/s and does not.**
+
+⚠️ **`HLS_LIVE_SYNC_SEGMENTS = 8` is a new input to the fragment-profile question**, not a decision.
+hls.js counts the live sync target in segments, so against our 9.0s window, 1.0s fragments leave the
+player **one segment** of margin while 0.25s leaves 28. One non-fatal stall then raises hls.js's
+latency target permanently. The campaign's cost, postage and refusal evidence still favours 1.0s;
+this says the question has to be re-opened **if in-browser viewers ship**, and that the cheapest fix
+is a configurable `liveSyncDurationCount` rather than a different fragment length.
+
+⚠️ **Time to first frame was ~150s, and that is ONE observation** against oversized content on a cold
+node. A verdict taken at 56s would have said "does not play at all" and would have been wrong.
+
+**Seven steps, ordered so everything that can kill the idea runs before anything that spends.** Steps
+1-5 and 7 are free. Only step 6 needs broadcast minutes, and it is priced in bytes before it is
+booked. See the doc for what each one answers.
+
 ## Phase 3 — OME, then the engine comparison ⏸ **deferred to last, 2026-08-08**
 
 ### 3.1 OME to parity
