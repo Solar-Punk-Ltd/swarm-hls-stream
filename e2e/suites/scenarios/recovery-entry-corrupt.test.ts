@@ -105,8 +105,11 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
     // is how a catalog index disappears.
     await writeRecoveryEntry(host, cfg, FOREIGN_STATE_FILE, JSON.stringify({ note: 'planted by scenario J' }));
 
-    await host.start(uploader);
+    // Stamped BEFORE the start, because everything this scenario asserts on is logged while the
+    // process comes up. Reading from an instant taken after `docker start` returned would miss the
+    // recovery pass entirely and fail on an absence the run itself created.
     const bootedAt = await host.nowIso();
+    await host.start(uploader);
     await waitFor(
       async () => {
         try {
@@ -129,6 +132,12 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
       /Skipping non-stream state file/,
       'a parseable file that is not a stream must be skipped rather than recovered',
     );
+
+    // ⚠️ The publisher is still running, so segments resume the moment the uploader is back and
+    // `handleSegment` cancels the recovery timer. That is correct behaviour and it means the stream
+    // stays live: waiting for a finalize here would wait forever. Stop the broadcaster first, so the
+    // finalize below is the ordinary end-of-stream path running on a repaired entry.
+    await publisher.stop();
 
     // The repair's whole purpose: a stream restored from this entry still announces, so it is
     // discoverable rather than live-forever-and-invisible. Finalization is what proves it got there.
@@ -174,8 +183,8 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
       const original = await readRecoveryEntry(host, cfg, target);
       await writeRecoveryEntry(host, cfg, target, original.slice(0, Math.floor(original.length / 2)));
 
-      await host.start(uploader);
       const bootedAt = await host.nowIso();
+      await host.start(uploader);
       await waitFor(
         async () => {
           try {
