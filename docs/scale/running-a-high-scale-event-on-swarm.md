@@ -359,7 +359,7 @@ freshness.**
 inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
 limits.
 
-### ⭐⭐ 2.3b Size it above the working set, or it does nothing at all
+### ⭐⭐ 2.3c Size it above the working set, or it does nothing at all
 
 ✅ **Measured 2026-08-08**, thirty-six arms in two sittings sweeping `--cache-capacity` against a fixed
 working set of 10,489 chunks, read off the node's own retrieval counter.
@@ -982,7 +982,7 @@ Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **
 time-scattered audience behaves like the synchronised one measured here**, since scattered viewers lose
 the pooling that carried these arms and should lean on the cache instead.
 
-✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3b. It is a cliff, and
+✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3c. It is a cliff, and
 the cliff has since been located: **a cache at 76% of the working set is byte-identical to no cache, one
 at 100.1% buys the entire benefit, and anything above that buys nothing more.** ⬅ **Still open: how much
 a real re-read pattern beats the cyclic scan that was measured**, which is the worst case on purpose.
