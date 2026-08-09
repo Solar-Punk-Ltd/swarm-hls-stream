@@ -117,6 +117,9 @@ describe('H — killed inside finalize: one recording, and the catalog points at
       intervalMs: 1_000,
       label: 'uploader container fully stopped after the kill',
     });
+    // Stamped before the start, so the recovery pass below is read from a window that opens with
+    // this boot rather than one that already holds the whole run.
+    const rebootedAt = await host.nowIso();
     await host.start(uploader);
     await waitFor(
       async () => {
@@ -127,6 +130,19 @@ describe('H — killed inside finalize: one recording, and the catalog points at
         }
       },
       { timeoutMs: REBOOT_WAIT_MS, intervalMs: 2_000, label: 'uploader reboots after the mid-finalize crash' },
+    );
+
+    // ⚠️ Waiting for `activeStreams === 0` on its own is not a wait at all here: it is already true
+    // in the first poll after boot, before `recoverStreams` has registered anything. Wait for the
+    // recovery pass to have declared itself first, so the idle below is the state AFTER recovery
+    // rather than the state before it.
+    await waitFor(
+      async () => /No streams to recover|Recovering \d+ stream/.test(await host.logsSince(uploader, rebootedAt)),
+      {
+        timeoutMs: REBOOT_WAIT_MS,
+        intervalMs: 1_000,
+        label: 'the reboot reaches its recovery pass and says what it found',
+      },
     );
 
     // Long enough for the recovery timer to fire on anything the reboot restored. A stream recovered
