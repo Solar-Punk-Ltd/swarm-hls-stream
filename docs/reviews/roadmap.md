@@ -668,9 +668,14 @@ property of the access pattern rather than of the cache.** Give the same 76% cap
 and it removes **36.8% of retrievals** with a lap-two median of **4ms**, which is what a correctly
 sized cache does.
 
-⭐⭐ **So size for the hot set, not the working set.** A cyclic scan has no hot set, every reference
-being equally popular, so its hot set is its working set and the step is that special case. ⬅ Where
-the new cliff sits, between the hot set and the 3.8x it that was tested, is open and cheap.
+⛔⛔ **CORRECTED the same day, and it corrects the line that stood here.** "Size for the hot set" was
+written before the sweep that looked for the new cliff, and there is no cliff: under skew the cache is
+a **dial, not a gate**. A smooth curve from 4% of retrievals removed at 0.24x the hot set to 37% at
+3.8x, with **no step anywhere, including at the hot set itself**. Early capacity is worth about **2x
+its share**, so a small cache is worth buying and there is no threshold to clear first.
+
+⚠️ The 100% cliff is real **only for a cyclic scan**, which has no hot set because every reference is
+equally popular. ⚠️ Capacity is counted in **chunks, not bytes**: 1 GB is roughly 280,000.
 
 ### 0.9c ✅ DONE 2026-08-08, free — sixteen viewers cost the network what one costs
 
