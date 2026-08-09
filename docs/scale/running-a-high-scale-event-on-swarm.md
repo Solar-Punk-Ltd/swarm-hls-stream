@@ -422,17 +422,37 @@ entries an undersized cache evicted during lap one, and it still collects 31% an
 **So what matters is that a skew exists, not that it points at recent content.** LRU re-warms a hot set
 on its first re-touch and holds it, provided the hot set fits.
 
-⛔ **So size for the hot set.** The hot set here is 2,096 chunks, **20% of the working set**, and the
-capacity that worked is 3.8x it. A cyclic scan has no hot set, every reference being equally popular, so
-its hot set _is_ its working set and the rule above is that special case.
+⛔⛔ **"Size for the hot set" was published here on 2026-08-09 and measured wrong the same day.** It
+rested on one capacity, 3.8x the hot set. A bisect below it found **no step at the hot set and no step
+anywhere**.
+[Full report.](../bench/the-cache-has-no-cliff-under-skew-2026-08-09.md)
 
-⭐⭐ **For DVR this is the difference between provisioning a whole re-watchable hour and provisioning the
-part of it people re-watch.** For live it changes nothing, because the live window is small either way.
+|  capacity | × hot set | % of working set | retrievals removed, r1 / r2 | share of what a full cache achieves |
+| --------: | --------: | ---------------: | --------------------------: | ----------------------------------: |
+|       500 |     0.24x |             4.8% |                  4.1 / 4.5% |                             9 / 10% |
+|     1,000 |     0.48x |             9.5% |                  8.2 / 8.1% |                            18 / 17% |
+| **2,100** | **1.00x** |        **20.0%** |            **17.7 / 17.5%** |                        **38 / 38%** |
+|     3,200 |     1.53x |            30.5% |                22.1 / 21.8% |                            47 / 47% |
+|     5,000 |     2.39x |            47.7% |                28.7 / 29.2% |                            62 / 63% |
+|     8,000 |     3.82x |            76.3% |                36.8 / 36.8% |                            79 / 79% |
 
-⚠️ ⬅ **The new cliff is not located.** One capacity was tested, at 3.8x the hot set. The theory puts the
-step at the hot set rather than the working set, and **nothing between was run.** 80/20 is also a chosen
-shape rather than an observed one, so **37% is not the number a real deployment gets**. What is
-established is that skew converts a step into partial credit.
+⭐⭐ **A smooth concave curve, both rounds within 0.5 percentage points.** At exactly the hot set a cache
+collects **38%** of what a full one collects, not all of it, and it keeps buying past that. **The hot set
+is a scale, not a threshold.**
+
+⭐ **Early capacity is worth about twice its share**: 4.8% of the working set buys 9 to 10% of the
+benefit, 9.5% buys 17 to 18%, 20% buys 38%. The premium decays and is gone by 76%.
+
+⛔ **So under a realistic pattern a cache is a dial, not a gate, and no capacity is wasted.** Pick a point
+on the curve. For DVR, where a re-watchable hour is ~353,000 chunks, **5% of that buys a tenth of the
+benefit and 20% buys nearly four tenths**, which is a very different procurement conversation from "clear
+the working set or get nothing".
+
+⚠️ **The cyclic result stands unchanged.** Below 100% a cyclic scan still collects exactly nothing,
+reproduced twice. **Every cliff measured here belongs to that pattern.**
+
+⚠️ 80/20 is a chosen shape, so the curve's heights are a property of this skew. What generalises is that
+skew removes the discontinuity. ⬅ Nothing between 5,000 and 8,000 was run, and nothing below 500.
 
 ### 2.4 Concurrency: a viewer adds load rather than sharing it
 
