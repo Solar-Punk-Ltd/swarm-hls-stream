@@ -1078,6 +1078,53 @@ scale. Name the axis, then test at least two points on it.
 Injecting the clock is right. Reporting alongside the thing under test rather than gating on it is
 how a test stops being able to fail.
 
+### 5.11 ⛔⛔ A check whose answer sits at the value it starts from
+
+Three of these turned up in one hour while building the recovery scenarios, and **none of them could
+have failed against a completely broken system**:
+
+- waiting for `activeStreams == 0` after a reboot, which is **already true in the first poll**, before
+  the recovery pass has registered anything
+- reading a log window stamped **after** the process started, so the boot lines being asserted on were
+  written before the window opened
+- a helper that read the last 1000 log lines for a value that is only re-logged when a broadcast runs,
+  which worked **only because every scenario publishes just before the next one looks**
+
+⭐ **The move: before asserting a state, assert that the transition into it happened.** One extra wait
+for "the recovery pass said what it found" turns _nothing is active_ from a tautology into a result.
+
+⭐ **And run a new test alone at least once, deliberately.** The third one had been in the repo the
+whole time and no run could have exposed it, because nothing had ever run one scenario on its own. **A
+suite whose members quietly prepare each other's preconditions only works as a whole, and nothing says
+so until you take one out.**
+
+### 5.12 ⛔ Error text is not the discriminator, the outcome is
+
+Three playback runs of a ~200 second recording: one failed every seek, two passed every seek. **All
+three log the same family of `bufferAppendError` and `InvalidStateError` warnings**, and the healthy
+runs throw them while seeking perfectly. A check written against the error text would have condemned
+every arm and found nothing.
+
+⭐ What separated them was one structural fact, visible only by asking the player what it had **built**
+rather than what it complained about: the failing run had **three audio SourceBuffers and no video
+SourceBuffer at all**, and appended 208 KB where the healthy runs appended 27 MB. **Ask a component
+what state it is in, not what it is saying.**
+
+### 5.13 ⛔⛔ A matched control is not a replicate
+
+The same three runs produced a finished, wrong write-up. Runs one and two were a clean matched pair:
+same producer, same harness, same seek targets, lengths within 7%, **one variable** (a discontinuity in
+the recording), and the result was **0 of 3 seeks against 3 of 3**. The document said "a recording
+containing a discontinuity cannot be seeked." Run three had the discontinuity and seeked perfectly.
+
+⭐ **A control removes the variable you are thinking about. It cannot tell you the failing arm
+reproduces.** Those are different questions and only the second one licenses a causal claim.
+
+⛔ **The effect being total is what made publishing off one pair feel safe, and that instinct is
+backwards.** A 0-of-3 against 3-of-3 is exactly as capable of being a single bad run as a marginal
+effect is. **Budget a replicate of the failing arm, not just a control for it** — here each run was a
+few hundredths of a BZZ, so the replicate cost less than the retraction would have.
+
 ---
 
 ## 6. The toolkit
