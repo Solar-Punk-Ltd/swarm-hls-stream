@@ -863,8 +863,20 @@ publisher say "slot N exists" instead of every viewer discovering it by failing 
 into smaller parts **increases the number of speculative reads**. ⬅ Whether that is a wash or a loss is
 the thing to measure before anyone builds LL-HLS.
 
-⬅ **Open and cheap:** whether the ~490ms grows with how far past the head you ask, which decides whether
-reading ahead by more than one slot is viable at all.
+✅ **Replicated on the direct path, and it is worse there.** Four alternating blocks of 100 reads
+straight at the gateway: **miss 459 and 483ms across two runs, hit 4 and 7ms, a 66x to 121x ratio.**
+⭐⭐ The miss cost is the same on both paths (483 direct against 496 through the browser) while the hit
+cost is 17 to 30x apart, so **the floor is a gateway-side cost and nothing a client does will move it.**
+
+✅ **And reading ahead by more than one slot is no cheaper per slot.** A single-owner chunk's address is
+a hash of its identifier and its owner, so slot N+1 and N+100 sit at unrelated addresses. **Read-ahead
+by N costs N misses, linearly.**
+
+⭐⭐ **A miss costs no BZZ at all.** Per-block attribution: 100 hits spent one cheque of 615,000,000,000
+wei, and **both miss blocks and the second hit block spent nothing**, as did every idle control. A
+not-found delivers no bytes, so no peer is owed. ⛔ A whole-run delta said the opposite and was wrong,
+because spending is lumpy and quantised. **So speculative reads are free in money and expensive in
+time**, and ⚠️ the 43-44 MB/s throughput ceiling cannot see them at all, because they move no bytes.
 
 ## Phase 3 — OME, then the engine comparison ⏸ **deferred to last, 2026-08-08**
 

@@ -99,6 +99,53 @@ set by the cost of speculative misses at the edge, then cutting segments into sm
 the number of speculative reads**. ⬅ Whether that is a wash or a loss is unmeasured, and it is the thing
 to measure before anyone builds it.
 
+## ⭐⭐ Replicated on the direct path, where the effect is far larger
+
+**2026-08-09, 05:21 to 05:29 UTC.** Four alternating blocks of 100 reads straight at the gateway, no
+browser and no proxy, against real slot identifiers from the corpus and random ones under the same
+owner. **A single-owner chunk's address is a hash of its identifier and its owner**, so consecutive
+slots land at unrelated addresses and a random identifier is the same kind of request as the next
+unwritten slot. There is no locality and no notion of distance.
+
+| run | miss median | hit median | ratio |
+| --- | ----------: | ---------: | ----: |
+| first  | **459ms** (p10 339, p90 599) | **7ms** (p10 4, p90 33) | **66x** |
+| second | **483ms** (p10 381, p90 593) | **4ms** (p10 3, p90 9)  | **121x** |
+
+⭐⭐ **The miss cost is the same on both paths, 483ms direct against 496ms through the browser, while
+the hit cost is 17 to 30 times apart.** So the archive's hit figures are mostly client-side and its
+miss figures are almost entirely the gateway's lookup. **The floor is a gateway-side cost and nothing
+a client does will move it.**
+
+⭐ Every one of the 400 misses returned 404 and every one of the 400 hits returned 200.
+
+## ⛔⛔ And a miss costs no BZZ at all, which is the opposite of what a whole-run delta said
+
+The first run's spendable balance fell by **1,044,000,000,200 wei** across 400 reads. Dividing that by
+the bytes the hits transferred suggested the hits could only account for about 0.5% of it, and therefore
+that **misses dominated the bill**. ⛔ **That was wrong, and only per-block attribution caught it.**
+
+| block                              |                spent |
+| ---------------------------------- | -------------------: |
+| 100 hits                           | **615,000,000,000 wei** |
+| 100 misses                         |                **0** |
+| 100 hits                           |                **0** |
+| 100 misses                         |                **0** |
+| every 20s idle control between them |               **0** |
+| a standalone 115s idle control      |               **0** |
+
+⭐⭐ **Misses spent nothing, in both miss blocks.** And the second hit block spent nothing either, so the
+one charge is a **cheque being written when a peer's debt crossed a threshold**, not a per-read price.
+**Spending is lumpy and quantised, so dividing a run total by a request count produces a number that
+describes nothing.**
+
+⭐ It makes sense once seen: a not-found delivers no bytes, so no peer is owed for bandwidth.
+
+⭐⭐ **Which sharpens the design consequence rather than softening it. Speculative reads are free in
+money and expensive in time.** What bounds read-ahead is latency and the lookup load on the gateway, not
+the wallet, and ⚠️ the throughput ceiling measured elsewhere is a **byte** rate, so it cannot see
+speculative reads at all: they move no bytes.
+
 ## ⚠️ What this does not show
 
 ⚠️ **Absolute milliseconds here are not comparable to the retrieval probe's.** These reads go from a
@@ -109,12 +156,18 @@ not**, and the segment figures elsewhere in this repo must not be set beside the
 ⚠️ **The 30% miss-rate boundary is a choice**, and three logs sit between 10 and 30%. The effect is
 large and one-sided at the extremes, which is what carries it, not the exact cut.
 
-⚠️ **⬅ Whether the ~490ms depends on how far past the head you ask is unmeasured**, and it decides
-whether read-ahead by more than one slot is viable. It is cheap to answer on an unfunded gateway.
+✅ **Whether the cost depends on how far past the head you ask is now answered, and it does not.** A
+single-owner chunk's address is a hash of its identifier and its owner, so slot N+1 and slot N+100 sit
+at unrelated addresses and neither is nearer to anything. The direct-path run asked for 400 addresses
+nobody has ever written and got the same ~480ms every time. ⭐ **So reading ahead by N costs N misses,
+linearly, and there is no cheaper distance to read at.**
 
 ⚠️ These are archived runs spanning 2026-08-05 to 2026-08-08 and several code changes, pooled by regime
 rather than held constant.
 
 ## Artifacts
 
-`docs/bench/*.requests.json`, 70 logs, unchanged. No gateway was touched and nothing was spent.
+The archive half: `docs/bench/*.requests.json`, 70 logs, unchanged, no gateway touched and nothing
+spent. The direct-path half: `/home/solarpunk/soc-miss2/`, instrument
+[`deploy/scripts/soc-miss-cost.sh`](../../deploy/scripts/soc-miss-cost.sh), **0.0000615 BZZ total**,
+which was one cheque written during the first block and nothing at all across the other three.
