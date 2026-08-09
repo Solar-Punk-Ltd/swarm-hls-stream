@@ -859,7 +859,17 @@ having, and not what the floor is made of.
 
 ⭐⭐ **The way past a miss floor is not a cheaper poll, it is not polling.** A push primitive lets a
 publisher say "slot N exists" instead of every viewer discovering it by failing to find slot N+1.
-⚠️ Swarm has GSOC and **nothing here has measured it**, so that is a direction rather than a finding.
+
+⚠️ **GSOC is unmeasured**, but its signatures in the bee-js the client already depends on say what shape
+it has. `gsocMine(targetOverlay, identifier, proximity)` means **GSOC is targeted at a neighbourhood,
+not broadcast**, so reaching a dispersed audience is one mined key and one send per neighbourhood.
+`gsocSend` takes a **postage batch**, so **a push costs the publisher where a poll costs the viewer's
+gateway**. ⭐ It composes with pooling: the targets are **gateways**, so a thousand viewers at ~123 per
+gateway is about **nine** targets rather than a thousand.
+
+⬅ **The three numbers that decide it, none of which exists:** whether a subscriber is notified promptly,
+what proximity a viewer's gateway needs to receive, and what a send costs in postage at four segments a
+second.
 
 ⚠️ **It also sharpens Phase 4.** If the read floor is speculative misses at the edge, cutting segments
 into smaller parts **increases the number of speculative reads**. ⬅ Whether that is a wash or a loss is
