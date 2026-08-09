@@ -15,17 +15,25 @@ measures everything reachable at current scale, and then hands over findings and
 ⛔ **Nothing here has ever exceeded eight concurrent viewers on one gateway.** Every figure in this
 document is 1 to 8. Any claim about a thousand nodes is a prediction until that other repo runs it.
 
-| #     | what                                                                     | gate                    |
-| ----- | ------------------------------------------------------------------------ | ----------------------- |
-| **1** | Free work: the open defects and the instruments that cost nothing        | none                    |
-| **2** | **Phase 0.9**, scale readiness measured at current scale                 | mostly free             |
-| **3** | 0.7c, then 0.5c / 0.5e as the chequebook allows                          | broadcast-min           |
-| **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        |
-| **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   |
-| **6** | **The scale-up handover document** for the other repo                    | none, and it lands here |
-| **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         |
-| **8** | Phase 3, OME to parity and the engine comparison                         | **last**                |
-| **9** | Phase 4, LL-HLS                                                          | **last**                |
+| #     | what                                                                     | gate                    | state                       |
+| ----- | ------------------------------------------------------------------------ | ----------------------- | --------------------------- |
+| **1** | Free work: the open defects and the instruments that cost nothing        | none                    | ✅ **done**                 |
+| **2** | **Phase 0.9**, scale readiness measured at current scale                 | mostly free             | ✅ **done, a-e**            |
+| **3** | 0.7c, then 0.5c / 0.5e as the chequebook allows                          | broadcast-min           | ⏸ **owner's call**          |
+| **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ⏸ **owner's call**          |
+| **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ⏸ **owner's call**          |
+| **6** | **The scale-up handover document** for the other repo                    | none, and it lands here | ✅ **written, and revised** |
+| **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         | ⬅ **next, and it is free**  |
+| **8** | Phase 3, OME to parity and the engine comparison                         | **last**                | ⏸ deferred                  |
+| **9** | Phase 4, LL-HLS                                                          | **last**                | ⏸ deferred                  |
+
+⭐ **Steps 1, 2 and 6 are done and every one of them was free.** Step 6 landed early rather than last,
+because the free work kept producing findings that belonged in it.
+
+⛔ **Steps 3, 4 and 5 all need broadcast minutes against a chequebook that binds at roughly 64 of
+them.** They are not blocked on work, they are blocked on a spending decision that is the owner's.
+
+⬅ **Step 7 is the next thing that costs nothing**, and it is the question Phase 4 turns on.
 
 ⚠️ **The uploader chequebook is the binding constraint on steps 3 and 5**, at roughly 64
 broadcast-minutes against 145 the remaining measured items ask for. Postage is not binding. Which of
@@ -589,11 +597,21 @@ Arms at several deposit sizes through `retrieval-debt-probe.sh`, reading
 `gateway-retrieval-metrics.sh` per arm. ⛔ Needs owner approval before any deposit: bring exact
 commands, fund nothing.
 
-### 0.9b `--cache-capacity`, excluded on purpose until now
+### 0.9b ✅ DONE 2026-08-08, extended 2026-08-09 — size the cache for the hot set
 
-Every arm ever run sets `--cache-capacity=0`, so nothing caches and every chunk is re-fetched. It was
-excluded deliberately, because two variables at once answers neither. It is now the untested lever
-most likely to matter when many viewers sit behind one gateway, and **an unfunded arm costs nothing**.
+Three sittings, all free. [Eviction.](../bench/a-cache-that-does-not-fit-does-nothing-2026-08-08.md)
+[The bisect that located the cliff.](../bench/the-cache-cliff-is-at-one-hundred-percent-2026-08-08.md)
+[The access pattern.](../bench/the-cache-cliff-belongs-to-the-access-pattern-2026-08-09.md)
+
+Under a **cyclic scan** the cliff is a step at exactly 100% of the working set: 76% is byte-identical
+to no cache, 100.1% buys the whole benefit, and above that buys nothing. ⛔ **That turned out to be a
+property of the access pattern rather than of the cache.** Give the same 76% capacity a skewed pattern
+and it removes **36.8% of retrievals** with a lap-two median of **4ms**, which is what a correctly
+sized cache does.
+
+⭐⭐ **So size for the hot set, not the working set.** A cyclic scan has no hot set, every reference
+being equally popular, so its hot set is its working set and the step is that special case. ⬅ Where
+the new cliff sits, between the hot set and the 3.8x it that was tested, is open and cheap.
 
 ### 0.9c ✅ DONE 2026-08-08, free — sixteen viewers cost the network what one costs
 
@@ -611,26 +629,45 @@ chunk" are rates divided by whatever throughput their arm ran at. Valid for the 
 they came from, not general. ⬅ Nothing above 16 is measured, and this sweep cannot see feed staleness,
 which LAT-11 found goes 1.30x at eight.
 
-### 0.9c-ii The concurrent-viewer knee above sixteen
+### 0.9c-ii ✅ DONE 2026-08-08, free — the knee is a byte rate
 
-LAT-11 measured 1 against 8 on one gateway: **1.30x staler, but only 1.09x more chunk retrieval**, at
-30.6% CPU on a 48-core host. The ceiling is inside bee's request handling, so **more BZZ does not help
-and horizontal gateways do**. Nothing between 2 and 8, or above 8, has ever been measured.
+[The ceiling.](../bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md)
+[What actually limits it.](../bench/a-synchronised-audience-is-the-failure-2026-08-08.md)
+
+**Throughput plateaus at 43 to 44 MB/s** across four concurrencies and both rounds. At 2.83 Mbps per
+viewer that is **~123 viewers**, bracketed exactly by 128 holding at zero buffer drain and 192 draining
+in both rounds. ⛔ **It is internal to bee**: at 512 viewers bee used ~6 of 48 cores, host load peaked
+at 36 of 48, and 43 MB/s is 344 of 1000 Mbps. **Not a capacity that can be bought.**
+
+⭐⭐ **What decides whether an audience is served efficiently is cohort size**, meaning how many
+viewers want the same chunk at the same instant. 128 in cohorts of 8 are comfortable, 128 on one tick
+drain 12.8 seconds of buffer, and ⛔ **client-side jitter was shipped as the fix and then measured
+doing nothing**, because the constraint is chunk diversity rather than arrival instant.
+
+⬅ Still open above 8: **feed staleness**, which LAT-11 put at 1.30x and no reference-list probe can
+see.
 
 ⚠️ **Use the alternating-block design, never a ladder.** Relabelling eight unchanged past runs as if
 the viewer count had varied moved the metric by up to 1.95x with nothing happening, so a ladder cannot
 resolve anything under ~2x.
 
-### 0.9d The local spin's real cost
+### 0.9d ✅ DONE 2026-08-08, free — the CPU model, halved by pacing
 
-5,470 loop iterations a second is cheap or expensive depending on what `prepareCredit` does per call,
-and **no host-load sample was taken during any unfunded arm**. This is the number that sets how many
-bee nodes fit on one simulation host, so the other repo needs it before it sizes anything.
+The probe now samples host load every two seconds during every arm (#112), so a starved probe client
+can no longer be mistaken for a slow gateway, and the same sampler is the neighbour-safety ceiling that
+keeps an unattended sweep off the other forty bee nodes on the host.
 
-### 0.9e `bee_retrieval_request_duration_time`
+⛔ **Every arm before this fetched flat out, which is a load generator rather than a viewer.** Paced
+properly the model is **~0.67 cores fixed plus ~0.046 per viewer**, against the ~1.5 + ~0.07 published
+before. ⭐ The control that makes it credible is that the same sitting's flat-out arms reproduce the
+old model. **Per-MB figures are duty-cycle insensitive and all stand. Per-viewer figures halve.**
 
-One line more in the metrics reducer. It is the last inferred step in the whole chain: the 1.0-1.1s
-retry timer is still taken from the client side rather than from the node.
+### 0.9e ✅ DONE 2026-08-08 — the node's own retrieval duration histogram
+
+Shipped in the metrics reducer as `durSum`, `durCount`, `durLe0p25` and `durLe1`, so
+`durCount - durLe1` is **the node's own count of retrievals that took a second or more**, which is the
+statistic a median cannot see. ⚠️ ⬅ The retry timer's **wall-clock shape** is still inferred from the
+client side. The count is now measured at the node, the shape is not.
 
 ## Phase 1 — the viewer features
 
