@@ -508,7 +508,7 @@ quarter of the budget rather than at its edge, so a longer segment moves the kne
 viewer**, fitted on paced arms the same day and predicting 1.41 at 16 against 1.34 measured and 3.61 at
 64 against 3.62. See 2.2's duty-cycle subsection for why the correction is real.
 
-### ⚠️ 2.4e Where the ceiling looked to be, before 2.4f moved it
+### ⭐⭐ 2.4e A gateway's capacity is a byte rate, and it is 43 to 44 MB/s
 
 ✅ **Measured directly 2026-08-08**, sixteen arms scaling 128 to 512 viewers with the cohort size held
 constant at 8. `docs/bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md`.
