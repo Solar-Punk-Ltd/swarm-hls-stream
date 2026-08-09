@@ -722,6 +722,44 @@ question and the answer there was no.** ⛔ Make it the first thing your simulat
 
 ---
 
+### ⭐⭐ 2.5 Reading the feed is a different cost from reading a segment, and it is a MISS cost
+
+✅ **Measured 2026-08-09**, two halves. 78,482 slot reads mined from 70 archived browser request logs,
+which cost nothing at all, and 800 reads straight at the gateway, which cost **0.0000615 BZZ**.
+[Full report.](../bench/the-announcement-floor-is-a-miss-floor-2026-08-09.md)
+
+A client finds the head of a feed by reading slots until one comes back 404. So **a viewer at the live
+edge misses about 45% of the time**, and that turns out to be where the time goes.
+
+| direct at the gateway |  miss | hit | ratio |
+| --------------------- | ----: | --: | ----: |
+| run 1                 | 459ms | 7ms |   66x |
+| run 2                 | 483ms | 4ms |  121x |
+
+⭐⭐ **A not-found slot read costs about 480ms and a successful one costs single-digit milliseconds.**
+The miss figure is the same measured through a browser (496ms) and measured directly (483ms), while the
+hit figure is 17 to 30x apart, so **the floor is a gateway-side lookup and no client change moves it.**
+
+⭐ Not-found has a characteristic cost, not a timeout: **66.4% of misses land in one 400-599ms band.**
+
+⭐⭐ **A miss costs no BZZ.** Per-block attribution across 400 reads: the hit blocks wrote one cheque and
+**both miss blocks spent nothing**, as did every idle control. A not-found delivers no bytes, so no peer
+is owed. ⛔ **So speculative reads are free in money and expensive in time**, and ⚠️ **the 43 to 44 MB/s
+ceiling in 2.4e cannot see them at all**, because they move no bytes. If your simulation reasons about
+gateway load in bytes it will under-count feed traffic entirely.
+
+⭐ **Reading ahead is linear and there is no cheaper distance.** A single-owner chunk's address is a hash
+of its identifier and its owner, so slot N+1 and slot N+100 sit at unrelated addresses. Read-ahead by N
+costs N misses.
+
+⛔⛔ **The design consequence: the way past a miss floor is not a cheaper poll, it is not polling.** A
+push primitive lets a publisher say "slot N exists" instead of every viewer discovering it by failing to
+find slot N+1. ⚠️ Swarm has GSOC and **nothing here has measured it**, so treat that as a direction
+rather than a finding.
+
+⚠️ **And it is what to check before believing anything about LL-HLS.** Smaller parts mean more
+speculative reads, so the floor gets asked more often, not less. ⬅ Wash or loss is unmeasured.
+
 ## 3. How to measure: the statistics
 
 ### 3.1 ⛔ Rate of crossing, not central tendency
