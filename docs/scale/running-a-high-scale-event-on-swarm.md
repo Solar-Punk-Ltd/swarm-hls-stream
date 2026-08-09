@@ -859,21 +859,47 @@ That is what separated "ultra-light is slower" from "ultra-light is starved", an
 ⭐ **Use ~0.0007 BZZ per MB.** The long-quoted 0.00085 is about 40% high. The cliff arm is the cleanest
 single measurement available: 0.05 BZZ bought exactly 74 MB with caching off, watched drain to zero.
 
-### ⭐ The rate is the bitrate
+### ⭐⭐ The rate is the bitrate, and every profile is now measured
+
+✅ **Measured 2026-08-09**, eight arms on a funded gateway, four profiles alternating, two rounds, 30 MB
+apiece. **0.1633 BZZ and zero broadcast minutes**, because the archive holds thousands of segment
+references at each profile size and they all still resolve.
+[Full report.](../bench/what-a-gateway-burns-at-each-profile-2026-08-09.md)
 
 ```
-BZZ/min  ~=  MB/min x 0.0007
+BZZ/min  =  MB/min x 0.000678
 ```
 
-| profile           | MB/min | **derived BZZ/min** | measured                                      |
-| ----------------- | -----: | ------------------: | --------------------------------------------- |
-| 720p / 2500 kbps  |  18.75 |          **0.0131** | ✅ **0.0102**, sampled every 5s over 3.19 min |
-| 1080p / 6000 kbps |   45.0 |          **0.0315** | ⬅ **never measured**                          |
+⭐⭐ **The per-MB rate is flat across an 8.5x range of segment size.** All eight arms landed between
+0.000644 and 0.000708 BZZ per MB, a spread of 9.4%, with no ordering by size. **Mean 0.000678.** Use that.
+The 0.00085 quoted for weeks is 25% too high.
 
-⚠️ Derived and measured agree within 25% at 720p. **That is the only cross-check that exists**, and
-**1080p/6000k ships without its gateway burn ever having been measured.**
+| profile                      |    segment |   MB/min | **BZZ/min** | **BZZ/hour** |
+| ---------------------------- | ---------: | -------: | ----------: | -----------: |
+| 2500 kbps @ 0.25s            |      94 kB |     21.1 |  **0.0143** |    **0.857** |
+| **6000 kbps @ 0.25s, ships** | **213 kB** | **47.9** |  **0.0325** |    **1.948** |
+| 2500 kbps @ 1.0s             |     346 kB |     20.8 |  **0.0141** |    **0.844** |
+| 6000 kbps @ 1.0s             |     792 kB |     47.5 |  **0.0322** |    **1.931** |
 
-⚠️ A 0.25s GOP is roughly **15% dearer per minute** than 1.0s. Two hand-read samples, not a gate.
+⭐⭐ **1080p at 6000 kbps costs a viewer's gateway 0.0325 BZZ a minute, 1.95 BZZ an hour.** It shipped
+without that number existing. The figure derived before it was measured was 0.0315, **right to within
+3%**.
+
+⛔⛔ **There is no GOP premium, and this document previously said there was.** It claimed a 0.25s GOP was
+"roughly 15% dearer per minute" off two hand-read samples. Measured, at the same bitrate, the two GOPs
+cost **0.0143 against 0.0141** and **0.0325 against 0.0322**, because the encoder delivers the same byte
+rate either way. **The resilient profile is free.**
+
+⭐ **Feed reads add nothing to the bill.** A not-found slot read costs about 480ms and **zero BZZ**, so a
+viewer's gateway burn is segment bytes and nothing else. See 2.5.
+
+⭐ **Price is per byte, not per second.** One round ran with a far heavier tail, p90 rising from 67 to
+654ms while medians barely moved, and **the BZZ per MB did not change**. A gateway pays for bytes, not
+for how long they took.
+
+⚠️ ⬅ **Archived segments, not the live edge.** The rate is per byte and should not care, but whether a
+live-edge read costs more than an archived one is unmeasured. **That is now a validation rather than a
+discovery**, and it is the only part of this a live broadcast would still add.
 
 ### ⛔ Three honesty notes on cost
 
