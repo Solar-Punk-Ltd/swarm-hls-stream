@@ -536,7 +536,7 @@ every concurrent viewer from that one fetch. Pooling is the whole reason our num
 | **the synchronised-audience problem**                            | ⛔ **worse**                             | we measured that what limits a gateway is how many viewers want the **same chunk at once**. That constraint does not disappear, it relocates to the storer neighbourhood, and there is no shared fetch to absorb it |
 | **cost in BZZ to us**                                            | ✅ **plausibly near zero**               | viewers pay their own retrieval, or pay nothing, see below                                                                                                                                                          |
 | **our infrastructure cost**                                      | ✅ **near zero**                         | no gateway fleet                                                                                                                                                                                                    |
-| **quality ceiling per viewer**                                   | ⛔ **lower**                             | ~600 KB/s against a gateway viewer's share of 43-44 MB/s                                                                                                                                                            |
+| **quality ceiling per viewer**                                   | ⛔⛔ **much lower**                      | **~345 KB/s measured at n=500** (not the retired ~600 band) against a gateway viewer's share of 43-44 MB/s. That is 0.99x of what our own best-fitting profile needs                                                |
 | **time to first frame**                                          | ⛔ **much worse**                        | ~150s observed cold, against a gateway viewer's seconds                                                                                                                                                             |
 | **page weight**                                                  | ⛔ **+4.15 MB of WASM**                  | per viewer, per cold load                                                                                                                                                                                           |
 
@@ -567,13 +567,19 @@ wrong, because the answer changes shape below about 2,000.
 
 What we can bound:
 
-**a) Per-viewer quality is capped at roughly 600 KB/s.** **[DERIVED from three sources]** So:
+**a) Per-viewer quality is capped at about 345 KB/s.** ⛔⛔ **This paragraph previously said "roughly
+600 KB/s" and derived 1.7x of headroom from it. Both were wrong.** That band was a distant gateway's
+round trip, and section 5c measured the real figure directly: **115 KB/s sequentially, ~345 KB/s at
+weeb-3's configured concurrency of 3.** **[OBSERVED, n=500]**
 
-| profile               |      needs | verdict for a browser viewer                                |
-| --------------------- | ---------: | ----------------------------------------------------------- |
-| **2.83 Mbps**         |   354 KB/s | ✅ **fits, ~1.7x headroom.** This is the profile to plan on |
-| **1080p / 6000k**     |   750 KB/s | ⛔ **does not fit.** Above the observed band                |
-| Abel's 2560x1600 test | 1,064 KB/s | ⛔⛔ 1.6x over, and a public gateway cannot serve it either |
+| profile               |      needs | verdict for a browser viewer                                                       |
+| --------------------- | ---------: | ---------------------------------------------------------------------------------- |
+| **2.86 Mbps**         |   357 KB/s | ⚠️ **0.99x of realtime at the median, 0.67x at the p90. It fits with NO headroom** |
+| **1080p / 6000k**     |   750 KB/s | ⛔⛔ **2.2x over.** Not a close call                                               |
+| Abel's 2560x1600 test | 1,064 KB/s | ⛔⛔ **3.1x over**, and a public gateway cannot serve it either                    |
+
+⚠️ And that is the **delivery** ceiling only, measured with nothing else running. It is not a
+sustained-playback result, which is still step 2 and still open.
 
 **b) Our own delivery is not the constraint.** The feed scales: a feed read at 128 concurrent readers
 costs what it costs at one. Publishing is unaffected by audience size. The publisher side of a
