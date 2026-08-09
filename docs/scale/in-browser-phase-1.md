@@ -417,8 +417,13 @@ Fitting `base + k x step` over steps from 120 to 320 ms picks **step = 194 ms**,
 **15.5 ms** against **48.5 ms** expected if the times bore no relation to any ladder. The winner sits
 well inside the scanned range rather than at a bound, so the scan is not imposing its own answer.
 
-Predicted modes 790 / 984 / 1178 / 1372 / 1566 / 1954 against observed 790 / 975–1000 / 1175 /
-1350–1375 / 1575 / 1925.
+Predicted modes 790 / 984 / 1178 / 1372 / 1566 / **1760** / 1954 against observed 790 / 975–1000 /
+1175 / 1350–1375 / 1575 / **none** / 1925.
+
+⚠️ **Six of the seven rungs carry an observed mode and the seventh is empty**, which is what a ladder
+looks like when only three samples land above 1600 ms at all. The residual figure above is computed
+over every sample rather than over the matched rungs, so it does not inherit that gap. Printing the
+six that matched and dropping the one that did not would make a 6-of-7 fit read as 6-of-6.
 
 ### ⭐⭐⭐ And weeb-3's source names the mechanism exactly
 
