@@ -241,11 +241,83 @@ and that would have been wrong.
 
 ⛔⛔ **Even a public gateway cannot play this stream in real time.** Three independent
 measurements — a public gateway at 665, a browser node at 580, a native ultra-light bee at 670 — land
-within 15% of each other. **That band, roughly 600 KB/s, is the number to design against**, and the
-test content is 1.6x above it.
+within 15% of each other, and the content is 1.6x above all of them.
 
-⚠️ **n=1 per arm on the gateway reads, one browser session.** The consistency across four refs and
-three independent sources is what makes it worth stating; it is not yet a replicated measurement.
+⛔⛔ **CORRECTION, made the same day by step 1. Do NOT read "~600 KB/s" as a property of the
+network.** An earlier draft of this document said design against that band. **It is wrong**, and the
+control that killed it was free: re-fetching a segment the public gateway had **just served** took
+**exactly as long as the cold fetch** (0.99–1.23s warm against 1.11s cold). A cache hit that costs
+what a miss costs is not measuring retrieval. That ~1.1s is the round trip to a distant public
+gateway, and it sits inside every "KB/s" derived from it.
+
+⭐ **So the public gateway is a usable instrument only where bytes dominate the round trip.** At
+4.4 MB it is roughly fine. At our 95 KB segments it reports the instrument. See section 5b.
+
+---
+
+## 5b. ✅ STEP 1 RUN: our own stream through weeb-3
+
+**2026-08-09, same browser, same node, same session type as section 5.** Free: the recording already
+existed, the control ran on the host. The only difference from section 5 is **the content**.
+
+**The recording**: `8d8a30ff…` / topic `38699de1-061c-494a-a0a2-571740f11760`, 2026-08-08, **917.2s,
+3,444 segments at 0.266s, 1280x720, mean segment 94,978 B = 357 KB/s = 2.86 Mbps.** Exactly the
+profile section 7 predicted would fit.
+
+### ⭐⭐ Time to a playable state went from ~150s to 5s
+
+|                               |   Abel's stream |  **our recording** |
+| ----------------------------- | --------------: | -----------------: |
+| bitrate                       |        8.5 Mbps |      **2.86 Mbps** |
+| segment                       | 4.43 MB / 4.17s | **95 KB / 0.266s** |
+| **`readyState 4` reached at** |       **~167s** |            **~5s** |
+
+**The content hypothesis is confirmed.** Nothing else changed.
+
+### ✅ weeb-3 reads our streams natively, end to end
+
+- **feed frontier resolved to bounded candidate 3445**, which is exactly the index our catalog records
+  for that recording. **The native feed path works on our feeds**, at least for read.
+- ⭐ **It parses our absolute segment URLs.** Our manifests carry
+  `http://49.12.149.62:10077/bytes/<ref>`, and `swarm_bytes_reference` strips host and route to the
+  bare reference, so **segments are fetched from Swarm and not through our gateway**. Verified in
+  source and in the served playlist. That trap would have made a browser node look fast while
+  measuring nothing.
+- It reported our segments correctly: `size 0.10 MB, duration 0.266 s, resolution 1280x720`.
+- It issues HTTP **range** requests (`bytes=0-105279`).
+
+### ⭐⭐ Per-segment service time is BIMODAL, and the tail is what binds
+
+Taken from the browser's own `performance` resource timings, so **the media-element pausing below
+cannot contaminate it**. n=18.
+
+|                                                         |                  ms |
+| ------------------------------------------------------- | ------------------: |
+| nine requests (already prefetched / SW cache)           |             **2–9** |
+| p50 over all                                            |             **246** |
+| **p90**                                                 |           **2,771** |
+| max                                                     |           **3,152** |
+| **crossing rate** (slower than the segment's own 266ms) | **27.8%** (5 of 18) |
+
+⛔⛔ **The median says comfortable and the p90 says failing.** A real retrieval clusters near 250ms,
+which is just inside real time for a 266ms segment, and then there is a tail to 3.1s. With weeb-3's
+**`HLS_PREFETCH_BODY_MAX_PARALLEL = 3`**, three in flight at 250ms is 12 segments/s against the 3.76/s
+this profile needs — comfortable. **Three in flight at the p90 of 2.77s is 1.08/s, which is not.**
+Same lesson as every other sitting: quote the crossing rate, never the median.
+
+### The local-RTT control
+
+The same ten segments, fetched **on the host** from our own gateway: **24–66 ms, median 44 ms**,
+against the public gateway's ~1,110 ms for the identical bytes. **25x.** That is what established the
+public gateway as the instrument rather than the network.
+
+### ⛔ What this run could NOT measure
+
+**Sustained playback.** This browser keeps pausing the media element: the playhead advanced 1.9s in
+26s, with 2 stall events, while a `play()` loop fought it. **A realtime ratio taken here is a number
+about the harness.** Buffer-ahead never exceeded 0.5s, which is _consistent with_ the prefetch
+pipeline not staying ahead, but is not separable from the pausing. **Step 4 in a real browser is now
+the priority**, and it is still free.
 
 ---
 
@@ -316,25 +388,121 @@ The question "what happens when 20,000 unfunded nodes ask one neighbourhood for 
 the same second" is one this repository has never asked, and it is the question that decides the
 event.
 
-### What would make it hold, in rough order of leverage
+### ⛔ Architecture is NOT decided here
 
-1. **Ship 2.83 Mbps to browser viewers, not 1080p/6000k.** Free, and it is the difference between
-   fitting and not fitting.
-2. **Jitter the client.** We already measured that a synchronised audience is the failure mode and
-   that jittering the client is what fixes it: 128 viewers on one tick drain 12.8s of buffer, in
-   cohorts of 8 they are comfortable. This applies **more** strongly with no gateway to absorb the
-   burst, and it is a change we have already shipped once.
-3. **Hybrid, not pure.** Gateways for the viewers who need low latency and high quality, browser
-   nodes for the tail. Pooling stays where it pays, and the browser nodes take load off the fleet
-   without being the only path.
-4. **Fund the browser nodes, or prove they do not need it.** If the 38x amplification carries over,
-   this stops being an optimisation and becomes the difference between working and not.
-5. **Raise the fragment count in the live window, or make `liveSyncDurationCount` configurable**, so
-   `HLS_LIVE_SYNC_SEGMENTS = 8` stops being one segment of margin.
-6. **Push race retrieval upstream.** Absent in weeb-3, present in hoverfly. On a path running at
-   1.6x over capacity it would show nothing, which is likely why it measured as no help.
+The owner holds a separate full architecture plan and a separate project for the higher-scale
+simulation. **This repository measures at current scale and hands over parameters.** What follows is
+that handover, not a design.
 
 ---
+
+## 7b. ⭐⭐ What to feed the higher-scale simulation project
+
+This is the deliverable for the other project. Everything below is a number this repository has
+actually measured, with the statistic it must be used as.
+
+### a) The per-viewer demand model — drive it in REQUESTS, not bytes
+
+⛔ **Bytes per second is the wrong primitive.** Two streams with identical bitrates put completely
+different loads on the network depending on fragment length, because service time has a large
+per-request component.
+
+| profile           | fragment | segment size | **requests/s per viewer** |    bytes/s |
+| ----------------- | -------: | -----------: | ------------------------: | ---------: |
+| 2.86 Mbps, 0.266s |   0.266s |        95 KB |                  **3.76** |   357 KB/s |
+| 2.86 Mbps, 1.0s   |     1.0s |       357 KB |                  **1.00** |   357 KB/s |
+| 8.5 Mbps, 4.17s   |    4.17s |      4.43 MB |                  **0.24** | 1,064 KB/s |
+
+**Same bitrate, 3.76x the request rate.** A simulator driven on bytes cannot see that.
+
+### b) The service-time distribution — feed it a DISTRIBUTION, never a mean
+
+⛔⛔ **Every failure we have found hid inside a mean.** Measured service times, all from this
+repository:
+
+| path                            | shape                                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **browser node, 95 KB segment** | **bimodal**: ~2–9ms when already prefetched, **p50 246ms / p90 2,771ms / max 3,152ms** when retrieved |
+| **feed slot, hit**              | 1–2 ms                                                                                                |
+| **feed slot, miss** (not-found) | **~426–480 ms**, and **~45% of live-edge reads are misses**                                           |
+| **our gateway, warm, 95 KB**    | 24–66 ms, median 44                                                                                   |
+| **public gateway, 95 KB**       | ~1,110 ms — **instrument, not network. Do not use**                                                   |
+| **public gateway, 4.4 MB**      | 4.7–6.8 s                                                                                             |
+
+⭐ **A miss costs ~480ms and ZERO BZZ.** Speculative reads are free in money and expensive in time,
+and read-ahead by N costs N misses, linearly.
+
+### c) The structural parameter that dominates everything: sharing
+
+| viewer class         | chunk fetches for N viewers of the same chunk             |
+| -------------------- | --------------------------------------------------------- |
+| **behind a gateway** | **1.** Measured: 16 viewers cost the network what 1 costs |
+| **in-browser node**  | **N.** No shared fetch exists                             |
+
+**Model this as an explicit sharing factor per viewer class.** It is the single largest lever in the
+whole simulation: at 20,000 viewers it is the difference between ~160 retrievals and 20,000.
+
+### d) Arrival-time distribution is a first-class input, not a detail
+
+- **128 viewers on one tick drain 12.8s of buffer. The same 128 in cohorts of 8 are comfortable.**
+- Crossing rate ≥1s: **0.42% synchronised against 0.065% spread, 6.4x**, while the medians are
+  identical (462–482 vs 463–482 ms).
+- ⛔ **What limits a server is how many viewers want the SAME CHUNK at once**, not the instant they
+  arrive. We shipped client jitter on the wrong reading of that once and measured it doing nothing.
+
+### e) Client-side concurrency ceilings (weeb-3, from source)
+
+A browser viewer is a **bounded** request engine, not an open tap:
+
+| constant                                 |                        value |
+| ---------------------------------------- | ---------------------------: |
+| `HLS_PREFETCH_BODY_MAX_PARALLEL`         |                        **3** |
+| `MEDIA_PREFETCH_MAX_PARALLEL`            |                            4 |
+| `CONNECTION_BUILDUP_LIMIT` (peers)       |                      **200** |
+| `HLS_LIVE_SYNC_SEGMENTS`                 |                            8 |
+| `maxBufferLength` / `maxMaxBufferLength` | 90s / 120s (30/60 at ≤2 GiB) |
+
+**A viewer's sustainable rate is `parallelism / service_time`.** At p50 that is 3/0.246 = 12.2
+requests/s. At p90 it is 3/2.771 = **1.08 requests/s**, below the 3.76/s the 0.266s profile needs.
+
+### f) Things the simulator can treat as free or flat
+
+- **Feed reads do not scale with audience.** 128 concurrent readers cost what one costs; every loaded
+  arm sits inside the spread four single-reader references show with nothing happening.
+- **Publishing is independent of audience size.**
+- **Not-found reads cost no BZZ.**
+- **Segment cost is flat at 0.000678 BZZ/MB across an 8.5x segment-size range**, with no GOP premium.
+
+### g) Validation targets — the sim should reproduce these before anyone trusts it
+
+1. **128 concurrent viewers hold behind one gateway; 192 fail.** Throughput plateaus at **43–44 MB/s**
+   even with the cohort held at 8.
+2. **16 viewers cost the network what 1 costs.**
+3. **A feed read at 128 readers costs what it costs at 1.**
+4. **A cold gateway costs 2–3x for ~2 minutes**, and no readiness signal goes green late enough to
+   predict it.
+5. **Cache is a dial, not a gate**: a smooth curve from 4% removed at 0.24x the hot set to 37% at
+   3.8x, with no step anywhere. Units are **chunks**, not bytes (1 GB ≈ 280,000).
+
+### h) ⛔ What the simulation must NOT assume
+
+- **That throughput is a constant KB/s.** It is not, and a warm-cache control proved it here the same
+  day the number was written down.
+- **That the median predicts failure.** It does not. Every real failure we have found was visible only
+  in a **rate of crossing** a threshold.
+- **That unfunded behaves like funded.** A bee node that cannot settle **asks 38 peers where a funded
+  one asks 1** and is skipped ~37x per chunk. ⚠️ **Every browser viewer is unfunded**, but that figure
+  came from bee's counters on a bee node and has **not** been shown to apply to weeb-3.
+- **That a gateway result transfers to a browser node.** All of our capacity numbers are
+  gateway-side.
+
+### i) ⛔⛔ The one thing only the other project can answer
+
+**What happens at a storer neighbourhood when thousands of unfunded nodes ask it for the same chunk
+inside the same second.** Everything this repository has measured sits on the viewer side of a gateway
+or the publisher side of the network. **That question decides the event, and nothing here can reach
+it.** Suggested shape: sweep N viewers against one chunk address with the arrival distribution from
+(d), and report the crossing rate rather than the mean.
 
 ## 8. The plan: in-browser phase 1
 
