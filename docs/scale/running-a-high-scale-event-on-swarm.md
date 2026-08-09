@@ -977,7 +977,7 @@ recreate named as the likeliest cause. **2.4e-bis measures it: the arm after a r
 and put 47% of segments over budget against 0.0% warm.** ⬅ It still does not explain every arm, so
 treat it as the largest known term rather than the whole answer.
 
-✅ **How the CPU cost behaves under a realistic duty cycle. Answered 2026-08-08**, see 2.2 and 2.4e.
+✅ **How the CPU cost behaves under a realistic duty cycle. Answered 2026-08-08**, see 2.2 and 2.4d.
 Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **whether a
 time-scattered audience behaves like the synchronised one measured here**, since scattered viewers lose
 the pooling that carried these arms and should lean on the cache instead.
