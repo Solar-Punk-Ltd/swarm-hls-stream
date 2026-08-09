@@ -1,3 +1,4 @@
+/* eslint-env browser */
 /**
  * Per-segment service time for an in-browser Swarm node (weeb-3).
  *
@@ -31,12 +32,18 @@
     const now = Math.round(performance.now());
     let maxL = 0;
     for (const el of document.querySelectorAll('div > *')) {
-      if (el.children.length) continue;
+      if (el.children.length) {
+        continue;
+      }
       const m = /^\[\+(\d+)ms\]\s*(.*)$/.exec((el.textContent || '').trim());
-      if (!m) continue;
+      if (!m) {
+        continue;
+      }
       maxL = Math.max(maxL, +m[1]);
       const key = el.textContent.trim();
-      if (!P.logs.has(key)) P.logs.set(key, [+m[1], m[2].slice(0, 140)]);
+      if (!P.logs.has(key)) {
+        P.logs.set(key, [+m[1], m[2].slice(0, 140)]);
+      }
     }
     const body = document.body.innerText;
     const c = body.match(/Connected:\s*(\d+)/);
@@ -54,8 +61,8 @@
       const r = await fetch(url, { cache: 'no-store' });
       status = r.status;
       bytes = (await r.arrayBuffer()).byteLength;
-    } catch (e) {
-      err = String(e).slice(0, 60);
+    } catch (error) {
+      err = String(error).slice(0, 60);
     }
     P.rows.push([
       i,
@@ -68,7 +75,9 @@
       status,
       err,
     ]);
-    if (P.rows.length % 20 === 0) scrape();
+    if (P.rows.length % 20 === 0) {
+      scrape();
+    }
   }
 
   (async () => {
@@ -77,15 +86,25 @@
       const R = playlist.match(/[a-f0-9]{64}/g) || [];
       window.__refs = R;
       scrape();
-      for (let i = FIRST; i < FIRST + 50; i++) await one(R[i], 'warmup', 'hls', i);
-      for (let i = FIRST + 50; i < FIRST + 550; i++) await one(R[i], 'cold', 'hls', i);
-      for (let i = FIRST + 550; i < FIRST + 590; i++) await one(R[i], 'route', i % 2 === 0 ? 'hls' : 'plain', i);
-      for (let i = FIRST + 510; i < FIRST + 550; i++) await one(R[i], 'warm', 'hls', i);
-      for (let i = 0; i < 20; i++) await one(randRef(), 'null', 'hls', -1 - i);
+      for (let i = FIRST; i < FIRST + 50; i++) {
+        await one(R[i], 'warmup', 'hls', i);
+      }
+      for (let i = FIRST + 50; i < FIRST + 550; i++) {
+        await one(R[i], 'cold', 'hls', i);
+      }
+      for (let i = FIRST + 550; i < FIRST + 590; i++) {
+        await one(R[i], 'route', i % 2 === 0 ? 'hls' : 'plain', i);
+      }
+      for (let i = FIRST + 510; i < FIRST + 550; i++) {
+        await one(R[i], 'warm', 'hls', i);
+      }
+      for (let i = 0; i < 20; i++) {
+        await one(randRef(), 'null', 'hls', -1 - i);
+      }
       scrape();
       P.state = 'done';
-    } catch (e) {
-      P.state = 'error: ' + String(e).slice(0, 200);
+    } catch (error) {
+      P.state = 'error: ' + String(error).slice(0, 200);
     }
   })();
 
