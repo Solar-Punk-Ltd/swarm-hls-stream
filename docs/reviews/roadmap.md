@@ -19,7 +19,7 @@ document is 1 to 8. Any claim about a thousand nodes is a prediction until that 
 | ----- | ------------------------------------------------------------------------ | ----------------------- | --------------------------- |
 | **1** | Free work: the open defects and the instruments that cost nothing        | none                    | ✅ **done**                 |
 | **2** | **Phase 0.9**, scale readiness measured at current scale                 | mostly free             | ✅ **done, a-e**            |
-| **3** | 0.7c, then 0.5c / 0.5e as the chequebook allows                          | broadcast-min           | ⏸ **owner's call**          |
+| **3** | 0.5e. **0.7c is struck and 0.5c is demoted**, see below                  | broadcast-min           | ▶ **authorised 2026-08-09** |
 | **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ⏸ **owner's call**          |
 | **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ⏸ **owner's call**          |
 | **6** | **The scale-up handover document** for the other repo                    | none, and it lands here | ✅ **written, and revised** |
@@ -43,9 +43,53 @@ hashes. ⛔ **What is left of it is not a measurement, it is a design decision**
 segment feed buys a hop and not a rate, and getting past the floor needs a push primitive rather than a
 cheaper poll. **That is the owner's call, and GSOC is unmeasured.**
 
-⚠️ **The uploader chequebook is the binding constraint on steps 3 and 5**, at roughly 64
-broadcast-minutes against 145 the remaining measured items ask for. Postage is not binding. Which of
-them gets bought is the owner's call, never mine.
+## ⛔ Step 3 re-scoped 2026-08-09, and two of its three runs should not be bought
+
+The owner authorised spending through 0.5e. Checking each item's premise before booking it removed two
+of the three, and re-pricing the third against the profile it actually needs made the budget stop
+binding.
+
+**⛔ 0.7c is struck.** It exists to answer a conditional: _if_ 1080p cannot hold at 0.25s but holds at
+0.5s, that is a real product choice between picture and latency. **The antecedent is false.**
+1080p/6000k at 0.25s is gated **twice at sixty minutes**, advance 1.0000 in both hours, `deliveredFps`
+30.00, zero fatal errors, and 12 of 12 five-minute windows at 0.999-1.001. There is no product choice
+to inform. What remains of 0.7c is a latency comparison at 1080p, and that has now **failed three
+sittings for three different reasons at a cost of 2.431 BZZ**, with a within-run span of 0.63s and
+3.47s against a 0.12s effect. This document's own verdict is that a fourth arm would not help.
+
+**⚠️ 0.5c is demoted.** It is the control for 0.5b, and 0.5b came back null: the predicted
+manifest-growth degradation is **absent** at 13,522 accumulated segments, 12 windows at 0.999-1.001
+with zero frozen samples. A control separates two explanations of an effect. There is no effect to
+explain, so the hour buys a second null.
+
+**✅ 0.5e is what step 3 is.** Its five scenarios are Phase 2's 2.3 through 2.7, and **no harness can
+express any of them**: `e2e/src/browser/faults.ts` stops, kills, restarts or pauses one container, and
+these need a kill timed to a program moment, several containers at once, a mutation performed while a
+service is down, a bounded full disk, and a second publisher. **Building that is free**, and it is the
+larger half of the work.
+
+**⛔ 2.1 and 2.2 stay unrun and they are the owner's call, not a scheduling decision.** Exhausting the
+chequebook mid-stream spends the entire remaining balance to watch it run out, and filling the postage
+batch consumes a batch with 26 days left on it. Both destroy the resource they measure. If they are
+ever bought, they are bought **last**, when the balance is nearly gone anyway.
+
+### The budget stopped binding, and the reason is that it was priced at one profile
+
+|                                         |                    uploader chequebook |
+| --------------------------------------- | -------------------------------------: |
+| available 2026-08-09                    |                         **2.3238 BZZ** |
+| sitting unused in the node's own wallet | 1.532 BZZ, and only a deposit moves it |
+| at 1080p / 0.25s, 0.0380 BZZ/min        |                                 61 min |
+| **at 720p / 0.25s, 0.0169 BZZ/min**     |                            **137 min** |
+| at 720p / 1.0s, 0.0127 BZZ/min          |                                183 min |
+
+⭐ **"64 broadcast-minutes against 145" priced every minute at the shipping profile.** None of the
+remaining work needs 1080p: a crash scenario asks whether a viewer recovers, not how the picture looks.
+At 720p the same balance covers the whole remaining list. **Price a run in bytes, then convert.**
+
+Postage `7849851f…` is at **151 of 256 buckets with 26.4 days left**, against a stop-and-ask threshold
+of 192, so it is not binding either. The gateway chequebook holds 6.155 BZZ and has never bound on this
+topology, at 0.0002 BZZ/min.
 
 ## Where the product actually is
 
@@ -496,7 +540,7 @@ measured from request logs and both reproduce on demand.
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | 0.7a | ✅ **done.** Screened all three at 3 min in one sitting: **all deliver 30.0fps at full resolution, 0 stalled, 0 rebuffers**, and latency across a 2.4x bitrate range differs by **70ms**. | 10            |
 | 0.7b | ✅ **done.** 1080p/6000k gated at 10 min: 594 samples, 30.0fps, advance **1.000**, 0 stalled, 0 rebuffers, 0 fatal. [Report](../bench/quality-at-a-viewer-2026-08-06.md).                 | 10            |
-| 0.7c | The best quality that holds at 0.25s against the same quality at 0.5s                                                                                                                     | 22            |
+| 0.7c | ⛔ **STRUCK 2026-08-09.** Its antecedent is false: 1080p holds at 0.25s, gated twice at sixty minutes. See the step 3 re-scope above.                                                     | ~~22~~ 0      |
 
 ⭐ **Quality is bought with bandwidth, not with latency: 2.24x the BZZ (0.0170 → 0.0381 per
 broadcast-minute) and essentially no seconds.** 1080p at 6000kbps ships.
@@ -549,13 +593,13 @@ in this phase, deliberately, because two variables at once answers neither.
 
 ### Phase 0.5's runs
 
-| run  | what                                                                                                                                                                                                                                                                         | why it is on the list                                                                                                                    | broadcast-min |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| 0.5a | ✅ **done 2026-08-06.** 10-minute gate: 0.998, one stall at t=2.2s (the join).                                                                                                                                                                                               |                                                                                                                                          | 13            |
-| 0.5b | ✅ **DONE 2026-08-06, and it holds.** 12 windows all at 1.000 or 0.999, **zero frozen samples**, latency drift −0.29s. The predicted manifest-growth degradation is **absent** at 13,522 accumulated segments. [Report](../bench/browser-watch-2026-08-06T02-23-11-449Z.md). |                                                                                                                                          | 63            |
-| 0.5c | 60-minute run at 1.0s                                                                                                                                                                                                                                                        | The control. Same hour, a quarter of the segments, so a degradation that tracks segment count separates from one that tracks wall clock. | 63            |
-| 0.5d | #71 and #85 fixed, each verified before and after                                                                                                                                                                                                                            | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state.                   | 50            |
-| 0.5e | The five remaining crash scenarios, ×2                                                                                                                                                                                                                                       | Phase 2's list, now that a viewer can be watched through one.                                                                            | 60            |
+| run  | what                                                                                                                                                                                                                                                                         | why it is on the list                                                                                                               | broadcast-min |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 0.5a | ✅ **done 2026-08-06.** 10-minute gate: 0.998, one stall at t=2.2s (the join).                                                                                                                                                                                               |                                                                                                                                     | 13            |
+| 0.5b | ✅ **DONE 2026-08-06, and it holds.** 12 windows all at 1.000 or 0.999, **zero frozen samples**, latency drift −0.29s. The predicted manifest-growth degradation is **absent** at 13,522 accumulated segments. [Report](../bench/browser-watch-2026-08-06T02-23-11-449Z.md). |                                                                                                                                     | 63            |
+| 0.5c | ⚠️ **DEMOTED 2026-08-09.** 60-minute run at 1.0s                                                                                                                                                                                                                             | Was the control for 0.5b. 0.5b came back **null**, so there is no effect for a control to separate and the hour buys a second null. | 63            |
+| 0.5d | #71 and #85 fixed, each verified before and after                                                                                                                                                                                                                            | Both are measured, both have a named number to move (46.7s and 16.2s), and both are recovery rather than steady state.              | 50            |
+| 0.5e | The five remaining crash scenarios, ×2                                                                                                                                                                                                                                       | Phase 2's list, now that a viewer can be watched through one.                                                                       | 60            |
 
 **Read the windows, not the median.** A run that is perfect for its first half and rebuffering
 through its second has a respectable median and is a broken stream, which is why `stability.ts` cuts
