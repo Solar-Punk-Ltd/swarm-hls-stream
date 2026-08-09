@@ -104,3 +104,78 @@ describe('reading a status code off a raw socket', () => {
     await assert.rejects(() => readStatusCode(port, 'POST / HTTP/1.1\r\nHost: x\r\n\r\n'), /before a status line/);
   });
 });
+
+/**
+ * That an answer sent *before* the request finished arriving is still the answer.
+ *
+ * This is what a gate ahead of the body parser does: it refuses on the headers, writes its status and
+ * destroys the connection, all while the client is still pushing a body nobody is going to read. The
+ * client's remaining write then fails with `EPIPE` or `ECONNRESET`.
+ *
+ * ⛔ **The helper used to iterate the socket, which couples the two.** The failed write tore down the
+ * read, so the 401 already sitting in the receive buffer was discarded and replaced by the very error
+ * that proved the 401 had been sent. `srsWebhookAuth.test.ts` posts a 200 KB body expecting a pre-parse
+ * refusal, so it provokes this on every run, and only whether the write had drained first — a function
+ * of machine load — decided whether the test passed.
+ *
+ * A large body rather than a small one, because the race needs the client's send to still be in flight
+ * when the answer lands. A body that fits in one socket buffer completes before the server can reply
+ * and reproduces nothing.
+ */
+describe('reading a status code when the peer hangs up mid-write', () => {
+  const OVERSIZED_REQUEST = `POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4000000\r\n\r\n${'x'.repeat(4_000_000)}`;
+
+  /** A server that answers on the first byte it sees and destroys, ignoring the rest of the body. */
+  async function serverRefusingBeforeTheBody(answer: string | null): Promise<number> {
+    const server = net.createServer((socket) => {
+      // The peer is mid-write when this destroys, so its own send fails too. Expected on both sides.
+      socket.on('error', () => {});
+      socket.once('data', () => {
+        if (answer === null) {
+          socket.destroy();
+          return;
+        }
+        // ⚠️ `end`, not `write` then `destroy`, and the difference is not stylistic.
+        //
+        // `destroy()` discards whatever is still queued, so writing and destroying on the same tick
+        // sends nothing and this server tests the no-answer case twice. Destroying from the write
+        // callback is worse: the body is still arriving, so the socket closes with unread data in its
+        // receive buffer, which is the case TCP answers with **RST** rather than FIN — and an RST
+        // makes the peer discard bytes it has received but not yet read. The answer then vanishes at
+        // random depending on whether the client got to it first, which is a flake and not a fixture.
+        //
+        // `end` sends the answer and then FIN, in order, so the client is guaranteed to receive it.
+        // The client is still pushing megabytes into a peer that has closed, so its own write still
+        // fails, which is the condition under test.
+        socket.end(answer);
+      });
+    });
+    servers.push(server);
+    server.listen(0, LOOPBACK_HOST);
+    await once(server, 'listening');
+    return (server.address() as AddressInfo).port;
+  }
+
+  it('reads the status the peer sent before it hung up', async () => {
+    const port = await serverRefusingBeforeTheBody('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n');
+
+    assert.equal(await readStatusCode(port, OVERSIZED_REQUEST), 401);
+  });
+
+  it('reads a 413 the same way, since which code is correct belongs to the caller', async () => {
+    const port = await serverRefusingBeforeTheBody('HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n');
+
+    assert.equal(await readStatusCode(port, OVERSIZED_REQUEST), 413);
+  });
+
+  /**
+   * ⭐ The assertion that keeps the tolerance honest. Swallowing `EPIPE` must not turn a server that
+   * refused to answer at all into a pass: a body accepted in silence and a body refused with a status
+   * are opposite outcomes, and only the second is what the callers assert.
+   */
+  it('still throws when the peer hangs up mid-write without answering', async () => {
+    const port = await serverRefusingBeforeTheBody(null);
+
+    await assert.rejects(() => readStatusCode(port, OVERSIZED_REQUEST), /before a status line/);
+  });
+});

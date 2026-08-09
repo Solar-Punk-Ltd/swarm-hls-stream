@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import http from 'node:http';
 import net, { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -25,6 +24,27 @@ export const TEST_AUTH_TOKEN = 'test-token-0123456789abcdef0123456789abcdef';
 export const NO_AUTH_HEADER = { authorization: 'none' };
 
 /**
+ * Socket errors that mean the peer stopped reading while this side was still sending.
+ *
+ * ⭐ **For a server that refuses a request before reading its body, this is the behaviour under test.**
+ * The gate answers and the connection is destroyed, and whatever is left of a large body in this
+ * side's send buffer then fails. `srsWebhookAuth.test.ts` posts a 200 KB body it expects to be refused
+ * pre-parse, so it provokes exactly this every time; whether the write has drained before the answer
+ * arrives is decided by machine load, which is why it failed under a full `pnpm verify` and passed
+ * three times in isolation.
+ *
+ * ⚠️ **Ignored as a cause, never as an answer.** A request that gets no status line still rejects on
+ * `close`, so no caller's assertion is weakened by this: an oversized body that was quietly accepted,
+ * or refused with the wrong code, fails exactly as before.
+ */
+const PEER_STOPPED_READING = new Set(['EPIPE', 'ECONNRESET']);
+
+function isPeerStoppedReading(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code !== undefined && PEER_STOPPED_READING.has(code);
+}
+
+/**
  * Sends a hand-written request to `port` and resolves the status code from the response's first line.
  *
  * **Accumulates until that line is complete, which is the whole point of it existing.** This used to
@@ -35,33 +55,64 @@ export const NO_AUTH_HEADER = { authorization: 'none' };
  * isolation: load changes where the chunk boundaries land, and nothing else about the test. See
  * TEST-53.
  *
- * Exported so it can be pointed at a server that splits on purpose, which a test using the real app
- * cannot make it do.
+ * **Reading and sending are settled separately**, which is the second reason it is not a plain
+ * `for await` over the socket. Iterating couples them: the send failing tears down the read, so an
+ * answer already in flight is thrown away and replaced by the `EPIPE` that proves the answer was
+ * sent. See `isPeerStoppedReading`.
+ *
+ * Exported so it can be pointed at a server that splits on purpose, or hangs up mid-write on purpose,
+ * neither of which a test using the real app can make it do.
  */
 export async function readStatusCode(port: number, request: string): Promise<number> {
   const socket = net.connect(port, LOOPBACK_HOST);
   try {
-    await once(socket, 'connect');
-    socket.write(request);
-    // A bounded wait, so a body parser that sits in front of the gate and waits for a body that
-    // never comes fails this test rather than hanging the run with no tally to read.
-    socket.setTimeout(RAW_RESPONSE_TIMEOUT_MS, () => socket.destroy(new Error('no response')));
+    return await new Promise<number>((resolve, reject) => {
+      let buffered = '';
+      let settled = false;
+      const settle = (finish: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        finish();
+      };
 
-    let buffered = '';
-    for await (const chunk of socket) {
-      buffered += String(chunk);
-      const lineEnd = buffered.indexOf('\r\n');
-      if (lineEnd === -1) {
-        continue;
-      }
-      const statusLine = buffered.slice(0, lineEnd);
-      const status = /^HTTP\/1\.\d (\d{3})/.exec(statusLine);
-      if (!status) {
-        throw new Error(`not an HTTP status line: ${JSON.stringify(statusLine)}`);
-      }
-      return Number(status[1]);
-    }
-    throw new Error(`connection closed before a status line arrived: ${JSON.stringify(buffered.slice(0, 80))}`);
+      // A bounded wait, so a body parser that sits in front of the gate and waits for a body that
+      // never comes fails this test rather than hanging the run with no tally to read.
+      socket.setTimeout(RAW_RESPONSE_TIMEOUT_MS, () => settle(() => reject(new Error('no response'))));
+
+      socket.on('data', (chunk: Buffer) => {
+        buffered += String(chunk);
+        const lineEnd = buffered.indexOf('\r\n');
+        if (lineEnd === -1) {
+          return;
+        }
+        const statusLine = buffered.slice(0, lineEnd);
+        const status = /^HTTP\/1\.\d (\d{3})/.exec(statusLine);
+        settle(() =>
+          status
+            ? resolve(Number(status[1]))
+            : reject(new Error(`not an HTTP status line: ${JSON.stringify(statusLine)}`)),
+        );
+      });
+
+      // Not `socket.destroy(error)` and not a rethrow: see `isPeerStoppedReading`. An error here is
+      // only ever a *cause*, and what the request was answered with is decided by `data` and `close`.
+      socket.on('error', (error) => {
+        if (isPeerStoppedReading(error)) {
+          return;
+        }
+        settle(() => reject(error));
+      });
+
+      socket.on('close', () =>
+        settle(() =>
+          reject(new Error(`connection closed before a status line arrived: ${JSON.stringify(buffered.slice(0, 80))}`)),
+        ),
+      );
+
+      socket.on('connect', () => socket.write(request));
+    });
   } finally {
     socket.destroy();
   }
