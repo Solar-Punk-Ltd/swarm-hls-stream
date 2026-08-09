@@ -122,6 +122,23 @@ async function main(): Promise<void> {
     });
 
     const events = parseUploaderLog(await log());
+
+    // ⛔ The check that was missing, and it cost a whole write-up. On 2026-08-09 this script produced
+    // a recording whose first four segments held 41 AAC packets and **zero video packets**, because
+    // the publisher was throttled to near no frames at the start. It reported success. The playback
+    // run against it then built an audio-only codec set, refused every later video sample with a
+    // non-fatal warning, and read as an intermittent player defect. See task #40.
+    //
+    // Refused for any videoless segment rather than only a leading one: a recording made to be
+    // seeked around in is not usable with a hole in its video either, and this cannot be repaired
+    // after the fact.
+    if (events.videolessSegments.length > 0) {
+      throw new Error(
+        `segment ${events.videolessSegments[0]} holds no video packets, so this recording cannot answer ` +
+          'anything about playback. The publisher delivered no frames; see task #76 for what throttles it.',
+      );
+    }
+
     if (!ARM_DISCONTINUITY) {
       // The control has to be a control. An outage nobody asked for, from a real hiccup, would put
       // the variable back in and the arm would look like a clean comparison.

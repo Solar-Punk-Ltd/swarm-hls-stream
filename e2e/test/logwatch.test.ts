@@ -54,6 +54,19 @@ const SEGMENTS_LOST = (count: number, index: number) =>
   `${count} segments from index ${index} for stream stream-7 never reached the uploader, marking a discontinuity`;
 /** `markDiscontinuity`. Ordinary rather than an error: the origin declared it and nothing was lost. */
 const ORIGIN_DISCONTINUITY = 'Origin declared a discontinuity for stream stream-7, marking the next segment';
+/**
+ * `StreamOrchestrator.mediaDuration`'s fallback warning, with the reason `measureSegmentDuration`
+ * produces for a segment holding no video. Copied from a real one on 2026-08-09.
+ */
+const VIDEOLESS = (index: number) =>
+  `[StreamOrchestrator] Cannot read how much media segment ${index} of live/stream holds, so 2.082s is being ` +
+  "published on the engine's word: cannot measure how much media this segment holds: it holds no video packets, " +
+  'so the media never reached the far end. Reported once per stream; see the segment_durations_unread_total counter ' +
+  'for the rate';
+/** The same warning for the other reason it fires, which is a different fault with a different cost. */
+const UNUSABLE_TIMESTAMPS = (index: number) =>
+  `[StreamOrchestrator] Cannot read how much media segment ${index} of live/stream holds, so 2s is being published ` +
+  "on the engine's word: its timestamps span 95443.7s, which is not a segment. Reported once per stream";
 const STALE = (count: number) => `Live manifest for stream stream-7 is stale: ${count} consecutive publish failure(s)`;
 const RETRY = 'Retrying in ~1840ms (attempt 2). Error: connect ECONNREFUSED';
 
@@ -96,6 +109,7 @@ describe('parseUploaderLog reads the text format', () => {
       manifestSocIndices: [],
       staleWarnings: 0,
       retries: 0,
+      videolessSegments: [],
     });
   });
 
@@ -129,6 +143,7 @@ describe('parseUploaderLog reads the json format', () => {
       discontinuitySegments: [1],
       staleWarnings: 1,
       retries: 1,
+      videolessSegments: [],
     });
   });
 });
@@ -173,6 +188,36 @@ describe('every path that arms a discontinuity is counted', () => {
     const log = [textLine('error', SEGMENT_LOST(2)), textLine('info', ORIGIN_DISCONTINUITY)].join('\n');
     assert.equal(parseUploaderLog(log).discontinuitiesArmed, 2);
     assert.deepEqual(parseUploaderLog(log).discontinuitySegments, []);
+  });
+});
+
+/**
+ * ⛔ Task #40. A recording whose opening segments hold no video plays as sound over a blank picture
+ * for its whole length, because the player fixes its codec set from the first fragment it parses.
+ * `make:recording` refuses on this, so the pattern going quiet would let it hand back an unplayable
+ * recording and call it a success — which is exactly what happened before the check existed.
+ */
+describe('segments that hold no video are named', () => {
+  it('captures the index of the segment the uploader could not read a frame out of', () => {
+    assert.deepEqual(parseUploaderLog(textLine('warn', VIDEOLESS(3))).videolessSegments, [3]);
+  });
+
+  it('reads it out of the json format too', () => {
+    assert.deepEqual(parseUploaderLog(jsonLine('warn', VIDEOLESS(0))).videolessSegments, [0]);
+  });
+
+  /**
+   * The discriminating case. Both faults share one warning and only one of them costs the picture,
+   * so a pattern anchored on the warning rather than the reason would refuse a usable recording and
+   * send someone looking for a video problem that is not there.
+   */
+  it('does not name a segment whose timestamps were merely unusable', () => {
+    assert.deepEqual(parseUploaderLog(textLine('warn', UNUSABLE_TIMESTAMPS(3))).videolessSegments, []);
+  });
+
+  it('names nothing on an ordinary broadcast', () => {
+    const log = [textLine('log', UPLOADED(0)), textLine('log', UPLOADED(1))].join('\n');
+    assert.deepEqual(parseUploaderLog(log).videolessSegments, []);
   });
 });
 
