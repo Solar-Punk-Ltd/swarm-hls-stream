@@ -8,6 +8,8 @@ import {
   PRESSURE_LOW,
   PRESSURE_MEDIUM,
   QueuePressure,
+  RECOVERY_ENTRY_MISSING,
+  RECOVERY_ENTRY_UNREADABLE,
   REJECT_DRAINING,
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
@@ -131,6 +133,14 @@ export class StreamOrchestrator {
   private stallReapers = new Map<string, Timer>();
   /** Streams already reported as having unreadable segment durations, so the warning fires once each. */
   private unreadDurationReported = new Set<string>();
+  /**
+   * Damaged recovery entries sitting in the state directory, counted at boot off what is on disk.
+   *
+   * Never cleared while the process runs, because no later event makes a stranded recording
+   * recoverable: only an operator repairing the quarantined file does. Reading it off disk rather
+   * than counting this boot's quarantines is what keeps a restart from clearing it. See task #38.
+   */
+  private quarantinedRecoveryEntries = 0;
   /**
    * Per stream, the monotonic reading at which it last showed progress. Monotonic rather than wall
    * clock so a backwards NTP step cannot make an age negative and hide a stall. Registration counts
@@ -690,22 +700,49 @@ export class StreamOrchestrator {
 
   public async recoverStreams(): Promise<string[]> {
     const activeIds = this.recoveryStore.listActive();
+    const recovered = activeIds.length === 0 ? this.reportNothingToRecover() : this.recoverEach(activeIds);
 
-    if (activeIds.length === 0) {
-      this.logger.info('[StreamOrchestrator] No streams to recover');
-      return [];
+    // Counted off disk rather than from this pass, so a restart cannot clear the alarm. Nothing here
+    // restarts on a degraded status, so a signal that outlives the process costs nothing and a signal
+    // that does not would be gone by the time an operator looked. See task #38.
+    this.quarantinedRecoveryEntries = this.recoveryStore.listQuarantined().length;
+    if (this.quarantinedRecoveryEntries > 0) {
+      this.logger.error(
+        `[StreamOrchestrator] ${this.quarantinedRecoveryEntries} recovery entries are in quarantine: each one is ` +
+          'a broadcast that cannot be finalized until the file is repaired by hand',
+      );
     }
 
+    return recovered;
+  }
+
+  private reportNothingToRecover(): string[] {
+    this.logger.info('[StreamOrchestrator] No streams to recover');
+    return [];
+  }
+
+  private recoverEach(activeIds: string[]): string[] {
     this.logger.info(`[StreamOrchestrator] Recovering ${activeIds.length} stream(s)...`);
 
     const recovered: string[] = [];
 
     for (const fileId of activeIds) {
-      const state = this.recoveryStore.load(fileId);
-      if (!state) {
-        this.recoveryStore.remove(fileId);
+      const entry = this.recoveryStore.read(fileId);
+
+      if (entry.kind === RECOVERY_ENTRY_MISSING) {
         continue;
       }
+
+      // ⛔ Deleting it was the whole of the old handling, and it is the one action nothing can take
+      // back. The entry is the only record the broadcast was live, so removing it strands the
+      // recording unfinalized, leaves its catalog entry saying `live` for good, and destroys the
+      // bytes an operator could have repaired. Keep them, and say so through /health. Task #38.
+      if (entry.kind === RECOVERY_ENTRY_UNREADABLE) {
+        this.recoveryStore.quarantine(fileId);
+        continue;
+      }
+
+      const state = entry.state;
 
       if (!state.streamId) {
         // Parseable JSON but not a stream state — the state dir can hold other files
@@ -1122,6 +1159,7 @@ export class StreamOrchestrator {
       hasIngestedMedia: counters.segmentsUploadedTotal > 0,
       segmentsSkipped: counters.segmentsSkippedTotal,
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
+      quarantinedRecoveryEntries: this.quarantinedRecoveryEntries,
     };
   }
 

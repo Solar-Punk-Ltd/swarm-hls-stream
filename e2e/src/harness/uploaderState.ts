@@ -107,6 +107,31 @@ export async function recoveryEntryIds(host: Host, cfg: E2EConfig): Promise<stri
     .map((line) => line.replace(/\.json$/, ''));
 }
 
+/**
+ * File names of the damaged entries the uploader has moved aside, by the `<id>.json.corrupt` naming
+ * `RecoveryStore.quarantine` uses.
+ *
+ * These are what keeps `/health` reporting `unrecoverable_stream`, so a scenario that plants one has
+ * to clear it: left behind, it degrades this deployment for every run after it.
+ */
+export async function quarantinedEntryNames(host: Host, cfg: E2EConfig): Promise<string[]> {
+  const listing = await runInStateDir(host, cfg, 'ls -1 *.json.corrupt* 2>/dev/null || true');
+  return listing
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/** The raw bytes of any file in the state directory, named exactly as it sits there. */
+export function readStateFile(host: Host, cfg: E2EConfig, fileName: string): Promise<string> {
+  return runInStateDir(host, cfg, `cat ${singleQuote(fileName)}`);
+}
+
+/** Delete any file in the state directory, for a scenario putting back what it planted. */
+export async function removeStateFile(host: Host, cfg: E2EConfig, fileName: string): Promise<void> {
+  await runInStateDir(host, cfg, `rm -f ${singleQuote(fileName)}`);
+}
+
 /** The raw bytes of one recovery entry, exactly as the uploader will read them back. */
 export function readRecoveryEntry(host: Host, cfg: E2EConfig, id: string): Promise<string> {
   return runInStateDir(host, cfg, `cat ${singleQuote(`${id}.json`)}`);

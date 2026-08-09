@@ -9,6 +9,7 @@ import {
   HEALTH_REASON_STALE_MANIFEST,
   HEALTH_REASON_STATE_NOT_PERSISTED,
   HEALTH_REASON_UNLISTED_STREAM,
+  HEALTH_REASON_UNRECOVERABLE_STREAM,
   HealthReason,
   HealthReport,
   HealthSignals,
@@ -93,6 +94,14 @@ export function deriveHealthStatus(signals: HealthSignals, segmentStallMs: numbe
   // internet, or a mid-run rotation, which `segment_stall` already catches.
   if (signals.msSinceAuthRejection !== null && !signals.hasIngestedMedia) {
     reasons.push(HEALTH_REASON_INGEST_REFUSED);
+  }
+
+  // No threshold and no window, and unlike every aged signal here it must never fade back to `ok`.
+  // One entry recovery could not read is one whole broadcast this process cannot finalize: its
+  // recording is stranded and its catalog entry says `live` until an operator repairs the file by
+  // hand. Nothing the service does later changes that, so the reason stands for the process's life.
+  if (signals.quarantinedRecoveryEntries > 0) {
+    reasons.push(HEALTH_REASON_UNRECOVERABLE_STREAM);
   }
 
   const isStalled = signals.msSinceStreamActivity !== null && signals.msSinceStreamActivity > segmentStallMs;

@@ -113,6 +113,7 @@ export const HEALTH_REASON_SEGMENT_LOSS = 'segment_loss' as const;
 export const HEALTH_REASON_UNLISTED_STREAM = 'unlisted_stream' as const;
 export const HEALTH_REASON_STATE_NOT_PERSISTED = 'state_not_persisted' as const;
 export const HEALTH_REASON_INGEST_REFUSED = 'ingest_refused' as const;
+export const HEALTH_REASON_UNRECOVERABLE_STREAM = 'unrecoverable_stream' as const;
 
 export type HealthReason =
   | typeof HEALTH_REASON_STALE_MANIFEST
@@ -122,7 +123,25 @@ export type HealthReason =
   | typeof HEALTH_REASON_SEGMENT_LOSS
   | typeof HEALTH_REASON_UNLISTED_STREAM
   | typeof HEALTH_REASON_STATE_NOT_PERSISTED
-  | typeof HEALTH_REASON_INGEST_REFUSED;
+  | typeof HEALTH_REASON_INGEST_REFUSED
+  | typeof HEALTH_REASON_UNRECOVERABLE_STREAM;
+
+export const RECOVERY_ENTRY_MISSING = 'missing' as const;
+export const RECOVERY_ENTRY_LOADED = 'loaded' as const;
+export const RECOVERY_ENTRY_UNREADABLE = 'unreadable' as const;
+
+/**
+ * What the recovery store found on disk for one stream id.
+ *
+ * ⛔ The three cases are kept apart because collapsing two of them cost a broadcast. `load` answers
+ * `null` for a stream that was never saved and for one whose file will not parse, and the recovery
+ * pass read that single `null` as permission to delete the file. Anything deciding what to *do* with
+ * an entry needs `unreadable` and `missing` to be different answers.
+ */
+export type RecoveryEntry =
+  | { kind: typeof RECOVERY_ENTRY_MISSING }
+  | { kind: typeof RECOVERY_ENTRY_LOADED; state: StreamState }
+  | { kind: typeof RECOVERY_ENTRY_UNREADABLE };
 
 export interface HealthSignals {
   activeStreams: number;
@@ -227,6 +246,16 @@ export interface HealthSignals {
    * {@link segmentsSkipped} is. Giving it a threshold is a product call.
    */
   segmentsNeverNamed: number;
+  /**
+   * Recovery entries this process found on disk and could not parse, so moved aside rather than
+   * resumed. Counted at boot and never cleared, because nothing that happens afterwards makes a
+   * stranded recording recoverable.
+   *
+   * Each one is a broadcast that was live when this service last died and that it cannot finalize:
+   * the recording it was building is never sealed and its catalog entry says `live` until someone
+   * repairs the quarantined file by hand. See task #38.
+   */
+  quarantinedRecoveryEntries: number;
 }
 
 export interface HealthReport {

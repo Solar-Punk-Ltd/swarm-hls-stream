@@ -104,6 +104,7 @@ describe('api server over http (S0.7 test layer)', () => {
         'hasIngestedMedia',
         'segmentsSkipped',
         'segmentsNeverNamed',
+        'quarantinedRecoveryEntries',
         'queueBacklogSeconds',
         'msSinceSegmentLoss',
         'msSinceStreamActivity',

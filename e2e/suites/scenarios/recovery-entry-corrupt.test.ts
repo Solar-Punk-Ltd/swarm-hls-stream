@@ -6,9 +6,12 @@ import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/
 import { parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import {
+  quarantinedEntryNames,
   readRecoveryEntry,
+  readStateFile,
   recoveryEntryIds,
   removeRecoveryEntry,
+  removeStateFile,
   writeRecoveryEntry,
 } from '../../src/harness/uploaderState.js';
 import { waitFor } from '../../src/harness/wait.js';
@@ -23,18 +26,17 @@ import { waitFor } from '../../src/harness/wait.js';
  *
  * | on disk | what happens | what it costs |
  * | --- | --- | --- |
- * | unparseable | `RecoveryStore.load` returns null and the entry is **deleted** | ⛔ the recording, silently |
+ * | unparseable | **quarantined** as `<id>.json.corrupt`, and `/health` degrades | the recording, loudly |
  * | parseable, no `streamId` | skipped and **never deleted** | nothing, correctly |
  * | announce-before-segment | **repaired** to `SEGMENT_READY`, loudly | one extra `addStream` |
  *
- * ⛔ **The first row is the one worth knowing about.** A broadcast whose entry cannot be parsed is not
- * recovered and not left for a human to look at: it is removed on the next boot, so the recording is
- * gone and the catalog goes on saying `live` forever. That is the same end state the repair path was
- * written to avoid, reached through the door nobody checked.
+ * ⛔ **The first row was the defect this scenario found, and it is now the fix it guards.** The entry
+ * used to be **deleted** on the next boot, so the recording was stranded, the catalog went on saying
+ * `live` forever, and the bytes that could have been repaired were gone. That is the same end state
+ * the repair path exists to avoid, reached through the door nobody checked. Task #38.
  *
- * The repair exists because refusing an entry was tried and was worse. This scenario asserts the two
- * outcomes that are unambiguously right and **reports** the first, because a test that asserted the
- * recording is lost would be freezing a defect into the suite as though it were a requirement.
+ * ⚠️ The recording is still lost either way. What changed is that it is now **recoverable by hand and
+ * impossible to miss**, rather than silently unrecoverable.
  */
 
 const WARMUP_SEGMENTS = 4;
@@ -67,6 +69,11 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
     // The planted file is deliberately one recovery will not clean up, so this suite has to. Left
     // behind it would make every later boot on this deployment log a skipped state file.
     await removeRecoveryEntry(host, cfg, FOREIGN_STATE_FILE).catch(() => undefined);
+    // And a quarantined entry keeps /health degraded until someone clears it, which is the fix
+    // working. A run that fails partway still has to leave the deployment as it found it.
+    for (const name of await quarantinedEntryNames(host, cfg).catch(() => [])) {
+      await removeStateFile(host, cfg, name).catch(() => undefined);
+    }
   });
 
   it('repairs the illegal readiness pair rather than leaving the broadcast invisible', async () => {
@@ -154,7 +161,7 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
     );
   });
 
-  it('reports what an unparseable entry costs, which is the recording', async () => {
+  it('keeps an unparseable entry for repair and says so, rather than deleting it', async () => {
     await waitForIdle(host, cfg);
     const restartedAt = await host.nowIso();
     const secondPublisher = startPublisher(cfg);
@@ -181,35 +188,51 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
       // A torn write: `RecoveryStore.save` renames a complete temporary file into place, so this is
       // what a filesystem fault leaves rather than what the uploader itself can produce.
       const original = await readRecoveryEntry(host, cfg, target);
-      await writeRecoveryEntry(host, cfg, target, original.slice(0, Math.floor(original.length / 2)));
+      const truncated = original.slice(0, Math.floor(original.length / 2));
+      await writeRecoveryEntry(host, cfg, target, truncated);
 
       const bootedAt = await host.nowIso();
       await host.start(uploader);
+
+      // ⛔ NOT waiting for `ok` here, and that is the point of the fix rather than an accommodation:
+      // a quarantined entry degrades this service until an operator clears it, so a wait for `ok`
+      // would hang for the whole timeout and then fail on the very behaviour under test.
       await waitFor(
         async () => {
           try {
-            return (await uploaderHealth(host, cfg)).status === 'ok';
+            return (await uploaderHealth(host, cfg)).reasons.includes('unrecoverable_stream');
           } catch {
             return false;
           }
         },
-        { timeoutMs: REBOOT_WAIT_MS, intervalMs: 2_000, label: 'the uploader boots on a truncated recovery entry' },
+        {
+          timeoutMs: REBOOT_WAIT_MS,
+          intervalMs: 2_000,
+          label: 'the uploader boots on a truncated entry and reports it as unrecoverable',
+        },
       );
 
-      // The process surviving is the requirement. What happened to the broadcast is the finding, and
-      // it is printed rather than asserted: see the header.
       const bootLog = await host.logsSince(uploader, bootedAt);
-      const remaining = await recoveryEntryIds(host, cfg);
-      const wasRemoved = !remaining.includes(target);
-      const wasFinalized = /Updating stream in list to VOD/.test(bootLog);
-      console.log(
-        `J: truncated entry ${target} — removed on boot: ${wasRemoved}, broadcast finalized: ${wasFinalized}`,
-      );
       assert.match(
         bootLog,
         /Failed to load state/,
-        'an entry that cannot be parsed must at least be reported, since nothing else will notice it',
+        'an entry that cannot be parsed must be reported, since nothing else will notice it',
       );
+
+      // The whole of task #38: the bytes still exist. A recording nobody can finalize is bad and a
+      // recording nobody can even inspect is worse, and only one of those can be walked back.
+      const quarantined = await quarantinedEntryNames(host, cfg);
+      const kept = quarantined.filter((name) => name.startsWith(`${target}.json`));
+      assert.equal(kept.length, 1, `expected ${target} to be kept for repair, found ${JSON.stringify(quarantined)}`);
+      assert.equal(
+        await readStateFile(host, cfg, kept[0]),
+        truncated,
+        'the entry was moved aside but not byte for byte, so a repair has less to work from than the fault left',
+      );
+
+      // Cleanup is part of the assertion's cost, not an afterthought: this deployment stays degraded
+      // until the quarantined file is gone, and every run after this one would inherit that.
+      await removeStateFile(host, cfg, kept[0]);
     } finally {
       await secondPublisher.stop();
     }
