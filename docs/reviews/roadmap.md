@@ -18,10 +18,10 @@ document is 1 to 8. Any claim about a thousand nodes is a prediction until that 
 | #     | what                                                                     | gate                    | state                       |
 | ----- | ------------------------------------------------------------------------ | ----------------------- | --------------------------- |
 | **1** | Free work: the open defects and the instruments that cost nothing        | none                    | ✅ **done**                 |
-| **2** | **Phase 0.9**, scale readiness measured at current scale                 | mostly free             | ✅ **done, a-e**            |
+| **2** | **Phase 0.9**, scale readiness measured at current scale                 | mostly free             | ✅ **done, a-f**            |
 | **3** | 0.5e. **0.7c is struck and 0.5c is demoted**, see below                  | 0.0357 BZZ, spent       | ✅ **done 2026-08-09**      |
-| **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ▶ **authorised 2026-08-09** |
-| **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ✅ **4 of 5, see step 3**   |
+| **4** | Phase 1.2 / 1.3, the viewer features still unproven                      | a long recording        | ✅ **1.2 done, 1.3 costed** |
+| **5** | Phase 2, the crash scenarios nobody has run                              | mixed                   | ✅ **5 of 5, #38 fixed**    |
 | **6** | **The scale-up handover document** for the other repo                    | none, and it lands here | ✅ **written, and revised** |
 | **7** | Can a segment be fetched without being announced? The announcement floor | none to measure         | ✅ **answered**             |
 | **8** | Phase 3, OME to parity and the engine comparison                         | **last**                | ⏸ deferred                  |
@@ -708,8 +708,7 @@ viewers want the same chunk at the same instant. 128 in cohorts of 8 are comfort
 drain 12.8 seconds of buffer, and ⛔ **client-side jitter was shipped as the fix and then measured
 doing nothing**, because the constraint is chunk diversity rather than arrival instant.
 
-⬅ Still open above 8: **feed staleness**, which LAT-11 put at 1.30x and no reference-list probe can
-see.
+✅ **The feed-staleness gap this sweep could not see is now measured, and it is a null.** See 0.9f.
 
 ⚠️ **Use the alternating-block design, never a ladder.** Relabelling eight unchanged past runs as if
 the viewer count had varied moved the metric by up to 1.95x with nothing happening, so a ladder cannot
@@ -732,6 +731,32 @@ Shipped in the metrics reducer as `durSum`, `durCount`, `durLe0p25` and `durLe1`
 `durCount - durLe1` is **the node's own count of retrievals that took a second or more**, which is the
 statistic a median cannot see. ⚠️ ⬅ The retry timer's **wall-clock shape** is still inferred from the
 client side. The count is now measured at the node, the shape is not.
+
+### 0.9f ✅ DONE 2026-08-09, free — the feed does not care how many are reading it
+
+[Report.](../bench/the-feed-does-not-care-how-many-are-reading-it-2026-08-09.md) Task #23, and the last
+measurable item before Phase 3. **54,400 feed slot reads across 20 alternating arms**, no broadcast, no
+publisher, no postage. Attributed cost **one cheque of 77 gwei**, which is 0.0000077 BZZ.
+
+⭐⭐ **A feed read at 128 concurrent readers costs what it costs at one.** Four interleaved
+single-reader references span **426 to 480ms** for a miss with nothing happening, and every loaded arm
+from 8 to 128 sits inside that spread: 461, 448, 428, 432, 463, 471ms. Hits are 1-2ms throughout, and
+every read returned the right code at every concurrency. **A reader sustains 4.81 slot reads a second
+at one reader and 4.69 at 128**, a 2.5% loss for 128x the audience.
+
+⛔ **The only thing that moves is the tail, and only for a synchronised audience**: the rate of reads
+crossing one second is **0.42% for `same` against 0.065% for `spread`**, 6.4x, while the medians of
+those same arms are indistinguishable. Replicated in a second sitting and the ordering held in all
+three pairs. ✅ Not viewer-visible at 128: about one slow read every 150 seconds against a 6s buffer.
+
+⛔⛔ **This retires LAT-11's open question rather than only filling its gap.** LAT-11's 1.30x was
+measured through the `/feeds/` head lookup, which was later shown to be 50-57% frozen on its own and
+which **the client no longer uses**. On the explicit-address path the client does use, the effect is
+absent at 8, at 32 and at 128.
+
+⚠️ **What it cannot say**: there is no live publisher, so this is what a feed read **costs**, not how
+far behind live a viewer ends up. And 128 is the ceiling reached rather than a ceiling found — the box
+carries forty other bee nodes and averaged 28 runnable at that arm against a ceiling of 48.
 
 ## Phase 1 — the viewer features
 
