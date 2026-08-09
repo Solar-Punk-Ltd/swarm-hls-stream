@@ -632,12 +632,20 @@ last row and needs no client change at all.
 ⚠️ **Cohorts of 8 are what was proven, not 4.3 seconds of spread specifically**, and the cohorts here
 are exact and evenly sized where a real audience is random and will throw up larger ones by chance.
 
-⬅ **Open, and the first things your simulation should establish:** where the knee actually is now that
-128 scattered viewers are comfortable, what a **randomly** distributed audience does rather than an
-evenly cohorted one, whether the burst limit is bee or the harness's own capacity (the curl clients
-share the gateway's host), and **the thing no reference-list probe can see**, which is that LAT-11
-measured feed staleness at 1.30x with eight viewers. **Retrieval scales. Whether the feed does is a
-separate question and the answer there was no.**
+✅ **Three of the four questions this section used to leave open have since been answered**, all on
+2026-08-08, and section 2.4e carries the detail.
+
+- **Where the knee is.** It is **between 128 and 192 viewers, and it is a byte rate**: throughput
+  plateaus at **43 to 44 MB/s** across four concurrencies and both rounds. At 2.83 Mbps per viewer that
+  is **~123 viewers**, and at 1080p roughly half of it.
+- **Whether the limit is bee or the harness.** It is **bee**. At the top arm bee used ~6 of 48 cores,
+  host load peaked at 36 of 48 leaving about twelve idle cores, and 43 MB/s is 344 of 1000 Mbps. All
+  three have headroom, so **it is not a capacity you can buy**.
+- **What a randomly distributed audience does** rather than an evenly cohorted one.
+
+⬅ **What is still open is the one no reference-list probe can see**, which is that LAT-11 measured feed
+staleness at **1.30x with eight viewers**. **Retrieval scales. Whether the feed does is a separate
+question and the answer there was no.** ⛔ Make it the first thing your simulation establishes.
 
 ---
 
