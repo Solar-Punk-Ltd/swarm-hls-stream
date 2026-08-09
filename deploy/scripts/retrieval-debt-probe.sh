@@ -26,6 +26,10 @@ ENV_FILE="${STACK_DIR}/.env"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-latbench}"
 GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT:-10077}"
 REFS="${REFS:-/home/solarpunk/phase06/refs.txt}"
+# Where a named reference pattern is looked up, as `refs-<name>.txt`. An arm that names one walks it
+# instead of ${REFS}, which is what lets one sitting interleave access patterns rather than compare a
+# sitting of one against a sitting of another.
+REFS_DIR="${REFS_DIR:-$(dirname "${REFS}")}"
 ACCT="${ACCT:-/home/solarpunk/phase06/acct2.sh}"
 # The node's own view of why a retrieval was slow, which nothing measured at the client can supply.
 # `bee_accounting_accounting_blocks_count` is bee's own words for the mechanism under test: "temporarily
@@ -36,7 +40,9 @@ METRICS="${METRICS:-/home/solarpunk/phase06/metrics.sh}"
 SEGMENTS="${SEGMENTS:-400}"
 ROUNDS="${ROUNDS:-2}"
 
-# The arms of one round, as `label:swap:idleSecondsBefore[:cacheCapacity[:viewers[:paceMs[:spread[:jitterMs]]]]]`, in order.
+# The arms of one round, as
+# `label:swap:idleSecondsBefore[:cacheCapacity[:viewers[:paceMs[:spread[:jitterMs[:refsPattern]]]]]]`,
+# in order.
 #
 # ⭐ The cache field exists because every arm this project has ever run set `--cache-capacity=0`, so
 # nothing cached and every chunk was re-fetched. It was excluded on purpose while the funding question
@@ -152,6 +158,40 @@ SPREAD="${SPREAD:-1}"
 # Added to the deadline rather than to the schedule, so it perturbs each request without the schedule
 # drifting, and lag is measured against the jittered deadline because the offset is deliberate.
 JITTER_MS="${JITTER_MS:-0}"
+
+# The named reference sequence this arm walks, built by `make-access-pattern-refs.sh`. Empty walks
+# ${REFS}, which is what every arm before this did.
+#
+# ⭐ This exists because the cache cliff was measured on a cyclic scan and a cyclic scan is the worst
+# case LRU can be given. The walk returns to each reference exactly one lap after it became the least
+# recently used thing, so at any capacity below the working set every single lookup misses and the cache
+# is byte-identical to no cache. A real audience re-reads recent segments more often than old ones,
+# which is the pattern LRU exists for.
+#
+# ⛔ Interleave the patterns inside ONE sitting. A cyclic sitting compared against a skewed sitting is
+# the ladder mistake, and this project has already paid for it once at up to 1.95x with nothing
+# happening. The field is the 9th:
+#   ARM_PLAN='Zc:false:0:0:1:0:1:0:cyclic C8:false:0:8000:1:0:1:0:cyclic'
+REFS_PATTERN="${REFS_PATTERN:-}"
+
+# A pattern name resolves to a file, anything else is the default list. Checked rather than assumed:
+# a missing file would make `fetch_walk` read nothing and report an arm of zero fetches, which reads
+# like a fast arm rather than a broken one.
+resolve_refs() {
+  local name="${1:-}"
+  if [ -z "${name}" ]; then
+    printf '%s' "${REFS}"
+    return 0
+  fi
+  local path="${REFS_DIR}/refs-${name}.txt"
+  if [ ! -s "${path}" ]; then
+    # ⛔ To stderr rather than through `say`. This runs inside a command substitution, so anything on
+    # stdout becomes the resolved path instead of a message, and the arm would walk its own error text.
+    printf '⛔ the arm asks for pattern %s and %s is missing or empty\n' "${name}" "${path}" >&2
+    return 1
+  fi
+  printf '%s' "${path}"
+}
 
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/probe.log"
@@ -473,6 +513,7 @@ summarise_lag() {
 fetch_walk() {
   local timesFile="$1" bytesFile="$2" seriesRound="$3" tag="$4" startedAt="$5" writeSeries="$6"
   local lagFile="$7" pace="$8" viewerIndex="${9:-1}" spread="${10:-1}" jitter="${11:-0}"
+  local refsFile="${12:-${REFS}}"
   local n=0 sum=0 out ms b nextAt=0 nowMs offsetMs target drawn=0
   # Seeded per viewer so the draws are reproducible and provably independent of each other.
   #
@@ -526,7 +567,7 @@ fetch_walk() {
       printf '%s\t%s\t%s\t%s\t%s\n' "${seriesRound}" "${tag}" "${n}" \
         "$(($(date +%s) - startedAt))" "$(acct)" >>"${SERIES}"
     fi
-  done <"${REFS}"
+  done <"${refsFile}"
   printf '%s\n' "${sum}" >"${bytesFile}"
 }
 
@@ -534,13 +575,16 @@ fetch_walk() {
 # node's ability to pay for it differs.
 run_arm() {
   local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}" viewers="${6:-}" pace="${7:-}"
-  local spread="${8:-}" jitterMs="${9:-}"
+  local spread="${8:-}" jitterMs="${9:-}" refsPattern="${10:-}"
   [ -n "${cache}" ] || cache="${CURRENT_ARM_CACHE}"
   [ -n "${viewers}" ] || viewers="${VIEWERS}"
   [ -n "${pace}" ] || pace="${PACE_MS}"
   [ -n "${spread}" ] || spread="${SPREAD}"
   [ -n "${jitterMs}" ] || jitterMs="${JITTER_MS}"
-  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s), pace ${pace}ms, spread ${spread}, jitter ${jitterMs}ms"
+  [ -n "${refsPattern}" ] || refsPattern="${REFS_PATTERN}"
+  local refsFile
+  refsFile="$(resolve_refs "${refsPattern}")" || return 1
+  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s), pace ${pace}ms, spread ${spread}, jitter ${jitterMs}ms, refs ${refsPattern:-default}"
 
   local was="${CURRENT_ARM_SWAP}/${CURRENT_ARM_CACHE}"
   [ "${FORCE_RECREATE:-0}" = "1" ] && was="forced"
@@ -618,7 +662,7 @@ run_arm() {
       : >"${passFile}.l${v}"
       fetch_walk "${passFile}.v${v}" "${passFile}.b${v}" "${round}" "${label}.${pass}.v${v}" \
         "${started}" "$([ "${v}" = 1 ] && echo 1 || echo 0)" "${passFile}.l${v}" "${pace}" \
-        "${v}" "${spread}" "${jitterMs}" &
+        "${v}" "${spread}" "${jitterMs}" "${refsFile}" &
       walkers+=("$!")
     done
     # ⛔ The viewers by name, not a bare `wait`. A bare one also waits for the load sampler, which does
@@ -684,8 +728,9 @@ run_arm() {
   # sample that a settle has already quietened.
   LAST_ARM_RUN_MEAN="${runMean}"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${spread}" "${jitterMs}" "${count}" "${bytes}" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${spread}" "${jitterMs}" \
+    "${refsPattern:-default}" "${count}" "${bytes}" \
     "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${behindShare}" "${maxLag}" \
     "${worstFinal}" "${cpuUsed}" "${cpuIdleRate}" \
     "${cpuRetrieval}" "${cpuPerMb}" "${loadBefore}" "${loadMax}" "${runMean}" "${runMax}" "${before}" "${after}" >>"${STATE}"
@@ -695,7 +740,7 @@ run_arm() {
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\trefs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 BASELINE_RUNNABLE="$(baseline_runnable)"
@@ -704,8 +749,9 @@ say "the neighbours alone are ${BASELINE_RUNNABLE} runnable, so arms settle to $
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
-    IFS=':' read -r label swap idle cache viewers pace spread jitterMs <<<"${spec}"
-    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" "${spread:-}" "${jitterMs:-}" ||
+    IFS=':' read -r label swap idle cache viewers pace spread jitterMs refsPattern <<<"${spec}"
+    run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" \
+      "${spread:-}" "${jitterMs:-}" "${refsPattern:-}" ||
       say "round ${round} arm ${label} did not complete"
 
     # ⛔ On the peak the arm actually produced, not on a sample taken after it. This machine is shared
