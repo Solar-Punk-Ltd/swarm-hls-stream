@@ -1110,6 +1110,12 @@ rather than what it complained about: the failing run had **three audio SourceBu
 SourceBuffer at all**, and appended 208 KB where the healthy runs appended 27 MB. **Ask a component
 what state it is in, not what it is saying.**
 
+✅ **Followed to the end, that one fact gave the whole cause, for nothing.** The failing run's
+recording opens with four segments holding **41 AAC packets and zero video packets**; video appears
+from the fifth. The player fixes its codec set from the first fragment it parses and never revises it,
+so it built an audio-only buffer set and then refused every later video sample. The structural
+question was answerable from the archive; the error text never would have been.
+
 ### 5.13 ⛔⛔ A matched control is not a replicate
 
 The same three runs produced a finished, wrong write-up. Runs one and two were a clean matched pair:
@@ -1124,6 +1130,28 @@ reproduces.** Those are different questions and only the second one licenses a c
 backwards.** A 0-of-3 against 3-of-3 is exactly as capable of being a single bad run as a marginal
 effect is. **Budget a replicate of the failing arm, not just a control for it** — here each run was a
 few hundredths of a BZZ, so the replicate cost less than the retraction would have.
+
+### 5.14 ⛔⛔ An instrument that produces an artifact has to check the artifact is usable
+
+The script that made those recordings checked its variable carefully in **both** directions: it refuses
+if the arm armed no discontinuity, and refuses if the control armed one on its own. It never checked
+that the media it produced had a picture in it. So it handed back a recording that could not play,
+reported success, and the playback run against it read as an intermittent player defect for a day.
+
+⛔ **This matters far more at scale than it did here.** A load test that spins up hundreds of encoders
+will have some of them throttled at startup, and a stream whose **first** segment carries no video
+becomes a recording that plays as sound over a blank picture **for its entire length**, complaining
+only with a warning the player marks non-fatal. At one stream you notice. At three hundred you compute
+an average over a population that quietly includes broken ones.
+
+⭐ **The check is nearly free and it is upstream of everything.** The producer already knows: the
+uploader's own duration parser answers `it holds no video packets, so the media never reached the far
+end` for exactly these segments, and counts them in `segment_durations_unread_total`. Alarm on that
+counter and refuse the artifact, rather than discovering it in a player three steps later.
+
+⚠️ **Anchor the check on the reason, not on the warning.** The same warning fires for a segment whose
+timestamps are unusable, which costs no picture. A check matching the warning refuses good artifacts
+and sends someone hunting a video problem that is not there.
 
 ---
 
