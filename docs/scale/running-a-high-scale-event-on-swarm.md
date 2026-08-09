@@ -359,7 +359,7 @@ freshness.**
 inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
 limits.
 
-### ⭐⭐ 2.3b Size it above the working set, or it does nothing at all
+### ⭐⭐ 2.3c Size it above the working set, or it does nothing at all
 
 ✅ **Measured 2026-08-08**, thirty-six arms in two sittings sweeping `--cache-capacity` against a fixed
 working set of 10,489 chunks, read off the node's own retrieval counter.
@@ -508,7 +508,7 @@ quarter of the budget rather than at its edge, so a longer segment moves the kne
 viewer**, fitted on paced arms the same day and predicting 1.41 at 16 against 1.34 measured and 3.61 at
 64 against 3.62. See 2.2's duty-cycle subsection for why the correction is real.
 
-### ⚠️ 2.4e Where the ceiling looked to be, before 2.4f moved it
+### ⭐⭐ 2.4e A gateway's capacity is a byte rate, and it is 43 to 44 MB/s
 
 ✅ **Measured directly 2026-08-08**, sixteen arms scaling 128 to 512 viewers with the cohort size held
 constant at 8. `docs/bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md`.
@@ -632,12 +632,20 @@ last row and needs no client change at all.
 ⚠️ **Cohorts of 8 are what was proven, not 4.3 seconds of spread specifically**, and the cohorts here
 are exact and evenly sized where a real audience is random and will throw up larger ones by chance.
 
-⬅ **Open, and the first things your simulation should establish:** where the knee actually is now that
-128 scattered viewers are comfortable, what a **randomly** distributed audience does rather than an
-evenly cohorted one, whether the burst limit is bee or the harness's own capacity (the curl clients
-share the gateway's host), and **the thing no reference-list probe can see**, which is that LAT-11
-measured feed staleness at 1.30x with eight viewers. **Retrieval scales. Whether the feed does is a
-separate question and the answer there was no.**
+✅ **Three of the four questions this section used to leave open have since been answered**, all on
+2026-08-08, and section 2.4e carries the detail.
+
+- **Where the knee is.** It is **between 128 and 192 viewers, and it is a byte rate**: throughput
+  plateaus at **43 to 44 MB/s** across four concurrencies and both rounds. At 2.83 Mbps per viewer that
+  is **~123 viewers**, and at 1080p roughly half of it.
+- **Whether the limit is bee or the harness.** It is **bee**. At the top arm bee used ~6 of 48 cores,
+  host load peaked at 36 of 48 leaving about twelve idle cores, and 43 MB/s is 344 of 1000 Mbps. All
+  three have headroom, so **it is not a capacity you can buy**.
+- **What a randomly distributed audience does** rather than an evenly cohorted one.
+
+⬅ **What is still open is the one no reference-list probe can see**, which is that LAT-11 measured feed
+staleness at **1.30x with eight viewers**. **Retrieval scales. Whether the feed does is a separate
+question and the answer there was no.** ⛔ Make it the first thing your simulation establishes.
 
 ---
 
@@ -969,12 +977,12 @@ recreate named as the likeliest cause. **2.4e-bis measures it: the arm after a r
 and put 47% of segments over budget against 0.0% warm.** ⬅ It still does not explain every arm, so
 treat it as the largest known term rather than the whole answer.
 
-✅ **How the CPU cost behaves under a realistic duty cycle. Answered 2026-08-08**, see 2.2 and 2.4e.
+✅ **How the CPU cost behaves under a realistic duty cycle. Answered 2026-08-08**, see 2.2 and 2.4d.
 Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **whether a
 time-scattered audience behaves like the synchronised one measured here**, since scattered viewers lose
 the pooling that carried these arms and should lean on the cache instead.
 
-✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3b. It is a cliff, and
+✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3c. It is a cliff, and
 the cliff has since been located: **a cache at 76% of the working set is byte-identical to no cache, one
 at 100.1% buys the entire benefit, and anything above that buys nothing more.** ⬅ **Still open: how much
 a real re-read pattern beats the cyclic scan that was measured**, which is the worst case on purpose.
