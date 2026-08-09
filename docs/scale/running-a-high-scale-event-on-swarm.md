@@ -412,10 +412,45 @@ non-zero capacity worth setting clears it.
 
 ⛔ **An audience that scrubs needs the whole re-watchable span**, and that is where the cliff bites.
 
-⚠️ **The cyclic scan measured is the worst case on purpose.** A real DVR audience re-reads recent
-segments more than old ones, which is what LRU is for, so real hit rates at under-sized capacities will
-beat 0.1%. **By how much is not measured**, and the safe assumption when sizing is that a cache smaller
-than the hot set is worth nothing.
+### ⭐⭐ What has to fit is the hot set, and only a uniform pattern makes that the working set
+
+✅ **Measured 2026-08-09**, eighteen arms running three access patterns over an identical working set,
+interleaved inside one sitting.
+[Full report.](../bench/the-cache-cliff-belongs-to-the-access-pattern-2026-08-09.md) **This qualifies
+everything above.**
+
+The cliff was measured with a **cyclic scan**, which is the worst case LRU can be given. Give the same
+capacity a skewed pattern instead, 80% of re-reads landing on a fifth of the references, and the step
+becomes partial credit:
+
+| lap-two pattern, all at 8,000 chunks = **76.3%** | retrievals removed, r1 / r2 | lap-two median |
+| ------------------------------------------------ | --------------------------: | -------------: |
+| **cyclic**, every reference equally popular      |              **0.0 / 0.0%** |    104 / 115ms |
+| **recent**, hot fifth is the newest              |            **36.8 / 36.8%** |    **4 / 3ms** |
+| **oldest**, hot fifth is the oldest              |            **31.2 / 31.1%** |    **4 / 4ms** |
+| cyclic at 10,500 = 100.1%, for reference         |                46.4 / 46.6% |        3 / 4ms |
+
+⭐⭐ **A cache at 76% of the working set removes 37% of retrievals under a realistic pattern and 0% under
+a cyclic one**, and its median second-lap fetch is **3 to 4ms, which is what a correctly sized cache
+does**. Since 46.5% is everything a cache can collect here (lap one must miss), **76% of the capacity
+collects 79% of the available benefit**.
+
+⭐ **The `oldest` arm is why this generalises.** Its hot fifth is placed where LRU is worst, on the
+entries an undersized cache evicted during lap one, and it still collects 31% and the same 4ms median.
+**So what matters is that a skew exists, not that it points at recent content.** LRU re-warms a hot set
+on its first re-touch and holds it, provided the hot set fits.
+
+⛔ **So size for the hot set.** The hot set here is 2,096 chunks, **20% of the working set**, and the
+capacity that worked is 3.8x it. A cyclic scan has no hot set, every reference being equally popular, so
+its hot set _is_ its working set and the rule above is that special case.
+
+⭐⭐ **For DVR this is the difference between provisioning a whole re-watchable hour and provisioning the
+part of it people re-watch.** For live it changes nothing, because the live window is small either way.
+
+⚠️ ⬅ **The new cliff is not located.** One capacity was tested, at 3.8x the hot set. The theory puts the
+step at the hot set rather than the working set, and **nothing between was run.** 80/20 is also a chosen
+shape rather than an observed one, so **37% is not the number a real deployment gets**. What is
+established is that skew converts a step into partial credit.
 
 ### ⭐⭐ 2.4b Sixteen viewers cost the network what one viewer costs
 
@@ -976,8 +1011,11 @@ the pooling that carried these arms and should lean on the cache instead.
 
 ✅ **Whether cache eviction bites at event scale. Answered 2026-08-08**, see 2.3b. It is a cliff, and
 the cliff has since been located: **a cache at 76% of the working set is byte-identical to no cache, one
-at 100.1% buys the entire benefit, and anything above that buys nothing more.** ⬅ **Still open: how much
-a real re-read pattern beats the cyclic scan that was measured**, which is the worst case on purpose.
+at 100.1% buys the entire benefit, and anything above that buys nothing more.** ✅ **And how much a real
+re-read pattern beats that cyclic scan is now measured too, 2026-08-09**: the same 76% capacity removes
+**37% of retrievals** under a skewed pattern and serves its median second-lap fetch in **4ms**, so
+**what has to fit is the hot set rather than the working set.** ⬅ Where the new cliff sits, between the
+hot set and the capacity tested, is open.
 
 ⬅ **Whether ultra-light's ~0.5s higher median latency is real.** Not established: the one comparable
 funded arm took a non-fatal stall, so per 5.3 it has no valid control.
