@@ -394,7 +394,7 @@ non-zero capacity worth setting clears it.
 
 ⛔ **An audience that scrubs needs the whole re-watchable span**, and that is where the cliff bites.
 
-### ⭐⭐ What has to fit is the hot set, and only a uniform pattern makes that the working set
+### ⭐⭐ Skew removes the cliff entirely: the cache is a dial, not a gate
 
 ✅ **Measured 2026-08-09**, eighteen arms running three access patterns over an identical working set,
 interleaved inside one sitting.
@@ -465,8 +465,12 @@ skew removes the discontinuity. ⬅ Nothing between 5,000 and 8,000 was run, and
 | feed staleness   |      n/a |       n/a | **1.30x** (p = 0.0129) |
 
 ⭐ **Eight viewers cause nine percent more chunk retrieval than one**, because the gateway already
-holds what the extra seven ask for. **The cost of a viewer is serving requests, and it lands on feed
-freshness.**
+holds what the extra seven ask for. **The cost of a viewer is serving requests.**
+
+⛔ **The staleness row is retired, 2026-08-09.** It was measured through `/feeds/{owner}/{topic}`, the
+head lookup, which was later shown to be 50-57% frozen on its own and which the client no longer uses.
+On the explicit-address path a client actually walks, a feed read at **128** concurrent readers costs
+what it costs at one. See 2.4h. The first two rows stand.
 
 ⭐ **The loaded arm sat at 30.6% CPU on a 48-core host, nowhere near saturation, so the ceiling is
 inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
@@ -736,9 +740,28 @@ are exact and evenly sized where a real audience is random and will throw up lar
   three have headroom, so **it is not a capacity you can buy**.
 - **What a randomly distributed audience does** rather than an evenly cohorted one.
 
-⬅ **What is still open is the one no reference-list probe can see**, which is that LAT-11 measured feed
-staleness at **1.30x with eight viewers**. **Retrieval scales. Whether the feed does is a separate
-question and the answer there was no.** ⛔ Make it the first thing your simulation establishes.
+### ✅ 2.4h The feed does not care how many are reading it, and that retires LAT-11's row
+
+**The one no reference-list probe could see is measured, 2026-08-09, and it is a null.**
+[Report.](../bench/the-feed-does-not-care-how-many-are-reading-it-2026-08-09.md) 54,400 slot reads
+across 20 alternating arms, for one cheque of 77 gwei.
+
+⭐⭐ **A feed read at 128 concurrent readers costs what it costs at one.** Four interleaved
+single-reader references span **426 to 480ms** for a miss with nothing happening, and every loaded arm
+from 8 to 128 sits inside that spread. Hits are 1-2ms throughout, no errors at any concurrency. **A
+reader sustains 4.81 slot reads a second at one and 4.69 at 128**, a 2.5% loss for 128x the audience.
+
+⛔ **LAT-11's 1.30x went through the `/feeds/` head lookup**, which was later shown to be 50-57% frozen
+on its own and which the client no longer uses. On the explicit-address path a client actually walks,
+the effect is absent at 8, at 32 and at 128. **Retrieval scales, and so does the feed.**
+
+⛔ **What does move is the tail, and only for a synchronised audience**: reads crossing one second run
+**0.42% for a cohort all wanting the same slot against 0.065% for readers wanting different ones**,
+6.4x, while the medians of those same arms are indistinguishable. ⭐ **Instrument the crossing rate,
+not the median** — this is 5.1 again, on a different subsystem.
+
+⚠️ **It measures what a read COSTS, not how far behind live a viewer ends up**, because there was no
+live publisher. Closing that gap is a job for a simulation that has one.
 
 ---
 
@@ -1219,9 +1242,13 @@ the pooling that carried these arms and should lean on the cache instead.
 the cliff has since been located: **a cache at 76% of the working set is byte-identical to no cache, one
 at 100.1% buys the entire benefit, and anything above that buys nothing more.** ✅ **And how much a real
 re-read pattern beats that cyclic scan is now measured too, 2026-08-09**: the same 76% capacity removes
-**37% of retrievals** under a skewed pattern and serves its median second-lap fetch in **4ms**, so
-**what has to fit is the hot set rather than the working set.** ⬅ Where the new cliff sits, between the
-hot set and the capacity tested, is open.
+**37% of retrievals** under a skewed pattern and serves its median second-lap fetch in **4ms**.
+⛔⛔ **And the sweep that went looking for the new cliff found there is none**: under skew the cache is
+a **dial, not a gate**, a smooth curve from 4% of retrievals removed at 0.24x the hot set to 37% at
+3.8x, with **no step anywhere, including at the hot set itself**. Early capacity is worth about **2x
+its share**, so buy what you can afford and stop looking for a threshold to clear. ⚠️ The 100% step is
+real **only for a cyclic scan**, which has no hot set because every reference is equally popular, and
+capacity is counted in **chunks, not bytes** (1 GB ≈ 280,000).
 
 ⬅ **Whether ultra-light's ~0.5s higher median latency is real.** Not established: the one comparable
 funded arm took a non-fatal stall, so per 5.3 it has no valid control.
