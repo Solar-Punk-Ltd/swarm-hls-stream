@@ -91,8 +91,33 @@ critical path. That is worth having and it is not what the floor is made of.
 
 ⭐⭐ **The way past a miss floor is not a cheaper poll, it is not polling.** A push primitive lets a
 publisher say "slot N exists now" rather than having every viewer discover it by failing to find slot
-N+1. ⚠️ Swarm has one in GSOC, and **nothing here has measured it**, so that is a direction rather than a
-finding.
+N+1. Swarm has one in GSOC.
+
+⚠️ **Nothing here has measured GSOC.** What follows is read off the `@ethersphere/bee-js` 9.8.1 type
+signatures the client already depends on, so it is the shape of the thing rather than a result:
+
+```
+gsocMine(targetOverlay, identifier, proximity) -> PrivateKey
+gsocSend(postageBatchId, signer, identifier, data, ...)
+gsocSubscribe(address, identifier, handler)
+```
+
+⭐⭐ **`gsocMine` taking a target overlay and a proximity is the whole story: GSOC is targeted at a
+neighbourhood, not broadcast.** A publisher mines a signing key whose resulting address lands near a
+node it wants to reach, so **one send reaches one neighbourhood**, and reaching a dispersed audience
+means one mined key and one send per neighbourhood.
+
+⭐ **`gsocSend` takes a postage batch, so a push is an upload and it costs postage.** That inverts where
+the cost sits. **Polling costs the viewer's gateway in time and nothing in money. Pushing costs the
+publisher in postage, per neighbourhood, per segment.**
+
+⭐⭐ **And it composes with pooling, which is what makes it plausible at all.** Viewers sit behind
+gateways rather than one node each, so the targets are **gateways**, not viewers. At the measured ~123
+viewers per gateway a thousand viewers is roughly nine targets, not a thousand.
+
+⬅ **Open, and all of it: whether a subscriber is actually notified promptly, what proximity is needed
+for a viewer's own gateway to receive, and what a send costs in postage at four segments a second.**
+Those are the three numbers that decide whether push beats a 480ms miss, and none of them exists yet.
 
 ⚠️ **And it sharpens what to expect from LL-HLS**, which is roadmap step 9. If the read side's floor is
 set by the cost of speculative misses at the edge, then cutting segments into smaller parts **increases
