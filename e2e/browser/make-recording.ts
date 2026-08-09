@@ -58,6 +58,14 @@ const AFTER_SEGMENTS = 45;
  * which is scenario A and leaves no discontinuity to seek across.
  */
 const OUTAGE_MS = 20_000;
+/**
+ * `RECORDING_ARM_DISCONTINUITY=0` makes the same recording without the outage.
+ *
+ * ⭐ **The control arm, and it is the whole reason this is a knob.** A long recording with a
+ * discontinuity in it differs from the 27 second ones this project already has in **two** ways, so a
+ * playback failure against it names neither. The same length with no discontinuity separates them.
+ */
+const ARM_DISCONTINUITY = process.env.RECORDING_ARM_DISCONTINUITY !== '0';
 const SEGMENT_WAIT_MS = 600_000;
 const VOD_WAIT_MS = 180_000;
 const MIN_STAMP_TTL_S = 600;
@@ -91,12 +99,16 @@ async function main(): Promise<void> {
     });
 
     const beforeOutage = (await uploaded()).length;
-    console.log(`recording: taking ${beeUploader} away for ${OUTAGE_MS / 1000}s to arm a discontinuity`);
-    await host.stop(beeUploader);
-    beeIsDown = true;
-    await new Promise((resolve) => setTimeout(resolve, OUTAGE_MS));
-    await host.start(beeUploader);
-    beeIsDown = false;
+    if (ARM_DISCONTINUITY) {
+      console.log(`recording: taking ${beeUploader} away for ${OUTAGE_MS / 1000}s to arm a discontinuity`);
+      await host.stop(beeUploader);
+      beeIsDown = true;
+      await new Promise((resolve) => setTimeout(resolve, OUTAGE_MS));
+      await host.start(beeUploader);
+      beeIsDown = false;
+    } else {
+      console.log('recording: control arm, no outage and no discontinuity');
+    }
 
     console.log(`recording: publishing ${after} more segments past the discontinuity`);
     await waitFor(async () => (await uploaded()).length >= beforeOutage + after, {
@@ -106,7 +118,16 @@ async function main(): Promise<void> {
     });
 
     const events = parseUploaderLog(await log());
-    if (events.discontinuitiesArmed === 0) {
+    if (!ARM_DISCONTINUITY) {
+      // The control has to be a control. An outage nobody asked for, from a real hiccup, would put
+      // the variable back in and the arm would look like a clean comparison.
+      if (events.discontinuitiesArmed > 0) {
+        throw new Error(
+          `the control arm armed ${events.discontinuitiesArmed} discontinuity(s) on its own, so it is not a control`,
+        );
+      }
+      console.log('recording: control arm clean, no discontinuity armed');
+    } else if (events.discontinuitiesArmed === 0) {
       // Reported rather than tolerated: a recording with no discontinuity answers a different
       // question from the one this was made for, and a playback run against it would look like a
       // pass. See scenario A — an outage inside the retry window buffers and flushes instead.
