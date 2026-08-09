@@ -341,24 +341,6 @@ all fetching the same segments.
    `reqFail=737`: every network retrieval failed and it did not matter. **Order arms so a cache arm
    can only inherit from a cache-off arm, or clear the store between them.**
 
-### 2.4 Concurrency: a viewer adds load rather than sharing it
-
-✅ **Measured (LAT-11), 1 viewer against 8 on one gateway, across two 34-minute broadcasts:**
-
-| per second       | 1 viewer | 8 viewers |                  ratio |
-| ---------------- | -------: | --------: | ---------------------: |
-| chunks retrieved |     87.7 |      96.0 |              **1.09x** |
-| gateway CPU      |    16.6% |     30.6% |              **1.84x** |
-| feed staleness   |      n/a |       n/a | **1.30x** (p = 0.0129) |
-
-⭐ **Eight viewers cause nine percent more chunk retrieval than one**, because the gateway already
-holds what the extra seven ask for. **The cost of a viewer is serving requests, and it lands on feed
-freshness.**
-
-⭐ **The loaded arm sat at 30.6% CPU on a 48-core host, nowhere near saturation, so the ceiling is
-inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
-limits.
-
 ### ⭐⭐ 2.3c Size it above the working set, or it does nothing at all
 
 ✅ **Measured 2026-08-08**, thirty-six arms in two sittings sweeping `--cache-capacity` against a fixed
@@ -451,6 +433,24 @@ part of it people re-watch.** For live it changes nothing, because the live wind
 step at the hot set rather than the working set, and **nothing between was run.** 80/20 is also a chosen
 shape rather than an observed one, so **37% is not the number a real deployment gets**. What is
 established is that skew converts a step into partial credit.
+
+### 2.4 Concurrency: a viewer adds load rather than sharing it
+
+✅ **Measured (LAT-11), 1 viewer against 8 on one gateway, across two 34-minute broadcasts:**
+
+| per second       | 1 viewer | 8 viewers |                  ratio |
+| ---------------- | -------: | --------: | ---------------------: |
+| chunks retrieved |     87.7 |      96.0 |              **1.09x** |
+| gateway CPU      |    16.6% |     30.6% |              **1.84x** |
+| feed staleness   |      n/a |       n/a | **1.30x** (p = 0.0129) |
+
+⭐ **Eight viewers cause nine percent more chunk retrieval than one**, because the gateway already
+holds what the extra seven ask for. **The cost of a viewer is serving requests, and it lands on feed
+freshness.**
+
+⭐ **The loaded arm sat at 30.6% CPU on a 48-core host, nowhere near saturation, so the ceiling is
+inside bee.** More BZZ will not help. The levers are **horizontal gateways** and bee's request-handling
+limits.
 
 ### ⭐⭐ 2.4b Sixteen viewers cost the network what one viewer costs
 
@@ -721,6 +721,44 @@ staleness at **1.30x with eight viewers**. **Retrieval scales. Whether the feed 
 question and the answer there was no.** ⛔ Make it the first thing your simulation establishes.
 
 ---
+
+### ⭐⭐ 2.5 Reading the feed is a different cost from reading a segment, and it is a MISS cost
+
+✅ **Measured 2026-08-09**, two halves. 78,482 slot reads mined from 70 archived browser request logs,
+which cost nothing at all, and 800 reads straight at the gateway, which cost **0.0000615 BZZ**.
+[Full report.](../bench/the-announcement-floor-is-a-miss-floor-2026-08-09.md)
+
+A client finds the head of a feed by reading slots until one comes back 404. So **a viewer at the live
+edge misses about 45% of the time**, and that turns out to be where the time goes.
+
+| direct at the gateway |  miss | hit | ratio |
+| --------------------- | ----: | --: | ----: |
+| run 1                 | 459ms | 7ms |   66x |
+| run 2                 | 483ms | 4ms |  121x |
+
+⭐⭐ **A not-found slot read costs about 480ms and a successful one costs single-digit milliseconds.**
+The miss figure is the same measured through a browser (496ms) and measured directly (483ms), while the
+hit figure is 17 to 30x apart, so **the floor is a gateway-side lookup and no client change moves it.**
+
+⭐ Not-found has a characteristic cost, not a timeout: **66.4% of misses land in one 400-599ms band.**
+
+⭐⭐ **A miss costs no BZZ.** Per-block attribution across 400 reads: the hit blocks wrote one cheque and
+**both miss blocks spent nothing**, as did every idle control. A not-found delivers no bytes, so no peer
+is owed. ⛔ **So speculative reads are free in money and expensive in time**, and ⚠️ **the 43 to 44 MB/s
+ceiling in 2.4e cannot see them at all**, because they move no bytes. If your simulation reasons about
+gateway load in bytes it will under-count feed traffic entirely.
+
+⭐ **Reading ahead is linear and there is no cheaper distance.** A single-owner chunk's address is a hash
+of its identifier and its owner, so slot N+1 and slot N+100 sit at unrelated addresses. Read-ahead by N
+costs N misses.
+
+⛔⛔ **The design consequence: the way past a miss floor is not a cheaper poll, it is not polling.** A
+push primitive lets a publisher say "slot N exists" instead of every viewer discovering it by failing to
+find slot N+1. ⚠️ Swarm has GSOC and **nothing here has measured it**, so treat that as a direction
+rather than a finding.
+
+⚠️ **And it is what to check before believing anything about LL-HLS.** Smaller parts mean more
+speculative reads, so the floor gets asked more often, not less. ⬅ Wash or loss is unmeasured.
 
 ## 3. How to measure: the statistics
 
