@@ -110,7 +110,11 @@ async function main(): Promise<void> {
       console.log('recording: control arm, no outage and no discontinuity');
     }
 
-    console.log(`recording: publishing ${after} more segments past the discontinuity`);
+    console.log(
+      ARM_DISCONTINUITY
+        ? `recording: publishing ${after} more segments past the discontinuity`
+        : `recording: publishing ${after} more segments`,
+    );
     await waitFor(async () => (await uploaded()).length >= beforeOutage + after, {
       timeoutMs: SEGMENT_WAIT_MS,
       intervalMs: 5_000,
@@ -157,13 +161,21 @@ async function main(): Promise<void> {
 
   const total = (await uploaded()).length;
   console.log('');
-  console.log('recording ready. To play it back and seek across the discontinuity:');
+  console.log(
+    ARM_DISCONTINUITY
+      ? 'recording ready. To play it back and seek across the discontinuity:'
+      : 'control recording ready, no discontinuity in it. To play it back and seek:',
+  );
   console.log('');
   console.log(`  BROWSER_VOD_OWNER=${announced.owner} \\`);
   console.log(`  BROWSER_VOD_TOPIC=${announced.topic} \\`);
   console.log('  pnpm browser:vod');
   console.log('');
-  console.log(`  segments: ${total}, discontinuity after roughly ${((100 * before) / total).toFixed(0)}% of them`);
+  console.log(
+    ARM_DISCONTINUITY
+      ? `  segments: ${total}, discontinuity after roughly ${((100 * before) / total).toFixed(0)}% of them`
+      : `  segments: ${total}, no discontinuity`,
+  );
 }
 
 main().catch((error: unknown) => {
