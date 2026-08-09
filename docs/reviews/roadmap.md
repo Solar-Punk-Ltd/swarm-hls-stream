@@ -62,11 +62,18 @@ manifest-growth degradation is **absent** at 13,522 accumulated segments, 12 win
 with zero frozen samples. A control separates two explanations of an effect. There is no effect to
 explain, so the hour buys a second null.
 
-**✅ 0.5e is what step 3 is.** Its five scenarios are Phase 2's 2.3 through 2.7, and **no harness can
-express any of them**: `e2e/src/browser/faults.ts` stops, kills, restarts or pauses one container, and
-these need a kill timed to a program moment, several containers at once, a mutation performed while a
-service is down, a bounded full disk, and a second publisher. **Building that is free**, and it is the
-larger half of the work.
+**✅ 0.5e IS DONE, four of five, for 0.0174 BZZ.** Its scenarios are Phase 2's 2.3 through 2.7. No
+harness could express any of them, because `e2e/src/browser/faults.ts` stops, kills, restarts or pauses
+one container and these need a kill timed to a program moment, several containers at once, a mutation
+performed while a service is down, a bounded full disk, and a second publisher. That harness is built
+and the runs are in `docs/bench/the-crash-scenarios-nobody-had-run-2026-08-09.md`.
+
+⭐⭐ **It was priced at 60 broadcast-minutes and cost 1.37 minutes of publishing.** One full pass of all
+four scenarios spent **0.0174 BZZ and moved postage not at all**. The estimate assumed five browser runs
+at 45s settle plus fault plus 60s recovery; four of the five questions are uploader-side and need only
+enough segments to have a stream. ⭐ **The cost of a measurement is set by the instrument it needs, not
+by the question it asks**, and asking "does this need a viewer?" before pricing moved this by two
+orders of magnitude.
 
 **⛔ 2.1 and 2.2 stay unrun and they are the owner's call, not a scheduling decision.** Exhausting the
 chequebook mid-stream spends the entire remaining balance to watch it run out, and filling the postage
@@ -821,15 +828,33 @@ real browser watching while the fault is injected. Two scenarios run so far
 
 **Missing, ordered by likelihood times damage:**
 
-| #   | scenario                                                | why it ranks here                                                                                                                                                                                                                                       |
-| --- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.1 | **Chequebook exhausted mid-stream**                     | **Known to occur.** It emptied at run 7 of 12 on 2026-08-05 and 64 of 247 peers went past -9.0e6 debt. Runs on either side were not comparable and nothing said so. The sweep now has a preflight, but the **uploader itself** has no behaviour for it. |
-| 2.2 | **Postage batch full or expired mid-stream** — task #62 | A batch went 9.4% to 64/64 in one day. Mutable batches then evict **silently**.                                                                                                                                                                         |
-| 2.3 | Crash during `finalize`                                 | `notifyStop` is memoized and deletes the recovery entry at the end. A crash inside it is the one window where the entry is gone and the VOD is not published.                                                                                           |
-| 2.4 | Whole-stack restart                                     | Every scenario today restarts one container. Nothing tests all of them together, which is what a host reboot does.                                                                                                                                      |
-| 2.5 | Recovery entry corrupt or hand-edited                   | `readinessFromPersisted` has a documented repair path. Unit-covered, never driven end to end.                                                                                                                                                           |
-| 2.6 | Disk full                                               | `ENOSPC` appears in uploader unit tests. `persistState` swallows it, which is the quietest way to lose a broadcast.                                                                                                                                     |
-| 2.7 | Two uploaders on one stream id                          | The reconnect-during-drain race. Unit-tested, and it is exactly the shape that unit tests model badly.                                                                                                                                                  |
+| #   | scenario                                                | why it ranks here                                                                                                                                                                                                                                           |
+| --- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.1 | **Chequebook exhausted mid-stream**                     | **Known to occur.** It emptied at run 7 of 12 on 2026-08-05 and 64 of 247 peers went past -9.0e6 debt. Runs on either side were not comparable and nothing said so. The sweep now has a preflight, but the **uploader itself** has no behaviour for it.     |
+| 2.2 | **Postage batch full or expired mid-stream** — task #62 | A batch went 9.4% to 64/64 in one day. Mutable batches then evict **silently**.                                                                                                                                                                             |
+| 2.3 | Crash during `finalize`                                 | ✅ **scenario H.** ⛔ The window described here is wrong: `finalize` deletes the entry **last**, after the catalog write, so a crash cannot leave the entry gone with nothing published. The real window is the reverse and it costs a **second paid VOD**. |
+| 2.4 | Whole-stack restart                                     | ✅ **scenario I.** Sharpened: the interesting part is not that everything restarts, it is that the uploader's 60s recovery timer races **its own bee node's cold start**, and finalizing means uploading through it.                                        |
+| 2.5 | Recovery entry corrupt or hand-edited                   | ✅ **scenario J.** ⛔ The repair path is not the dangerous one. An **unparseable** entry is deleted on the next boot, so the recording is lost and the catalog says `live` forever, which is the end state the repair exists to avoid.                      |
+| 2.6 | Disk full                                               | ⏸ **not built, and the premise is stale.** See below.                                                                                                                                                                                                       |
+| 2.7 | Two uploaders on one stream id                          | ✅ **scenario K.** The guard under test is `retire()`: the outgoing drain must stop owning the recovery entry, or a live broadcast runs with nothing on disk to recover it from.                                                                            |
+
+### ⏸ 2.6 is the one of the five I did not build, and why
+
+**Its premise is stale.** "`persistState` swallows it, which is the quietest way to lose a broadcast"
+was true when it was written and is not now. The failure sets `statePersistFailedAt`, which reaches
+`getHealthSignals()` and raises `HEALTH_REASON_STATE_NOT_PERSISTED` **with no threshold**, so `/health`
+degrades on the first failed write. The quiet failure has a loud signal.
+
+**And the faithful injection is the expensive kind.** The uploader runs as **root**, so permissions
+cannot make its state directory unwritable, and its `STATE_DIR` is a volume mount point, so it cannot
+be replaced with a file. A genuine `ENOSPC` needs the container recreated with a bounded tmpfs, which
+mutates a deployment shared with the rest of this measurement programme. ⛔ **Filling the volume is not
+an option**: it is backed by the host disk, and the host carries forty other bee nodes and five other
+compose projects.
+
+**What is left unproven is a confirmation rather than a discovery**: that the health reason fires under
+a real `ENOSPC` rather than the injected error the unit test uses. Worth doing on a disposable
+deployment, not on this one.
 
 ---
 
