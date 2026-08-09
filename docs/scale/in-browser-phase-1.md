@@ -3,8 +3,9 @@
 **2026-08-09.** Assessment of the in-browser Swarm node option ahead of Phase 3, written to be read
 by the lab or parsed for a presentation.
 
-**Cost so far: nothing.** No broadcast, no postage, no BZZ. Everything below is source reading, one
-browser session against a public deployment, and four reads from a **public** gateway.
+**Cost so far: 0.0019231 BZZ, and no broadcast minutes.** All of it is one 40-read control against our
+own gateway in section 5c. Everything else is source reading and browser sessions against a public
+deployment, on an unfunded node that cannot spend.
 
 ⚠️ **Read the status column before quoting anything.** This document deliberately mixes three kinds
 of statement and marks every one:
@@ -17,7 +18,7 @@ of statement and marks every one:
 
 ---
 
-## 1. The five answers, up front
+## 1. The seven answers, up front
 
 **1. Abel's link is the current build.** GitHub Pages deploys from `main`, and the live deployment is
 `f21ddd91`, which is `main` HEAD. **[OBSERVED]**
@@ -37,15 +38,28 @@ session. That is step 4 of the plan. **[OBSERVED]**
 median **665 KB/s = 5.3 Mbps**. The content needs **1.6x more throughput than the fastest arm
 delivered**. Nothing in the browser causes that. **[OBSERVED]**
 
-**4. ⭐ Our own profiles are a much better match, and one of them fits with room to spare.** At
-2.83 Mbps a viewer needs 354 KB/s against the ~580-670 KB/s these paths deliver. At 1080p/6000k they
-need 750 KB/s, which is **above** it. **[DERIVED]**
+**4. ⛔⛔ Our own profiles are a better match, but "with room to spare" was WRONG and section 5c
+retires it.** That claim rested on a ~580-670 KB/s band which turned out to be a distant gateway's
+round trip rather than anything's delivery capability. **Measured directly at n=500, a browser node
+delivers 115 KB/s sequentially and about 345 KB/s at its own configured concurrency of 3, against the
+357 KB/s that 2.86 Mbps needs.** That is **0.99x of realtime at the median and 0.67x at the p90**, on
+an idle laptop with nothing decoding. **The best-fitting profile we have does not fit with room to
+spare, it fits with none.** 1080p/6000k is not a close call. **[OBSERVED]**
 
 **5. ⛔⛔ In-browser nodes invert our scaling model, and this is the finding that matters most.**
 Every result we have about serving many viewers rests on **pooling behind a gateway**: 16 viewers cost
 the network what 1 costs, because bee fetches each chunk once and serves everyone from it. **Remove
 the gateway and that saving is gone.** 20,000 browser nodes are 20,000 independent retrievals of the
 same chunks. See section 6. **[DERIVED]**
+
+**6. ⛔⛔⛔ A weeb-3 node is a PURE CONSUMER, and this is worse than answer 5 alone.** It creates seven
+libp2p control handles and accepts inbound streams on exactly two of them, **pricing and gossip**. It
+never accepts inbound retrieval, pushsync or swap. **A browser audience therefore adds no serving
+capacity and no cache capacity at all**, while each node asks **six peers to confirm every chunk**
+(`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`). All demand, no supply. See section 5c. **[SOURCE]**
+
+**7. ⛔ A not-found costs a browser node 13.5 seconds**, against roughly 480 ms for a bee gateway, 28x.
+Any design that speculatively asks for chunks that might not exist is disqualified. **[OBSERVED]**
 
 ---
 
@@ -127,8 +141,15 @@ the other.
 _is_ weeb-3's deployment. Embedding it at our own path means either serving under `/weeb-3/` or
 writing our own hls.js loader, which is what the POC did.
 
-⛔ **COOP/COEP cross-origin isolation is required** (SharedArrayBuffer). That is a real deployment
-constraint: it breaks third-party embeds and iframes, so a "watch on any site" story gets harder.
+✅ **CORRECTION: COOP/COEP cross-origin isolation is NOT required.** This document previously said it
+was, on the assumption that the runtime used `SharedArrayBuffer`. **It does not.** On the live
+deployment `crossOriginIsolated` is `false` and `SharedArrayBuffer` is `undefined`, there are **zero**
+references to it in the built JavaScript, and the README lists moving the runtime into workers as
+future work. The runtime is single-threaded on the main thread. **[OBSERVED] + [SOURCE]**
+
+That removes a deployment constraint rather than adding one: third-party embeds and iframes are not
+blocked by isolation headers. ⚠️ The service worker is still hardcoded to the `/weeb-3/` scope, which
+is a separate and real packaging constraint.
 
 ---
 
@@ -286,7 +307,12 @@ profile section 7 predicted would fit.
 - It reported our segments correctly: `size 0.10 MB, duration 0.266 s, resolution 1280x720`.
 - It issues HTTP **range** requests (`bytes=0-105279`).
 
-### ⭐⭐ Per-segment service time is BIMODAL, and the tail is what binds
+### ⛔ Per-segment service time, n=18 — **SUPERSEDED by section 5c, do not quote these numbers**
+
+**Section 5c re-ran this at n=500 and every figure in this subsection moved.** The bimodality was an
+artifact of measuring **on the stream page while the player was running**, which mixed prefetch cache
+hits into the sample. On the app shell, where nothing is prefetched, **there are no 2–9 ms requests at
+all** and the floor is 784 ms. Kept here because the mistake is the instructive part.
 
 Taken from the browser's own `performance` resource timings, so **the media-element pausing below
 cannot contaminate it**. n=18.
@@ -318,6 +344,177 @@ public gateway as the instrument rather than the network.
 about the harness.** Buffer-ahead never exceeded 0.5s, which is _consistent with_ the prefetch
 pipeline not staying ahead, but is not separable from the pausing. **Step 4 in a real browser is now
 the priority**, and it is still free.
+
+---
+
+## 5c. ✅ STEP 3 RUN: the distribution at n=500, and what the tail actually is
+
+**2026-08-09.** Raw data `docs/bench/in-browser-service-time-2026-08-09.tsv`, harness
+`deploy/scripts/in-browser-service-time.js`. Cost: **0.0019231 BZZ**, all of it the gateway control.
+The browser node is unfunded and cost nothing.
+
+### The one design choice that decides whether the number means anything
+
+**Measured on the weeb-3 app shell, not on a stream page.** The app shell boots and connects the node
+but attaches no stream, so **nothing is prefetched**. Section 5b measured on a stream page with the
+player running, which is why nine of its eighteen samples came back in 2–9 ms and made the
+distribution look bimodal. Those were cache hits, not retrievals.
+
+Segments were fetched **sequentially** through `/weeb-3/hls/bytes/<ref>`, so nothing queues behind
+anything else. Peer count was watched rising **143 → 200** and the run began at `Connected: 200,
+Connecting: 0`, so the warm state is an observed transition rather than a value that started
+satisfied. Idle time between consecutive fetches was **p50 0 ms, max 18 ms**, so the recorded
+milliseconds are wall time and the page was never throttled mid-run.
+
+### [OBSERVED] The distribution, n=500 cold, our own 0.266s / ~93 KB segments
+
+| statistic |        ms |
+| --------- | --------: |
+| min       |   **784** |
+| p10       |       792 |
+| p25       |       797 |
+| **p50**   |   **807** |
+| p75       |       980 |
+| **p90**   | **1,186** |
+| p99       |     1,581 |
+| max       |     2,184 |
+
+⛔⛔ **The crossing rate is 100%. All 500 of 500 segments took longer than their own 266 ms**, and the
+**fastest one was already 3x over**. Section 5b's 27.8% was measuring a sample half made of cache hits.
+
+⛔ **The p90 of 2,771 ms from n=18 was an artifact.** At n=500 the p90 is **1,186 ms**. That is the
+gap between a tail statistic and the sample size a tail statistic needs.
+
+### ⭐⭐ The warm control is what makes this a measurement rather than a number
+
+|                                         |        p50 |
+| --------------------------------------- | ---------: |
+| cold (n=500)                            | **807 ms** |
+| **warm re-fetch of the last 40** (n=40) |   **1 ms** |
+
+**800x.** Full ~90 KB bodies, HTTP 200, served from the node's local store.
+
+⭐ **Last session a warm re-fetch cost exactly what a cold one cost, and that killed a published
+figure.** Here the same control does the opposite job: it proves the ~790 ms floor **is retrieval**,
+and that the service worker hop, the WASM boundary and the 90 KB copy together cost **single-digit
+milliseconds**. An `/hls/bytes/` versus `/bytes/` route arm (20 each, alternating, matched) agreed
+within noise, so the routing machinery is not the floor either.
+
+### ⭐⭐⭐ The tail is QUANTISED. It is retry rounds, not slow peers.
+
+25 ms bins, and the **valleys are empty**, which a smooth tail cannot produce:
+
+| bin  | count |     | bin       | count |
+| ---- | ----: | --- | --------- | ----: |
+| 775  |   158 |     | 1050–1075 | **0** |
+| 800  |   160 |     | 1150      |     7 |
+| 900  |     2 |     | 1175      |    26 |
+| 950  |    22 |     | 1450–1550 | **0** |
+| 975  |    60 |     | 1575      |     2 |
+| 1000 |     3 |     | 1700–1900 | **0** |
+
+Fitting `base + k x step` over steps from 120 to 320 ms picks **step = 194 ms**, mean residual
+**15.5 ms** against **48.5 ms** expected if the times bore no relation to any ladder. The winner sits
+well inside the scanned range rather than at a bound, so the scan is not imposing its own answer.
+
+Predicted modes 790 / 984 / 1178 / 1372 / 1566 / 1954 against observed 790 / 975–1000 / 1175 /
+1350–1375 / 1575 / 1925.
+
+### ⭐⭐⭐ And weeb-3's source names the mechanism exactly
+
+⛔ **First, a correction to this document's own plan.** Section 8 rule 5 said "weeb-3 logs enough to
+separate them". **It does not.** All 33 `interface_log` call sites are connection, refreshment and
+service-worker events. **There is no per-chunk logging at all**, so the not-found / slow-peer / retry
+/ erasure classification the plan called for cannot be done from logs. It can be done from the shape
+of the distribution plus the constants, which is what follows.
+
+In `retrieval.rs`, when `select_retrieve_peer` can find **no eligible peer**, because every candidate
+is either already tried (`skiplist`) or **unaffordable (`overdraftlist`)**:
+
+```rust
+if !overdraftlist.is_empty() { reset_overdraft(&mut skiplist, &mut overdraftlist); }
+async_std::task::sleep(Duration::from_millis(RETRIEVE_CHECK_RETRY_WAIT_MS)).await;
+continue;
+```
+
+`RETRIEVE_CHECK_RETRY_WAIT_MS = 160`. **A 160 ms sleep plus per-round work is the 194 ms ladder step.**
+`overdraftlist` is accounting, so **the ladder is the unfunded node waiting out its own credit
+exhaustion.** That is the browser-side face of what our light versus ultra-light sitting measured on
+bee as a funded node asking one peer where an unfunded one asks many.
+
+| constant                            |  value | what it sets                                                   |
+| ----------------------------------- | -----: | -------------------------------------------------------------- |
+| `RETRIEVE_CHECK_CONFIRMATION_PEERS` |  **6** | ⛔⛔ peers that must confirm **every chunk**, by design        |
+| `RETRIEVE_DATA_GROUP_CONCURRENCY`   |      8 | chunks in flight, so ~25 chunks is ~4 rounds = the 790 ms base |
+| `RETRIEVE_CHECK_RETRY_WAIT_MS`      |    160 | the ladder step, on the overdraft path                         |
+| `RETRIEVE_ATTEMPT_TIMEOUT_MS`       | 10,000 | what a miss costs before it gives up                           |
+| `RETRIEVE_HEDGE_AFTER_MS`           |  1,000 | duplicate request after a second                               |
+
+### ⛔⛔ A miss costs 13.5 seconds, and that kills read-ahead
+
+20 references that do not exist, **all 20 returned HTTP 503**, between **11,679 and 14,474 ms**,
+median **13,503 ms**. `RETRIEVE_ATTEMPT_TIMEOUT_MS = 10_000` is why.
+
+⭐ Against the **~480 ms** a bee gateway takes for a not-found, this is **28x worse**. The announcement
+floor work concluded that read-ahead by N costs N misses linearly. **In a browser node each of those
+misses costs 13.5 seconds**, so speculative fetching is not merely expensive here, it is disqualifying.
+
+### The gateway control, run on the host
+
+|                                       |        p50 |
+| ------------------------------------- | ---------: |
+| our funded bee, **on the host**, n=40 |  **41 ms** |
+| browser node, unfunded, this laptop   | **807 ms** |
+
+⚠️ **Named honestly: this is not a clean funded-versus-unfunded comparison.** The two sit on different
+machines and different network paths, and the gateway is in a datacentre. What it does establish is
+that **the content is there and is cheap to fetch**, so the browser node's 807 ms is not the content
+being slow. Attributing the gap to funding needs a funded light node on this same laptop, which is
+step 4's proper design.
+
+The control also re-confirmed the cost model: 3.72 MB for **0.0019231 BZZ = 0.000517 BZZ/MB**, against
+the settled 0.000678.
+
+### ⛔⛔ What this does to the throughput arithmetic
+
+A 0.266 s segment stream needs **3.76 segments per second**. Measured:
+
+| concurrency                                 | segments/s | versus realtime |
+| ------------------------------------------- | ---------: | --------------: |
+| 1 (measured directly)                       |       1.24 |       **0.33x** |
+| 3 (`HLS_PREFETCH_BODY_MAX_PARALLEL`) at p50 |       3.72 |       **0.99x** |
+| 3 at the p90                                |       2.53 |       **0.67x** |
+
+⛔ **At its own configured concurrency, a browser node lands at 0.99x of realtime at the median and
+0.67x at the p90.** There is no headroom whatsoever, on an idle laptop, with a full 200-peer table,
+with no video decoding running, on the 2.86 Mbps profile this document already picked as the one that
+fits. **1080p/6000k is not a close call.**
+
+### ⭐⭐⭐ The structural finding: a browser node is a pure consumer
+
+weeb-3 creates seven libp2p control handles and calls `.accept()` on exactly **two** of them:
+
+```rust
+incoming_pricing_streams = ctrl0.accept(PRICING_PROTOCOL).unwrap();
+incoming_gossip_streams   = ctrl1.accept(GOSSIP_PROTOCOL).unwrap();
+self.interface_log("Node protocol listeners ready".to_string());
+```
+
+**It never accepts inbound `/swarm/retrieval/1.4.0/retrieval`, pushsync or swap.** The other five
+handles are cloned into outbound request paths only.
+
+⛔⛔ **So 20,000 browser viewers are 20,000 takers and zero givers.** They add no serving capacity and
+no cache capacity to the network. Every chunk they consume is drawn from the storer neighbourhood, and
+each one asks **six peers per chunk** to confirm it. Combined with the loss of gateway pooling from
+section 6, the demand a browser audience puts on storers is **larger than the same audience behind
+gateways by roughly three orders of magnitude**, not smaller.
+
+### ⛔ What this run still could NOT measure
+
+- **Sustained playback**, unchanged from 5b. This measures retrieval, not a playhead.
+- **Funded versus unfunded on equal footing.** The gateway control is confounded by machine and
+  location, deliberately, because a viewer really does sit on a laptop.
+- **Whether the ladder is worse under a herd.** Every fetch here was alone.
 
 ---
 
@@ -513,17 +710,17 @@ needs broadcast minutes.
 Each row names **the statistic** and **the n** it needs, because the whole point is precision and
 every one of these questions has a shape where a small sample lies.
 
-| #     | question, stated so it can be answered wrong                                                                                                                                                            | statistic and n                                                                                                                                                       | why it is next                                                                                                                                                            | cost                                                                         |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| **1** | ~~Does our own stream shape fix it?~~ ✅ **DONE.** `readyState 4` at 5s vs 167s                                                                                                                         | —                                                                                                                                                                     | —                                                                                                                                                                         | done, free                                                                   |
-| **2** | **Can a browser viewer SUSTAIN 2.86 Mbps?** Playhead advance per wall second, over ≥10 minutes, in a real browser that does not pause background media                                                  | **realtime ratio** ≥ 0.999, plus **stall count** and **stall seconds**. One 10-minute run, then two more                                                              | ⛔ **This is the blocker on every throughput claim we have.** Today's harness paused the element, so the question is completely open                                      | free                                                                         |
-| **3** | **What IS the service-time tail, and what causes it?** p90 was 2,771ms from **n=18**, which is two data points wearing a percentile's clothing                                                          | **p50/p90/p99 and the crossing rate**, n **≥ 500** segments. Then classify each tail event from weeb-3's own log: not-found, slow peer, retry, erasure reconstruction | The tail is what binds, and we cannot fix a tail we cannot name. ⭐ Cross-check against the announcement floor's ~480ms miss                                              | free                                                                         |
-| **4** | **Does the 38x unfunded amplification carry to weeb-3?**                                                                                                                                                | requests **per distinct chunk**, browser node vs our funded gateway on the same segments. n ≥ 200 chunks                                                              | ⛔⛔ **Decides whether 20k viewers are 20k requests or 760k.** Single highest-value free number in the whole phase                                                        | free                                                                         |
-| **5** | **Which fragment profile does a browser node actually prefer?** Three forces now point two ways                                                                                                         | **A/B/A alternating**, same content at 0.266s and 1.0s, ≥ 300 segments per arm. Report crossing rate, not median                                                      | ⛔ `HLS_LIVE_SYNC_SEGMENTS=8` favours 0.25s; per-request cost and `MAX_PARALLEL=3` favour 1.0s; our own campaign favours 1.0s. **Nothing resolves this but a direct A/B** | free                                                                         |
-| **6** | **Does service time degrade when N browsers want the SAME chunk?**                                                                                                                                      | crossing rate at N = 1, 2, 4, 8, alternating arms, ≥ 200 requests per arm                                                                                             | The herd question with **no gateway to absorb it**. The closest we can get to the storer-side question from here                                                          | free                                                                         |
-| **7** | **Does it run on mobile at all?** ⚠️ **A contradiction to settle first**: the research handoff says Shared Worker is unsupported on Chrome/Android, weeb-3's README lists Chrome (Android) as supported | boolean, then time-to-playable on one Android and one iOS device                                                                                                      | If mobile cannot run it, the device mix decides the architecture before any throughput number matters                                                                     | free                                                                         |
-| **8** | **Is a segment one retrieval or twenty-four?** A 95 KB segment is ~24 chunks                                                                                                                            | request count and byte count per segment at the peer layer                                                                                                            | Decides whether bigger fragments genuinely amortise, which is the mechanism behind step 5                                                                                 | free                                                                         |
-| **9** | **Live, against our own publisher.** Only after 2-8                                                                                                                                                     | crossing rate and lag-behind-live, both profiles                                                                                                                      | The only question that needs a live edge                                                                                                                                  | ⚠️ **broadcast minutes. Price in bytes and bring the number before booking** |
+| #     | question, stated so it can be answered wrong                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | statistic and n                                                                                                                                                 | why it is next                                                                                                                                                            | cost                                                                         |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| **1** | ~~Does our own stream shape fix it?~~ ✅ **DONE.** `readyState 4` at 5s vs 167s                                                                                                                                                                                                                                                                                                                                                                                                                                                     | —                                                                                                                                                               | —                                                                                                                                                                         | done, free                                                                   |
+| **2** | **Can a browser viewer SUSTAIN 2.86 Mbps?** Playhead advance per wall second, over ≥10 minutes, in a real browser that does not pause background media                                                                                                                                                                                                                                                                                                                                                                              | **realtime ratio** ≥ 0.999, plus **stall count** and **stall seconds**. One 10-minute run, then two more                                                        | ⛔ **This is the blocker on every throughput claim we have.** Today's harness paused the element, so the question is completely open                                      | free                                                                         |
+| **3** | ~~What IS the service-time tail, and what causes it?~~ ✅ **DONE, section 5c.** n=500: p50 **807ms**, p90 **1,186ms**, crossing rate **100%**. The tail is a **quantised 194ms retry ladder** on the overdraft path, not slow peers. A miss costs **13.5s**                                                                                                                                                                                                                                                                         | —                                                                                                                                                               | ⛔ The plan said "weeb-3 logs enough to separate them". **It does not** — there is no per-chunk logging at all. The distribution plus the constants did the job instead   | done, 0.0019 BZZ                                                             |
+| **4** | **Does the 38x unfunded amplification carry to weeb-3?** ⭐ **Source already sets a floor: `RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`, six peers per chunk by design.** What is open is what the overdraft ladder adds on top of that                                                                                                                                                                                                                                                                                                  | requests **per distinct chunk**, a **funded** against an **unfunded** node **on the same laptop**, so machine and location stop being confounds. n ≥ 200 chunks | ⛔⛔ Still the highest-value number, but narrower now: the structural 6x is settled, the accounting multiplier is not                                                     | free                                                                         |
+| **5** | **Which fragment profile does a browser node actually prefer?** Three forces now point two ways                                                                                                                                                                                                                                                                                                                                                                                                                                     | **A/B/A alternating**, same content at 0.266s and 1.0s, ≥ 300 segments per arm. Report crossing rate, not median                                                | ⛔ `HLS_LIVE_SYNC_SEGMENTS=8` favours 0.25s; per-request cost and `MAX_PARALLEL=3` favour 1.0s; our own campaign favours 1.0s. **Nothing resolves this but a direct A/B** | free                                                                         |
+| **6** | **Does service time degrade when N browsers want the SAME chunk?**                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | crossing rate at N = 1, 2, 4, 8, alternating arms, ≥ 200 requests per arm                                                                                       | The herd question with **no gateway to absorb it**. The closest we can get to the storer-side question from here                                                          | free                                                                         |
+| **7** | **Does it run on mobile at all?** ✅ **The blocking contradiction is SETTLED from source.** The runtime does not use a Shared Worker: `worker.js` is a `self.onconnect` SharedWorker entry point for the **old `Weeb3` class** and **nothing instantiates it**. `Weeb3No103` runs on the main thread, which is why the README lists Chrome and Firefox on Android. Confirmed live: `crossOriginIsolated` is **false** and `SharedArrayBuffer` is **undefined** on the public deployment, with zero references to it in the built JS | boolean, then time-to-playable on one Android and one iOS device                                                                                                | ⚠️ Source removes the objection but **does not prove mobile works**. A 4.15 MB WASM payload and a 200-peer WebSocket table on a phone still need a device                 | free                                                                         |
+| **8** | ~~Is a segment one retrieval or twenty-four?~~ ✅ **ANSWERED from source and timing.** ~25 chunks, fetched **8 at a time** (`RETRIEVE_DATA_GROUP_CONCURRENCY`), each confirmed by **6 peers**, so **~150 peer requests per 95 KB segment** and ~4 rounds, which is the 790 ms base                                                                                                                                                                                                                                                  | —                                                                                                                                                               | ⭐ This is the mechanism behind step 5: fragment size changes the round count, not the per-chunk cost                                                                     | done, free                                                                   |
+| **9** | **Live, against our own publisher.** Only after 2-8                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | crossing rate and lag-behind-live, both profiles                                                                                                                | The only question that needs a live edge                                                                                                                                  | ⚠️ **broadcast minutes. Price in bytes and bring the number before booking** |
 
 ### ⭐ What "precise" requires here, learned the hard way today
 
@@ -536,7 +733,14 @@ every one of these questions has a shape where a small sample lies.
 4. **One question per sitting.** Today's session answered "is the content the problem" cleanly
    precisely because nothing else varied.
 5. **Classify the tail, do not just measure it.** A tail with four different causes cannot be
-   optimised, and weeb-3 logs enough to separate them.
+   optimised. ⛔ **This rule originally said "and weeb-3 logs enough to separate them", which was
+   false** — all 33 `interface_log` sites are connection and accounting events and none are per-chunk.
+   What actually classified the tail was the **shape of the distribution** (quantised, with empty
+   valleys) read against the **constants in the source**. When an instrument does not exist, the
+   arithmetic of the result can still name the mechanism.
+6. **A grep that anchors on layout under-reports.** Searching for `interface_log(format!("` found 14
+   messages and missed 19, because the format string is often on the next line. The smaller answer
+   looked complete and nearly became "weeb-3 does not log retrieval at all".
 
 ### How to run it
 
