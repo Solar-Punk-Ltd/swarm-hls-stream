@@ -445,6 +445,22 @@ restore_gateway() {
 }
 trap restore_gateway EXIT
 
+# What the gateway has left to pay peers for reads with, in PLUR. A whole BZZ is 1e16.
+#
+# ⛔ This exists because a WHOLE-RUN delta cannot attribute cost. bee writes a cheque when a peer's debt
+# crosses a threshold, so spending is quantised and lumpy: one sitting spent 615,000,000,000 in its first
+# block and nothing at all across the next three, and a further identical cheque left the balance later
+# with nothing asked of the node. Dividing a run total by a request count describes the cheque schedule
+# rather than the request.
+#
+# An unfunded node has no chequebook and refuses, which is 0 rather than an error: it cannot spend.
+spendable() {
+  local v
+  v="$(curl -s -m 5 "http://127.0.0.1:${GATEWAY_BEE_PORT}/chequebook/balance" 2>/dev/null |
+    grep -o '"availableBalance":"[0-9]*"' | grep -o '[0-9]*')"
+  printf '%s' "${v:-0}"
+}
+
 acct() { bash "${ACCT}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
 metrics() { bash "${METRICS}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
 
@@ -626,13 +642,20 @@ run_arm() {
   # arm's CPU total into a retrieval cost. Without it two identical funded arms came out 0.57s and
   # 0.91s on startup noise alone.
   local cpuBefore cpuAfter cpuUsed cpuIdleRate idleA idleB
+  # ⭐ The idle window doubles as the spend control. Whatever the node settles while nothing is asked of
+  # it is not the arm's cost, and without this it would be charged to whichever arm ran next.
+  local spendIdleA spendIdleB spentIdle spendArmA spendArmB spentArm
+  spendIdleA="$(spendable)"
   idleA="$(gateway_cpu_seconds)"
   sleep "${CPU_IDLE_WINDOW_S}"
   idleB="$(gateway_cpu_seconds)"
+  spendIdleB="$(spendable)"
+  spentIdle=$((spendIdleA - spendIdleB))
   cpuIdleRate="$(awk -v a="${idleA}" -v b="${idleB}" -v w="${CPU_IDLE_WINDOW_S}" \
     'BEGIN{printf "%.4f", (w>0)?(b-a)/w:0}')"
-  say "  gateway idles at ${cpuIdleRate} CPU-seconds per second"
+  say "  gateway idles at ${cpuIdleRate} CPU-seconds per second, and spent ${spentIdle} PLUR doing it"
   cpuBefore="$(gateway_cpu_seconds)"
+  spendArmA="$(spendable)"
 
   : >"${OUT_DIR}/times-${round}-${label}.txt"
   local lagFile="${OUT_DIR}/lag-${round}-${label}.txt"
@@ -692,6 +715,8 @@ run_arm() {
   [ -n "${runMax}" ] || runMax=0
   [ -n "${runMean}" ] || runMean=0
   cpuAfter="$(gateway_cpu_seconds)"
+  spendArmB="$(spendable)"
+  spentArm=$((spendArmA - spendArmB))
   cpuUsed="$(awk -v a="${cpuBefore}" -v b="${cpuAfter}" 'BEGIN{printf "%.2f", b-a}')"
   local cpuRetrieval
   cpuRetrieval="$(awk -v u="${cpuUsed}" -v r="${cpuIdleRate}" -v s="$((ended - started))" \
@@ -722,15 +747,18 @@ run_arm() {
     say "  ⭐⭐ deepest lag ${maxLag}ms, worst viewer ended ${worstFinal}ms behind = the buffer this needs"
   fi
   say "  ⭐ gateway CPU ${cpuUsed}s total, ${cpuRetrieval}s above idle = ${cpuPerMb}s per MB retrieved"
+  # ⭐ Per MB, because the rate IS the bitrate: what a profile costs follows from its byte rate, and a
+  # per-minute figure only means anything once tied back to one of these.
+  say "  ⭐ spent ${spentArm} PLUR on the arm against ${spentIdle} idle = $(awk -v p="${spentArm}" -v b="${bytes}" 'BEGIN{printf "%.6f", (b>0)?(p/1e16)/(b/1000000):0}') BZZ per MB"
   say "  ⭐ host load ${loadBefore} before, peaked ${loadMax} avg, runnable mean ${runMean} peak ${runMax} of $(nproc) cores"
   say "  accounting after:  ${after}"
   # The guard in the arm loop reads the peak this arm actually produced, rather than a between-arm
   # sample that a settle has already quietened.
   LAST_ARM_RUN_MEAN="${runMean}"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${spread}" "${jitterMs}" \
-    "${refsPattern:-default}" "${count}" "${bytes}" \
+    "${refsPattern:-default}" "${spentArm}" "${spentIdle}" "${count}" "${bytes}" \
     "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${behindShare}" "${maxLag}" \
     "${worstFinal}" "${cpuUsed}" "${cpuIdleRate}" \
     "${cpuRetrieval}" "${cpuPerMb}" "${loadBefore}" "${loadMax}" "${runMean}" "${runMax}" "${before}" "${after}" >>"${STATE}"
@@ -740,7 +768,7 @@ run_arm() {
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\trefs\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\trefs\tspentArmPlur\tspentIdlePlur\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 BASELINE_RUNNABLE="$(baseline_runnable)"
