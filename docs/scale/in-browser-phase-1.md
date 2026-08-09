@@ -328,7 +328,8 @@ cannot contaminate it**. n=18.
 ⛔⛔ **The median says comfortable and the p90 says failing.** A real retrieval clusters near 250ms,
 which is just inside real time for a 266ms segment, and then there is a tail to 3.1s. With weeb-3's
 **`HLS_PREFETCH_BODY_MAX_PARALLEL = 3`**, three in flight at 250ms is 12 segments/s against the 3.76/s
-this profile needs — comfortable. **Three in flight at the p90 of 2.77s is 1.08/s, which is not.**
+this profile needs, which is comfortable. **Three in flight at the p90 of 2.77s is 1.08/s, which is
+not.**
 Same lesson as every other sitting: quote the crossing rate, never the median.
 
 ### The local-RTT control
@@ -642,7 +643,7 @@ repository:
 | **feed slot, hit**                | 1–2 ms                                                                                                                                                                                                                                                                                                             |
 | **feed slot, miss** (not-found)   | **~426–480 ms**, and **~45% of live-edge reads are misses**                                                                                                                                                                                                                                                        |
 | **our gateway, warm, 95 KB**      | 24–66 ms, median 44                                                                                                                                                                                                                                                                                                |
-| **public gateway, 95 KB**         | ~1,110 ms — **instrument, not network. Do not use**                                                                                                                                                                                                                                                                |
+| **public gateway, 95 KB**         | ~1,110 ms, **instrument not network. Do not use**                                                                                                                                                                                                                                                                  |
 | **public gateway, 4.4 MB**        | 4.7–6.8 s                                                                                                                                                                                                                                                                                                          |
 
 ⭐ **A miss costs ~480ms and ZERO BZZ.** Speculative reads are free in money and expensive in time,
@@ -776,7 +777,7 @@ every one of these questions has a shape where a small sample lies.
    precisely because nothing else varied.
 5. **Classify the tail, do not just measure it.** A tail with four different causes cannot be
    optimised. ⛔ **This rule originally said "and weeb-3 logs enough to separate them", which was
-   false** — all 33 `interface_log` sites are connection and accounting events and none are per-chunk.
+   false.** All 33 `interface_log` sites are connection and accounting events and none are per-chunk.
    What actually classified the tail was the **shape of the distribution** (quantised, with empty
    valleys) read against the **constants in the source**. When an instrument does not exist, the
    arithmetic of the result can still name the mechanism.
