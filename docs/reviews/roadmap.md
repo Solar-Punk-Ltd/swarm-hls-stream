@@ -814,9 +814,20 @@ so it built an audio-only buffer set and refused every later video sample with a
 
 ⭐ The cause is old — 5 video packets in 2.51s is about 2fps against a requested 30, which is the
 publisher throttle of 0.2 and #76. What is new is that a throttle **at second zero** does not degrade
-the picture, it removes it for the whole recording. `make:recording` now refuses on it. ⬅ **Whether
-the uploader should skip leading videoless segments is a product call**, task #41: it already detects
-them and already knows its mediatype, but it changes what media a manifest names.
+the picture, it removes it for the whole recording. `make:recording` now refuses on it.
+
+✅ **Task #41 is decided and shipped: the uploader withholds them.** A video stream's opening segments
+are held back until one carries a frame, so the first fragment any player parses has a picture in it.
+It costs the audio in those seconds, about 8 in the case measured, and it buys the other 201.
+
+⛔ **The three bounds are the design, not the withholding.** It never applies to an **audio stream**,
+whose every segment carries no video and which would otherwise publish nothing at all. It **gives up
+at ten seconds** and publishes anyway at error level, because a publisher that never sends a frame
+would otherwise be taken off the air by the guard, which is worse than the fault. And bytes that are
+**not a transport stream this can read** are published rather than withheld: zero video packets is
+equally what any other container looks like from here, so `countPesPackets` separates media with no
+picture from bytes that are not media. `opening_segments_withheld_total` read next to
+`segments_uploaded_total` tells the guard working from a publisher sending nothing.
 
 ⚠️ **Still unreached, and both need a longer recording than 27 seconds**: seeking **past a
 discontinuity**, and seeking into a region **whose chunks have left the local gateway**. On a recording

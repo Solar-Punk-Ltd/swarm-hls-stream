@@ -86,20 +86,40 @@ pattern matching the warning would refuse usable recordings and send someone hun
 problem that is not there. There is a test for exactly that distinction, and removing the anchor
 fails it.
 
-## ⛔ What is left, and it is a product call
+## ✅ What was decided: the uploader withholds them (task #41)
 
-The instrument is fixed. **A viewer is not.** If a broadcast's opening segments carry no video, the
-recording it becomes is unplayable, and the deployment publishes it anyway.
+The instrument was fixed the same day. **A viewer was not**, until this: a broadcast whose opening
+segments carried no video became an unplayable recording and the deployment published it anyway.
 
-| option | what it costs |
+A video stream's opening segments are now held back until one carries a frame, so the first fragment
+any player parses has a picture in it. It costs the audio in those seconds, about 8 here, and buys
+the other 201. Nothing is uploaded for a withheld segment, so no stamp is spent on media no viewer
+would ever be told about.
+
+⛔ **The three bounds are the design. Withholding on its own is the easy half.**
+
+| bound | why it is not optional |
 | --- | --- |
-| **Skip leading videoless segments** for a video stream, before the first with video | the audio in those seconds. There is precedent: the CON-20 handover floor already skips segments on purpose and counts them in `segmentsSkipped` |
-| **Degrade `/health`** on a videoless segment | nothing, and it fixes no viewer |
-| **Nothing**, and document it | free, and a broadcaster can ship a silent total failure |
+| **Never for an audio stream** | every segment of one carries no video, so the guard would publish nothing at all, ever |
+| **Give up at 10 seconds**, publish anyway at error level | a publisher that never sends a frame under a video mediatype would otherwise be taken off the air **by the guard**. A silent outage this causes is worse than the fault it prevents |
+| **Publish bytes that are not a transport stream** and stay armed | zero video packets is equally what any other container looks like from here. Without the separation, an engine this cannot parse has **every** segment withheld, and the counter reports a publisher sending no frames |
 
-The uploader already has the signal and already knows its own mediatype, so the first is a small
-change. It is a change to what media a manifest names, which makes it the owner's call rather than a
-correction.
+That last one is why `countPesPackets` exists rather than a `videoPackets === 0` check: it separates
+**media with no picture** from **bytes that are not media**, which `readVideoPts` answers identically.
+
+`opening_segments_withheld_total` on `/metrics` and `openingSegmentsWithheld` on `/health`, with no
+threshold and no reason raised, exactly as `segmentsSkipped` carries none. **The pair is the reading**:
+climbing for a few seconds and stopping is the guard working, climbing while
+`segments_uploaded_total` stays at zero is a publisher sending no frames, and those two were
+indistinguishable from outside before this.
+
+Six mutants, each run alone and each killed: arming for audio, dropping the ceiling, never disarming
+on a segment with video, treating unreadable bytes as videoless, not counting a withhold, and arming
+after recovery regardless of what the restored manifest already named.
+
+⚠️ **After recovery the gate is armed only where the crash beat the first manifest.** A restored
+manifest naming a segment is one players were served, and their codec sets are fixed whatever the
+stream does next, so withholding there would lose media and change nothing a viewer sees.
 
 ## ⭐ The transferable part
 

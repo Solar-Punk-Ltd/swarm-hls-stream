@@ -1176,6 +1176,33 @@ counter and refuse the artifact, rather than discovering it in a player three st
 timestamps are unusable, which costs no picture. A check matching the warning refuses good artifacts
 and sends someone hunting a video problem that is not there.
 
+✅ **The uploader now fixes this at the source rather than only reporting it**, which is what makes it
+survivable at three hundred encoders: a video stream's opening segments are **withheld** until one
+carries a frame, so the first fragment every player parses has a picture in it. See 5.15 for the part
+that is harder than the withholding.
+
+### 5.15 ⛔⛔ A guard that cannot be wrong is a guard that can take you off the air
+
+Withholding the videoless opening is four lines. The bounds around it are the design, and every one of
+them exists because the guard's own failure mode is worse than the fault it prevents.
+
+| bound                                                             | what it stops the guard doing                                                                                                                              |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **never for an audio stream**                                     | every segment of one carries no video, so the guard would publish **nothing at all**, for the whole broadcast                                              |
+| **give up at 10 seconds of media** and publish anyway, loudly     | a publisher that never sends a frame under a video mediatype would otherwise be silenced by the guard rather than by its own fault                         |
+| **publish bytes that are not a transport stream**, and stay armed | zero video packets is equally what any container you cannot parse looks like. Withhold on that and an engine you do not understand loses **every** segment |
+
+⭐ **The third one is the transferable lesson and it is not about video.** "I could not find X" and
+"there is no X" are the same return value from most parsers, and a guard that acts on the second while
+reading the first will fire hardest exactly where you understand the input least. Make the parser
+answer both questions separately before you act on either: here that meant counting audio packets as
+well as video ones, so **media with no picture** and **bytes that are not media** stopped being the
+same reading.
+
+⭐ **Pair the counter with a second one before you alarm on it.** Withheld segments climbing and then
+stopping is the guard working. Withheld climbing while uploads stay flat is a publisher sending no
+frames. Neither number says which on its own, and a scale run wants the difference.
+
 ---
 
 ## 6. The toolkit
