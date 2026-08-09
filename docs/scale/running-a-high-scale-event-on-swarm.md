@@ -549,18 +549,56 @@ it can be**, and a deployment has to clear both.
 
 ### ⛔⛔ 2.4e-bis A gateway restarted mid-event is out of service for minutes
 
-✅ **Measured 2026-08-08**, incidentally, because the sweep above alternated an identical reference arm.
+✅ **Seen 2026-08-08** incidentally, then **replicated deliberately** with a measured decay curve
+([full report](../bench/a-cold-gateway-needs-a-minute-2026-08-08.md)), and its mechanism narrowed
+2026-08-09 ([full report](../bench/a-cold-gateway-is-idle-long-before-it-is-cheap-2026-08-09.md)).
 
-**The same work costs about three times as much on a freshly recreated node**: 194 CPU-seconds against
-70 warm, 47% of segments over budget against 0.0%, and viewers ending 13 seconds behind rather than
-level. At 128 viewers, which is comfortably inside capacity.
+Five identical 128-viewer arms after a recreate, two rounds:
 
-⭐ It takes **three to four arms, roughly two minutes**, to decay. Peer count is flat throughout, so it
-is not a node short of peers.
+| arm          | CPU per MB, r1 / r2 |       vs settled | over budget      | ended behind      |
+| ------------ | ------------------: | ---------------: | ---------------- | ----------------- |
+| **W1, cold** |   **0.231 / 0.220** | **2.16 / 2.06x** | **32.3 / 40.4%** | **6045 / 6785ms** |
+| W2           |       0.126 / 0.128 |     1.18 / 1.20x | 0.6 / 0.5%       | 29 / 0ms          |
+| W3           |       0.119 / 0.120 |     1.11 / 1.12x | 0.0 / 1.1%       | 0 / 0ms           |
+| W4           |       0.101 / 0.112 |     0.94 / 1.05x | 0.0 / 0.0%       | 0 / 0ms           |
+| W5           |       0.106 / 0.107 |     0.99 / 1.00x | 0.0 / 0.0%       | 0 / 0ms           |
 
-⛔ **So warm a newly provisioned gateway before pointing viewers at it**, and treat a restart during a
-live event as taking that gateway out for minutes rather than seconds. ⬅ The exact decay curve is being
-measured separately.
+⭐⭐ **CPU and the viewer recover on different timescales.** CPU takes three to four arms. **The viewer
+is fine after one.** So a gateway is **unfit to serve for about a minute and quietly expensive for about
+three**.
+
+⚠️ The incidental observation gave 2.8x and the deliberate replication 2.1x. The difference is that the
+first recreate also changed the node's funding, so **2 to 3x is the honest range** and 2.1x is the figure
+measured with only the recreate varying.
+
+### ⛔⛔ And there is no readiness signal that goes green late enough
+
+✅ **Measured 2026-08-09** by sampling a settled node and a freshly recreated one on the same arm with
+**no retrieval at all**, which separates "the retrieval path is more expensive cold" from "the node is
+busy with startup work".
+
+**Background work is not the mechanism.** Non-retrieval CPU runs at **14x for thirty seconds** and then
+sits between 0.53x and 1.06x of warm for the next four and a half minutes. It does not decay, it stops.
+
+| signal                                     | green after     |
+| ------------------------------------------ | --------------- |
+| `/health` answers                          | milliseconds    |
+| bee's own warmup completes                 | **1.4 seconds** |
+| peer count reaches its steady value        | **5 seconds**   |
+| background CPU reaches its floor           | **25 seconds**  |
+| **retrieval costs what it normally costs** | **minutes**     |
+
+⛔ **Every cheap check says ready long before the node is cheap to serve from**, so a load balancer
+cannot wait for a signal, because there is not one. ⭐ **The only thing that warms a gateway is retrieval
+traffic.** Walk a few hundred references through a new node before admitting viewers, and count that walk
+as part of provisioning.
+
+⛔ **Treat a restart during a live event as taking that gateway out for minutes rather than seconds.**
+
+⚠️ What the remaining cost actually is stays open. Bee's own `--warmup-time` is ruled out (it defaults to
+five minutes but is a maximum, and the node logs 1.4 seconds), and so is peer discovery (381 peers on the
+first sample). ⬅ Per-peer stream setup, unlearned peer selection and first-contact accounting are all
+still candidates.
 
 ### ⭐⭐ 2.4f What actually limits a gateway is how many viewers arrive at once
 
@@ -965,9 +1003,10 @@ during an unfunded arm.
 
 ⚠️ **What varies between identical unfunded runs. The strongest lead is now confirmed.** Eleven arms
 spanned 1.9% to 19.5% late and neither idle, debt level nor arm order accounted for it, with a container
-recreate named as the likeliest cause. **2.4e-bis measures it: the arm after a recreate cost 3x the CPU
-and put 47% of segments over budget against 0.0% warm.** ⬅ It still does not explain every arm, so
-treat it as the largest known term rather than the whole answer.
+recreate named as the likeliest cause. **2.4e-bis measures it: the arm after a recreate cost 2.1x the CPU
+per MB and put 32 to 40% of segments over budget against 0.0% warm**, reproducibly across two rounds, and
+the mechanism is narrowed to the retrieval path rather than to startup housekeeping. ⬅ It still does not
+explain every arm, so treat it as the largest known term rather than the whole answer.
 
 ✅ **How the CPU cost behaves under a realistic duty cycle. Answered 2026-08-08**, see 2.2 and 2.4e.
 Per-MB holds within 20%, per-viewer halves. What replaces it is narrower: ⬅ **whether a
