@@ -817,6 +817,137 @@ rather than a finding.
 ⚠️ **And it is what to check before believing anything about LL-HLS.** Smaller parts mean more
 speculative reads, so the floor gets asked more often, not less. ⬅ Wash or loss is unmeasured.
 
+## 2z. What the NETWORK sees: a load model for a multi-stage event
+
+**Written 2026-08-10 for the Devcon question.** Everything above characterises **our gateway**. This
+section is the only place that turns those measurements outward and asks what load the **swarm** sees,
+because that is the question an event actually poses.
+
+⛔⛔ **Read the boundary first. We cannot tell you the network's capacity.** Nothing in this repository
+measured the swarm's aggregate headroom, and no amount of single-gateway work can. **What this section
+does is bound OUR demand and identify which decisions move it by orders of magnitude.** That is a
+different claim and a weaker one, and it is still the useful one, because our demand is the only term
+we control.
+
+### 2z.1 The unit the network actually feels is a CHUNK REQUEST, not a viewer and not a byte
+
+At 720p / 2500 kbps / 0.25s, per stream:
+
+|                                                          |           |
+| -------------------------------------------------------- | --------: |
+| segment                                                  |     94 kB |
+| chunk, measured here                                     |   ~3.6 kB |
+| chunks per segment                                       |   **~26** |
+| segments per second                                      |      3.75 |
+| **chunk retrievals per second, per stream, per gateway** |   **~98** |
+| real peer contacts per chunk, funded                     | **1.142** |
+| **peer requests per second, per stream, per gateway**    |  **~112** |
+
+⚠️ **Derived**, by dividing measured segment sizes by the measured chunk size and multiplying by the
+measured per-chunk contact count. Every input is measured, the multiplication is not.
+
+### 2z.2 ⭐⭐⭐ Pooling is worth about 100x. It is the single decision that decides the whole question.
+
+A gateway fetches each distinct chunk **once** and serves every viewer behind it from that fetch, so
+network demand scales with **gateway-stream pairs**, not with people. Twelve stages, 200 viewers each,
+2,400 viewers total:
+
+| topology                                                          | peer requests per second at the swarm |  relative |
+| ----------------------------------------------------------------- | ------------------------------------: | --------: |
+| **pooled behind gateways** (24 gateway-stream pairs)              |                            **~2,700** |    **1x** |
+| every viewer its own light node                                   |                              ~269,000 |  **100x** |
+| every viewer a browser node, IF its 6-peer constant means 6 sends |                            ~1,600,000 | **~600x** |
+
+⭐⭐⭐ **So the architecture question is not "can the network take Devcon". It is "does Devcon arrive
+pooled or unpooled", and those two differ by two orders of magnitude on identical content.** A pooled
+event is a rounding error against normal network traffic. An unpooled one is a load test nobody agreed
+to run.
+
+### 2z.3 ⛔⛔ The funding multiplier is 13%, NOT 38x, and this document said 38x for weeks
+
+The unfunded arm shows **39.41 peer-selection iterations per chunk** against 1.14 funded. **Those are
+not requests.** `bee_retrieval_request_attempts` increments **before** the accounting call that decides
+whether to contact the peer at all, so a skipped peer is counted and never asked. Subtracting skips:
+
+| arm      | attempts | − skips | **real contacts** | per chunk |
+| -------- | -------: | ------: | ----------------: | --------: |
+| funded   |   23,924 |       5 |            23,919 | **1.142** |
+| unfunded |  825,931 | 799,072 |        **26,859** | **1.281** |
+
+⭐ **An unfunded node adds about 13% network load. It does 34x the bookkeeping and 1.13x the traffic.**
+
+⛔ **What funding actually decides is the VIEWER's experience, not the network's load**: 0.0-0.3% of
+segments over budget funded, against **11.6-15.0% unfunded**. Fund nodes because unfunded viewers get a
+bad stream, not because they hurt anyone else.
+
+⚠️ **And apply the same suspicion to weeb-3's `RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`.** That constant
+was read from source and **never verified to be six sends rather than six candidates**. bee taught us
+that exact lesson at a cost of a wrong figure carried for weeks. **The browser row in 2z.2 is the least
+trustworthy number in this document.**
+
+### 2z.4 ⭐⭐ Chunks spread. Feeds concentrate. That is the only structural hot spot.
+
+**Segment chunks are content-addressed**, so a stream's chunks scatter uniformly across the address
+space and their load lands on the whole network rather than on any neighbourhood. Nothing to manage.
+
+⛔ **A feed is one address.** Every viewer of a stage polls the same single-owner-chunk address, which
+lives in **one neighbourhood**. That neighbourhood is the only place an event concentrates load.
+
+| topology                        | pollers on one feed address |
+| ------------------------------- | --------------------------: |
+| pooled, 2 gateways per stage    |                       **2** |
+| unpooled, 200 viewers per stage |                     **200** |
+
+✅ **Measured, and it is why pooling matters twice**: a feed read at 128 concurrent readers costs what
+it costs at one, through a gateway. That result was taken **through gateways**, so it says pooled feed
+traffic is free. **It says nothing about 200 independent nodes polling one neighbourhood**, which is
+exactly the unpooled case and is unmeasured.
+
+⛔ **And about 45% of live-edge feed reads are not-founds**, each costing about 480ms and zero BZZ.
+Speculative reads are **free in money and expensive in time**, and the 43-44 MB/s ceiling **cannot see
+them at all** because they move no bytes. A load model that reasons in bytes will under-count feed
+traffic entirely.
+
+### 2z.5 The write side, which nothing here has ever tested
+
+Twelve stages publishing simultaneously, derived from the same per-stream arithmetic:
+
+|                                                               |                                   |
+| ------------------------------------------------------------- | --------------------------------: |
+| chunks written per second, all stages                         |                        **~1,180** |
+| feed updates per second (one SOC write per segment per stage) |                           **~45** |
+| before neighbourhood replication                              | multiply by the redundancy factor |
+
+⛔⛔ **Every measurement in this repository is ONE stream.** Concurrent publishing has never been run,
+so the table above is arithmetic with no experimental support whatsoever, and the uploader's behaviour
+under fifteen simultaneous broadcasts is genuinely unknown. **This is the largest gap between what we
+know and what an event requires.**
+
+### 2z.6 What we can say, and what we refuse to say
+
+✅ **We can say**, with measurement behind it:
+
+- A pooled event's swarm-facing demand is **~2,700 peer requests per second** for twelve stages and
+  2,400 viewers, and that is small.
+- **Pooling changes that by ~100x**, unpooling by the same factor in the other direction.
+- **Funding changes network load by ~13%** and viewer experience by **50x** in late-segment share.
+- **Feeds are the only hot spot**, and pooling keeps them cold.
+- **A cache does not raise any ceiling**, it reduces work under one.
+
+⬅ **We refuse to say**, because nobody measured it:
+
+- Whether the swarm has headroom for this on top of its normal traffic. **Out of scope for this repo
+  and not answerable from here.**
+- How a fleet of gateways behaves. Every fleet number is a single node divided.
+- What fifteen concurrent publishers do to an uploader, a bee node, or a postage batch.
+- Whether 200 independent light nodes polling one feed neighbourhood is fine or is a hot spot.
+- Whether weeb-3 really sends six requests per chunk.
+
+⭐⭐⭐ **The single most useful thing this analysis produces is not a capacity number. It is that the
+three decisions which matter most (pool or not, fund or not, feed design) are all OURS, and two of them
+are free.** The network's capacity is the term we cannot control and, if the event is pooled, the term
+we probably do not need.
+
 ## 3. How to measure: the statistics
 
 ### 3.1 ⛔ Rate of crossing, not central tendency
