@@ -20,6 +20,7 @@ import { MEDIA_TYPE_VIDEO, STREAM_STATUS_VOD, StreamState } from '../src/types.j
 
 import { FakeClock } from './helpers/fakeClock.js';
 import {
+  makeFakeCatalog,
   makeFakeRecoveryStore,
   makeRecordingCatalog,
   makeRecoveredState,
@@ -92,6 +93,48 @@ describe('a live stream whose engine dies without saying so (#86)', () => {
 
     assert.equal(hasFinalized(published), true, 'the broadcast must be published as a VOD rather than left live');
     assert.equal(orch.getActiveStreamCount(), 0, 'the orphaned stream must not keep holding its id');
+  });
+
+  /**
+   * `streams_reaped_total` counts the moment the reaper decides, not the finalize that follows it, and
+   * this pins that so the wording and the behaviour cannot drift apart again. Both had said "finalized"
+   * while the increment sat one line above a fire-and-forget `stopStream`.
+   *
+   * The call site is deliberately left where it is. It is the engine-health signal the reaper was built
+   * to provide, and moving it behind a successful stop would lose that signal in exactly the situation
+   * where an operator most needs it: an engine dying while Bee is also refusing writes. The cost of
+   * keeping it is that a reap is not a finalize, and the pair below is how an operator tells them
+   * apart, so the pair is what the test asserts.
+   */
+  it('counts the reap decision, and the failed finalize separately, when the VOD write is refused', async () => {
+    const clock = new FakeClock();
+    const saved: StreamState[] = [];
+    // Only the VOD write is refused, so the broadcast starts and runs exactly as it always does and the
+    // failure lands precisely where the reaper's own finalize is.
+    const catalog = makeFakeCatalog({
+      addStream: async (entry: { state?: string }) => {
+        if (entry?.state === STREAM_STATUS_VOD) {
+          throw new Error('fake catalog refused the VOD write');
+        }
+      },
+    });
+    const orch = makeTestOrchestrator(
+      { orphanReapMs: REAP_MS, recoveryTimeout: RECOVERY_MS, segmentStallMs: STALL_MS, clock },
+      {},
+      makeFakeRecoveryStore({ save: (_streamId: string, state: StreamState) => saved.push(state) }),
+      catalog,
+    );
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('seg0'));
+    await waitFor(() => saved.length > 0, SETTLE_CEILING_MS);
+
+    await clock.advance(REAP_MS + 1);
+    await waitFor(() => orch.getMetricsSnapshot().streamsFailedTotal > 0, SETTLE_CEILING_MS);
+
+    const snapshot = orch.getMetricsSnapshot();
+    assert.equal(snapshot.streamsReapedTotal, 1, 'the reap is counted even though nothing was finalized');
+    assert.equal(snapshot.streamsFailedTotal, 1, 'and the finalize that failed is counted as a failure');
   });
 
   /**

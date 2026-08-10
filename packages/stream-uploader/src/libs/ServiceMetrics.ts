@@ -61,7 +61,20 @@ export class ServiceMetrics {
   }
 
   /**
-   * A broadcast finalized because its engine went silent, rather than because anything asked. See #86.
+   * A broadcast the reaper GAVE UP ON because its engine went silent, rather than because anything
+   * asked. See #86.
+   *
+   * ⛔ This counts the reaper's decision, not the finalize that follows it. The increment happens
+   * before `stopStream`, which is fired and forgotten, so a rise here means "this many broadcasts were
+   * abandoned by their engine", never "this many VODs were published". Its siblings
+   * `recordStreamFinalized` and `recordStreamFailed` both count outcomes, which is the distinction the
+   * word "finalized" used to blur here.
+   *
+   * The call site stays where it is deliberately: it is the engine-health signal the reaper exists to
+   * provide, and moving it behind a successful stop would lose it in exactly the case an operator most
+   * needs it, an engine dying while Bee is also refusing writes. A reap whose finalize fails also
+   * increments `streamsFailed`, so the two counters together separate "engine died" from "and we could
+   * not publish the recording either".
    *
    * Worth a counter of its own rather than folding into the finalize total, because every one of these
    * is an engine that died without sending `on_unpublish`. A deployment where this is routine has a
