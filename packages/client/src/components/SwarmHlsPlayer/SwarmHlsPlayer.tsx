@@ -11,6 +11,7 @@ import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './C
 import { FEED_STATE_LIVE, FeedState } from './feedState';
 import { attachLivePlaybackRateGuard } from './livePlaybackRate';
 import { ManifestStateManager } from './ManifestManagement';
+import { nextMediaErrorAction, NO_MEDIA_ERRORS_YET } from './mediaErrorRecovery';
 import { attachPlaybackStallReporter } from './playbackHealth';
 import { buildPlayerConfig } from './playerConfig';
 
@@ -84,6 +85,10 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         setRestartTrigger((prev) => prev + 1);
       };
 
+      // Held across errors rather than inside the handler, because the escalation is about how many
+      // failures arrived in a row and a per-event value cannot remember that.
+      let mediaErrors = NO_MEDIA_ERRORS_YET;
+
       video.addEventListener('pause', onHlsPause);
       video.addEventListener('play', onHlsPlay);
 
@@ -106,10 +111,24 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
             console.warn('Fatal network error');
             restartStream();
             break;
-          case ErrorTypes.MEDIA_ERROR:
-            console.warn('Fatal media error');
+          case ErrorTypes.MEDIA_ERROR: {
+            // ⛔ Recovery re-appends the media that just failed, so calling it on every fatal media
+            // error with no window and no ending is an unbounded loop that refetches fragments each
+            // turn. A broadcast whose opening media a decoder will not accept used to leave a viewer
+            // on a black player pulling media for as long as the tab stayed open.
+            const decision = nextMediaErrorAction(mediaErrors, Date.now());
+            mediaErrors = decision.state;
+            console.warn(`Fatal media error, ${decision.action}`);
+            if (decision.action === 'restart') {
+              restartStream();
+              break;
+            }
+            if (decision.action === 'swap-codec-and-recover') {
+              hls?.swapAudioCodec();
+            }
             hls?.recoverMediaError();
             break;
+          }
           default:
             console.error('Unrecoverable fatal error. Destroying and restarting.');
             restartStream();
