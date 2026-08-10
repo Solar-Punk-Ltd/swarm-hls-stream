@@ -7,7 +7,7 @@ import { config } from '@/utils/config';
 
 import { LadderFeedPoller } from './LadderFeedPoller';
 import { ManifestStateManager } from './ManifestState';
-import { buildMasterPlaylist, parseManifest, parseSwarmUri } from './playlist';
+import { absoluteBytesBase, buildMasterPlaylist, parseManifest, parseSwarmUri } from './playlist';
 
 /** A stream's ABR ladder, as the loader needs it: who owns the feeds, and what the rungs are. */
 export interface LadderSource {
@@ -98,7 +98,7 @@ export class ManifestFetcher {
     // what is there — the only wait is for the very first response to arrive.
     if (this.poller.isPolling(hexTopic)) {
       await this.poller.ready(hexTopic);
-      return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+      return this.stateManager.serialize(hexTopic, this.bytesBaseUrl());
     }
 
     if (!this.stateManager.getIndex(hexTopic)) {
@@ -123,7 +123,7 @@ export class ManifestFetcher {
       this.stateManager.setIndex(hexTopic, extractFeedIndex(res));
     }
 
-    return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+    return this.stateManager.serialize(hexTopic, this.bytesBaseUrl());
   }
 
   private async handleFollowupFetch(owner: string, topic: Topic): Promise<string> {
@@ -151,12 +151,17 @@ export class ManifestFetcher {
         console.error('Error fetching follow-up:', error);
       });
 
-    return this.stateManager.serialize(hexTopic, `${this._beeUrl}/bytes`);
+    return this.stateManager.serialize(hexTopic, this.bytesBaseUrl());
   }
 
   private generateNextId(topic: Topic): string {
     const currentIndex = this.stateManager.getIndex(topic.toString())!;
     return makeFeedIdentifier(topic, currentIndex.next()).toString();
+  }
+
+  /** Absolute, because it is written into a playlist. See {@link absoluteBytesBase}. */
+  private bytesBaseUrl(): string {
+    return absoluteBytesBase(this._beeUrl, window.location.origin);
   }
 
   private async fetchResource(path: string): Promise<Response> {

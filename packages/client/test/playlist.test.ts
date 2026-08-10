@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  absoluteBytesBase,
   buildMasterPlaylist,
   buildSwarmUri,
   parseManifest,
@@ -28,6 +29,33 @@ describe('swarm URIs', () => {
 
   it('still parses the bare owner/topic form hls.js hands back for a single rendition', () => {
     assert.deepEqual(parseSwarmUri('aabbcc/topic-uuid'), { owner: 'aabbcc', topic: 'topic-uuid' });
+  });
+});
+
+describe('absoluteBytesBase', () => {
+  const origin = 'http://localhost:5173';
+
+  it('absolutises the dev proxy path, which is otherwise resolved against swarm://', () => {
+    // The bug this exists to prevent: a root-relative "/bee/bytes/<ref>" in a media playlist whose
+    // own URL is swarm://<owner>/<topic> resolves to swarm://<owner>/bee/bytes/<ref>, and the
+    // fragment loader then requests <origin>//<owner>/bee/bytes/<ref> — which a dev server answers
+    // with index.html rather than a segment.
+    assert.equal(absoluteBytesBase('/bee', origin), 'http://localhost:5173/bee/bytes');
+  });
+
+  it('leaves an already absolute gateway alone', () => {
+    assert.equal(absoluteBytesBase('http://localhost:1653', origin), 'http://localhost:1653/bytes');
+    assert.equal(absoluteBytesBase('https://gateway.example', origin), 'https://gateway.example/bytes');
+  });
+
+  it('does not double the slash on a trailing-slash gateway URL', () => {
+    assert.equal(absoluteBytesBase('http://localhost:1653/', origin), 'http://localhost:1653/bytes');
+  });
+
+  it('always returns something with a scheme, whatever it was given', () => {
+    for (const beeUrl of ['/bee', 'http://localhost:1653', 'https://gateway.example/']) {
+      assert.match(absoluteBytesBase(beeUrl, origin), /^https?:\/\//, `"${beeUrl}" must absolutise`);
+    }
   });
 });
 
