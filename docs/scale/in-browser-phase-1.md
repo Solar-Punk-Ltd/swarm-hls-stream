@@ -188,6 +188,39 @@ pure-consumer finding above is unaffected and still holds on its own evidence. *
 **7. ⛔ A not-found costs a browser node 13.5 seconds**, against roughly 480 ms for a bee gateway, 28x.
 Any design that speculatively asks for chunks that might not exist is disqualified. **[OBSERVED]**
 
+**8. ⭐⭐⭐ The browser audience's real ceiling is that almost no full node is reachable from a browser,
+and that is a DEFAULT, not a protocol limit.** A browser node has one transport, `websocket_websys`, so
+it can only peer with nodes that terminate TLS WebSocket and advertise it. `addresses.rs` sorts every
+address into `BeeWss`, `DnsTransformedWss` or `Other`, and `Other` returns `None` at the dial site, so
+anything else is dropped before it is tried. **[SOURCE]**
+
+Measured 2026-08-10:
+
+|                                                  |                                          |
+| ------------------------------------------------ | ---------------------------------------- |
+| Swarm nodes our gateway can see                  | **3,979**                                |
+| entry points weeb-3 ships, all of them answering | **319 of 319**                           |
+| machines those 319 resolve to                    | ⛔ **4**, three of them in one /16       |
+| what our own bee gateway advertises              | plain `/ip4/../tcp/..`, **no ws at all** |
+| what a browser can therefore do with our gateway | **nothing, it cannot dial it**           |
+
+⭐ **The lever is two flags that are off by default.** Bee ships `--p2p-wss-enable` and autotls against
+`libp2p.direct`, which produces exactly the `/ip4/../tcp/../tls/sni/../ws/p2p/..` form weeb-3 requires:
+the entry-point list is simply the set of operators who turned them on. So "browsers cannot reach the
+network" is really "almost nobody enabled the listener", and it is fixable by configuration on nodes we
+or others already run, rather than by client work or protocol change. **[SOURCE + OBSERVED]**
+
+⚠️ **Bounds on the 319.** It is WSS reachability only, never libp2p acceptance, so it is an **upper
+bound** on the peers a browser can hold. And it is a count of endpoints, not of independent capacity:
+four machines carry all of it, so an audience of browsers concentrates on four hosts no matter how the
+client is tuned. `INITIAL_BOOTNODE_COUNT = 160` against `CONNECTION_BUILDUP_LIMIT = 200` means a single
+tab spends up to 80% of its connection budget there before discovery gets a slot.
+
+⛔ The probe carries its own null control, because "100% reachable" is exactly the shape a broken probe
+produces: a closed port is refused in 5 ms, an NXDOMAIN in 35 ms, an unroutable address times out at
+10 s, and a live endpoint opens in 1.3 s. Run it with
+[`wss-population-probe.mjs`](../../deploy/scripts/wss-population-probe.mjs).
+
 ---
 
 ## 2. What weeb-3 is, from its own source
