@@ -640,6 +640,84 @@ gateways by roughly three orders of magnitude**, not smaller.
 
 ---
 
+## 5d. ⭐⭐ STEP 5 RUN: bigger fragments are WORSE, and the amortisation premise is dead
+
+**Question 5 asked which fragment profile a browser node prefers.** The premise was that the ~790 ms
+floor is paid per request, so a fragment carrying four times the bytes should cost far less than four
+times the time, making larger fragments a cheap win for browser viewers.
+
+⭐ **It costs nothing and needs no broadcast.** Every reference comes from the archived sweep of
+2026-08-03, which walked GOP 0.25 through 4 in a single sitting: same uploader, same postage batch,
+same day. That is what makes the sizes comparable. A fresh recording per arm would have confounded
+fragment size with upload age. 430 unique references were recovered from `docs/bench/latency-*.json`.
+
+### [OBSERVED] The result, and it points the other way
+
+Sizes were **interleaved round-robin**, so every round fetched one reference of each size in ascending
+order. Rounds 0 to 2, node at 154 peers falling to 72:
+
+| GOP  | median size |  completed | times                        |
+| ---- | ----------: | ---------: | ---------------------------- |
+| 0.25 |      225 KB |    **3/3** | 1.7 s, 19.5 s, 3.7 s         |
+| 0.5  |      223 KB |    **3/3** | 1.3 s, 2.4 s, 3.0 s          |
+| 1    |      443 KB |    **3/3** | 1.8 s, 22.1 s, 4.1 s         |
+| 1.5  |      1.3 MB |        2/3 | 3.9 s, 50.5 s, ⛔ 229 s      |
+| 2    |      204 KB |    **3/3** | 1.0 s, 1.0 s, 1.8 s          |
+| 3    |      2.5 MB |        1/3 | 132 s, ⛔ 77 s, ⛔ 240 s     |
+| 4    |      3.5 MB | ⛔ **0/3** | ⛔ 240 s, ⛔ 240 s, ⛔ 240 s |
+
+⭐⭐ **Everything at or under 465 KB completed, 12 for 12. Everything at 1.3 MB and above failed or
+crawled.** Because the sizes are interleaved, this is a **within-round** contrast: in each round the
+small references succeeded while the large ones in the same round did not. Late-run decay cannot
+produce that pattern.
+
+⛔ **So the answer to question 5 is the opposite of its premise. Do not raise fragment size to help
+browser viewers.** Note also that GOP is a poor proxy for size here (GOP 2 produced 204 KB while GOP
+1.5 produced 1.3 MB), which is why the sizes above are measured rather than assumed.
+
+### ⛔⛔ The run then destroyed its own instrument, and that is why it stops at three rounds
+
+In round 3 a **230 KB** reference also timed out at 240 s, and the node settled at **72 connected with
+128 permanently connecting**. After a reload it stalled at **78/122 for eight minutes without moving**,
+the renderer went unresponsive for over a minute with **no probe of ours running**, and then every
+reference, small ones included, returned **503 in 11 to 100 ms**. That is refusal to retrieve at all,
+a different failure from the 240 s timeouts.
+
+⭐ **A round-3 failure at 230 KB is indistinguishable from a size effect unless something independent
+reports node health.** Rounds 0 to 2 survive because their contrast is within-round. Rounds 3 onward
+are discarded. `deploy/scripts/in-browser-fragment-profile.js` now runs a **cold canary reference at
+the start of every round and discards any round whose canary misses its budget**, which is the control
+this sitting lacked. It also caps each retrieval at 30 s, because weeb-3's own 240 s ceiling spends
+four minutes per stuck fetch to establish nothing that thirty seconds does not.
+
+### ⭐⭐⭐ The control that assigns blame, run on the host
+
+The same three references, through the funded bee gateway:
+
+| reference            | in a browser node  | through the gateway  |
+| -------------------- | ------------------ | -------------------- |
+| `ac39746ac6`, 233 KB | ⛔ 503 in 100 ms   | ✅ 200 in **77 ms**  |
+| `be40d77811`, 230 KB | 1,707 ms           | ✅ 200 in **64 ms**  |
+| `7c792ba083`, 3.5 MB | ⛔ 0/3, 240 s each | ✅ 200 in **649 ms** |
+
+**Every chunk is present and healthy.** The 3.5 MB object that a browser node failed to retrieve three
+times in four minutes each comes back from a gateway in **0.65 seconds**. Whatever is happening above
+belongs to the browser node, not to expired or missing data. ⚠️ The gateway is warm from earlier work,
+so those times are cache-warm rather than cold retrieval. The claim being made is only that the data
+resolves, and for that a warm read is sufficient. Cost of the control: about **0.003 BZZ**.
+
+### ⛔ What this does NOT establish
+
+- **Where the cliff sits.** It is somewhere between 465 KB and 1.3 MB, and the archive offers no sizes
+  in between. The direction is measured, the threshold is not.
+- **Whether the cliff moves with peer count.** During the pilot at roughly 154 peers, the same 3.5 MB
+  object _did_ arrive, in 48.8 s. At 72 peers it never did. One observation each, so this is a reason
+  to re-run on a healthy node, not a finding.
+- **Why the node collapsed.** n=1, and a mechanism read out of source after the fact cannot fail to fit
+  the observation that prompted the reading. It is recorded as an observation and nothing more.
+
+---
+
 ## 6. ⛔⛔ What in-browser nodes do to everything we have measured
 
 This is the section to put in front of the lab.
@@ -915,7 +993,7 @@ every one of these questions has a shape where a small sample lies.
 | **2** | **Can a browser viewer SUSTAIN 2.86 Mbps?** Playhead advance per wall second, over ≥10 minutes, in a real browser that does not pause background media                                                                                                                                                                                                                                                                                                                                                                              | **realtime ratio** ≥ 0.999, plus **stall count** and **stall seconds**. One 10-minute run, then two more                                                                                                                                                                                         | ⛔ **This is the blocker on every throughput claim we have.** ⚠️ **2026-08-10: it cannot be run by an agent at all.** An automated pane is a hidden document with no user activation, so autoplay is blocked and the failure impersonates a delivery failure. Harness written and committed: `deploy/scripts/in-browser-sustain.js`, which refuses to run hidden. **Needs a human to paste it into a focused Chrome tab** | free                                                                         |
 | **3** | ~~What IS the service-time tail, and what causes it?~~ ✅ **DONE, section 5c.** n=500: p50 **807ms**, p90 **1,186ms**, crossing rate **100%**. The tail is a **quantised 194ms retry ladder** on the overdraft path, not slow peers. A miss costs **13.5s**                                                                                                                                                                                                                                                                         | —                                                                                                                                                                                                                                                                                                | ⛔ The plan said "weeb-3 logs enough to separate them". **It does not** — there is no per-chunk logging at all. The distribution plus the constants did the job instead                                                                                                                                                                                                                                                   | done, 0.0019 BZZ                                                             |
 | **4** | **Does the 38x unfunded amplification carry to weeb-3?** ⭐ **Source already sets a floor: `RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`, six peers per chunk by design.** What is open is what the overdraft ladder adds on top of that                                                                                                                                                                                                                                                                                                  | requests **per distinct chunk**, a **funded** against an **unfunded** weeb-3 **on the same laptop, same binary, same peer table**, so implementation, machine and location all stop being confounds. n ≥ 200 chunks. ⛔ Fund BEFORE loading the page: `cheques_active` is cached once at startup | ⛔⛔ Still the highest-value number. ⭐ **2026-08-10: the design is now clean.** weeb-3 can issue real cheques (`cheques_active`, section 6), so this is one binary with one condition changed, not weeb-3 against bee                                                                                                                                                                                                    | ⚠️ **chequebook gas + a BZZ deposit for the funded arm. Owner's call**       |
-| **5** | **Which fragment profile does a browser node actually prefer?** Three forces now point two ways                                                                                                                                                                                                                                                                                                                                                                                                                                     | **A/B/A alternating**, same content at 0.266s and 1.0s, ≥ 300 segments per arm. Report crossing rate, not median                                                                                                                                                                                 | ⛔ `HLS_LIVE_SYNC_SEGMENTS=8` favours 0.25s; per-request cost and `MAX_PARALLEL=3` favour 1.0s; our own campaign favours 1.0s. **Nothing resolves this but a direct A/B**                                                                                                                                                                                                                                                 | free                                                                         |
+| **5** | ✅ **DIRECTION ANSWERED 2026-08-10, section 5d, and it is the OPPOSITE of the premise. Bigger fragments are worse, not better.** ⛔ Open: **where** the cliff sits, and whether it moves with peer count                                                                                                                                                                                                                                                                                                                            | Done for free off 430 archived references, sizes **interleaved round-robin**. Re-run needs a **healthy node** and sizes between 465 KB and 1.3 MB, which the archive does not hold                                                                                                               | ⭐⭐ Everything ≤ 465 KB completed **12/12**; 1.3 MB went 2/3, 2.5 MB 1/3, **3.5 MB 0/3 at a 240s ceiling**, all as a **within-round** contrast. The gateway served the same 3.5 MB object in **0.65 s**, so the data was never the problem                                                                                                                                                                               | free                                                                         |
 | **6** | **Does service time degrade when N browsers want the SAME chunk?**                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | crossing rate at N = 1, 2, 4, 8, alternating arms, ≥ 200 requests per arm                                                                                                                                                                                                                        | The herd question with **no gateway to absorb it**. The closest we can get to the storer-side question from here                                                                                                                                                                                                                                                                                                          | free                                                                         |
 | **7** | **Does it run on mobile at all?** ✅ **The blocking contradiction is SETTLED from source.** The runtime does not use a Shared Worker: `worker.js` is a `self.onconnect` SharedWorker entry point for the **old `Weeb3` class** and **nothing instantiates it**. `Weeb3No103` runs on the main thread, which is why the README lists Chrome and Firefox on Android. Confirmed live: `crossOriginIsolated` is **false** and `SharedArrayBuffer` is **undefined** on the public deployment, with zero references to it in the built JS | boolean, then time-to-playable on one Android and one iOS device                                                                                                                                                                                                                                 | ⚠️ Source removes the objection but **does not prove mobile works**. A 4.15 MB WASM payload and a 200-peer WebSocket table on a phone still need a device                                                                                                                                                                                                                                                                 | free                                                                         |
 | **8** | ~~Is a segment one retrieval or twenty-four?~~ ✅ **ANSWERED from source and timing.** ~25 chunks, fetched **8 at a time** (`RETRIEVE_DATA_GROUP_CONCURRENCY`), each confirmed by **6 peers**, so **~150 peer requests per 95 KB segment** and ~4 rounds, which is the 790 ms base                                                                                                                                                                                                                                                  | —                                                                                                                                                                                                                                                                                                | ⭐ This is the mechanism behind step 5: fragment size changes the round count, not the per-chunk cost                                                                                                                                                                                                                                                                                                                     | done, free                                                                   |
