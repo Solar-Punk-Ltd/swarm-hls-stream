@@ -973,6 +973,29 @@ A browser viewer is a **bounded** request engine, not an open tap:
 **A viewer's sustainable rate is `parallelism / service_time`.** At p50 that is 3/0.246 = 12.2
 requests/s. At p90 it is 3/2.771 = **1.08 requests/s**, below the 3.76/s the 0.266s profile needs.
 
+#### ⛔⛔ And a hard ceiling on FRAGMENT SIZE, which is not a rate at all
+
+Measured twice, section 5d, with canary-verified rounds the second time:
+
+| fragment size | completed, both sittings |
+| ------------- | -----------------------: |
+| ≤ 500 KB      |              **20 / 20** |
+| 1.3 MB        |                    3 / 5 |
+| 2.5 MB        |                    1 / 5 |
+| 3.5 MB        |                **0 / 5** |
+
+**Model this as a retrievability ceiling, not as a slowdown.** A browser viewer does not fetch a 3.5 MB
+fragment slowly, it does not fetch it at all. The simulator should treat fragments above roughly 1 MB
+as **failing** for browser viewers rather than as taking proportionally longer.
+
+⛔⛔ **DO NOT CONFUSE THIS WITH (f)'s "cost is flat across an 8.5x segment-size range".** Both are true
+and they are about different things. **Cost per MB through a gateway is flat with size. Retrievability
+in a browser node is not.** Reading the flat-cost line as "fragment size does not matter" is exactly
+the mistake this row exists to prevent.
+
+⚠️ The threshold is **bracketed, not located**: somewhere between ~511 KB and 1.3 MB. Anything the sim
+does between those two numbers is interpolation.
+
 ### f) Things the simulator can treat as free or flat
 
 - **Feed reads do not scale with audience.** 128 concurrent readers cost what one costs; every loaded
