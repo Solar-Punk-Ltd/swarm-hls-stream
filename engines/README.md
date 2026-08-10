@@ -29,6 +29,12 @@ Set `ABR_ENABLED=true` in `engines/srs/.env` and SRS produces four renditions in
 Each rung is a stream in its own right, so the flow above is unchanged — it just happens four
 times, and the uploader gets four feeds it groups back into one ladder.
 
+The uploader then writes a fifth feed: the ladder's **master playlist**, a multivariant playlist
+naming the four rung feeds, on a topic that *is* the ladder's group id. The catalog entry points at
+that, so one URL yields the whole ladder. It is rewritten whenever a rung's measured bandwidth
+drifts, and always before the catalog entry referring to it — the other order would publish an
+entry whose topic resolves to nothing.
+
 ```
                      transcode (4x ffmpeg)         republish, RTMP 127.0.0.1
 SRT ingest ──▶ __defaultVhost__ ──────────────▶ vhost abr ──▶ HLS + webhooks ──▶ uploader

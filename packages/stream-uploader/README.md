@@ -18,6 +18,24 @@ Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swar
                       └─ Crash recovery (persisted state + recovery timeout)
 ```
 
+### ABR ladder
+
+With `ABR_ENABLED=true` (see [engines/srs](../../engines/srs/)) the engine publishes one stream per
+rung, and each gets its own `StreamUploader` and its own manifest feed. Two things then tie them
+back together:
+
+- The four rungs fold into a **single catalog entry**, keyed by a shared group id rather than by
+  topic. Four uploaders write that entry concurrently, which is safe only because every catalog
+  write goes through one serialized queue.
+- That same point is where the ladder's **master playlist** is written, to a fifth feed whose topic
+  is the group id — it is the only place the whole ladder is known, since each uploader holds just
+  its own rung. The catalog entry's `topic` points at the master, so one URL yields every rung.
+
+Each rung's `BANDWIDTH` in the master is measured from real segments rather than copied from the
+encoder's target, and is re-announced when it drifts more than 15% (at most every 30s, since the
+catalog is one feed shared by every stream). `EXT-X-MEDIA-SEQUENCE` carries the engine's own
+sequence number, which is what tells a player that two rungs share a timeline.
+
 ## Prerequisites
 
 - Node.js 20+
@@ -186,6 +204,10 @@ curl -X POST http://localhost:3000/stream/stop \
 | `StreamCatalog`      | Maintains the stream directory as a Swarm feed                                  |
 | `RecoveryStore`      | Persists stream state to disk for crash recovery                                |
 | `ManifestManager`    | Builds and updates HLS manifests                                                |
+| `AbrLadder`          | The rung list from `ABR_LADDER`, and what maps a stream name back to its rung    |
+| `MasterPlaylist`     | Builds a ladder's multivariant playlist                                          |
+| `MasterFeedWriter`   | Publishes that master to a feed per ladder, topic = the ladder's group id        |
+| `BitrateMeter`       | Measures each rung's real bitrate, which becomes the master's `BANDWIDTH`        |
 
 ## Scripts
 

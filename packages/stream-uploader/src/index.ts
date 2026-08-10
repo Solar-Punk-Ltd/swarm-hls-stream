@@ -1,9 +1,10 @@
-import { Bee } from '@ethersphere/bee-js';
+import { Bee, PrivateKey } from '@ethersphere/bee-js';
 
 import { ApiServerHandle, startApiServer } from './api/server.js';
 import { engineRegistry } from './engines/registry.js';
 import { EnginePlugin } from './engines/types.js';
 import { Logger } from './libs/Logger.js';
+import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
 import { StreamOrchestrator } from './libs/StreamOrchestrator.js';
@@ -79,7 +80,19 @@ async function start() {
     const bee = new Bee(config.beeUrl);
     const recoveryStore = new RecoveryStore(config.stateDir);
 
-    const streamCatalog = new StreamCatalog(bee, config.streamKey, config.streamListTopic, config.stamp);
+    // Only with the ladder on. A single-rendition stream has nothing to be multivariant about, and
+    // publishing a one-entry master for it would buy a second feed and no choice.
+    const masterWriter = config.abr
+      ? new MasterFeedWriter(bee, new PrivateKey(config.streamKey), config.stamp)
+      : undefined;
+
+    const streamCatalog = new StreamCatalog(
+      bee,
+      config.streamKey,
+      config.streamListTopic,
+      config.stamp,
+      masterWriter,
+    );
     await streamCatalog.init();
 
     streamOrchestrator = new StreamOrchestrator(bee, streamCatalog, recoveryStore, {

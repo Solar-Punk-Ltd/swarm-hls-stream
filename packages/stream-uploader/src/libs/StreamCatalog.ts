@@ -6,10 +6,15 @@ import { retryAwaitableAsync } from '../utils/common.js';
 
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
+import { MasterFeedWriter, PublishedMaster } from './MasterFeedWriter.js';
 
 export interface StreamEntry {
   title: string;
   owner: string;
+  /**
+   * The feed a viewer opens. For a ladder this is the master playlist's feed, so one URL yields
+   * every rung; for a single-rendition stream it is the media playlist's feed, as it always was.
+   */
   topic: string;
   state: StreamStatus;
   mediatype: MediaType;
@@ -18,8 +23,7 @@ export interface StreamEntry {
   duration?: number;
   /**
    * Ladder identity, absent on single-rendition streams. Present, it — not `topic` — is what
-   * makes the entry unique, because `topic` points at whichever rung is currently lowest and
-   * would otherwise split one ladder into several entries as its rungs come up.
+   * makes the entry unique, because four rungs fold into one entry and each of them writes it.
    */
   group?: string;
   renditions?: Rendition[];
@@ -43,11 +47,18 @@ export class StreamCatalog {
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
-  constructor(bee: Bee, streamKey: string, feedTopic: string, stamp: string) {
+  /**
+   * Writes each ladder's master playlist. Absent, ladder entries fall back to pointing at their
+   * lowest rung, which is what a client without master support reads.
+   */
+  private masterWriter?: MasterFeedWriter;
+
+  constructor(bee: Bee, streamKey: string, feedTopic: string, stamp: string, masterWriter?: MasterFeedWriter) {
     this.bee = bee;
     this.signer = new PrivateKey(streamKey);
     this.feedTopic = Topic.fromString(feedTopic);
     this.stamp = stamp;
+    this.masterWriter = masterWriter;
     this.logger.debug(
       `[StreamCatalog] bee=${(bee as unknown as { url?: string }).url ?? '?'} owner=${this.signer
         .publicKey()
@@ -83,22 +94,30 @@ export class StreamCatalog {
 
   /**
    * Folds one rung into its ladder's single catalog entry, creating the entry if this is the
-   * first rung up.
+   * first rung up, and republishes the ladder's master playlist to match.
    *
    * Four uploaders call this concurrently for the same ladder, each holding only its own rung.
    * The read-merge-write that reconciles them is only safe because the catalog's queue serialises
-   * every write to this feed, so the merge always sees the previous rung's result.
+   * every write to this feed, so the merge always sees the previous rung's result — and it is also
+   * the only point at which the *whole* ladder is known, which is why the master is written here
+   * rather than from the uploader that happens to hold a rung.
+   *
+   * The master goes out before the catalog entry that points at it. The other order would publish
+   * an entry whose `topic` resolves to nothing for as long as the two writes are apart, and a
+   * viewer reading the catalog in that window sees a stream it cannot open.
    */
   public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<void> {
     return this.queue.add(() =>
-      this.writeFeed((previous) => [
-        ...withoutGroup(previous, identity.owner, identity.group),
-        buildLadderEntry(identity, previous, rendition),
-      ]),
+      this.writeFeed(async (previous) => {
+        const entry = buildLadderEntry(identity, previous, rendition);
+        const published = await this.masterWriter?.publish(identity.group, entry.renditions ?? []);
+
+        return [...withoutGroup(previous, identity.owner, identity.group), published ? withMaster(entry, published) : entry];
+      }),
     );
   }
 
-  private async writeFeed(update: (previous: StreamEntry[]) => StreamEntry[]): Promise<void> {
+  private async writeFeed(update: (previous: StreamEntry[]) => StreamEntry[] | Promise<StreamEntry[]>): Promise<void> {
     let previous: StreamEntry[] = [];
 
     if (this.feedIndex !== null) {
@@ -108,7 +127,7 @@ export class StreamCatalog {
       }
     }
 
-    const state = update(previous);
+    const state = await update(previous);
 
     const nextIndex = this.feedIndex ? this.feedIndex.next() : FeedIndex.fromBigInt(BigInt(0));
     const feedWriter = this.bee.makeFeedWriter(this.feedTopic, this.signer);
@@ -170,6 +189,25 @@ export function buildLadderEntry(identity: LadderIdentity, previous: StreamEntry
   }
 
   return entry;
+}
+
+/**
+ * Repoints a ladder entry at its published master playlist.
+ *
+ * `topic` moves off the lowest rung and onto the master, so one URL yields the whole ladder — and
+ * `index`, which on a finalized stream is where a viewer finds the last playlist written, has to
+ * move with it or it would name an index in the wrong feed. `renditions` stays: it is what lets a
+ * client show the ladder before fetching anything, and what the fallback path builds a master from
+ * when an entry predates masters being published at all.
+ */
+export function withMaster(entry: StreamEntry, master: PublishedMaster): StreamEntry {
+  const repointed: StreamEntry = { ...entry, topic: master.topic };
+
+  if (entry.index !== undefined) {
+    repointed.index = master.index;
+  }
+
+  return repointed;
 }
 
 function withoutTopic(entries: StreamEntry[], owner: string, topic: string): StreamEntry[] {
