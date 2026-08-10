@@ -85,7 +85,11 @@ describe('process signal handling', () => {
     registerShutdownSignals(shutdownRecorder().lifecycle, events);
 
     assert.deepEqual(events.registered.sort(), ['SIGINT', 'SIGTERM']);
-    assert.deepEqual([...SHUTDOWN_SIGNALS].sort(), ['SIGINT', 'SIGTERM'], 'the exported list drifted from what is registered');
+    assert.deepEqual(
+      [...SHUTDOWN_SIGNALS].sort(),
+      ['SIGINT', 'SIGTERM'],
+      'the exported list drifted from what is registered',
+    );
   });
 
   it('writes every line of an uncaught exception, not just the first', () => {

@@ -51,7 +51,10 @@ export function registerShutdownSignals(lifecycle: ShutdownTarget, events: Proce
  * Reports a crash line by line rather than as one object, because a `Promise` and an `Error` both
  * serialize to `{}` through `JSON.stringify`. See `crashReport.ts`, where that is the whole point.
  */
-export function registerCrashHandlers(logger: CrashLogger = Logger.getInstance(), events: ProcessEvents = process): void {
+export function registerCrashHandlers(
+  logger: CrashLogger = Logger.getInstance(),
+  events: ProcessEvents = process,
+): void {
   const report = (lines: CrashLine[]): void => {
     for (const { label, value } of lines) {
       logger.error(label, value);

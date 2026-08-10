@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 // where `ENGINE=srs` is enough to make a shipped default of `''` read back as `'srs'`.
 import '../src/utils/env.js';
 
-type Config = (typeof import('../src/utils/config.js'))['config'];
+type Config = typeof import('../src/utils/config.js')['config'];
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -36,7 +36,13 @@ const REQUIRED_ENV: EnvVar[] = [
 ];
 
 const OPTIONAL_ENV: OptionalEnvVar[] = [
-  { name: 'MANIFEST_ACCESS_URL', field: 'manifestAccessUrl', sample: 'http://manifest.test', fallback: '', refused: [] },
+  {
+    name: 'MANIFEST_ACCESS_URL',
+    field: 'manifestAccessUrl',
+    sample: 'http://manifest.test',
+    fallback: '',
+    refused: [],
+  },
   { name: 'API_PORT', field: 'apiPort', sample: '4444', fallback: 3000, refused: ['-1', '65536'] },
   { name: 'STATE_DIR', field: 'stateDir', sample: '/var/lib/uploader', fallback: './state', refused: [] },
   { name: 'MAX_QUEUE_SIZE', field: 'maxQueueSize', sample: '7', fallback: 100, refused: ['0'] },
@@ -60,7 +66,9 @@ async function loadConfig(env: Record<string, string>): Promise<Config> {
   const saved = process.env;
   process.env = { ...env } as NodeJS.ProcessEnv;
   try {
-    const module = (await import(`../src/utils/config.js?case=${++caseCount}`)) as typeof import('../src/utils/config.js');
+    const module = (await import(
+      `../src/utils/config.js?case=${++caseCount}`
+    )) as typeof import('../src/utils/config.js');
     return module.config;
   } finally {
     process.env = saved;
@@ -84,7 +92,11 @@ describe('the environment contract', () => {
       assert.equal(config[variable.field], variable.sample, `${variable.name} did not reach config.${variable.field}`);
     }
     for (const variable of OPTIONAL_ENV) {
-      assert.equal(config[variable.field], expected(variable), `${variable.name} did not reach config.${variable.field}`);
+      assert.equal(
+        config[variable.field],
+        expected(variable),
+        `${variable.name} did not reach config.${variable.field}`,
+      );
     }
   });
 
@@ -95,7 +107,9 @@ describe('the environment contract', () => {
       assert.equal(
         config[variable.field],
         variable.fallback,
-        `config.${variable.field} defaulted to something other than the documented ${JSON.stringify(variable.fallback)}`,
+        `config.${variable.field} defaulted to something other than the documented ${JSON.stringify(
+          variable.fallback,
+        )}`,
       );
     }
   });

@@ -67,7 +67,11 @@ interface LossCall {
   count: number;
 }
 
-function fakeOrchestrator(calls: SegmentCall[], losses: LossCall[] = [], outcome: SegmentResult = { accepted: true }): StreamOrchestrator {
+function fakeOrchestrator(
+  calls: SegmentCall[],
+  losses: LossCall[] = [],
+  outcome: SegmentResult = { accepted: true },
+): StreamOrchestrator {
   return {
     handleSegment: (streamId: string, segmentIndex: number, _duration: number, data: Buffer) => {
       calls.push({ streamId, segmentIndex, size: data.length });
