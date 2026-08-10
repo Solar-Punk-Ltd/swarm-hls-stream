@@ -13,6 +13,7 @@ import {
 } from '../types.js';
 import { retryAwaitableAsync } from '../utils/common.js';
 
+import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
@@ -78,7 +79,7 @@ export class StreamUploader {
   private isFirstSegmentReady = false;
   private isFirstManifestReady = false;
 
-  private bitrate: BitrateSample = { totalBytes: 0, totalDuration: 0, peakBps: 0 };
+  private bitrate: BitrateSample = emptyBitrateSample();
   private announcedBandwidth = 0;
   private lastBandwidthAnnounceAt = 0;
 
@@ -112,7 +113,7 @@ export class StreamUploader {
   }
 
   public handleSegment(segmentIndex: number, duration: number, data: Buffer): void {
-    this.recordBitrate(data.length, duration);
+    recordSegment(this.bitrate, data.length, duration);
 
     this.segmentQueue.add(async () => {
       const result = await this.uploadDataToBee(data);
@@ -206,16 +207,6 @@ export class StreamUploader {
     };
   }
 
-  private recordBitrate(bytes: number, duration: number): void {
-    if (duration <= 0 || bytes <= 0) {
-      return;
-    }
-
-    this.bitrate.totalBytes += bytes;
-    this.bitrate.totalDuration += duration;
-    this.bitrate.peakBps = Math.max(this.bitrate.peakBps, (bytes * 8) / duration);
-  }
-
   /**
    * What the ladder rung looks like to a player right now.
    *
@@ -226,15 +217,14 @@ export class StreamUploader {
   private buildRendition(final?: { index: number; duration: number }): Rendition {
     const rung = this.ladder!.rung;
     const configuredBps = rung.configuredKbps * 1000;
-    const measuredAvg = this.bitrate.totalDuration > 0 ? (this.bitrate.totalBytes * 8) / this.bitrate.totalDuration : 0;
 
     return {
       name: rung.name,
       width: rung.width,
       height: rung.height,
       topic: this.streamRawTopic,
-      bandwidth: Math.round(this.bitrate.peakBps || configuredBps),
-      avgBandwidth: Math.round(measuredAvg || configuredBps),
+      bandwidth: peakBandwidth(this.bitrate, configuredBps),
+      avgBandwidth: averageBandwidth(this.bitrate, configuredBps),
       ...(final ?? {}),
     };
   }

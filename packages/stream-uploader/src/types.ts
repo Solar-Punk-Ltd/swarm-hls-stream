@@ -40,6 +40,13 @@ export interface BitrateSample {
   totalBytes: number;
   totalDuration: number;
   peakBps: number;
+  /** Trailing segments the peak is measured across. See {@link PEAK_WINDOW_SEGMENTS}. */
+  window?: SegmentSize[];
+}
+
+export interface SegmentSize {
+  bytes: number;
+  duration: number;
 }
 
 /**
