@@ -15,8 +15,6 @@ interface TopicState {
 const HLS_ENDLIST = '#EXT-X-ENDLIST';
 const HLS_PLAYLIST_TYPE = '#EXT-X-PLAYLIST-TYPE';
 const HLS_PLAYLIST_TYPE_EVENT = '#EXT-X-PLAYLIST-TYPE:EVENT';
-const HLS_MEDIA_SEQUENCE = '#EXT-X-MEDIA-SEQUENCE';
-const HLS_MEDIA_SEQUENCE_ZERO = '#EXT-X-MEDIA-SEQUENCE:0';
 
 export class ManifestStateManager {
   private static instance: ManifestStateManager;
@@ -59,8 +57,15 @@ export class ManifestStateManager {
       return false;
     }
 
+    // Kept exactly as the uploader wrote them, first playlist only. The header worth naming is
+    // EXT-X-MEDIA-SEQUENCE: it is the engine's sequence number for the oldest segment in that first
+    // playlist, and since everything appended after it is contiguous, it stays the sequence number
+    // of this playlist's first segment for the whole session. It used to be rewritten to 0 — right
+    // enough for one playlist read on its own, wrong across a ladder, because it is all that tells
+    // hls.js two rungs share a timeline. Four rungs all claiming to start at 0 while their first
+    // segments cover different intervals is a switch that lands in a gap.
     if (state.headers.length === 0) {
-      state.headers = this.normalizeHeaders(headers);
+      state.headers = [...headers];
     }
 
     const newSegments = segments.filter((s) => !state.segmentUris.has(s.uri));
@@ -134,10 +139,6 @@ export class ManifestStateManager {
       });
     }
     return this.topics.get(topicId)!;
-  }
-
-  private normalizeHeaders(headers: string[]): string[] {
-    return headers.map((h) => (h.startsWith(HLS_MEDIA_SEQUENCE) ? HLS_MEDIA_SEQUENCE_ZERO : h));
   }
 
   private buildUri(uri: string, bytesUrl: string): string {
