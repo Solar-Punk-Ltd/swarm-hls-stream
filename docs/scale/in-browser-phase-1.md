@@ -48,6 +48,37 @@ you check visibility. **Any sustained-playback number from an agent-driven pane 
 pane.** The harness `deploy/scripts/in-browser-sustain.js` therefore refuses to run in a hidden
 document rather than producing one.
 
+### ⭐⭐ 2026-08-10: concurrency 3 measured directly, and it does NOT multiply
+
+Raw data `docs/bench/in-browser-concurrency3-2026-08-10.tsv`. Free, no broadcast minutes.
+
+Every throughput number in this document before today was **arithmetic**: a sequential p50 multiplied
+by weeb-3's own `HLS_PREFETCH_BODY_MAX_PARALLEL = 3`. That arithmetic said 345 KB/s, or 0.99x of
+realtime. **Measured directly at concurrency 3 it is 212 KB/s, 0.592x of realtime.** **[OBSERVED]**
+
+| arm                      | concurrency |         p50 |   throughput |
+| ------------------------ | ----------: | ----------: | -----------: |
+| sequential, 2026-08-09   |           1 |      807 ms |     115 KB/s |
+| **parallel, 2026-08-10** |       **3** | **1025 ms** | **212 KB/s** |
+
+⛔ **Three workers return 1.85x the sequential throughput, not 3x**, because the per-request p50 rises
+**27%** under concurrency. Assuming linear scaling overstated delivery by **1.7x**.
+
+⭐ **The floor reproduces across sessions and licenses the comparison**: minimum **791 ms** today
+against **784 ms** on 2026-08-09, and a mean segment of 92 KB against 92.9 KB. The base rung is the
+same node behaviour on both days.
+
+✅ **It does not degrade over time.** Per-minute throughput held at **212 / 214 / 208 KB/s** across the
+clean window, and the p90 sat between 2015 and 2046 ms throughout. Whatever limits a browser node, it
+is not accumulating debt or drifting.
+
+⚠️ **Two honest limits.** The peer table was **146**, not the 200 of the n=500 run, and buildup
+plateaued with peers dropping on `BrokenPipe` as fast as they were dialled, so peer count is an
+uncontrolled variable between the two. And after 180 s I started a second weeb-3 node on the same
+uplink, which raised the p50 and contaminated everything after minute 3. **A concurrency-1 control in
+the same session at the same peer count is still owed**, and until it exists the 1.85x is a
+measurement with a confound rather than a clean scaling law.
+
 **3. ⛔⛔ The reason it struggles is the content, not weeb-3.** That stream is **2560x1600 at
 ~8.5 Mbps**, and a **public gateway** — a full node, not a browser — delivered its segments at a
 median **665 KB/s = 5.3 Mbps**. The content needs **1.6x more throughput than the fastest arm
