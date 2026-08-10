@@ -17,6 +17,11 @@ interface RenderedMetric {
  * Milliseconds everywhere else in this service, seconds here, because Prometheus convention is base
  * units and a timestamp gauge is compared against `time()` in a query. Rendering is the only place
  * that conversion belongs, so nothing upstream has to remember it.
+ *
+ * ⛔ The null branch is an EQUIVALENT MUTANT and no test can kill it. `null / 1000` is already `0` in
+ * JavaScript, so removing the check leaves every output identical. It is kept because relying on that
+ * coercion would state the intent nowhere, and it is written down here so the surviving mutant is not
+ * mistaken for a coverage gap and chased a second time.
  */
 function toUnixSeconds(epochMs: number | null): number {
   return epochMs === null ? 0 : epochMs / 1000;
