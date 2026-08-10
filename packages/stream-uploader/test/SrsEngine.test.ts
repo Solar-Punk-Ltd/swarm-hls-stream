@@ -103,6 +103,44 @@ async function postHls(mediaRoot: string, orchestrator: StreamOrchestrator, file
   }
 }
 
+interface StreamsReply {
+  code: number;
+  started: string[];
+}
+
+/** Posts an `on_publish` or `on_unpublish` and reports the code SRS is answered with. */
+async function postStreams(action: string, app: string, stream: string): Promise<StreamsReply> {
+  const started: string[] = [];
+  const orchestrator = {
+    startStream: (streamId: string) => {
+      started.push(streamId);
+      return true;
+    },
+    stopStream: async (streamId: string) => void started.push(`stop:${streamId}`),
+    recordAuthRejection: () => undefined,
+  } as unknown as StreamOrchestrator;
+
+  const engine = createSrsEngine(MEDIA_ROOT, { webhookToken: TEST_WEBHOOK_TOKEN });
+  const app_ = express();
+  app_.use(express.json());
+  app_.use(engine.prefix, engine.createRouter(orchestrator));
+
+  const { server, baseUrl } = await listenOnLoopback(app_);
+  try {
+    const response = await fetch(
+      `${baseUrl}${engine.prefix}/streams?${SRS_WEBHOOK_TOKEN_PARAM}=${TEST_WEBHOOK_TOKEN}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action, app, stream, param: '' }),
+      },
+    );
+    return { code: (await response.json()) as number, started };
+  } finally {
+    server.close();
+  }
+}
+
 const SEGMENT_BYTES = 'segment-bytes';
 const DECOY_BYTES = 'do-not-touch';
 
@@ -282,5 +320,50 @@ describe('a segment SRS delivered and the uploader never took is accounted as lo
     assert.equal(status, 200);
     assert.equal(calls.length, 1, 'the segment must actually have reached the uploader for this to be a control');
     assert.deepEqual(losses, []);
+  });
+});
+
+/**
+ * `app` and `stream` are relayed by SRS from whatever a publisher typed into their own publish url, so
+ * they are attacker-controlled, and with `PUBLISH_KEY_SECRET` unset they are unauthenticated too.
+ * `utils/streamId.ts` states this rule as belonging to both ends and names SEC-25 as the incident: an
+ * unscreened name was admitted and then could not be named back to `POST /stream/stop` to be removed.
+ * OME's `parseAppStream` applied it. The engine that ships did not.
+ */
+describe('the SRS webhook refuses an app/stream it cannot vouch for (SEC-25)', () => {
+  const UNUSABLE = [
+    { name: 'a traversal in the stream half', app: 'video', stream: '../../etc/passwd' },
+    { name: 'a traversal in the app half', app: '..', stream: 'demo' },
+    { name: 'a backslash, the shape SEC-25 was reported with', app: 'pwn', stream: '..\\..\\video\\victim' },
+    { name: 'a name that does not begin with an alphanumeric', app: 'video', stream: '-leading-dash' },
+    { name: 'an empty stream half', app: 'video', stream: '' },
+    { name: 'a newline, which would forge a log line', app: 'video', stream: 'demo\ninjected' },
+  ];
+
+  for (const { name, app, stream } of UNUSABLE) {
+    it(`refuses a publish naming ${name}`, async () => {
+      const { code, started } = await postStreams('on_publish', app, stream);
+
+      assert.equal(code, 1, 'SRS reads 1 as a refusal, so the publish must answer 1 rather than 0');
+      assert.deepEqual(started, [], 'an unusable name must never reach the orchestrator');
+    });
+  }
+
+  // A publisher SRS already accepted has to be able to leave. SRS reads any non-zero answer as a
+  // failure to retry, and the session an unpublish names is gone from its side either way.
+  it('acknowledges an unpublish naming an unusable app/stream, without acting on it', async () => {
+    const { code, started } = await postStreams('on_unpublish', 'video', '../../etc/passwd');
+
+    assert.equal(code, 0);
+    assert.deepEqual(started, [], 'nothing may be stopped under a name that could never have started');
+  });
+
+  it('still admits the names a real broadcast uses', async () => {
+    for (const stream of ['demo', 'my-stream_2.0', 'clock']) {
+      const { code, started } = await postStreams('on_publish', 'video', stream);
+
+      assert.equal(code, 0, `video/${stream} is a name in use today and must keep working`);
+      assert.deepEqual(started, [`video/${stream}`]);
+    }
   });
 });
