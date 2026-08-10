@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '../src');
+const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SRC = resolve(PACKAGE_DIR, 'src');
 
 /** Local import specifiers in the order the ES module graph evaluates them, which is source order. */
 function localImportsInOrder(file: string): string[] {
@@ -49,5 +50,39 @@ describe('env is loaded before anything reads it (ARCH-4)', () => {
       /getInstance\(\)[\s\S]*?loggerOptionsFromEnv\(process\.env\)/,
       'the logger no longer snapshots process.env at construction',
     );
+  });
+});
+
+/**
+ * The root `.env` is read while `utils/env.ts` is evaluated, from a path built out of the module's
+ * own location, so by the time any test runs there is nothing left to observe: the repository's
+ * `.env` is gitignored, differs per developer and is absent in CI, which TEST-37 rules out reading.
+ * Importing a copy of the module from a directory tree the test owns is what makes the loaded path
+ * visible.
+ */
+describe('the root .env is found from the module, not from the working directory (ARCH-4)', () => {
+  const ROOT_VAR = 'TEST_ROOT_ENV_VAR';
+
+  it('loads the .env four directories above itself, which is the repository root', async () => {
+    const fixtureRoot = mkdtempSync(join(PACKAGE_DIR, '.env-root-fixture-'));
+    const moduleDir = join(fixtureRoot, 'packages', 'uploader', 'src', 'utils');
+    mkdirSync(moduleDir, { recursive: true });
+    copyFileSync(resolve(SRC, 'utils/env.ts'), join(moduleDir, 'env.ts'));
+    writeFileSync(join(fixtureRoot, '.env'), `${ROOT_VAR}=loaded-from-the-repository-root\n`);
+    delete process.env[ROOT_VAR];
+
+    try {
+      await import(pathToFileURL(join(moduleDir, 'env.ts')).href);
+
+      assert.equal(
+        process.env[ROOT_VAR],
+        'loaded-from-the-repository-root',
+        'the uploader read no .env at all, or read one somewhere other than the repository root, ' +
+          'so every setting kept outside the container silently reverts to its default',
+      );
+    } finally {
+      delete process.env[ROOT_VAR];
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
