@@ -28,6 +28,20 @@ decoder, no buffer and no player state machine, so it cannot stall, cannot rebuf
 what a picture looked like. The lag it reports is what a buffer _would_ have absorbed, not what a
 viewer saw.
 
+⛔⛔ **There is a THIRD kind, and it behaves like neither of the above.** A **browser node** viewer runs
+a Swarm node inside the tab (weeb-3) and fetches from the network directly, with no gateway between it
+and the swarm. **Every figure in this document assumes a gateway.** None of them transfer. The three
+things that make it a different animal:
+
+|                                                                                           |                                                       |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| it delivers about **0.59x of realtime** for a 2.86 Mbps stream, so it does not keep up    | 203 KB/s measured against the 357 KB/s needed         |
+| it is **demand only**: it never serves, caches or announces for anyone else               | so an audience of them adds load and no capacity      |
+| fragments above roughly **1 MB stop arriving at all**, which is a ceiling and not a delay | ≤ 500 KB completed 20/20, 3.5 MB completed **0 of 5** |
+
+**Everything about browser nodes lives in [in-browser-phase-1.md](./in-browser-phase-1.md)**, including
+what to feed a simulator, in its section 7b. Do not model a browser-node audience from this document.
+
 **Three labels are used throughout and they are not decoration:**
 
 | label           | means                                                                       |
