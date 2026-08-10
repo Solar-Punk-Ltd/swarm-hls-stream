@@ -132,20 +132,25 @@ value is the baseline. Every other item on this list can start later. This one c
   374 GB across 40 parallel uploads needs batch sizing before the event.
 - **Prediction to falsify:** per-stream behaviour is independent up to some stage count.
 
-### Third: verify weeb-3's six peers, and remove a 5x uncertainty
+### ~~Third: verify weeb-3's six peers~~ ✅ ANSWERED 2026-08-10, and the second row won
 
-`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6` was **read from source and never verified to be six sends
-rather than six candidates**. bee taught us that exact lesson at the cost of a wrong figure carried for
-weeks. It is the difference between these two rows:
+`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6` was **read from source and never verified**. It has now been
+traced to its caller, and **it is not on the viewer's path at all**: `retrieve_check_chunk` reads it,
+and its sole caller runs immediately after `push_chunk`, so six is what an **uploader** does to confirm
+a push. A viewer runs `retrieve_chunk`, which asks **one** peer and breaks on the first valid reply,
+hedging a second only after `RETRIEVE_HEDGE_AFTER_MS = 1000`.
 
-|                          | one browser node | browser nodes = the whole Devcon event |
-| ------------------------ | ---------------: | -------------------------------------: |
-| if 6 means six sends     |        590 req/s |                                  **7** |
-| if ~1.14 sends, like bee |        112 req/s |                                 **37** |
+|                           | one browser node | browser nodes = the whole Devcon event |
+| ------------------------- | ---------------: | -------------------------------------: |
+| ~~if 6 means six sends~~  |    ~~590 req/s~~ |                              ~~**7**~~ |
+| ✅ **~1.1-1.3, like bee** |    **112 req/s** |                                 **37** |
 
-**Method:** connect a browser node to a bee node we own as a peer, fetch a known number of chunks, read
-the inbound count off our node's `/metrics`. An afternoon, and it turns a multiplication into a
-measurement.
+⭐ **Plan against the second row.** The same trap caught us twice in one project, on bee's skip counter
+and now on this constant: **a constant's name is not its behaviour, and the caller is where the
+behaviour is.** Grepping the definition is what produces these errors; grepping the call sites is what
+catches them, and it costs one command.
+
+⚠️ The 112 req/s still rests on an unmeasured denominator, so read "Fourth" below before using it.
 
 ### Fourth: the missing denominator, what can a full node answer?
 

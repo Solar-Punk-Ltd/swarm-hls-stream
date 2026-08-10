@@ -1040,9 +1040,17 @@ realtime at the median and 0.67x at the p90**, on an idle laptop with nothing de
 re-fetch returns in **1 ms**, which is what proves the 790 ms floor is retrieval and not plumbing.
 
 **And a browser node gives nothing back.** It accepts inbound libp2p streams for **pricing and gossip
-only**, never retrieval, so it serves no chunks and contributes no cache. Each one asks **six peers per
-chunk** by design (`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`), roughly **150 peer requests per 95 KB
-segment**. An audience of browser nodes is **all demand and no supply**.
+only**, never retrieval, so it serves no chunks and contributes no cache. An audience of browser nodes
+is **all demand and no supply**.
+
+⛔ **CORRECTED 2026-08-10: the "six peers per chunk" that used to sit here was the uploader's figure,
+not the viewer's.** `RETRIEVE_CHECK_CONFIRMATION_PEERS = 6` is read by `retrieve_check_chunk`, whose
+sole caller runs immediately after `push_chunk`: it is the confirmation an **uploader** takes after
+pushing. The viewer path is `retrieve_chunk`, which asks **one** peer and breaks on the first valid
+reply, hedging a second only after 1 s. Real cost is **~1.1-1.3 requests per chunk**, so the
+"~150 peer requests per 95 KB segment" that followed from it was wrong by roughly two orders of
+magnitude and must not be quoted. The root cause is worth keeping: a constant's **name** was read and
+its **caller** never was.
 
 ⭐ **The tail is a mechanism, not noise.** It is quantised: base 790 ms plus multiples of **194 ms**,
 with empty valleys between the modes. That step is `RETRIEVE_CHECK_RETRY_WAIT_MS = 160` on the
