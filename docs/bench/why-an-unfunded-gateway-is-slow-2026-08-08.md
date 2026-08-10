@@ -61,10 +61,17 @@ for the single-viewer arms they were taken from and do not generalise.** And
 pullsync too, so it may count more than the retrieval loop's skips. Nobody has read that part of the
 source. See [the concurrency sweep](sixteen-viewers-cost-what-one-costs-2026-08-08.md).
 
-⭐ **An unfunded node puts about 13% more load on the network, not 34x.** Two independent arms landing
-at 1.281 and 1.296 against a funded 1.142 is not a coincidence, and it is corroborated by rate: 825,931
-requests in 151 seconds would be **5,470 per second**, which is a peer-selection loop spinning rather
-than a light node saturating a link.
+⭐ **An unfunded node puts about 13% more load on the network in bytes, not 34x.** Two independent arms
+landing at 1.281 and 1.296 against a funded 1.142 is not a coincidence, and it is corroborated by rate:
+825,931 requests in 151 seconds would be **5,470 per second**, which is a peer-selection loop spinning
+rather than a light node saturating a link.
+
+⛔ **Read that as a byte figure and never as the whole answer, which this report was first written to
+say.** Retrievals go up 1.13x, but the pseudo-settlements measured below go up **10.9x**, so total
+messages go up **1.50x**. A settlement message is tiny and a retrieval drags a 4 kB chunk back with it,
+which is the whole reason the two answers differ by 4x. **In bytes it is ~13%. In messages and
+connections it is ~50%.** Which one matters depends on what is scarce, and at fleet scale that is more
+likely to be connections than bandwidth.
 
 ⭐ **So the 37 extra iterations per chunk are local: CPU and latency inside one node.** That does not
 soften the deployment answer, since the late share and the one-second stalls are measured at the

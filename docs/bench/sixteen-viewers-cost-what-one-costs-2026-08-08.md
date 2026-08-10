@@ -61,6 +61,10 @@ published as an unfunded node adding ~13% network load. **At sixteen viewers the
 arithmetic means what it says. ⛔ **It does not generalise to concurrency**, and the earlier
 CPU-per-viewer figure derived from single-viewer arms is wrong for any pooled topology.
 
+⛔ The ~13% quoted above carries a second qualification that has nothing to do with concurrency: it is a
+**byte** figure. Settlement messages go up 10.9x over the same arms, so in messages and connections the
+penalty is nearer **50%**. See `why-an-unfunded-gateway-is-slow-2026-08-08.md`.
+
 ⚠️ **And one assumption underneath it is unverified.** `bee_accounting_accounting_blocks_count` lives
 in the accounting package, which serves pushsync and pullsync as well as retrieval, so it may count
 more than the retrieval loop's skips. The rate-like behaviour above is consistent with that. Nobody
