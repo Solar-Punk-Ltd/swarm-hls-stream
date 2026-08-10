@@ -40,6 +40,25 @@ describe('required', () => {
     process.env[VAR] = '';
     assert.throws(() => required(VAR), { message: `Required env var is set but empty: ${VAR}` });
   });
+
+  // `required` guards API_AUTH_TOKEN, SRS_WEBHOOK_TOKEN and OME_ADMISSION_SECRET, so a value that is
+  // blank in every sense an operator means by blank has to be refused rather than returned. Quoting
+  // in a `.env` and interpolating an unset compose variable both produce whitespace that survives
+  // dotenv, and a service that starts on a one-space auth token looks configured from every angle
+  // except the one that matters.
+  for (const [name, value] of Object.entries({ space: ' ', tab: '\t', newline: '\n', mixed: ' \t ' })) {
+    it(`reports a variable holding only ${name} as empty`, () => {
+      process.env[VAR] = value;
+      assert.throws(() => required(VAR), { message: `Required env var is set but empty: ${VAR}` });
+    });
+  }
+
+  // Returned unchanged rather than trimmed: a secret's surrounding whitespace may be deliberate, and
+  // silently altering one would fail authentication somewhere far from here.
+  it('keeps surrounding whitespace on a value that is not blank', () => {
+    process.env[VAR] = ' padded ';
+    assert.equal(required(VAR), ' padded ');
+  });
 });
 
 describe('optionalInt (OBS-12)', () => {
