@@ -1,61 +1,90 @@
 # Handover to the loadlab repo: what to test, what is already known, and where every number lives
 
-**Written 2026-08-10.** This repository measures **one gateway at current scale**. The loadlab repo runs
-the load tests this one cannot. This file is the bridge: what is settled, what is open, what to run
-first, and the file to open for each claim so nothing is re-derived from memory.
+**Written 2026-08-10, rewritten the same day once the Devcon architecture was settled.** This repository
+measures **one gateway at current scale**. The loadlab repo runs the load tests this one cannot. This
+file is the bridge: what is settled, what is open, what to run first, and the file to open for each
+claim so nothing is re-derived from memory.
 
 ⛔ **Read [`running-a-high-scale-event-on-swarm.md`](./running-a-high-scale-event-on-swarm.md) section
 2z before designing anything.** It is the load model, and its boundaries are the point.
 
 ---
 
-## 1. The three-line summary
+## 1. The target the tests are for
 
-1. **A pooled event is small. An unpooled one is 100x larger on identical content.** Network demand
-   scales with gateway-stream pairs, not with viewers, because a gateway fetches each distinct chunk
-   once and serves everyone behind it from that fetch.
+**Devcon: 10 stages, 4-rung ABR ladder (1080p/720p/480p/360p), 20,000 concurrent viewers, 8 hours.**
+The architecture is settled and it decides which tests matter:
+
+```
+Swarm                                     the content genuinely lives here
+  ↓   104 Mbps pulled ONCE                2-3 bee gateways, redundant
+HTTP cache / CDN                          segments are immutable, they cache perfectly
+  ↓   50 Gbps delivered                   180 TB over the event
+20,000 viewers                            ordinary streaming infrastructure
+```
+
+⭐⭐⭐ **The load Swarm sees is set by `stages x renditions` and by nothing else.** Viewer count does not
+appear anywhere in it. 20,000 viewers or 200,000, Swarm is asked for the same **104 Mbps / 4,124 requests
+per second**. That single property is why the event is feasible, and it is the property every test below
+is really checking.
+
+|                                        |                                     |
+| -------------------------------------- | ----------------------------------: |
+| Swarm-facing, whole event              |          **104 Mbps**, ~4,124 req/s |
+| retrieval cost, 8h, one puller         |                         **254 BZZ** |
+| published to Swarm                     |                          **374 GB** |
+| concurrent uploads                     |        **40** (10 stages x 4 rungs) |
+| delivery layer, scales with audience   | 50 Gbps, 180 TB, conventional money |
+| if bee served viewers directly instead |        **143 gateways, ~3,630 BZZ** |
+
+---
+
+## 2. The three-line summary
+
+1. **Whoever does the fan-out decides everything.** In bee it costs 143 machines and 14x the BZZ. In an
+   HTTP cache it costs 2 to 3 machines and the Swarm side stops caring about audience size.
 2. **A gateway's capacity is a bitrate, ~350 Mbps, and it is internal to bee.** CPU, host load and NIC
-   all had headroom when it was hit. It cannot be bought past. More gateways is the only lever.
+   all had headroom when it was hit. It cannot be bought past.
 3. **We have never run more than one stream, more than one gateway, or more than eight real viewers.**
    Everything at fleet scale in either repo is arithmetic until loadlab measures it.
 
 ---
 
-## 2. Settled, with the file that settles it
+## 3. Settled, with the file that settles it
 
-| claim                       | number                                                   | where                                                          |
-| --------------------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
-| Gateway throughput ceiling  | **344-352 Mbps**, cache-off and cache-warm alike         | `docs/bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md`    |
-| Viewers per gateway, 720p   | **~123**, bracketed 128 held / 192 drained               | same                                                           |
-| Viewers per gateway, 1080p  | **~55** ⚠️ derived, not measured                         | `running-a-high-scale-event-on-swarm.md` §2.4e                 |
-| Retrieval cost              | **0.000678 BZZ/MB**, flat over an 8.5x size range        | §2 cost table                                                  |
-| GOP premium                 | **does not exist**, 1.4% not 15%                         | same                                                           |
-| Viewers pool for free       | 16 cost what 1 costs                                     | §2.4b                                                          |
-| Feed reads under load       | flat to 128 concurrent readers **through gateways**      | §2.6                                                           |
-| Not-found cost              | ~480ms, **zero BZZ**, ~45% of live-edge reads            | §2.7                                                           |
-| Funding is a switch at zero | 0.05 BZZ performs like 6.4 BZZ                           | §2.1b                                                          |
-| Unfunded network cost       | **+13%**, not 34x ⛔ see §2z.3                           | §2.1                                                           |
-| Unfunded viewer cost        | **11.6-15.0% of segments late** vs 0.0-0.3%              | §2.1                                                           |
-| Synchronised audience       | 128 on one tick drain **12.8s of buffer**                | `a-synchronised-audience-is-the-failure-2026-08-08.md`         |
-| Cold gateway                | **2-3x cost for ~2 min**, no readiness signal catches it | `a-cold-gateway-is-idle-long-before-it-is-cheap-2026-08-09.md` |
-| Browser node throughput     | **~0.6x of realtime**, 100% crossing rate                | `docs/scale/in-browser-phase-1.md` §5c                         |
-| Browser node is demand-only | never accepts inbound retrieval                          | same §6                                                        |
-| Browser fragment ceiling    | ≤500 kB **20/20**, 3.5 MB **0/5**                        | `in-browser-fragment-profile-*-2026-08-10.tsv`                 |
+| claim                       | number                                                      | where                                                          |
+| --------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------- |
+| Gateway throughput ceiling  | **344-352 Mbps**, cache-off and cache-warm alike            | `docs/bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md`    |
+| Viewers per gateway, 720p   | **~123**, bracketed 128 held / 192 drained                  | same                                                           |
+| Viewers per gateway, 1080p  | **~55** ⚠️ derived                                          | `running-a-high-scale-event-on-swarm.md` §2.4e                 |
+| Chunks per segment          | **26.2** for a 94 kB segment, includes merkle-tree overhead | §2.5 cache sizing                                              |
+| Retrieval cost              | **0.000678 BZZ/MB**, flat over an 8.5x size range           | §2 cost table                                                  |
+| GOP premium                 | **does not exist**, 1.4% not 15%                            | same                                                           |
+| Viewers pool for free       | 16 cost what 1 costs                                        | §2.4b                                                          |
+| Feed reads under load       | flat to 128 concurrent readers **through gateways**         | §2.6                                                           |
+| Not-found cost              | ~480ms, **zero BZZ**, ~45% of live-edge reads               | §2.7                                                           |
+| Funding is a switch at zero | 0.05 BZZ performs like 6.4 BZZ                              | §2.1b                                                          |
+| Unfunded network cost       | **+13%**, not 34x ⛔ see §2z.3                              | §2.1                                                           |
+| Unfunded viewer cost        | **11.6-15.0% of segments late** vs 0.0-0.3%                 | §2.1                                                           |
+| Synchronised audience       | 128 on one tick drain **12.8s of buffer**                   | `a-synchronised-audience-is-the-failure-2026-08-08.md`         |
+| Cold gateway                | **2-3x cost for ~2 min**, no readiness signal catches it    | `a-cold-gateway-is-idle-long-before-it-is-cheap-2026-08-09.md` |
+| Browser node throughput     | **~0.6x of realtime**, 100% crossing rate                   | `docs/scale/in-browser-phase-1.md` §5c                         |
+| Browser node is demand-only | never accepts inbound retrieval                             | same §6                                                        |
+| Browser fragment ceiling    | ≤500 kB **20/20**, 3.5 MB **0/5**                           | `in-browser-fragment-profile-*-2026-08-10.tsv`                 |
 
 ---
 
-## 3. ⛔ The five traps that cost this project the most
+## 4. ⛔ The five traps that cost this project the most
 
-Every one of these produced a published figure that was wrong. They are listed because loadlab will meet
-the same shapes at larger scale, where they cost more.
+Every one of these produced a published figure that was wrong. Loadlab will meet the same shapes at
+larger scale, where they cost more.
 
 1. **A counter incremented before the send is not a send.** `bee_retrieval_request_attempts` counts
    peers that accounting then skips. This turned "38x network amplification" into the real answer,
    **+13%**. Subtract `accounting_blocks_count` before believing any request rate.
-2. **A correct measurement of the wrong quantity.** The most expensive errors here were never bad
-   instruments. A median transfer time improved 20x while the thing users feel, the rate of crossing a
-   deadline, did not move at all. **Pick the statistic before the run, and prefer rate-of-crossing to
-   medians.**
+2. **A correct measurement of the wrong quantity.** A median transfer time improved 20x while the thing
+   users feel, the rate of crossing a deadline, did not move at all. **Pick the statistic before the
+   run, and prefer rate-of-crossing to medians.**
 3. **A matched control is not a replicate.** One pair of arms giving 0/3 against 3/3 felt conclusive and
    was wrong. Replicate the arm, not just the comparison.
 4. **n=1 does not get a mechanism.** A mechanism found by reading source _after_ an anomaly is fitted to
@@ -66,106 +95,152 @@ the same shapes at larger scale, where they cost more.
 
 ---
 
-## 4. What to run, in order
+## 5. What to run, in order
 
-### First, and it blocks any go decision: concurrent publishers
+### ⭐ Start now, because it expires: the witness node
 
-**Nothing in either repo has run more than one stream.** Fifteen simultaneous stages through an uploader
-that has only ever seen one is the single largest unknown.
+**A full node we own, in the network, doing nothing special**, recording inbound request rate, peer
+count and accounting counters continuously.
 
-- Arms: **1, 2, 5, 10, 15** concurrent broadcasts.
+- **Weeks of baseline before the event** is what makes it useful. There is no way to compress that.
+- **During the event**, any movement is the only network-level signal available to us.
+- Costs one small server.
+
+⛔ **Nobody hands us Swarm-wide telemetry.** A node we control is the entire observability story, and its
+value is the baseline. Every other item on this list can start later. This one cannot.
+
+### First test, and it decides the architecture: one gateway, 40 distinct streams
+
+**Can a single bee gateway pull 104 Mbps of 40 renditions with nothing shared between them?**
+
+- Our 350 Mbps ceiling was measured with viewers **sharing** chunks in cohorts of eight. Forty distinct
+  renditions is the opposite workload and we have no evidence for it.
+- Arms: 4, 10, 20, 40 distinct streams. Measure sustained throughput, per-stream late share, and where
+  it bends.
+- **Prediction to falsify:** one gateway sustains 104 Mbps of fully distinct content.
+- ⭐ Cheapest thing on the list and the only one that can invalidate everything above it.
+
+### Second: concurrent publishers
+
+**Nothing in either repo has run more than one stream.** The Devcon shape is **40 simultaneous uploads**
+(10 stages x 4 rungs) through an uploader that has only ever handled one.
+
+- Arms: **1, 2, 5, 10, 20, 40** concurrent broadcasts.
 - Measure: per-stream publish latency, uploader queue depth, `segments_never_named_total`,
   `manifest_publish_failures_total`, and whether anything serialises.
 - Watch for: a postage batch filling, which went 9.4% to full in a day and then evicts **silently**.
-- Prediction to falsify: per-stream behaviour is independent up to some stage count. **We have no
-  evidence for that and it is the assumption every capacity number rests on.**
+  374 GB across 40 parallel uploads needs batch sizing before the event.
+- **Prediction to falsify:** per-stream behaviour is independent up to some stage count.
 
-### Second: does a fleet behave like one node times N
+### Third: verify weeb-3's six peers, and remove a 5x uncertainty
 
-Every fleet-scale number in both repos is a single-gateway measurement divided.
+`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6` was **read from source and never verified to be six sends
+rather than six candidates**. bee taught us that exact lesson at the cost of a wrong figure carried for
+weeks. It is the difference between these two rows:
 
-- Arms: **1, 3, 8 gateways**, same content, viewers split evenly.
-- Measure: whether per-gateway throughput holds at ~350 Mbps as gateway count rises, and whether the
-  feed neighbourhood shows any effect.
-- Prediction to falsify: gateways are independent.
+|                          | one browser node | browser nodes = the whole Devcon event |
+| ------------------------ | ---------------: | -------------------------------------: |
+| if 6 means six sends     |        590 req/s |                                  **7** |
+| if ~1.14 sends, like bee |        112 req/s |                                 **37** |
 
-### Third: the unpooled feed neighbourhood
+**Method:** connect a browser node to a bee node we own as a peer, fetch a known number of chunks, read
+the inbound count off our node's `/metrics`. An afternoon, and it turns a multiplication into a
+measurement.
 
-§2z.4 identifies the **only structural hot spot**: a feed is one address in one neighbourhood, and our
-"flat to 128 readers" result was taken **through gateways**, so it says nothing about independent nodes.
+### Fourth: the missing denominator, what can a full node answer?
+
+**We measured what a gateway can retrieve. We never measured what a node can answer.** Opposite
+directions, and we only ever instrumented one.
+
+- Point a rising number of requesters at one node we own, find where its response rate bends.
+- ⛔ Until this number exists, "590 requests per second" has nothing to be large or small against, and
+  every claim about how many nodes the network tolerates is invented.
+- It also converts every browser-node figure into "and therefore N more full nodes", which is what
+  planning actually needs.
+
+### Fifth: the unpooled feed neighbourhood
+
+A feed is **one address in one neighbourhood**, and our "flat to 128 readers" result was taken **through
+gateways**, so it says nothing about independent nodes.
 
 - Arms: **1, 8, 32, 128 independent light nodes** polling **one** feed address.
-- Measure: poll latency distribution and not-found share, per node.
-- This is the experiment that decides whether unpooled viewers are merely expensive or actually harmful.
+- The chosen architecture avoids this case entirely, which is a reason to prefer it, but the number is
+  worth having if browser nodes are ever promoted.
 
-### Fourth: the two silent killers
+### Sixth: the two silent killers
 
-Both are ranked first and second on this project's own risk list, both are marked known-to-occur, and
-**neither has ever been run**.
+Both ranked first and second on this project's own risk list, both known to occur, **neither ever run**.
 
-- **Chequebook exhausted mid-stream.** It emptied at run 7 of 12 once, and 64 of 247 peers went past
-  their debt threshold. The uploader has **no behaviour** for it.
+- **Chequebook exhausted mid-stream.** It emptied at run 7 of 12 once, 64 of 247 peers went past their
+  debt threshold, and the uploader has **no behaviour** for it. A dry gateway answers `/health` in
+  1.1 ms with 134 peers while its viewers go to 10.6% late.
 - **Postage batch full or expired mid-stream.** Mutable batches evict silently.
-- ⛔ Both need a funded node, so price them in bytes first: **0.000678 BZZ/MB**.
 
-### Fifth, only once the above pass: real viewers above eight
+### Seventh, once the above pass: real viewers above eight
 
-Probe viewers model retrieval load well and playback not at all. They have no decoder and no buffer, so
-they cannot stall. At some point people have to watch in browsers and stalls have to be counted.
+Probe viewers model retrieval load well and playback not at all. No decoder, no buffer, so they cannot
+stall. At some point people have to watch in browsers and stalls have to be counted.
 
 ---
 
-## 5. The load model, ready to implement
+## 6. The load model, ready to implement
 
-From §2z, at 720p / 2500 kbps / 0.25s. **Drive the simulation in requests, not bytes.**
+**Drive the simulation in requests, not bytes.**
 
 ```
-chunks_per_segment      = 94 kB / 3.6 kB          ~= 26
-segments_per_second     = 1 / 0.267               ~= 3.75
-chunk_reads_per_stream  = 26 * 3.75               ~= 98  per second, per gateway
-peer_requests           = chunk_reads * 1.142     ~= 112 per second, per gateway   (funded)
-                        = chunk_reads * 1.281     ~= 126 per second, per gateway   (unfunded)
+# Swarm side. Note that viewer count does not appear.
+per_stage_kbps    = 6000 + 2500 + 1200 + 700        # the 4-rung ladder
+total_mbps        = per_stage_kbps / 1000 * stages   # 104 at 10 stages
+bytes_per_sec     = total_mbps * 1e6 / 8
+chunk_reads       = bytes_per_sec / 3600             # ~3.6 kB per chunk, measured
+peer_requests     = chunk_reads * 1.142              # measured, funded
+                  = chunk_reads * 1.281              # measured, unfunded
+bzz_per_hour      = bytes_per_sec * 60 / 1e6 * 0.000678 * 60
 
-gateways_per_stage      = ceil(viewers_per_stage / 123)      # 720p; use 54 for 1080p
-network_peer_requests   = stages * gateways_per_stage * 112
+# Delivery side. This is the only place viewers appear.
+egress_gbps       = viewers * avg_viewer_mbps / 1000
 ```
 
 ⚠️ **Feed traffic is invisible to any byte-based model.** A not-found moves no bytes, costs ~480ms, and
 is ~45% of live-edge reads. Model feed polls as a separate request stream or you will under-count.
 
 ⚠️ **Service time is a distribution with a fat tail, never a mean.** Feed it percentiles. A p50 of 246ms
-and a p90 of 2,771ms describe completely different viewers, and the p90 is the one that decides whether
-a stream survives.
+and a p90 of 2,771ms describe completely different viewers, and the p90 decides whether a stream lives.
 
-⛔ **Do not model browser nodes as network participants.** They accept inbound connections for pricing
-and gossip only, never retrieval. They add demand and contribute **no serving and no caching**.
+⛔ **Do not model browser nodes as network participants.** They accept inbound for pricing and gossip
+only, never retrieval. They add demand and contribute **no serving and no caching**.
+
+⚠️ **A request is not one node's problem.** Swarm forwards retrieval toward a chunk's neighbourhood, so
+each request becomes several messages along a path. **We have never measured the hop count**, so every
+request figure here is a lower bound on messages.
 
 ---
 
-## 6. Where the raw data is
+## 7. Where the raw data is
 
 - **`docs/bench/*.md`** one report per sitting, each with its own cost in BZZ and its own controls.
-- **`docs/bench/*.tsv`** raw per-request rows, including discarded arms and the reason they were
-  discarded.
+- **`docs/bench/*.tsv`** raw per-request rows, including discarded arms and why they were discarded.
 - **`docs/bench/*.requests.json`** a corpus of already-paid-for requests. ⭐ Several questions were
   answered from these for **zero broadcast minutes**, including the entire fragment-size result. Check
   here before booking any run.
 - **`deploy/scripts/`** the harnesses. `in-browser-fragment-profile.js` carries the canary pattern worth
   copying: every round opens with a known-good probe, and a round whose canary fails is discarded whole.
-- **`docs/scale/in-browser-phase-1.md`** everything about browser nodes, with simulator inputs in §7b.
+- **`docs/scale/in-browser-phase-1.md`** everything about browser nodes, simulator inputs in §7b.
 - **`docs/reviews/roadmap.md`** the ranked risk list, including the two unrun scenarios above.
 
 ---
 
-## 7. Open questions this repo cannot close
+## 8. Open questions, and who can close them
 
-| question                                              | why it is stuck here                                                                |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Does the swarm have headroom for an event?            | Needs network-wide instrumentation. Not answerable from a single gateway.           |
-| Do concurrent publishers interfere?                   | Never run. **Loadlab's first job.**                                                 |
-| Does a gateway fleet behave like N independent nodes? | One gateway throughout.                                                             |
-| Is an unpooled feed neighbourhood a hot spot?         | Our flat-to-128 result went through gateways.                                       |
-| Does weeb-3 really send 6 requests per chunk?         | Read from source, never verified. bee taught us why that matters.                   |
-| Does funding fix a browser node's tail?               | Test deferred by the owner. Stays a prediction.                                     |
-| What causes the ~14-minute collapse?                  | Seen in 1 run of 15, cause never found, mitigated not fixed.                        |
-| Is ABR worth building?                                | No ladder exists, neither engine transcodes. A product decision, not a measurement. |
+| question                                                        | status                                        | who                                         |
+| --------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------- |
+| Can one gateway pull 40 distinct streams at 104 Mbps?           | **blocks the architecture**                   | loadlab, ~1 day                             |
+| Do 40 concurrent publishers interfere?                          | never run                                     | loadlab, ~1 day                             |
+| Does weeb-3 send 6 requests per chunk or consider 6 candidates? | source-read, unverified                       | either repo, an afternoon                   |
+| What request rate can a full node answer?                       | never measured, **the missing denominator**   | loadlab                                     |
+| How many hops does a retrieval traverse?                        | never measured                                | loadlab                                     |
+| Is an unpooled feed neighbourhood a hot spot?                   | our result went through gateways              | loadlab                                     |
+| Does the Swarm network have headroom for an event?              | **not answerable by measurement from inside** | witness node baseline is the closest we get |
+| Does funding fix a browser node's tail?                         | ⏸ deferred by the owner                       | reopen only on their word                   |
+| What causes the ~14-minute collapse?                            | 1 run in 15, cause never found                | unresolved, mitigated not fixed             |
+| Is ABR worth building?                                          | no ladder exists, neither engine transcodes   | product decision, not a measurement         |
