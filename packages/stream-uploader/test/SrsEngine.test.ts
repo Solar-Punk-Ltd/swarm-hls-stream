@@ -8,6 +8,7 @@ import { after, afterEach, before, beforeEach, describe, it, mock } from 'node:t
 import { createSrsEngine, resolveSegmentPath } from '../src/engines/srs.js';
 import { SRS_WEBHOOK_TOKEN_PARAM } from '../src/engines/srs/webhookToken.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
+import { REJECT_QUEUE_FULL, type SegmentResult } from '../src/types.js';
 
 import { listenOnLoopback } from './helpers/loopbackServer.js';
 
@@ -60,11 +61,21 @@ interface SegmentCall {
   size: number;
 }
 
-function fakeOrchestrator(calls: SegmentCall[]): StreamOrchestrator {
+interface LossCall {
+  streamId: string;
+  firstIndex: number;
+  count: number;
+}
+
+function fakeOrchestrator(calls: SegmentCall[], losses: LossCall[] = [], outcome: SegmentResult = { accepted: true }): StreamOrchestrator {
   return {
     handleSegment: (streamId: string, segmentIndex: number, _duration: number, data: Buffer) => {
       calls.push({ streamId, segmentIndex, size: data.length });
-      return { accepted: true };
+      return outcome;
+    },
+    handleSegmentLoss: (streamId: string, firstIndex: number, count: number) => {
+      losses.push({ streamId, firstIndex, count });
+      return true;
     },
   } as unknown as StreamOrchestrator;
 }
@@ -190,5 +201,82 @@ describe('SRS /hls route reaches the filesystem only inside the media root (SEC-
     assert.deepEqual(calls, [{ streamId: 'video/demo', segmentIndex: 1, size: SEGMENT_BYTES.length }]);
     assert.ok(pathsPassedTo(rmSync).includes(segmentPath), 'an accepted segment must be deleted');
     assert.equal(fs.existsSync(segmentPath), false, 'an accepted segment is removed from the media volume');
+  });
+});
+
+/**
+ * Every one of these answers 200 and drops the segment, which is correct: SRS reads a rejected
+ * `on_hls` as permission to drop the rest of the broadcast silently rather than as a retry. What was
+ * missing is the other half. Without the loss being reported, `segments_lost_total` stays at zero
+ * through a queue-full episode, the health signal aged off it never moves, and the manifest names
+ * the segments either side of the hole as contiguous, so a viewer's player is told a join is seamless
+ * when media is missing from it. Until this landed, the only engine that reported a loss was the OME
+ * puller, which is the one that is deferred.
+ */
+describe('a segment SRS delivered and the uploader never took is accounted as lost', () => {
+  let sandbox: string;
+  let mediaRoot: string;
+  let segmentPath: string;
+
+  before(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'srs-loss-'));
+    mediaRoot = path.join(sandbox, 'media');
+    segmentPath = path.join(mediaRoot, 'video', 'demo-1.ts');
+    fs.mkdirSync(path.join(mediaRoot, 'video'), { recursive: true });
+  });
+
+  beforeEach(() => {
+    fs.writeFileSync(segmentPath, SEGMENT_BYTES);
+  });
+
+  after(() => {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  const LOST_ONCE = [{ streamId: 'video/demo', firstIndex: 1, count: 1 }];
+
+  it('reports the loss when the uploader refuses the segment under backpressure', async () => {
+    const losses: LossCall[] = [];
+
+    const status = await postHls(
+      mediaRoot,
+      fakeOrchestrator([], losses, { accepted: false, reason: REJECT_QUEUE_FULL }),
+      `${SRS_PREFIX}video/demo-1.ts`,
+    );
+
+    assert.equal(status, 200, 'answering a rejection would cost the rest of the broadcast rather than buy a retry');
+    assert.deepEqual(losses, LOST_ONCE);
+  });
+
+  it('reports the loss when the segment file is gone before it can be read', async () => {
+    fs.rmSync(segmentPath);
+    const losses: LossCall[] = [];
+
+    const status = await postHls(mediaRoot, fakeOrchestrator([], losses), `${SRS_PREFIX}video/demo-1.ts`);
+
+    assert.equal(status, 200);
+    assert.deepEqual(losses, LOST_ONCE);
+  });
+
+  it('reports the loss when the named path escapes the media root', async () => {
+    const losses: LossCall[] = [];
+
+    const status = await postHls(mediaRoot, fakeOrchestrator([], losses), '../outside.ts');
+
+    assert.equal(status, 200);
+    assert.deepEqual(losses, LOST_ONCE);
+  });
+
+  // The control for the three above. Without it they would all pass against a handler that reported
+  // every segment as lost.
+  it('reports nothing when the segment is taken', async () => {
+    const losses: LossCall[] = [];
+    const calls: SegmentCall[] = [];
+
+    const status = await postHls(mediaRoot, fakeOrchestrator(calls, losses), `${SRS_PREFIX}video/demo-1.ts`);
+
+    assert.equal(status, 200);
+    assert.equal(calls.length, 1, 'the segment must actually have reached the uploader for this to be a control');
+    assert.deepEqual(losses, []);
   });
 });
