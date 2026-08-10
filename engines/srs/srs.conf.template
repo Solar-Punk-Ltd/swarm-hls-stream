@@ -8,6 +8,14 @@ http_server {
     dir             ./objs/nginx/html;
 }
 
+# Read-only stats, on the port docker-compose has always published. It is what makes a transcode
+# loop visible: with the ABR ladder on, /api/v1/streams must settle at one source plus one stream
+# per rung, and a count that keeps climbing is the loop. Without this the check cannot be run.
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
 srt_server {
     enabled         on;
     listen          10080;
