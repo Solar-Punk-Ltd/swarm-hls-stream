@@ -706,15 +706,49 @@ belongs to the browser node, not to expired or missing data. ⚠️ The gateway 
 so those times are cache-warm rather than cold retrieval. The claim being made is only that the data
 resolves, and for that a warm read is sufficient. Cost of the control: about **0.003 BZZ**.
 
-### ⛔ What this does NOT establish
+### ⭐⭐⭐ REPLICATED on a health-verified node, and the canary is what makes it stick
 
-- **Where the cliff sits.** It is somewhere between 465 KB and 1.3 MB, and the archive offers no sizes
-  in between. The direction is measured, the threshold is not.
-- **Whether the cliff moves with peer count.** During the pilot at roughly 154 peers, the same 3.5 MB
-  object _did_ arrive, in 48.8 s. At 72 peers it never did. One observation each, so this is a reason
-  to re-run on a healthy node, not a finding.
-- **Why the node collapsed.** n=1, and a mechanism read out of source after the fact cannot fail to fit
-  the observation that prompted the reading. It is recorded as an observation and nothing more.
+A second sitting the same day, node steady at **108 connected / 92 connecting**, retrieval budget
+raised to **60 s** so a slow-but-arriving large fetch would still register (the pilot had shown 3.5 MB
+arriving in 48.8 s, and a 30 s bound would have scored that as a failure). **Every round opens with a
+cold ~230 KB canary, and a round whose canary misses its budget is discarded whole.**
+
+| round | canary      | ≤ 511 KB          | 1.3 MB    | 2.5 MB    | 3.5 MB    |
+| ----- | ----------- | ----------------- | --------- | --------- | --------- |
+| 0     | ✅ 1,212 ms | ✅ 4/4, 1.6-3.9 s | ✅ 5.19 s | ⛔ > 60 s | ⛔ > 60 s |
+| 1     | ✅ 1,007 ms | ✅ 4/4, 1.2-4.1 s | ⛔ > 60 s | ⛔ > 60 s | ⛔ > 60 s |
+| 2     | ⛔ 61 s     | _discarded_       |           |           |           |
+| 3     | ⛔ 138 s    | _discarded_       |           |           |           |
+
+⭐⭐ **The canary completed in about a second in the very rounds where 2.5 MB and 3.5 MB could not
+complete in sixty.** That is what the first sitting could not say. The large-fragment misses are no
+longer attributable to node health, because an independent small fetch inside the same round succeeded.
+
+**Both sittings together:** at or under ~500 KB, **20 of 20** completed. At 1.3 MB, **3 of 5**. At
+2.5 MB, **1 of 5**. At 3.5 MB, **0 of 5**.
+
+⛔ **"Over budget" means "did not complete within the budget", never "failed".** The budget is a bound
+the harness imposes, so a row sitting at it is never quoted as a duration.
+
+### ⚠️ [OBSERVED] Sustained retrieval degrades the node itself, twice
+
+Both sittings ran well for two to three rounds and then stopped working entirely. Sitting one: clean
+through round 2, then a 230 KB reference timed out, peers fell to 72 with 128 permanently connecting,
+and every reference returned 503 in 11-100 ms. Sitting two: clean through round 1, then **both**
+remaining canaries missed, at 61 s and 138 s, with peers still reporting 108.
+
+**This is a replicated observation and not a diagnosis.** It matters for anyone running these probes,
+because a browser sitting has a usable window of a few minutes and must re-check health rather than
+assume it. ⛔ n=2 does not get a mechanism.
+
+### ⛔ What this still does NOT establish
+
+- **Where exactly the cliff sits.** Between ~511 KB and 1.3 MB, and the archive offers no sizes in
+  between. The direction is measured twice, the threshold is bracketed but not located.
+- **Whether the cliff moves with peer count.** At ~154 peers the 3.5 MB object arrived in 48.8 s; at
+  108 and at 72 peers it never did. Suggestive, and still a single observation of the arrival.
+- **Why the node collapses under sustained retrieval.** A mechanism read out of source after the fact
+  cannot fail to fit the observation that prompted the reading.
 
 ---
 

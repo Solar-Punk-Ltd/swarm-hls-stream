@@ -22,10 +22,15 @@
  * and every measurement in it is discarded**, because at that point the run is measuring node health.
  *
  * ⚠️ `RETRIEVAL_BUDGET_MS` IS A BOUND THIS SCRIPT IMPOSES, so a result at the bound is reported as
- * "did not complete in time" and never as a measured duration. 30s is chosen because a live viewer
- * waiting 30s for a sub-second fragment has already failed, so the bound is operationally meaningful
- * rather than arbitrary. The first sitting used weeb-3's own 240s ceiling and spent four minutes per
- * stuck fetch to learn nothing more than this bound learns in thirty seconds.
+ * "did not complete in time" and never as a measured duration. The 30s default is operationally
+ * meaningful rather than arbitrary: a live viewer waiting 30s for a sub-second fragment has already
+ * failed. The first sitting used weeb-3's own 240s ceiling and spent four minutes per stuck fetch to
+ * learn nothing more than this bound learns in thirty seconds.
+ *
+ * ⚠️ Raise it via `window.__q5budgetMs` when the question is **where the cliff is** rather than
+ * whether a viewer could live with it. The replication used 60000, because a 3.5MB fetch had once
+ * arrived in 48.8s and a 30s bound would have scored that as a failure. **Report the budget beside
+ * the result every time**, since it decides what "did not complete" means.
  *
  * HOW TO RUN
  *   1. Open https://lat-murmeldjur.github.io/weeb-3/ in Chrome and wait for the peer count to STOP
@@ -35,7 +40,7 @@
  *   3. Paste this file. Results land on window.__q5.
  */
 (() => {
-  const RETRIEVAL_BUDGET_MS = 30000;
+  const RETRIEVAL_BUDGET_MS = window.__q5budgetMs || 30000;
   const WARM_CONTROL_N = 12;
 
   const refsByGop = window.__q5refs;

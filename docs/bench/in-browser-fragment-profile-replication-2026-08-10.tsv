@@ -1,0 +1,49 @@
+# In-browser fragment profile, REPLICATION on a health-verified node, weeb-3 unfunded, 2026-08-10.
+# Second sitting. Node held 108 connected / 92 connecting throughout. Retrieval budget 60000ms,
+# raised from the harness default of 30000 so a slow-but-arriving large fetch still registers:
+# the pilot had shown 3.5MB arriving in 48.8s, and a 30s bound would have scored that as a failure.
+#
+# ⭐ EVERY ROUND OPENS WITH A COLD CANARY (~230KB). A round whose canary misses the budget is
+# DEGRADED and every measurement in it is discarded. Rounds 2 and 3 are degraded and retained here
+# only as the record of where the node stopped working.
+#
+# ⛔ "over-budget" MEANS "did not complete within the budget", NOT "failed". The budget is a bound
+# this harness imposes, so a row sitting at it is never quoted as a duration.
+#
+# ROUNDS 0-1 ARE THE MEASUREMENT:
+#   <= 511 KB   8/8 completed, 1.2s to 4.1s
+#   1.3 MB      1/2   (5.19s when it completed)
+#   2.5 MB      0/2
+#   3.5 MB      0/2
+# The canary completed in 1212ms and 1007ms in those same two rounds, so the large-fragment misses
+# are not attributable to node health. That is what this sitting adds over the first one.
+index	arm	round	gop	ref	ms	bytes	status	note
+-1000	canary	0	-1	0f958a1fe9	1212	232556	200
+0	main	0	0.25	9e55806ee0	1644	243460	200
+1	main	0	0.5	55793e430a	2238	228608	200
+2	main	0	1	7854b6cd4a	3906	511548	200
+3	main	0	1.5	01ad930e42	5190	1297576	200
+4	main	0	2	49595668de	2113	118816	200
+5	main	0	3	ba8e8f88c6	60203	0	0	over-budget
+6	main	0	4	1c84710aab	60005	0	0	over-budget
+-1001	canary	1	-1	77efd3353e	1007	223532	200
+100	main	1	0.25	84aab3b0db	1187	231240	200
+101	main	1	0.5	b8e0b822e8	2192	195520	200
+102	main	1	1	ad2c8a4a57	4089	475076	200
+103	main	1	1.5	0fc700da76	60517	0	0	over-budget
+104	main	1	2	b3225f8954	3426	141564	200
+105	main	1	3	da04091e7b	60572	0	0	over-budget
+106	main	1	4	84d98a0ad3	60999	0	0	over-budget
+-1002	canary	2	-1	acf8474666	60997	0	0	over-budget DEGRADED
+200	main	2	0.25	8be272a249	69223	0	0	over-budget DISCARDED
+201	main	2	0.5	b576b4c70d	60770	0	0	over-budget DISCARDED
+202	main	2	1	9d22ac05fb	60001	0	0	over-budget DISCARDED
+203	main	2	1.5	44a98d8725	119253	0	0	over-budget DISCARDED
+204	main	2	2	07c55bfb19	119970	0	0	over-budget DISCARDED
+205	main	2	3	fe33e80d0f	120590	0	0	over-budget DISCARDED
+206	main	2	4	7a058ac86f	119383	0	0	over-budget DISCARDED
+-1003	canary	3	-1	24509323d9	138294	0	0	over-budget DEGRADED
+300	main	3	0.25	35e9581992	101681	0	0	over-budget DISCARDED
+301	main	3	0.5	034e36be60	119872	0	0	over-budget DISCARDED
+302	main	3	1	ef9cfb0dcd	119974	0	0	over-budget DISCARDED
+303	main	3	1.5	ff83952646	119991	0	0	over-budget DISCARDED
