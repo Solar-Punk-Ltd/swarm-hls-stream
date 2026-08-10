@@ -48,6 +48,39 @@ you check visibility. **Any sustained-playback number from an agent-driven pane 
 pane.** The harness `deploy/scripts/in-browser-sustain.js` therefore refuses to run in a hidden
 document rather than producing one.
 
+### ⭐⭐⭐ The matched control: it is the TAIL that concurrency costs, not the floor
+
+Raw data `docs/bench/in-browser-concurrency-control-2026-08-10.tsv`. One session, one node, one peer
+table (129, unchanged start to end), disjoint refs, **arms alternated c1/c3/c1/c3/c1/c3** in blocks of
+40 so drift cannot map onto an arm. n=120 per arm. **[OBSERVED]**
+
+⭐ **The warm control returned p50 2 ms against a cold 970 ms, 485x**, so this measured retrieval.
+
+| statistic | c1 (n=120) | c3 (n=120) |    change |
+| --------- | ---------: | ---------: | --------: |
+| **min**   |     785 ms |     786 ms | **+0.1%** |
+| p50       |     970 ms |   1,173 ms |      +21% |
+| p90       |   1,207 ms |   1,998 ms |      +66% |
+| max       |   1,612 ms |   3,005 ms |      +86% |
+
+⛔⛔ **The floor does not move at all and the tail nearly doubles.** Concurrency does not make a
+retrieval slower. It pushes a larger fraction of requests onto the **194 ms overdraft retry ladder**,
+which is exactly what you would expect: three chunks in flight exhaust pseudosettle credit with each
+peer three times sooner.
+
+⭐⭐⭐ **That makes a testable prediction: funding should remove most of the concurrency penalty**,
+because the ladder is an accounting artifact and the floor is not. It raises the value of question 4
+considerably, since the funded arm would move the tail rather than the floor.
+
+| arm    | fetches/s |      KB/s | versus realtime |
+| ------ | --------: | --------: | --------------: |
+| c1     |     1.018 |      93.2 |          0.271x |
+| **c3** | **2.221** | **203.0** |      **0.591x** |
+
+Speedup **2.181x** overall, per block 2.332 / 2.288 / 1.949. **Crossing rate 100% in both arms**: all
+240 fetches were slower than their own 266 ms segment. The standalone run measured 212 KB/s at 146
+peers and this one 203 KB/s at 129, which agree, so **peer count in that band barely matters**.
+
 ### ⛔ 2026-08-10: in a REAL browser the player never requests a single segment
 
 Question 2 was attempted in real Chrome with the extension, and the visibility problem was solved:
@@ -89,8 +122,11 @@ realtime. **Measured directly at concurrency 3 it is 212 KB/s, 0.592x of realtim
 | sequential, 2026-08-09   |           1 |      807 ms |     115 KB/s |
 | **parallel, 2026-08-10** |       **3** | **1025 ms** | **212 KB/s** |
 
-⛔ **Three workers return 1.85x the sequential throughput, not 3x**, because the per-request p50 rises
-**27%** under concurrency. Assuming linear scaling overstated delivery by **1.7x**.
+⛔ **Three workers return 2.18x the sequential throughput, not 3x.** Assuming linear scaling
+overstated delivery by **1.4x**.
+
+⚠️ **That 2.18x replaces a 1.85x I published earlier the same day**, which compared a 200-peer
+sequential arm against a 146-peer parallel one. See the matched control below.
 
 ⭐ **The floor reproduces across sessions and licenses the comparison**: minimum **791 ms** today
 against **784 ms** on 2026-08-09, and a mean segment of 92 KB against 92.9 KB. The base rung is the
