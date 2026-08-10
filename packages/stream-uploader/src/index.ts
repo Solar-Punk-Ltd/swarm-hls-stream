@@ -13,8 +13,8 @@ import './utils/env.js';
 import { startApiServer } from './api/server.js';
 import { loadEngines } from './engines/load.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
-import { type CrashLine, uncaughtExceptionLines, unhandledRejectionLines } from './libs/crashReport.js';
 import { Logger } from './libs/Logger.js';
+import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
 import { RecoveryStore } from './libs/RecoveryStore.js';
 import { ServiceLifecycle } from './libs/ServiceLifecycle.js';
 import { StreamCatalog } from './libs/StreamCatalog.js';
@@ -24,17 +24,8 @@ import { config } from './utils/config.js';
 const logger = Logger.getInstance();
 const lifecycle = new ServiceLifecycle((code) => process.exit(code), logger);
 
-process.on('SIGTERM', () => void lifecycle.shutdown('SIGTERM'));
-process.on('SIGINT', () => void lifecycle.shutdown('SIGINT'));
-
-const report = (lines: CrashLine[]): void => {
-  for (const { label, value } of lines) {
-    logger.error(label, value);
-  }
-};
-
-process.on('uncaughtException', (error) => report(uncaughtExceptionLines(error)));
-process.on('unhandledRejection', (reason) => report(unhandledRejectionLines(reason)));
+registerShutdownSignals(lifecycle);
+registerCrashHandlers(logger);
 
 async function start() {
   try {

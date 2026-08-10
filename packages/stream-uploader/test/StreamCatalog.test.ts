@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { CatalogIndexStore } from '../src/libs/CatalogIndexStore.js';
+import { Logger } from '../src/libs/Logger.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { MEDIA_TYPE_VIDEO, STREAM_STATUS_LIVE } from '../src/types.js';
 
@@ -18,14 +19,28 @@ const liveEntry = () => ({
   timestamp: 0,
 });
 
+type CatalogEntry = ReturnType<typeof liveEntry>;
+
 interface CapturedWrite {
   index: FeedIndex;
   deferred?: boolean;
+  payload: string;
 }
+
+const beeStatusError = (status: number, message: string) =>
+  new BeeResponseError('GET', '/feeds', message, undefined, status, message);
+
+/** What a boot lookup throws when the feed topic has never been written to. */
+const FEED_NOT_FOUND = beeStatusError(404, 'Not Found.');
 
 interface CatalogBeeOptions {
   lookupIndex?: bigint;
-  lookupFails404?: boolean;
+  /** Thrown by the boot head lookup instead of answering with a head. */
+  lookupThrows?: Error;
+  /** What the feed already holds, as `fetchCurrentState` reads it back. */
+  published?: CatalogEntry[];
+  /** Awaited inside the feed write, so a test can hold one write open while it queues the next. */
+  holdWrite?: () => Promise<void>;
   /** Called before each feed write. Returning an error throws it instead of recording the write. */
   writeFails?: () => Error | null;
 }
@@ -36,25 +51,44 @@ function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): 
       downloadPayload: async (dlOpts?: { index?: FeedIndex }) => {
         // With an index this is fetchCurrentState; without, it is the init head lookup.
         if (dlOpts?.index) {
-          return { payload: { toJSON: () => [] } };
+          return { payload: { toJSON: () => opts.published ?? [] } };
         }
-        if (opts.lookupFails404) {
-          throw new BeeResponseError('GET', '/feeds', 'Not Found.', undefined, 404, 'Not Found');
+        if (opts.lookupThrows) {
+          throw opts.lookupThrows;
         }
         return { feedIndex: FeedIndex.fromBigInt(opts.lookupIndex ?? 0n), payload: { toJSON: () => [] } };
       },
     }),
     makeFeedWriter: () => ({
-      uploadPayload: async (_stamp: string, _data: unknown, writeOpts: CapturedWrite) => {
+      uploadPayload: async (_stamp: string, payload: unknown, writeOpts: Omit<CapturedWrite, 'payload'>) => {
         const err = opts.writeFails?.();
         if (err) {
           throw err;
         }
-        writes.push(writeOpts);
+        await opts.holdWrite?.();
+        writes.push({ ...writeOpts, payload: String(payload) });
         return { reference: { toHex: () => 'ref' } };
       },
     }),
   } as unknown as Bee;
+}
+
+/** The catalog as a reader will parse it back out of the feed. */
+function publishedBy(write: CapturedWrite): CatalogEntry[] {
+  return JSON.parse(write.payload) as CatalogEntry[];
+}
+
+/** The log lines written while `run` is in flight, with the previous sink restored afterwards. */
+async function logLinesDuring(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const logger = Logger.getInstance();
+  const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+  try {
+    await run();
+  } finally {
+    logger.configure(previous);
+  }
+  return lines;
 }
 
 interface SavedIndex {
@@ -63,13 +97,17 @@ interface SavedIndex {
   index: FeedIndex;
 }
 
-function fakeIndexStore(initial: bigint | null): { store: CatalogIndexStore; saved: SavedIndex[] } {
+function fakeIndexStore(
+  initial: bigint | null,
+  msSinceSaveFailed: number | null = null,
+): { store: CatalogIndexStore; saved: SavedIndex[] } {
   const saved: SavedIndex[] = [];
   const store = {
     load: () => (initial === null ? null : FeedIndex.fromBigInt(initial)),
     save: (owner: string, topicHex: string, index: FeedIndex) => {
       saved.push({ owner, topicHex, index });
     },
+    getMsSinceSaveFailed: () => msSinceSaveFailed,
   } as unknown as CatalogIndexStore;
   return { store, saved };
 }
@@ -78,7 +116,7 @@ describe('StreamCatalog Swarm write options', () => {
   it('requests a deferred upload for the catalog feed write', async () => {
     const writes: CapturedWrite[] = [];
     const catalog = new StreamCatalog(
-      makeCatalogBee(writes, { lookupFails404: true }),
+      makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND }),
       TEST_STREAM_KEY,
       TEST_TOPIC,
       'stamp',
@@ -103,7 +141,7 @@ describe('StreamCatalog survives a transient Bee failure (TEST-1)', () => {
     let attempts = 0;
     const catalog = new StreamCatalog(
       makeCatalogBee(writes, {
-        lookupFails404: true,
+        lookupThrows: FEED_NOT_FOUND,
         writeFails: () => (attempts++ === 0 ? Object.assign(new Error('503 unavailable'), { status: 503 }) : null),
       }),
       TEST_STREAM_KEY,
@@ -122,7 +160,7 @@ describe('StreamCatalog survives a transient Bee failure (TEST-1)', () => {
     let attempts = 0;
     const catalog = new StreamCatalog(
       makeCatalogBee(writes, {
-        lookupFails404: true,
+        lookupThrows: FEED_NOT_FOUND,
         writeFails: () => {
           attempts++;
           return Object.assign(new Error('402 payment required'), { status: 402 });
@@ -166,7 +204,7 @@ describe('StreamCatalog boot-index hardening', () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
     const catalog = new StreamCatalog(
-      makeCatalogBee(writes, { lookupFails404: true }),
+      makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND }),
       TEST_STREAM_KEY,
       TEST_TOPIC,
       'stamp',
@@ -200,7 +238,7 @@ describe('StreamCatalog boot-index hardening', () => {
     const writes: CapturedWrite[] = [];
     const { store, saved } = fakeIndexStore(null);
     const catalog = new StreamCatalog(
-      makeCatalogBee(writes, { lookupFails404: true }),
+      makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND }),
       TEST_STREAM_KEY,
       TEST_TOPIC,
       'stamp',
@@ -214,5 +252,177 @@ describe('StreamCatalog boot-index hardening', () => {
     assert.equal(saved[0].index.toBigInt(), 0n);
     assert.equal(saved[0].owner, new PrivateKey(TEST_STREAM_KEY).publicKey().address().toString());
     assert.equal(saved[0].topicHex, Topic.fromString(TEST_TOPIC).toString());
+  });
+
+  it('adopts the lookup head when nothing is persisted', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, { lookupIndex: 5n }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.equal(writes[0].index.toBigInt(), 6n, 'an uploader with no persisted floor still has to follow the head');
+  });
+
+  /**
+   * The floor and the head agreeing is the ordinary case, and announcing it as a stale head sends an
+   * operator looking for a fork that is not happening.
+   */
+  it('does not call a head that matches the persisted index stale', async () => {
+    const writes: CapturedWrite[] = [];
+    const { store } = fakeIndexStore(125n);
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, { lookupIndex: 125n }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+      store,
+    );
+
+    const lines = await logLinesDuring(() => catalog.init());
+
+    assert.ok(
+      lines.some((line) => line.includes('Loaded feed at index')),
+      'the boot has to report something for the absence below to mean anything',
+    );
+    assert.deepEqual(
+      lines.filter((line) => line.includes('stale index')),
+      [],
+      'a head that agrees with the persisted floor is not a stale head',
+    );
+  });
+
+  it('rethrows a boot lookup that failed for a reason other than a missing feed', async () => {
+    const catalog = new StreamCatalog(
+      makeCatalogBee([], { lookupThrows: beeStatusError(500, 'Internal Server Error.') }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+
+    await logLinesDuring(async () => {
+      await assert.rejects(
+        catalog.init(),
+        /Internal Server Error/,
+        'a broken node must not read as an empty feed, which would restart the index at 0',
+      );
+    });
+  });
+
+  it('starts fresh when the node reports the feed exists but holds no entries yet (503)', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, { lookupThrows: beeStatusError(503, 'Service Unavailable.') }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.equal(writes[0].index.toBigInt(), 0n, 'an empty feed is where a first broadcast belongs, not an error');
+  });
+});
+
+describe('StreamCatalog index-save health', () => {
+  it('reports how long the persisted index has been failing to save', () => {
+    const { store } = fakeIndexStore(null, 4200);
+    const catalog = new StreamCatalog(makeCatalogBee([]), TEST_STREAM_KEY, TEST_TOPIC, 'stamp', store);
+
+    assert.equal(catalog.getMsSinceIndexSaveFailed(), 4200);
+  });
+
+  it('reports nothing when no index is persisted at all', () => {
+    const catalog = new StreamCatalog(makeCatalogBee([]), TEST_STREAM_KEY, TEST_TOPIC, 'stamp');
+
+    assert.equal(catalog.getMsSinceIndexSaveFailed(), null);
+  });
+});
+
+/**
+ * Every write republishes the whole catalog, so what the payload holds is the whole directory a
+ * viewer browses. Dropping somebody else's live stream from it takes that broadcast off the air for
+ * every viewer who has not already joined, and the uploader that did it sees a successful write.
+ */
+describe('StreamCatalog publishes the whole catalog', () => {
+  it('publishes exactly the announced stream on a first write', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.deepEqual(publishedBy(writes[0]), [liveEntry()]);
+  });
+
+  it('keeps every other stream and replaces only its own entry', async () => {
+    const writes: CapturedWrite[] = [];
+    const supersededByThisWrite = { ...liveEntry(), title: 'the title before this announce' };
+    const sameOwnerOtherTopic = { ...liveEntry(), topic: 'another-topic-uuid' };
+    const otherOwnerSameTopic = { ...liveEntry(), owner: 'another-owner' };
+    const unrelated = { ...liveEntry(), owner: 'another-owner', topic: 'another-topic-uuid' };
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, {
+        lookupIndex: 4n,
+        published: [supersededByThisWrite, sameOwnerOtherTopic, otherOwnerSameTopic, unrelated],
+      }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+    const announced = { ...liveEntry(), title: 'the title this announce carries' };
+
+    await catalog.init();
+    await catalog.addStream(announced);
+
+    assert.deepEqual(
+      publishedBy(writes[0]),
+      [sameOwnerOtherTopic, otherOwnerSameTopic, unrelated, announced],
+      'only the entry for this owner and topic is replaced, and the rest keep their order',
+    );
+  });
+});
+
+/**
+ * Two announces racing produce two writes at the same index, and the second silently replaces the
+ * first: the feed forks at that index and every reader following the original chain loses whichever
+ * entry lost the race.
+ */
+describe('StreamCatalog serialises its feed writes', () => {
+  it('gives every queued announce its own feed index', async () => {
+    const writes: CapturedWrite[] = [];
+    let releaseWrite!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const catalog = new StreamCatalog(
+      makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND, holdWrite: () => held }),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      'stamp',
+    );
+
+    await catalog.init();
+    const first = catalog.addStream(liveEntry());
+    const second = catalog.addStream({ ...liveEntry(), topic: 'another-topic-uuid' });
+    releaseWrite();
+    await Promise.all([first, second]);
+
+    assert.deepEqual(
+      writes.map((write) => write.index.toBigInt()),
+      [0n, 1n],
+      'a second announce arriving mid-write must queue behind it, not fork the feed at the same index',
+    );
   });
 });

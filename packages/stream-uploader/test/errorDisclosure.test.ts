@@ -1,7 +1,12 @@
+import { Router } from 'express';
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
 import { createOmeEngine } from '../src/engines/ome.js';
+import { EnginePlugin } from '../src/engines/types.js';
+import { ErrorHandler } from '../src/libs/ErrorHandler.js';
+import { Logger } from '../src/libs/Logger.js';
+import { LOG_LEVEL_ERROR } from '../src/libs/logLevels.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import {
   MEDIA_TYPE_VIDEO,
@@ -30,6 +35,82 @@ const DISCLOSURES = [
   ['a filesystem path', INTERNAL_PATH],
   ['an internal batch id', '4f8a'],
 ] as const;
+
+/** The whole of what a caller is told for a failure this service owns. Written out, not imported. */
+const GENERIC_500 = { ok: false, error: 'Internal server error', statusCode: 500 };
+
+/**
+ * A failure shape, and the whole of what a caller may see for it.
+ *
+ * `clientErrorStatus` reads `expose`, `status` and `statusCode` off whatever error reaches it, and
+ * `http-errors` sets all three consistently, so the body parsers that reach it in production only
+ * ever exercise one point of that space. Every shape the guard exists to refuse is outside it, which
+ * is why the guard could be deleted a line at a time with the suite still green.
+ */
+const DECLARED_STATUS_CASES = [
+  { what: 'an error declaring no status at all', props: {}, status: 500, body: GENERIC_500 },
+  { what: 'a 4xx that was never marked exposable', props: { status: 404 }, status: 500, body: GENERIC_500 },
+  {
+    what: 'an exposable status carried only on statusCode',
+    props: { expose: true, statusCode: 413 },
+    status: 413,
+    body: { ok: false, error: 'Request body too large', statusCode: 413 },
+  },
+  {
+    what: 'an exposable status carried only on status',
+    props: { expose: true, status: 400 },
+    status: 400,
+    body: { ok: false, error: 'Malformed request body', statusCode: 400 },
+  },
+  { what: 'an exposable 5xx', props: { expose: true, status: 500 }, status: 500, body: GENERIC_500 },
+  { what: 'an exposable 3xx', props: { expose: true, status: 302 }, status: 500, body: GENERIC_500 },
+  {
+    what: 'an exposable status that is not a number',
+    props: { expose: true, statusCode: '404' },
+    status: 500,
+    body: GENERIC_500,
+  },
+  {
+    what: 'an exposable 4xx this service has no wording for',
+    props: { expose: true, status: 429 },
+    status: 429,
+    body: { ok: false, error: 'Bad request', statusCode: 429 },
+  },
+  // 4xx-shaped and still not a status. `res.status()` throws on a fraction, and a throw inside the
+  // error handler is answered by express's own, which sends the stack and this deployment's absolute
+  // paths to whoever provoked it. A range check alone let that through.
+  {
+    what: 'an exposable status that is not a whole number',
+    props: { expose: true, status: 400.5 },
+    status: 500,
+    body: GENERIC_500,
+  },
+] as const;
+
+const THROWING_PREFIX = '/engines/throwing';
+
+/**
+ * An engine router that throws a chosen error, so the handler can be driven with a failure no body
+ * parser produces. Mounted like any other engine, so the error travels the real middleware chain.
+ */
+function engineThatThrows(error: unknown): EnginePlugin {
+  return {
+    name: 'throwing',
+    prefix: THROWING_PREFIX,
+    createRouter: () => {
+      const router = Router();
+      router.get('/', () => {
+        throw error;
+      });
+      return router;
+    },
+  };
+}
+
+/** Named so the frame it leaves in `stack` is something a test can look for. */
+function thrownInsideDrainUploader(): Error {
+  return new Error(LEAKY_MESSAGE);
+}
 
 /**
  * A catalog whose VOD write rejects, which is the path that actually carries an error verbatim to
@@ -155,11 +236,13 @@ describe('responses do not carry internals (S1.7)', () => {
       });
     }
 
+    // The whole body and not its `error` field alone. `ok` is what a caller branches on, and a
+    // refusal that carries `ok: true` reads as a request that was taken.
     it('answers 400 for a truncated JSON body', async () => {
       const { status, body } = await postToUngatedEngine('{"request":{"status":"opening"');
 
       assert.equal(status, 400, 'a malformed body still answers 5xx, so an anonymous caller drives the error rate');
-      assert.equal((body as { error?: string }).error, 'Malformed request body');
+      assert.deepEqual(body, { ok: false, error: 'Malformed request body', statusCode: 400 });
     });
 
     it('answers 413 for a body over the control ceiling', async () => {
@@ -168,7 +251,16 @@ describe('responses do not carry internals (S1.7)', () => {
       const { status, body } = await postToUngatedEngine(overCeiling);
 
       assert.equal(status, 413, 'an oversized body answers 5xx rather than naming the ceiling it crossed');
-      assert.equal((body as { error?: string }).error, 'Request body too large');
+      assert.deepEqual(body, { ok: false, error: 'Request body too large', statusCode: 413 });
+    });
+
+    // The third status the parsers raise, and the one with no wording of its own until it is asked
+    // for: an encoding this service does not decompress is refused before any of the body is read.
+    it('answers 415 for a body in an encoding it cannot read', async () => {
+      const { status, body } = await postToUngatedEngine('{"request":{}}', { 'content-encoding': 'nope' });
+
+      assert.equal(status, 415, 'an unreadable encoding is the sender’s fault, not this service’s');
+      assert.deepEqual(body, { ok: false, error: 'Unsupported content type or encoding', statusCode: 415 });
     });
 
     // The parser quotes the body back in its own message, so passing its text through would hand an
@@ -182,6 +274,73 @@ describe('responses do not carry internals (S1.7)', () => {
         !JSON.stringify(body).includes(marker),
         `the response reflected the request body: ${JSON.stringify(body)}`,
       );
+    });
+  });
+
+  /**
+   * Which failures a caller is allowed to be told about, and in whose words.
+   *
+   * A status the error declared is only answered back when the error also says it is the caller's to
+   * see, and only for the 4xx range this service has decided to attribute. Everything else collapses
+   * to the one generic 500, because a status is disclosure too: answering an internal Bee 404 as a
+   * 404 tells a caller their own request was at fault and moves the failure off the channel operators
+   * alert on. See SEC-12.
+   */
+  describe('the status answered back comes from the error, and is bounded (SEC-12)', () => {
+    async function answerFor(props: Record<string, unknown>) {
+      const engine = engineThatThrows(Object.assign(new Error(LEAKY_MESSAGE), props));
+      const api = await start(makeTestOrchestrator(), [engine]);
+
+      return api.request(THROWING_PREFIX, { headers: NO_AUTH_HEADER });
+    }
+
+    for (const { what, props, status, body } of DECLARED_STATUS_CASES) {
+      it(`answers ${what} with ${status} and nothing more`, async () => {
+        const answer = await answerFor(props);
+
+        assert.equal(answer.status, status, `the caller was answered ${answer.status}`);
+        assert.deepEqual(answer.body, body);
+      });
+    }
+  });
+
+  /**
+   * The other direction, and what makes withholding all of the above affordable: everything kept from
+   * a caller has to reach an operator. Every failure in this service is reported through the one
+   * shared `ErrorHandler`, and the suites that care about a report replace `handleError` with a spy,
+   * so nothing held what it writes.
+   */
+  describe('the shared error handler reports internals where only an operator can read them', () => {
+    function reportedLines(error: unknown, context?: string): string[] {
+      const lines: string[] = [];
+      const logger = Logger.getInstance();
+      const previous = logger.configure({ level: LOG_LEVEL_ERROR, sink: (_level, line) => lines.push(line) });
+      try {
+        ErrorHandler.getInstance().handleError(error, context);
+      } finally {
+        logger.configure(previous);
+      }
+      return lines;
+    }
+
+    it('names the context it was given, and carries the stack the response withholds', () => {
+      const lines = reportedLines(thrownInsideDrainUploader(), 'StreamUploader.uploadSegment');
+
+      assert.equal(lines.length, 1, 'one failure is one line');
+      const [line] = lines;
+      assert.ok(line.includes('StreamUploader.uploadSegment'), `the line does not say what failed: ${line}`);
+      assert.ok(line.includes(LEAKY_MESSAGE), `the line does not say why it failed: ${line}`);
+      assert.ok(
+        line.includes('thrownInsideDrainUploader'),
+        `the line carries no stack, which is the one place it is allowed to be: ${line}`,
+      );
+    });
+
+    it('says the context is unknown when it was given none, rather than leaving a gap', () => {
+      const lines = reportedLines(new Error(LEAKY_MESSAGE));
+
+      assert.equal(lines.length, 1);
+      assert.ok(lines[0].includes('unknown context'), `a report from nowhere reads as one from ${lines[0]}`);
     });
   });
 });

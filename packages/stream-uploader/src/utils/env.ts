@@ -68,6 +68,8 @@ export function optionalInt(name: string, fallback: number, range: IntRange = {}
     throw new Error(`Env var ${name} is not a whole number: "${value}"`);
   }
 
+  // Whatever got past the check above is digits padded with at most the whitespace `Number` already
+  // skips, so this trim changes no result. It is here so both lines read the same value.
   const parsed = Number(value.trim());
   const min = range.min ?? 0;
   const max = range.max ?? MAX_TIMER_DELAY_MS;

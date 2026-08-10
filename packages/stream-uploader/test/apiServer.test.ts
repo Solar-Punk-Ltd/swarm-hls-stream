@@ -1,8 +1,15 @@
+import { Router } from 'express';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import net, { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
+import { startApiServer } from '../src/api/server.js';
+import { createOmeEngine } from '../src/engines/ome.js';
 import { Fetcher } from '../src/engines/ome/interfaces.js';
 import { OmeHlsPuller, SEGMENT_RETRY_LIMIT } from '../src/engines/ome/OmeHlsPuller.js';
+import { EnginePlugin } from '../src/engines/types.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
@@ -21,7 +28,7 @@ import {
 } from '../src/types.js';
 import { MANIFEST_FAILURE_THRESHOLD } from '../src/utils/health.js';
 
-import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
+import { ApiTestServer, startTestApi, TEST_AUTH_TOKEN } from './helpers/apiTestServer.js';
 import { FakeClock } from './helpers/fakeClock.js';
 import {
   FakeUploads,
@@ -33,6 +40,7 @@ import {
   rejectImmediately,
   toRecoveryFileId,
 } from './helpers/fakes.js';
+import { LOOPBACK_HOST } from './helpers/loopbackServer.js';
 
 const STREAM_ID = 'live/one';
 
@@ -132,7 +140,7 @@ describe('api server over http (S0.7 test layer)', () => {
   it('rejects POST /stream/start without a mediatype through the error handler', async () => {
     const api = await start(makeTestOrchestrator());
 
-    const { status, body } = await api.request('/stream/start', {
+    const { status, body, headers } = await api.request('/stream/start', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ streamId: 'live/one' }),
@@ -140,6 +148,9 @@ describe('api server over http (S0.7 test layer)', () => {
 
     assert.equal(status, 400, 'json body parsing and ApiError both run in the real middleware chain');
     assert.deepEqual(body, { ok: false, error: 'mediatype must be "audio" or "video"', statusCode: 400 });
+    // Only a refusal that knows when to come back carries it, and `res.set` stringifies whatever it
+    // is given: sending it unconditionally tells a caller to wait `undefined` seconds.
+    assert.equal(headers['retry-after'], undefined, 'a malformed request is not a request to retry');
   });
 
   it('accepts a segment for a started stream', async () => {
@@ -162,6 +173,166 @@ describe('api server over http (S0.7 test layer)', () => {
 
     assert.equal(status, 404);
     assert.deepEqual(body, { ok: false, error: 'Unknown stream: live/ghost', statusCode: 404 });
+  });
+});
+
+/**
+ * What `createApiApp` wires up, as opposed to what the things it wires up then do.
+ *
+ * Every one of these is exercised constantly and asserted nowhere, because the suites that need a
+ * parsed body or a named engine build their own app around the piece they are testing. The wiring
+ * itself is what a deployment runs, and it could be unpicked a line at a time with the suite green.
+ */
+describe('the app the service actually mounts', () => {
+  const servers: ApiTestServer[] = [];
+  after(async () => {
+    await Promise.all(servers.map((server) => server.close()));
+  });
+
+  async function start(...args: Parameters<typeof startTestApi>): Promise<ApiTestServer> {
+    const server = await startTestApi(...args);
+    servers.push(server);
+    return server;
+  }
+
+  function engineNamed(name: string): EnginePlugin {
+    return { name, prefix: `/engines/${name}`, createRouter: () => Router() };
+  }
+
+  // `/health` names the engines so an operator can see which ingest paths this build carries. The
+  // contract test above asserts the key is present, which an array of the wrong thing satisfies.
+  it('names each mounted engine in the health body, in the order they were mounted', async () => {
+    const api = await start(makeTestOrchestrator(), [engineNamed('first'), engineNamed('second')]);
+
+    const { body } = await api.request('/health');
+
+    assert.deepEqual((body as { engines?: unknown }).engines, ['first', 'second']);
+  });
+
+  /**
+   * The raw body kept beside the parsed one, which is the only thing an HMAC over the request can be
+   * checked against: re-serializing `req.body` does not reproduce the bytes that were signed.
+   *
+   * Driven through the real app on purpose. `OmeAdmission.test.ts` and `EnginePublishKey.test.ts`
+   * mount an `express.json` of their own with this same `verify` hook, so every test that proves the
+   * signature check works supplies the thing the app is responsible for supplying.
+   */
+  it('keeps the raw control body, so a signed webhook can be verified against what was sent', async () => {
+    const secret = 'admission-secret';
+    const engine = createOmeEngine('http://ome:8081', 60_000, { admissionSecret: secret });
+    const api = await start(makeTestOrchestrator(), [engine]);
+    const body = JSON.stringify({ request: { direction: 'outgoing' } });
+
+    const { status } = await api.request(`${engine.prefix}/admission`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-ome-signature': createHmac('sha1', secret).update(body).digest('base64url'),
+      },
+      body,
+    });
+
+    assert.equal(status, 200, 'a correctly signed admission was refused, so the app kept no raw body');
+  });
+
+  // Mounted under `/stream`, which is where the spending is. `/health` is what `deploy/scripts/health.sh`
+  // polls on a timer, and a liveness probe that can be refused for being too frequent reports an
+  // outage that is not happening.
+  it('does not spend the ingest rate budget on the liveness probe', async () => {
+    const api = await start(makeTestOrchestrator(), [], { windowMs: 60_000, globalMax: 1, perStreamMax: 1 });
+
+    const probes = [await api.request('/health'), await api.request('/health'), await api.request('/health')];
+
+    assert.deepEqual(
+      probes.map((probe) => probe.status),
+      [200, 200, 200],
+    );
+  });
+});
+
+/**
+ * The listening half of the module, which nothing had ever started. `createApiApp` is covered by
+ * every suite that uses `startTestApi`, and `startApiServer` is what `src/index.ts` calls: the port
+ * it binds and the handle a shutdown waits on were both untested.
+ */
+describe('startApiServer', () => {
+  const POLL_INTERVAL_MS = 10;
+  const BIND_CEILING_MS = 4_000;
+  /** A close that has not settled by here is not slow, it is one that never resolves. */
+  const CLOSE_CEILING_MS = 4_000;
+
+  /** A port the OS just handed out and nothing holds, so the bind under test is the only one on it. */
+  async function freePort(): Promise<number> {
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, LOOPBACK_HOST, resolve));
+    const { port } = probe.address() as AddressInfo;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    return port;
+  }
+
+  /**
+   * Raced rather than awaited. A close that never settles is one of the failures under test, and
+   * awaiting it hangs the file with no tally instead of failing.
+   */
+  async function withinCeiling<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+    const ceiling = sleep(ms, undefined, { ref: false }).then(() => {
+      throw new Error(`${what} did not settle within ${ms}ms`);
+    });
+    return Promise.race([work, ceiling]);
+  }
+
+  async function untilItAnswers(url: string): Promise<number> {
+    const deadline = Date.now() + BIND_CEILING_MS;
+    for (;;) {
+      try {
+        return (await fetch(url)).status;
+      } catch {
+        assert.ok(Date.now() < deadline, `nothing answered ${url} within ${BIND_CEILING_MS}ms`);
+        await sleep(POLL_INTERVAL_MS);
+      }
+    }
+  }
+
+  async function untilItRefuses(url: string): Promise<void> {
+    const deadline = Date.now() + BIND_CEILING_MS;
+    for (;;) {
+      try {
+        await fetch(url);
+      } catch {
+        return;
+      }
+      assert.ok(Date.now() < deadline, `${url} still answered ${BIND_CEILING_MS}ms after close() resolved`);
+      await sleep(POLL_INTERVAL_MS);
+    }
+  }
+
+  it('serves on the port it was given, and stops serving once its handle is closed', async () => {
+    const port = await freePort();
+    const origin = `http://${LOOPBACK_HOST}:${port}`;
+    const handle = startApiServer(makeTestOrchestrator(), port, { authToken: TEST_AUTH_TOKEN });
+
+    // The handle is returned before the socket is bound, so the port has to be waited for.
+    assert.equal(await untilItAnswers(`${origin}/health`), 200);
+
+    await withinCeiling(handle.close(), CLOSE_CEILING_MS, 'close()');
+
+    await untilItRefuses(`${origin}/health`);
+  });
+
+  // A shutdown that reports success for a socket it did not release leaves the next start colliding
+  // with a port that is supposedly free, which is the failure this rejection exists to name.
+  it('reports a close it could not perform, rather than resolving as though it had', async () => {
+    const port = await freePort();
+    const handle = startApiServer(makeTestOrchestrator(), port, { authToken: TEST_AUTH_TOKEN });
+    await untilItAnswers(`http://${LOOPBACK_HOST}:${port}/health`);
+    await withinCeiling(handle.close(), CLOSE_CEILING_MS, 'close()');
+
+    await assert.rejects(
+      withinCeiling(handle.close(), CLOSE_CEILING_MS, 'the second close()'),
+      // Matched on what node said, so a close that hangs cannot pass as one that refused: the ceiling
+      // above rejects too, and its message is not this one.
+      /not running/i,
+    );
   });
 });
 

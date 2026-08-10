@@ -285,6 +285,17 @@ export function resolveSegmentPath(mediaRootPath: string, file: string): string 
   return segmentPath.startsWith(mediaRoot + path.sep) ? segmentPath : undefined;
 }
 
+/**
+ * A segment SRS has finished writing.
+ *
+ * Every path answers `SRS_ACCEPT`, including the ones that drop the segment. Answering a rejection
+ * would not redeliver it: SRS reads a rejected `on_hls` as permission to keep running and drop every
+ * later segment of that stream silently, so refusing costs the rest of the broadcast rather than
+ * buying a retry. What a dropped segment does need is to be accounted, or the manifest tells a viewer
+ * the media either side of the hole is contiguous and nothing moves `segments_lost_total` or the
+ * health signal built on it. `handleSegmentLoss` decides for itself whether the loss is attributable,
+ * no-opping for a stream that is unknown or already draining.
+ */
 function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrchestrator, mediaRootPath: string): void {
   try {
     const payload = req.body as SrsHlsPayload;
@@ -294,12 +305,14 @@ function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrches
 
     if (!segmentPath) {
       logger.warn(`[SRS] Rejected segment path outside the media root for ${streamId}: ${payload.file}`);
+      streamOrchestrator.handleSegmentLoss(streamId, payload.seq_no, 1);
       srsResponse(res, SRS_ACCEPT);
       return;
     }
 
     if (!fs.existsSync(segmentPath)) {
       logger.warn(`[SRS] Segment file not found: ${segmentPath}`);
+      streamOrchestrator.handleSegmentLoss(streamId, payload.seq_no, 1);
       srsResponse(res, SRS_ACCEPT);
       return;
     }
@@ -311,6 +324,7 @@ function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrches
       fs.rmSync(segmentPath, { force: true });
     } else {
       logger.warn(`[SRS] Segment ${payload.seq_no} not accepted for ${streamId}: ${result.reason}`);
+      streamOrchestrator.handleSegmentLoss(streamId, payload.seq_no, 1);
     }
 
     srsResponse(res, SRS_ACCEPT);
