@@ -176,12 +176,14 @@
       video.muted = true;
 
       note(await waitForGesture());
-      try {
-        await video.play();
-        note('play() resolved');
-      } catch (e) {
-        note(`play() rejected: ${e.name}. If this is AbortError the tab is probably not visible.`);
-      }
+      // ⛔ Never await play() bare. It resolves when playback actually BEGINS, so at readyState 0 it
+      // stays pending for as long as no data arrives, and the sampler below never starts. A wedged
+      // probe then reports nothing at all, which is strictly worse than reporting a stalled stream:
+      // "no data ever arrived" is a result, and it is the result this run is most likely to find.
+      video.play().then(
+        () => note('play() resolved'),
+        (e) => note(`play() rejected: ${e.name}`),
+      );
 
       P.state = 'sampling';
       note(`sampling for ${RUN_MS / 60000} minutes`);
