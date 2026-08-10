@@ -36,6 +36,7 @@ export class ManifestFetcher {
   private _beeUrl: string = config.beeUrl;
   private ladders = new Map<string, RegisteredLadder>();
   private poller: LadderFeedPoller;
+  private lastLoggedMaster = '';
 
   constructor(private readonly stateManager: ManifestStateManager = ManifestStateManager.getInstance()) {
     // The poller fetches through this instance rather than holding a URL of its own, so switching
@@ -86,7 +87,18 @@ export class ManifestFetcher {
       return null;
     }
 
-    return buildMasterPlaylist(ladder.owner, ladder.renditions);
+    const master = buildMasterPlaylist(ladder.owner, ladder.renditions);
+
+    // Logged because it is otherwise unobservable. The master never becomes a request — it is
+    // built here and handed straight to hls.js — so devtools' network panel, which is the first
+    // place anyone looks for a playlist, shows nothing at all. Once per distinct master, which for
+    // a live session is once.
+    if (master !== this.lastLoggedMaster) {
+      this.lastLoggedMaster = master;
+      console.log(`[SwarmHls] master playlist for ${sourceUrl}\n${master}`);
+    }
+
+    return master;
   }
 
   async fetch(url: string): Promise<string> {
