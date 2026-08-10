@@ -396,6 +396,10 @@ export class StreamUploader {
     this.liveManifestQueued = true;
     void this.manifestQueue.add(async () => {
       this.liveManifestQueued = false;
+      // Unreachable from the only caller, which queues this straight after adding a segment, so the
+      // manager always holds one by the time the job runs and no test can drive this branch. Kept
+      // because publishing an empty manifest is a paid SOC write that tells viewers the playlist is
+      // empty, which is worse than the publish this skips.
       const manifest = this.manifestManager.buildLiveManifest();
       if (!manifest) {
         return;

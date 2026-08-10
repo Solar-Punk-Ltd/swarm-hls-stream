@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { ErrorHandler } from '../src/libs/ErrorHandler.js';
+import { Logger } from '../src/libs/Logger.js';
 import { ManifestManager } from '../src/libs/ManifestManager.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
+import { ServiceMetrics } from '../src/libs/ServiceMetrics.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
@@ -27,6 +29,28 @@ interface SegmentUploadControl {
 function failFirst(times: number, error: () => Error): () => Error | null {
   let remaining = times;
   return () => (remaining-- > 0 ? error() : null);
+}
+
+/** Fails only the `nth` call, so one write in a sequence can be refused while the rest land. */
+function failOnly(nth: number, error: () => Error): () => Error | null {
+  let calls = 0;
+  return () => (++calls === nth ? error() : null);
+}
+
+/** Run against the shared logger with a captured sink, restoring whatever was configured before. */
+async function withCapturedLog(run: (lines: string[]) => Promise<void>): Promise<void> {
+  const lines: string[] = [];
+  const logger = Logger.getInstance();
+  const previous = logger.configure({
+    sink: (_level, line) => {
+      lines.push(line);
+    },
+  });
+  try {
+    await run(lines);
+  } finally {
+    logger.configure(previous);
+  }
 }
 
 /** Counts the calls a control saw, which is what tells one attempt apart from a retried one. */
@@ -194,6 +218,60 @@ describe('StreamUploader discontinuity lifecycle', () => {
     assert.equal(state.pendingDiscontinuity, false);
   });
 
+  /**
+   * The field is optional, so an entry written by a build that predates it restores as absent, and
+   * absent has to mean "nothing was pending". Read the other way round, every restart of every
+   * stream opens with a discontinuity the broadcast never had, which players answer by flushing
+   * whatever they had buffered.
+   */
+  it('does not flag a discontinuity when the restored entry carries none', async () => {
+    const uploader = newUploader(
+      {},
+      {
+        restoreState: {
+          streamRawTopic: 'topic-abc',
+          socIndex: 5,
+          segments: [{ index: 0, duration: 2, ref: 'ref0', discontinuity: false }],
+          hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+          isFirstSegmentReady: true,
+          isFirstManifestReady: true,
+        },
+      },
+    );
+
+    uploader.handleSegment(7, 2, Buffer.from('seg7'));
+    await drain(uploader);
+
+    const state = uploader.getStreamState();
+    assert.equal(state.segments.find((s) => s.index === 7)?.discontinuity, false);
+    assert.equal(state.pendingDiscontinuity, false);
+  });
+
+  /**
+   * The marker itself is asserted above. This is what an operator is told about it, and it is the
+   * only trace either kind of gap leaves here: a loss is counted by the orchestrator rather than by
+   * this class, and an origin break is counted by nothing at all.
+   */
+  it('reports the size of a gap it marks, and an origin break as ordinary', async () => {
+    await withCapturedLog(async (lines) => {
+      const uploader = newUploader();
+
+      uploader.handleSegmentLoss(4, 1);
+      uploader.handleSegmentLoss(10, 40);
+      uploader.markDiscontinuity();
+      await drain(uploader);
+
+      const gaps = lines.filter((line) => line.includes('never reached the uploader'));
+      assert.equal(gaps.length, 2, `both gaps have to be reported, got ${gaps.length}`);
+      assert.ok(gaps[0].includes('Segment 4 for stream stream-test'), gaps[0]);
+      assert.ok(gaps[1].includes('40 segments from index 10 for stream stream-test'), gaps[1]);
+      assert.ok(
+        lines.some((line) => line.includes('Origin declared a discontinuity for stream stream-test')),
+        'an encoder restart upstream marks the same flag, and nothing else says which happened',
+      );
+    });
+  });
+
   it('persists pendingDiscontinuity when a segment upload fails, so it survives a crash', async () => {
     const saved: StreamState[] = [];
     const recovery = {
@@ -285,6 +363,18 @@ describe('StreamUploader live manifest failure surfacing', () => {
     assert.equal(state.liveManifestStale, true);
     // The segment itself uploaded fine — only the manifest (SOC feed) write failed.
     assert.equal(state.segments.length, 1);
+  });
+
+  // The control the flag needs. Without it, a reading that is always stale passes: /health would
+  // report every healthy stream as one whose viewers are stuck on a manifest that has moved on.
+  it('does not flag a stale manifest while publishes are landing', async () => {
+    const uploader = newUploader();
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    assert.equal(uploader.hasStaleLiveManifest(), false);
+    assert.equal(uploader.getStreamState().liveManifestStale, false);
   });
 });
 
@@ -478,6 +568,35 @@ describe('StreamUploader finalization (CON-25)', () => {
     assert.ok(!closing.includes(PLAYLIST_TYPE_VOD_TAG), 'and that playlist is still the live one');
     assert.ok(vod.includes(PLAYLIST_TYPE_VOD_TAG), 'the recording is published after it, not instead of it');
   });
+
+  /**
+   * A refused closing manifest does not fail the finalization, deliberately: the recording is what
+   * the catalog points at and it is still worth publishing. What is lost is only visible to whoever
+   * is watching at that moment, whose player restarts at the beginning of the recording, so the log
+   * line is the only place that outcome is recorded at all.
+   *
+   * The feed refuses the second write of three: the live manifest publishes, the closing one is
+   * refused, the VOD lands.
+   */
+  it('says the ending was lost when the closing manifest is refused, and stays quiet when it lands', async () => {
+    const lostEndings = (lines: string[]): string[] => lines.filter((line) => line.includes('closing live manifest'));
+
+    await withCapturedLog(async (lines) => {
+      const refused = newUploader({}, { feedControl: { fail: failOnly(2, permanentError) } });
+      refused.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(refused);
+      await refused.notifyStop();
+
+      assert.equal(lostEndings(lines).length, 1, 'a viewer sent back to the first second has to be explainable');
+
+      const clean = newUploader();
+      clean.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(clean);
+      await clean.notifyStop();
+
+      assert.equal(lostEndings(lines).length, 1, 'and an ending that published must not report itself as lost');
+    });
+  });
 });
 
 describe('StreamUploader catalog announce backoff (CON-3)', () => {
@@ -492,7 +611,8 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
     });
   }
 
-  function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs: number): StreamUploader {
+  /** Omitting the window is a case of its own: it is the one every deployment actually runs. */
+  function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs?: number): StreamUploader {
     return new StreamUploader(
       makeBee({}),
       '',
@@ -528,6 +648,44 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
     await publishSegments(uploader, 5);
 
     assert.equal(attempts.length, 1, `five segments cost ${attempts.length} paid catalog writes against a dead feed`);
+  });
+
+  /**
+   * The same rule, with nobody supplying the window. Every test above names one, so the default that
+   * ships was the one configuration none of them exercised, and a default that resolves to no window
+   * at all rate-limits nothing: the spend it was added to stop comes back in full.
+   */
+  it('rate limits on its own default, not only on a window a test supplied', async () => {
+    const attempts: unknown[] = [];
+    const uploader = newAnnouncingUploader(makeCatalog(attempts, () => true));
+
+    await publishSegments(uploader, 3);
+
+    assert.equal(attempts.length, 1, `three segments cost ${attempts.length} paid catalog writes at the default`);
+  });
+
+  /**
+   * Which write failed, in the one log line an operator gets. A catalog announce and the two Swarm
+   * writes at the bottom of the file all fail as a handled error with a context label, and the label
+   * is the only thing separating a broadcast nobody can find from one nobody can play.
+   */
+  it('names the catalog announce as the write that failed', async () => {
+    const capture = captureHandledErrors();
+    try {
+      const uploader = newAnnouncingUploader(
+        makeCatalog([], () => true),
+        60_000,
+      );
+
+      await publishSegments(uploader, 1);
+
+      assert.deepEqual(
+        capture.handled.map((h) => h.context),
+        ['StreamUploader.notifyStart'],
+      );
+    } finally {
+      capture.restore();
+    }
   });
 
   /**
@@ -578,10 +736,16 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
 
     assert.equal(uploader.getMsSinceCatalogAnnounceFailed(), null, 'nothing has failed yet');
 
+    // Bounded by the elapsed time rather than only by zero. An age built from the instant instead of
+    // the interval is positive too, and reads as the whole of the epoch, which no threshold survives.
+    const startedAt = Date.now();
     await publishSegments(uploader, 1);
 
     const age = uploader.getMsSinceCatalogAnnounceFailed();
-    assert.ok(age !== null && age >= 0, `a live unlisted stream must be reportable, got ${age}`);
+    assert.ok(
+      age !== null && age >= 0 && age <= Date.now() - startedAt,
+      `a live unlisted stream must be reportable as an age, got ${age}`,
+    );
   });
 });
 
@@ -617,11 +781,16 @@ describe('StreamUploader recovery persist failures (OBS-4)', () => {
 
     assert.equal(uploader.getMsSinceStatePersistFailed(), null, 'nothing has been written yet');
 
+    // Bounded by the elapsed time, for the reason given beside the catalog announce age above.
+    const startedAt = Date.now();
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
 
     const age = uploader.getMsSinceStatePersistFailed();
-    assert.ok(age !== null && age >= 0, `a stream whose state is not on disk must be reportable, got ${age}`);
+    assert.ok(
+      age !== null && age >= 0 && age <= Date.now() - startedAt,
+      `a stream whose state is not on disk must be reportable as an age, got ${age}`,
+    );
 
     saveFails = false;
     uploader.handleSegment(1, 2, Buffer.from('seg1'));
@@ -650,16 +819,20 @@ function liveWindowSize(count: number, manifestBeeUrl: string): number {
     .filter((line) => line.length > 0 && !line.startsWith('#')).length;
 }
 
-/** A bee whose first feed write blocks until released, so segments pile up behind one publish. */
-function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void): Bee {
+/**
+ * A bee whose first feed write blocks until released, so segments pile up behind one publish.
+ *
+ * `socWrites` collects the feed index of every publish, which is what a paid SOC write looks like
+ * from outside: one entry is one chunk and the postage for it.
+ */
+function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void, socWrites: number[] = []): Bee {
   let refCounter = 0;
-  let publishes = 0;
   const bee = {
     uploadData: async () => ({ reference: { toHex: () => `ref${refCounter++}` } }),
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => {
-        publishes += 1;
-        if (publishes === 1) {
+        socWrites.push(opts.index);
+        if (socWrites.length === 1) {
           entered();
           await held;
         }
@@ -669,6 +842,76 @@ function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void): Bee 
   };
   return bee as unknown as Bee;
 }
+
+interface UploaderFixtureOptions {
+  restoreState?: unknown;
+  metrics?: ServiceMetrics;
+}
+
+function uploaderWith(bee: Bee, manifestBeeUrl: string, options: UploaderFixtureOptions = {}): StreamUploader {
+  return new StreamUploader(
+    bee,
+    manifestBeeUrl,
+    makeFakeCatalog(),
+    makeFakeRecoveryStore(),
+    TEST_STREAM_KEY,
+    'stamp',
+    'stream-test',
+    MEDIA_TYPE_VIDEO,
+    { restoreState: options.restoreState as never, metrics: options.metrics },
+  );
+}
+
+/** A publish held at the first feed write, with the handles to know it started and to let it finish. */
+function heldPublish(socWrites: number[] = []): { bee: Bee; started: Promise<void>; release: () => void } {
+  let release = (): void => {};
+  let entered = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+
+  return {
+    bee: beeWithHeldFirstPublish(held, () => entered(), socWrites),
+    started,
+    release: () => release(),
+  };
+}
+
+/**
+ * One publish for a burst, rather than one per segment.
+ *
+ * Every segment calls `uploadLiveManifest`, and every publish that reaches Bee is a SOC write and the
+ * postage for it. `liveManifestQueued` is what holds that at one write per publish while a publish is
+ * slow. The block below is the same condition read the other way: this is what it costs, that is what
+ * it loses.
+ */
+describe('StreamUploader live manifest publish coalescing', () => {
+  it('publishes once for a burst that arrives behind an in-flight publish', async () => {
+    const socWrites: number[] = [];
+    const publish = heldPublish(socWrites);
+    const uploader = uploaderWith(publish.bee, '');
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await publish.started;
+
+    for (let index = 1; index <= 9; index++) {
+      uploader.handleSegment(index, 2, Buffer.from('a'));
+    }
+    await uploader.segmentQueue.onIdle();
+
+    publish.release();
+    await drain(uploader);
+
+    assert.deepEqual(
+      socWrites,
+      [0, 1],
+      `ten segments behind one held publish cost ${socWrites.length} paid feed writes`,
+    );
+  });
+});
 
 /**
  * The quietest way this uploader can lose a piece of a broadcast.
@@ -680,56 +923,45 @@ function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void): Bee 
  * answers a failed upload rather than this, so not even a discontinuity marks the hole.
  */
 describe('segments the live window outran before anything published them', () => {
-  function uploaderWith(bee: Bee, manifestBeeUrl: string): StreamUploader {
-    return new StreamUploader(
-      bee,
-      manifestBeeUrl,
-      makeFakeCatalog(),
-      makeFakeRecoveryStore(),
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-      {},
-    );
-  }
+  it('counts the segments no published manifest ever named, and says so', async () => {
+    await withCapturedLog(async (lines) => {
+      const publish = heldPublish();
+      const uploader = uploaderWith(publish.bee, WIDE_MANIFEST_URL);
 
-  it('counts the segments no published manifest ever named', async () => {
-    let release = (): void => {};
-    let entered = (): void => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
+      // The first publish names segment 0 alone, and is held there.
+      uploader.handleSegment(0, 2, Buffer.from('a'));
+      await publish.started;
+
+      // Nine more upload while it is held, so the next publish is built from all ten.
+      for (let index = 1; index <= 9; index++) {
+        uploader.handleSegment(index, 2, Buffer.from('a'));
+      }
+      await uploader.segmentQueue.onIdle();
+
+      publish.release();
+      await drain(uploader);
+
+      const named = liveWindowSize(10, WIDE_MANIFEST_URL);
+      assert.ok(named < 9, `fixture must overflow the window, but it named ${named} of 10`);
+      // Everything after segment 0 and before the window: ten segments, less the window, less segment 0.
+      const lost = 10 - named - 1;
+      assert.equal(uploader.getSegmentsNeverNamed(), lost);
+      // The counter is read by /health. The line is what says which segments and when, and it is the
+      // last thing the publish does, so it also proves the publish finished rather than threw.
+      assert.ok(
+        lines.some((line) => line.includes(`skipped ${lost} uploaded segment(s)`)),
+        `no line reported the ${lost} segments this stream published nothing for`,
+      );
     });
-    const firstPublishStarted = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-
-    const uploader = uploaderWith(
-      beeWithHeldFirstPublish(held, () => entered()),
-      WIDE_MANIFEST_URL,
-    );
-
-    // The first publish names segment 0 alone, and is held there.
-    uploader.handleSegment(0, 2, Buffer.from('a'));
-    await firstPublishStarted;
-
-    // Nine more upload while it is held, so the next publish is built from all ten.
-    for (let index = 1; index <= 9; index++) {
-      uploader.handleSegment(index, 2, Buffer.from('a'));
-    }
-    await uploader.segmentQueue.onIdle();
-
-    release();
-    await drain(uploader);
-
-    const named = liveWindowSize(10, WIDE_MANIFEST_URL);
-    assert.ok(named < 9, `fixture must overflow the window, but it named ${named} of 10`);
-    // Everything after segment 0 and before the window: ten segments, less the window, less segment 0.
-    assert.equal(uploader.getSegmentsNeverNamed(), 10 - named - 1);
   });
 
   it('counts nothing while every segment still reaches a manifest', async () => {
-    const uploader = uploaderWith(makeBee({}), '');
+    const metrics = new ServiceMetrics();
+    const reported: number[] = [];
+    metrics.recordSegmentsNeverNamed = (count: number) => {
+      reported.push(count);
+    };
+    const uploader = uploaderWith(makeBee({}), '', { metrics });
 
     for (let index = 0; index < 5; index++) {
       uploader.handleSegment(index, 2, Buffer.from('a'));
@@ -737,6 +969,43 @@ describe('segments the live window outran before anything published them', () =>
     }
 
     assert.equal(uploader.getSegmentsNeverNamed(), 0);
+    // A counter incremented by zero reads the same as one never touched, so the guard that stops
+    // this reporting a loss on every healthy publish is only visible in the calls themselves.
+    assert.deepEqual(reported, [], 'a publish that skipped nothing must not report a loss of zero');
+  });
+
+  /**
+   * Segments a restart reloaded are not this session's to lose, which is why `announcedThrough`
+   * starts at null rather than at whatever the recovery entry said. The window a recovered uploader
+   * publishes is built from segments it did reload, so counting against a restored high-water reports
+   * the whole outage as segments this session uploaded and failed to name, when nothing here failed.
+   */
+  it('does not count reloaded segments as segments it failed to name', async () => {
+    const restored = Array.from({ length: 10 }, (_, index) => ({
+      index,
+      duration: 2,
+      ref: `ref${index}`,
+      discontinuity: false,
+    }));
+    const uploader = uploaderWith(makeBee({}), WIDE_MANIFEST_URL, {
+      restoreState: {
+        streamRawTopic: 'topic-abc',
+        socIndex: 5,
+        segments: restored,
+        hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+        isFirstSegmentReady: true,
+        isFirstManifestReady: true,
+      },
+    });
+
+    uploader.handleSegment(10, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    assert.ok(
+      liveWindowSize(11, WIDE_MANIFEST_URL) < 11,
+      'fixture must overflow the window, or a restored high-water would count nothing either',
+    );
+    assert.equal(uploader.getSegmentsNeverNamed(), 0, 'a restart published one manifest and lost nothing');
   });
 });
 
@@ -821,8 +1090,8 @@ describe('StreamUploader reporting which Swarm write failed', () => {
     }
   });
 
-  // The control the two above need. Without it a capture that reported on every publish would pass
-  // both of them, and the label would stop meaning that anything went wrong.
+  // The control the three above need. Without it a capture that reported on every publish would pass
+  // all of them, and the label would stop meaning that anything went wrong.
   it('reports nothing when both writes land', async () => {
     const capture = captureHandledErrors();
     try {
@@ -835,5 +1104,85 @@ describe('StreamUploader reporting which Swarm write failed', () => {
     } finally {
       capture.restore();
     }
+  });
+});
+
+/**
+ * The title is what a viewer reads when picking a broadcast out of the catalog, and both entries this
+ * uploader writes carry it: the announce that lists a live stream and the VOD entry that replaces it.
+ *
+ * The clock is frozen on a single-digit day and month, which is the only shape that tells a padded
+ * field from an unpadded one, and it makes the expected title a literal rather than the same
+ * arithmetic the source does. Reimplementing the format here would assert it against itself, which is
+ * the trap `e2e/src/bench/clientTuning.ts` records.
+ */
+describe('StreamUploader catalog entry title', () => {
+  it('titles a stream with the day it went live, zero padded', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 2, 5, 12, 0, 0).getTime() });
+
+    const published: { title: string }[] = [];
+    const uploader = new StreamUploader(
+      makeBee({}),
+      '',
+      makeFakeCatalog({
+        addStream: async (entry: { title: string }) => {
+          published.push(entry);
+        },
+      }),
+      makeFakeRecoveryStore(),
+      TEST_STREAM_KEY,
+      'stamp',
+      'stream-test',
+      MEDIA_TYPE_VIDEO,
+    );
+
+    await uploader.notifyStart();
+
+    assert.deepEqual(
+      published.map((entry) => entry.title),
+      ['05/03/2026'],
+    );
+  });
+});
+
+/**
+ * A recovery entry that says the catalog announce happened before the first segment did.
+ *
+ * No live sequence can produce that pair, since the announce is gated on the segment, so the entry on
+ * disk was corrupted or hand-edited. It is repaired rather than refused, for the reasons on
+ * `readinessFromPersisted`, and a silent repair is how a deployment goes on writing damaged entries
+ * with nothing to show for it.
+ */
+describe('StreamUploader restoring an impossible recovery entry', () => {
+  function restoredFrom(readiness: { isFirstSegmentReady: boolean; isFirstManifestReady: boolean }): void {
+    newUploader(
+      {},
+      {
+        restoreState: {
+          streamRawTopic: 'topic-abc',
+          socIndex: 5,
+          segments: [{ index: 0, duration: 2, ref: 'ref0', discontinuity: false }],
+          hlsHeaders: ['#EXTM3U', '#EXT-X-VERSION:3'],
+          ...readiness,
+        },
+      },
+    );
+  }
+
+  it('warns that the entry could not have been written by a live stream, and only then', async () => {
+    await withCapturedLog(async (lines) => {
+      const repairs = (): string[] => lines.filter((line) => line.includes('claims the catalog announce'));
+
+      restoredFrom({ isFirstSegmentReady: false, isFirstManifestReady: true });
+      assert.equal(repairs().length, 1, 'a repair nobody is told about is a corrupt store nobody fixes');
+      assert.ok(repairs()[0].includes('stream-test'), repairs()[0]);
+
+      // Every ordinary restart passes through the same line. A warning that fires on all of them says
+      // nothing about any of them, and every recovery entry on disk starts looking hand-edited.
+      restoredFrom({ isFirstSegmentReady: true, isFirstManifestReady: true });
+      restoredFrom({ isFirstSegmentReady: true, isFirstManifestReady: false });
+      restoredFrom({ isFirstSegmentReady: false, isFirstManifestReady: false });
+      assert.equal(repairs().length, 1, 'a reachable pair is not a repair');
+    });
   });
 });
