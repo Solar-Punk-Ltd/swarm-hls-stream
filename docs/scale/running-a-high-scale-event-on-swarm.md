@@ -393,9 +393,15 @@ produce**, not above its typical one.
 
 ### ⭐ How much to size it, and live is nothing like DVR
 
-⚠️ **`--cache-capacity` is in CHUNKS, not bytes.** At the ~3.6 KB per chunk measured here, a gigabyte
-is roughly 280,000. Sizing it as if it were megabytes is off by three orders of magnitude, in the
-direction that silently does nothing.
+⚠️ **`--cache-capacity` is in CHUNKS, not bytes.** A gigabyte is roughly 280,000 of them. Sizing it as
+if it were megabytes is off by three orders of magnitude, in the direction that silently does nothing.
+
+⛔ **That 280,000 works out to ~3.6 KB of video per chunk, and this document previously called 3.6 KB
+"the chunk size". It is not.** A Swarm chunk is **4096 bytes**, as the feed row in 1.2 already says.
+94.4 KB of segment is **23.05 chunks of payload**, and **26.2 chunks are actually fetched**, so there is
+about **14% overhead** in merkle-tree nodes and upload wrappers. ⚠️ Which of the two accounts for how
+much has not been itemised. **Use 4096 to size bytes and 26.2 per segment to count requests**, and do
+not treat the ratio between them as a chunk size.
 
 |                                       | what has to fit | at 26.2 chunks per 267ms segment |
 | ------------------------------------- | --------------- | -------------------------------: |
@@ -833,15 +839,16 @@ we control.
 
 At 720p / 2500 kbps / 0.25s, per stream:
 
-|                                                          |           |
-| -------------------------------------------------------- | --------: |
-| segment                                                  |     94 kB |
-| chunk, measured here                                     |   ~3.6 kB |
-| chunks per segment                                       |   **~26** |
-| segments per second                                      |      3.75 |
-| **chunk retrievals per second, per stream, per gateway** |   **~98** |
-| real peer contacts per chunk, funded                     | **1.142** |
-| **peer requests per second, per stream, per gateway**    |  **~112** |
+|                                                          |                                          |
+| -------------------------------------------------------- | ---------------------------------------: |
+| segment                                                  |                                    94 kB |
+| Swarm chunk                                              |                               **4096 B** |
+| chunks of payload                                        |                                    23.05 |
+| **chunks actually fetched per segment**                  | **26.2**, ~14% tree and wrapper overhead |
+| segments per second                                      |                                     3.75 |
+| **chunk retrievals per second, per stream, per gateway** |                                  **~98** |
+| real peer contacts per chunk, funded                     |                                **1.142** |
+| **peer requests per second, per stream, per gateway**    |                                 **~112** |
 
 ⚠️ **Derived**, by dividing measured segment sizes by the measured chunk size and multiplying by the
 measured per-chunk contact count. Every input is measured, the multiplication is not.
@@ -874,7 +881,26 @@ whether to contact the peer at all, so a skipped peer is counted and never asked
 | funded   |   23,924 |       5 |            23,919 | **1.142** |
 | unfunded |  825,931 | 799,072 |        **26,859** | **1.281** |
 
-⭐ **An unfunded node adds about 13% network load. It does 34x the bookkeeping and 1.13x the traffic.**
+⭐ **An unfunded node sends about 13% more RETRIEVAL requests. It does 34x the bookkeeping and 1.13x the
+retrieval traffic.**
+
+⛔⛔ **But 13% counts retrievals only, and this document said "13% network load" without that
+qualification.** An unfunded node cannot write cheques, so its only way to clear debt is pseudosettle,
+and it sends **10.9x more settlement messages**:
+
+|                     | funded | unfunded |     ratio |
+| ------------------- | -----: | -------: | --------: |
+| retrieval requests  | 23,924 |   27,012 |     1.13x |
+| settlement messages |    957 |   10,422 | **10.9x** |
+| **total messages**  | 24,881 |   37,434 | **1.50x** |
+
+⭐ **So which number is right depends on what is scarce.** A settlement message is tiny and a retrieval
+drags a 4 kB chunk back with it, so **in bytes the penalty is ~13%** and **in messages and connections it
+is ~50%**. Quote whichever the constraint is, and say which one you meant.
+
+⚠️ **Operationally this is what a dry chequebook means:** the node does not simply slow down, it becomes
+**noisier and less useful at the same time**, generating half again as many messages while serving its
+viewers worse, and reporting itself perfectly healthy throughout.
 
 ⛔ **What funding actually decides is the VIEWER's experience, not the network's load**: 0.0-0.3% of
 segments over budget funded, against **11.6-15.0% unfunded**. Fund nodes because unfunded viewers get a
