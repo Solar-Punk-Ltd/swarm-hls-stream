@@ -4,7 +4,7 @@ import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { MEDIA_TYPE_VIDEO } from '../src/types.js';
-import { METRICS_CONTENT_TYPE, renderPrometheusMetrics } from '../src/utils/metricsFormat.js';
+import { renderPrometheusMetrics } from '../src/utils/metricsFormat.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
 import { makeMetricsSnapshot, makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
