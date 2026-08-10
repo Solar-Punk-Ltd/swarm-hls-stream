@@ -48,6 +48,34 @@ you check visibility. **Any sustained-playback number from an agent-driven pane 
 pane.** The harness `deploy/scripts/in-browser-sustain.js` therefore refuses to run in a hidden
 document rather than producing one.
 
+### ⛔ 2026-08-10: in a REAL browser the player never requests a single segment
+
+Question 2 was attempted in real Chrome with the extension, and the visibility problem was solved:
+one synthetic click gave `hasFocus: true` and `userActivation.hasBeenActive: true`, so autoplay was
+permitted. **The stream still did not start, and the reason is new.** **[OBSERVED]**
+
+| over 210 s, node at **200 peers** |          |
+| --------------------------------- | -------: |
+| feed polls                        |  **242** |
+| **segment requests**              |    **0** |
+| `readyState`                      |    **0** |
+| buffered ranges                   |    **0** |
+| playhead gain                     |  **0 s** |
+| `video.error`                     | **null** |
+
+The manifest is not the problem. Fetched directly in the same tab it returns **200**, 337 KB,
+`#EXT-X-PLAYLIST-TYPE:EVENT`, `#EXT-X-START:TIME-OFFSET=0,PRECISE=YES`, **3444 segments** and a
+closing `#EXT-X-ENDLIST`. The node is not the problem either: its log is a steady stream of
+`Applied refreshment`, and the same node served **415 segment fetches** for the concurrency arm above.
+
+⛔ **So weeb-3's player polled a complete, well-formed VOD playlist 242 times and never asked for a
+fragment.** That is a weeb-3 behaviour rather than a harness artifact, and it is a different obstacle
+from the hidden-document one. **Question 2 remains unanswered on the playhead side.**
+
+⚠️ Note this contradicts nothing earlier: step 1 reached `readyState 4` on this same content. What
+changed between then and now is not established, and guessing at it from one sitting is how the last
+three wrong claims in this document were made.
+
 ### ⭐⭐ 2026-08-10: concurrency 3 measured directly, and it does NOT multiply
 
 Raw data `docs/bench/in-browser-concurrency3-2026-08-10.tsv`. Free, no broadcast minutes.
