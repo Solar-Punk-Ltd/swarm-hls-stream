@@ -70,6 +70,13 @@ ARM_PLAN="${ARM_PLAN:-L:true:0 U:false:0}"
 # ⛔ This is the headline the first sitting nearly missed. Across six arms the median penalty was 2.9x
 # and the share of segments over budget was **45x**, 0.3% against 15.0%. A buffer drains on late
 # segments, not on typical ones, so a median is the wrong statistic for the failure being predicted.
+#
+# ⛔ Set it PER ARM whenever a sitting interleaves profiles of different segment lengths. The budget is
+# a property of the profile, so scoring a 1.0s arm against a 0.25s arm's 267ms reports nearly every
+# fetch as late and scoring a 0.25s arm against 1000ms reports nearly none. Comparing profiles is the
+# whole reason to interleave them, and a shared budget makes exactly that comparison meaningless. The
+# field is the 10th:
+#   ARM_PLAN='S:false:0:0:1:267:1:0:g025:267 G:false:0:0:1:1000:1:0:g1:1000'
 BUDGET_MS="${BUDGET_MS:-267}"
 
 # How long to watch the node do nothing, to learn what it costs to do nothing, before an arm starts.
@@ -479,7 +486,7 @@ warmup_fetch() {
 # was 2.9x where the share over budget was 45x, because a buffer drains on late segments rather than
 # on typical ones.
 summarise_times() {
-  sort -n "$1" | awk -v b="${BUDGET_MS}" '
+  sort -n "$1" | awk -v b="${2:-${BUDGET_MS}}" '
     {v[NR]=$1; if($1>b) late++}
     END{
       if(NR==0){print "0 0 0 0 0.0"; exit}
@@ -488,9 +495,9 @@ summarise_times() {
 }
 
 say_times() {
-  local label="$1" c m p l s
-  read -r c m p l s <<<"$(summarise_times "$2")"
-  say "  ${label}: ${c} segments, median ${m}ms, p90 ${p}ms, ⭐ ${l} over ${BUDGET_MS}ms = ${s}%"
+  local label="$1" budget="${3:-${BUDGET_MS}}" c m p l s
+  read -r c m p l s <<<"$(summarise_times "$2" "${budget}")"
+  say "  ${label}: ${c} segments, median ${m}ms, p90 ${p}ms, ⭐ ${l} over ${budget}ms = ${s}%"
 }
 
 epoch_ms() { date +%s%3N; }
@@ -591,16 +598,17 @@ fetch_walk() {
 # node's ability to pay for it differs.
 run_arm() {
   local round="$1" label="$2" swap="$3" idle="${4:-0}" cache="${5:-}" viewers="${6:-}" pace="${7:-}"
-  local spread="${8:-}" jitterMs="${9:-}" refsPattern="${10:-}"
+  local spread="${8:-}" jitterMs="${9:-}" refsPattern="${10:-}" budget="${11:-}"
   [ -n "${cache}" ] || cache="${CURRENT_ARM_CACHE}"
   [ -n "${viewers}" ] || viewers="${VIEWERS}"
   [ -n "${pace}" ] || pace="${PACE_MS}"
   [ -n "${spread}" ] || spread="${SPREAD}"
   [ -n "${jitterMs}" ] || jitterMs="${JITTER_MS}"
   [ -n "${refsPattern}" ] || refsPattern="${REFS_PATTERN}"
+  [ -n "${budget}" ] || budget="${BUDGET_MS}"
   local refsFile
   refsFile="$(resolve_refs "${refsPattern}")" || return 1
-  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s), pace ${pace}ms, spread ${spread}, jitter ${jitterMs}ms, refs ${refsPattern:-default}"
+  say "round ${round} arm ${label}: ${SEGMENTS} segments, ${idle}s idle first, cache ${cache}, ${viewers} viewer(s), pace ${pace}ms, spread ${spread}, jitter ${jitterMs}ms, refs ${refsPattern:-default}, budget ${budget}ms"
 
   local was="${CURRENT_ARM_SWAP}/${CURRENT_ARM_CACHE}"
   [ "${FORCE_RECREATE:-0}" = "1" ] && was="forced"
@@ -701,7 +709,7 @@ run_arm() {
     done
     cat "${passFile}" >>"${OUT_DIR}/times-${round}-${label}.txt"
     # Each pass reported on its own, because the whole point of a second pass is that it should differ.
-    say_times "pass ${pass}" "${passFile}"
+    say_times "pass ${pass}" "${passFile}" "${budget}"
   done
   ended="$(date +%s)"
   rm -f "${loadFlag}"
@@ -730,7 +738,7 @@ run_arm() {
   say "  node metrics after:  ${mAfter}"
 
   local median p90 count late lateShare
-  read -r count median p90 late lateShare <<<"$(summarise_times "${OUT_DIR}/times-${round}-${label}.txt")"
+  read -r count median p90 late lateShare <<<"$(summarise_times "${OUT_DIR}/times-${round}-${label}.txt" "${budget}")"
 
   local cpuPerMb
   cpuPerMb="$(awk -v c="${cpuRetrieval}" -v b="${bytes}" 'BEGIN{printf "%.3f", (b>0)?c/(b/1000000):0}')"
@@ -741,7 +749,7 @@ run_arm() {
   [ -n "${worstFinal}" ] || worstFinal=0
 
   say "  ${count} fetches by ${viewers} viewer(s), $((bytes / 1000000)) MB, $((ended - started))s, median ${median}ms, p90 ${p90}ms"
-  say "  ⭐ ${late} of ${count} missed the ${BUDGET_MS}ms budget = ${lateShare}%"
+  say "  ⭐ ${late} of ${count} missed the ${budget}ms budget = ${lateShare}%"
   if [ "${pace}" -gt 0 ]; then
     say "  ⭐ paced at ${pace}ms: ${behind} of ${lagCount} fetches started behind = ${behindShare}%"
     say "  ⭐⭐ deepest lag ${maxLag}ms, worst viewer ended ${worstFinal}ms behind = the buffer this needs"
@@ -756,9 +764,9 @@ run_arm() {
   # sample that a settle has already quietened.
   LAST_ARM_RUN_MEAN="${runMean}"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${round}" "${label}" "${swap}" "${cache}" "${idle}" "${viewers}" "${pace}" "${spread}" "${jitterMs}" \
-    "${refsPattern:-default}" "${spentArm}" "${spentIdle}" "${count}" "${bytes}" \
+    "${refsPattern:-default}" "${budget}" "${spentArm}" "${spentIdle}" "${count}" "${bytes}" \
     "$((ended - started))" "${median}" "${p90}" "${lateShare}" "${behindShare}" "${maxLag}" \
     "${worstFinal}" "${cpuUsed}" "${cpuIdleRate}" \
     "${cpuRetrieval}" "${cpuPerMb}" "${loadBefore}" "${loadMax}" "${runMean}" "${runMax}" "${before}" "${after}" >>"${STATE}"
@@ -768,7 +776,7 @@ run_arm() {
 
 say "=== retrieval debt probe: ${ROUNDS} rounds of [${ARM_PLAN}] at ${SEGMENTS} segments ==="
 say "gateway found at swap=${BASELINE_SWAP} cache=${BASELINE_CACHE}, which is what it will be left at"
-[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\trefs\tspentArmPlur\tspentIdlePlur\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
+[ -s "${STATE}" ] || printf 'round\tarm\tswap\tcache\tidle\tviewers\tpaceMs\tspread\tjitterMs\trefs\tbudgetMs\tspentArmPlur\tspentIdlePlur\tfetches\tbytes\tseconds\tmedianMs\tp90Ms\tlatePct\tbehindPct\tmaxLagMs\tendLagMs\tcpuS\tcpuIdleRate\tcpuRetrievalS\tcpuSPerMb\tloadBefore\tloadMax\trunMean\trunMax\tacctBefore\tacctAfter\n' >"${STATE}"
 [ -s "${SERIES}" ] || printf 'round\tarm\tat\telapsed\tpeers\tinDebt\ttotalDebt\tdeepest\tmedianDebt\tp10Debt\tpinned\n' >"${SERIES}"
 
 BASELINE_RUNNABLE="$(baseline_runnable)"
@@ -777,9 +785,9 @@ say "the neighbours alone are ${BASELINE_RUNNABLE} runnable, so arms settle to $
 
 for round in $(seq 1 "${ROUNDS}"); do
   for spec in ${ARM_PLAN}; do
-    IFS=':' read -r label swap idle cache viewers pace spread jitterMs refsPattern <<<"${spec}"
+    IFS=':' read -r label swap idle cache viewers pace spread jitterMs refsPattern budgetMs <<<"${spec}"
     run_arm "${round}" "${label}" "${swap}" "${idle:-0}" "${cache:-}" "${viewers:-}" "${pace:-}" \
-      "${spread:-}" "${jitterMs:-}" "${refsPattern:-}" ||
+      "${spread:-}" "${jitterMs:-}" "${refsPattern:-}" "${budgetMs:-}" ||
       say "round ${round} arm ${label} did not complete"
 
     # ⛔ On the peak the arm actually produced, not on a sample taken after it. This machine is shared
