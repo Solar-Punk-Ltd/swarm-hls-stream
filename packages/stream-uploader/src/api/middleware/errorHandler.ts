@@ -31,6 +31,20 @@ const CLIENT_ERROR_MESSAGES: Record<number, string> = {
 };
 
 /**
+ * Whether a status an error declared is one this service will answer a caller with.
+ *
+ * Whole numbers only, rather than merely 4xx-shaped ones. `res.status()` throws a `TypeError` for a
+ * fractional code, and a throw inside this handler is answered by express's own, which sends the
+ * stack trace and the deployment's absolute paths to whoever provoked it.
+ *
+ * The `typeof` is what lets the comparisons compile against an `unknown`. `Number.isInteger` already
+ * refuses everything that is not a number, so removing it changes nothing a test can observe.
+ */
+function isAnswerableClientStatus(declared: unknown): declared is number {
+  return typeof declared === 'number' && Number.isInteger(declared) && declared >= 400 && declared < 500;
+}
+
+/**
  * The status a body-parser failure already carries, or `undefined` when the error is ours to own.
  *
  * Read off `expose`, which `http-errors` sets only for statuses that are safe to attribute to the
@@ -52,7 +66,7 @@ function clientErrorStatus(err: Error): number | undefined {
 
   const declared = typeof status === 'number' ? status : statusCode;
 
-  return typeof declared === 'number' && declared >= 400 && declared < 500 ? declared : undefined;
+  return isAnswerableClientStatus(declared) ? declared : undefined;
 }
 
 export function errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
