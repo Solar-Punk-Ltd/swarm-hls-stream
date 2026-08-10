@@ -1130,6 +1130,7 @@ export class StreamOrchestrator {
         continue;
       }
       const activityAt = this.streamActivityAt.get(streamId);
+      // Unreachable: an id enters `activeStreams` and this map together, and `retireSession` clears both.
       if (activityAt === undefined) {
         continue;
       }
