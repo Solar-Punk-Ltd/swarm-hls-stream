@@ -4,3 +4,8 @@
   gap: 30px;
   height: calc(100dvh - 190px);
 }
+
+// Matches `.stream-list-text`, since this stands in the same place and says the same kind of thing.
+.stream-browser-notice {
+  padding: 20px;
+}
