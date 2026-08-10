@@ -27,6 +27,16 @@ export interface QoeMetrics {
   /** hls.js's own throughput estimate. Over Swarm this is the number expected to oscillate. */
   bandwidthEstimateKbps: number | null;
   /**
+   * Every rung hls.js parsed from the master, with the bitrate it was told and whether it is
+   * reachable. `capped` means capLevelToPlayerSize ruled it out for the current player size;
+   * `unaffordable` means the bandwidth estimate does not cover it under abrBandWidthUpFactor.
+   * A rung that is neither, and still not selected, is a rung hls.js excluded — usually because
+   * its playlist or a fragment failed to load.
+   */
+  ladder: LadderLevel[];
+  /** What ABR would pick right now, by height. Differs from selectedHeight while a switch is in flight. */
+  nextHeight: number | null;
+  /**
    * How long a level switch took: from hls.js deciding, to the first fragment of the new rung
    * being buffered. This is the measurement the ABR-over-Swarm POC exists to produce — it is
    * where a stale rung's feed walk would show up.
@@ -51,6 +61,14 @@ export interface QoeMetrics {
   playbackTimeMs: number;
 }
 
+export interface LadderLevel {
+  height: number;
+  bitrateKbps: number;
+  current: boolean;
+  capped: boolean;
+  unaffordable: boolean;
+}
+
 export const initialMetrics = (): QoeMetrics => ({
   startupTimeMs: null,
   firstFrameTimeMs: null,
@@ -67,6 +85,8 @@ export const initialMetrics = (): QoeMetrics => ({
   abrEnabled: false,
   selectedHeight: null,
   bandwidthEstimateKbps: null,
+  ladder: [],
+  nextHeight: null,
   lastSwitchLatencyMs: null,
   avgSwitchLatencyMs: null,
   maxSwitchLatencyMs: null,
@@ -264,6 +284,20 @@ export const attachQoeTracking = (
 
       const estimate = hls.bandwidthEstimate;
       metrics.bandwidthEstimateKbps = Number.isFinite(estimate) && estimate > 0 ? Math.round(estimate / 1000) : null;
+
+      // The whole ABR decision, laid out. Which rungs exist, what hls.js believes each costs, and
+      // which of the two gates — player size or bandwidth — is holding one back. Without this the
+      // only visible symptom of a stuck ladder is a resolution that never changes.
+      const capping = hls.autoLevelCapping;
+      const affordable = estimate * hls.config.abrBandWidthUpFactor;
+      metrics.ladder = hls.levels.map((level, index) => ({
+        height: level.height,
+        bitrateKbps: Math.round(level.maxBitrate / 1000),
+        current: index === hls.currentLevel,
+        capped: capping > -1 && index > capping,
+        unaffordable: affordable < level.maxBitrate,
+      }));
+      metrics.nextHeight = hls.levels[hls.nextAutoLevel]?.height ?? null;
     }
 
     flush();

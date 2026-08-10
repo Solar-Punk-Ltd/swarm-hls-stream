@@ -168,6 +168,17 @@ const QoePanel: React.FC<{ metrics: QoeMetrics }> = ({ metrics: m }) => (
       <Row label="Switch Latency (avg)" value={fmtMs(m.avgSwitchLatencyMs)} />
       <Row label="Switch Latency (max)" value={fmtMs(m.maxSwitchLatencyMs)} bad={(m.maxSwitchLatencyMs ?? 0) > 5000} />
       <Row label="Switches Measured" value={String(m.switchLatencySamples)} />
+      {m.ladder.map((level) => (
+        <Row
+          key={level.height}
+          label={`${level.current ? '▸' : '\u00A0'} ${level.height}p`}
+          value={`${level.bitrateKbps} kbps${level.capped ? ' · capped' : ''}${
+            level.unaffordable ? ' · unaffordable' : ''
+          }`}
+          bad={level.capped || level.unaffordable}
+        />
+      ))}
+      {m.ladder.length > 0 && <Row label="ABR would pick" value={m.nextHeight != null ? `${m.nextHeight}p` : '—'} />}
     </Section>
 
     <Section title="Reliability">
