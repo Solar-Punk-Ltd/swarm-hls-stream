@@ -4,13 +4,22 @@ import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { MEDIA_TYPE_VIDEO } from '../src/types.js';
-import { renderPrometheusMetrics } from '../src/utils/metricsFormat.js';
+import { METRICS_CONTENT_TYPE, renderPrometheusMetrics } from '../src/utils/metricsFormat.js';
 
 import { ApiTestServer, startTestApi } from './helpers/apiTestServer.js';
 import { makeMetricsSnapshot, makeTestOrchestrator, rejectImmediately } from './helpers/fakes.js';
 
 const STREAM_ID = 'live/one';
 const SETTLE_CEILING_MS = 4_000;
+
+/** `name -> help text` for every metric in an exposition body, so a test can assert the text is there. */
+function parseHelp(body: string): Map<string, string> {
+  const help = new Map<string, string>();
+  for (const match of body.matchAll(/^# HELP (swarm_hls_[a-z0-9_]+) ?(.*)$/gm)) {
+    help.set(match[1], match[2]);
+  }
+  return help;
+}
 
 /** `name value` for every sample in an exposition body, so a test can assert on numbers not text. */
 function parseExposition(body: string): Map<string, number> {
@@ -93,6 +102,24 @@ describe('metrics exposition format', () => {
   });
 
   /**
+   * The assertion above checks a HELP line is present and cannot check it says anything, because
+   * `# HELP name ` with the text removed still contains `# HELP name `. Mutation testing found every
+   * one of the seventeen help strings surviving on exactly that gap. The HELP text is the only
+   * description an operator gets at 3am from a plain curl, so an empty one is a real regression.
+   *
+   * Deliberately asserts that text EXISTS rather than what it says: pinning the wording would make
+   * every future edit to an explanation a failing test, and the wording is not the contract.
+   */
+  it('gives every metric help text that actually describes it', () => {
+    const help = parseHelp(renderPrometheusMetrics(SNAPSHOT));
+
+    assert.equal(help.size, 17, 'every metric must carry a HELP line');
+    for (const [name, text] of help) {
+      assert.ok(text.trim().length > 0, `${name} has a HELP line with no text in it`);
+    }
+  });
+
+  /**
    * Milliseconds everywhere else in this service and seconds here, because a Prometheus timestamp
    * gauge is compared against `time()` in a query. Exposing milliseconds would put every alert on
    * this metric out by a factor of a thousand and still look like a plausible number.
@@ -162,6 +189,27 @@ describe('GET /metrics (S2.7, OBS-7)', () => {
     assert.equal(status, 200);
     assert.equal(samples.get('swarm_hls_active_streams'), 0);
     assert.equal(samples.get('swarm_hls_segments_uploaded_total'), 0);
+  });
+
+  /**
+   * The version in this string is part of the Prometheus text exposition contract, not decoration, and
+   * nothing else in the suite read it: mutation testing blanked the whole constant and every test
+   * still passed. Blanked, Express falls back to `application/octet-stream`, and a scraper that gets
+   * the wrong media type does not fall back, it drops the target. The service then carries on looking
+   * perfectly healthy from the inside.
+   *
+   * ⛔ Asserts the type and the version separately rather than comparing against the constant, because
+   * Express reorders media type parameters and serves `text/plain; charset=utf-8; version=0.0.4`.
+   * Parameter order carries no meaning in HTTP, so an equality check here would fail on a detail that
+   * is not the contract, and the first fix anyone reached for would be to loosen it to nothing.
+   */
+  it('declares the prometheus exposition content type on the response', async () => {
+    const api = await start(makeTestOrchestrator());
+
+    const { headers } = await api.request('/metrics');
+
+    assert.match(headers['content-type'], /^text\/plain\b/);
+    assert.match(headers['content-type'], /\bversion=0\.0\.4\b/);
   });
 
   it('counts a segment that reached swarm', async () => {
