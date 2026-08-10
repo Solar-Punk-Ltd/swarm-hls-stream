@@ -27,6 +27,7 @@ const SWARM_SCHEME = 'swarm://';
 
 const HLS_ENDLIST = '#EXT-X-ENDLIST';
 const HLS_EXTINF = '#EXTINF';
+const HLS_STREAM_INF = '#EXT-X-STREAM-INF';
 
 export function buildSwarmUri(owner: string, topic: string): string {
   return `${SWARM_SCHEME}${owner}/${topic}`;
@@ -54,11 +55,54 @@ export function parseSwarmUri(url: string): { owner: string; topic: string } {
 }
 
 /**
- * The multivariant playlist for a ladder, built here rather than fetched.
+ * Whether a feed answered with a multivariant playlist rather than a media playlist.
  *
- * It is four URIs that never change, so putting it on Swarm would buy a fifth feed and no
- * information: the rung topics are already in the stream catalog, and the media playlists the
- * player actually consumes are synthesised locally too.
+ * This is how a ladder is recognised, in preference to a flag on the catalog entry: it works on a
+ * deep link with no catalog read behind it, and it cannot disagree with the playlist it describes.
+ */
+export function isMasterPlaylist(text: string): boolean {
+  return text.includes(HLS_STREAM_INF);
+}
+
+/**
+ * The variant feeds a master points at, in the order it lists them.
+ *
+ * Read off the master rather than out of the catalog, because these are the feeds hls.js will
+ * actually request — polling any other set would leave the rungs it asks for un-walked while
+ * keeping ones it never touches at the live edge. The owner comes from the URIs for the same
+ * reason: the master is what says where its own variants live.
+ */
+export function masterVariants(text: string): { owner: string; topic: string }[] {
+  const lines = text.trim().split('\n');
+  const variants: { owner: string; topic: string }[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trim().startsWith(HLS_STREAM_INF)) {
+      continue;
+    }
+
+    const uri = lines[i + 1]?.trim();
+    if (!uri || uri.startsWith('#')) {
+      continue;
+    }
+
+    const variant = parseSwarmUri(uri);
+    if (variant.owner && variant.topic) {
+      variants.push(variant);
+    }
+    i++;
+  }
+
+  return variants;
+}
+
+/**
+ * A ladder's multivariant playlist, built locally instead of fetched.
+ *
+ * The uploader publishes the real one to a feed of its own, and that is what a session normally
+ * reads — see `libs/MasterPlaylist.ts` in the stream-uploader, whose output this must match. This
+ * copy is the fallback for a catalog entry written before masters were published, whose `topic`
+ * points at the lowest rung: without it such a stream would play as a single rendition forever.
  *
  * No CODECS attribute — the uploader never sees the codec string, and hls.js takes it from the
  * first parsed fragment anyway. Omitting it is legal; guessing it would let hls.js discard a rung

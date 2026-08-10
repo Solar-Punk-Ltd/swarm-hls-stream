@@ -7,7 +7,14 @@ import { config } from '@/utils/config';
 
 import { LadderFeedPoller } from './LadderFeedPoller';
 import { ManifestStateManager } from './ManifestState';
-import { absoluteBytesBase, buildMasterPlaylist, parseManifest, parseSwarmUri } from './playlist';
+import {
+  absoluteBytesBase,
+  buildMasterPlaylist,
+  isMasterPlaylist,
+  masterVariants,
+  parseManifest,
+  parseSwarmUri,
+} from './playlist';
 
 /** A stream's ABR ladder, as the loader needs it: who owns the feeds, and what the rungs are. */
 export interface LadderSource {
@@ -24,9 +31,15 @@ export interface LadderSource {
  */
 export type LadderResolver = () => LadderSource;
 
-/** What was registered, alongside the topics that were actually handed to the poller. */
+/**
+ * A source known to be a ladder, and the topics actually handed to the poller.
+ *
+ * `resolve` is present only on the fallback path, where the ladder came from the stream catalog
+ * rather than from a published master. `topics` is recorded rather than re-derived, because it is
+ * what has to be stopped again — see {@link ManifestFetcher.registerLadder}.
+ */
 interface RegisteredLadder {
-  resolve: LadderResolver;
+  resolve?: LadderResolver;
   topics: Topic[];
 }
 
@@ -53,11 +66,15 @@ export class ManifestFetcher {
   }
 
   /**
-   * Declares that the stream loaded from `sourceUrl` is a ladder.
+   * Declares that the stream loaded from `sourceUrl` has a ladder in the stream catalog.
    *
-   * Two things follow. The loader answers that source's top-level playlist request with a master
-   * rather than with a media playlist, and every rung's feed starts being walked immediately —
-   * including the three hls.js is not playing, which is what makes switching to one of them cheap.
+   * This is the fallback path, for an entry whose `topic` points at the lowest rung because it was
+   * written before the uploader published masters. It pre-starts the rung walks from the catalog's
+   * rendition list so such a stream is still a ladder; {@link fetchSource} then answers the
+   * top-level request with a locally built master when the feed turns out to hold a media playlist.
+   *
+   * Registering costs nothing when the source *does* have a published master: the topics are the
+   * same ones, and starting a walk that is already running is a no-op.
    */
   registerLadder(sourceUrl: string, resolve: LadderResolver): void {
     const ladder = resolve();
@@ -67,38 +84,76 @@ export class ManifestFetcher {
     // which happens before the previous effect's cleanup runs, so a resolver read at unregister
     // time already sees the *next* stream's ladder — which would stop the rungs just started and
     // leave the previous stream's walk loops running forever.
-    this.ladders.set(sourceUrl, { resolve, topics });
+    this.trackLadder(sourceUrl, topics, resolve);
     this.poller.start(ladder.owner, topics);
   }
 
+  /**
+   * Stops every rung this source was walking and discards what they accumulated.
+   *
+   * The clearing belongs here rather than in the player, because with a published master the rung
+   * topics are discovered from the playlist and the player never sees them — it would have nothing
+   * to clear, and the next session would resume the previous one's playlists. Done synchronously
+   * with the stop, so a response still in flight cannot recreate the state it lands after.
+   */
   unregisterLadder(sourceUrl: string): void {
     const registered = this.ladders.get(sourceUrl);
     this.ladders.delete(sourceUrl);
 
-    if (registered) {
-      this.poller.stop(registered.topics);
+    if (!registered) {
+      return;
     }
+
+    this.poller.stop(registered.topics);
+    for (const topic of registered.topics) {
+      this.stateManager.clear(topic.toString());
+    }
+  }
+
+  /**
+   * Answers the top-level playlist request for `url` — the one hls.js makes once, from
+   * `loadSource`.
+   *
+   * The source feed is read first and its content decides what this is. A multivariant playlist
+   * means the uploader published a master for a ladder, and it is returned as it stands; the rungs
+   * it names start being walked here, before hls.js has parsed it and asked for any of them. A
+   * media playlist means either a single-rendition stream, or a catalog entry from before masters
+   * existed — the fallback in {@link registerLadder} covers the second.
+   */
+  async fetchSource(url: string): Promise<string> {
+    const source = parseSwarmUri(url);
+    const topic = Topic.fromString(source.topic);
+    const hexTopic = topic.toString();
+
+    const res = await this.fetchResource(`feeds/${source.owner}/${hexTopic}`);
+    const text = await res.text();
+
+    if (isMasterPlaylist(text)) {
+      const variants = masterVariants(text);
+      this.startVariants(url, source.owner, variants);
+      this.logMaster(url, text, 'published');
+      return text;
+    }
+
+    const synthesized = this.masterFor(url);
+    if (synthesized) {
+      this.logMaster(url, synthesized, 'synthesised from the catalog');
+      return synthesized;
+    }
+
+    // Single rendition: the source feed *is* the media playlist, so the read above was the initial
+    // fetch. Handing the response on rather than fetching again keeps this one request.
+    return this.ingestManifest(hexTopic, text, res);
   }
 
   /** The master playlist for a registered ladder, or null when this source is single-rendition. */
   masterFor(sourceUrl: string): string | null {
-    const ladder = this.ladders.get(sourceUrl)?.resolve();
+    const ladder = this.ladders.get(sourceUrl)?.resolve?.();
     if (!ladder || ladder.renditions.length === 0) {
       return null;
     }
 
-    const master = buildMasterPlaylist(ladder.owner, ladder.renditions);
-
-    // Logged because it is otherwise unobservable. The master never becomes a request — it is
-    // built here and handed straight to hls.js — so devtools' network panel, which is the first
-    // place anyone looks for a playlist, shows nothing at all. Once per distinct master, which for
-    // a live session is once.
-    if (master !== this.lastLoggedMaster) {
-      this.lastLoggedMaster = master;
-      console.log(`[SwarmHls] master playlist for ${sourceUrl}\n${master}`);
-    }
-
-    return master;
+    return buildMasterPlaylist(ladder.owner, ladder.renditions);
   }
 
   async fetch(url: string): Promise<string> {
@@ -122,7 +177,11 @@ export class ManifestFetcher {
   private async handleInitialFetch(owner: string, topic: Topic): Promise<string> {
     const hexTopic = topic.toString();
     const res = await this.fetchResource(`feeds/${owner}/${hexTopic}`);
-    const text = await res.text();
+    return this.ingestManifest(hexTopic, await res.text(), res);
+  }
+
+  /** Folds a feed's newest media playlist into this topic's state and serialises what results. */
+  private ingestManifest(hexTopic: string, text: string, res: Response): string {
     const parsed = parseManifest(text);
 
     const shouldContinue = this.stateManager.updateManifest(
@@ -136,6 +195,46 @@ export class ManifestFetcher {
     }
 
     return this.stateManager.serialize(hexTopic, this.bytesBaseUrl());
+  }
+
+  /**
+   * Records a ladder against its source, merging topics rather than replacing them.
+   *
+   * Both paths can fire for one source — the catalog registers the ladder as the player mounts, and
+   * the published master names the same rungs a moment later. Replacing would leave whichever set
+   * lost the race running with nothing to stop it at teardown.
+   */
+  private trackLadder(sourceUrl: string, topics: Topic[], resolve?: LadderResolver): void {
+    const existing = this.ladders.get(sourceUrl);
+    const known = new Set(existing?.topics.map((t) => t.toString()));
+    const merged = [...(existing?.topics ?? []), ...topics.filter((t) => !known.has(t.toString()))];
+
+    this.ladders.set(sourceUrl, { resolve: resolve ?? existing?.resolve, topics: merged });
+  }
+
+  private startVariants(sourceUrl: string, sourceOwner: string, variants: { owner: string; topic: string }[]): void {
+    if (variants.length === 0) {
+      return;
+    }
+
+    const topics = variants.map((variant) => Topic.fromString(variant.topic));
+    this.trackLadder(sourceUrl, topics);
+    this.poller.start(variants[0].owner || sourceOwner, topics);
+  }
+
+  /**
+   * Logged because a master is otherwise hard to see. The published one arrives as a feed read that
+   * looks like every other feed read, and the synthesised one never becomes a request at all — so
+   * devtools' network panel, the first place anyone looks for a playlist, shows nothing useful
+   * either way. Once per distinct master, which for a live session is once.
+   */
+  private logMaster(sourceUrl: string, master: string, origin: string): void {
+    if (master === this.lastLoggedMaster) {
+      return;
+    }
+
+    this.lastLoggedMaster = master;
+    console.log(`[SwarmHls] master playlist for ${sourceUrl} (${origin})\n${master}`);
   }
 
   private async handleFollowupFetch(owner: string, topic: Topic): Promise<string> {

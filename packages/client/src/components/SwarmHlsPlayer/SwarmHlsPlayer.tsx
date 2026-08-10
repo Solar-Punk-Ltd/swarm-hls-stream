@@ -78,21 +78,25 @@ export const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
   abrEwmaFastLive: 9,
   abrEwmaSlowLive: 27,
 
-  // Where a cold session starts, since there is nothing measured yet. hls.js seeds 500 kbps, which
-  // with this ladder parks every viewer on the bottom rung and then needs a long stretch of EWMA to
-  // climb out. Starting mid-ladder and letting the buffer loop pull down is the better trade here,
-  // because buffer occupancy is a real signal on Swarm and measured throughput largely is not.
-  // This number is a starting guess, and is exactly what the POC exists to replace.
+  // A floor only. Once the ladder has been parsed, {@link startAtTopRung} raises the estimate to
+  // whatever the top rung needs, because any fixed number here is a guess that the ABR gate then
+  // treats as a hard ceiling. This value is what a session runs on for the brief window before the
+  // master is read, and for a single-rendition stream, where it changes nothing.
   abrEwmaDefaultEstimate: 2_000_000,
 
   // hls.js's startup probe fetches the first fragment at a low level to measure throughput. That
   // measurement is retrieval latency here, so it produces a number that is not bandwidth; the
-  // seeded estimate above is the more honest input.
+  // seeded estimate is the more honest input.
   testBandwidth: false,
 
-  // Do not pull 1080p into a 400px box. Cheap, and it matters most on the small screens the ladder
-  // exists for.
-  capLevelToPlayerSize: true,
+  // Off, and this is load-bearing rather than a preference. `capLevelToPlayerSize` caps ABR at the
+  // first rung whose width or height reaches `max(playerWidth, playerHeight) x devicePixelRatio`,
+  // and it sets `autoLevelCapping`, which ABR cannot exceed for any bandwidth. In a 420px-wide
+  // player at devicePixelRatio 1 that resolves to 640x360 — the bottom rung, pinned there
+  // permanently and regardless of how fast Swarm is answering. Sizing the ladder to the box is the
+  // right production default; it is the wrong thing to leave on while measuring what the ladder can
+  // reach. See the watch page, which is laid out wide for the same reason.
+  capLevelToPlayerSize: false,
 
   // Restated at hls.js's own defaults rather than changed. They are here to be swept from a caller
   // during the POC without editing this file; there is no evidence yet for moving them.
@@ -144,29 +148,92 @@ function ladderKey(renditions: Rendition[] | undefined): string {
   return renditions.map((r) => `${r.name}:${r.topic}`).join('|');
 }
 
+/** The rung to aim at: tallest, and among equals the one carrying the most bits. */
+function topLevelIndex(levels: readonly { height: number; maxBitrate: number }[]): number {
+  return levels.reduce((best, level, index) => {
+    const incumbent = levels[best];
+    const taller = level.height > incumbent.height;
+    const fatter = level.height === incumbent.height && level.maxBitrate > incumbent.maxBitrate;
+    return taller || fatter ? index : best;
+  }, 0);
+}
+
+/**
+ * Starts the session on the top rung and lets measurement bring it down, rather than starting at
+ * the bottom and waiting for measurement to let it up.
+ *
+ * The second is what hls.js does by default and it cannot work over Swarm. `findBestLevel` will
+ * only move up to a rung when `abrBandWidthUpFactor x bandwidthEstimate >= BANDWIDTH`, and
+ * `bandwidthEstimate` moves only on fragments actually fetched — with `testBandwidth` off there is
+ * no probe, and a probe would measure retrieval latency rather than a rate anyway. So a viewer
+ * fetching 700 kbps segments measures roughly 700 kbps, concludes 700 kbps is all it can afford,
+ * and never tries the rung that would have told it otherwise. The floor is self-fulfilling.
+ *
+ * Seeding the estimate at exactly what the top rung needs under the up-switch factor inverts that:
+ * the whole ladder is affordable from cold, and the first real fragments then move the estimate.
+ * If Swarm keeps up it stays high; if it does not, the EWMA falls and — faster — the starvation
+ * path in `findBestLevel` drops the level as the buffer drains. Falling back on evidence, rather
+ * than never climbing for want of it.
+ *
+ * The cost is an honest one: the first fragment is a top-rung fragment, so a viewer on a slow
+ * gateway pays a slower startup before the first down-switch. That is the trade this branch is
+ * making, and it is what `abrEwmaFastLive` governs the speed of.
+ */
+function startAtTopRung(hls: Hls): void {
+  const levels = hls.levels;
+  if (levels.length < 2) {
+    return;
+  }
+
+  // Clamped because this is a divisor and the factor is caller-tunable for exactly this kind of
+  // sweep. A zero would seed an infinite estimate, which hls.js then multiplies by the same zero
+  // and compares as NaN — no rung is ever selectable and playback simply never starts.
+  const upFactor = Math.min(Math.max(hls.config.abrBandWidthUpFactor, 0.1), 1);
+  const top = topLevelIndex(levels);
+  const affordable = levels[top].maxBitrate / upFactor;
+
+  // Never downward: a caller that deliberately seeded higher keeps its number.
+  hls.bandwidthEstimate = Math.max(hls.config.abrEwmaDefaultEstimate, Math.round(affordable));
+
+  // `startLevel` picks the first fragment only, and leaves ABR enabled — unlike `currentLevel`,
+  // which would pin the session to this rung for good.
+  hls.startLevel = top;
+}
+
 /**
  * Pins hls.js to one rung. Called only when a rung was asked for; otherwise ABR chooses.
  *
- * Rungs are matched by their feed URI rather than by height or bitrate, because that is the one
- * attribute of a level that came from this ladder and cannot collide with another rung's.
+ * Matched by feed URI where the catalog supplied one, because a rung's topic is the one attribute
+ * of a level that came from this ladder and cannot collide with another rung's. Falling back to the
+ * height in the rung's name covers the session driven purely by a published master, which knows
+ * every level's resolution but has no rendition names to match against.
+ *
  * Assigning `currentLevel` is also what turns ABR off — a `startLevel` alone only picks where it
  * begins, and it would switch away on the first throughput sample.
  */
 function applyLevel(hls: Hls, owner: string, renditions: Rendition[], level: string): void {
   const target = renditions.find((r) => r.name === level);
-  if (!target) {
-    console.warn(`Unknown rendition "${level}", leaving level selection on auto`);
-    return;
-  }
 
-  const uri = buildSwarmUri(owner, target.topic);
-  const index = hls.levels.findIndex((candidate) => candidate.uri === uri);
+  const index = target
+    ? hls.levels.findIndex((candidate) => candidate.uri === buildSwarmUri(owner, target.topic))
+    : levelIndexByName(hls, level);
+
   if (index < 0) {
-    console.warn(`Rendition "${target.name}" is not among the parsed levels, leaving selection on auto`);
+    console.warn(`Rendition "${level}" is not among the parsed levels, leaving selection on auto`);
     return;
   }
 
   hls.currentLevel = index;
+}
+
+/** `720p` -> the parsed level 720 rows tall, so a rung can be pinned without a catalog entry. */
+function levelIndexByName(hls: Hls, level: string): number {
+  const height = Number.parseInt(level, 10);
+  if (!Number.isFinite(height)) {
+    return -1;
+  }
+
+  return hls.levels.findIndex((candidate) => candidate.height === height);
 }
 
 interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
@@ -227,8 +294,10 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
 
     const sourceUrl = buildSwarmUri(owner, topicString);
     const ladder = renditionsRef.current;
+
+    // A ladder the catalog knows about. Only the fallback path needs this — a stream whose feed
+    // holds a published master is recognised by the loader from the master itself, catalog or not.
     const isLadder = renditionKey.length > 0 && !!ladder;
-    const ladderTopics = isLadder ? ladder.map((r) => r.topic) : [topicString];
 
     if (isLadder) {
       manifestFetcher.registerLadder(sourceUrl, () => ({
@@ -255,6 +324,11 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
         // looks like this one and fetches from somewhere else entirely.
         pLoader: CustomManifestLoader,
         fLoader: CustomFragmentLoader,
+        // Fragment loading is started by hand from MANIFEST_PARSED below, once the ladder is known.
+        // Left on, hls.js starts it from its own MANIFEST_LOADED handler, and whether that runs
+        // before or after this component gets to set `startLevel` depends on the order two internal
+        // controllers happened to register for the same event. Not a race worth inheriting.
+        autoStartLoad: false,
       });
 
       const restartStream = () => {
@@ -300,9 +374,16 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       hls.loadSource(sourceUrl);
 
       hls.on(Events.MANIFEST_PARSED, () => {
-        if (isLadder && level && level !== AUTO_LEVEL) {
-          applyLevel(hls!, owner, renditionsRef.current ?? ladder, level);
+        // The ladder is whatever hls.js parsed, not whatever the catalog said: a published master
+        // is the authority on which rungs exist, and a deep link may have had no catalog at all.
+        const pinned = !!level && level !== AUTO_LEVEL;
+        if (pinned) {
+          applyLevel(hls!, owner, renditionsRef.current ?? ladder ?? [], level!);
+        } else {
+          startAtTopRung(hls!);
         }
+
+        hls!.startLoad();
 
         if (autoPlay) {
           video.play().catch((err) => {
@@ -320,18 +401,19 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       video.removeEventListener('pause', onHlsPause);
       video.removeEventListener('play', onHlsPlay);
       detachQoe?.();
+
+      // Stops every rung's walk and discards its accumulated playlist, including rungs discovered
+      // from a published master that this component never saw.
       manifestFetcher.unregisterLadder(sourceUrl);
 
       if (hls) {
-        // Every rung, not just the one that was playing: the others hold accumulated segment
-        // state too, and leaving it behind would have the next session resume someone else's
-        // playlist.
-        for (const topicString of ladderTopics) {
-          try {
-            ManifestStateManager.getInstance().clear(Topic.fromString(topicString).toString());
-          } catch (error) {
-            console.warn('Failed to clear manifest state for topic:', topicString, error);
-          }
+        // The source feed on top of that. For a single-rendition stream it is the media playlist
+        // and holds the only state there is; for a ladder it is the master, and clearing it is a
+        // no-op. Leaving either behind would have the next session resume someone else's playlist.
+        try {
+          ManifestStateManager.getInstance().clear(Topic.fromString(topicString).toString());
+        } catch (error) {
+          console.warn('Failed to clear manifest state for topic:', topicString, error);
         }
 
         hls.destroy();

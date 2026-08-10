@@ -28,12 +28,11 @@ export class CustomManifestLoader extends PlaylistLoader {
       return;
     }
 
-    // `manifest` is the top-level request, and for a ladder it has to be answered with the
-    // multivariant playlist; `level` is one rung, and is a feed like any other. A single-rendition
-    // stream registers no ladder, so its `manifest` request falls through to the same feed read it
-    // has always been.
-    const source = context.type === 'manifest' ? manifestFetcher.masterFor(context.url) : null;
-    const manifest = source !== null ? Promise.resolve(source) : manifestFetcher.fetch(context.url);
+    // `manifest` is the top-level request — the one whose answer decides whether this stream is a
+    // ladder at all, so it goes through the path that reads the source feed and looks. `level` is
+    // one rung, which is a feed like any other.
+    const manifest =
+      context.type === 'manifest' ? manifestFetcher.fetchSource(context.url) : manifestFetcher.fetch(context.url);
 
     manifest
       .then((data) => {
