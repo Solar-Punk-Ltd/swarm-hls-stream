@@ -1,0 +1,54 @@
+# In-browser (weeb-3) SUSTAINED DELIVERY at concurrency 3, 2026-08-10
+#
+# Question: does the per-segment service time hold over time, and what does concurrency 3 actually
+# deliver? Every throughput figure before this was ARITHMETIC over a sequential p50, never measured.
+#
+# Node: weeb-3 0.0.327001, public deployment, app shell only (no stream attached, nothing prefetched).
+# Content: our own recording 8d8a30ff... / 7fd811aa..., 3444 segments of 0.266s, mean 92 KB.
+# Concurrency 3 = HLS_PREFETCH_BODY_MAX_PARALLEL, the value weeb-3's own player uses.
+#
+# ⛔ PEER TABLE WAS 146 CONNECTED / 54 CONNECTING, not the 200/0 of the n=500 sitting. Buildup
+# plateaued and the log showed peers dropping with BrokenPipe as fast as they were dialled. Treat the
+# 146-vs-200 difference as an uncontrolled variable between this and the 2026-08-09 run.
+#
+# ⛔ WINDOW: first 180s ONLY. After that a second weeb-3 node was started in another browser on the
+# same uplink and the p50 rose (1016 -> 1165 -> 1368). That is my contamination, not the node's.
+#
+# ⚠️ Per-fetch rows were not retained, only these aggregates. Re-running should keep the raw rows.
+
+## the clean window
+metric	value	note
+window_s	180	first three minutes, single node on the uplink
+peers_connected	146	plateaued, not the 200 of the n=500 run
+n_fetches	415	all HTTP 200
+bytes_MB	37.18
+mean_segment_KB	92	matches the 92.9 KB of the n=500 run
+throughput_KBps	212
+needed_KBps	357	2.86 Mbps
+realtime_ratio	0.592	⛔ NOT the 0.99x that was derived from arithmetic
+segments_per_s	2.31
+needed_segments_per_s	3.76
+crossing_rate_pct	100.0	every segment slower than its own 266ms
+
+## service time at concurrency 3 (ms)
+p0	791	⭐ reproduces the 784ms floor of the n=500 run at concurrency 1
+p10	826
+p50	1025
+p90	2015
+p99	2991
+max	3990
+
+## does it degrade? 60s buckets
+minute	n	p50_ms	KBps	note
+0	137	1087	212	clean
+1	141	1040	214	clean
+2	137	1016	208	clean
+3	133	1165	201	⛔ second node now dialling, contaminated
+4	74	1368	112	⛔ contaminated, partial bucket
+
+## concurrency does not multiply, which is the finding
+arm	concurrency	p50_ms	KBps	source
+sequential	1	807	115	2026-08-09 n=500 run, 200 peers
+parallel	3	1025	212	this run, 146 peers
+# 3 workers returned 1.85x the sequential throughput, not 3x, because the per-request p50 rose 27%.
+# ⚠️ Confounded by peer count. A concurrency-1 control in THIS session at 146 peers is still owed.

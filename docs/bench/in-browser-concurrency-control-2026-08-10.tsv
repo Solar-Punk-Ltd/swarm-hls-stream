@@ -1,0 +1,55 @@
+# In-browser (weeb-3) CONCURRENCY 1 vs 3, MATCHED CONTROL, 2026-08-10
+#
+# Settles what the standalone concurrency-3 run could not: is the concurrency penalty real, or was it
+# the peer count? Both arms ran in ONE session, on ONE node, against ONE peer table, on disjoint refs.
+#
+# ⭐ ARMS WERE ALTERNATED, NOT LADDERED: c1, c3, c1, c3, c1, c3, blocks of 40. Drift over the sitting
+# therefore cannot map onto an arm, and each arm carries three replicates.
+#
+# Node: weeb-3 0.0.327001, public deployment, app shell only, nothing prefetched.
+# Peers: 129 connected / 71 connecting at start AND at end. Plateaued, unchanged across the sitting.
+# Content: our own recording, 3444 segments of 0.266s, mean 91 KB. Concurrency 3 = HLS_PREFETCH_BODY_MAX_PARALLEL.
+
+## ⭐⭐ the warm control, which licenses everything below
+arm	n	min_ms	p50_ms	max_ms
+warm re-fetch	20	1	2	6
+# 2ms against a cold 970ms is 485x. The run measured retrieval, not plumbing.
+
+## service time by arm (ms), n=120 each
+arm	n	min	p50	p90	max	MB
+c1	120	785	970	1207	1612	10.72
+c3	120	786	1173	1998	3005	10.71
+
+## ⭐⭐⭐ THE SHAPE IS THE FINDING: the floor does not move, the tail does
+statistic	c1	c3	change
+min	785	786	+0.1%	identical, the retrieval round trip is untouched
+p50	970	1173	+21%
+p90	1207	1998	+66%
+max	1612	3005	+86%
+# Concurrency does not slow the fast path. It pushes more requests onto the 194ms overdraft retry
+# ladder, because 3x the chunk demand exhausts pseudosettle credit with each peer 3x sooner.
+# ⭐ This predicts that FUNDING would remove most of the concurrency penalty. See question 4.
+
+## block times, alternated, three replicates per arm
+block	conc	ms	fetches
+0	1	39679	40
+1	3	17014	40
+2	1	40476	40
+3	3	17687	40
+4	1	37675	40
+5	3	19335	40
+
+## ⭐⭐ throughput: concurrency 3 returns 2.18x, NOT 3x
+arm	total_ms	fetches	fetches_per_s	KBps	vs_realtime
+c1	117830	120	1.018	93.2	0.271
+c3	54036	120	2.221	203.0	0.591
+# speedup 2.181x overall; per-block 2.332, 2.288, 1.949
+# needed: 3.76 segments/s = 357 KB/s for 2.86 Mbps
+# crossing rate 100% in BOTH arms: every one of 240 fetches was slower than its own 266ms segment.
+
+## ⛔ this corrects my own figure from earlier the same day
+claim	value	status
+"3 workers give 1.85x"	1.85	⛔ WRONG, compared a 200-peer sequential arm against a 146-peer parallel one
+"3 workers give 2.18x"	2.18	✅ matched control, one session, one peer table, three replicates per arm
+# The standalone c3 run measured 212 KB/s at 146 peers; this one 203 KB/s at 129 peers. Those agree,
+# so peer count between 129 and 146 barely matters and the earlier error was in the c1 baseline.
