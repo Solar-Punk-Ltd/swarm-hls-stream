@@ -16,6 +16,23 @@ import { fetchWithTimeout, TimedResponse } from './fetchWithTimeout';
 const MAX_WALK_PER_READ = 32;
 
 /**
+ * A slot the publisher has not written yet, which is the ordinary answer on a catalog that is idle.
+ *
+ * Named for the same reason `ManifestFetcher` names it: it is the one status that means "there is
+ * nothing more", and every other status means the gateway could not answer. Reading them as the same
+ * thing is what let a broken gateway render as an empty catalog.
+ */
+const SLOT_NOT_WRITTEN_YET = 404;
+
+/** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
+export class CatalogFetchError extends Error {
+  constructor(url: string, readonly status: number) {
+    super(`Catalog feed request to ${url} was refused with ${status}`);
+    this.name = 'CatalogFetchError';
+  }
+}
+
+/**
  * Follows the app catalog feed by walking slots rather than resolving its head on every poll.
  *
  * The catalog is polled every five seconds forever and gains a slot per broadcast lifecycle event,
@@ -106,10 +123,21 @@ export class CatalogFeedReader {
         return newest;
       }
 
-      if (!response.ok) {
-        // The expected case on an idle catalog, and the cheap one. Anything that is not a slot we can
-        // read stops the walk rather than being retried here, since the poll comes round again.
+      if (response.status === SLOT_NOT_WRITTEN_YET) {
+        // The expected case on an idle catalog, and the cheap one. The walk stops rather than
+        // retrying here, since the poll comes round again.
         break;
+      }
+      if (!response.ok) {
+        // Every other status is the gateway failing, and is raised for the same reason a throw is:
+        // the browse page decides between "Could not reach this gateway" and "No streams here yet"
+        // by whether this rejected, so a refusal that returned quietly always chose the second.
+        // Salvaged first, on the same rule the throw path uses, since each slot carries the whole
+        // catalog and a body already fetched is not worth discarding for a later step's failure.
+        if (newest !== null) {
+          return newest;
+        }
+        throw new CatalogFetchError(`${gatewayUrl}/${request.path}`, response.status);
       }
       cursor = request.index;
       this.index = cursor;
@@ -128,8 +156,12 @@ export class CatalogFeedReader {
   private async readHead(gatewayUrl: string, signal?: AbortSignal): Promise<string | null> {
     const request = nextFeedRequest(this.owner, this.topic, null);
     const response = await this.fetcher(`${gatewayUrl}/${request.path}`, { signal });
-    if (!response.ok) {
+    // A catalog nobody has broadcast to has no head, which is nothing to show rather than a fault.
+    if (response.status === SLOT_NOT_WRITTEN_YET) {
       return null;
+    }
+    if (!response.ok) {
+      throw new CatalogFetchError(`${gatewayUrl}/${request.path}`, response.status);
     }
 
     const resolved = resolvedFeedIndex(response.headers);
