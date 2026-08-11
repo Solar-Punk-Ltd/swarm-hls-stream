@@ -227,22 +227,29 @@
     const wallS = (last.t - first.t) / 1000;
     const playheadS = last.ct - first.ct;
     const stalls = samples.filter((s) => s.stalled);
-    const ratio = playheadS / wallS;
+    // ⛔ Startup is charged against the stream if it is left in the denominator, and it is not
+    // starvation. The 2026-08-11 abel-1 run took 2.1s to first frame, which caps a twelve minute
+    // sitting at 0.9971 with ZERO stalls, so the 0.999 bar was unreachable by construction and the
+    // run printed DOES NOT SUSTAIN for a stream that stalled once, for one second, in twelve minutes.
+    const playingMs = P.firstAdvanceAt === undefined ? wallS * 1000 : wallS * 1000 - P.firstAdvanceAt;
+    const ratio = playingMs > 0 ? (playheadS * 1000) / playingMs : 0;
     const demandedKBps = Math.round(stream.segmentKB / stream.segmentSeconds);
     return {
       stream: streamName,
       what: stream.what,
       demandedKBps,
-      // What the path actually delivered, and the only figure here comparable to a fetch sweep's
-      // KB/s. Derived from the ratio rather than observed, because the segment fetches happen inside
-      // the service worker where this probe cannot see them.
-      impliedDeliveredKBps: Math.round(demandedKBps * ratio),
+      // ⚠️ The name says derived because this is the figure most likely to be quoted, and it is not
+      // observed: the segment fetches happen inside the service worker where this probe cannot see
+      // them, so it is the demand above scaled by the ratio. Only as good as `segmentKB`.
+      derivedDeliveredKBps: Math.round(demandedKBps * ratio),
       peersAtStart: P.peersAtStart,
       gateReason: P.gateReason,
       samples: samples.length,
       wallS: +wallS.toFixed(1),
       playheadS: +playheadS.toFixed(1),
       realtimeRatio: +ratio.toFixed(4),
+      /** Kept so sittings taken before the startup fix stay directly comparable. */
+      realtimeRatioWithStartup: +(playheadS / wallS).toFixed(4),
       stallCount: stalls.length,
       stallSeconds: +((stalls.length * SAMPLE_MS) / 1000).toFixed(1),
       startupS: P.firstAdvanceAt === undefined ? null : +(P.firstAdvanceAt / 1000).toFixed(1),
