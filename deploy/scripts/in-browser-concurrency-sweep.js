@@ -32,13 +32,24 @@
  * out. Two arms sharing a reference would let the second read the first's cached bytes, and the warm
  * control shows what that is worth: single-digit ms against a cold ~800ms.
  *
+ * ⛔ ONE TAB. Every weeb-3 tab runs its own libp2p node dialing 160 bootnodes, and concurrent tabs
+ * starve each other: measured on 2026-08-11, a second tab halved the newer node's peers and a third
+ * left it at zero connected with no error shown. Check the peer count before believing any arm.
+ *
  * HOW TO RUN
- *   1. Open https://lat-murmeldjur.github.io/weeb-3/ in Chrome and wait for the peer count to STOP
- *      MOVING. Buildup is not monotonic, so waiting for a target hangs.
- *   2. window.__concRefs = [ref, ...]      arms x rounds x block references, all cold.
- *      window.__concCanaries = [ref, ...]  one cold reference per round, none of them in __concRefs.
- *   3. Optionally window.__concArms = [1,2,3,4,8,16], window.__concRounds = 3, window.__concBlock = 20.
- *   4. Paste this file. Watch window.__conc.progress(). Save window.__conc.tsv() to docs/bench.
+ *   1. Open https://lat-murmeldjur.github.io/weeb-3/ in Chrome, ALONE, and wait for the peer count to
+ *      STOP MOVING. Buildup is not monotonic, so waiting for a target hangs.
+ *   2. Write a plan file: {refs, canaries, arms, rounds, block}. It needs arms x rounds x block cold
+ *      references, plus one cold canary per round that appears in neither list.
+ *   3. node deploy/scripts/serve-sweep-plan.mjs <plan.json>
+ *   4. In the page's console, load the plan and then this file. Fetching it rather than pasting it is
+ *      what makes the sitting and the repository agree about what ran:
+ *        fetch('http://127.0.0.1:8899/plan.json').then((r) => r.json()).then((p) => Object.assign(window, {
+ *          __concRefs: p.refs, __concCanaries: p.canaries,
+ *          __concArms: p.arms, __concRounds: p.rounds, __concBlock: p.block,
+ *        }));
+ *        fetch('http://127.0.0.1:8899/sweep.js').then((r) => r.text()).then(eval);
+ *   5. Watch window.__conc.progress(). Save window.__conc.tsv() to docs/bench.
  */
 (() => {
   const ARMS = window.__concArms || [1, 2, 3, 4, 8, 16];
