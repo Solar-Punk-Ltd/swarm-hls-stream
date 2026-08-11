@@ -159,12 +159,59 @@ describe('CatalogFeedReader', () => {
     expect(reader.getIndex()?.toBigInt()).toBe(9n);
   });
 
-  it('treats a failed head lookup as nothing to show rather than a position', async () => {
-    const { fetcher } = stubFetcher([respond({ ok: false, status: 500 })]);
+  it('treats a head lookup the gateway has nothing for as an empty catalog rather than a position', async () => {
+    const { fetcher } = stubFetcher([respond({ ok: false, status: 404 })]);
     const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
 
     expect(await reader.read('http://gw')).toBeNull();
     expect(reader.getIndex()).toBeNull();
+  });
+
+  /**
+   * ⛔ The distinction this whole group exists for, and the one status was collapsing.
+   *
+   * A 404 is the ordinary answer on a catalog nobody has broadcast to yet, so it has to stay quiet.
+   * Every other status is the gateway failing, and returning null for those made a failing gateway
+   * indistinguishable from an idle one: the browse page reads SWR's `error` to choose between
+   * "Could not reach this gateway" and "No streams here yet", and without a throw it always picked
+   * the second. `catalogView.ts` was written to remove exactly that confusion.
+   *
+   * `ManifestFetcher` already draws this line, naming 404 `SLOT_NOT_WRITTEN_YET` and failing on
+   * anything else. This is the same rule in the other feed reader.
+   */
+  it('raises on a head lookup the gateway refused, so a broken gateway is not shown as an empty catalog', async () => {
+    const { fetcher } = stubFetcher([respond({ ok: false, status: 500 })]);
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    await expect(reader.read('http://gw')).rejects.toThrow('500');
+    expect(reader.getIndex()).toBeNull();
+  });
+
+  it('raises when the first step of a walk is refused with a server error', async () => {
+    const { fetcher } = stubFetcher([respond({ headers: headerFor(7) }), respond({ ok: false, status: 502 })]);
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    await reader.read('http://gw');
+
+    await expect(reader.read('http://gw')).rejects.toThrow('502');
+    // The walk read nothing, so the position it starts from next time is the one it already held.
+    expect(reader.getIndex()?.toBigInt()).toBe(7n);
+  });
+
+  // Same salvage rule the throw path already has: what a walk fetched is not thrown away because a
+  // later step of it failed, since each slot carries the whole catalog rather than a delta.
+  it('keeps the slot it already read when a later step of the same walk is refused with a server error', async () => {
+    const { fetcher } = stubFetcher([
+      respond({ headers: headerFor(7) }),
+      respond({ text: '[{"live":true}]' }),
+      respond({ ok: false, status: 503 }),
+    ]);
+    const reader = new CatalogFeedReader(OWNER, TOPIC, fetcher);
+
+    await reader.read('http://gw');
+
+    expect(await reader.read('http://gw')).toBe('[{"live":true}]');
+    expect(reader.getIndex()?.toBigInt()).toBe(8n);
   });
 
   /**
