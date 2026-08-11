@@ -165,6 +165,48 @@ export function summariseSweep(rows) {
   };
 }
 
+/**
+ * What a player actually did, rather than what a harness asked for.
+ *
+ * ⭐⭐ Every concurrency figure this project holds came from a sweep that CHOSE its concurrency. The
+ * player's own was read out of weeb-3's source and then inferred from a synthetic arm agreeing with a
+ * playback result to within 3%. Agreement is not observation, and the same rows summarised here are
+ * the sweep's rows, so the two become directly comparable instead of merely consistent.
+ *
+ * ⭐ The verdict is a fetch RATE, not a byte rate. A segment has to be replaced once per segment
+ * duration however small it is, so a player that cannot complete that many fetches a second cannot
+ * hold realtime no matter how fast each one is. That is the whole of why a 0.266s profile fails on a
+ * node that serves a 4.167s one comfortably.
+ *
+ * @param {SweepRow[]} rows Every fetch the page issued, in the shape {@link parseSweepRows} produces.
+ * @param {{segmentSeconds: number}} stream The shape being played, which sets the bar.
+ */
+export function summariseObserved(rows, { segmentSeconds }) {
+  if (!rows.length) {
+    return { fetches: 0, delivered: 0, verdict: 'no fetches' };
+  }
+  const done = rows.filter(delivered);
+  const wallMs = wallMsOf(rows);
+  const wallS = wallMs / 1000;
+  const busyMs = rows.reduce((sum, row) => sum + row.ms, 0);
+  const fetchPerS = wallS ? round2(done.length / wallS) : 0;
+  const requiredFetchPerS = round2(1 / segmentSeconds);
+
+  return {
+    fetches: rows.length,
+    delivered: done.length,
+    achievedMean: wallMs ? round2(busyMs / wallMs) : 0,
+    achievedPeak: peakInFlight(rows),
+    wallS: round2(wallS),
+    kbPerS: wallS ? Math.round(done.reduce((sum, row) => sum + row.bytes, 0) / 1024 / wallS) : 0,
+    fetchPerS,
+    requiredFetchPerS,
+    p50Ms: median(done.map((row) => row.ms)),
+    realtimeHeadroom: requiredFetchPerS ? round2(fetchPerS / requiredFetchPerS) : 0,
+    verdict: fetchPerS >= requiredFetchPerS ? 'keeps up' : 'short',
+  };
+}
+
 const COLUMNS = ['arm', 'round', 'ref', 'startMs', 'endMs', 'ms', 'bytes', 'status', 'overBudget'];
 
 /**

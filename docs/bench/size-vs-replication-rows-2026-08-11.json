@@ -1,0 +1,114 @@
+[
+ {
+  "arm": "canary",
+  "round": 0,
+  "ref": "5f28aff69dee",
+  "ms": 13877,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 0,
+  "ref": "66f8208ea46b",
+  "ms": 3398,
+  "bytes": 4780276,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 0,
+  "ref": "2b41bf88bab3",
+  "ms": 11263,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "ours-today",
+  "round": 0,
+  "ref": "7f4716f51cdf",
+  "ms": 1012,
+  "bytes": 104528,
+  "status": 200
+ },
+ {
+  "arm": "his",
+  "round": 0,
+  "ref": "870aa03c7e01",
+  "ms": 3197,
+  "bytes": 3701344,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 0,
+  "ref": "7c792ba0834a",
+  "ms": 7429,
+  "bytes": 3491160,
+  "status": 200
+ },
+ {
+  "arm": "ours-today",
+  "round": 0,
+  "ref": "0a75e6cbbd06",
+  "ms": 1025,
+  "bytes": 92308,
+  "status": 200
+ },
+ {
+  "arm": "canary",
+  "round": 1,
+  "ref": "5f28aff69dee",
+  "ms": 11928,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "ours-today",
+  "round": 1,
+  "ref": "9b2fe501c462",
+  "ms": 976,
+  "bytes": 95504,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 1,
+  "ref": "ff51816d5b43",
+  "ms": 11841,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 1,
+  "ref": "620a332d416b",
+  "ms": 3624,
+  "bytes": 4496020,
+  "status": 200
+ },
+ {
+  "arm": "ours-today",
+  "round": 1,
+  "ref": "812d0be7df84",
+  "ms": 961,
+  "bytes": 96820,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 1,
+  "ref": "ece35c33401c",
+  "ms": 12184,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 1,
+  "ref": "a2225a716c07",
+  "ms": 3201,
+  "bytes": 4396192,
+  "status": 200
+ }
+]

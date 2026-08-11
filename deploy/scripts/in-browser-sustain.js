@@ -13,12 +13,36 @@
  * sittings lost time to that before the cause was named, so the visibility assertion below is the
  * null control for this instrument and must not be removed to "make it work".
  *
+ * ⛔ ONE TAB, and no other weeb-3 tab anywhere. Every tab runs its own libp2p node dialing 160
+ * bootnodes and they starve each other: measured 2026-08-11, a second tab halved the newer node's
+ * peers and a third left it at zero connected with no error shown. This probe reports `peersAtStart`
+ * for exactly that reason. Read it before reading the ratio.
+ *
  * HOW TO RUN
- *   1. Open https://lat-murmeldjur.github.io/weeb-3/ in a normal Chrome window.
- *   2. Keep the tab visible and focused for the whole run. Do not background it.
- *   3. Paste this whole file into the console and press enter.
- *   4. Click the page once when told to. Autoplay needs a real gesture.
- *   5. Wait. It prints a summary and leaves the raw samples on `window.__sustain.samples`.
+ *   1. On the machine, from the repo: `node deploy/scripts/serve-sweep-plan.mjs <any-plan.json>`
+ *      (this probe needs no plan, but the server wants the argument).
+ *   2. Open https://lat-murmeldjur.github.io/weeb-3/ in a normal Chrome window, with no other
+ *      weeb-3 tab open anywhere.
+ *   3. Keep the tab visible and focused for the whole run. Do not background it.
+ *   4. In the console, naming the stream first, then fetching THIS file rather than a pasted copy:
+ *        window.__sustainStream = 'abel-1';
+ *        fetch('http://127.0.0.1:8899/script/in-browser-sustain.js').then((r) => r.text()).then(eval)
+ *      Pasting the file by hand still works and is the fallback if the server is not running.
+ *   5. Click the page once when told to. Autoplay needs a real gesture.
+ *   6. Wait 12 minutes. It prints a summary and leaves the raw samples on `window.__sustain.samples`.
+ *
+ * ⛔⛔ THERE IS NO DEFAULT STREAM, DELIBERATELY, AND THIS IS THE POINT OF THE SELECTOR.
+ *
+ * Every in-browser sitting before 2026-08-11 ran against the owner and topic that used to be
+ * hardcoded here. That is a recording of `HLS_FRAGMENT=0.25`, which is the latency bench profile and
+ * **not what we ship**: both compose files default to 1.0. Nobody chose that, it was simply what the
+ * constant said, and a whole series of results was reported as being about "our stream". So the
+ * choice is now compulsory and unset throws, because the failure being guarded against is not a wrong
+ * answer, it is a right answer to a question nobody realised was being asked.
+ *
+ * ⚠️ `peers: plateaued at ~140` is the ordinary message, not a fault. `PEER_TARGET` of 190 was set
+ * when one load reached 200; the loads measured on 2026-08-11 settled at 134 and 147, so the plateau
+ * branch is the one that fires and it costs 20 seconds of quiet before it does.
  *
  * WHAT IT REPORTS
  *   realtimeRatio   playhead seconds gained per wall second. **The verdict. Needs >= 0.999.**
@@ -30,15 +54,79 @@
  * each stall, and a viewer experiences the stalls, not the average.
  */
 (() => {
-  const OWNER = '8d8a30ff4cbcf8ad0e0773547686295f8157feb0';
-  const TOPIC = '7fd811aa6aedbced02d010f5e7987039e3a6033dc59bbce668b8515890ed5efd';
+  /**
+   * @typedef {object} StreamUnderTest
+   * @property {string} owner Feed owner, 40 hex.
+   * @property {string} topic Feed topic as 64 hex. weeb-3 takes 64 hex as raw bytes and keccak256s
+   *   anything shorter (`normalize_feed_topic`, weeb-3 src/conventions.rs:241), so this and the raw
+   *   UUID a share link carries address the same feed. Verified against bee-js `Topic.fromString`.
+   * @property {number} segmentSeconds Observed EXTINF. ⛔ Not the manifest's declared duration, which
+   *   ran 20-25% long before 2026-08-06.
+   * @property {number} segmentKB Mean segment size. With segmentSeconds this fixes the bitrate, and
+   *   bitrate is what a retrieval path has to meet.
+   * @property {string} what Printed in the summary, so a pasted result carries its own scope.
+   */
+
+  /** @type {Record<string, StreamUnderTest>} */
+  const STREAMS = {
+    latbench: {
+      owner: '8d8a30ff4cbcf8ad0e0773547686295f8157feb0',
+      topic: '7fd811aa6aedbced02d010f5e7987039e3a6033dc59bbce668b8515890ed5efd',
+      segmentSeconds: 0.266,
+      segmentKB: 90,
+      what: '⛔ OUR BENCH PROFILE, HLS_FRAGMENT=0.25, which we do not ship. 2.77 Mbps.',
+    },
+    'abel-1': {
+      owner: '47535bf0835ff9cb1c7c7cb4f44fa514f58e703d',
+      topic: 'd1e6072ffe54287de3f43dd74eeb8319e0186259a307b37af9b28aacb9f21a7a',
+      segmentSeconds: 4.166667,
+      segmentKB: 4241,
+      what: 'Third party VOD reported to play fine in this node. 8.34 Mbps, 1,591 segments.',
+    },
+    'abel-2': {
+      owner: '47535bf0835ff9cb1c7c7cb4f44fa514f58e703d',
+      topic: '12924ca6bec1f291ba5467119fa99261e88c2475ae05e69e6b4da1102008042f',
+      segmentSeconds: 4.166667,
+      segmentKB: 4241,
+      what: '⚠️ Replicate of abel-1, shape ASSUMED from it and not read. 8.34 Mbps if that holds.',
+    },
+    'ours-shipping-2026-08-11': {
+      owner: '8d8a30ff4cbcf8ad0e0773547686295f8157feb0',
+      topic: '7e87a2d9-82fe-422f-a66a-5b1e42281636',
+      // ⛔ Measured off the run, not read off the knobs. `HLS_FRAGMENT=1.0` against a 1.0s GOP
+      // delivered 1.917s segments and the 6000kbps asked for arrived as 3.37. Why 1.0 doubles is not
+      // known: the same pairing at 0.5 delivers 0.502s, so the obvious near-miss explanation is wrong.
+      segmentSeconds: 1.917,
+      segmentKB: 787,
+      what: '⭐ THE PROFILE WE SHIP, 1080p at HLS_FRAGMENT=1.0. Delivered 1.917s segments, 3.37 Mbps.',
+    },
+  };
+
+  const streamName = window.__sustainStream;
+  const stream = STREAMS[streamName];
+  if (!stream) {
+    throw new Error(
+      `Refusing to run: set window.__sustainStream to one of [${Object.keys(STREAMS).join(', ')}] ` +
+        'before loading this script. There is no default on purpose, see the header.',
+    );
+  }
 
   /** Peer buildup is not monotonic: one load stalled at 150/50 and never moved, the next reached 200/0 in 59s. */
   const PEER_TARGET = 190;
   const PEER_QUIET_MS = 20000;
   const PEER_DEADLINE_MS = 240000;
   const SAMPLE_MS = 1000;
-  const RUN_MS = 12 * 60 * 1000;
+  /** Twelve is what the 2026-08-11 latbench sitting ran, so leave it alone to stay comparable. */
+  const RUN_MS = (window.__sustainMinutes || 12) * 60 * 1000;
+  /**
+   * How often to re-read the peer counter during the run.
+   *
+   * ⛔ The 2026-08-11 run recorded peers only at the start and delivery fell 18% across its twelve
+   * minutes, 253 to 207 KB/s, with buffer depth flat. A node losing peers and later content simply
+   * being slower to retrieve produce the same shape in those samples, so the finding had to be left
+   * as a question. Reading the counter costs one `innerText` regex, so there was never a reason not to.
+   */
+  const PEER_SAMPLE_EVERY = 10;
 
   if (document.visibilityState !== 'visible') {
     throw new Error(
@@ -49,7 +137,13 @@
 
   const P = (window.__sustain = {
     state: 'waiting-peers',
+    // Carried on the object the raw samples are saved from, so a dumped sitting says which stream it
+    // was, in the file, without depending on anyone's note of what they ran.
+    stream: { name: streamName, ...stream },
     samples: [],
+    // Exposed so a saved sitting can be re-derived after an arithmetic fix without asking anyone to
+    // sit through it again, and so the arithmetic is reachable from `node --test`.
+    summarise,
     log: [],
     err: null,
     peersAtStart: null,
@@ -59,6 +153,20 @@
     P.log.push(`[${Math.round(performance.now())}ms] ${m}`);
     console.log('[sustain]', m);
   };
+
+  /**
+   * ⛔ A playhead advancing at 1.0x is not proof that playback was healthy. The media clock runs
+   * regardless of whether the pipeline kept up, and Chrome drops frames rather than slowing down, so
+   * a starved decoder reports a perfect ratio and an unwatchable picture. The abel-1 sitting had no
+   * frame counters and so cannot rule this out at all.
+   */
+  function readFrames(video) {
+    if (typeof video.getVideoPlaybackQuality !== 'function') {
+      return null;
+    }
+    const quality = video.getVideoPlaybackQuality();
+    return { dropped: quality.droppedVideoFrames, total: quality.totalVideoFrames };
+  }
 
   function readPeers() {
     const text = document.body.innerText || '';
@@ -99,7 +207,7 @@
       throw new Error('navigation input not found, the weeb-3 UI has changed');
     }
     const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setValue.call(input, `/stream/${OWNER}/${TOPIC}`);
+    setValue.call(input, `/stream/${stream.owner}/${stream.topic}`);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     for (const type of ['keydown', 'keypress', 'keyup']) {
@@ -144,19 +252,48 @@
     const first = samples[0];
     const last = samples[samples.length - 1];
     const wallS = (last.t - first.t) / 1000;
-    const playheadS = last.ct - first.ct;
     const stalls = samples.filter((s) => s.stalled);
+
+    // ⭐ Numerator and denominator span the SAME window. Taking startup out of the denominator while
+    // still measuring the playhead from before playback began is how an error hides inside a ratio
+    // quoted to four decimal places.
+    const playing = P.firstAdvanceAt === undefined ? samples : samples.filter((s) => s.t >= P.firstAdvanceAt);
+    const playingFrom = playing[0] || first;
+    const playingS = (last.t - playingFrom.t) / 1000;
+    const playheadS = last.ct - playingFrom.ct;
+    // ⛔ Startup is charged against the stream if it is left in the denominator, and it is not
+    // starvation. The 2026-08-11 abel-1 run took 2.1s to first frame, which caps a twelve minute
+    // sitting at 0.9971 with ZERO stalls, so the 0.999 bar was unreachable by construction and the
+    // run printed DOES NOT SUSTAIN for a stream that stalled once, for one second, in twelve minutes.
+    const ratio = playingS > 0 ? playheadS / playingS : 0;
+    const demandedKBps = Math.round(stream.segmentKB / stream.segmentSeconds);
     return {
+      stream: streamName,
+      what: stream.what,
+      demandedKBps,
+      // ⚠️ The name says derived because this is the figure most likely to be quoted, and it is not
+      // observed: the segment fetches happen inside the service worker where this probe cannot see
+      // them, so it is the demand above scaled by the ratio. Only as good as `segmentKB`.
+      derivedDeliveredKBps: Math.round(demandedKBps * ratio),
       peersAtStart: P.peersAtStart,
       gateReason: P.gateReason,
       samples: samples.length,
       wallS: +wallS.toFixed(1),
       playheadS: +playheadS.toFixed(1),
-      realtimeRatio: +(playheadS / wallS).toFixed(4),
+      realtimeRatio: +ratio.toFixed(4),
+      /** Kept so sittings taken before the startup fix stay directly comparable. */
+      realtimeRatioWithStartup: +((last.ct - first.ct) / wallS).toFixed(4),
+      /**
+       * ⭐⭐ Every second of playback the run did not get, however it was lost, and the figure to
+       * quote. `stallCount` only sees a playhead that did not move AT ALL between two samples, so a
+       * stream advancing 0.9s per wall second reports zero stalls while bleeding ten percent. The
+       * headless abel-1 run lost 5.6s with one detected stall.
+       */
+      lostS: +(playingS - playheadS).toFixed(1),
       stallCount: stalls.length,
       stallSeconds: +((stalls.length * SAMPLE_MS) / 1000).toFixed(1),
       startupS: P.firstAdvanceAt === undefined ? null : +(P.firstAdvanceAt / 1000).toFixed(1),
-      verdict: playheadS / wallS >= 0.999 ? '✅ SUSTAINS' : '⛔ DOES NOT SUSTAIN',
+      verdict: ratio >= 0.999 ? '✅ SUSTAINS' : '⛔ DOES NOT SUSTAIN',
     };
   }
 
@@ -198,7 +335,21 @@
           paused: video.paused,
           buffEnd: buffered.length ? +buffered.end(buffered.length - 1).toFixed(2) : null,
         };
-        if (previous && !sample.paused && sample.ct === previous.ct) {
+        if (P.samples.length % PEER_SAMPLE_EVERY === 0) {
+          const peers = readPeers();
+          sample.peers = peers.connected;
+          sample.connecting = peers.connecting;
+          const frames = readFrames(video);
+          if (frames) {
+            sample.droppedFrames = frames.dropped;
+            sample.totalFrames = frames.total;
+          }
+        }
+        // ⛔ Only once playback has actually begun. Before the first frame `currentTime` is 0 on
+        // every sample, so an unguarded comparison reads each one as a stall: the 3-minute headless
+        // run reported five stalls of which four were this, and the twelve minute abel-1 sitting's
+        // single reported stall is most likely the same artifact rather than a real starvation.
+        if (previous && !sample.paused && sample.ct === previous.ct && P.firstAdvanceAt !== undefined) {
           sample.stalled = true;
         }
         if (previous && sample.ct > previous.ct && P.firstAdvanceAt === undefined) {
@@ -226,5 +377,5 @@
     }
   })();
 
-  return 'armed. Keep this tab visible and focused.';
+  return `armed on '${streamName}' (${stream.what}). Keep this tab visible and focused.`;
 })();

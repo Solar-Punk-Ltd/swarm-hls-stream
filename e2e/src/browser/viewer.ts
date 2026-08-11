@@ -1,26 +1,55 @@
 /**
  * Driving a real Chrome at the deployed client, and reading a viewer's session out of it.
  *
- * ## Why headed under Xvfb, and why no throttling flags
- *
- * Chromium takes `--disable-background-timer-throttling` and friends, and every automation guide
- * reaches for them. This does not, deliberately.
+ * ## Why headed under Xvfb, and ⛔ why the throttling flags ARE passed anyway
  *
  * The point of the run is to find out whether a viewer's player holds the buffer it is configured
  * with. That question is only answerable in a browser behaving as a foregrounded tab, and the
- * previous attempt failed precisely because the page was permanently hidden. Passing the flags would
- * make the timer probe in {@link readInstrument} pass whether or not the page was really
- * foregrounded, which converts the harness's one honest self-check into a restatement of its own
- * command line. Run headed against a real X display instead, and let the probe measure something.
+ * previous attempt failed precisely because the page was permanently hidden. So this file passes no
+ * throttling flags of its own, and runs headed against a real X display, and the reasoning for that
+ * is sound.
+ *
+ * ⛔⛔ **It does not achieve what it says, because playwright-core passes them regardless.** Verified
+ * against the published 1.61.1 tarball on 2026-08-11: `--disable-background-timer-throttling`,
+ * `--disable-backgrounding-occluded-windows` and `--disable-renderer-backgrounding` are in its
+ * hardcoded default argument list, and it sends `Emulation.setFocusEmulationEnabled({enabled: true})`
+ * on every main frame, which forces `visibilityState` to `visible` on a genuinely hidden page.
+ *
+ * ⭐⭐⭐ So **both** checks in {@link judgeInstrument} pass by construction here: the visibility one
+ * because Playwright forces it, the timer one because Playwright unthrottles it. They are exactly the
+ * "restatement of its own command line" this comment was written to prevent, and the reasoning above
+ * is what makes that worth saying rather than quietly deleting.
+ *
+ * ⚠️ The runs are still believed: under Xvfb the page really is foregrounded, so the flags change
+ * nothing about what happened. What is gone is the **proof**, and a guard that cannot fail is not
+ * evidence that the thing it guards is true. Setting `ignoreDefaultArgs` does not fix it either, as
+ * the focus-emulation handle is keyed to Playwright's own CDP session and a second session cannot
+ * release it.
  *
  * The one flag that is passed relaxes the autoplay gate, which is not a degradation being masked: a
  * viewer satisfies that gate by clicking, and there is nobody here to click.
  *
- * ## Why real Chrome rather than the bundled Chromium
+ * ## ⛔ Why real Chrome rather than the bundled Chromium, AND WHY THAT REASON HAS EXPIRED
  *
- * Playwright's Chromium is the open-source build with no H.264 or AAC. It would load the page, run
- * hls.js, fetch every segment from Swarm and decode none of them, which looks exactly like a
- * delivery failure. See `REQUIRED_CODECS`.
+ * This installed Google Chrome because Playwright's Chromium was the open-source build with no H.264
+ * or AAC: it would load the page, run hls.js, fetch every segment from Swarm and decode none of them,
+ * which looks exactly like a delivery failure.
+ *
+ * **Playwright v1.57 replaced the bundled Chromium with Chrome for Testing, which has shipped the
+ * proprietary codecs since 119.** Measured 2026-08-11 on **linux64**, the platform
+ * `Dockerfile.browser` actually builds, using the pinned playwright-core 1.61.1 and its own browser
+ * revision 1228 / 149.0.7827.55: `isTypeSupported` and `canPlayType` both answer for
+ * `avc1.42E01E` and `mp4a.40.2`, and a bogus codec answers false, so the probe discriminates.
+ *
+ * ⚠️ The v1.57 notes carve out Arm64 Linux, which continues on Chromium. This was verified on x86-64
+ * only, which is what the image builds.
+ *
+ * So the codec argument no longer chooses anything, and no replacement argument is offered here
+ * rather than invented. Whether to drop the apt repository for Chrome for Testing, which would pin
+ * the browser by the lockfile instead of leaving it unpinnable, is an open decision.
+ *
+ * ⭐ `REQUIRED_CODECS` asserts this at runtime rather than trusting any of the above, which is the
+ * property that made it safe to re-examine at all. See `instrument.ts`.
  */
 
 import { type Browser, chromium, type Page, type Request } from 'playwright-core';

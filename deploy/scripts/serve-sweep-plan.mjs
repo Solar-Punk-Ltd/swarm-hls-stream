@@ -21,23 +21,51 @@
  *   }));
  *   fetch('http://127.0.0.1:8899/sweep.js').then((r) => r.text()).then(eval);
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PLAN_ROUTE = '/plan.json';
 export const SWEEP_ROUTE = '/sweep.js';
+/** Any other harness in this directory, by file name. See {@link harnessPath}. */
+export const SCRIPT_ROUTE_PREFIX = '/script/';
 
 const DEFAULT_PORT = 8899;
-const DEFAULT_SWEEP = fileURLToPath(new URL('./in-browser-concurrency-sweep.js', import.meta.url));
+const SCRIPTS_DIR = fileURLToPath(new URL('.', import.meta.url));
+const DEFAULT_SWEEP = join(SCRIPTS_DIR, 'in-browser-concurrency-sweep.js');
 /** Loopback only. A LAN bind would both expose the plan and be blocked by the page anyway. */
 const HOST = '127.0.0.1';
+
+/**
+ * Where a `/script/<name>` request resolves, or null if it names anything but a harness here.
+ *
+ * The only route that takes a path from the request, so it is the only place traversal is possible.
+ * `basename` collapses any separator that survives URL decoding, and the result is required to still
+ * equal what was asked for, so an encoded `..%2f` fails the comparison rather than being cleaned up
+ * and served. `.js` only, because the plan file is served by its own route and nothing else here is
+ * meant to leave the machine.
+ */
+function asHarnessRoute(name, scriptDir) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    // A malformed escape is not a harness name, and throwing here would take the request down.
+    return null;
+  }
+  if (!decoded.endsWith('.js') || basename(decoded) !== decoded) {
+    return null;
+  }
+  const path = join(scriptDir, decoded);
+  return existsSync(path) ? { type: 'text/javascript', path } : null;
+}
 
 /**
  * @param {{ planPath: string, sweepPath?: string }} paths
  * @returns {import('node:http').Server} not yet listening
  */
-export function createPlanServer({ planPath, sweepPath = DEFAULT_SWEEP }) {
+export function createPlanServer({ planPath, sweepPath = DEFAULT_SWEEP, scriptDir = SCRIPTS_DIR }) {
   const routes = {
     [PLAN_ROUTE]: { type: 'application/json', path: planPath },
     [SWEEP_ROUTE]: { type: 'text/javascript', path: sweepPath },
@@ -47,7 +75,10 @@ export function createPlanServer({ planPath, sweepPath = DEFAULT_SWEEP }) {
     // Present on every path, including the failures: without it the page reports an opaque network
     // error and the operator debugs their fetch rather than their URL.
     const headers = { 'access-control-allow-origin': '*' };
-    const route = routes[request.url.split('?')[0]];
+    const path = request.url.split('?')[0];
+    const route = path.startsWith(SCRIPT_ROUTE_PREFIX)
+      ? asHarnessRoute(path.slice(SCRIPT_ROUTE_PREFIX.length), scriptDir)
+      : routes[path];
     if (!route) {
       response.writeHead(404, headers);
       return response.end('no such route');

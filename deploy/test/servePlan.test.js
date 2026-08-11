@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
-import { createPlanServer, PLAN_ROUTE, SWEEP_ROUTE } from '../scripts/serve-sweep-plan.mjs';
+import { createPlanServer, PLAN_ROUTE, SCRIPT_ROUTE_PREFIX, SWEEP_ROUTE } from '../scripts/serve-sweep-plan.mjs';
 
 const sandboxes = [];
 
@@ -94,5 +94,54 @@ describe('the sweep plan server', () => {
     const paths = { planPath: join(sandbox(), 'absent.json'), sweepPath: fixture().sweepPath };
     const status = await serving(paths, async (origin) => (await fetch(origin + PLAN_ROUTE)).status);
     assert.equal(status, 500);
+  });
+});
+
+/**
+ * The other in-browser harnesses are pasted into a console by hand, which is how a sitting ends up
+ * running something other than what is in git. `in-browser-sustain.js` is 230 lines and has to be
+ * pasted by a human at a focused tab, so it is the one that most needs this.
+ */
+describe('serving any harness in the scripts directory', () => {
+  function scriptDir() {
+    const dir = sandbox();
+    writeFileSync(join(dir, 'in-browser-sustain.js'), '"the sustain harness"');
+    return { ...fixture(), scriptDir: dir };
+  }
+
+  it('serves a harness by name so a human pastes two lines instead of the whole file', async () => {
+    const body = await serving(scriptDir(), async (origin) =>
+      (await fetch(`${origin}${SCRIPT_ROUTE_PREFIX}in-browser-sustain.js`)).text(),
+    );
+    assert.equal(body, '"the sustain harness"');
+  });
+
+  it('refuses a name that is not in the scripts directory', async () => {
+    const status = await serving(
+      scriptDir(),
+      async (origin) => (await fetch(`${origin}${SCRIPT_ROUTE_PREFIX}not-a-harness.js`)).status,
+    );
+    assert.equal(status, 404);
+  });
+
+  // The route takes a name from the request, so it is the one place traversal is even possible.
+  // Checked with an encoded separator too, since the raw one is normalised away before it arrives.
+  it('cannot be walked out of the scripts directory', async () => {
+    const statuses = await serving(scriptDir(), async (origin) =>
+      Promise.all(
+        ['../../package.json', '..%2f..%2fpackage.json', '%2e%2e%2fplan.json', 'sub/dir.js'].map(
+          async (attempt) => (await fetch(`${origin}${SCRIPT_ROUTE_PREFIX}${attempt}`)).status,
+        ),
+      ),
+    );
+    assert.deepEqual(statuses, [404, 404, 404, 404]);
+  });
+
+  it('refuses anything that is not a .js harness', async () => {
+    const status = await serving(
+      scriptDir(),
+      async (origin) => (await fetch(`${origin}${SCRIPT_ROUTE_PREFIX}plan.json`)).status,
+    );
+    assert.equal(status, 404);
   });
 });
