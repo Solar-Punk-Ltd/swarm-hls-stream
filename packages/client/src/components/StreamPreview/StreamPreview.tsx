@@ -13,6 +13,7 @@ import Pqueue from 'p-queue';
 
 import playIcon from '@/assets/icons/playIcon.png';
 import DefaultPreviewImage from '@/assets/images/defaultPreviewImage.png';
+import { previewSourceFrom } from '@/components/StreamPreview/previewSource';
 import { CustomFragmentLoader } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
 import { parseManifest } from '@/components/SwarmHlsPlayer/ManifestManagement';
 import { useAppContext } from '@/providers/App';
@@ -63,11 +64,21 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title,
         });
         const { segments } = parseManifest(res.text);
 
-        if (segments.length === 0 || abort.signal.aborted) {
+        // Split from the check below, because the two used to share an early return and only one of
+        // them is a reason to leave the spinner up. An aborted card is being unmounted and nobody is
+        // looking at it; a card with nothing to show is on screen and has to say so.
+        if (abort.signal.aborted) {
           return;
         }
 
-        const seg = segments[0];
+        const source = previewSourceFrom(res, segments);
+        if (source.kind === 'unavailable') {
+          console.warn(`Thumbnail unavailable for ${topic}: ${source.reason}`);
+          setIsLoading(false);
+          return;
+        }
+
+        const seg = source.firstSegment;
         const segUrl = previewSegmentUrl(seg.uri, gatewayUrl);
 
         // Spelled from the shared constants rather than by hand. These six literals were the last

@@ -105,6 +105,24 @@ function describeIncumbent(incumbent: StreamClaimant | undefined): string {
   return incumbent.address ?? 'a session that named no publisher';
 }
 
+/**
+ * Whether a parsed recovery entry holds enough to rebuild the broadcast it claims to be.
+ *
+ * `RecoveryStore.read` reaches its result through `JSON.parse(data) as StreamState`, and that cast is a
+ * claim about the bytes rather than a check on them, so anything shaped like an object arrives here
+ * typed as if it were sound. Only `segments` is checked because only `segments` is dereferenced on the
+ * rebuild path without a guard, twice: `ManifestManager.restoreState` spreads it, and `recoverStream`
+ * iterates it to seed the duplicate filter. Both throw on `undefined`, and both throw far enough from
+ * here that the entry looks merely unlucky rather than unusable.
+ *
+ * ⚠️ Deliberately not a full schema. A validator wider than the code it protects starts rejecting
+ * entries that would have recovered, and quarantine is the one outcome an operator has to repair by
+ * hand. Widen this when the rebuild path dereferences something new, and not before.
+ */
+function isRebuildableStreamState(state: StreamState): boolean {
+  return Array.isArray(state.segments);
+}
+
 /** Why an announce may not take a live stream id. Each spelling states only what its own branch established. */
 type TakeoverRefusal = 'proven-incumbent' | 'still-publishing';
 
@@ -858,6 +876,22 @@ export class StreamOrchestrator {
         // Parseable JSON but not a stream state — the state dir can hold other files
         // (e.g. the catalog feed index). Skip it; never delete what recovery does not own.
         this.logger.warn(`[StreamOrchestrator] Skipping non-stream state file: ${fileId}`);
+        continue;
+      }
+
+      // ⛔ Two tiers, and the difference is ownership. Above: a file recovery does not own, left alone.
+      // Here: a file that claims to be a broadcast and cannot be rebuilt into one. That is as lost as
+      // an entry nobody could parse, so it takes the same route. Before this, it threw inside recovery,
+      // was caught, and stayed on disk as an ordinary `.json`, which meant `listActive` handed it back
+      // on every boot to fail in the same place while `quarantinedRecoveryEntries` — the one signal
+      // `deriveHealthStatus` treats as permanent — stayed at zero. Narrows task #38, which covered only
+      // the entry that fails to parse.
+      if (!isRebuildableStreamState(state)) {
+        this.logger.error(
+          `[StreamOrchestrator] Recovery entry ${fileId} is a stream state that cannot be rebuilt ` +
+            '(its segment list is missing or is not an array); quarantining it so it is not retried forever',
+        );
+        this.recoveryStore.quarantine(fileId);
         continue;
       }
 

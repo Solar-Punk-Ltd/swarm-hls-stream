@@ -98,7 +98,7 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
     {
       name: 'streams_reaped_total',
       type: 'counter',
-      help: 'Streams finalized because their engine went silent, rather than because a stop was sent. A rising rate means an engine is dying without unpublishing.',
+      help: 'Streams the reaper gave up on because their engine went silent, rather than because a stop was sent. Counts the decision, not the finalize that follows it, so cross-reference streams_failed_total to see whether the recording was published. A rising rate means an engine is dying without unpublishing.',
       value: snapshot.streamsReapedTotal,
     },
     {

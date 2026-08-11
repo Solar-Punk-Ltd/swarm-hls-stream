@@ -346,6 +346,49 @@ describe('StreamOrchestrator recovering an entry it cannot read', () => {
     assert.equal(orch.getHealthSignals().quarantinedRecoveryEntries, 2, 'a restart erased what an operator must see');
     await orch.cleanup();
   });
+
+  /**
+   * ⛔ This narrows #38, which only ever covered the entry that fails to PARSE. An entry that parses
+   * into an object of the wrong shape reached recovery, threw somewhere inside it, was caught, and was
+   * left on disk as an ordinary `.json`. So `listActive` returned it again on the next boot, it failed
+   * in exactly the same place, and `quarantinedRecoveryEntries` stayed at zero the whole time — which
+   * is the one signal `deriveHealthStatus` treats as permanent, and the only one built to say a
+   * recording is stranded. The recording was as lost as an unparseable one and nothing said so.
+   *
+   * `JSON.parse(data) as StreamState` is the reason a mis-shaped entry gets this far: the cast is a
+   * claim about the bytes, not a check on them.
+   */
+  it('quarantines an entry that parses but is missing the segments recovery needs', async () => {
+    const MISSHAPEN = 'live_misshapen';
+    const quarantined: string[] = [];
+    const removed: string[] = [];
+    const orch = makeOrchestrator(
+      makeFakeRecoveryStore({
+        listActive: () => [MISSHAPEN],
+        // Valid JSON, and it even carries the streamId the old guard looked for, so every check that
+        // existed before this test waves it through.
+        read: () => ({ kind: RECOVERY_ENTRY_LOADED, state: { streamId: 'live/misshapen' } as StreamState }),
+        quarantine: (fileId: string) => {
+          quarantined.push(fileId);
+          return `/state/${fileId}.json.corrupt`;
+        },
+        listQuarantined: () => quarantined.map((fileId) => `${fileId}.json.corrupt`),
+        remove: (fileId: string) => removed.push(fileId),
+      }),
+    );
+
+    const recovered = await orch.recoverStreams();
+
+    assert.deepEqual(recovered, [], 'an entry recovery cannot rebuild must not be reported as recovered');
+    assert.deepEqual(quarantined, [MISSHAPEN], 'it was left on disk to fail identically on every future boot');
+    assert.deepEqual(removed, [], 'never delete the only record that the broadcast existed');
+    assert.equal(
+      orch.getHealthSignals().quarantinedRecoveryEntries,
+      1,
+      'the stranded recording must reach the one signal built to report it',
+    );
+    await orch.cleanup();
+  });
 });
 
 describe('StreamOrchestrator recovery hygiene', () => {

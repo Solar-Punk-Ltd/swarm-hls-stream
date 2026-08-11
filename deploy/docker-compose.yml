@@ -56,6 +56,13 @@ services:
       # deployed chequebook is topped up through the node's /chequebook/deposit instead.
       - --swap-initial-deposit=${BEE_GATEWAY_SWAP_INITIAL_DEPOSIT:-0}
       - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
+      # ⛔ Capacity does NOT gate caching, and setting it to 0 never turned the cache off. Measured
+      # 2026-08-10: with capacity 0 confirmed on the running container, a second walk of the same 1000
+      # references moved the same 120 MB with a median of 4ms against 121ms on the first walk. Bee's
+      # own help calls this flag "enable forwarded content caching (default true)", so every arm this
+      # project ever labelled cache-off was measured with the cache on. Left at bee's default so
+      # deployments are unchanged; an experiment that needs a cold node every pass sets it false.
+      - --cache-retrieval=${BEE_GATEWAY_CACHE_RETRIEVAL:-true}
       - --cors-allowed-origins=*
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password

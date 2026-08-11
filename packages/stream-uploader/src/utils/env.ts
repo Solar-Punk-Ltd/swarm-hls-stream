@@ -16,13 +16,19 @@ export function loadEngineEnv(engineName: string): void {
  * Absent and present-but-empty are reported differently on purpose. Compose supplies several of
  * these as `${VAR:-}`, so the variable is present and empty far more often than it is missing, and
  * "missing" sends an operator looking for a key that is already in their `.env`.
+ *
+ * Whitespace counts as empty, because the callers are `API_AUTH_TOKEN`, `SRS_WEBHOOK_TOKEN` and
+ * `OME_ADMISSION_SECRET` among others: a quoted `.env` value and an interpolated compose variable
+ * both survive dotenv as whitespace, and a service that starts on a one-space auth token reports
+ * itself configured while accepting a secret anyone would guess. The value itself is returned
+ * unpadded rather than trimmed, since a secret's whitespace may be deliberate.
  */
 export function required(name: string): string {
   const value = process.env[name];
   if (value === undefined) {
     throw new Error(`Missing required env var: ${name}`);
   }
-  if (value === '') {
+  if (value.trim() === '') {
     throw new Error(`Required env var is set but empty: ${name}`);
   }
   return value;

@@ -79,7 +79,18 @@ considerably, since the funded arm would move the tail rather than the floor.
 
 Speedup **2.181x** overall, per block 2.332 / 2.288 / 1.949. **Crossing rate 100% in both arms**: all
 240 fetches were slower than their own 266 ms segment. The standalone run measured 212 KB/s at 146
-peers and this one 203 KB/s at 129, which agree, so **peer count in that band barely matters**.
+peers and this one 203 KB/s at 129.
+
+⛔ **CORRECTED 2026-08-10: this table measures our client, not the node, and the sentence that used to
+close it ("peer count in that band barely matters") is not supported by it.** Two points 129 and 146
+peers apart cannot separate a flat curve from a linear one, and the arms differ in client concurrency
+rather than in peer count, so peer count was never the variable being swept. Worse, the concurrency
+figure itself was misread: `RETRIEVE_DATA_GROUP_CONCURRENCY = 8` bounds **Merkle-node expansions**,
+each of which carries up to 128 chunk requests, so "8 chunks in flight" understates the offered load by
+roughly 128x. ⚠️ **Treat 203 KB/s as a property of this harness and leave the node's ceiling
+UNMEASURED.** Reading the accounting source suggests throughput should rise with peer count, because a
+per-peer reserve refreshes at most once a second, but that is a **model and not a measurement** and the
+two points above are far too close together to test it. See task #62. **[HARNESS]**
 
 ### ⛔ 2026-08-10: in a REAL browser the player never requests a single segment
 
@@ -165,11 +176,50 @@ same chunks. See section 6. **[DERIVED]**
 **6. ⛔⛔⛔ A weeb-3 node is a PURE CONSUMER, and this is worse than answer 5 alone.** It creates seven
 libp2p control handles and accepts inbound streams on exactly two of them, **pricing and gossip**. It
 never accepts inbound retrieval, pushsync or swap. **A browser audience therefore adds no serving
-capacity and no cache capacity at all**, while each node asks **six peers to confirm every chunk**
-(`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`). All demand, no supply. See section 5c. **[SOURCE]**
+capacity and no cache capacity at all.** All demand, no supply. See section 5c. **[SOURCE]**
+
+⛔ **CORRECTED 2026-08-10.** This answer used to end "while each node asks six peers to confirm every
+chunk (`RETRIEVE_CHECK_CONFIRMATION_PEERS = 6`)". That constant belongs to the **uploader**:
+`retrieve_check_chunk` reads it, and its only caller runs immediately after `push_chunk`. The viewer
+path, `retrieve_chunk`, asks **one** peer and breaks on the first valid reply, hedging a second only
+after `RETRIEVE_HEDGE_AFTER_MS = 1000`, so a viewer costs **~1.1-1.3 requests per chunk**. The
+pure-consumer finding above is unaffected and still holds on its own evidence. **[SOURCE]**
 
 **7. ⛔ A not-found costs a browser node 13.5 seconds**, against roughly 480 ms for a bee gateway, 28x.
 Any design that speculatively asks for chunks that might not exist is disqualified. **[OBSERVED]**
+
+**8. ⭐⭐⭐ The browser audience's real ceiling is that almost no full node is reachable from a browser,
+and that is a DEFAULT, not a protocol limit.** A browser node has one transport, `websocket_websys`, so
+it can only peer with nodes that terminate TLS WebSocket and advertise it. `addresses.rs` sorts every
+address into `BeeWss`, `DnsTransformedWss` or `Other`, and `Other` returns `None` at the dial site, so
+anything else is dropped before it is tried. **[SOURCE]**
+
+Measured 2026-08-10:
+
+|                                                  |                                          |
+| ------------------------------------------------ | ---------------------------------------- |
+| Swarm nodes our gateway can see                  | **3,979**                                |
+| entry points weeb-3 ships, all of them answering | **319 of 319**                           |
+| machines those 319 resolve to                    | ⛔ **4**, three of them in one /16       |
+| what our own bee gateway advertises              | plain `/ip4/../tcp/..`, **no ws at all** |
+| what a browser can therefore do with our gateway | **nothing, it cannot dial it**           |
+
+⭐ **The lever is two flags that are off by default.** Bee ships `--p2p-wss-enable` and autotls against
+`libp2p.direct`, which produces exactly the `/ip4/../tcp/../tls/sni/../ws/p2p/..` form weeb-3 requires:
+the entry-point list is simply the set of operators who turned them on. So "browsers cannot reach the
+network" is really "almost nobody enabled the listener", and it is fixable by configuration on nodes we
+or others already run, rather than by client work or protocol change. **[SOURCE + OBSERVED]**
+
+⚠️ **Bounds on the 319.** It is WSS reachability only, never libp2p acceptance, so it is an **upper
+bound** on the peers a browser can hold. And it is a count of endpoints, not of independent capacity:
+four machines carry all of it, so an audience of browsers concentrates on four hosts no matter how the
+client is tuned. `INITIAL_BOOTNODE_COUNT = 160` against `CONNECTION_BUILDUP_LIMIT = 200` means a single
+tab spends up to 80% of its connection budget there before discovery gets a slot.
+
+⛔ The probe carries its own null control, because "100% reachable" is exactly the shape a broken probe
+produces: a closed port is refused in 5 ms, an NXDOMAIN in 35 ms, an unroutable address times out at
+10 s, and a live endpoint opens in 1.3 s. Run it with
+[`wss-population-probe.mjs`](../../deploy/scripts/wss-population-probe.mjs).
 
 ---
 
@@ -626,10 +676,16 @@ self.interface_log("Node protocol listeners ready".to_string());
 handles are cloned into outbound request paths only.
 
 ⛔⛔ **So 20,000 browser viewers are 20,000 takers and zero givers.** They add no serving capacity and
-no cache capacity to the network. Every chunk they consume is drawn from the storer neighbourhood, and
-each one asks **six peers per chunk** to confirm it. Combined with the loss of gateway pooling from
-section 6, the demand a browser audience puts on storers is **larger than the same audience behind
-gateways by roughly three orders of magnitude**, not smaller.
+no cache capacity to the network. Every chunk they consume is drawn from the storer neighbourhood.
+
+⛔ **CORRECTED 2026-08-10: the multiplier here was wrong, and it was wrong in our favour to overstate
+the problem.** This paragraph used to say each viewer asks six peers per chunk, and concluded the
+demand was "larger by roughly three orders of magnitude". Six is the uploader's confirmation count, not
+the viewer's; a viewer costs **~1.1-1.3 requests per chunk**. The real amplification is therefore
+almost entirely the **lost pooling**, not the per-chunk cost: 16 viewers behind one gateway cost the
+network **one** fetch per chunk, and the same 16 in browsers cost about **16 x 1.15 = 18**. It scales
+with the pool size you are replacing, and for a 16-deep pool that is roughly **18x, not 1000x**. The
+direction of the finding survives. Its size does not. **[SOURCE]**
 
 ### ⛔ What this run still could NOT measure
 
@@ -1059,7 +1115,7 @@ every one of these questions has a shape where a small sample lies.
 | **5** | ✅ **DIRECTION ANSWERED 2026-08-10, section 5d, and it is the OPPOSITE of the premise. Bigger fragments are worse, not better.** ⛔ Open: **where** the cliff sits, and whether it moves with peer count                                                                                                                                                                                                                                                                                                                            | Done for free off 430 archived references, sizes **interleaved round-robin**. Re-run needs a **healthy node** and sizes between 465 KB and 1.3 MB, which the archive does not hold                                                                                                                                | ⭐⭐ Everything ≤ 465 KB completed **12/12**; 1.3 MB went 2/3, 2.5 MB 1/3, **3.5 MB 0/3 at a 240s ceiling**, all as a **within-round** contrast. The gateway served the same 3.5 MB object in **0.65 s**, so the data was never the problem                                                                                                                                                                               | free                                                                         |
 | **6** | **Does service time degrade when N browsers want the SAME chunk?**                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | crossing rate at N = 1, 2, 4, 8, alternating arms, ≥ 200 requests per arm                                                                                                                                                                                                                                         | The herd question with **no gateway to absorb it**. The closest we can get to the storer-side question from here                                                                                                                                                                                                                                                                                                          | free                                                                         |
 | **7** | **Does it run on mobile at all?** ✅ **The blocking contradiction is SETTLED from source.** The runtime does not use a Shared Worker: `worker.js` is a `self.onconnect` SharedWorker entry point for the **old `Weeb3` class** and **nothing instantiates it**. `Weeb3No103` runs on the main thread, which is why the README lists Chrome and Firefox on Android. Confirmed live: `crossOriginIsolated` is **false** and `SharedArrayBuffer` is **undefined** on the public deployment, with zero references to it in the built JS | boolean, then time-to-playable on one Android and one iOS device                                                                                                                                                                                                                                                  | ⚠️ Source removes the objection but **does not prove mobile works**. A 4.15 MB WASM payload and a 200-peer WebSocket table on a phone still need a device                                                                                                                                                                                                                                                                 | free                                                                         |
-| **8** | ~~Is a segment one retrieval or twenty-four?~~ ✅ **ANSWERED from source and timing.** ~25 chunks, fetched **8 at a time** (`RETRIEVE_DATA_GROUP_CONCURRENCY`), each confirmed by **6 peers**, so **~150 peer requests per 95 KB segment** and ~4 rounds, which is the 790 ms base                                                                                                                                                                                                                                                  | —                                                                                                                                                                                                                                                                                                                 | ⭐ This is the mechanism behind step 5: fragment size changes the round count, not the per-chunk cost                                                                                                                                                                                                                                                                                                                     | done, free                                                                   |
+| **8** | ~~Is a segment one retrieval or twenty-four?~~ ⚠️ **PARTLY RETRACTED 2026-08-10.** ~25 chunks per segment stands. The rest does not: `RETRIEVE_DATA_GROUP_CONCURRENCY = 8` bounds **Merkle-node expansions**, each carrying up to 128 chunk requests, not 8 chunks in flight; and the "6 peers" was the uploader's confirmation, so a viewer costs ~1.1-1.3 requests per chunk. **~150 peer requests per segment is withdrawn**, and with it the "~4 rounds" account of the 790 ms base, which is now unexplained                   | —                                                                                                                                                                                                                                                                                                                 | ⭐ This is the mechanism behind step 5: fragment size changes the round count, not the per-chunk cost                                                                                                                                                                                                                                                                                                                     | done, free                                                                   |
 | **9** | **Live, against our own publisher.** Only after 2-8                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | crossing rate and lag-behind-live, both profiles                                                                                                                                                                                                                                                                  | The only question that needs a live edge                                                                                                                                                                                                                                                                                                                                                                                  | ⚠️ **broadcast minutes. Price in bytes and bring the number before booking** |
 
 ### ⭐ What "precise" requires here, learned the hard way today
