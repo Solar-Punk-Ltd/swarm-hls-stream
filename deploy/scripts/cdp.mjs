@@ -22,9 +22,10 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { sampleChromeCpu } from './chrome-cpu.mjs';
+
 /** macOS default. Overridable so a host that keeps Chrome elsewhere can run this. */
-export const CHROME_PATH =
-  process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+export const CHROME_PATH = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const PORT_RANGE_START = 9333;
 const ENDPOINT_ATTEMPTS = 40;
@@ -147,12 +148,21 @@ export async function clickPage(client) {
 /**
  * Runs `body` against a fresh headless Chrome on `url`, then always tears the browser down.
  *
+ * `body` receives the Chrome's own root PID, so a caller that wants to know what the browser cost can
+ * sample the process tree beneath it. See `chrome-cpu.mjs` for why a PID on its own is not enough.
+ *
+ * ⭐ `idleMs` buys the null control for that measurement, and it has to happen HERE because it is the
+ * only moment a caller cannot reach: Chrome is up, the page target exists, and nothing has been
+ * navigated to yet. Without it a run has no way to separate what the page cost from what an empty
+ * headless Chrome costs, and every figure would carry the browser's own floor inside it.
+ *
  * @param {string} url
- * @param {(client: {send: Function}) => Promise<T>} body
+ * @param {(client: {send: Function}, context: {pid: number, idleCpu: import('./chrome-cpu.mjs').TreeCpu|null, idleSeconds: number}) => Promise<T>} body
+ * @param {{idleMs?: number}} [options]
  * @returns {Promise<T>}
  * @template T
  */
-export async function withPage(url, body) {
+export async function withPage(url, body, { idleMs = 0 } = {}) {
   const port = PORT_RANGE_START + Math.floor(process.pid % 100);
   const profile = mkdtempSync(join(tmpdir(), 'cdp-'));
   const chrome = spawn(CHROME_PATH, chromeArgs(port, profile), { stdio: 'ignore' });
@@ -163,8 +173,21 @@ export async function withPage(url, body) {
   try {
     client = connect(await firstPageEndpoint(port));
     await client.send('Page.enable');
+
+    let idleCpu = null;
+    if (idleMs > 0) {
+      const before = await sampleChromeCpu(chrome.pid);
+      await sleep(idleMs);
+      const after = await sampleChromeCpu(chrome.pid);
+      idleCpu = {
+        totalSeconds: after.totalSeconds - before.totalSeconds,
+        processCount: after.processCount,
+        byType: after.byType,
+      };
+    }
+
     await client.send('Page.navigate', { url });
-    return await body(client);
+    return await body(client, { pid: chrome.pid, idleCpu, idleSeconds: idleMs / 1000 });
   } finally {
     client?.close();
     chrome.kill();
