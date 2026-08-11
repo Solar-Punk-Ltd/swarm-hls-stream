@@ -1,51 +1,67 @@
 /**
- * #71: is the in-browser throughput ceiling about SEGMENT SIZE or about how well OUR content is
- * replicated?
+ * Does a reference come back, and how fast, as a function of WHICH CORPUS it belongs to?
  *
- * abel-1 sustained 8.34 Mbps on 4.24 MB segments. Our own 3.5 MB references delivered 0/5 on the
- * same kind of node. Those two facts are perfectly confounded: his is a stream people watch, ours
- * were fixtures uploaded once for a bench. Nothing measured so far can tell the two apart.
+ * #71 asked whether the in-browser ceiling was segment size or replication and answered replication:
+ * a 225 KB reference of ours missed 0/5 in the same minutes a 4.2 MB reference of his delivered
+ * 10/10. Size cannot produce that. What separates the arms is which upload a reference belongs to and
+ * how recently anything read it.
  *
- * This alternates his references and ours, ONE AT A TIME, in the same node in the same minutes, so
- * the only thing differing between adjacent fetches is whose content it is.
+ * So the instrument outlived its first question, and this is its general form: any number of named
+ * corpora, fetched ONE AT A TIME with the arm order rotated between rounds, so adjacent fetches
+ * differ only in which corpus they came from and no arm keeps a favourable position.
  *
  * ⛔ SCORED ON BOTH METRICS, SEPARATELY. Throughput and delivery-inside-a-budget invert with size,
- * which is how "bigger fragments are worse" and "bigger fetches are faster per byte" are both true
- * of the same rows. Reporting one without the other is what produced that mess.
+ * which is how "bigger fragments are worse" and "bigger fetches are faster per byte" are both true of
+ * the same rows. Reporting one without the other is what produced that mess.
+ *
+ * ⭐ THE CONTROL IS SOMEBODY ELSE'S CONTENT, DELIBERATELY. The fragment sittings used a canary made
+ * of our own uploads, so a failed canary could not tell a sick node from missing content, and the
+ * rule that discarded the round destroyed the evidence that would have separated them. A control has
+ * to be made of material the experiment is not questioning.
+ *
+ * Usage: node deploy/scripts/corpus-delivery.mjs <plan.json> [out.json]
+ *
+ * plan.json:
+ *   {
+ *     "rounds": 3,
+ *     "perArmPerRound": 2,
+ *     "control": "his",
+ *     "arms": [
+ *       { "name": "his",        "feed": { "owner": "47535bf0...", "topic": "d1e6072f..." } },
+ *       { "name": "ours-live",  "feed": { "owner": "8d8a30ff...", "topic": "7fd811aa..." } },
+ *       { "name": "ours-aug03", "refs": ["3f2a...", "9c11..."] }
+ *     ]
+ *   }
+ *
+ * An arm carries either a `feed` to harvest its references from or an explicit `refs` list.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 
 import { clickPage, evaluate, sleep, withPage } from './cdp.mjs';
 
-/**
- * Where the reference lists live. Both are JSON or newline-delimited hex produced by earlier
- * sittings, so this script takes them rather than re-deriving what a previous run already paid for.
- *
- * Usage: node deploy/scripts/size-vs-replication.mjs <refs-dir> [out.json]
- */
-const SCRATCH = process.argv[2];
-if (!SCRATCH) {
-  throw new Error('usage: size-vs-replication.mjs <dir holding q5-refs.json and refs.txt> [out.json]');
-}
-const OWNER = '47535bf0835ff9cb1c7c7cb4f44fa514f58e703d';
-const TOPIC = 'd1e6072ffe54287de3f43dd74eeb8319e0186259a307b37af9b28aacb9f21a7a';
-const BYTES = 'https://lat-murmeldjur.github.io/weeb-3/hls/bytes/';
-const FEED = `https://lat-murmeldjur.github.io/weeb-3/feeds/${OWNER}/${TOPIC}`;
+const NODE = 'https://lat-murmeldjur.github.io/weeb-3/';
+const BYTES = `${NODE}hls/bytes/`;
 
-const ROUNDS = 2;
-const PER_ARM_PER_ROUND = 2;
 const BUDGET_MS = 120000;
 const PEER_FLOOR = 150;
+const PEER_WAIT_ATTEMPTS = 60;
+/** Coprime with any short reference list, so a round does not replay the same few references. */
+const REF_STRIDE = 37;
 
-/** Ours, GOP 4, the largest bucket in the archive and the nearest match to his 4.24 MB. */
-const OURS = JSON.parse(readFileSync(`${SCRATCH}/q5-refs.json`, 'utf-8'))['4'];
-/** Ours from the latbench recording, which was being read successfully earlier TODAY. 90 KB each,
- *  so this arm answers a DELIVERY question and its throughput is not comparable to the big arms. */
-const OURS_FRESH = readFileSync(`${SCRATCH}/refs.txt`, 'utf-8').split('\n').filter(Boolean);
-/** A small reference of ours, opening every round: a round whose canary misses is not trusted. */
-const CANARY = JSON.parse(readFileSync(`${SCRATCH}/q5-refs.json`, 'utf-8'))['0.25'][0];
+const planPath = process.argv[2];
+if (!planPath) {
+  throw new Error('usage: corpus-delivery.mjs <plan.json> [out.json]');
+}
+const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+const rounds = plan.rounds ?? 3;
+const perArmPerRound = plan.perArmPerRound ?? 2;
 
-const FETCH_ONE = (ref, arm, round) => `(async () => {
+/**
+ * @typedef {{ arm: string, round: number, ref: string, ms: number, bytes: number, status: number,
+ *             error?: string }} FetchRow
+ */
+
+const fetchOne = (ref, arm, round) => `(async () => {
   const started = performance.now();
   try {
     const response = await fetch(${JSON.stringify(BYTES + ref)}, { signal: AbortSignal.timeout(${BUDGET_MS}) });
@@ -58,74 +74,88 @@ const FETCH_ONE = (ref, arm, round) => `(async () => {
   }
 })()`;
 
-/** His segment references, read off the playlist his feed resolves to. */
-async function abelRefs(client) {
-  const text = await evaluate(client, `fetch(${JSON.stringify(FEED)}).then((r) => r.text())`);
-  const refs = [...String(text).matchAll(/([0-9a-f]{64})/g)].map((m) => m[1]);
-  return [...new Set(refs)];
+/** Segment references as the playlist a feed resolves to lists them, through the node's own route. */
+async function refsFromFeed(client, { owner, topic }) {
+  const url = `${NODE}feeds/${owner}/${topic}`;
+  const text = await evaluate(client, `fetch(${JSON.stringify(url)}).then((r) => r.text())`);
+  return [...new Set([...String(text).matchAll(/([0-9a-f]{64})/g)].map((m) => m[1]))];
 }
 
-const rows = [];
-await withPage('https://lat-murmeldjur.github.io/weeb-3/', async (client) => {
-  await sleep(4000);
-  await clickPage(client);
-
-  for (let i = 0; i < 60; i++) {
+async function waitForPeers(client) {
+  for (let attempt = 0; attempt < PEER_WAIT_ATTEMPTS; attempt++) {
     const peers = Number(
       await evaluate(client, `(document.body.innerText.match(/Connected:\\s*(\\d+)/) || [])[1] || 0`),
     );
     if (peers >= PEER_FLOOR) {
-      console.log(`peers ${peers}`);
-      break;
+      return peers;
     }
     await sleep(2000);
   }
+  throw new Error(`node never reached ${PEER_FLOOR} peers, so nothing measured here would mean anything`);
+}
 
-  const his = await abelRefs(client);
-  console.log(`his references found: ${his.length}`);
-  if (his.length < ROUNDS * PER_ARM_PER_ROUND) {
-    throw new Error(`only ${his.length} of his references, need ${ROUNDS * PER_ARM_PER_ROUND}`);
+/** @type {FetchRow[]} */
+const rows = [];
+await withPage(NODE, async (client) => {
+  await sleep(4000);
+  await clickPage(client);
+  console.log(`peers ${await waitForPeers(client)}`);
+
+  /** @type {Map<string, string[]>} */
+  const armRefs = new Map();
+  for (const arm of plan.arms) {
+    const refs = arm.feed ? await refsFromFeed(client, arm.feed) : arm.refs;
+    if (!refs?.length) {
+      throw new Error(`arm ${arm.name} resolved no references`);
+    }
+    armRefs.set(arm.name, refs);
+    console.log(`  ${arm.name.padEnd(16)} ${refs.length} references`);
   }
 
-  console.log('\n  arm     round        KB      ms     KB/s  status');
-  for (let round = 0; round < ROUNDS; round++) {
-    const plan = [{ arm: 'canary', ref: CANARY }];
-    for (let i = 0; i < PER_ARM_PER_ROUND; i++) {
-      const index = round * PER_ARM_PER_ROUND + i;
-      // His first in even rounds, ours first in odd, so order is not confounded with whose it is.
-      const pair = [
-        { arm: 'his', ref: his[index] },
-        { arm: 'ours-aug03', ref: OURS[index % OURS.length] },
-        { arm: 'ours-today', ref: OURS_FRESH[(index * 37) % OURS_FRESH.length] },
-      ];
-      plan.push(...(round % 2 === 0 ? pair : pair.reverse()));
-    }
-    for (const item of plan) {
-      const row = JSON.parse(await evaluate(client, FETCH_ONE(item.ref, item.arm, round)));
-      rows.push(row);
-      const kb = row.bytes / 1024;
-      console.log(
-        `  ${row.arm.padEnd(7)}${String(row.round).padStart(4)}  ${kb.toFixed(0).padStart(8)}` +
-          `${String(row.ms).padStart(8)}  ${(kb / (row.ms / 1000)).toFixed(1).padStart(7)}  ${row.status}${row.error ? ' ' + row.error : ''}`,
-      );
+  console.log('\n  arm                round        KB      ms     KB/s  status');
+  for (let round = 0; round < rounds; round++) {
+    // Rotated rather than reversed: with more than two arms, reversing only ever swaps the ends and
+    // leaves the middle arm permanently mid-round.
+    const order = plan.arms.map((_, i) => plan.arms[(i + round) % plan.arms.length]);
+    for (let slot = 0; slot < perArmPerRound; slot++) {
+      const index = round * perArmPerRound + slot;
+      for (const arm of order) {
+        const refs = armRefs.get(arm.name);
+        const ref = refs[(index * REF_STRIDE) % refs.length];
+        const row = JSON.parse(await evaluate(client, fetchOne(ref, arm.name, round)));
+        rows.push(row);
+        const kb = row.bytes / 1024;
+        console.log(
+          `  ${row.arm.padEnd(18)}${String(row.round).padStart(3)}  ${kb.toFixed(0).padStart(8)}` +
+            `${String(row.ms).padStart(8)}  ${(kb / (row.ms / 1000)).toFixed(1).padStart(7)}  ` +
+            `${row.status}${row.error ? ' ' + row.error : ''}`,
+        );
+      }
     }
   }
 });
 
-writeFileSync(process.argv[3] ?? `${SCRATCH}/size-vs-replication-rows.json`, JSON.stringify(rows, null, 1));
+writeFileSync(process.argv[3] ?? 'corpus-delivery-rows.json', JSON.stringify(rows, null, 1));
 
-const arm = (name) => rows.filter((r) => r.arm === name && r.status === 200 && r.bytes > 0);
-console.log('\n  arm     delivered/tried   meanKB   meanKB/s');
-for (const name of ['his', 'ours-aug03', 'ours-today', 'canary']) {
-  const tried = rows.filter((r) => r.arm === name);
-  const done = arm(name);
-  if (!tried.length) {
-    continue;
-  }
+const delivered = (name) => rows.filter((r) => r.arm === name && r.status === 200 && r.bytes > 0);
+console.log('\n  arm               delivered/tried   meanKB   meanKB/s');
+for (const arm of plan.arms) {
+  const tried = rows.filter((r) => r.arm === arm.name);
+  const done = delivered(arm.name);
   const meanKB = done.reduce((s, r) => s + r.bytes, 0) / (done.length || 1) / 1024;
   const meanRate = done.reduce((s, r) => s + r.bytes / 1024 / (r.ms / 1000), 0) / (done.length || 1);
   console.log(
-    `  ${name.padEnd(7)}${String(done.length + '/' + tried.length).padStart(15)}` +
+    `  ${arm.name.padEnd(18)}${String(done.length + '/' + tried.length).padStart(13)}` +
       `${meanKB.toFixed(0).padStart(9)}${meanRate.toFixed(1).padStart(11)}`,
+  );
+}
+
+if (plan.control) {
+  const control = delivered(plan.control).length;
+  const tried = rows.filter((r) => r.arm === plan.control).length;
+  console.log(
+    control * 2 >= tried
+      ? `\n  control ${plan.control}: ${control}/${tried}, the node was answering`
+      : `\n  ⛔ CONTROL ${plan.control} DELIVERED ${control}/${tried}. The node was not answering, so no arm here means anything.`,
   );
 }
