@@ -10,7 +10,7 @@
 import { LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
 
 import { type GatewayHealth, gatewaySection } from './gatewayHealth.js';
-import type { InstrumentVerdict } from './instrument.js';
+import { describeProof, type InstrumentProof, type InstrumentVerdict } from './instrument.js';
 import type { NetworkSummary } from './network.js';
 import { costSection, type ResourceCost } from './resources.js';
 import type { LatencyTargetVerdict, SessionSummary, ViewerSample } from './session.js';
@@ -23,6 +23,14 @@ export interface BrowserRun {
   gopSeconds: number;
   summary: SessionSummary;
   instrument: InstrumentVerdict & { soundSamples: number };
+  /**
+   * Evidence that the soundness verdict above was capable of coming out the other way.
+   *
+   * Optional because every run recorded before 2026-08-12 has none, and a report that cannot be
+   * rendered for the archive is a report that cannot be re-derived. A run without one is reported as
+   * having an untested verdict rather than a sound one.
+   */
+  instrumentProof?: InstrumentProof;
   network?: NetworkSummary;
   samples: readonly ViewerSample[];
   screenshots: readonly string[];
@@ -66,14 +74,21 @@ export const orDash = (value: number | null, digits = 2): string => (value === n
 
 export function instrumentSection(run: BrowserRun): string[] {
   if (run.instrument.sound) {
+    // A sound verdict is only worth printing as one if the check that produced it could have said
+    // otherwise. Where it could not, the caveat goes in the heading rather than in a footnote,
+    // because a reader who has to scroll to find it will quote the verdict.
+    const unproven = describeProof(run.instrumentProof);
     return [
-      '## The instrument was sound',
+      unproven.length > 0
+        ? '## ⚠️ Every sample passed, but the check could not have failed'
+        : '## The instrument was sound',
       '',
       `All ${run.summary.samples} samples came from a page reporting \`visibilityState: visible\`, with a ` +
         '100ms timer keeping its schedule and a build that can decode H.264 and AAC. Nothing below is ' +
         'the harness degrading its own subject, which is the failure that blocked this measurement ' +
         'until now.',
       '',
+      ...unproven.flatMap((caveat) => [`⛔ ${caveat}`, '']),
     ];
   }
 
