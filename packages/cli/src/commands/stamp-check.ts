@@ -1,17 +1,11 @@
-import { createBee } from '../lib/bee-client.js';
-import { loadEnv, resolveBeeUploaderTarget, SVC_BEE_UPLOADER } from '../lib/config-reader.js';
-import { dim, error, header, ok, table, warn } from '../lib/output.js';
+import { loadEnv, resolvePublisherTargets } from '../lib/config-reader.js';
+import { forEachNode } from '../lib/nodes.js';
+import { dim, ok, table, warn } from '../lib/output.js';
 
 export async function stampCheck(urlOverride?: string): Promise<void> {
   loadEnv();
 
-  const target = resolveBeeUploaderTarget();
-  const url = urlOverride ?? target.url;
-
-  header(`Stamps on ${SVC_BEE_UPLOADER} (${url})`);
-
-  try {
-    const bee = createBee(url);
+  await forEachNode(resolvePublisherTargets(), urlOverride, async (bee, node) => {
     const batches = await bee.getPostageBatches();
 
     if (batches.length === 0) {
@@ -20,10 +14,14 @@ export async function stampCheck(urlOverride?: string): Promise<void> {
     }
 
     for (const batch of batches) {
-      const status = batch.usable ? 'usable' : 'not usable';
+      const hex = batch.batchID.toHex();
       const statusFn = batch.usable ? ok : warn;
-      statusFn(`${batch.batchID.toHex()}`);
-      table('  Status', status);
+
+      // Flagged because a node per rung means several batches, and the one the uploader is actually
+      // spending is the only one whose utilization matters. A node holding a healthy batch that is
+      // not the configured one looks fine here and still stops publishing when the real one fills.
+      statusFn(`${hex}${node.stamp === hex ? '  <- configured' : ''}`);
+      table('  Status', batch.usable ? 'usable' : 'not usable');
       table('  Depth', String(batch.depth));
       table('  Amount', batch.amount);
       table('  Utilization', String(batch.utilization));
@@ -31,8 +29,9 @@ export async function stampCheck(urlOverride?: string): Promise<void> {
       table('  Immutable', String(batch.immutableFlag));
       dim('');
     }
-  } catch (err) {
-    error(`Failed: ${err instanceof Error ? err.message : 'unknown error'}`);
-    process.exit(1);
-  }
+
+    if (node.stamp && !batches.some((batch) => batch.batchID.toHex() === node.stamp)) {
+      warn(`Configured batch ${node.stamp} is not on this node — check BEE_PUBLISHERS`);
+    }
+  });
 }
