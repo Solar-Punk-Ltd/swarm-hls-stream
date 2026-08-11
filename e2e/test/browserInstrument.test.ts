@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  describeProof,
+  type InstrumentProof,
   type InstrumentReading,
   judgeInstrument,
   judgeRun,
@@ -87,5 +89,42 @@ describe('judging a whole run rather than one sample', () => {
 
   it('accepts a run whose every sample was sound', () => {
     assert.deepEqual(judgeRun([SOUND, SOUND]), { sound: true, failures: [], soundSamples: 2 });
+  });
+});
+
+/**
+ * The half of the guard that had never been checked. `judgeRun` can say a run was sound; only the
+ * proof says whether it could have said anything else, and under Playwright's default flags two of
+ * the three checks cannot fail at all.
+ */
+describe('reporting whether the guard could have failed', () => {
+  const FIRED: InstrumentProof = {
+    degradation: 'its main thread blocked for 3000ms',
+    rejected: true,
+    firedChecks: ['timerDriftRatio'],
+  };
+
+  it('says nothing when the proof fired, so a real verdict reads as one', () => {
+    assert.deepEqual(describeProof(FIRED), []);
+  });
+
+  it('names the degradation the instrument failed to notice', () => {
+    const caveats = describeProof({ ...FIRED, rejected: false, firedChecks: [] });
+
+    assert.equal(caveats.length, 1);
+    assert.match(caveats[0], /main thread blocked for 3000ms/);
+    assert.match(caveats[0], /restatement of the launch flags rather than evidence/);
+  });
+
+  /**
+   * Every run recorded before 2026-08-12 carries no proof, and the archive still has to render. A
+   * missing proof is reported as an untested verdict rather than passed over, because silence here
+   * would be indistinguishable from a proof that fired.
+   */
+  it('treats a missing proof as untested rather than as passing', () => {
+    const caveats = describeProof(undefined);
+
+    assert.equal(caveats.length, 1);
+    assert.match(caveats[0], /untested/);
   });
 });
