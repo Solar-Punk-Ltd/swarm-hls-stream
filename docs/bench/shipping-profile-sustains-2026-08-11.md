@@ -28,7 +28,52 @@ Both gaps are recorded in `live-shipping-profile-prediction-2026-08-11.md` with 
 not weaken this result: **1.917s segments at `HLS_FRAGMENT=1.0` are what a deployment on the compose
 defaults actually produces**, so this is the shipping profile as shipped, not as intended.
 
-## ⭐⭐ THE OCCUPANCY MODEL PREDICTED THE MIDDLE POINT BEFORE IT WAS MEASURED
+## ⛔⛔⛔ CORRECTION: A PLAYBACK RUN MEASURES THE STREAM'S BITRATE, NOT THE NODE'S CAPABILITY
+
+**Everything below the next heading was written from a whole-run average and is wrong.** Both runs
+ramp to a ~90s buffer lead and then hold it flat for the remaining 570 seconds. Once the buffer is
+satisfied the player fetches at exactly the stream's bitrate, so **the steady phase measures the
+demand we chose, not what the node can do.** Averaging the two phases together buries the only
+informative part of the run.
+
+⭐⭐ **The fill phase is the measurement.** Both runs, independently:
+
+| | fill rate | **delivered** |
+| --- | ---: | ---: |
+| run 1 | 1.875x realtime | **770 KB/s** |
+| run 2 | 1.860x realtime | **764 KB/s** |
+
+**~767 KB/s, n=2, agreeing within 0.8%** — not the 461 first reported.
+
+⛔ **abel-1 carries the same defect and its figure moves too.** Its 1,014 KB/s was `ratio x demand`
+from a run that also reached a steady lead. Recomputed off its own fill phase: **1,135 and 1,160 KB/s**,
+so **~1,148**. ⚠️ Note how much closer to its demand that sits: abel needs 1,018 and can do 1,148, a
+13% margin, while this profile needs 411 and can do 767, an **87%** margin.
+
+⚠️ 767 is what the node **and hls.js together** achieve when the player wants more than realtime. It
+is a floor on the node alone.
+
+## ⛔⛔ AND SO THE OCCUPANCY MODEL IS REFUTED AT THE POINT IT PREDICTED
+
+| stream | segment | occupancy | demand | **capability** |
+| --- | ---: | ---: | ---: | ---: |
+| bench 0.25s | 90 KB / 0.266s | **4.5%** | 338 KB/s | **228** |
+| **ours, as shipped** | **787 KB / 1.917s** | **38.5%** | **411 KB/s** | **767** |
+| abel-1 | 4,241 KB / 4.167s | saturated | 1,018 KB/s | **1,148** |
+
+⭐ The 4.5% point survives unchanged, and for an instructive reason: **that run never filled a buffer**,
+so its playback rate really was its capability. A failure measures the node; a success measures the
+stream.
+
+**A line through the outer points predicts 382 KB/s at 38.5%. Measured 767, twice.** The linear model
+is not 10% out as first reported, it is **half**. ⭐⭐ The real shape is strongly saturating: 8.6x the
+occupancy from 4.5% to 38.5% buys **3.4x** the throughput, and a further 5.4x buys only **1.5x**.
+
+⭐⭐⭐ **The product reading is better than the linear model's, not worse.** At 38.5% occupancy the
+shipping profile already gets **two thirds of what a saturated node gets**, with 87% headroom over what
+it needs. Chasing bigger segments buys much less than the line suggested.
+
+## ⛔ SUPERSEDED: what the whole-run average said
 
 Chunk concurrency is 2,048 (`lib.rs:321`); segment concurrency is 4 (`stream_hls.rs:3720` plus one
 exempt foreground fetch). A segment fills `bytes / 4096` chunks, so **small segments cannot fill the
