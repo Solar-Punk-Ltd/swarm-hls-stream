@@ -58,11 +58,17 @@ re-scope those figures as floors rather than delete them was correct.
 The shipping profile needs **411 KB/s** (787 KB every 1.917s). A browser node at player concurrency
 delivers **1,134 KB/s**, so **2.76x headroom**.
 
-⚠️ **Corrected the same evening: that 411 KB/s is what the deployment host produced, not what the
-profile asks for.** It delivered 3.44 Mbps against 6000 kbps requested, where the same encoder
-settings locally deliver 6.35. Against a **full-rate** 1080p/6000k stream the requirement is ~775 KB/s
-and the headroom is about **1.4x, not 2.76x**. It still sustains, with a much thinner margin. See
-`srs-fragment-bracket-2026-08-11.md`. ⭐ The 1,134 KB/s itself is unaffected: it was measured by
+⚠️ **Corrected twice. Both headroom figures are right, about different publishers.** 411 KB/s is what
+this deployment really sends a viewer, so **2.76x is its headroom and the row above is sound**. A
+publisher on a link that carries the full 6000 kbps would send ~775 KB/s and the headroom would be
+about **1.5x**, still sustaining with a thinner margin.
+
+⛔ **What was wrong was the cause, not either number.** The same-evening correction blamed the
+deployment host. It is the **publish path from this laptop to it**, reproduced on 2026-08-12 by moving
+only the media engine onto the host and watching 1.000s segments become 2.400s while the bytes per
+segment did not move. See `segment-stretch-2026-08-12.md`.
+
+⭐ The 1,134 KB/s itself is unaffected by any of this: it was measured by
 fetching real segments and never divided by a duration. That is an independent route to this morning's sustain
 result (ratio 0.9996, zero stalls) and it explains the 90-second buffer lead: the node fills far
 faster than the stream drains.
