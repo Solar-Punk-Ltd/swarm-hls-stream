@@ -98,6 +98,53 @@ describe('in-browser sustain probe, choosing a stream', () => {
   });
 });
 
+/** A sample in the shape the probe records, one per wall second. */
+const at = (t, ct, extra = {}) => ({ t, ct, rs: 4, paused: false, buffEnd: ct + 10, ...extra });
+
+/** Drives the summary over a prepared set of samples, as a finished run would. */
+function summarise(samples, { firstAdvanceAt = 0, stream = 'abel-1' } = {}) {
+  const { sustain } = arm({ __sustainStream: stream });
+  sustain.samples = samples;
+  sustain.firstAdvanceAt = firstAdvanceAt;
+  return sustain.summarise();
+}
+
+describe('in-browser sustain probe, scoring a run', () => {
+  it('does not charge time before the first frame against the stream', () => {
+    // Five seconds of startup, then a playhead that keeps perfect time.
+    const samples = [
+      at(0, 0, { rs: 0 }),
+      at(5000, 0, { rs: 0 }),
+      at(6000, 1),
+      at(105000, 100),
+    ];
+
+    const summary = summarise(samples, { firstAdvanceAt: 6000 });
+
+    assert.equal(summary.realtimeRatio, 1);
+    assert.ok(summary.realtimeRatioWithStartup < 1, 'the unadjusted figure still carries startup');
+  });
+
+  it('counts seconds lost to a playhead that advances slowly but never quite stops', () => {
+    // 0.9s of playhead per wall second: no sample ever repeats, so nothing reads as a stall.
+    const samples = Array.from({ length: 101 }, (_, i) => at(i * 1000, i * 0.9));
+
+    const summary = summarise(samples, { firstAdvanceAt: 0 });
+
+    assert.equal(summary.stallCount, 0);
+    assert.equal(summary.realtimeRatio, 0.9);
+    assert.equal(summary.lostS, 10);
+  });
+
+  it('reports the stream and its demand beside the ratio', () => {
+    const summary = summarise([at(0, 0), at(100000, 100)], { firstAdvanceAt: 0 });
+
+    assert.equal(summary.stream, 'abel-1');
+    assert.equal(summary.demandedKBps, 1018);
+    assert.equal(summary.derivedDeliveredKBps, 1018);
+  });
+});
+
 describe('in-browser sustain probe, the stream table', () => {
   /**
    * The bitrate in each description is what a reader quotes, and the two numbers beside it are what

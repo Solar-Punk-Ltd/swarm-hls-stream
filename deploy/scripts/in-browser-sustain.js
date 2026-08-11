@@ -131,6 +131,9 @@
     // was, in the file, without depending on anyone's note of what they ran.
     stream: { name: streamName, ...stream },
     samples: [],
+    // Exposed so a saved sitting can be re-derived after an arithmetic fix without asking anyone to
+    // sit through it again, and so the arithmetic is reachable from `node --test`.
+    summarise,
     log: [],
     err: null,
     peersAtStart: null,
@@ -239,14 +242,21 @@
     const first = samples[0];
     const last = samples[samples.length - 1];
     const wallS = (last.t - first.t) / 1000;
-    const playheadS = last.ct - first.ct;
     const stalls = samples.filter((s) => s.stalled);
+
+    // ⭐ Numerator and denominator span the SAME window. Taking startup out of the denominator while
+    // still measuring the playhead from before playback began is how an error hides inside a ratio
+    // quoted to four decimal places.
+    const playing =
+      P.firstAdvanceAt === undefined ? samples : samples.filter((s) => s.t >= P.firstAdvanceAt);
+    const playingFrom = playing[0] || first;
+    const playingS = (last.t - playingFrom.t) / 1000;
+    const playheadS = last.ct - playingFrom.ct;
     // ⛔ Startup is charged against the stream if it is left in the denominator, and it is not
     // starvation. The 2026-08-11 abel-1 run took 2.1s to first frame, which caps a twelve minute
     // sitting at 0.9971 with ZERO stalls, so the 0.999 bar was unreachable by construction and the
     // run printed DOES NOT SUSTAIN for a stream that stalled once, for one second, in twelve minutes.
-    const playingMs = P.firstAdvanceAt === undefined ? wallS * 1000 : wallS * 1000 - P.firstAdvanceAt;
-    const ratio = playingMs > 0 ? (playheadS * 1000) / playingMs : 0;
+    const ratio = playingS > 0 ? playheadS / playingS : 0;
     const demandedKBps = Math.round(stream.segmentKB / stream.segmentSeconds);
     return {
       stream: streamName,
@@ -263,7 +273,14 @@
       playheadS: +playheadS.toFixed(1),
       realtimeRatio: +ratio.toFixed(4),
       /** Kept so sittings taken before the startup fix stay directly comparable. */
-      realtimeRatioWithStartup: +(playheadS / wallS).toFixed(4),
+      realtimeRatioWithStartup: +((last.ct - first.ct) / wallS).toFixed(4),
+      /**
+       * ⭐⭐ Every second of playback the run did not get, however it was lost, and the figure to
+       * quote. `stallCount` only sees a playhead that did not move AT ALL between two samples, so a
+       * stream advancing 0.9s per wall second reports zero stalls while bleeding ten percent. The
+       * headless abel-1 run lost 5.6s with one detected stall.
+       */
+      lostS: +(playingS - playheadS).toFixed(1),
       stallCount: stalls.length,
       stallSeconds: +((stalls.length * SAMPLE_MS) / 1000).toFixed(1),
       startupS: P.firstAdvanceAt === undefined ? null : +(P.firstAdvanceAt / 1000).toFixed(1),
@@ -319,7 +336,11 @@
             sample.totalFrames = frames.total;
           }
         }
-        if (previous && !sample.paused && sample.ct === previous.ct) {
+        // ⛔ Only once playback has actually begun. Before the first frame `currentTime` is 0 on
+        // every sample, so an unguarded comparison reads each one as a stall: the 3-minute headless
+        // run reported five stalls of which four were this, and the twelve minute abel-1 sitting's
+        // single reported stall is most likely the same artifact rather than a real starvation.
+        if (previous && !sample.paused && sample.ct === previous.ct && P.firstAdvanceAt !== undefined) {
           sample.stalled = true;
         }
         if (previous && sample.ct > previous.ct && P.firstAdvanceAt === undefined) {
