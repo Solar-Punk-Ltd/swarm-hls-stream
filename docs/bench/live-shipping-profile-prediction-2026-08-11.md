@@ -106,10 +106,38 @@ comfortably, and a measured ratio meaningfully below 1.0 refutes it.
 
 ## ⚠️ TWO INSTRUMENT FACTS THIS TURNED UP, BOTH WORTH THEIR OWN CHECK
 
-1. **`HLS_FRAGMENT=1.0` with a 1.0s GOP produces 1.92s segments, roughly double.** SRS cuts on the
-   first keyframe **at or after** the fragment duration, so a GOP equal to the fragment is the
-   pathological pairing: the keyframe that lands a hair under 1.0s of accumulated duration is not
-   taken, and the next one at 1.92s is. `bench-profiles.sh` sets fragment equal to GOP on every row.
+1. **`HLS_FRAGMENT=1.0` with a 1.0s GOP produces 1.92s segments, roughly double.**
+
+   ⛔⛔ **THE MECHANISM I FIRST GAVE FOR THIS IS WITHDRAWN.** I wrote that SRS cutting on the first
+   keyframe *at or after* the fragment makes GOP-equal-to-fragment pathological, because the keyframe
+   landing a hair under the boundary is skipped. That was reasoned from **one** configuration, and a
+   second one refutes it: `HLS_FRAGMENT=0.5` with a 0.5s GOP, the same pairing, produced **0.502s**
+   segments (968 of them in 8.1 minutes, and its own report agrees at a 0.50s median). If the
+   near-miss story were right, 0.5 would double to 1.0 as well. It does not.
+
+   The encoder settings are not exotic and rule out the obvious alternatives: `-g round(fps*gop)`,
+   `-sc_threshold 0` so scene changes insert no extra keyframes, `-tune zerolatency`
+   (`e2e/src/bench/wallclockPublisher.ts:115`).
+
+   ⭐ **So the finding is the observation, not an explanation for it: the delivered segment duration
+   is not predictable from the fragment knob and has to be measured per configuration.**
+
+   **Three arms in, and the anomaly is a single point:**
+
+   | `HLS_FRAGMENT` | segments | observed median | **ratio** |
+   | ---: | ---: | ---: | ---: |
+   | 0.5 | 968 | 0.50s | **1.00x** |
+   | **1.0** | **629** | **1.90s** | **1.92x** |
+   | 2.0 | 245 | 2.00s | **1.00x** |
+
+   ⛔⛔ **It is not a systematic pathology. 0.5 and 2.0 both land on the knob, and only 1.0 doubles.**
+   That rules out every "boundary rounding" story, including the one I withdrew, because a rounding
+   effect would hit 0.5 and 2.0 as well.
+
+   ⚠️⚠️ **And 1.0 is the compose default, so it is what ships.** A deployment on defaults publishes
+   segments twice as long as configured, which doubles the latency floor a viewer waits through. That
+   is a product consequence, not just an instrument one, and it deserves its own investigation rather
+   than another guess from me.
 2. **The bench's `6000 kbps` is a request, not a delivered bitrate.** On this synthetic source it
    delivered 3.37 Mbps.
 

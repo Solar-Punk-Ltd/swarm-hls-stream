@@ -94,8 +94,8 @@
       owner: '8d8a30ff4cbcf8ad0e0773547686295f8157feb0',
       topic: '7e87a2d9-82fe-422f-a66a-5b1e42281636',
       // ⛔ Measured off the run, not read off the knobs. `HLS_FRAGMENT=1.0` against a 1.0s GOP
-      // delivered 1.917s segments, because SRS cuts on the first keyframe at or AFTER the fragment
-      // and a GOP equal to it misses by a hair every time. The 6000kbps asked for arrived as 3.37.
+      // delivered 1.917s segments and the 6000kbps asked for arrived as 3.37. Why 1.0 doubles is not
+      // known: the same pairing at 0.5 delivers 0.502s, so the obvious near-miss explanation is wrong.
       segmentSeconds: 1.917,
       segmentKB: 787,
       what: '⭐ THE PROFILE WE SHIP, 1080p at HLS_FRAGMENT=1.0. Delivered 1.917s segments, 3.37 Mbps.',
