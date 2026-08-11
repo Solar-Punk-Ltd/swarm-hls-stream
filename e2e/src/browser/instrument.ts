@@ -69,6 +69,35 @@ export interface InstrumentVerdict {
 }
 
 /**
+ * Evidence that the sensor can report a failure at all, taken from a page that is not the subject.
+ *
+ * ## Why a guard needs this and the rest of the file does not
+ *
+ * {@link judgeInstrument} is a pure function and its rule is tested directly, against the numbers the
+ * 2026-08-03 attempt produced. What has never been tested is the other half: whether the **collection**
+ * path can ever hand it a failing reading. Under Playwright it largely cannot. playwright-core passes
+ * `--disable-background-timer-throttling` and two siblings from its own default argument list, and
+ * sends `Emulation.setFocusEmulationEnabled({enabled: true})` on every main frame, so a genuinely
+ * hidden page still reports `visible` with punctual timers. Both checks then pass for reasons that
+ * have nothing to do with the run being sound.
+ *
+ * ⛔ **A guard that cannot fail is not evidence.** So the harness degrades a throwaway page on purpose
+ * and requires the instrument to notice. If it does not, the run does not get to call itself sound; it
+ * reports that its own soundness is unproven, which is a different and honest thing.
+ *
+ * The degraded page is separate from the one being measured, in the same browser and context, so the
+ * proof carries to the real page without disturbing what it is watching.
+ */
+export interface InstrumentProof {
+  /** What was done to the throwaway page, in the words the report prints. */
+  degradation: string;
+  /** Whether {@link judgeInstrument} rejected the reading taken while the degradation was in force. */
+  rejected: boolean;
+  /** Which checks fired, so a proof that works for the wrong reason is visible rather than implied. */
+  firedChecks: string[];
+}
+
+/**
  * Decide whether a reading came from a browser that was not degrading its own subject.
  *
  * Pure, and separate from the code that collects the reading, so the rule can be tested against the
@@ -118,4 +147,25 @@ export function judgeRun(readings: readonly InstrumentReading[]): InstrumentVerd
   // it in a report is noise around the one fact.
   const failures = [...new Set(verdicts.flatMap((verdict) => verdict.failures))];
   return { sound: readings.length > 0 && failures.length === 0, failures, soundSamples };
+}
+
+/**
+ * What the report says about a run's guard, given the proof taken alongside it.
+ *
+ * Deliberately not folded into {@link judgeRun}. That function judges readings and nothing else, and a
+ * run whose samples were all sound really did have sound samples: the proof answers the separate
+ * question of whether "sound" was capable of coming out any other way. Keeping them apart is what
+ * stops a failed proof from being read as a degraded viewer.
+ */
+export function describeProof(proof: InstrumentProof | undefined): string[] {
+  if (!proof) {
+    return ["no falsifiability proof was taken, so this run's soundness verdict is untested"];
+  }
+  if (!proof.rejected) {
+    return [
+      `the instrument did not reject a page with ${proof.degradation}, so its soundness checks cannot ` +
+        'fail here and every "sound" verdict below is a restatement of the launch flags rather than evidence',
+    ];
+  }
+  return [];
 }
