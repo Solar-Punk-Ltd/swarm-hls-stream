@@ -24,11 +24,21 @@
  *   2. Open https://lat-murmeldjur.github.io/weeb-3/ in a normal Chrome window, with no other
  *      weeb-3 tab open anywhere.
  *   3. Keep the tab visible and focused for the whole run. Do not background it.
- *   4. In the console, one line, which fetches THIS file rather than a pasted copy of it:
+ *   4. In the console, naming the stream first, then fetching THIS file rather than a pasted copy:
+ *        window.__sustainStream = 'abel-1';
  *        fetch('http://127.0.0.1:8899/script/in-browser-sustain.js').then((r) => r.text()).then(eval)
  *      Pasting the file by hand still works and is the fallback if the server is not running.
  *   5. Click the page once when told to. Autoplay needs a real gesture.
  *   6. Wait 12 minutes. It prints a summary and leaves the raw samples on `window.__sustain.samples`.
+ *
+ * ⛔⛔ THERE IS NO DEFAULT STREAM, DELIBERATELY, AND THIS IS THE POINT OF THE SELECTOR.
+ *
+ * Every in-browser sitting before 2026-08-11 ran against the owner and topic that used to be
+ * hardcoded here. That is a recording of `HLS_FRAGMENT=0.25`, which is the latency bench profile and
+ * **not what we ship**: both compose files default to 1.0. Nobody chose that, it was simply what the
+ * constant said, and a whole series of results was reported as being about "our stream". So the
+ * choice is now compulsory and unset throws, because the failure being guarded against is not a wrong
+ * answer, it is a right answer to a question nobody realised was being asked.
  *
  * ⚠️ `peers: plateaued at ~140` is the ordinary message, not a fault. `PEER_TARGET` of 190 was set
  * when one load reached 200; the loads measured on 2026-08-11 settled at 134 and 147, so the plateau
@@ -44,15 +54,60 @@
  * each stall, and a viewer experiences the stalls, not the average.
  */
 (() => {
-  const OWNER = '8d8a30ff4cbcf8ad0e0773547686295f8157feb0';
-  const TOPIC = '7fd811aa6aedbced02d010f5e7987039e3a6033dc59bbce668b8515890ed5efd';
+  /**
+   * @typedef {object} StreamUnderTest
+   * @property {string} owner Feed owner, 40 hex.
+   * @property {string} topic Feed topic as 64 hex. weeb-3 takes 64 hex as raw bytes and keccak256s
+   *   anything shorter (`normalize_feed_topic`, weeb-3 src/conventions.rs:241), so this and the raw
+   *   UUID a share link carries address the same feed. Verified against bee-js `Topic.fromString`.
+   * @property {number} segmentSeconds Observed EXTINF. ⛔ Not the manifest's declared duration, which
+   *   ran 20-25% long before 2026-08-06.
+   * @property {number} segmentKB Mean segment size. With segmentSeconds this fixes the bitrate, and
+   *   bitrate is what a retrieval path has to meet.
+   * @property {string} what Printed in the summary, so a pasted result carries its own scope.
+   */
+
+  /** @type {Record<string, StreamUnderTest>} */
+  const STREAMS = {
+    latbench: {
+      owner: '8d8a30ff4cbcf8ad0e0773547686295f8157feb0',
+      topic: '7fd811aa6aedbced02d010f5e7987039e3a6033dc59bbce668b8515890ed5efd',
+      segmentSeconds: 0.266,
+      segmentKB: 90,
+      what: '⛔ OUR BENCH PROFILE, HLS_FRAGMENT=0.25, which we do not ship. 2.77 Mbps.',
+    },
+    'abel-1': {
+      owner: '47535bf0835ff9cb1c7c7cb4f44fa514f58e703d',
+      topic: 'd1e6072ffe54287de3f43dd74eeb8319e0186259a307b37af9b28aacb9f21a7a',
+      segmentSeconds: 4.166667,
+      segmentKB: 4241,
+      what: 'Third party VOD reported to play fine in this node. 8.34 Mbps, 1,591 segments.',
+    },
+    'abel-2': {
+      owner: '47535bf0835ff9cb1c7c7cb4f44fa514f58e703d',
+      topic: '12924ca6bec1f291ba5467119fa99261e88c2475ae05e69e6b4da1102008042f',
+      segmentSeconds: 4.166667,
+      segmentKB: 4241,
+      what: '⚠️ Replicate of abel-1, shape ASSUMED from it and not read. 8.34 Mbps if that holds.',
+    },
+  };
+
+  const streamName = window.__sustainStream;
+  const stream = STREAMS[streamName];
+  if (!stream) {
+    throw new Error(
+      `Refusing to run: set window.__sustainStream to one of [${Object.keys(STREAMS).join(', ')}] ` +
+        'before loading this script. There is no default on purpose, see the header.',
+    );
+  }
 
   /** Peer buildup is not monotonic: one load stalled at 150/50 and never moved, the next reached 200/0 in 59s. */
   const PEER_TARGET = 190;
   const PEER_QUIET_MS = 20000;
   const PEER_DEADLINE_MS = 240000;
   const SAMPLE_MS = 1000;
-  const RUN_MS = 12 * 60 * 1000;
+  /** Twelve is what the 2026-08-11 latbench sitting ran, so leave it alone to stay comparable. */
+  const RUN_MS = (window.__sustainMinutes || 12) * 60 * 1000;
   /**
    * How often to re-read the peer counter during the run.
    *
@@ -72,6 +127,9 @@
 
   const P = (window.__sustain = {
     state: 'waiting-peers',
+    // Carried on the object the raw samples are saved from, so a dumped sitting says which stream it
+    // was, in the file, without depending on anyone's note of what they ran.
+    stream: { name: streamName, ...stream },
     samples: [],
     log: [],
     err: null,
@@ -122,7 +180,7 @@
       throw new Error('navigation input not found, the weeb-3 UI has changed');
     }
     const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setValue.call(input, `/stream/${OWNER}/${TOPIC}`);
+    setValue.call(input, `/stream/${stream.owner}/${stream.topic}`);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     for (const type of ['keydown', 'keypress', 'keyup']) {
@@ -169,17 +227,26 @@
     const wallS = (last.t - first.t) / 1000;
     const playheadS = last.ct - first.ct;
     const stalls = samples.filter((s) => s.stalled);
+    const ratio = playheadS / wallS;
+    const demandedKBps = Math.round(stream.segmentKB / stream.segmentSeconds);
     return {
+      stream: streamName,
+      what: stream.what,
+      demandedKBps,
+      // What the path actually delivered, and the only figure here comparable to a fetch sweep's
+      // KB/s. Derived from the ratio rather than observed, because the segment fetches happen inside
+      // the service worker where this probe cannot see them.
+      impliedDeliveredKBps: Math.round(demandedKBps * ratio),
       peersAtStart: P.peersAtStart,
       gateReason: P.gateReason,
       samples: samples.length,
       wallS: +wallS.toFixed(1),
       playheadS: +playheadS.toFixed(1),
-      realtimeRatio: +(playheadS / wallS).toFixed(4),
+      realtimeRatio: +ratio.toFixed(4),
       stallCount: stalls.length,
       stallSeconds: +((stalls.length * SAMPLE_MS) / 1000).toFixed(1),
       startupS: P.firstAdvanceAt === undefined ? null : +(P.firstAdvanceAt / 1000).toFixed(1),
-      verdict: playheadS / wallS >= 0.999 ? '✅ SUSTAINS' : '⛔ DOES NOT SUSTAIN',
+      verdict: ratio >= 0.999 ? '✅ SUSTAINS' : '⛔ DOES NOT SUSTAIN',
     };
   }
 
@@ -254,5 +321,5 @@
     }
   })();
 
-  return 'armed. Keep this tab visible and focused.';
+  return `armed on '${streamName}' (${stream.what}). Keep this tab visible and focused.`;
 })();
