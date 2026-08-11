@@ -145,7 +145,7 @@ Four stamped arms across the same path, in `host-stretch-ladder-2026-08-12.json`
 had written "lower bitrate reduces the effect"; the 720p row refuted that, and the replicate then
 showed the whole ranking was inside the noise.
 
-⭐ **What survives is stronger than what did not.** Across four stamped arms and three configurations
+⭐ **What survives is stronger than what did not.** Across six stamped arms and three configurations
 the median never once came down to the unstamped value: **1.356s to 2.674s stamped, against 1.052s
 unstamped on the same path.** The effect is present every time. Its magnitude is not modelled and
 should not be quoted as a single number.
@@ -176,7 +176,7 @@ timeline, where it becomes a longer segment and a lower frame rate that nothing 
 ## ⚠️ This is the second re-attribution of the same measurement
 
 The 1.917s figure has now been blamed on `HLS_FRAGMENT`, then on the deployment host, and is here
-blamed on the publish path. **The measurement was right all three times.** What kept changing is the
+blamed on our own publisher. **The measurement was right all three times.** What kept changing is the
 cause, and the cause is what propagated into the cost model, a headroom claim and a slide deck.
 
 ⛔ The reason the first two attributions survived as long as they did is that every arm testing them
