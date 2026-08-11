@@ -53,6 +53,15 @@
   const PEER_DEADLINE_MS = 240000;
   const SAMPLE_MS = 1000;
   const RUN_MS = 12 * 60 * 1000;
+  /**
+   * How often to re-read the peer counter during the run.
+   *
+   * ⛔ The 2026-08-11 run recorded peers only at the start and delivery fell 18% across its twelve
+   * minutes, 253 to 207 KB/s, with buffer depth flat. A node losing peers and later content simply
+   * being slower to retrieve produce the same shape in those samples, so the finding had to be left
+   * as a question. Reading the counter costs one `innerText` regex, so there was never a reason not to.
+   */
+  const PEER_SAMPLE_EVERY = 10;
 
   if (document.visibilityState !== 'visible') {
     throw new Error(
@@ -212,6 +221,11 @@
           paused: video.paused,
           buffEnd: buffered.length ? +buffered.end(buffered.length - 1).toFixed(2) : null,
         };
+        if (P.samples.length % PEER_SAMPLE_EVERY === 0) {
+          const peers = readPeers();
+          sample.peers = peers.connected;
+          sample.connecting = peers.connecting;
+        }
         if (previous && !sample.paused && sample.ct === previous.ct) {
           sample.stalled = true;
         }
