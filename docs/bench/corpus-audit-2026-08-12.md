@@ -37,7 +37,7 @@ figure without saying which publisher it assumes.
 ### C. Instruments that could not fail, affects soundness claims rather than numbers
 
 A guard whose sensor cannot report a failure is not evidence. Known instances: the e2e browser
-harness's visibility and timer checks, which Playwright forces to pass; and `--cache-capacity=0`,
+harness's visibility and timer checks, which Playwright forces to pass, and `--cache-capacity=0`,
 which disabled no cache at all.
 
 **Tell:** a run reports "sound" or "control passed" without anywhere showing that arm failing.

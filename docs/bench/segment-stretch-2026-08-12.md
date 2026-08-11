@@ -47,7 +47,7 @@ timeline produces 1.000s segments to three decimal places, because a loopback si
 perfectly and the stamps then record a pace that is correct.
 
 ⚠️ **Read that with the next section, not on its own.** The recipe turns out to be the cause after
-all; what this sitting establishes is that **it needs a network to express itself**, which is exactly
+all. What this sitting establishes is that **it needs a network to express itself**, which is exactly
 why five earlier local brackets cleared it.
 
 ## ✅✅✅ H1 CONFIRMED: MOVE ONLY THE ENGINE ONTO THE HOST AND THE STRETCH APPEARS
@@ -77,8 +77,8 @@ changing only whether frames carry wallclock stamps.
 
 | recipe | loopback | **across the internet** |
 | --- | ---: | ---: |
-| unstamped, SRT + MPEG-TS | 1.052s | **1.052s** |
-| **wallclock-stamped**, SRT + MPEG-TS | 1.000s | **2.400s** |
+| unstamped, SRT + MPEG-TS | 1.052s | **1.052s**, n=3, identical to three decimals |
+| **wallclock-stamped**, SRT + MPEG-TS | 1.000s | **1.356 to 2.674s**, n=6 |
 
 ⭐⭐⭐ **The unstamped arm crossed the internet at fps 30, speed 0.999x and a sustained 6,363 kbit/s,
 delivering 1800 frames in 60.00 seconds and segments identical to its loopback twin.** The path
@@ -141,7 +141,7 @@ Four stamped arms across the same path, in `host-stretch-ladder-2026-08-12.json`
 | **1080p 6000k, replicate of row 1** | **1.356s** | 4,776 |
 
 ⛔⛔ **The replicate of the first row lands at 1.356s against 2.400s. One configuration, two runs,
-1.8x apart** — which is wider than every gap the ladder was built to read. After the first two rows I
+1.8x apart**, which is wider than every gap the ladder was built to read. After the first two rows I
 had written "lower bitrate reduces the effect"; the 720p row refuted that, and the replicate then
 showed the whole ranking was inside the noise.
 
@@ -170,7 +170,7 @@ The two alternating rounds put the pair minutes apart rather than sittings apart
 rounds while the unstamped arm did not move at all.
 
 ⭐⭐ **That is the finding in its sharpest form.** The network is doing the same unruly thing to both
-recipes. One of them absorbs it and delivers a steady stream; the other writes it into the media
+recipes. One of them absorbs it and delivers a steady stream. The other writes it into the media
 timeline, where it becomes a longer segment and a lower frame rate that nothing reports as an error.
 
 ## ⚠️ This is the second re-attribution of the same measurement
