@@ -64,4 +64,34 @@ describe('escalating a fatal media error instead of retrying it forever', () => 
 
     assert.deepEqual(state, NO_MEDIA_ERRORS_YET, 'the caller holds this across events and must own it');
   });
+
+  /**
+   * ⛔ Why the caller must read a monotonic clock, made executable rather than left in a comment.
+   *
+   * The whole ladder is a subtraction of two clock readings, so a clock that can jump breaks it in
+   * both directions, and the two failures are opposite. `feedState.ts` already documents this for its
+   * own deadlines; the player called this one with `Date.now()`, the one non-monotonic clock in the
+   * package, which an NTP correction moves under a viewer mid-session.
+   */
+  describe('a clock that jumps, which is why the caller owes this a monotonic one', () => {
+    it('forgets an escalation already in progress when the clock steps forward', () => {
+      const first = nextMediaErrorAction(NO_MEDIA_ERRORS_YET, T0);
+      const afterStepForward = nextMediaErrorAction(first.state, T0 + MEDIA_ERROR_RECOVERY_WINDOW_MS + 1);
+
+      // Reads as an hourly hiccup, so the ladder never climbs and a stream that cannot play is
+      // recovered forever: exactly the unbounded loop this module exists to end.
+      assert.equal(afterStepForward.action, 'recover');
+    });
+
+    it('escalates to a restart on the very next error when the clock steps backward', () => {
+      const first = nextMediaErrorAction(NO_MEDIA_ERRORS_YET, T0);
+      const second = nextMediaErrorAction(first.state, T0 - 5_000);
+      const third = nextMediaErrorAction(second.state, T0 - 5_000);
+
+      // A negative elapsed time is inside any window, so every error looks like a repeat and a
+      // stream that would have recovered is torn down and restarted instead.
+      assert.equal(second.action, 'swap-codec-and-recover');
+      assert.equal(third.action, 'restart');
+    });
+  });
 });

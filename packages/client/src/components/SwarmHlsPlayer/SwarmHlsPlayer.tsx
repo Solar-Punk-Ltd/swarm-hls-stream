@@ -116,7 +116,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
             // error with no window and no ending is an unbounded loop that refetches fragments each
             // turn. A broadcast whose opening media a decoder will not accept used to leave a viewer
             // on a black player pulling media for as long as the tab stayed open.
-            const decision = nextMediaErrorAction(mediaErrors, Date.now());
+            const decision = nextMediaErrorAction(mediaErrors, performance.now());
             mediaErrors = decision.state;
             console.warn(`Fatal media error, ${decision.action}`);
             if (decision.action === 'restart') {

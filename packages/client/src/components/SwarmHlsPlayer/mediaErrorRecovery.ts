@@ -46,6 +46,14 @@ export interface MediaErrorDecision {
  * An error arriving after the window has passed is treated as a fresh problem, which resets the ladder
  * to the bottom rung. That is the difference between a stream that hiccups once an hour and one that
  * cannot play at all, and only the second should ever reach `restart`.
+ *
+ * @param nowMs A reading from a **monotonic** clock, so `performance.now()` and not `Date.now()`. The
+ *   whole ladder is a subtraction of two readings, and a clock that steps breaks it in both
+ *   directions: forward and an escalation already under way is forgotten, so a stream that cannot
+ *   play is recovered forever, which is the unbounded loop this module exists to end; backward and
+ *   every error reads as a repeat, so a stream that would have recovered is restarted instead. An
+ *   NTP correction moves `Date.now()` under a viewer mid-session. `FeedHealthTracker` takes its clock
+ *   for the same reason.
  */
 export function nextMediaErrorAction(
   state: MediaErrorRecoveryState,
