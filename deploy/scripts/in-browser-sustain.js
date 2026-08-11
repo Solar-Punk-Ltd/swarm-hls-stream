@@ -90,6 +90,16 @@
       segmentKB: 4241,
       what: '⚠️ Replicate of abel-1, shape ASSUMED from it and not read. 8.34 Mbps if that holds.',
     },
+    'ours-shipping-2026-08-11': {
+      owner: '8d8a30ff4cbcf8ad0e0773547686295f8157feb0',
+      topic: '7e87a2d9-82fe-422f-a66a-5b1e42281636',
+      // ⛔ Measured off the run, not read off the knobs. `HLS_FRAGMENT=1.0` against a 1.0s GOP
+      // delivered 1.917s segments, because SRS cuts on the first keyframe at or AFTER the fragment
+      // and a GOP equal to it misses by a hair every time. The 6000kbps asked for arrived as 3.37.
+      segmentSeconds: 1.917,
+      segmentKB: 787,
+      what: '⭐ THE PROFILE WE SHIP, 1080p at HLS_FRAGMENT=1.0. Delivered 1.917s segments, 3.37 Mbps.',
+    },
   };
 
   const streamName = window.__sustainStream;
@@ -247,8 +257,7 @@
     // ⭐ Numerator and denominator span the SAME window. Taking startup out of the denominator while
     // still measuring the playhead from before playback began is how an error hides inside a ratio
     // quoted to four decimal places.
-    const playing =
-      P.firstAdvanceAt === undefined ? samples : samples.filter((s) => s.t >= P.firstAdvanceAt);
+    const playing = P.firstAdvanceAt === undefined ? samples : samples.filter((s) => s.t >= P.firstAdvanceAt);
     const playingFrom = playing[0] || first;
     const playingS = (last.t - playingFrom.t) / 1000;
     const playheadS = last.ct - playingFrom.ct;
