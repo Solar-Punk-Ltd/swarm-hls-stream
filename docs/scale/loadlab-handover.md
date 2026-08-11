@@ -64,7 +64,7 @@ is really checking.
 | Feed reads under load       | flat to 128 concurrent readers **through gateways**         | §2.6                                                           |
 | Not-found cost              | ~480ms, **zero BZZ**, ~45% of live-edge reads               | §2.7                                                           |
 | Funding is a switch at zero | 0.05 BZZ performs like 6.4 BZZ                              | §2.1b                                                          |
-| Unfunded network cost       | **+13%**, not 34x ⛔ see §2z.3                              | §2.1                                                           |
+| Unfunded network cost       | **~13% in bytes, ~50% in messages** ⛔ say which            | §2.1, §2z.3                                                    |
 | Unfunded viewer cost        | **11.6-15.0% of segments late** vs 0.0-0.3%                 | §2.1                                                           |
 | Synchronised audience       | 128 on one tick drain **12.8s of buffer**                   | `a-synchronised-audience-is-the-failure-2026-08-08.md`         |
 | Cold gateway                | **2-3x cost for ~2 min**, no readiness signal catches it    | `a-cold-gateway-is-idle-long-before-it-is-cheap-2026-08-09.md` |
@@ -80,8 +80,15 @@ Every one of these produced a published figure that was wrong. Loadlab will meet
 larger scale, where they cost more.
 
 1. **A counter incremented before the send is not a send.** `bee_retrieval_request_attempts` counts
-   peers that accounting then skips. This turned "38x network amplification" into the real answer,
-   **+13%**. Subtract `accounting_blocks_count` before believing any request rate.
+   peers that accounting then skips. This turned "38x network amplification" into real contacts of
+   1.142 funded against 1.281 unfunded. Subtract `accounting_blocks_count` before believing any
+   request rate.
+   ⛔ **And then say which resource you mean.** Retrievals go up 1.13x but settlement messages go up
+   **10.9x**, so an unfunded node costs about **13% more in bytes** and about **50% more in messages
+   and connections**. A settlement message is tiny and a retrieval drags a 4 kB chunk with it, so the
+   two answers differ by 4x and the honest figure depends on which one is scarce at your scale. An
+   unqualified "+13%" is the version of this that was published here first and it is not safe to
+   reuse.
 2. **A correct measurement of the wrong quantity.** A median transfer time improved 20x while the thing
    users feel, the rate of crossing a deadline, did not move at all. **Pick the statistic before the
    run, and prefer rate-of-crossing to medians.**

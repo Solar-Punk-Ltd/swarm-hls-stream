@@ -8,6 +8,7 @@ import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
 import { optional, required } from '../utils/env.js';
 import { assertUsablePublishKeySecret, hasValidPublishKey, publishKeyFromParam } from '../utils/publishKey.js';
+import { isUsableStreamId } from '../utils/streamId.js';
 import { redactUrlSecrets } from '../utils/urlSecrets.js';
 
 import { assertUsableWebhookToken, hasValidWebhookToken } from './srs/webhookToken.js';
@@ -86,6 +87,17 @@ function srsResponse(res: Response, code: number): void {
 
 function buildStreamId(app: string, stream: string): string {
   return `${app}/${stream}`;
+}
+
+/**
+ * The name, rendered so that putting it in a log line cannot forge one.
+ *
+ * `app` and `stream` are relayed by SRS from whatever a publisher typed into their own publish url, so
+ * a refused name is by definition one nobody has screened. `JSON.stringify` escapes the newlines and
+ * control characters that would otherwise let it write log lines of its own.
+ */
+function forLog(streamId: string): string {
+  return JSON.stringify(streamId);
 }
 
 /** The publisher's address, for `StreamClaimant`, or null when the webhook did not carry one whole. */
@@ -198,6 +210,18 @@ function handleStreams(
     const payload = req.body as SrsStreamPayload;
     const streamId = buildStreamId(payload.app, payload.stream);
 
+    // `utils/streamId.ts` states this rule as belonging to both ends, the schema for ids an operator
+    // sends over HTTP and this for names a media engine relays over a webhook. OME's `parseAppStream`
+    // has applied it since SEC-25. SRS never did, so the one engine that ships was the one admitting
+    // whatever a publisher typed. An unpublish is answered rather than refused, for the same reason it
+    // is everywhere else here: SRS reads any non-zero answer as a failure to retry, and the session an
+    // unpublish names is already gone from its side.
+    if (!isUsableStreamId(streamId)) {
+      logger.warn(`[SRS] Refused a webhook naming an unusable app/stream: ${forLog(streamId)}`);
+      srsResponse(res, payload.action === SRS_ACTION_PUBLISH ? SRS_REJECT : SRS_ACCEPT);
+      return;
+    }
+
     if (payload.action === SRS_ACTION_UNPUBLISH) {
       // Extracted before anything is answered, so a `param` that cannot be parsed reaches the catch
       // below with the response still unsent. Answering first and screening after would double-send on
@@ -300,6 +324,15 @@ function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrches
   try {
     const payload = req.body as SrsHlsPayload;
     const streamId = buildStreamId(payload.app, payload.stream);
+
+    // Ahead of the path resolution below, so a name nobody screened never reaches the filesystem at
+    // all. No loss is recorded: an unusable name never started a stream, so there is no broadcast for
+    // the gap to belong to.
+    if (!isUsableStreamId(streamId)) {
+      logger.warn(`[SRS] Refused a segment naming an unusable app/stream: ${forLog(streamId)}`);
+      srsResponse(res, SRS_ACCEPT);
+      return;
+    }
 
     const segmentPath = resolveSegmentPath(mediaRootPath, payload.file);
 
