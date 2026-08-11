@@ -1,4 +1,5 @@
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../libs/AbrLadder.js';
+import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
 
 import { optional, optionalBool, optionalInt, required } from './env.js';
 
@@ -22,9 +23,21 @@ function readAbrConfig(): { vhost: string; ladder: AbrLadder } | null {
   };
 }
 
+/**
+ * One Bee node per rung, or empty for the single-node deployment described by BEE_URL and STAMP.
+ *
+ * Parsed eagerly and allowed to throw, for the same reason ABR_LADDER is: a publisher list that
+ * does not match the ladder means rungs paying out of the wrong postage batch, and a startup
+ * refusal is far easier to diagnose than a rung that goes quiet hours later.
+ */
+function readPublisherSpecs(): PublisherSpec[] {
+  return parsePublisherSpecs(optional('BEE_PUBLISHERS', ''));
+}
+
 export const config = {
   beeUrl: required('BEE_URL'),
   stamp: required('STAMP'),
+  publishers: readPublisherSpecs(),
   streamKey: required('STREAM_KEY'),
   streamListTopic: required('STREAM_LIST_TOPIC'),
   manifestAccessUrl: optional('MANIFEST_ACCESS_URL', ''),

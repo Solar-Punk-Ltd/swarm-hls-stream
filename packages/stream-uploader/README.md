@@ -36,6 +36,27 @@ encoder's target, and is re-announced when it drifts more than 15% (at most ever
 catalog is one feed shared by every stream). `EXT-X-MEDIA-SEQUENCE` carries the engine's own
 sequence number, which is what tells a player that two rungs share a timeline.
 
+### One Bee node per rung
+
+A feed's address is a pure function of its signing key and topic — `makeFeedIdentifier` is
+`keccak256(topic ‖ index)`, and bee-js signs the single owner chunk locally before POSTing it. So a
+Bee node owns nothing here; it is a pipe with a wallet, and which pipe carries which rung is a
+routing decision that `BeePublisherPool` holds.
+
+Set `BEE_PUBLISHERS` to split it (see [.env.sample](../../.env.sample)); unset, one node serves
+everything, exactly as before. The reason to split is that postage batches drain in proportion to
+bitrate — 1080p burns roughly 7× the bytes of 360p, so equal batches expire hours apart — and one
+node per rung makes that "a rung goes quiet and ABR steps down" instead of "the stage stops".
+
+Because nothing about a feed's address depends on the node, all four rungs still publish under one
+signing key and therefore one owner. Rung feeds differ only by topic, and moving a feed to a
+different node later changes nothing a viewer sees.
+
+The catalog and every master playlist are written through **the lowest rung's node**: its batch
+outlives the others by roughly 7×, and those two feeds are the only addresses a viewer needs to open
+a stage. Riding them on the 1080p node would take discovery down first, while three rungs were still
+publishing fine.
+
 ## Prerequisites
 
 - Node.js 20+
@@ -205,6 +226,7 @@ curl -X POST http://localhost:3000/stream/stop \
 | `RecoveryStore`      | Persists stream state to disk for crash recovery                                |
 | `ManifestManager`    | Builds and updates HLS manifests                                                |
 | `AbrLadder`          | The rung list from `ABR_LADDER`, and what maps a stream name back to its rung    |
+| `BeePublisherPool`   | Which Bee node and postage batch each rung publishes through                      |
 | `MasterPlaylist`     | Builds a ladder's multivariant playlist                                          |
 | `MasterFeedWriter`   | Publishes that master to a feed per ladder, topic = the ladder's group id        |
 | `BitrateMeter`       | Measures each rung's real bitrate, which becomes the master's `BANDWIDTH`        |

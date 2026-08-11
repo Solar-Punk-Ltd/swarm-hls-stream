@@ -1,9 +1,10 @@
-import { Bee, BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
+import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
 import PQueue from 'p-queue';
 
 import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
 import { retryAwaitableAsync } from '../utils/common.js';
 
+import { BeePublisher, BeePublisherPool } from './BeePublisherPool.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter, PublishedMaster } from './MasterFeedWriter.js';
@@ -38,10 +39,9 @@ export interface LadderIdentity {
 }
 
 export class StreamCatalog {
-  private bee: Bee;
+  private publishers: BeePublisherPool;
   private signer: PrivateKey;
   private feedTopic: Topic;
-  private stamp: string;
   private feedIndex: FeedIndex | null = null;
   private queue = new PQueue({ concurrency: 1 });
   private logger = Logger.getInstance();
@@ -53,24 +53,33 @@ export class StreamCatalog {
    */
   private masterWriter?: MasterFeedWriter;
 
-  constructor(bee: Bee, streamKey: string, feedTopic: string, stamp: string, masterWriter?: MasterFeedWriter) {
-    this.bee = bee;
+  constructor(publishers: BeePublisherPool, streamKey: string, feedTopic: string, masterWriter?: MasterFeedWriter) {
+    this.publishers = publishers;
     this.signer = new PrivateKey(streamKey);
     this.feedTopic = Topic.fromString(feedTopic);
-    this.stamp = stamp;
     this.masterWriter = masterWriter;
+
+    const publisher = this.publisher;
     this.logger.debug(
-      `[StreamCatalog] bee=${(bee as unknown as { url?: string }).url ?? '?'} owner=${this.signer
+      `[StreamCatalog] bee=${publisher.url} owner=${this.signer
         .publicKey()
         .address()
-        .toString()} topic="${feedTopic}" topicHex=${this.feedTopic.toString()} stamp=${stamp.slice(0, 12)}…`,
+        .toString()} topic="${feedTopic}" topicHex=${this.feedTopic.toString()} stamp=${publisher.stamp.slice(0, 12)}…`,
     );
+  }
+
+  /**
+   * The node the catalog is written through. Coordination rides the lowest rung's publisher — see
+   * {@link BeePublisherPool.coordinator} for why that one.
+   */
+  private get publisher(): BeePublisher {
+    return this.publishers.coordinator();
   }
 
   public async init(): Promise<void> {
     try {
       const owner = this.signer.publicKey().address();
-      const feedReader = this.bee.makeFeedReader(this.feedTopic, owner);
+      const feedReader = this.publisher.bee.makeFeedReader(this.feedTopic, owner);
       const data = await feedReader.downloadPayload();
       this.feedIndex = data.feedIndex;
 
@@ -112,7 +121,10 @@ export class StreamCatalog {
         const entry = buildLadderEntry(identity, previous, rendition);
         const published = await this.masterWriter?.publish(identity.group, entry.renditions ?? []);
 
-        return [...withoutGroup(previous, identity.owner, identity.group), published ? withMaster(entry, published) : entry];
+        return [
+          ...withoutGroup(previous, identity.owner, identity.group),
+          published ? withMaster(entry, published) : entry,
+        ];
       }),
     );
   }
@@ -130,10 +142,13 @@ export class StreamCatalog {
     const state = await update(previous);
 
     const nextIndex = this.feedIndex ? this.feedIndex.next() : FeedIndex.fromBigInt(BigInt(0));
-    const feedWriter = this.bee.makeFeedWriter(this.feedTopic, this.signer);
+    const publisher = this.publisher;
+    const feedWriter = publisher.bee.makeFeedWriter(this.feedTopic, this.signer);
 
     const payload = JSON.stringify(state);
-    const result = await retryAwaitableAsync(() => feedWriter.uploadPayload(this.stamp, payload, { index: nextIndex }));
+    const result = await retryAwaitableAsync(() =>
+      feedWriter.uploadPayload(publisher.stamp, payload, { index: nextIndex }),
+    );
 
     this.feedIndex = nextIndex;
     const ownerAddr = this.signer.publicKey().address().toString();
@@ -147,7 +162,7 @@ export class StreamCatalog {
   private async fetchCurrentState(): Promise<StreamEntry[] | null> {
     try {
       const owner = this.signer.publicKey().address();
-      const feedReader = this.bee.makeFeedReader(this.feedTopic, owner);
+      const feedReader = this.publisher.bee.makeFeedReader(this.feedTopic, owner);
       const data = await feedReader.downloadPayload({ index: this.feedIndex! });
       return data.payload.toJSON() as StreamEntry[];
     } catch (error) {

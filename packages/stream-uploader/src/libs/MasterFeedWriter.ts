@@ -1,9 +1,10 @@
-import { Bee, BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
+import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
 import PQueue from 'p-queue';
 
 import { Rendition } from '../types.js';
 import { retryAwaitableAsync } from '../utils/common.js';
 
+import { BeePublisherPool } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
 import { buildMasterPlaylist } from './MasterPlaylist.js';
 
@@ -30,11 +31,7 @@ export class MasterFeedWriter {
   private queue = new PQueue({ concurrency: 1 });
   private logger = Logger.getInstance();
 
-  constructor(
-    private readonly bee: Bee,
-    private readonly signer: PrivateKey,
-    private readonly stamp: string,
-  ) {}
+  constructor(private readonly publishers: BeePublisherPool, private readonly signer: PrivateKey) {}
 
   public get owner(): string {
     return this.signer.publicKey().address().toHex();
@@ -60,14 +57,15 @@ export class MasterFeedWriter {
       const topic = Topic.fromString(group);
       const index = await this.nextIndex(group, topic);
       const playlist = buildMasterPlaylist(this.owner, renditions);
+      const publisher = this.publishers.coordinator();
 
-      const writer = this.bee.makeFeedWriter(topic, this.signer);
-      await retryAwaitableAsync(() => writer.uploadPayload(this.stamp, playlist, { index }));
+      const writer = publisher.bee.makeFeedWriter(topic, this.signer);
+      await retryAwaitableAsync(() => writer.uploadPayload(publisher.stamp, playlist, { index }));
 
       this.indices.set(group, index);
       this.logger.debug(
-        `[MasterFeedWriter] Master for ladder ${group} written at index ${index.toString()} with ` +
-          `${renditions.length} rung(s): ${renditions.map((r) => r.name).join(', ')}`,
+        `[MasterFeedWriter] Master for ladder ${group} written at index ${index.toString()} via ` +
+          `${publisher.rung} with ${renditions.length} rung(s): ${renditions.map((r) => r.name).join(', ')}`,
       );
 
       return { topic: group, index: Number(index.toBigInt()) };
@@ -96,7 +94,7 @@ export class MasterFeedWriter {
 
   private async readIndex(topic: Topic): Promise<FeedIndex | null> {
     try {
-      const reader = this.bee.makeFeedReader(topic, this.signer.publicKey().address());
+      const reader = this.publishers.coordinator().bee.makeFeedReader(topic, this.signer.publicKey().address());
       const data = await reader.downloadPayload();
       return data.feedIndex;
     } catch (error) {

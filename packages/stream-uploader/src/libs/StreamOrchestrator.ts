@@ -1,4 +1,3 @@
-import { Bee } from '@ethersphere/bee-js';
 import crypto from 'crypto';
 import PQueue from 'p-queue';
 
@@ -15,6 +14,7 @@ import {
 } from '../types.js';
 
 import { AbrLadder } from './AbrLadder.js';
+import { BeePublisherPool } from './BeePublisherPool.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -25,7 +25,6 @@ const DRAIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 interface StreamOrchestratorConfig {
   streamKey: string;
-  stamp: string;
   manifestBeeUrl: string;
   maxQueueSize: number;
   recoveryTimeout: number;
@@ -45,7 +44,7 @@ export class StreamOrchestrator {
   private errorHandler = ErrorHandler.getInstance();
 
   constructor(
-    private bee: Bee,
+    private publishers: BeePublisherPool,
     private streamCatalog: StreamCatalog,
     private recoveryStore: RecoveryStore,
     private config: StreamOrchestratorConfig,
@@ -88,14 +87,19 @@ export class StreamOrchestrator {
       );
     }
 
+    // Resolved here for the same reason the group is, and it decides which node's postage batch
+    // pays for this rung. A stream with no rung — single-rendition, or anything arriving through the
+    // generic API — rides the coordinator, which is the longest-lived batch of the set.
+    const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
+
     this.queue.add(() => {
       const uploader = new StreamUploader({
-        bee: this.bee,
+        bee: publisher.bee,
         manifestBeeUrl: this.config.manifestBeeUrl,
         streamCatalog: this.streamCatalog,
         recoveryStore: this.recoveryStore,
         streamKey: this.config.streamKey,
-        stamp: this.config.stamp,
+        stamp: publisher.stamp,
         streamId,
         streamTopic,
         mediatype,
@@ -176,13 +180,19 @@ export class StreamOrchestrator {
         this.streamBases.set(streamId, base);
       }
 
+      // Routed from the persisted rung name rather than from a fresh ladder match, so a recovered
+      // rung resumes on the node that has been paying for it. If the ladder was reconfigured while
+      // this stream was down, the pool warns and routes it to the coordinator instead of dropping a
+      // ladder its siblings are still publishing.
+      const publisher = state.ladder ? this.publishers.forRung(state.ladder.rung.name) : this.publishers.coordinator();
+
       const uploader = new StreamUploader({
-        bee: this.bee,
+        bee: publisher.bee,
         manifestBeeUrl: this.config.manifestBeeUrl,
         streamCatalog: this.streamCatalog,
         recoveryStore: this.recoveryStore,
         streamKey: this.config.streamKey,
-        stamp: this.config.stamp,
+        stamp: publisher.stamp,
         streamId: state.streamId,
         streamTopic: state.streamRawTopic,
         mediatype: state.mediatype,
