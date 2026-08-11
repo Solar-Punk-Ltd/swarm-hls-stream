@@ -141,6 +141,20 @@
     console.log('[sustain]', m);
   };
 
+  /**
+   * ⛔ A playhead advancing at 1.0x is not proof that playback was healthy. The media clock runs
+   * regardless of whether the pipeline kept up, and Chrome drops frames rather than slowing down, so
+   * a starved decoder reports a perfect ratio and an unwatchable picture. The abel-1 sitting had no
+   * frame counters and so cannot rule this out at all.
+   */
+  function readFrames(video) {
+    if (typeof video.getVideoPlaybackQuality !== 'function') {
+      return null;
+    }
+    const quality = video.getVideoPlaybackQuality();
+    return { dropped: quality.droppedVideoFrames, total: quality.totalVideoFrames };
+  }
+
   function readPeers() {
     const text = document.body.innerText || '';
     const connected = text.match(/Connected:\s*(\d+)/);
@@ -299,6 +313,11 @@
           const peers = readPeers();
           sample.peers = peers.connected;
           sample.connecting = peers.connecting;
+          const frames = readFrames(video);
+          if (frames) {
+            sample.droppedFrames = frames.dropped;
+            sample.totalFrames = frames.total;
+          }
         }
         if (previous && !sample.paused && sample.ct === previous.ct) {
           sample.stalled = true;
