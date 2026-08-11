@@ -15,10 +15,7 @@ import { fileURLToPath } from 'node:url';
  * the network.
  */
 
-const SOURCE = readFileSync(
-  fileURLToPath(new URL('../scripts/in-browser-sustain.js', import.meta.url)),
-  'utf-8',
-);
+const SOURCE = readFileSync(fileURLToPath(new URL('../scripts/in-browser-sustain.js', import.meta.url)), 'utf-8');
 
 const STREAM_NAMES = ['latbench', 'abel-1', 'abel-2'];
 
@@ -63,10 +60,7 @@ describe('in-browser sustain probe, choosing a stream', () => {
   });
 
   it('still refuses a hidden document once a stream is chosen', () => {
-    assert.throws(
-      () => arm({ __sustainStream: 'abel-1' }, { visible: false }),
-      /document is not visible/,
-    );
+    assert.throws(() => arm({ __sustainStream: 'abel-1' }, { visible: false }), /document is not visible/);
   });
 
   it('reports which stream it armed on, so a pasted result carries its scope', () => {
@@ -112,12 +106,7 @@ function summarise(samples, { firstAdvanceAt = 0, stream = 'abel-1' } = {}) {
 describe('in-browser sustain probe, scoring a run', () => {
   it('does not charge time before the first frame against the stream', () => {
     // Five seconds of startup, then a playhead that keeps perfect time.
-    const samples = [
-      at(0, 0, { rs: 0 }),
-      at(5000, 0, { rs: 0 }),
-      at(6000, 1),
-      at(105000, 100),
-    ];
+    const samples = [at(0, 0, { rs: 0 }), at(5000, 0, { rs: 0 }), at(6000, 1), at(105000, 100)];
 
     const summary = summarise(samples, { firstAdvanceAt: 6000 });
 
@@ -157,10 +146,7 @@ describe('in-browser sustain probe, the stream table', () => {
       const { stream } = arm({ __sustainStream: name }).sustain;
       const claimed = Number(stream.what.match(/([\d.]+) Mbps/)[1]);
 
-      const derived =
-        (stream.segmentKB * BYTES_PER_KB * BITS_PER_BYTE) /
-        BITS_PER_MEGABIT /
-        stream.segmentSeconds;
+      const derived = (stream.segmentKB * BYTES_PER_KB * BITS_PER_BYTE) / BITS_PER_MEGABIT / stream.segmentSeconds;
 
       assert.ok(
         Math.abs(derived - claimed) / claimed < 0.02,
