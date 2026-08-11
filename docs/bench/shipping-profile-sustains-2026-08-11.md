@@ -118,8 +118,11 @@ seen here. Startup to first frame was 25.1s at 0.222 cores.
   3.21 Mbps held with zero stalls on the profile we ship.
 - ⛔ **`#44`'s 0.6734 is fully explained.** It was 90 KB segments at 4.5% occupancy, and the same node
   reaches 0.9996 at 38.5% and 0.9962 when saturated. The node was never the problem.
-- ⭐ **Segment size is a first-class product knob**, not a latency detail. It sets how much of the
-  chunk semaphore a viewer can fill, and that sets whether playback holds.
+- ⛔⛔ **"Segment size is a first-class product knob" is withdrawn, 2026-08-12, and points the other
+  way.** It is a knob for a client fetching one segment at a time. At the concurrency hls.js really
+  uses, throughput across a 8.3x size range varies by **1.26x**, while per-segment latency varies by
+  **7.2x**. So size still matters, as a **latency** decision, and small wins.
+  See `c4-across-sizes-2026-08-12.md`.
 
 ## Still open
 
