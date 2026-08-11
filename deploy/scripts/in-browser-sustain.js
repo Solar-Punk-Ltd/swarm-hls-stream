@@ -13,12 +13,26 @@
  * sittings lost time to that before the cause was named, so the visibility assertion below is the
  * null control for this instrument and must not be removed to "make it work".
  *
+ * ⛔ ONE TAB, and no other weeb-3 tab anywhere. Every tab runs its own libp2p node dialing 160
+ * bootnodes and they starve each other: measured 2026-08-11, a second tab halved the newer node's
+ * peers and a third left it at zero connected with no error shown. This probe reports `peersAtStart`
+ * for exactly that reason. Read it before reading the ratio.
+ *
  * HOW TO RUN
- *   1. Open https://lat-murmeldjur.github.io/weeb-3/ in a normal Chrome window.
- *   2. Keep the tab visible and focused for the whole run. Do not background it.
- *   3. Paste this whole file into the console and press enter.
- *   4. Click the page once when told to. Autoplay needs a real gesture.
- *   5. Wait. It prints a summary and leaves the raw samples on `window.__sustain.samples`.
+ *   1. On the machine, from the repo: `node deploy/scripts/serve-sweep-plan.mjs <any-plan.json>`
+ *      (this probe needs no plan, but the server wants the argument).
+ *   2. Open https://lat-murmeldjur.github.io/weeb-3/ in a normal Chrome window, with no other
+ *      weeb-3 tab open anywhere.
+ *   3. Keep the tab visible and focused for the whole run. Do not background it.
+ *   4. In the console, one line, which fetches THIS file rather than a pasted copy of it:
+ *        fetch('http://127.0.0.1:8899/script/in-browser-sustain.js').then((r) => r.text()).then(eval)
+ *      Pasting the file by hand still works and is the fallback if the server is not running.
+ *   5. Click the page once when told to. Autoplay needs a real gesture.
+ *   6. Wait 12 minutes. It prints a summary and leaves the raw samples on `window.__sustain.samples`.
+ *
+ * ⚠️ `peers: plateaued at ~140` is the ordinary message, not a fault. `PEER_TARGET` of 190 was set
+ * when one load reached 200; the loads measured on 2026-08-11 settled at 134 and 147, so the plateau
+ * branch is the one that fires and it costs 20 seconds of quiet before it does.
  *
  * WHAT IT REPORTS
  *   realtimeRatio   playhead seconds gained per wall second. **The verdict. Needs >= 0.999.**
