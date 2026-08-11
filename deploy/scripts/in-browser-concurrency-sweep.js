@@ -46,6 +46,9 @@
   const BLOCK = window.__concBlock || 20;
   const BUDGET_MS = window.__concBudgetMs || 30000;
   const WARM_N = 5;
+  const SCHEDULING_PROBE_N = 12;
+  /** A same-origin fetch of the page itself is tens of ms. A 1Hz clamped loop is about a thousand. */
+  const SCHEDULING_CEILING_MS = 500;
 
   const refs = window.__concRefs;
   const canaries = window.__concCanaries || [];
@@ -62,12 +65,6 @@
   if (new Set([...refs, ...canaries]).size !== refs.length + canaries.length) {
     throw new Error('references are not all distinct, so some arm would read bytes another arm already paid for');
   }
-  // Timer throttling in a hidden document lands on the wall clock every figure downstream divides by.
-  // Merely unfocused is fine, and is recorded per arm instead.
-  if (document.visibilityState !== 'visible') {
-    throw new Error('Refusing to run: document is hidden, so its throttled timers would understate the node.');
-  }
-
   const T0 = performance.now();
   const now = () => Math.round(performance.now() - T0);
 
@@ -84,6 +81,41 @@
     const connected = body.match(/Connected:\s*(\d+)/);
     const connecting = body.match(/Connecting:\s*(\d+)/);
     return [connected ? +connected[1] : -1, connecting ? +connecting[1] : -1];
+  }
+
+  /**
+   * Is this document's task queue serviced promptly enough to time a fetch?
+   *
+   * ⛔ DELIBERATELY NOT A VISIBILITY CHECK. Visibility is a proxy for "the clock is throttled", and for
+   * a fetch-driven harness the proxy is wrong in both directions. Measured in an automated Chrome pane
+   * on 2026-08-11: ten 100ms timers took 9,787ms, a 9.8x clamp, and `requestAnimationFrame` fired zero
+   * frames in four seconds, while twelve sequential same-origin fetches in that same pane ran at a 42ms
+   * median with not one quantised to the clamp. Chrome clamps timers in a hidden document; it does not
+   * throttle network continuations. This file's only timer is the 30s abort, where a 1Hz granularity is
+   * noise. So a visibility gate refuses an environment that measures correctly, and would wave through
+   * a visible one that does not.
+   *
+   * The number is REPORTED as well as gated on, and lands in the TSV header, so a later reader can
+   * judge the environment a sitting ran in rather than trusting that it passed.
+   *
+   * ⚠️ None of this transfers to `in-browser-sustain.js`. That one measures PLAYBACK, autoplay needs a
+   * real user gesture, and media is suspended in a hidden document, so its refusal to run in an
+   * automated pane is its null control and must stay. This harness never had that dependency.
+   */
+  async function schedulingProbe() {
+    const durations = [];
+    for (let i = 0; i < SCHEDULING_PROBE_N; i++) {
+      const startedAt = performance.now();
+      try {
+        await fetch(`${location.pathname}?schedprobe=${i}`, { cache: 'no-store' });
+      } catch {
+        /* a refused probe still measures how long the loop took to come back */
+      }
+      durations.push(Math.round(performance.now() - startedAt));
+    }
+    // First iteration carries connection setup, so it is not evidence about scheduling.
+    const settled = durations.slice(1).sort((a, b) => a - b);
+    return { p50Ms: settled[Math.floor(settled.length / 2)], durations };
   }
 
   /**
@@ -165,6 +197,8 @@
       `# In-browser weeb-3 concurrency sweep. arms ${JSON.stringify(ARMS)}, rounds ${ROUNDS}, block ${BLOCK}.`,
       `# Retrieval budget ${BUDGET_MS}ms. A row at the bound is "did not complete", never a duration.`,
       `# Degraded rounds (canary missed), excluded by the analyser: ${JSON.stringify(P.degradedRounds)}`,
+      `# Scheduling probe: same-origin fetch p50 ${P.scheduling ? P.scheduling.p50Ms : '?'}ms ` +
+        `(ceiling ${SCHEDULING_CEILING_MS}ms), document ${document.visibilityState}. Judge the environment, do not assume it.`,
       ...P.marks.map(
         (m) =>
           `# round ${m.round} pos ${m.position} arm ${m.arm}: peers ${m.peersBefore.join('/')} -> ` +
@@ -183,6 +217,13 @@
 
   (async () => {
     try {
+      P.scheduling = await schedulingProbe();
+      if (P.scheduling.p50Ms > SCHEDULING_CEILING_MS) {
+        throw new Error(
+          `Refusing to run: this document's loop returns from a same-origin fetch in ${P.scheduling.p50Ms}ms, ` +
+            `over the ${SCHEDULING_CEILING_MS}ms ceiling. Every figure here divides by a wall clock this would inflate.`,
+        );
+      }
       const blocks = buildBlocks();
       for (let index = 0; index < blocks.length; index++) {
         const block = blocks[index];
@@ -225,5 +266,5 @@
     }
   })();
 
-  return `armed: ${ARMS.length} arms x ${ROUNDS} rounds x ${BLOCK} fetches. Keep this tab visible.`;
+  return `armed: ${ARMS.length} arms x ${ROUNDS} rounds x ${BLOCK} fetches. A scheduling probe runs first and refuses a throttled loop.`;
 })();
