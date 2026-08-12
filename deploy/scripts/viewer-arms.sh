@@ -199,8 +199,10 @@ start_sampler() {
   local dir="$1" label="$2"
   [ "${METRICS_INTERVAL_S}" -gt 0 ] 2>/dev/null || return 0
   mkdir -p "${dir}"
+  # ⛔ STAMP is passed because the sampler's capacity floor applies to the batch this sitting writes
+  # to and to no other. /stamps lists every batch the node ever bought, three of which are dead here.
   UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT}" GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT}" \
-    UPLOADER_API_PORT="${UPLOADER_API_PORT}" bash "${NODE_METRICS}" \
+    UPLOADER_API_PORT="${UPLOADER_API_PORT}" STAMP="$(resolve_stamp)" bash "${NODE_METRICS}" \
     watch "${dir}" "${METRICS_INTERVAL_S}" "${STOP_FILE}" "${label}" >> "${LOG}" 2>&1 &
   SAMPLER_PID=$!
   say "  sampling both nodes every ${METRICS_INTERVAL_S}s into $(basename "${dir}")"

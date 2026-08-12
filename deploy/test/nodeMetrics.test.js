@@ -40,6 +40,10 @@ function bzz(amount) {
   return ((BigInt(Math.round(amount * 10000)) * PLUR_PER_BZZ) / 10000n).toString();
 }
 
+const IN_USE = 'a'.repeat(64);
+/** The dead depth-22 batch this deployment really carries: mutable, 50 of 64 buckets, abandoned. */
+const ABANDONED = 'b'.repeat(64);
+
 function snapshot({
   atMs = 0,
   uploader = {},
@@ -50,6 +54,7 @@ function snapshot({
   depth = 25,
   ttlSeconds = 981972,
   health = {},
+  extraBatches = [],
 } = {}) {
   return {
     label: 'stub',
@@ -60,7 +65,7 @@ function snapshot({
     stamps: {
       stamps: [
         {
-          batchID: 'a'.repeat(64),
+          batchID: IN_USE,
           utilization,
           usable: true,
           depth,
@@ -68,6 +73,7 @@ function snapshot({
           immutableFlag: true,
           batchTTL: ttlSeconds,
         },
+        ...extraBatches,
       ],
     },
     uploaderHealth: health,
@@ -78,12 +84,14 @@ function snapshot({
   };
 }
 
-async function floors(snap, { reservePlur = '5000000000000000', maxPct = '75' } = {}) {
+async function floors(snap, { reservePlur = '5000000000000000', maxPct = '75', batch = IN_USE } = {}) {
   const dir = workspace();
   const path = join(dir, 'snapshot.json');
   writeFileSync(path, JSON.stringify(snap));
   try {
-    const { stdout } = await run('python3', [METRICS, 'floors', path, reservePlur, maxPct], { encoding: 'utf8' });
+    const { stdout } = await run('python3', [METRICS, 'floors', path, reservePlur, maxPct, batch], {
+      encoding: 'utf8',
+    });
     return { crossed: false, reasons: stdout.split('\n').filter(Boolean) };
   } catch (failure) {
     return { crossed: true, reasons: failure.stdout.split('\n').filter(Boolean) };
@@ -154,6 +162,59 @@ describe('the floors that stop a sitting mid-flight', () => {
     const { crossed } = await floors(snapshot({ utilization: 383 }));
 
     assert.equal(crossed, false);
+  });
+
+  /**
+   * ⛔⛔ This stopped a night seventeen seconds after it launched, on 2026-08-12.
+   *
+   * `/stamps` lists every batch the node has ever bought, and this deployment carries four of which
+   * three are dead. `46ad3454` is a mutable depth-22 batch abandoned on 2026-08-04 at 50 of 64
+   * buckets, which is 78% and will never come down. The batch actually in use was at 39%.
+   *
+   * A floor that reads every row is not stricter, it is wrong: it stops on a number that describes
+   * something the sitting does not write to and can never fix.
+   */
+  it('judges only the batch the sitting writes to, not every batch the node ever bought', async () => {
+    const withDeadBatch = snapshot({
+      utilization: 199,
+      extraBatches: [
+        {
+          batchID: ABANDONED,
+          utilization: 50,
+          usable: true,
+          depth: 22,
+          bucketDepth: 16,
+          immutableFlag: false,
+          batchTTL: 479569,
+        },
+      ],
+    });
+
+    const { crossed } = await floors(withDeadBatch);
+
+    assert.equal(crossed, false, 'a dead batch at 78% stopped a sitting writing to one at 39%');
+  });
+
+  it('still stops when the batch in use is the full one', async () => {
+    const { crossed, reasons } = await floors(snapshot({ utilization: 400 }));
+
+    assert.equal(crossed, true);
+    assert.match(reasons[0], /^batch aaaaaaaa is 78% full/);
+  });
+
+  /** Unknown capacity is not permission to spend against it, the same rule the door gate applies. */
+  it('stops when nobody said which batch the sitting writes to', async () => {
+    const { crossed, reasons } = await floors(snapshot(), { batch: '' });
+
+    assert.equal(crossed, true);
+    assert.match(reasons[0], /was not named/);
+  });
+
+  it('stops when the named batch is not on the node at all', async () => {
+    const { crossed, reasons } = await floors(snapshot(), { batch: 'c'.repeat(64) });
+
+    assert.equal(crossed, true);
+    assert.match(reasons[0], /cccccccc is not on the node, which lists aaaaaaaa/);
   });
 
   it('names every reason at once, so a fix for one does not reveal the next on the next run', async () => {

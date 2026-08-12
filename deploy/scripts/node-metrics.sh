@@ -87,7 +87,7 @@ case "${1:-}" in
       n=$((n + 1))
       SAMPLE="$(printf '%s/sample-%04d.json' "${OUT_DIR}" "${n}")"
       snapshot_to "${SAMPLE}" "${WATCH_LABEL}-${n}"
-      if ! REASONS="$(python3 "${HERE}/node_metrics.py" floors "${SAMPLE}" "${RESERVE_PLUR}" "${MAX_UTILIZATION_PCT}")"; then
+      if ! REASONS="$(python3 "${HERE}/node_metrics.py" floors "${SAMPLE}" "${RESERVE_PLUR}" "${MAX_UTILIZATION_PCT}" "${STAMP:-}")"; then
         {
           printf 'node-metrics: STOPPING at sample %d, %s\n' "${n}" "$(date -u +%FT%TZ)"
           printf '%s\n' "${REASONS}"

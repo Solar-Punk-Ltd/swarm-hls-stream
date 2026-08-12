@@ -149,13 +149,22 @@ def render_diff(before: dict, after: dict) -> list[str]:
     return lines
 
 
-def breached_floors(snapshot: dict, reserve_plur: int, max_utilization_pct: float) -> list[str]:
+def breached_floors(
+    snapshot: dict, reserve_plur: int, max_utilization_pct: float, batch_id: str
+) -> list[str]:
     """The reasons this snapshot says a sitting should stop, or an empty list to carry on.
 
     ⛔ The point of reading these DURING a run rather than after it. A single continuous arm has one
     funding check, at minute zero, so a four-hour broadcast that runs its chequebook dry at hour three
     spends its last hour measuring what a starved node does and files it as a result. A node at zero
     is refused service by its peers, which looks like the network being slow.
+
+    ⛔⛔ `batch_id` names the ONE batch this sitting writes to and is not optional. `/stamps` lists
+    every batch the node has ever bought, and on this deployment that is four, of which three are dead.
+    A first version checked all of them and stopped a night seventeen seconds in because a mutable
+    depth-22 batch abandoned on 2026-08-04 sits at 78% and always will. The batch in use was at 39%.
+    An unnamed batch is a refusal for the same reason an unreadable one is: unknown capacity is not
+    permission to spend against it.
     """
     reasons = []
     for who in ("uploader", "gateway"):
@@ -165,7 +174,14 @@ def breached_floors(snapshot: dict, reserve_plur: int, max_utilization_pct: floa
         elif int(available) < reserve_plur:
             reasons.append(f"{who} available {int(available) / 1e16:.4f} BZZ is under the {reserve_plur / 1e16:.2f} reserve")
 
-    for batch_id, (used, buckets, ttl_days) in _batches(snapshot).items():
+    batches = _batches(snapshot)
+    if not batch_id:
+        reasons.append("the batch this sitting writes to was not named, so its capacity is unknown")
+    elif batch_id not in batches:
+        listed = ", ".join(known[:8] for known in batches) or "nothing"
+        reasons.append(f"batch {batch_id[:8]} is not on the node, which lists {listed}")
+    else:
+        used, buckets, _ = batches[batch_id]
         pct = 100.0 * used / buckets
         if pct >= max_utilization_pct:
             reasons.append(f"batch {batch_id[:8]} is {pct:.0f}% full, at the {max_utilization_pct:.0f}% stop line")
@@ -184,13 +200,13 @@ def main(argv: list[str]) -> int:
         return 0
     if len(argv) >= 5 and argv[1] == "floors":
         snapshot = json.load(open(argv[2]))
-        reasons = breached_floors(snapshot, int(argv[3]), float(argv[4]))
+        reasons = breached_floors(snapshot, int(argv[3]), float(argv[4]), argv[5] if len(argv) > 5 else "")
         for reason in reasons:
             print(reason)
         return 1 if reasons else 0
     print(
         "usage: node_metrics.py build < payload.json | diff <before.json> <after.json>"
-        " | floors <snapshot.json> <reserve_plur> <max_utilization_pct>",
+        " | floors <snapshot.json> <reserve_plur> <max_utilization_pct> <batch_id>",
         file=sys.stderr,
     )
     return 2
