@@ -12,12 +12,13 @@
  * sound, and a failure here names the harness rather than looking like the deployment.
  */
 
-import { judgeInstrument } from '../src/browser/instrument.js';
+import { describeProofs, judgeInstrument } from '../src/browser/instrument.js';
 import {
   CLOCK_OVERLAY_ID,
   installClockOverlay,
   installTimerProbe,
   launchViewer,
+  proveInstrumentCanFail,
   readInstrument,
   VIEWPORT,
 } from '../src/browser/viewer.js';
@@ -57,6 +58,18 @@ async function main(): Promise<void> {
     Object.entries(reading.codecSupport).forEach(([codec, supported]) => {
       console.log(`  ${supported ? 'decodes' : 'CANNOT DECODE'}  ${codec}`);
     });
+
+    // ⛔ Run here, where it costs nothing, because it is the only part of the harness that a unit
+    // test cannot reach: these bodies are serialised into the page, and esbuild's `keepNames` rewrite
+    // of a function it can name is invisible until a real browser evaluates it. `proveVisibilityCanFail`
+    // shipped with exactly that fault and was found by a buffer sweep, twenty minutes into a paid
+    // broadcast, because nothing free had ever called it.
+    const proofs = await proveInstrumentCanFail(browser);
+    proofs.forEach((proof) => {
+      console.log(`  ${proof.rejected ? 'rejects' : 'ACCEPTS'}  a page whose ${proof.degradation}`);
+    });
+    const unproven = describeProofs(proofs);
+    unproven.forEach((note) => console.log(`  ⚠️ ${note}`));
 
     console.log(`\nselfcheck: ${verdict.sound ? 'SOUND' : 'VOID'}`);
     verdict.failures.forEach((failure) => console.log(`  ⛔ ${failure}`));
