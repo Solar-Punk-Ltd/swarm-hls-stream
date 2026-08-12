@@ -1,7 +1,15 @@
-# #155 halved what a stall costs a viewer, and #87 does not need a rebuild after all
+# What a stall costs at the shipping profile, and what #87 still needs
 
 **2026-08-12, free.** Two reads of `hls.js@1.6.15`'s own source against our uploader's arithmetic. No
-broadcast, no browser, no BZZ. Both answers were a grep, and both change #87 before it is booked.
+broadcast, no browser, no BZZ.
+
+⛔⛔ **READ THE TWO AMENDMENTS AT THE FOOT BEFORE QUOTING ANYTHING HERE.** This document was written in
+one pass and corrected twice within the hour. Its second section, "#87 needs one build and one
+broadcast", is **WITHDRAWN**: our client exposes no handle to the player, so #87 needs a client change
+either way. Its first section survives but is **narrower than its heading**: the 1.0s cap holds for a
+broadcaster publishing the GOP we recommend, and the cap **ratchets to 3.0s permanently** after any
+one force-closed segment. Both headings below are left as written rather than quietly fixed, because
+what they claimed is the point.
 
 ## ⭐ A stall costs less than it used to, because the cap is our segment length
 
