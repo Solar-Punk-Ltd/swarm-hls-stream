@@ -57,12 +57,12 @@ require_number() {
 # `LIVE_SYNC_DURATION_S` in the client is 6 for exactly this default. The two were chosen together:
 # a deployment that raises this has to raise that or it will rebuffer.
 # `HLS_WINDOW` stays at fifteen fragments, which is what 22.5 against 1.5 already was.
-require_number HLS_FRAGMENT "${HLS_FRAGMENT:-1.0}"
+require_number HLS_FRAGMENT "${HLS_FRAGMENT:-0.5}"
 require_number HLS_WINDOW "${HLS_WINDOW:-15}"
 # 2.1 is SRS's own default, so naming it here changes no deployment that does not set it.
-require_number HLS_AOF_RATIO "${HLS_AOF_RATIO:-2.1}"
-sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-1.0}/" "$CONF"
-sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO:-2.1}/" "$CONF"
+require_number HLS_AOF_RATIO "${HLS_AOF_RATIO:-4.2}"
+sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-0.5}/" "$CONF"
+sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO:-4.2}/" "$CONF"
 sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-15}/" "$CONF"
 
 # How long SRT holds a packet waiting for a retransmission before delivering without it.
