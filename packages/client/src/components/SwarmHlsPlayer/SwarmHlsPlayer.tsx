@@ -14,6 +14,7 @@ import { ManifestStateManager } from './ManifestManagement';
 import { nextMediaErrorAction, NO_MEDIA_ERRORS_YET } from './mediaErrorRecovery';
 import { attachPlaybackStallReporter } from './playbackHealth';
 import { buildPlayerConfig } from './playerConfig';
+import { exposePlayerForInstrumentation } from './playerTestHandle';
 
 import './SwarmHlsPlayer.scss';
 
@@ -152,6 +153,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
 
     const detachQoe = enableQoeOverlay ? attachQoeTracking(video, hls, setMetrics) : null;
     const detachRateGuard = hls ? attachLivePlaybackRateGuard(video, hls) : null;
+    const detachTestHandle = hls ? exposePlayerForInstrumentation(hls) : null;
 
     // Attached with the player rather than with the subscription above, because it is the player
     // that stalls: a restart builds a fresh media pipeline and the stalls of the one before it are
@@ -167,6 +169,7 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       detachQoe?.();
       detachRateGuard?.();
       detachStallReporter?.();
+      detachTestHandle?.();
 
       if (hls) {
         // The destroy runs whatever the clear does. Losing it leaks the loaders and the media
