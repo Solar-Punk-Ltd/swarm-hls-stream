@@ -27,7 +27,14 @@ losing chunks, that difference alone produces "small fine, large fails" with **n
 any kind**. Give the same node the same sizes in fresh content and the ordering does not weaken, it
 **vanishes**.
 
-## ⭐⭐⭐ AND THE ORDERING INVERTS: BIGGER IS STRICTLY BETTER
+## ⭐⭐⭐ AND THE ORDERING INVERTS: BIGGER IS STRICTLY BETTER, ⛔ ONE FETCH AT A TIME
+
+> ⛔⛔ **2026-08-12: true of this instrument, not of a player.** Every row below is one fetch at a
+> time. Re-run with a c1 and a c4 arm inside each sitting, the 3.3x advantage at c1 collapses to
+> **1.26x at the concurrency hls.js actually uses**, and the largest segment costs **7.2x the
+> per-segment latency** of the smallest for 21% more throughput. See `c4-across-sizes-2026-08-12.md`.
+> **As a product recommendation this is withdrawn and reversed: prefer small segments.**
+
 
 Throughput rises monotonically with segment size, **4.1x from end to end**, at identical delivery.
 Per-request overhead amortises and a larger segment fills more of the chunk semaphore that binds:

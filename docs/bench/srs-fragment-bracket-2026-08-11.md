@@ -1,4 +1,16 @@
-# ✅ #76 ANSWERED: SRS does not double. Our deployment does.
+# ✅ #76: SRS does not double. ⛔ "Our deployment does" is WITHDRAWN
+
+> ⛔⛔ **The title's second sentence was wrong and `segment-stretch-2026-08-12.md` replaces it.** The
+> bracket below stands: every arm lands on its knob, min equal to max. What does not stand is the
+> conclusion drawn by comparing it against a live broadcast, because **every arm here runs on one
+> machine over loopback and the deployment publishes across the internet.** Move only the media engine
+> onto the deployment host, keeping this same encoder on this same laptop, and the segments stretch to
+> 2.4s while the bytes per segment stay put. It is the publish path, not the host and not SRS.
+>
+> ⛔ A local reproduction of a distributed system's fault is not a control. It is a different
+> experiment, and here it produced a confident answer to a question nobody had asked.
+
+
 
 **2026-08-11 evening. Cost: zero.** Stock `ossrs/srs:6` in local Docker with a minimal config, ffmpeg
 publishing `testsrc2`, segment durations read as `#EXTINF` off a mounted directory. No bee, no

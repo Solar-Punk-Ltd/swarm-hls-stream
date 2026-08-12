@@ -54,7 +54,13 @@
 
 import { type Browser, chromium, type Page, type Request } from 'playwright-core';
 
-import { type InstrumentReading, REQUIRED_CODECS, TIMER_PROBE_INTERVAL_MS } from './instrument.js';
+import {
+  type InstrumentProof,
+  type InstrumentReading,
+  judgeInstrument,
+  REQUIRED_CODECS,
+  TIMER_PROBE_INTERVAL_MS,
+} from './instrument.js';
 import { type RequestRecord } from './network.js';
 import { type OverlayRow, readOverlayMetrics } from './overlay.js';
 import { type ViewerSample } from './session.js';
@@ -116,6 +122,56 @@ export async function installTimerProbe(page: Page): Promise<void> {
       probe.lastFireAtMs = now;
     }, intervalMs);
   }, TIMER_PROBE_INTERVAL_MS);
+}
+
+/**
+ * How long the throwaway page is made to stall.
+ *
+ * Thirty times {@link TIMER_PROBE_INTERVAL_MS}, so the reading lands an order of magnitude past the
+ * drift limit rather than near it. A proof that only just fires would be its own kind of unfalsifiable.
+ */
+const PROOF_STALL_MS = 3_000;
+
+/**
+ * Show that the instrument can report a failure, on a page that is not the one being measured.
+ *
+ * ⭐ **The degradation is a blocked main thread, chosen because it is the one thing here that no
+ * launch flag can mask.** Playwright forces `visibilityState` and unthrottles timers, so neither of
+ * those conditions can be created under it, but nothing can make a `setInterval` fire while script is
+ * running. The reading comes back with `lastIntervalMs` at the length of the stall, and
+ * {@link judgeInstrument} rejects it.
+ *
+ * ⚠️ **This proves the timer sensor, and only the timer sensor.** The visibility check remains
+ * unfalsifiable here and the returned {@link InstrumentProof} says which checks fired, so a report
+ * cannot quietly upgrade "one sensor works" into "the guard works". Fixing the visibility check needs
+ * the harness to stop asking Playwright, which is a larger change than this one.
+ *
+ * Run on its own context so the page under measurement is never stalled to prove a point about it.
+ */
+export async function proveInstrumentCanFail(browser: Browser): Promise<InstrumentProof> {
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  try {
+    const page = await context.newPage();
+    await installTimerProbe(page);
+    await page.goto('about:blank');
+    await page.evaluate((stallMs: number) => {
+      const until = performance.now() + stallMs;
+      while (performance.now() < until) {
+        // Deliberately starving the main thread. A sleep would not do it: the point is that no task
+        // can run, which is what the timer probe exists to notice.
+      }
+    }, PROOF_STALL_MS);
+
+    const reading = await readInstrument(page);
+    const verdict = judgeInstrument(reading);
+    return {
+      degradation: `its main thread blocked for ${PROOF_STALL_MS}ms`,
+      rejected: !verdict.sound,
+      firedChecks: verdict.failures.length > 0 ? ['timerDriftRatio'] : [],
+    };
+  } finally {
+    await context.close();
+  }
 }
 
 export async function readInstrument(page: Page): Promise<InstrumentReading> {

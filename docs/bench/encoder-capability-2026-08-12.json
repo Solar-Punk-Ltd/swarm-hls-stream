@@ -1,0 +1,122 @@
+[
+ {
+  "arm": {
+   "recipe": "probe",
+   "size": "1280x720",
+   "bitrateKbps": 2500,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 0,
+  "wallSeconds": 60.64,
+  "frames": 1815,
+  "fps": 30,
+  "speed": 0.997,
+  "mediaSeconds": 60.26
+ },
+ {
+  "arm": {
+   "recipe": "bench",
+   "size": "1280x720",
+   "bitrateKbps": 2500,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 0,
+  "wallSeconds": 60.05,
+  "frames": 52912,
+  "fps": 882,
+  "speed": 0.991,
+  "mediaSeconds": 59.46
+ },
+ {
+  "arm": {
+   "recipe": "probe",
+   "size": "1920x1080",
+   "bitrateKbps": 6000,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 0,
+  "wallSeconds": 60.63,
+  "frames": 1817,
+  "fps": 30,
+  "speed": 0.997,
+  "mediaSeconds": 60.35
+ },
+ {
+  "arm": {
+   "recipe": "bench",
+   "size": "1920x1080",
+   "bitrateKbps": 6000,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 0,
+  "wallSeconds": 60.07,
+  "frames": 25586,
+  "fps": 427,
+  "speed": 0.992,
+  "mediaSeconds": 59.48
+ },
+ {
+  "arm": {
+   "recipe": "bench",
+   "size": "1280x720",
+   "bitrateKbps": 2500,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 1,
+  "wallSeconds": 60.03,
+  "frames": 34050,
+  "fps": 568,
+  "speed": 0.991,
+  "mediaSeconds": 59.43
+ },
+ {
+  "arm": {
+   "recipe": "probe",
+   "size": "1920x1080",
+   "bitrateKbps": 6000,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 1,
+  "wallSeconds": 60.63,
+  "frames": 1817,
+  "fps": 30,
+  "speed": 0.997,
+  "mediaSeconds": 60.35
+ },
+ {
+  "arm": {
+   "recipe": "bench",
+   "size": "1920x1080",
+   "bitrateKbps": 6000,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 1,
+  "wallSeconds": 60.07,
+  "frames": 25095,
+  "fps": 418,
+  "speed": 0.992,
+  "mediaSeconds": 59.47
+ },
+ {
+  "arm": {
+   "recipe": "probe",
+   "size": "1280x720",
+   "bitrateKbps": 2500,
+   "fps": 30,
+   "gopSeconds": 1
+  },
+  "round": 1,
+  "wallSeconds": 60.62,
+  "frames": 1817,
+  "fps": 30,
+  "speed": 0.997,
+  "mediaSeconds": 60.35
+ }
+]
