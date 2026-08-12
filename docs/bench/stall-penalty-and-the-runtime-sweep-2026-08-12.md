@@ -113,3 +113,33 @@ means an operator override is unguarded. That is a real weakening and would have
 A capability in a dependency is not a capability in the product until something in the product
 reaches it. The first half of this document, which is about the penalty cap, is unaffected: it is
 arithmetic over hls.js's own expression and our uploader's `ceil`, and neither needs a handle.
+
+# ⚠️ SECOND AMENDMENT: the cap was already known, and it RATCHETS
+
+Two things found by reading `docs/bench/one-stall-costs-a-second-2026-08-07.md` **after** writing the
+above, which is the wrong order.
+
+**The cap being `targetduration` is not new.** That document derived it on 2026-08-07 and states it
+plainly. What is new here is only the arithmetic against #155's segment lengths, and it should have
+been presented that way. **Read the corpus before claiming a mechanism.**
+
+⛔⛔ **And the cap RATCHETS.** `ManifestManager.addSegment` keeps `targetDuration` as a running maximum
+of `Math.ceil(duration)` that **never comes back down**, so the table above gives the cap only while
+every segment is normally cut. **One force-closed segment sets it for the rest of the broadcast.**
+
+With the shipped `fragment 0.5 × aof 5.0`, a force-close lands at **2.5s**, and `ceil(2.5) = 3`. So
+the worst a stall can cost is:
+
+| what the broadcaster sends | segment | cap |
+| --- | ---: | ---: |
+| the recommended 0.5s GOP | 0.5s, peaks 0.636 | **1.0s** |
+| a 2.0s GOP, OBS's default | 2.0s, peaks 2.133 | 3.0s |
+| **any GOP, after one force-close** | 2.5s once | **3.0s, permanently** |
+
+**"#155 halved it" is therefore scoped to a broadcaster publishing the GOP we recommend**, which is
+the case the row above measures and the one the shipping profile describes. It says nothing about a
+2.0s publisher, whose cap was 3 before and is 3 now.
+
+⭐ **This matters for #87 directly**: a single force-close during the sitting moves the cap mid-run,
+so the sweep has to read `#EXT-X-TARGETDURATION` per arm rather than assume it, and an arm that saw
+one is not comparable with an arm that did not.
