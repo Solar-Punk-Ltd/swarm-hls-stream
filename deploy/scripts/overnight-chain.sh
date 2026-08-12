@@ -174,6 +174,20 @@ run_sitting() {
 
 [ -r "${PLAN}" ] || { say "REFUSING: cannot read the plan at ${PLAN}"; exit 2; }
 
+# Resolved once, here, so every sitting inherits it. nvm publishes `pnpm` through a profile hook that
+# a detached non-interactive shell never reads, and a driver that cannot find it publishes an arm,
+# pays for it, and records nothing. The drivers refuse on their own account too; this is what makes
+# the refusal unnecessary.
+if ! command -v pnpm >/dev/null 2>&1; then
+  NVM_BIN="$(ls -d "${HOME}"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)"
+  if [ -n "${NVM_BIN}" ]; then
+    PATH="${NVM_BIN}:${PATH}"
+    export PATH
+    say "  added ${NVM_BIN} to PATH for pnpm"
+  fi
+fi
+command -v pnpm >/dev/null 2>&1 || { say "REFUSING: pnpm is not on PATH, so no sitting could watch anything"; exit 2; }
+
 say "overnight chain starting from ${PLAN}"
 say "  stop file ${STOP_FILE}, load ceiling ${LOAD_CEILING}"
 

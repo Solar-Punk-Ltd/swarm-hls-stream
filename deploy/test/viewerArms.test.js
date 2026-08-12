@@ -57,7 +57,7 @@ async function startChequebook(availableBzz) {
  */
 const BATCH_ID = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
 
-function stubBin(binDir, recordPath, watchedFlag, restartLog, removalLog, chequebookPort, batch) {
+function stubBin(binDir, recordPath, watchedFlag, restartLog, removalLog, chequebookPort, batch, omitPnpm) {
   mkdirSync(binDir, { recursive: true });
   const stamps = {
     stamps: [
@@ -137,6 +137,9 @@ process.exit(0);
   for (const name of ['docker', 'curl', 'pnpm']) {
     chmodSync(join(binDir, name), 0o755);
   }
+  if (omitPnpm) {
+    rmSync(join(binDir, 'pnpm'));
+  }
 }
 
 const HEALTHY_BATCH = {
@@ -157,6 +160,7 @@ async function runArms({
   warmupRounds,
   batch = HEALTHY_BATCH,
   stopFileFirst = false,
+  withoutPnpm = false,
 }) {
   const port = await startChequebook(bzz);
   const out = mkdtempSync(join(tmpdir(), 'viewer-arms-'));
@@ -168,7 +172,7 @@ async function runArms({
   const removals = join(out, 'removals.txt');
   writeFileSync(restarts, '');
   writeFileSync(removals, '');
-  stubBin(bin, record, join(out, 'watched.flag'), restarts, removals, port, batch);
+  stubBin(bin, record, join(out, 'watched.flag'), restarts, removals, port, batch, withoutPnpm);
   if (stopFileFirst) {
     writeFileSync(join(out, 'STOP'), 'a previous sitting crossed a floor\n');
   }
@@ -213,6 +217,8 @@ exit 0
     GATEWAY_BEE_PORT: String(port),
     NODE_METRICS: metricsStub,
     STOP_POLL_S: '0.05',
+    // An empty HOME so the nvm fallback finds no install, which is what makes the refusal reachable.
+    ...(withoutPnpm ? { HOME: join(out, 'empty-home'), PATH: `${bin}:/usr/bin:/bin` } : {}),
     ...(preflightOnly ? { PREFLIGHT_ONLY: '1' } : {}),
   };
 
@@ -428,7 +434,31 @@ describe('a sitting refuses what it cannot finish, and records what the nodes di
       'round1-b-after',
       'sitting-after',
     ]);
-    assert.equal(metricsCalls.filter((call) => call.startsWith('diff ')).length, 3, 'a diff per arm and one over the sitting');
+    assert.equal(
+      metricsCalls.filter((call) => call.startsWith('diff ')).length,
+      3,
+      'a diff per arm and one over the sitting',
+    );
+  });
+
+  /**
+   * ⛔⛔ This published a real arm, paid for it, and recorded nothing, on 2026-08-12.
+   *
+   * `pnpm` reaches an interactive shell through nvm's profile hook, which the detached shell the
+   * overnight chain runs in never reads. The arm started its broadcast, waited for the stream, ran
+   * `pnpm browser:watch`, got `command not found`, and wrote a row like any other arm.
+   *
+   * ⭐ The shape worth remembering: a missing tool is discovered AFTER the money is spent unless
+   * something checks for it before the publisher starts. The broadcast is the cost; the watch is the
+   * only reason to pay it.
+   */
+  it('refuses before publishing when it has no way to watch', async () => {
+    const { code, gops, removals, log } = await runArms({ arms: 'a:2.0', rounds: 2, withoutPnpm: true });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, [], 'an arm published a broadcast it could not watch');
+    assert.deepEqual(removals, [], 'a refused sitting removed a container');
+    assert.match(log, /pnpm is not on PATH/);
   });
 
   it('leaves no reading unpaired, so every arm can be differenced', async () => {

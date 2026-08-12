@@ -128,6 +128,20 @@ STOP_FILE="${STOP_FILE:-${OUT_DIR}/STOP}"
 mkdir -p "${OUT_DIR}" "${METRICS_DIR}"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "${LOG}"; }
+
+# `pnpm` reaches an interactive shell through nvm's profile hook, which a detached non-interactive
+# shell never reads. ⛔ On 2026-08-12 the first launch of the overnight chain published a full arm,
+# paid for it, and then died on `pnpm: command not found` with nothing watching. An arm that cannot
+# run its watch still starts a broadcast, still spends, and still writes a row.
+ensure_pnpm_on_path() {
+  command -v pnpm >/dev/null 2>&1 && return 0
+  local nvm_bin
+  nvm_bin="$(ls -d "${HOME}"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)"
+  [ -n "${nvm_bin}" ] || return 1
+  PATH="${nvm_bin}:${PATH}"
+  export PATH
+  command -v pnpm >/dev/null 2>&1
+}
 bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
 
 available_plur() {
@@ -394,6 +408,12 @@ else
   say "  no warm-up round, so every arm counts"
 fi
 [ -n "${COLD_ARMS}" ] && say "  cold-join arms (gateway restarted before the browser opens): ${COLD_ARMS}"
+if ! ensure_pnpm_on_path; then
+  say "REFUSING TO START: pnpm is not on PATH and no nvm install was found under ${HOME}/.nvm"
+  say "  Every arm would publish, spend, and record nothing, because the watch is a pnpm script."
+  exit 1
+fi
+say "  watching with $(command -v pnpm)"
 if [ -f "${STOP_FILE}" ]; then
   say "REFUSING TO START: a floor was already crossed and ${STOP_FILE} says so:"
   sed 's/^/  /' "${STOP_FILE}" >> "${LOG}"
