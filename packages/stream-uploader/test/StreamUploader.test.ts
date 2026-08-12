@@ -56,17 +56,19 @@ function newUploader(
   segmentControl: SegmentUploadControl = {},
   opts: { restoreState?: unknown; feedWriteFails?: boolean } = {},
 ): StreamUploader {
-  return new StreamUploader(
-    makeBee(segmentControl, opts.feedWriteFails),
-    '',
-    makeCatalog(),
-    makeRecovery(),
-    TEST_STREAM_KEY,
-    'stamp',
-    'stream-test',
-    MEDIA_TYPE_VIDEO,
-    opts.restoreState as never,
-  );
+  return new StreamUploader({
+    bee: makeBee(segmentControl, opts.feedWriteFails),
+    manifestBeeUrl: '',
+    streamCatalog: makeCatalog(),
+    recoveryStore: makeRecovery(),
+    streamKey: TEST_STREAM_KEY,
+    stamp: 'stamp',
+    redundancyLevel: 1,
+    streamId: 'stream-test',
+    streamTopic: 'topic-test',
+    mediatype: MEDIA_TYPE_VIDEO,
+    restoreState: opts.restoreState as never,
+  });
 }
 
 async function drain(uploader: StreamUploader): Promise<void> {
@@ -145,16 +147,18 @@ describe('StreamUploader discontinuity lifecycle', () => {
       remove: () => {},
       listActive: () => [],
     } as unknown as RecoveryStore;
-    const uploader = new StreamUploader(
-      makeBee({ fail: permanentError }),
-      '',
-      makeCatalog(),
-      recovery,
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+    const uploader = new StreamUploader({
+      bee: makeBee({ fail: permanentError }),
+      manifestBeeUrl: '',
+      streamCatalog: makeCatalog(),
+      recoveryStore: recovery,
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
@@ -184,16 +188,18 @@ describe('StreamUploader Swarm write options', () => {
       }),
     } as unknown as Bee;
 
-    const uploader = new StreamUploader(
+    const uploader = new StreamUploader({
       bee,
-      '',
-      makeCatalog(),
-      makeRecovery(),
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+      manifestBeeUrl: '',
+      streamCatalog: makeCatalog(),
+      recoveryStore: makeRecovery(),
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);

@@ -2,6 +2,7 @@ import { Bee, BeeResponseError, FeedIndex, PrivateKey, Topic } from '@etherspher
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { BeePublisherPool, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
 import { CatalogIndexStore } from '../src/libs/CatalogIndexStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { MEDIA_TYPE_VIDEO, STREAM_STATUS_LIVE } from '../src/types.js';
@@ -51,6 +52,15 @@ function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): 
   } as unknown as Bee;
 }
 
+/** The catalog reaches its node through the pool's coordinator, so that is all a double needs. */
+function makePublishers(bee: Bee): BeePublisherPool {
+  const publisher = { rung: SINGLE_PUBLISHER, url: '', stamp: 'stamp', bee };
+  return {
+    coordinator: () => publisher,
+    forRung: () => publisher,
+  } as unknown as BeePublisherPool;
+}
+
 interface SavedIndex {
   owner: string;
   topicHex: string;
@@ -71,7 +81,7 @@ function fakeIndexStore(initial: bigint | null): { store: CatalogIndexStore; sav
 describe('StreamCatalog Swarm write options', () => {
   it('requests a deferred upload for the catalog feed write', async () => {
     const writes: CapturedWrite[] = [];
-    const catalog = new StreamCatalog(makeCatalogBee(writes, { lookupFails404: true }), TEST_STREAM_KEY, TEST_TOPIC, 'stamp');
+    const catalog = new StreamCatalog(makePublishers(makeCatalogBee(writes, { lookupFails404: true })), TEST_STREAM_KEY, TEST_TOPIC);
 
     await catalog.addStream(liveEntry());
 
@@ -84,7 +94,7 @@ describe('StreamCatalog boot-index hardening', () => {
   it('resumes from the persisted index when the boot lookup returns a stale head', async () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
-    const catalog = new StreamCatalog(makeCatalogBee(writes, { lookupIndex: 17n }), TEST_STREAM_KEY, TEST_TOPIC, 'stamp', store);
+    const catalog = new StreamCatalog(makePublishers(makeCatalogBee(writes, { lookupIndex: 17n })), TEST_STREAM_KEY, TEST_TOPIC, store);
 
     await catalog.init();
     await catalog.addStream(liveEntry());
@@ -96,7 +106,7 @@ describe('StreamCatalog boot-index hardening', () => {
   it('resumes from the persisted index when the boot lookup finds no feed (404)', async () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(125n);
-    const catalog = new StreamCatalog(makeCatalogBee(writes, { lookupFails404: true }), TEST_STREAM_KEY, TEST_TOPIC, 'stamp', store);
+    const catalog = new StreamCatalog(makePublishers(makeCatalogBee(writes, { lookupFails404: true })), TEST_STREAM_KEY, TEST_TOPIC, store);
 
     await catalog.init();
     await catalog.addStream(liveEntry());
@@ -107,7 +117,7 @@ describe('StreamCatalog boot-index hardening', () => {
   it('keeps the lookup head when it is ahead of the persisted index', async () => {
     const writes: CapturedWrite[] = [];
     const { store } = fakeIndexStore(10n);
-    const catalog = new StreamCatalog(makeCatalogBee(writes, { lookupIndex: 125n }), TEST_STREAM_KEY, TEST_TOPIC, 'stamp', store);
+    const catalog = new StreamCatalog(makePublishers(makeCatalogBee(writes, { lookupIndex: 125n })), TEST_STREAM_KEY, TEST_TOPIC, store);
 
     await catalog.init();
     await catalog.addStream(liveEntry());
@@ -118,7 +128,7 @@ describe('StreamCatalog boot-index hardening', () => {
   it('persists the feed index after every successful write', async () => {
     const writes: CapturedWrite[] = [];
     const { store, saved } = fakeIndexStore(null);
-    const catalog = new StreamCatalog(makeCatalogBee(writes, { lookupFails404: true }), TEST_STREAM_KEY, TEST_TOPIC, 'stamp', store);
+    const catalog = new StreamCatalog(makePublishers(makeCatalogBee(writes, { lookupFails404: true })), TEST_STREAM_KEY, TEST_TOPIC, store);
 
     await catalog.init();
     await catalog.addStream(liveEntry());

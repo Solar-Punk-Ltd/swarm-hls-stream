@@ -63,8 +63,8 @@
 
                     <Publishers>
                         <HLS>
-                            <SegmentDuration>2</SegmentDuration>
-                            <SegmentCount>5</SegmentCount>
+                            <SegmentDuration>SEGMENT_DURATION_PLACEHOLDER</SegmentDuration>
+                            <SegmentCount>SEGMENT_COUNT_PLACEHOLDER</SegmentCount>
                             <CrossDomains><Url>*</Url></CrossDomains>
                         </HLS>
                     </Publishers>
@@ -90,8 +90,8 @@
 
                     <Publishers>
                         <HLS>
-                            <SegmentDuration>2</SegmentDuration>
-                            <SegmentCount>5</SegmentCount>
+                            <SegmentDuration>SEGMENT_DURATION_PLACEHOLDER</SegmentDuration>
+                            <SegmentCount>SEGMENT_COUNT_PLACEHOLDER</SegmentCount>
                             <CrossDomains><Url>*</Url></CrossDomains>
                         </HLS>
                     </Publishers>

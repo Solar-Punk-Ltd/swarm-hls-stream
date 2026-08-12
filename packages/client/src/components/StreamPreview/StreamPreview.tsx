@@ -7,7 +7,7 @@ import Pqueue from 'p-queue';
 import playIcon from '@/assets/icons/playIcon.png';
 import DefaultPreviewImage from '@/assets/images/defaultPreviewImage.png';
 import { CustomFragmentLoader } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
-import { parseManifest } from '@/components/SwarmHlsPlayer/ManifestManagement';
+import { isMasterPlaylist, masterVariants, parseManifest } from '@/components/SwarmHlsPlayer/playlist';
 import { useAppContext } from '@/providers/App';
 import { MediaType, StreamState } from '@/types/stream';
 import { formatDuration } from '@/utils/format';
@@ -16,6 +16,33 @@ import './StreamPreview.scss';
 
 const thumbnailQueue = new Pqueue({ concurrency: 1 });
 const STREAM_STATE_LIVE: StreamState = 'live';
+
+async function fetchFeed(gatewayUrl: string, owner: string, topic: string, signal: AbortSignal): Promise<string> {
+  const hexTopic = Topic.fromString(topic).toString();
+  const res = await fetch(`${gatewayUrl}/feeds/${owner}/${hexTopic}`, { signal });
+  return res.text();
+}
+
+/**
+ * A media playlist to take the thumbnail frame from, following one level of indirection.
+ *
+ * A ladder's catalog topic is its master playlist, which has no segments in it — so a thumbnail
+ * taken straight from the feed would find nothing and every ABR stream would show the placeholder
+ * image. The lowest rung is the cheapest frame to fetch and is listed first.
+ */
+async function fetchPlaylist(gatewayUrl: string, owner: string, topic: string, signal: AbortSignal): Promise<string> {
+  const text = await fetchFeed(gatewayUrl, owner, topic, signal);
+  if (!isMasterPlaylist(text)) {
+    return text;
+  }
+
+  const [variant] = masterVariants(text);
+  if (!variant || signal.aborted) {
+    return '';
+  }
+
+  return fetchFeed(gatewayUrl, variant.owner || owner, variant.topic, signal);
+}
 
 interface StreamPreviewProps {
   owner: string;
@@ -44,11 +71,7 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title 
       }
 
       try {
-        const hexTopic = Topic.fromString(topic).toString();
-        const res = await fetch(`${gatewayUrl}/feeds/${owner}/${hexTopic}`, {
-          signal: abort.signal,
-        });
-        const text = await res.text();
+        const text = await fetchPlaylist(gatewayUrl, owner, topic, abort.signal);
         const { segments } = parseManifest(text);
 
         if (segments.length === 0 || abort.signal.aborted) {

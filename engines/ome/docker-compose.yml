@@ -14,5 +14,7 @@ services:
     environment:
       OME_ADAPTER_PORT: ${OME_ADAPTER_PORT:-3000}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
+      HLS_SEGMENT_DURATION: ${HLS_SEGMENT_DURATION:-2}
+      HLS_SEGMENT_COUNT: ${HLS_SEGMENT_COUNT:-5}
     extra_hosts:
       - "host.docker.internal:host-gateway"
