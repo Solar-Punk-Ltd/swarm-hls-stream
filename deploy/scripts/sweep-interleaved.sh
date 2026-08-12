@@ -174,7 +174,18 @@ run_one() {
 
   say "round ${round}: ${name} (${size} ${kbps}kbps gop ${gop}) starting"
 
+  # `SWEEP_EXTRA_ENV` is a space-separated list of NAME=VALUE handed to every run, for the bench knobs
+  # this driver has no opinion about. It exists because a sitting's expensive part is the broadcast:
+  # a follow-up question answerable from the same minutes should not cost a second one. Applied to
+  # every arm rather than to a chosen few, so it cannot become a difference between rows.
+  local extra=()
+  local pair
+  for pair in ${SWEEP_EXTRA_ENV:-}; do
+    extra+=(-e "${pair}")
+  done
+
   docker run --rm --network host \
+    ${extra[@]+"${extra[@]}"} \
     -u "$(id -u):$(id -g)" \
     --group-add "$(getent group docker | cut -d: -f3)" \
     -v /var/run/docker.sock:/var/run/docker.sock \
@@ -224,6 +235,9 @@ run_one() {
 : > "${LOG}"
 : > "${STATE}"
 say "sweep starting: ${#CONFIGS[@]} configs x ${ROUNDS} rounds x ${MINUTES} min, interleaved"
+# Logged rather than assumed remembered: a knob that changes what the instrument counts is part of
+# the configuration a report has to name, and this one is invisible in the row it produces.
+[ -n "${SWEEP_EXTRA_ENV:-}" ] && say "  extra bench env on every arm: ${SWEEP_EXTRA_ENV}"
 
 TOTAL_MINUTES=$((${#CONFIGS[@]} * ROUNDS * MINUTES))
 if [ "${SKIP_FUNDS_CHECK:-0}" = "1" ]; then
