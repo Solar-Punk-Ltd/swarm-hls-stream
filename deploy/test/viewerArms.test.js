@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -113,7 +113,7 @@ process.exit(0);
   }
 }
 
-async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin = '10', cold = '' }) {
+async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin = '10', cold = '', warmupRounds }) {
   const port = await startChequebook(bzz);
   const out = mkdtempSync(join(tmpdir(), 'viewer-arms-'));
   cleanups.push(() => rmSync(out, { recursive: true, force: true }));
@@ -135,6 +135,7 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
     BENCH_REPO: out,
     ARMS: arms,
     COLD_ARMS: cold,
+    ...(warmupRounds === undefined ? {} : { WARMUP_ROUNDS: warmupRounds }),
     GATEWAY_READY_TIMEOUT_S: '5',
     ROUNDS: String(rounds),
     MINUTES: '1',
@@ -158,6 +159,9 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
   }
   return {
     code,
+    state: existsSync(join(out, 'viewer-arms-state.tsv'))
+      ? readFileSync(join(out, 'viewer-arms-state.tsv'), 'utf8').split('\n').filter(Boolean)
+      : [],
     gops: readFileSync(record, 'utf8').split('\n').filter(Boolean),
     restarts: readFileSync(restarts, 'utf8').split('\n').filter(Boolean),
     removals: readFileSync(removals, 'utf8').split('\n').filter(Boolean),
@@ -267,9 +271,29 @@ describe('a viewer sitting runs its arms in an order that cannot fake a result',
     assert.deepEqual(removals, [], 'a refused sitting removed a container');
   });
 
+  /**
+   * A soak is one arm held for hours. It has nothing to compare against and nothing to warm up for,
+   * and labelling its only round as discarded would file a four-hour broadcast as a warm-up nobody
+   * counted.
+   */
+  it('counts every arm when no warm-up round was asked for', async () => {
+    const { state, log } = await runArms({ arms: 'soak:0.5', rounds: 1, warmupRounds: '0' });
+
+    assert.equal(state.length, 1);
+    assert.match(state[0], /\tcounted\t/);
+    assert.match(log, /no warm-up round, so every arm counts/);
+  });
+
+  it('discards the rounds it was told to, not always exactly one', async () => {
+    const { state } = await runArms({ arms: 'a:2.0', rounds: 3, warmupRounds: '2' });
+
+    assert.equal(state.filter((row) => row.includes('\twarm-up\t')).length, 2);
+    assert.equal(state.filter((row) => row.includes('\tcounted\t')).length, 1);
+  });
+
   it('says which round is warm-up, since the arms are otherwise identical in the log', async () => {
     const { log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 2 });
 
-    assert.match(log, /round 1 is warm-up and is discarded/);
+    assert.match(log, /the first 1 round\(s\) are warm-up and are discarded/);
   });
 });

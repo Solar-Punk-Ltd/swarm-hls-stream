@@ -35,6 +35,11 @@ BENCH_REPO="${BENCH_REPO:-/home/solarpunk/swarm-hls-bench}"
 PROFILE="${PROFILE:-latbench}"
 PORT_SLOT="${PORT_SLOT:-7}"
 ROUNDS="${ROUNDS:-3}"
+# How many leading rounds are discarded. One by default, because the first arms of a sitting run
+# differently and comparing them against later ones has cost two sittings here. ⛔ Set to 0 for a
+# **soak**, which has no arm to compare against and nothing to warm up for: labelling its only round
+# as discarded would file a four-hour broadcast as a warm-up nobody counted.
+WARMUP_ROUNDS="${WARMUP_ROUNDS:-1}"
 MINUTES="${MINUTES:-8}"
 SIZE="${SIZE:-1280x720}"
 BITRATE_KBPS="${BITRATE_KBPS:-2500}"
@@ -249,7 +254,11 @@ fi
 
 TOTAL_ARMS=$((${#ARM_LIST[@]} * ROUNDS))
 say "viewer-arms starting: ${#ARM_LIST[@]} arms x ${ROUNDS} rounds x ${MINUTES} min = ${TOTAL_ARMS} broadcasts"
-say "  round 1 is warm-up and is discarded"
+if [ "${WARMUP_ROUNDS}" -gt 0 ]; then
+  say "  the first ${WARMUP_ROUNDS} round(s) are warm-up and are discarded"
+else
+  say "  no warm-up round, so every arm counts"
+fi
 [ -n "${COLD_ARMS}" ] && say "  cold-join arms (gateway restarted before the browser opens): ${COLD_ARMS}"
 if ! can_afford $((TOTAL_ARMS * MINUTES)); then
   say "REFUSING TO START: this sitting cannot pay for itself"
@@ -270,7 +279,7 @@ for round in $(seq 1 "${ROUNDS}"); do
   fi
   for arm in "${order[@]}"; do
     run_arm "${arm%%:*}" "${arm##*:}" "${round}" \
-      "$([ "${round}" -eq 1 ] && echo warm-up || echo counted)" || break 2
+      "$([ "${round}" -le "${WARMUP_ROUNDS}" ] && echo warm-up || echo counted)" || break 2
   done
 done
 
