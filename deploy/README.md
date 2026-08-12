@@ -69,6 +69,41 @@ The deploy script will skip stream-uploader and configure SRS to reach it via `h
 
 Single `.env` in monorepo root for core options, shared by dev and deploy — see [.env.sample](../.env.sample). **Engine-specific options live in `engines/<name>/.env`** (samples: [engines/srs/.env.sample](../engines/srs/.env.sample), [engines/ome/.env.sample](../engines/ome/.env.sample)), loaded at runtime for the engine selected via `ENGINE`. `setup.sh` creates them from the samples for engines enabled in `config.json`. `deploy.sh` loads the enabled engines' env files too (below the root env — root values win on duplicate keys, matching the native uploader's dotenv order) and feeds them into compose interpolation.
 
+### What the broadcaster's encoder must send
+
+Nothing in this stack transcodes. SRS cuts the stream it is given into segments, so **the encoder's
+keyframe interval decides the segment length**, and the segment is the largest single hop between a
+camera and a viewer.
+
+| Setting                     | Use      | Why                                                                                |
+| --------------------------- | -------- | ---------------------------------------------------------------------------------- |
+| **Keyframe interval (GOP)** | **0.5s** | Measured on both sides. Larger costs latency and stalls, smaller breaks retrieval. |
+| Video bitrate               | 2500k    | 720p30. 1080p at 6000k also ships, and costs ~2.3x the BZZ.                        |
+| B-frames                    | off      | `-tune zerolatency` or equivalent.                                                 |
+
+In OBS this is _Settings → Output → Advanced → Keyframe Interval_, which takes **seconds** and
+defaults to 0 (meaning "let the encoder decide", usually 2s). In ffmpeg it is `-g <frames>`, so at 30
+fps a 0.5s GOP is `-g 15`.
+
+**Why 0.5 and not something else**, from two funded sittings on 2026-08-12:
+
+|      GOP | capture to fetchable | confirmed feed stalls | live-edge reads that 404 |
+| -------: | -------------------: | --------------------: | -----------------------: |
+|     2.0s |                3.88s |                3 of 3 |                       0% |
+|     1.0s |                2.30s |                1 of 3 |                       0% |
+| **0.5s** |            **1.55s** |            **0 of 3** |                   **0%** |
+|    0.25s |       not comparable |                0 of 3 |               **18-21%** |
+
+Going from 2.0s to 0.5s costs **19% more BZZ**, because the extra bytes are keyframes. Going below
+0.5s is not a trade, it is a failure: roughly one segment in five cannot be retrieved at the live
+edge. See [gop-sustain](../docs/bench/gop-sustain-2026-08-12.md) and
+[gop-floor](../docs/bench/gop-floor-2026-08-12.md).
+
+⚠️ `HLS_FRAGMENT` (default `0.5`) is a **floor** on the segment, not the segment. A GOP below it is
+rounded up, so lowering the encoder's keyframe interval without lowering `HLS_FRAGMENT` to match
+changes nothing. The pair is a range: a GOP outside `[HLS_FRAGMENT, HLS_FRAGMENT * HLS_AOF_RATIO]`,
+shipped as `[0.5, 2.1]`, is either rounded up or force-cut without a keyframe.
+
 ## Scripts
 
 ### deploy.sh
