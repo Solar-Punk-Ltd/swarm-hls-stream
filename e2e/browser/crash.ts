@@ -24,6 +24,7 @@ import { renderCrashReport } from '../src/browser/recoveryReport.js';
 import { judgeCost, readResources } from '../src/browser/resources.js';
 import {
   envNumber,
+  envNumberOrNull,
   requireEnv,
   runIdFrom,
   screenshotDirFor,
@@ -129,7 +130,7 @@ async function main(): Promise<void> {
   const settleMs = envNumber('BROWSER_SETTLE_SECONDS', DEFAULT_SETTLE_SECONDS) * 1000;
   const recoverMs = envNumber('BROWSER_RECOVER_SECONDS', DEFAULT_RECOVER_SECONDS) * 1000;
   const intervalMs = envNumber('BROWSER_SAMPLE_INTERVAL_MS', DEFAULT_SAMPLE_INTERVAL_MS);
-  const gopSeconds = envNumber('BROWSER_GOP_SECONDS', 0.25);
+  const gopSeconds = envNumberOrNull('BROWSER_GOP_SECONDS');
 
   const cfg = loadConfig();
   const host = makeHost(cfg);

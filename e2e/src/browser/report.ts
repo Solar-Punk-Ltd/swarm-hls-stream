@@ -20,7 +20,8 @@ export interface BrowserRun {
   measuredAt: string;
   watchUrl: string;
   chromeVersion: string;
-  gopSeconds: number;
+  /** Null when the run was not told, which the renderer says rather than guesses. */
+  gopSeconds: number | null;
   summary: SessionSummary;
   instrument: InstrumentVerdict & { soundSamples: number };
   /**
@@ -312,6 +313,22 @@ export function networkSection(run: BrowserRun): string[] {
   ];
 }
 
+/**
+ * How a report names the GOP it was watching.
+ *
+ * ⛔ Says "an unrecorded GOP" rather than filling in a plausible one. This existed as a 0.25 default
+ * that reached nothing but the opening sentence, so a run nobody parameterised published a headline
+ * naming a segment length the deployment had not produced since #155. The numbers under it were
+ * fine, which is exactly why it lasted: a mislabelled artefact reads as a finding about the
+ * configuration it names, and the archive keeps it that way.
+ *
+ * ⚠️ It is still the value handed in rather than one this run measured. `#EXTINF` is the thing that
+ * would make the label self-evident, and reading it here is the better fix.
+ */
+export function describeGop(gopSeconds: number | null): string {
+  return gopSeconds === null ? 'a broadcast at an unrecorded GOP' : `a ${gopSeconds}s-GOP broadcast`;
+}
+
 export function renderBrowserReport(run: BrowserRun): string {
   const { rows, everyNth } = forTable(run.samples);
   const sampleRows = rows.map((sample, i) =>
@@ -331,7 +348,7 @@ export function renderBrowserReport(run: BrowserRun): string {
     `# A viewer, watched in a real browser`,
     '',
     `**${run.measuredAt}.** ${run.chromeVersion}, headed against an X display on the deployment host, ` +
-      `watching a ${run.gopSeconds}s-GOP broadcast through the shipped client.`,
+      `watching ${describeGop(run.gopSeconds)} through the shipped client.`,
     '',
     `\`${run.watchUrl}\``,
     '',

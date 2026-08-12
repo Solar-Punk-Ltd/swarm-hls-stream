@@ -25,6 +25,7 @@ import { renderBrowserReport } from '../src/browser/report.js';
 import { judgeCost, readResources } from '../src/browser/resources.js';
 import {
   envNumber,
+  envNumberOrNull,
   requireEnv,
   runIdFrom,
   screenshotDirFor,
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
   const clientUrl = requireEnv('BROWSER_CLIENT_URL');
   const watchSeconds = envNumber('BROWSER_WATCH_SECONDS', DEFAULT_WATCH_SECONDS);
   const intervalMs = envNumber('BROWSER_SAMPLE_INTERVAL_MS', DEFAULT_SAMPLE_INTERVAL_MS);
-  const gopSeconds = envNumber('BROWSER_GOP_SECONDS', 0.25);
+  const gopSeconds = envNumberOrNull('BROWSER_GOP_SECONDS');
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
