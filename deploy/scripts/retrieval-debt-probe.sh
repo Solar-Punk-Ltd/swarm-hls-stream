@@ -65,7 +65,12 @@ ROUNDS="${ROUNDS:-2}"
 ARM_PLAN="${ARM_PLAN:-L:true:0 U:false:0}"
 
 # The per-segment budget a retrieval has to land inside. Default is 267ms, which is what an eight-frame
-# GOP at 30fps gives a 0.25s profile, the one that ships.
+# GOP at 30fps gives.
+#
+# ⛔ That is NOT the shipping profile, and this comment used to say it was. What ships is a 0.5s GOP
+# against `HLS_FRAGMENT=0.5`, so the budget for a shipping-profile arm is **500**. A 0.25s GOP was
+# measured on 2026-08-12 to lose 18-21% of live-edge reads to 404 and is not a profile to score
+# anything against. See `docs/bench/gop-floor-2026-08-12.md`.
 #
 # ⛔ This is the headline the first sitting nearly missed. Across six arms the median penalty was 2.9x
 # and the share of segments over budget was **45x**, 0.3% against 15.0%. A buffer drains on late
