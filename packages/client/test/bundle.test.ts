@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { PLAYER_HANDLE } from '../src/components/SwarmHlsPlayer/playerTestHandle';
 import viteConfig from '../vite.config.js';
 
 const CLIENT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -105,6 +106,23 @@ describe('the emitted bundle honours the declared browser target (TEST-22)', () 
     );
 
     expect(withRangeSyntax).toEqual([]);
+  });
+
+  /**
+   * The instrumentation seam must leave no trace in a build that did not ask for it.
+   *
+   * This asserts the shipping direction, and in doing so it proves the mechanism: the handle only
+   * disappears if Vite substituted `import.meta.env.VITE_EXPOSE_PLAYER` with a literal and the
+   * minifier dropped the dead branch. **Written as a static member access for exactly that reason.**
+   * Behind a named constant the substitution does not happen, the branch survives, and the handle
+   * ships. That was measured, not assumed: it was present in a production bundle until the indirection
+   * came out. The other direction is covered by `playerTestHandle.test.ts` and by building with the
+   * flag set, which is not done here because it costs a second full build.
+   */
+  it('leaves no instrumentation handle in a build that did not ask for one', () => {
+    const leaked = emitted.js.filter(({ source }) => source.includes(PLAYER_HANDLE)).map(({ name }) => name);
+
+    expect(leaked).toEqual([]);
   });
 
   it('emits js that parses at the ecmascript version the target names', () => {
