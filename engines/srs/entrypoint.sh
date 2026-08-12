@@ -60,9 +60,9 @@ require_number() {
 require_number HLS_FRAGMENT "${HLS_FRAGMENT:-0.5}"
 require_number HLS_WINDOW "${HLS_WINDOW:-15}"
 # 2.1 is SRS's own default, so naming it here changes no deployment that does not set it.
-require_number HLS_AOF_RATIO "${HLS_AOF_RATIO:-4.2}"
+require_number HLS_AOF_RATIO "${HLS_AOF_RATIO:-5.0}"
 sed -i "s/HLS_FRAGMENT_PLACEHOLDER/${HLS_FRAGMENT:-0.5}/" "$CONF"
-sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO:-4.2}/" "$CONF"
+sed -i "s/HLS_AOF_RATIO_PLACEHOLDER/${HLS_AOF_RATIO:-5.0}/" "$CONF"
 sed -i "s/HLS_WINDOW_PLACEHOLDER/${HLS_WINDOW:-15}/" "$CONF"
 
 # How long SRT holds a packet waiting for a retransmission before delivering without it.

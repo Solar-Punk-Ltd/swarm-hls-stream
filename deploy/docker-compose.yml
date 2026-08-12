@@ -222,11 +222,16 @@ services:
       # broadcaster who asked for 0.5s ones. See `docs/bench/gop-vs-fragment-2026-08-12.md`.
       HLS_FRAGMENT: ${HLS_FRAGMENT:-0.5}
       # SRS force-closes a segment at `HLS_FRAGMENT * HLS_AOF_RATIO` regardless of keyframes, so this
-      # is the ceiling on the pair rather than a detail. Raised from SRS's own 2.1 alongside the
-      # fragment halving **to hold the product at 2.1s exactly where it was**: a broadcaster
-      # publishing the common 2s GOP is unaffected, and the valid range only widens, 1.0-2.1 to
-      # 0.5-2.1. See the entrypoint.
-      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-4.2}
+      # is the ceiling on the pair rather than a detail.
+      #
+      # ⛔ The ceiling has to clear `GOP + 0.135s`, not the GOP. Measured 2026-08-12: a segment
+      # overshoots its settled length by a **constant ~0.135s** and ramps back down, at every GOP
+      # tested. A 2.0s GOP therefore needs 2.135s, and both the old pair (1.0 * 2.1) and #155's
+      # (0.5 * 4.2) gave exactly 2.1, which force-closed the common OBS default intermittently:
+      # mode 2.117 and spread 1.861-2.219 against a clean 2.000 with room. 5.0 gives **2.5s**, which
+      # is the ceiling latbench has run all along. See
+      # `docs/bench/shipped-fragment-validation-2026-08-12.md`.
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-5.0}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
 

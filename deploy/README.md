@@ -102,7 +102,7 @@ edge. See [gop-sustain](../docs/bench/gop-sustain-2026-08-12.md) and
 ⚠️ `HLS_FRAGMENT` (default `0.5`) is a **floor** on the segment, not the segment. A GOP below it is
 rounded up, so lowering the encoder's keyframe interval without lowering `HLS_FRAGMENT` to match
 changes nothing. The pair is a range: a GOP outside `[HLS_FRAGMENT, HLS_FRAGMENT * HLS_AOF_RATIO]`,
-shipped as `[0.5, 2.1]`, is either rounded up or force-cut without a keyframe.
+shipped as `[0.5, 2.5]`, is either rounded up or force-cut without a keyframe.
 
 ## Scripts
 

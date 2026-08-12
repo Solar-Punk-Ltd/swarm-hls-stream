@@ -77,6 +77,22 @@ const VALID = { SRS_WEBHOOK_TOKEN: 'x'.repeat(64) };
  */
 const RECOMMENDED_GOP_SECONDS = 0.5;
 
+/**
+ * How far a segment runs past its settled length before ramping back down to it.
+ *
+ * Measured 2026-08-12 across GOPs of 0.5, 1.0 and 2.0, which overshot by 0.136, 0.136 and 0.133
+ * seconds. **It is a constant rather than a proportion of the GOP**, and it is invisible to any
+ * summary that reports a median, because the median sits at the settled value.
+ * See `docs/bench/shipped-fragment-validation-2026-08-12.md`.
+ */
+const SEGMENT_OVERSHOOT_S = 0.135;
+
+/**
+ * The longest keyframe interval a broadcaster is likely to send without being asked, which is OBS's
+ * default. Not what we recommend, but what has to keep working when nobody read the docs.
+ */
+const LARGEST_UNINVITED_GOP_SECONDS = 2;
+
 describe('the SRS latency knobs', () => {
   // ⛔ None of these values may equal a default asserted below, or the assertion passes against a
   // template that still hard-codes it. 0.75 is deliberately not 0.5.
@@ -109,11 +125,34 @@ describe('the SRS latency knobs', () => {
     // rather than the segment, so it has to sit at or below the GOP broadcasters are told to
     // publish, or their request is silently rounded up.
     assert.match(conf, /hls_fragment\s+0\.5;/);
-    // Doubled from SRS's own 2.1 when the fragment halved, so the product stays 2.1s and the valid
-    // GOP range only widens, 1.0-2.1 to 0.5-2.1. No existing broadcaster's GOP leaves it.
-    assert.match(conf, /hls_aof_ratio\s+4\.2;/);
+    // 5.0 gives a 2.5s ceiling at the 0.5s fragment. It was 4.2 for one commit, chosen to hold the
+    // product at SRS's own 2.1s, and 2.1 turned out to be 35ms short of what a 2.0s GOP needs. See
+    // the overshoot test below.
+    assert.match(conf, /hls_aof_ratio\s+5\.0;/);
     assert.match(conf, /hls_window\s+15;/);
     assert.match(conf, /latency\s+200;/);
+  });
+
+  /**
+   * The ceiling has to clear `GOP + overshoot`, not the GOP.
+   *
+   * A segment overruns its settled length by a constant before settling back, so a ceiling set to the
+   * GOP itself force-closes the overshooting ones: SRS cuts without a keyframe, and the segment after
+   * the cut cannot begin on one. Both the pre-#155 pair (1.0 x 2.1) and #155's own (0.5 x 4.2) gave
+   * exactly 2.1s, which is 35ms under what a 2.0s GOP needs, and a 2.0s GOP measured mode 2.117 with
+   * a 1.861-2.219 spread against a clean 2.000 when the ceiling was out of the way.
+   */
+  it('ships a ceiling that clears the largest uninvited GOP plus its overshoot', () => {
+    const conf = renderSrsConf({ ...VALID, HLS_FRAGMENT: '', HLS_WINDOW: '', SRT_LATENCY: '' });
+    const fragment = Number(conf.match(/hls_fragment\s+([\d.]+);/)[1]);
+    const ratio = Number(conf.match(/hls_aof_ratio\s+([\d.]+);/)[1]);
+    const needed = LARGEST_UNINVITED_GOP_SECONDS + SEGMENT_OVERSHOOT_S;
+
+    assert.ok(
+      fragment * ratio >= needed,
+      `the ceiling is ${(fragment * ratio).toFixed(3)}s and a ${LARGEST_UNINVITED_GOP_SECONDS}s GOP ` +
+        `needs ${needed.toFixed(3)}s, so its overshooting segments are force-closed without a keyframe`,
+    );
   });
 
   /**
