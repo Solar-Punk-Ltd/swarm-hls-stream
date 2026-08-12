@@ -63,17 +63,35 @@ function distil(path) {
   };
 }
 
-const rows = process.argv.slice(2).map(distil).filter(Boolean).sort((a, b) => a.at.localeCompare(b.at));
+const rows = process.argv
+  .slice(2)
+  .map(distil)
+  .filter(Boolean)
+  .sort((a, b) => a.at.localeCompare(b.at));
 
 const f = (x, d = 0) => (Number.isFinite(x) ? x.toFixed(d) : '--');
 console.log(
-  ['#', 'gop', 'n', 'segMs', 'segKB', 'total', 'viewer', 'stall', 'seg', 'upl', 'man', 'feed', 'fetch', 'NONSEG'].join('\t'),
+  ['#', 'gop', 'n', 'segMs', 'segKB', 'total', 'viewer', 'stall', 'seg', 'upl', 'man', 'feed', 'fetch', 'NONSEG'].join(
+    '\t',
+  ),
 );
 rows.forEach((r, i) => {
   console.log(
     [
-      i + 1, r.gop, r.n, f(r.segMs), f(r.segKB), f(r.totalMs), f(r.viewerMs), r.stalls,
-      f(r.segment), f(r.upload), f(r.manifestPublish), f(r.feedPropagation), f(r.fetch), f(r.nonSegment),
+      i + 1,
+      r.gop,
+      r.n,
+      f(r.segMs),
+      f(r.segKB),
+      f(r.totalMs),
+      f(r.viewerMs),
+      r.stalls,
+      f(r.segment),
+      f(r.upload),
+      f(r.manifestPublish),
+      f(r.feedPropagation),
+      f(r.fetch),
+      f(r.nonSegment),
     ].join('\t'),
   );
 });
