@@ -55,7 +55,7 @@ async function startChequebook(availableBzz) {
  * state the script exists to notice, so the test would sit out a real timeout per arm and prove
  * nothing about the ordering it is measuring.
  */
-function stubBin(binDir, recordPath, watchedFlag, restartLog, chequebookPort) {
+function stubBin(binDir, recordPath, watchedFlag, restartLog, removalLog, chequebookPort) {
   mkdirSync(binDir, { recursive: true });
 
   // Records `restart`, so a cold arm is distinguishable from a warm one, and succeeds at everything
@@ -63,8 +63,17 @@ function stubBin(binDir, recordPath, watchedFlag, restartLog, chequebookPort) {
   writeFileSync(
     join(binDir, 'docker'),
     `#!/usr/bin/env node
+const fs = require('node:fs');
 if (process.argv[2] === 'restart') {
-  require('node:fs').appendFileSync(${JSON.stringify(restartLog)}, process.argv[3] + '\\n');
+  fs.appendFileSync(${JSON.stringify(restartLog)}, process.argv[3] + '\\n');
+}
+if (process.argv[2] === 'rm') {
+  fs.appendFileSync(${JSON.stringify(removalLog)}, process.argv.slice(3).join(' ') + '\\n');
+}
+// Lists one publisher already on the box, so a run that tears down everything matching the
+// pattern shows up as a removal here.
+if (process.argv[2] === 'ps') {
+  process.stdout.write('someone-elses-publisher\\n');
 }
 process.exit(0);
 `,
@@ -112,8 +121,10 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
   const record = join(out, 'gops.txt');
   writeFileSync(record, '');
   const restarts = join(out, 'restarts.txt');
+  const removals = join(out, 'removals.txt');
   writeFileSync(restarts, '');
-  stubBin(bin, record, join(out, 'watched.flag'), restarts, port);
+  writeFileSync(removals, '');
+  stubBin(bin, record, join(out, 'watched.flag'), restarts, removals, port);
 
   const env = {
     ...process.env,
@@ -149,6 +160,7 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
     code,
     gops: readFileSync(record, 'utf8').split('\n').filter(Boolean),
     restarts: readFileSync(restarts, 'utf8').split('\n').filter(Boolean),
+    removals: readFileSync(removals, 'utf8').split('\n').filter(Boolean),
     log: readFileSync(join(out, 'viewer-arms.log'), 'utf8'),
   };
 }
@@ -231,6 +243,28 @@ describe('a viewer sitting runs its arms in an order that cannot fake a result',
 
     assert.match(log, /cold-join arms \(gateway restarted before the browser opens\): cold/);
     assert.match(log, /gateway restarted for a cold join, answered after/);
+  });
+
+  /**
+   * The teardown matches every publisher on the box, not only this run's, and it hangs off an EXIT
+   * trap. On 2026-08-12 a PREFLIGHT_ONLY invocation, which publishes nothing at all, exited through
+   * that trap and killed the broadcast a paid buffer sweep had been running against for forty
+   * minutes. The sweep carried on sampling a dead stream.
+   */
+  it('kills nothing on a preflight, which publishes nothing', async () => {
+    const { code, restarts, removals, log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 2, preflightOnly: true });
+
+    assert.equal(code, 0);
+    assert.deepEqual(removals, [], 'a preflight removed a container');
+    assert.deepEqual(restarts, []);
+    assert.match(log, /PREFLIGHT_ONLY/);
+  });
+
+  it('kills nothing when it refuses to start for want of funds', async () => {
+    const { code, removals } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 2, bzz: 0 });
+
+    assert.equal(code, 1);
+    assert.deepEqual(removals, [], 'a refused sitting removed a container');
   });
 
   it('says which round is warm-up, since the arms are otherwise identical in the log', async () => {

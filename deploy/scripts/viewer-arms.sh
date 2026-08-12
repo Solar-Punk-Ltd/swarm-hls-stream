@@ -114,8 +114,24 @@ can_afford() {
 # the poller only kills the poller: the ffmpeg container is detached so it outlives its ssh session.
 # Removing by pattern is what actually stops a broadcast, and a publisher left running holds the
 # stream id against every arm that follows.
+#
+# ⛔⛔ **Only ever removes publishers this run created.** The pattern matches every publisher on the
+# box, including one serving somebody else's live sitting, and the teardown is on an EXIT trap. On
+# 2026-08-12 a PREFLIGHT_ONLY invocation of this script, which publishes nothing at all, exited
+# through that trap and killed the broadcast a paid buffer sweep had been running against for forty
+# minutes. The sweep went on sampling a dead stream.
+#
+# The names present before this run started are recorded once and excluded from every teardown.
+PUBLISHERS_NOT_OURS="$(docker ps -aq --filter 'name=^swarm-hls-publish-' 2>/dev/null | tr '\n' ' ')"
+
 stop_publisher() {
-  docker ps -aq --filter 'name=^swarm-hls-publish-' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  local id
+  for id in $(docker ps -aq --filter 'name=^swarm-hls-publish-' 2>/dev/null); do
+    case " ${PUBLISHERS_NOT_OURS} " in
+      *" ${id} "*) continue ;;
+    esac
+    docker rm -f "${id}" >/dev/null 2>&1 || true
+  done
 }
 
 start_publisher() {
@@ -223,8 +239,6 @@ run_arm() {
   return 0
 }
 
-trap 'stop_publisher' EXIT INT TERM
-
 # Checked before anything is published, because a negative or trivial watch produces a full set of
 # arms, a full ledger and no samples, which reads as a sitting that ran.
 WATCH_SECONDS=$((MINUTES * 60 - PUBLISHER_MARGIN_S))
@@ -242,6 +256,10 @@ if ! can_afford $((TOTAL_ARMS * MINUTES)); then
   exit 1
 fi
 [ "${PREFLIGHT_ONLY:-0}" = "1" ] && { say "PREFLIGHT_ONLY, so stopping here without publishing anything"; exit 0; }
+
+# Installed only here, past every exit that publishes nothing, so a run that starts no broadcast can
+# never tear one down on its way out.
+trap 'stop_publisher' EXIT INT TERM
 
 for round in $(seq 1 "${ROUNDS}"); do
   order=("${ARM_LIST[@]}")
