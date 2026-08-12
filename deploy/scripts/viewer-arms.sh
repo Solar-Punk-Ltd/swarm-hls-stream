@@ -76,6 +76,22 @@ UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-325000000000000}"
 GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-267000000000000}"
 FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-140}"
 
+# What the nodes themselves say they did, either side of every arm, and periodically through a long
+# one. ⛔ This is not decoration on the result. Seventeen arms of the buffer sweep were scored
+# entirely on what the harness saw from outside while both bee nodes kept a complete account of the
+# same events that nothing read. `bee_pusher_sync_time` is the publish race; `bee_retrieval_*` is the
+# fetch hop. Set METRICS_INTERVAL_S above zero for an arm long enough to need a series rather than
+# two endpoints, which is also the only mid-flight funding check a single-arm sitting gets.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NODE_METRICS="${NODE_METRICS:-${HERE}/node-metrics.sh}"
+STAMP_GUARD="${STAMP_GUARD:-${HERE}/stamp-guard.sh}"
+METRICS_INTERVAL_S="${METRICS_INTERVAL_S:-0}"
+UPLOADER_CONTAINER="${UPLOADER_CONTAINER:-latbench-stream-uploader-1}"
+# How often the arm loop looks for a crossed floor while its watch runs. Five seconds against a
+# four-hour arm is under a thousandth of it; a test with a stubbed watch pays it per arm, so it is
+# overridable.
+STOP_POLL_S="${STOP_POLL_S:-5}"
+
 # `name:gop`, in the order round 1 runs them. Even rounds run the reverse, so position within a round
 # cannot favour a configuration.
 read -r -a ARM_LIST <<< "${ARMS:-obs-default:2.0 shipped:0.5}"
@@ -84,7 +100,15 @@ read -r -a ARM_LIST <<< "${ARMS:-obs-default:2.0 shipped:0.5}"
 OUT_DIR="${OUT_DIR:-/home/solarpunk/viewer-arms/$(date -u +%Y%m%d-%H%M%S)}"
 LOG="${OUT_DIR}/viewer-arms.log"
 STATE="${OUT_DIR}/viewer-arms-state.tsv"
-mkdir -p "${OUT_DIR}"
+METRICS_DIR="${OUT_DIR}/node-metrics"
+# Written by the sampler when a floor is crossed, read by the arm loop and by whatever runs next.
+# ⭐ Its presence is the record of WHEN a sitting stopped being trustworthy, which two endpoint
+# readings cannot show and which no amount of care after the fact can reconstruct.
+#
+# Overridable so a chain of sittings can share one, which is what makes a crossed floor stop the
+# night rather than one sitting: the node does not refill between them.
+STOP_FILE="${STOP_FILE:-${OUT_DIR}/STOP}"
+mkdir -p "${OUT_DIR}" "${METRICS_DIR}"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "${LOG}"; }
 bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
@@ -113,6 +137,63 @@ can_afford() {
     fi
   done
   return ${short}
+}
+
+# ⛔ Read off the container that is actually publishing, never off a file. `.env.latbench` is
+# gitignored and lives on the host, `/stamps` lists four batches of which three are dead, and
+# "the stamp" has meant a different row on three separate days here. The uploader's own environment
+# is the only source that cannot be stale.
+resolve_stamp() {
+  [ -n "${STAMP:-}" ] && { printf '%s' "${STAMP}"; return 0; }
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${UPLOADER_CONTAINER}" 2>/dev/null |
+    sed -n 's/^STAMP=//p' | head -1
+}
+
+# Capacity, checked the same way funding is: before the spend, as something that refuses.
+#
+# ⛔ The rule this enforces was already written down, in bold, in two places, and read automatically
+# by `e2e/src/browser/resources.ts` — which warns at the END of a run, after the broadcast is paid
+# for. Three sittings ran past the 75% line on 2026-08-12 because remembering to look was the only
+# thing between the threshold and the spend.
+has_capacity() {
+  local minutes="$1" batch
+  batch="$(resolve_stamp)"
+  if [ -z "${batch}" ]; then
+    say "  REFUSING: could not read STAMP off ${UPLOADER_CONTAINER}, so batch capacity is unknown"
+    return 1
+  fi
+  if ! STAMP_GUARD_PORT="${UPLOADER_BEE_PORT}" bash "${STAMP_GUARD}" \
+    --batch "${batch}" --minutes "${minutes}" --port "${UPLOADER_BEE_PORT}" >> "${LOG}" 2>&1; then
+    say "  REFUSING: stamp-guard says this sitting cannot finish on batch ${batch:0:8}"
+    return 1
+  fi
+  return 0
+}
+
+snapshot_metrics() {
+  local out="$1" label="$2"
+  UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT}" GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT}" \
+    UPLOADER_API_PORT="${UPLOADER_API_PORT}" bash "${NODE_METRICS}" snapshot "${out}" "${label}" \
+    >> "${LOG}" 2>&1 || say "  node-metrics snapshot ${label} failed, so this arm has no node account"
+}
+
+SAMPLER_PID=""
+start_sampler() {
+  local dir="$1" label="$2"
+  [ "${METRICS_INTERVAL_S}" -gt 0 ] 2>/dev/null || return 0
+  mkdir -p "${dir}"
+  UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT}" GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT}" \
+    UPLOADER_API_PORT="${UPLOADER_API_PORT}" bash "${NODE_METRICS}" \
+    watch "${dir}" "${METRICS_INTERVAL_S}" "${STOP_FILE}" "${label}" >> "${LOG}" 2>&1 &
+  SAMPLER_PID=$!
+  say "  sampling both nodes every ${METRICS_INTERVAL_S}s into $(basename "${dir}")"
+}
+
+stop_sampler() {
+  [ -n "${SAMPLER_PID}" ] || return 0
+  kill "${SAMPLER_PID}" 2>/dev/null || true
+  wait "${SAMPLER_PID}" 2>/dev/null || true
+  SAMPLER_PID=""
 }
 
 # `publish-clock.sh` names its container `swarm-hls-publish-$$`, so there is no fixed name and killing
@@ -206,10 +287,19 @@ restart_gateway() {
 run_arm() {
   local name="$1" gop="$2" round="$3" counted="$4" coldFor="-"
   local watch_seconds=$((MINUTES * 60 - PUBLISHER_MARGIN_S))
+  local slug="round${round}-${name}"
   say "round ${round}: ${name} (gop ${gop}) starting, watching ${watch_seconds}s"
 
+  if [ -f "${STOP_FILE}" ]; then
+    say "STOPPING before ${name}: an earlier arm crossed a floor and left ${STOP_FILE}"
+    return 1
+  fi
   if ! can_afford "${MINUTES}"; then
     say "STOPPING before ${name}: cannot pay for this arm"
+    return 1
+  fi
+  if ! has_capacity "${MINUTES}"; then
+    say "STOPPING before ${name}: the postage batch cannot carry this arm"
     return 1
   fi
 
@@ -227,17 +317,42 @@ run_arm() {
     say "  gateway restarted for a cold join, answered after ${coldFor}s"
   fi
 
+  # Taken after the gateway restart, so a cold arm's reading is of the node the viewer actually got.
+  snapshot_metrics "${METRICS_DIR}/${slug}-before.json" "${slug}-before"
+  start_sampler "${METRICS_DIR}/${slug}-series" "${slug}"
+
   (
     cd "${BENCH_REPO}" || exit 1
     BROWSER_CLIENT_URL="http://127.0.0.1:$((10004 + PORT_SLOT * 10))" \
       BROWSER_WATCH_SECONDS="${watch_seconds}" \
       BROWSER_GOP_SECONDS="${gop}" \
       pnpm browser:watch
-  ) >> "${LOG}" 2>&1
-  local status=$?
+  ) >> "${LOG}" 2>&1 &
+  local watch_pid=$! status=0
 
+  # ⭐ The publisher is what spends, so a floor crossed mid-arm is answered by stopping the broadcast
+  # and NOT by killing the watch. Killing it would throw away every sample the arm had already taken,
+  # which on a four-hour arm is the whole result. The watch runs on to its own deadline against a
+  # dead stream, costing time and nothing else, and the stop file says where to cut the series.
+  while kill -0 "${watch_pid}" 2>/dev/null; do
+    if [ -f "${STOP_FILE}" ]; then
+      say "  a floor was crossed mid-arm, stopping the broadcast now and letting the watch write out"
+      stop_publisher
+      break
+    fi
+    sleep "${STOP_POLL_S}"
+  done
+  wait "${watch_pid}" || status=$?
+
+  stop_sampler
   stop_publisher
   wait_for_quiet
+  snapshot_metrics "${METRICS_DIR}/${slug}-after.json" "${slug}-after"
+  bash "${NODE_METRICS}" diff "${METRICS_DIR}/${slug}-before.json" "${METRICS_DIR}/${slug}-after.json" \
+    > "${METRICS_DIR}/${slug}-diff.txt" 2>> "${LOG}" || true
+  say "  what the nodes say this arm did:"
+  sed 's/^/    /' "${METRICS_DIR}/${slug}-diff.txt" >> "${LOG}" 2>/dev/null || true
+
   printf '%s\t%s\t%s\t%s\t%s\tcold=%s\t%s\n' "$(date -u +%FT%TZ)" "${round}" "${name}" "${gop}" "${counted}" \
     "${coldFor}" "$([ ${status} -eq 0 ] && echo ok || echo "WATCH-FAILED(${status})")" >> "${STATE}"
   say "round ${round}: ${name} finished, status ${status}"
@@ -260,15 +375,27 @@ else
   say "  no warm-up round, so every arm counts"
 fi
 [ -n "${COLD_ARMS}" ] && say "  cold-join arms (gateway restarted before the browser opens): ${COLD_ARMS}"
+if [ -f "${STOP_FILE}" ]; then
+  say "REFUSING TO START: a floor was already crossed and ${STOP_FILE} says so:"
+  sed 's/^/  /' "${STOP_FILE}" >> "${LOG}"
+  exit 1
+fi
 if ! can_afford $((TOTAL_ARMS * MINUTES)); then
   say "REFUSING TO START: this sitting cannot pay for itself"
   exit 1
 fi
+if ! has_capacity $((TOTAL_ARMS * MINUTES)); then
+  say "REFUSING TO START: the postage batch cannot carry this sitting"
+  exit 1
+fi
+# The whole instrument surface either side of the sitting, not only either side of each arm, so a
+# drift across the hour has a reading that spans it.
+snapshot_metrics "${METRICS_DIR}/sitting-before.json" "sitting-before"
 [ "${PREFLIGHT_ONLY:-0}" = "1" ] && { say "PREFLIGHT_ONLY, so stopping here without publishing anything"; exit 0; }
 
 # Installed only here, past every exit that publishes nothing, so a run that starts no broadcast can
 # never tear one down on its way out.
-trap 'stop_publisher' EXIT INT TERM
+trap 'stop_sampler; stop_publisher' EXIT INT TERM
 
 for round in $(seq 1 "${ROUNDS}"); do
   order=("${ARM_LIST[@]}")
@@ -283,4 +410,9 @@ for round in $(seq 1 "${ROUNDS}"); do
   done
 done
 
+snapshot_metrics "${METRICS_DIR}/sitting-after.json" "sitting-after"
+bash "${NODE_METRICS}" diff "${METRICS_DIR}/sitting-before.json" "${METRICS_DIR}/sitting-after.json" \
+  > "${METRICS_DIR}/sitting-diff.txt" 2>> "${LOG}" || true
+say "what the nodes say the whole sitting did:"
+sed 's/^/  /' "${METRICS_DIR}/sitting-diff.txt" >> "${LOG}" 2>/dev/null || true
 say "viewer-arms done: $(wc -l < "${STATE}") arms recorded"

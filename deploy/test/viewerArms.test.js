@@ -55,11 +55,30 @@ async function startChequebook(availableBzz) {
  * state the script exists to notice, so the test would sit out a real timeout per arm and prove
  * nothing about the ordering it is measuring.
  */
-function stubBin(binDir, recordPath, watchedFlag, restartLog, removalLog, chequebookPort) {
+const BATCH_ID = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+
+function stubBin(binDir, recordPath, watchedFlag, restartLog, removalLog, chequebookPort, batch) {
   mkdirSync(binDir, { recursive: true });
+  const stamps = {
+    stamps: [
+      {
+        batchID: batch.id,
+        utilization: batch.utilization,
+        usable: batch.usable,
+        label: 'stub',
+        depth: 25,
+        amount: '36043833600',
+        bucketDepth: 16,
+        immutableFlag: true,
+        exists: true,
+        batchTTL: batch.ttlSeconds,
+      },
+    ],
+  };
 
   // Records `restart`, so a cold arm is distinguishable from a warm one, and succeeds at everything
-  // else, since arm teardown shells out to docker too.
+  // else, since arm teardown shells out to docker too. `inspect` carries the batch the uploader is
+  // configured with, which is where the capacity gate reads it from rather than from a file.
   writeFileSync(
     join(binDir, 'docker'),
     `#!/usr/bin/env node
@@ -69,6 +88,9 @@ if (process.argv[2] === 'restart') {
 }
 if (process.argv[2] === 'rm') {
   fs.appendFileSync(${JSON.stringify(removalLog)}, process.argv.slice(3).join(' ') + '\\n');
+}
+if (process.argv[2] === 'inspect') {
+  process.stdout.write(${JSON.stringify(batch.env)});
 }
 // Lists one publisher already on the box, so a run that tears down everything matching the
 // pattern shows up as a removal here.
@@ -86,6 +108,10 @@ const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
 if (url.includes('/chequebook/balance')) {
   process.stdout.write(require('node:child_process').execFileSync('/usr/bin/curl',
     ['-s', 'http://127.0.0.1:${chequebookPort}/chequebook/balance'], { encoding: 'utf8' }));
+} else if (url.includes('/stamps')) {
+  process.stdout.write(${JSON.stringify(JSON.stringify(stamps))});
+} else if (url.includes('/metrics')) {
+  process.stdout.write('bee_pusher_total_synced 12\\nbee_retrieval_request_count 34\\n');
 } else if (url.includes('/health')) {
   // Live until this arm's watch has run, then quiet, which is what a real publisher teardown looks
   // like and what lets wait_for_quiet return instead of expiring.
@@ -113,7 +139,25 @@ process.exit(0);
   }
 }
 
-async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin = '10', cold = '', warmupRounds }) {
+const HEALTHY_BATCH = {
+  id: BATCH_ID,
+  utilization: 199,
+  usable: true,
+  ttlSeconds: 981972,
+  env: `STAMP=${BATCH_ID}\nLOG_LEVEL=debug\n`,
+};
+
+async function runArms({
+  arms,
+  rounds,
+  bzz = 500,
+  preflightOnly = false,
+  margin = '10',
+  cold = '',
+  warmupRounds,
+  batch = HEALTHY_BATCH,
+  stopFileFirst = false,
+}) {
   const port = await startChequebook(bzz);
   const out = mkdtempSync(join(tmpdir(), 'viewer-arms-'));
   cleanups.push(() => rmSync(out, { recursive: true, force: true }));
@@ -124,7 +168,26 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
   const removals = join(out, 'removals.txt');
   writeFileSync(restarts, '');
   writeFileSync(removals, '');
-  stubBin(bin, record, join(out, 'watched.flag'), restarts, removals, port);
+  stubBin(bin, record, join(out, 'watched.flag'), restarts, removals, port, batch);
+  if (stopFileFirst) {
+    writeFileSync(join(out, 'STOP'), 'a previous sitting crossed a floor\n');
+  }
+  // A recorder rather than the real collector. Each real snapshot is seven curls and two python
+  // starts, and an ordering test that takes two of them per arm spends its whole budget proving
+  // something `nodeMetrics.test.js` proves directly. What matters here is THAT every arm is
+  // bracketed, which is exactly what this records.
+  const metricsCalls = join(out, 'metrics-calls.txt');
+  writeFileSync(metricsCalls, '');
+  const metricsStub = join(out, 'node-metrics-stub.sh');
+  writeFileSync(
+    metricsStub,
+    `#!/usr/bin/env bash
+echo "$*" >> ${JSON.stringify(metricsCalls)}
+[ "$1" = snapshot ] && printf '{"label":"%s","atMs":0}' "\${3:-}" > "$2"
+exit 0
+`,
+  );
+  chmodSync(metricsStub, 0o755);
 
   const env = {
     ...process.env,
@@ -148,6 +211,8 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
     PUBLISHER_MARGIN_S: margin,
     UPLOADER_BEE_PORT: String(port),
     GATEWAY_BEE_PORT: String(port),
+    NODE_METRICS: metricsStub,
+    STOP_POLL_S: '0.05',
     ...(preflightOnly ? { PREFLIGHT_ONLY: '1' } : {}),
   };
 
@@ -166,6 +231,7 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
     restarts: readFileSync(restarts, 'utf8').split('\n').filter(Boolean),
     removals: readFileSync(removals, 'utf8').split('\n').filter(Boolean),
     log: readFileSync(join(out, 'viewer-arms.log'), 'utf8'),
+    metricsCalls: readFileSync(metricsCalls, 'utf8').split('\n').filter(Boolean),
   };
 }
 
@@ -295,5 +361,84 @@ describe('a viewer sitting runs its arms in an order that cannot fake a result',
     const { log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 2 });
 
     assert.match(log, /the first 1 round\(s\) are warm-up and are discarded/);
+  });
+});
+
+/**
+ * That a sitting refuses rather than warns, and leaves the nodes' own account of what it did.
+ *
+ * ⛔ Both halves are answers to the same failure on 2026-08-12. The postage stop line was written in
+ * bold in two places and read automatically by a checker that warns at the END of a run, and three
+ * paid sittings went past it. And seventeen arms of a funded buffer sweep were scored entirely on
+ * what the harness saw from outside, while both bee nodes kept a complete account of the same events
+ * that nothing ever read.
+ *
+ * A threshold that is written down is not a control. Only a gate that refuses is one.
+ */
+describe('a sitting refuses what it cannot finish, and records what the nodes did', () => {
+  it('refuses to start when the batch is past its stop line', async () => {
+    const full = { ...HEALTHY_BATCH, utilization: 400 };
+    const { code, log, removals, gops } = await runArms({ arms: 'a:2.0', rounds: 2, batch: full });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, [], 'a sitting published against a batch past the stop line');
+    assert.deepEqual(removals, [], 'a refused sitting removed a container');
+    assert.match(log, /postage batch cannot carry this sitting/);
+  });
+
+  it('refuses to start when the batch has almost no time left', async () => {
+    const expiring = { ...HEALTHY_BATCH, ttlSeconds: 3600 };
+    const { code, gops } = await runArms({ arms: 'a:2.0', rounds: 2, batch: expiring });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, [], 'a sitting published against a batch about to lapse');
+  });
+
+  /**
+   * Unknown capacity is not permission to spend against it. The batch is read off the container that
+   * is actually publishing, because `/stamps` lists four batches of which three are dead and "the
+   * stamp" has meant a different row on three separate days here.
+   */
+  it('refuses when the uploader will not say which batch it is using', async () => {
+    const silent = { ...HEALTHY_BATCH, env: 'LOG_LEVEL=debug\n' };
+    const { code, log, gops } = await runArms({ arms: 'a:2.0', rounds: 2, batch: silent });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, []);
+    assert.match(log, /could not read STAMP/);
+  });
+
+  it('publishes nothing when a previous sitting left a stop file', async () => {
+    const { code, gops, removals } = await runArms({ arms: 'a:2.0', rounds: 2, stopFileFirst: true });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, [], 'a sitting published after a floor had already been crossed');
+    assert.deepEqual(removals, [], 'a refused sitting removed a container');
+  });
+
+  it('brackets every arm and the whole sitting with a reading from both nodes', async () => {
+    const { metricsCalls } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 1, warmupRounds: '0' });
+
+    const labels = metricsCalls.filter((call) => call.startsWith('snapshot ')).map((call) => call.split(/\s+/).pop());
+    assert.deepEqual(labels, [
+      'sitting-before',
+      'round1-a-before',
+      'round1-a-after',
+      'round1-b-before',
+      'round1-b-after',
+      'sitting-after',
+    ]);
+    assert.equal(metricsCalls.filter((call) => call.startsWith('diff ')).length, 3, 'a diff per arm and one over the sitting');
+  });
+
+  it('leaves no reading unpaired, so every arm can be differenced', async () => {
+    const { metricsCalls } = await runArms({ arms: 'a:2.0', rounds: 2, warmupRounds: '0' });
+
+    const snapshots = metricsCalls.filter((call) => call.startsWith('snapshot '));
+    assert.equal(snapshots.length % 2, 0);
+    assert.equal(
+      snapshots.filter((call) => call.endsWith('-before')).length,
+      snapshots.filter((call) => call.endsWith('-after')).length,
+    );
   });
 });
