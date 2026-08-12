@@ -102,11 +102,7 @@ export function armIsComparable(arm: ArmSetup, firstTargetDurationS: number | nu
   if (arm.stallCountAtStart !== 0 && arm.stallCountAtStart !== null) {
     return `arm started with stallCount ${arm.stallCountAtStart}, so it carries the previous arm's penalty`;
   }
-  if (
-    firstTargetDurationS !== null &&
-    arm.targetDurationS !== null &&
-    arm.targetDurationS !== firstTargetDurationS
-  ) {
+  if (firstTargetDurationS !== null && arm.targetDurationS !== null && arm.targetDurationS !== firstTargetDurationS) {
     return (
       `#EXT-X-TARGETDURATION moved from ${firstTargetDurationS} to ${arm.targetDurationS}, so the stall ` +
       'penalty ceiling is not the one earlier arms were measured under'

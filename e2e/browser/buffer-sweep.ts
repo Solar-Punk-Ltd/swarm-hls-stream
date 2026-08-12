@@ -31,7 +31,14 @@ import {
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord } from '../src/browser/network.js';
 import { judgeCost, readResources } from '../src/browser/resources.js';
-import { envNumber, requireEnv, runIdFrom, screenshotDirFor, writeRunArtifacts } from '../src/browser/runFiles.js';
+import {
+  envNumber,
+  requireEnv,
+  runIdFrom,
+  screenshotDirFor,
+  thinRequestLog,
+  writeRunArtifacts,
+} from '../src/browser/runFiles.js';
 import { summarize } from '../src/browser/session.js';
 import { launchViewer, proveInstrumentCanFail, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, sampleFor } from '../src/browser/watchLoop.js';
@@ -78,6 +85,53 @@ function targetsFrom(name: string, fallback: number[]): number[] {
     throw new Error(`${name} names no usable targets: ${raw}`);
   }
   return parsed;
+}
+
+interface SweepRun {
+  measuredAt: string;
+  armSeconds: number;
+  firstTargetDurationS: number | null;
+  results: ArmResult[];
+  cost: { bzzSpent: number; bucketsUsed: number };
+}
+
+/**
+ * The report a person reads, which leads with what was thrown away.
+ *
+ * An excluded arm is printed in the same table as a counted one rather than filtered out, because a
+ * sweep that silently drops arms reports a clean result it did not measure. See gate lesson AHC.
+ */
+function renderSweepReport(run: SweepRun): string {
+  const counted = run.results.filter((row) => row.counted && !row.excludedBecause);
+  const lines = [
+    `# Buffer sweep, ${run.measuredAt}`,
+    '',
+    `${run.armSeconds}s per arm, ${counted.length} of ${run.results.length} arms counted. ` +
+      `\`#EXT-X-TARGETDURATION\` ${run.firstTargetDurationS ?? '—'}s, which caps the stall penalty.`,
+    '',
+    '⛔ Scored on stalls. A smaller buffer always shows a better latency, so the latency column',
+    'cannot locate the floor and is here only to show the arm did what it was told.',
+    '',
+    '| target | held at | samples | rebuffers | stalled | median latency | counted |',
+    '| ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+  ];
+
+  for (const row of run.results) {
+    lines.push(
+      `| ${row.requestedTargetS}s | ${row.setup.targetLatencyS ?? '—'}s | ${row.samples} | ` +
+        `${row.rebufferCount} | ${row.stalledSamples} | ${row.medianLatencyS?.toFixed(2) ?? '—'}s | ` +
+        `${row.excludedBecause ? `no, ${row.excludedBecause}` : 'yes'} |`,
+    );
+  }
+
+  const unsound = run.results.filter((row) => !row.instrumentSound);
+  if (unsound.length > 0) {
+    lines.push('', '## ⛔ Arms whose instrument was not sound', '');
+    unsound.forEach((row) => lines.push(`- **${row.label}**: ${row.instrumentFailures.join('; ')}`));
+  }
+
+  lines.push('', `Cost: ${run.cost.bzzSpent.toFixed(3)} BZZ over ${run.cost.bucketsUsed} postage buckets.`, '');
+  return lines.join('\n');
 }
 
 async function main(): Promise<void> {
@@ -186,8 +240,12 @@ async function main(): Promise<void> {
     gateway: summarizeGateway(gatewaySamples),
   };
 
-  const stem = await writeRunArtifacts('browser-buffer-sweep', runId, { run });
-  console.log(`\nbrowser: wrote ${stem}.json`);
+  const stem = await writeRunArtifacts('browser-buffer-sweep', runId, {
+    markdown: renderSweepReport(run),
+    run,
+    requests: thinRequestLog(requests),
+  });
+  console.log(`\nbrowser: wrote ${stem}.md`);
 
   // Printed as a table with the exclusions beside the counts, because an arm dropped quietly is how a
   // sweep reports a clean result it did not measure.
