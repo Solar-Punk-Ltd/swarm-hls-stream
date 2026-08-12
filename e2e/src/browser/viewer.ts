@@ -132,28 +132,46 @@ export async function installTimerProbe(page: Page): Promise<void> {
  */
 const PROOF_STALL_MS = 3_000;
 
+/** What the visibility proof forces the throwaway document to report. */
+const PROOF_VISIBILITY_STATE = 'hidden';
+
 /**
- * Show that the instrument can report a failure, on a page that is not the one being measured.
+ * A blank page with the timer probe installed, in its own context, torn down afterwards.
  *
- * ⭐ **The degradation is a blocked main thread, chosen because it is the one thing here that no
- * launch flag can mask.** Playwright forces `visibilityState` and unthrottles timers, so neither of
- * those conditions can be created under it, but nothing can make a `setInterval` fire while script is
- * running. The reading comes back with `lastIntervalMs` at the length of the stall, and
- * {@link judgeInstrument} rejects it.
- *
- * ⚠️ **This proves the timer sensor, and only the timer sensor.** The visibility check remains
- * unfalsifiable here and the returned {@link InstrumentProof} says which checks fired, so a report
- * cannot quietly upgrade "one sensor works" into "the guard works". Fixing the visibility check needs
- * the harness to stop asking Playwright, which is a larger change than this one.
- *
- * Run on its own context so the page under measurement is never stalled to prove a point about it.
+ * Its own context so the page under measurement is never degraded to prove a point about it.
  */
-export async function proveInstrumentCanFail(browser: Browser): Promise<InstrumentProof> {
+async function onThrowawayPage<T>(browser: Browser, use: (page: Page) => Promise<T>): Promise<T> {
   const context = await browser.newContext({ viewport: VIEWPORT });
   try {
     const page = await context.newPage();
     await installTimerProbe(page);
     await page.goto('about:blank');
+    return await use(page);
+  } finally {
+    await context.close();
+  }
+}
+
+/**
+ * Show that each sensor the guard relies on can report a failure, on pages that are not the subject.
+ *
+ * ⛔ **A guard that cannot fail is not evidence**, and the two sensors have to be shown separately:
+ * proving the timer sensor says nothing about the visibility one. {@link describeProofs} reports any
+ * sensor that has no proof, so a report cannot quietly upgrade "one sensor works" into "the guard
+ * works".
+ */
+export async function proveInstrumentCanFail(browser: Browser): Promise<InstrumentProof[]> {
+  return [await proveTimerCanFail(browser), await proveVisibilityCanFail(browser)];
+}
+
+/**
+ * ⭐ **A blocked main thread is the one degradation here that no launch flag can mask.** Playwright
+ * passes `--disable-background-timer-throttling` and two siblings, so a genuinely backgrounded page
+ * still has punctual timers, but nothing can make a `setInterval` fire while script is running. The
+ * reading comes back with `lastIntervalMs` at the length of the stall.
+ */
+async function proveTimerCanFail(browser: Browser): Promise<InstrumentProof> {
+  return onThrowawayPage(browser, async (page) => {
     await page.evaluate((stallMs: number) => {
       const until = performance.now() + stallMs;
       while (performance.now() < until) {
@@ -162,16 +180,45 @@ export async function proveInstrumentCanFail(browser: Browser): Promise<Instrume
       }
     }, PROOF_STALL_MS);
 
-    const reading = await readInstrument(page);
-    const verdict = judgeInstrument(reading);
+    const verdict = judgeInstrument(await readInstrument(page));
     return {
+      sensor: 'timerDriftRatio',
       degradation: `its main thread blocked for ${PROOF_STALL_MS}ms`,
       rejected: !verdict.sound,
-      firedChecks: verdict.failures.length > 0 ? ['timerDriftRatio'] : [],
+      firedChecks: verdict.firedChecks,
     };
-  } finally {
-    await context.close();
-  }
+  });
+}
+
+/**
+ * ⚠️ **This is a weaker proof than the timer one, and the wording says so wherever it is printed.**
+ *
+ * Playwright sends `Emulation.setFocusEmulationEnabled({enabled: true})` on every main frame, so a
+ * page here cannot be genuinely hidden. The document's own answer is overridden instead, which tests
+ * that **the collection path reports what the document says rather than assuming `visible`**. That is
+ * the part that was untested and that a refactor could silently break.
+ *
+ * ⛔ What it still does not test is whether Chromium would ever report `hidden` to this harness. It
+ * would not, under these flags. So the visibility check protects against a future harness that drops
+ * them, and against nothing today.
+ */
+async function proveVisibilityCanFail(browser: Browser): Promise<InstrumentProof> {
+  return onThrowawayPage(browser, async (page) => {
+    await page.evaluate((state: string) => {
+      Object.defineProperty(document, 'visibilityState', { get: () => state, configurable: true });
+    }, PROOF_VISIBILITY_STATE);
+    // Let the probe fire at least once after navigation, so a slow start does not trip the timer
+    // check as well and leave the proof looking like it fired for the reason it claims.
+    await page.waitForTimeout(TIMER_PROBE_INTERVAL_MS * 3);
+
+    const verdict = judgeInstrument(await readInstrument(page));
+    return {
+      sensor: 'visibilityState',
+      degradation: `document.visibilityState overridden to '${PROOF_VISIBILITY_STATE}'`,
+      rejected: !verdict.sound,
+      firedChecks: verdict.firedChecks,
+    };
+  });
 }
 
 export async function readInstrument(page: Page): Promise<InstrumentReading> {

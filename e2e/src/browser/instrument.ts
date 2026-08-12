@@ -66,7 +66,19 @@ export interface InstrumentVerdict {
   sound: boolean;
   /** One sentence per failure, in the words the report prints. Empty when sound. */
   failures: string[];
+  /**
+   * The names of the checks that tripped.
+   *
+   * Carried alongside the prose so a falsifiability proof can show it fired for the reason it claims
+   * rather than for some other one. A visibility proof that passes because the timer happened to
+   * stutter has proven nothing about visibility, and without this that would be invisible.
+   */
+  firedChecks: string[];
 }
+
+/** The sensors {@link judgeInstrument} reads, each of which needs its own falsifiability proof. */
+export const PROVEN_SENSORS = ['visibilityState', 'timerDriftRatio'] as const;
+export type ProvenSensor = (typeof PROVEN_SENSORS)[number];
 
 /**
  * Evidence that the sensor can report a failure at all, taken from a page that is not the subject.
@@ -89,6 +101,13 @@ export interface InstrumentVerdict {
  * proof carries to the real page without disturbing what it is watching.
  */
 export interface InstrumentProof {
+  /**
+   * The sensor this proof is about.
+   *
+   * Named so a missing proof can be reported by name. Proving the timer sensor says nothing about the
+   * visibility sensor, and a single unnamed proof would let one stand in for both.
+   */
+  sensor: ProvenSensor;
   /** What was done to the throwaway page, in the words the report prints. */
   degradation: string;
   /** Whether {@link judgeInstrument} rejected the reading taken while the degradation was in force. */
@@ -104,33 +123,53 @@ export interface InstrumentProof {
  * exact numbers the 2026-08-03 attempt produced rather than against a browser that has to be
  * persuaded into that state.
  */
-export function judgeInstrument(reading: InstrumentReading): InstrumentVerdict {
-  const failures: string[] = [];
+interface Check {
+  name: string;
+  trips: (reading: InstrumentReading) => boolean;
+  say: (reading: InstrumentReading) => string;
+}
 
-  if (reading.visibilityState !== 'visible') {
-    failures.push(
+/**
+ * Held as a table rather than a run of `if` blocks so that the name of a check and the condition that
+ * trips it cannot drift apart. A proof reports which check fired, and deriving that separately from
+ * the judgement would be two copies of the same rule.
+ */
+const CHECKS: readonly Check[] = [
+  {
+    name: 'visibilityState',
+    trips: (reading) => reading.visibilityState !== 'visible',
+    say: (reading) =>
       `the page reported visibilityState '${reading.visibilityState}', so Chromium is entitled to pause ` +
-        `muted video and throttle the timers hls.js loads from`,
-    );
-  }
-
-  if (reading.timerDriftRatio > TIMER_DRIFT_LIMIT) {
-    failures.push(
+      `muted video and throttle the timers hls.js loads from`,
+  },
+  {
+    name: 'timerDriftRatio',
+    trips: (reading) => reading.timerDriftRatio > TIMER_DRIFT_LIMIT,
+    say: (reading) =>
       `a ${TIMER_PROBE_INTERVAL_MS}ms timer fired ${reading.timerDriftRatio.toFixed(1)}x late, over the ` +
-        `${TIMER_DRIFT_LIMIT}x limit, so the loader hls.js drives from timers was not running at its configured rate`,
-    );
-  }
-
-  const missing = REQUIRED_CODECS.filter((codec) => !reading.codecSupport[codec]);
-  if (missing.length > 0) {
-    failures.push(
-      `the browser cannot decode ${missing.join(
+      `${TIMER_DRIFT_LIMIT}x limit, so the loader hls.js drives from timers was not running at its configured rate`,
+  },
+  {
+    name: 'codecSupport',
+    trips: (reading) => missingCodecs(reading).length > 0,
+    say: (reading) =>
+      `the browser cannot decode ${missingCodecs(reading).join(
         ' or ',
       )}, so an empty picture here would be the build and not the stream`,
-    );
-  }
+  },
+];
 
-  return { sound: failures.length === 0, failures };
+function missingCodecs(reading: InstrumentReading): string[] {
+  return REQUIRED_CODECS.filter((codec) => !reading.codecSupport[codec]);
+}
+
+export function judgeInstrument(reading: InstrumentReading): InstrumentVerdict {
+  const tripped = CHECKS.filter((check) => check.trips(reading));
+  return {
+    sound: tripped.length === 0,
+    failures: tripped.map((check) => check.say(reading)),
+    firedChecks: tripped.map((check) => check.name),
+  };
 }
 
 /**
@@ -146,7 +185,8 @@ export function judgeRun(readings: readonly InstrumentReading[]): InstrumentVerd
   // Deduplicated because a throttled run repeats one sentence once per sample, and forty copies of
   // it in a report is noise around the one fact.
   const failures = [...new Set(verdicts.flatMap((verdict) => verdict.failures))];
-  return { sound: readings.length > 0 && failures.length === 0, failures, soundSamples };
+  const firedChecks = [...new Set(verdicts.flatMap((verdict) => verdict.firedChecks))];
+  return { sound: readings.length > 0 && failures.length === 0, failures, firedChecks, soundSamples };
 }
 
 /**
@@ -157,15 +197,30 @@ export function judgeRun(readings: readonly InstrumentReading[]): InstrumentVerd
  * question of whether "sound" was capable of coming out any other way. Keeping them apart is what
  * stops a failed proof from being read as a degraded viewer.
  */
-export function describeProof(proof: InstrumentProof | undefined): string[] {
-  if (!proof) {
+export function describeProofs(proofs: readonly InstrumentProof[] | undefined): string[] {
+  if (!proofs || proofs.length === 0) {
     return ["no falsifiability proof was taken, so this run's soundness verdict is untested"];
   }
-  if (!proof.rejected) {
-    return [
-      `the instrument did not reject a page with ${proof.degradation}, so its soundness checks cannot ` +
-        'fail here and every "sound" verdict below is a restatement of the launch flags rather than evidence',
-    ];
-  }
-  return [];
+
+  return PROVEN_SENSORS.flatMap((sensor) => {
+    const proof = proofs.find((candidate) => candidate.sensor === sensor);
+    if (!proof) {
+      return [`the ${sensor} check was never shown able to fail, so a "sound" verdict from it is untested`];
+    }
+    if (!proof.rejected) {
+      return [
+        `the instrument did not reject a page with ${proof.degradation}, so its ${sensor} check cannot ` +
+          'fail here and every "sound" verdict below is a restatement of the launch flags rather than evidence',
+      ];
+    }
+    // A proof that fired only because some other check tripped has demonstrated that other check.
+    if (!proof.firedChecks.includes(sensor)) {
+      return [
+        `the reading taken with ${proof.degradation} was rejected, but by ${
+          proof.firedChecks.join(' and ') || 'no named check'
+        } rather than by ${sensor}, so ${sensor} is still untested`,
+      ];
+    }
+    return [];
+  });
 }

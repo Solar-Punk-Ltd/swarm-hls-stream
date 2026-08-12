@@ -192,7 +192,7 @@ describe('what the latency section says about the target it was measured against
       chromeVersion: 'Chrome test',
       gopSeconds: 0.25,
       summary: summarize(run(...steps)),
-      instrument: { sound: true, failures: [], soundSamples: steps.length },
+      instrument: { sound: true, failures: [], firedChecks: [], soundSamples: steps.length },
       samples: [],
       screenshots: [],
     }).join('\n');

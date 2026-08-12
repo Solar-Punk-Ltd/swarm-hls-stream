@@ -32,7 +32,7 @@ import {
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
 import { summarize } from '../src/browser/session.js';
-import { launchViewer, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import { launchViewer, proveInstrumentCanFail, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, type SampledStretch, sampleFor } from '../src/browser/watchLoop.js';
 import { loadConfig } from '../src/config.js';
 import { makeHost } from '../src/harness/host.js';
@@ -56,6 +56,9 @@ async function main(): Promise<void> {
 
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
+  // Taken before the measurement so an early failure downstream cannot leave the run reporting a
+  // soundness verdict nothing ever tried to break.
+  const instrumentProofs = await proveInstrumentCanFail(browser);
   console.log(`browser: ${chromeVersion}, watching via ${clientUrl} for ${watchSeconds}s`);
 
   const requests: RequestRecord[] = [];
@@ -103,6 +106,7 @@ async function main(): Promise<void> {
     chromeVersion,
     gopSeconds,
     summary: summarize(watched.samples),
+    instrumentProofs,
     instrument: judgeRun(watched.readings),
     network,
     samples: watched.samples,

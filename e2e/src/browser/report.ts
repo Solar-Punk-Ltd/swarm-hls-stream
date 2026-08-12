@@ -10,7 +10,7 @@
 import { LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
 
 import { type GatewayHealth, gatewaySection } from './gatewayHealth.js';
-import { describeProof, type InstrumentProof, type InstrumentVerdict } from './instrument.js';
+import { describeProofs, type InstrumentProof, type InstrumentVerdict } from './instrument.js';
 import type { NetworkSummary } from './network.js';
 import { costSection, type ResourceCost } from './resources.js';
 import type { LatencyTargetVerdict, SessionSummary, ViewerSample } from './session.js';
@@ -30,7 +30,7 @@ export interface BrowserRun {
    * rendered for the archive is a report that cannot be re-derived. A run without one is reported as
    * having an untested verdict rather than a sound one.
    */
-  instrumentProof?: InstrumentProof;
+  instrumentProofs?: readonly InstrumentProof[];
   network?: NetworkSummary;
   samples: readonly ViewerSample[];
   screenshots: readonly string[];
@@ -77,7 +77,7 @@ export function instrumentSection(run: BrowserRun): string[] {
     // A sound verdict is only worth printing as one if the check that produced it could have said
     // otherwise. Where it could not, the caveat goes in the heading rather than in a footnote,
     // because a reader who has to scroll to find it will quote the verdict.
-    const unproven = describeProof(run.instrumentProof);
+    const unproven = describeProofs(run.instrumentProofs);
     return [
       unproven.length > 0
         ? '## ⚠️ Every sample passed, but the check could not have failed'
