@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { armIsComparable, type ArmSetup, perArmFromSessionTotals } from '../src/browser/bufferSweep.js';
+import {
+  armIsComparable,
+  armResultFrom,
+  type ArmSetup,
+  MAX_LOGGED_UNEVENTFUL_SAMPLES,
+  perArmFromSessionTotals,
+  thinSamples,
+} from '../src/browser/bufferSweep.js';
+import { type InstrumentReading, REQUIRED_CODECS } from '../src/browser/instrument.js';
+import { type ViewerSample } from '../src/browser/session.js';
+import { type SampledStretch } from '../src/browser/watchLoop.js';
 
 function armThatTook(over: Partial<ArmSetup> = {}): ArmSetup {
   return {
@@ -13,6 +23,52 @@ function armThatTook(over: Partial<ArmSetup> = {}): ArmSetup {
     ...over,
   };
 }
+
+const BASE: ViewerSample = {
+  atMs: 0,
+  currentTime: 0,
+  paused: false,
+  readyState: 4,
+  playbackRate: 1,
+  bufferAheadS: 8,
+  liveLatencyS: 1.5,
+  liveTargetLatencyS: 1.5,
+  bufferStalls: 0,
+  rebufferCount: 0,
+  rebufferMs: 0,
+  fatalErrors: 0,
+  decodedFrames: 0,
+  droppedFrames: 0,
+  resolution: '1280×720',
+  feedStateMessage: null,
+};
+
+/**
+ * An arm that watched `count` seconds without incident, with `at` applied from its index on.
+ *
+ * The overrides carry forward rather than landing on one sample, because everything the sweep reads
+ * is a running total the player maintains for the session: a rebuffer that reverted a second later
+ * would be a player restart rather than a rebuffer.
+ */
+function arm(count: number, at: Record<number, Partial<ViewerSample>> = {}): ViewerSample[] {
+  let carried: Partial<ViewerSample> = {};
+  return Array.from({ length: count }, (_, i) => {
+    carried = { ...carried, ...at[i] };
+    return { ...BASE, atMs: i * 1000, currentTime: i, ...carried };
+  });
+}
+
+const SOUND_READING: InstrumentReading = {
+  visibilityState: 'visible',
+  timerDriftRatio: 1,
+  codecSupport: Object.fromEntries(REQUIRED_CODECS.map((codec) => [codec, true])),
+};
+
+const stretchOf = (samples: readonly ViewerSample[]): SampledStretch => ({
+  samples: [...samples],
+  readings: samples.map(() => SOUND_READING),
+  screenshots: [],
+});
 
 /**
  * What the sweep is allowed to count.
@@ -110,5 +166,140 @@ describe('scoring an arm on its own rebuffers', () => {
 
   it('handles an empty sweep without inventing an arm', () => {
     assert.deepEqual(perArmFromSessionTotals([]), []);
+  });
+});
+
+/**
+ * What an arm keeps of its own series.
+ *
+ * The sweep is scored on rebuffers, and a rebuffer count on its own cannot be lined up against
+ * anything. The refusals our uploader's `deferred: false` feed slot produces are already in the
+ * `.requests.json` with their `startedAtMs`, so whether a small buffer target's rebuffers are those
+ * refusals is a question about two timestamps, and this is the side that used to be a count.
+ */
+describe('what an arm keeps of its samples', () => {
+  const uneventful = (count: number): number => thinSamples(arm(count)).length;
+
+  it('keeps a short arm whole, so an ordinary sitting loses nothing', () => {
+    const kept = thinSamples(arm(MAX_LOGGED_UNEVENTFUL_SAMPLES));
+
+    assert.equal(kept.length, MAX_LOGGED_UNEVENTFUL_SAMPLES);
+  });
+
+  it('thins a long arm to the cap rather than growing with the sitting', () => {
+    assert.ok(uneventful(4_000) <= MAX_LOGGED_UNEVENTFUL_SAMPLES + 1);
+  });
+
+  it('keeps the arm start, which is what puts the arm on the request log wall clock', () => {
+    const kept = thinSamples(arm(4_000));
+
+    assert.equal(kept[0].atMs, 0);
+  });
+
+  /**
+   * The one this whole change is for. A thinned stretch is sampled every Nth second, so a rebuffer
+   * surviving only as "somewhere in the last N" would make the alignment coarser exactly as the
+   * sitting grew, which is the thinning dissolving the comparison it is meant to keep affordable.
+   *
+   * ⛔ Asserted over a run of positions rather than one. An event's predecessor lands on the thinning
+   * stride roughly one time in N by coincidence, and at a single position this passed with the
+   * predecessor rule taken out.
+   */
+  it('keeps a rebuffer out of a long uneventful arm, bracketed to one interval', () => {
+    for (let landsAt = 2_000; landsAt < 2_010; landsAt += 1) {
+      const kept = thinSamples(arm(4_000, { [landsAt]: { rebufferCount: 1, rebufferMs: 400 } }));
+      const at = kept.findIndex((sample) => sample.rebufferCount === 1);
+
+      assert.ok(at > 0, `the rebuffer at sample ${landsAt} was thinned away`);
+      assert.equal(
+        kept[at].atMs - kept[at - 1].atMs,
+        1_000,
+        `nothing within a sampling interval bounds when the rebuffer at sample ${landsAt} started`,
+      );
+    }
+  });
+
+  /**
+   * A stall is a step rather than a counter, so both ends of it have to survive: the pair is what
+   * `summarize` reads to call the sample stalled at all.
+   */
+  it('keeps both ends of a stall, which is scored off the step and not off a counter', () => {
+    const frozen = arm(4_000).map((sample, i) => (i >= 2_000 ? { ...sample, currentTime: 2_000 } : sample));
+
+    const at = new Set(thinSamples(frozen).map((sample) => sample.atMs));
+
+    assert.ok(at.has(2_000_000) && at.has(2_001_000), 'the interval playback stopped over was thinned away');
+  });
+
+  it('keeps what the overlay told the viewer when it changed', () => {
+    const kept = thinSamples(arm(4_000, { 2_000: { feedStateMessage: 'Waiting for the broadcast' } }));
+
+    assert.ok(kept.some((sample) => sample.atMs === 2_000_000));
+  });
+
+  it('does not fall over on an arm that took nothing', () => {
+    assert.deepEqual(thinSamples([]), []);
+    assert.equal(uneventful(1), 1);
+  });
+});
+
+/**
+ * ⛔ The regression this exists to stop: `samples` used to be `stretch.samples.length`, a count, and
+ * the whole series was dropped on the floor. A published sweep could then say how many rebuffers an
+ * arm had and nothing at all about when inside the arm they happened.
+ */
+describe('the arm result a sweep publishes', () => {
+  const resultFor = (samples: readonly ViewerSample[]) =>
+    armResultFrom({ label: 'arm@1.5s', targetS: 1.5, counted: true }, armThatTook(), 1, stretchOf(samples));
+
+  it('carries the samples themselves rather than a count of them', () => {
+    const result = resultFor(arm(3, { 1: { rebufferCount: 1 } }));
+
+    assert.deepEqual(
+      result.samples.map((sample) => sample.atMs),
+      [0, 1_000, 2_000],
+    );
+  });
+
+  /**
+   * Counted over the whole stretch, so the column a reader scores the sweep on is the number of
+   * samples the arm took rather than the number that survived thinning.
+   */
+  it('counts every sample taken, not the ones the artefact kept', () => {
+    const result = resultFor(arm(4_000));
+
+    assert.equal(result.sampleCount, 4_000);
+    assert.ok(result.samples.length < result.sampleCount);
+  });
+
+  /** Thinning runs after the scoring, so nothing a sweep report prints moves when the cap does. */
+  it('scores the arm over the whole series, before any of it is thinned', () => {
+    const withLateRebuffers = arm(4_000, { 3_500: { rebufferCount: 2, rebufferMs: 900 } });
+
+    const result = resultFor(withLateRebuffers);
+
+    assert.equal(result.rebufferCount, 2);
+  });
+
+  it('names a warm-up arm as excluded without judging its setup', () => {
+    const warmup = armResultFrom(
+      { label: 'warmup-0@6s', targetS: 6, counted: false },
+      armThatTook(),
+      1,
+      stretchOf(arm(3)),
+    );
+
+    assert.equal(warmup.excludedBecause, 'warm-up');
+  });
+
+  it('carries the reason a counted arm was excluded', () => {
+    const contaminated = armResultFrom(
+      { label: 'arm@1.5s', targetS: 1.5, counted: true },
+      armThatTook({ stallCountAtStart: 2 }),
+      1,
+      stretchOf(arm(3)),
+    );
+
+    assert.match(contaminated.excludedBecause ?? '', /carries the previous arm/);
   });
 });

@@ -1,5 +1,9 @@
 import { type Page } from 'playwright-core';
 
+import { judgeRun } from './instrument.js';
+import { playbackAdvances, STALLED_ADVANCE_RATIO, summarize, type ViewerSample } from './session.js';
+import { type SampledStretch } from './watchLoop.js';
+
 /**
  * Where the player publishes itself when built with `VITE_EXPOSE_PLAYER`.
  *
@@ -136,4 +140,152 @@ export function perArmFromSessionTotals(totals: readonly number[]): number[] {
     previous = total;
     return contribution;
   });
+}
+
+/**
+ * How many uneventful samples an arm keeps in the artefact.
+ *
+ * A sample costs about 400 bytes once `writeRunArtifacts` pretty-prints it, and a sitting is as many
+ * arms as it has questions. Seventeen arms of 300s is 5,100 samples and a **2.54 MB** json committed
+ * to git, against 1.29 MB for the largest file `docs/bench` holds and 9.9 MB for everything it has
+ * accumulated. At this cap that sitting is 1.28 MB, the shipped four-plus-two arms of 240s go from
+ * 0.72 MB to 0.36, and an uneventful stretch is sampled every other second.
+ */
+export const MAX_LOGGED_UNEVENTFUL_SAMPLES = 150;
+
+/**
+ * Which samples an arm cannot be read without.
+ *
+ * Everything the sweep is scored on, plus what the overlay was telling the viewer. Judged against
+ * the preceding sample rather than read off this one, because the player reports all of these as
+ * running totals for the session: a rebuffer is a step in a counter rather than a flag on a sample.
+ *
+ * The stall test is {@link playbackAdvances} against {@link STALLED_ADVANCE_RATIO}, which is the
+ * arithmetic {@link summarize} counts `stalledSamples` with. A second definition of a stall here
+ * would leave the kept samples disagreeing with the score they are the evidence for.
+ */
+function eventfulFlags(samples: readonly ViewerSample[]): boolean[] {
+  // advances[i] describes the step from samples[i] to samples[i + 1], so it is indexed off by one.
+  const advances = playbackAdvances(samples);
+
+  return samples.map((sample, i) => {
+    // The arm's first sample, which is what puts the arm on the wall clock the request log uses.
+    if (i === 0) {
+      return true;
+    }
+    const previous = samples[i - 1];
+    return (
+      advances[i - 1].ratio < STALLED_ADVANCE_RATIO ||
+      sample.rebufferCount !== previous.rebufferCount ||
+      sample.rebufferMs !== previous.rebufferMs ||
+      sample.bufferStalls !== previous.bufferStalls ||
+      sample.fatalErrors !== previous.fatalErrors ||
+      sample.feedStateMessage !== previous.feedStateMessage
+    );
+  });
+}
+
+/**
+ * Keep every sample where something happened, and an evenly spread sample of the rest.
+ *
+ * ⭐ **The series is what says _when_ inside an arm a rebuffer landed**, which a count cannot.
+ * `docs/bench/gop-floor-replicate-2026-08-12.md` established that our own uploader publishes a
+ * segment's reference about 100ms before its bytes are retrievable, and the refusals that follow from
+ * it are already in the `.requests.json` beside the report with their `startedAtMs`. Whether the
+ * rebuffers a small buffer target produces are those refusals is a question about two timestamps, and
+ * both sides are `Date.now()` on the host that launched the browser, so they subtract.
+ *
+ * Thinned on `thinRequestLog`'s pattern and for its reason: an event is why anyone opens the file,
+ * and the uneventful majority is there to give the events a background. One pass, in order.
+ *
+ * An event's predecessor is kept as well. These counters only report that something has already
+ * happened, so the sample before one is what bounds when it started, and without it that bracket
+ * would widen with the thinning rate rather than staying at a sampling interval. A refusal lasts
+ * about 100ms, so a bracket that grew with the cap would be the thinning quietly dissolving the
+ * comparison the samples are kept for.
+ *
+ * ⛔ Every figure the report scores is computed over the **whole** series before this runs, so no
+ * number in a sweep report changes.
+ */
+export function thinSamples(samples: readonly ViewerSample[]): ViewerSample[] {
+  const eventful = eventfulFlags(samples);
+  const keep = eventful.map((flag, i) => flag || eventful[i + 1] === true);
+
+  const uneventful = keep.reduce((total, flag) => total + (flag ? 0 : 1), 0);
+  if (uneventful <= MAX_LOGGED_UNEVENTFUL_SAMPLES) {
+    return [...samples];
+  }
+
+  const everyNth = Math.ceil(uneventful / MAX_LOGGED_UNEVENTFUL_SAMPLES);
+  let thinned = 0;
+  return samples.filter((_, i) => (keep[i] ? true : thinned++ % everyNth === 0));
+}
+
+export interface ArmPlan {
+  label: string;
+  targetS: number;
+  /** False for the warm-up arms, which are measured and then thrown away. */
+  counted: boolean;
+}
+
+export interface ArmResult {
+  label: string;
+  requestedTargetS: number;
+  counted: boolean;
+  setup: ArmSetup;
+  excludedBecause: string | null;
+  /** How many samples the arm took, which is more than {@link samples} holds once thinned. */
+  sampleCount: number;
+  /** The arm's own series, thinned by {@link thinSamples}. */
+  samples: readonly ViewerSample[];
+  /**
+   * Rebuffers this arm caused, not the session total at the end of it.
+   *
+   * ⛔ Left as the session total by {@link armResultFrom} and replaced once the sweep ends, because
+   * the counter behind it is monotonic across the whole sweep and one arm's contribution is not
+   * knowable until its predecessor's total is. See {@link perArmFromSessionTotals}.
+   *
+   * ⚠️ `stalledSamples` beside it needs no such treatment: it counts samples inside the arm.
+   */
+  rebufferCount: number;
+  stalledSamples: number;
+  medianLatencyS: number | null;
+  instrumentSound: boolean;
+  instrumentFailures: string[];
+}
+
+/**
+ * Everything an arm is worth, in one place, so a runner cannot report a figure the arm did not
+ * measure.
+ *
+ * The summary and the instrument verdict are taken over the whole stretch, before
+ * {@link thinSamples} touches anything.
+ *
+ * ⛔ {@link ArmResult.rebufferCount} comes out of here as the **session** total. Nothing inside one
+ * arm can difference it, so the runner replaces it through {@link perArmFromSessionTotals} once the
+ * sweep has every arm's reading.
+ */
+export function armResultFrom(
+  arm: ArmPlan,
+  setup: ArmSetup,
+  firstTargetDurationS: number | null,
+  stretch: SampledStretch,
+): ArmResult {
+  const summary = summarize(stretch.samples);
+  const instrument = judgeRun(stretch.readings);
+
+  return {
+    label: arm.label,
+    requestedTargetS: arm.targetS,
+    counted: arm.counted,
+    setup,
+    excludedBecause: arm.counted ? armIsComparable(setup, firstTargetDurationS) : 'warm-up',
+    sampleCount: stretch.samples.length,
+    samples: thinSamples(stretch.samples),
+    rebufferCount: summary.rebufferCount,
+    stalledSamples: summary.stalledSamples,
+    medianLatencyS: summary.latency.medianLatencyS ?? null,
+    instrumentSound: instrument.sound,
+    instrumentFailures: instrument.failures,
+  };
 }
