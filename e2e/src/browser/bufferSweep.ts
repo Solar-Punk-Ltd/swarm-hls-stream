@@ -110,3 +110,30 @@ export function armIsComparable(arm: ArmSetup, firstTargetDurationS: number | nu
   }
   return null;
 }
+
+/**
+ * Per-arm contributions from a series of session totals.
+ *
+ * ⛔ `summarize` reads `rebufferCount`, `rebufferMs`, `fatalErrors` and `droppedFrames` through
+ * `totalAcrossRestarts`, which takes the peak of a **monotonic session counter**. That is right for a
+ * whole watch and wrong for one arm of a sweep: each arm would report everything its predecessors
+ * accumulated, an arm that caused nothing would report the running total, and the column the sweep is
+ * scored on would read flat whatever the buffer did.
+ *
+ * ⚠️ `stalledSamples` needs none of this. It counts samples inside the arm, which is why the two sat
+ * side by side in one table looking like the same kind of number.
+ *
+ * A total that goes **down** is a player restart resetting its counter, so the drop is not negative
+ * work: the arm contributed whatever it reached from zero.
+ */
+export function perArmFromSessionTotals(totals: readonly number[]): number[] {
+  let previous = 0;
+  return totals.map((total) => {
+    // Against the previous reading rather than the running peak: after a restart the counter's own
+    // baseline is what later arms are measured from, and carrying the old peak would credit every
+    // arm after a restart with nothing until it climbed back past it.
+    const contribution = total >= previous ? total - previous : total;
+    previous = total;
+    return contribution;
+  });
+}
