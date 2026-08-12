@@ -20,7 +20,13 @@
  *   deploy/scripts/browser-on-host.sh --script browser:buffer-sweep -- BROWSER_ARM_SECONDS=240
  */
 
-import { armIsComparable, type ArmSetup, perArmFromSessionTotals, setArm } from '../src/browser/bufferSweep.js';
+import {
+  type ArmPlan,
+  type ArmResult,
+  armResultFrom,
+  perArmFromSessionTotals,
+  setArm,
+} from '../src/browser/bufferSweep.js';
 import {
   DEFAULT_GATEWAY_SAMPLE_INTERVAL_MS,
   gatewayReader,
@@ -28,7 +34,6 @@ import {
   startGatewaySampling,
   summarizeGateway,
 } from '../src/browser/gatewayHealth.js';
-import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord } from '../src/browser/network.js';
 import { judgeCost, readResources } from '../src/browser/resources.js';
 import {
@@ -39,7 +44,6 @@ import {
   thinRequestLog,
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
-import { summarize } from '../src/browser/session.js';
 import { launchViewer, proveInstrumentCanFail, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, sampleFor } from '../src/browser/watchLoop.js';
 import { loadConfig } from '../src/config.js';
@@ -57,31 +61,6 @@ const DEFAULT_COUNTED_TARGETS_S = [6, 3, 2, 1.5];
 
 /** Discarded. Two of them, and at the ends of the range, so warm-up cannot favour either direction. */
 const DEFAULT_WARMUP_TARGETS_S = [6, 1.5];
-
-interface ArmResult {
-  label: string;
-  requestedTargetS: number;
-  counted: boolean;
-  setup: ArmSetup;
-  excludedBecause: string | null;
-  samples: number;
-  /**
-   * Rebuffers this arm caused, not the session total at the end of it.
-   *
-   * ⛔ `summarize` reads `rebufferCount` through `totalAcrossRestarts`, which takes the peak of a
-   * **monotonic session counter**. Correct for a whole watch and wrong for one arm of a sweep: every
-   * arm would report whatever its predecessors accumulated, so an arm that caused nothing reports the
-   * running total and the sweep's own score reads as flat. This is the number the sweep is scored on,
-   * which is why it is differenced here rather than left for a reader to notice.
-   *
-   * ⚠️ `stalledSamples` beside it needs no such treatment: it counts samples inside the arm.
-   */
-  rebufferCount: number;
-  stalledSamples: number;
-  medianLatencyS: number | null;
-  instrumentSound: boolean;
-  instrumentFailures: string[];
-}
 
 function targetsFrom(name: string, fallback: number[]): number[] {
   const raw = process.env[name];
@@ -123,13 +102,18 @@ function renderSweepReport(run: SweepRun): string {
     '⛔ Scored on stalls. A smaller buffer always shows a better latency, so the latency column',
     'cannot locate the floor and is here only to show the arm did what it was told.',
     '',
+    "The `.json` beside this carries each arm's samples, so a rebuffer can be placed inside its arm",
+    'and lined up against the refusals in the `.requests.json`. That series is thinned and holds fewer',
+    'rows than the samples column counts: every sample where something happened is kept with the one',
+    'before it, and the uneventful rest is sampled evenly.',
+    '',
     '| target | held at | samples | rebuffers | stalled | median latency | counted |',
     '| ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
 
   for (const row of run.results) {
     lines.push(
-      `| ${row.requestedTargetS}s | ${row.setup.targetLatencyS ?? '—'}s | ${row.samples} | ` +
+      `| ${row.requestedTargetS}s | ${row.setup.targetLatencyS ?? '—'}s | ${row.sampleCount} | ` +
         `${row.rebufferCount} | ${row.stalledSamples} | ${row.medianLatencyS?.toFixed(2) ?? '—'}s | ` +
         `${row.excludedBecause ? `no, ${row.excludedBecause}` : 'yes'} |`,
     );
@@ -162,7 +146,7 @@ async function main(): Promise<void> {
   const chromeVersion = `Chrome ${browser.version()}`;
   const instrumentProofs = await proveInstrumentCanFail(browser);
 
-  const plan = [
+  const plan: ArmPlan[] = [
     ...warmup.map((targetS, index) => ({ targetS, counted: false, label: `warmup-${index}@${targetS}s` })),
     // Reversed against the warm-up order, so a drift across the sitting cannot line up with the axis.
     ...[...counted].reverse().map((targetS) => ({ targetS, counted: true, label: `arm@${targetS}s` })),
@@ -213,29 +197,15 @@ async function main(): Promise<void> {
         totalSamples: plan.length * Math.ceil((armSeconds * 1000) / intervalMs),
       });
 
-      const summary = summarize(stretch.samples);
-      const instrument = judgeRun(stretch.readings);
-      rebufferTotals.push(summary.rebufferCount);
-      results.push({
-        label: arm.label,
-        requestedTargetS: arm.targetS,
-        counted: arm.counted,
-        setup,
-        excludedBecause: arm.counted ? armIsComparable(setup, firstTargetDurationS) : 'warm-up',
-        samples: stretch.samples.length,
-        // Replaced with this arm's own contribution once the sweep ends and the series is known.
-        rebufferCount: summary.rebufferCount,
-        stalledSamples: summary.stalledSamples,
-        medianLatencyS: summary.latency.medianLatencyS ?? null,
-        instrumentSound: instrument.sound,
-        instrumentFailures: instrument.failures,
-      });
+      const result = armResultFrom(arm, setup, firstTargetDurationS, stretch);
+      // Still the session total here. Replaced with this arm's own contribution once the sweep ends.
+      rebufferTotals.push(result.rebufferCount);
+      results.push(result);
 
-      const last = results[results.length - 1];
       console.log(
-        `  ${last.label}: held at ${setup.targetLatencyS ?? '—'}s, ${last.samples} samples, ` +
-          `${last.rebufferCount} rebuffers so far this sweep, ${last.stalledSamples} stalled in this arm` +
-          `${last.excludedBecause ? `  [EXCLUDED: ${last.excludedBecause}]` : ''}`,
+        `  ${result.label}: held at ${setup.targetLatencyS ?? '—'}s, ${result.sampleCount} samples, ` +
+          `${result.rebufferCount} rebuffers so far this sweep, ${result.stalledSamples} stalled in this arm` +
+          `${result.excludedBecause ? `  [EXCLUDED: ${result.excludedBecause}]` : ''}`,
       );
     }
   } finally {
@@ -276,7 +246,7 @@ async function main(): Promise<void> {
       [
         row.requestedTargetS,
         row.setup.targetLatencyS ?? '—',
-        row.samples,
+        row.sampleCount,
         row.rebufferCount,
         row.stalledSamples,
         row.medianLatencyS?.toFixed(2) ?? '—',
