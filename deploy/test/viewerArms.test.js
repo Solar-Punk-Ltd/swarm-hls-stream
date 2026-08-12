@@ -526,6 +526,23 @@ describe('a sitting refuses what it cannot finish, and records what the nodes di
     );
   });
 
+  /**
+   * ⭐ Cost is per broadcast as well as per minute. Two sittings on 2026-08-12 night differed by 2.6x
+   * per broadcast hour, and the difference tracks how many broadcasts each STARTED rather than how
+   * long each ran: eight in 56 minutes against one in 119. A gate that prices only minutes lets a
+   * sweep of short arms through on a balance that covers a third of it.
+   */
+  it('charges a sitting for each broadcast it will start, not only for its minutes', async () => {
+    // Enough for the minutes at the per-minute rate, nowhere near enough for eight setups.
+    const perMinuteOnly = 8 * 1 * 0.013 * 1.4 + 0.2;
+
+    const { code, gops, log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 4, bzz: perMinuteOnly });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, [], 'a sweep published on a balance that covers only its minutes');
+    assert.match(log, /cannot pay for itself/);
+  });
+
   it('leaves no reading unpaired, so every arm can be differenced', async () => {
     const { metricsCalls } = await runArms({ arms: 'a:2.0', rounds: 2, warmupRounds: '0' });
 

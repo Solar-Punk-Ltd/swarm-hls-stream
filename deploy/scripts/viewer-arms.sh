@@ -73,27 +73,34 @@ PUBLISHER_MARGIN_S="${PUBLISHER_MARGIN_S:-90}"
 # The same measured burn and margin `sweep-interleaved.sh` uses, for the same reason: a sitting that
 # stops partway leaves rows measured on a node its peers have stopped serving.
 #
-# ⛔⛔⛔ MEASURED ACROSS A WHOLE REAL SITTING, 2026-08-12 night, and it is 2.7x what every earlier
-# reading here said. Eight arms over 41 minutes cost the uploader 1.792 BZZ and the gateway 1.455:
+# ⭐⭐⭐ COST IS PER BROADCAST, NOT ONLY PER MINUTE. Measured 2026-08-12 night, two sittings.
 #
-#   uploader   2.62 BZZ per broadcast hour = 0.0437 per minute
-#   gateway    2.13 BZZ per broadcast hour = 0.0355 per minute
+# The 120-minute soak burned **0.78 BZZ/hr on the uploader and 0.64 on the gateway, and the rate was
+# FLAT**: four independent 30-minute windows read 0.80, 0.75, 0.79, 0.80. That is a replicate inside
+# one sitting, and it is the marginal cost of broadcasting.
 #
-# ⛔ Earlier the same day these were refitted DOWN to 0.0214 and 0.0095, on the argument that the old
-# 0.0325 and 0.0267 were over-conservative. That refit was wrong in the dangerous direction: it would
-# have approved a four-hour soak the balance could not finish, and the sitting would have spent its
-# last hour measuring a node its peers had stopped serving. The original constants were closer to
-# right than the refit that replaced them.
+# ⛔ The arm sitting earlier the same night cost **2.06 BZZ/hr of broadcast**, idle-to-idle, which is
+# 2.6x that. Eight broadcasts in 56 minutes against one in 119. Subtracting the marginal rate leaves
+# about **1.19 BZZ across 8 starts, so roughly 0.15 BZZ per broadcast STARTED**, independent of how
+# long it then runs.
 #
-# ⭐⭐⭐ WHY THE PER-ARM READINGS DISAGREE, AND WHICH ONE TO BELIEVE. The node-metrics diff for a
-# single arm reported 0.65 BZZ/hr over the same sitting that cost 2.62. `availableBalance` falls when
-# a cheque is ISSUED, and issuance lags the traffic that earned it, so a snapshot taken at an arm's
-# last second misses that arm's own cheques. **A per-arm figure is a floor. Price a sitting off the
-# sitting.**
+# ⚠️ That per-broadcast figure is a FIT across two sittings, not a measurement. Its window also
+# contains four failed launches and an alternating GOP. What would test it is two sittings of equal
+# total broadcast time and different arm counts. Until then it is priced conservatively here, because
+# being wrong about a fixed cost overstates a sweep's runway and understates a soak's.
 #
-# ⚠️ 1080p burns more again. Override both for a sitting that is not 720p.
-UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-437000000000000}"
-GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-355000000000000}"
+# ⛔⛔ Three different values were used for these constants in one evening. The 0.0325/0.0267 that
+# stood for a week, a refit DOWN to 0.0214/0.0095 that would have approved a soak the balance could
+# not finish, and a refit UP to 0.0437/0.0355 derived from an arm sitting whose cost was mostly
+# setup. Each was defended with arithmetic. **The one that survives is the one measured over a long
+# continuous window and replicated within it.**
+#
+# ⚠️ 1080p burns more again. Override for a sitting that is not 720p.
+UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-130000000000000}"
+GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-107000000000000}"
+# Charged once per broadcast the sitting will start, on top of the per-minute rate above.
+UPLOADER_SETUP_PLUR="${UPLOADER_SETUP_PLUR:-1500000000000000}"
+GATEWAY_SETUP_PLUR="${GATEWAY_SETUP_PLUR:-1200000000000000}"
 FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-140}"
 
 # What the nodes themselves say they did, either side of every arm, and periodically through a long
@@ -149,13 +156,18 @@ available_plur() {
 }
 
 # Both nodes are paid: the uploader pays peers to take chunks and the gateway pays to pull them back.
+#
+# ⭐ Priced as minutes AND broadcasts, because the two sittings of 2026-08-12 night differed by 2.6x
+# per broadcast hour and the difference tracks how many broadcasts each started, not how long each
+# ran. A sweep of eight short arms is dominated by setup; a soak is dominated by minutes.
 can_afford() {
-  local minutes="$1" short=0 who port burn have need
-  for pair in "uploader:${UPLOADER_BEE_PORT}:${UPLOADER_BURN_PLUR_PER_MIN}" \
-    "gateway:${GATEWAY_BEE_PORT}:${GATEWAY_BURN_PLUR_PER_MIN}"; do
-    who="${pair%%:*}"; port="$(echo "${pair}" | cut -d: -f2)"; burn="${pair##*:}"
+  local minutes="$1" broadcasts="${2:-1}" short=0 who port burn setup have need
+  for pair in "uploader:${UPLOADER_BEE_PORT}:${UPLOADER_BURN_PLUR_PER_MIN}:${UPLOADER_SETUP_PLUR}" \
+    "gateway:${GATEWAY_BEE_PORT}:${GATEWAY_BURN_PLUR_PER_MIN}:${GATEWAY_SETUP_PLUR}"; do
+    who="$(echo "${pair}" | cut -d: -f1)"; port="$(echo "${pair}" | cut -d: -f2)"
+    burn="$(echo "${pair}" | cut -d: -f3)"; setup="$(echo "${pair}" | cut -d: -f4)"
     have="$(available_plur "${port}")"
-    need=$((minutes * burn * FUNDS_MARGIN_PERCENT / 100))
+    need=$(((minutes * burn + broadcasts * setup) * FUNDS_MARGIN_PERCENT / 100))
     if [ -z "${have}" ]; then
       say "  ${who} chequebook on ${port} did not answer, so funding is unknown"
       short=1
@@ -394,7 +406,7 @@ run_arm() {
     say "STOPPING before ${name}: an earlier arm crossed a floor and left ${STOP_FILE}"
     return 1
   fi
-  if ! can_afford "${MINUTES}"; then
+  if ! can_afford "${MINUTES}" 1; then
     say "STOPPING before ${name}: cannot pay for this arm"
     return 1
   fi
@@ -484,7 +496,7 @@ if [ -f "${STOP_FILE}" ]; then
   sed 's/^/  /' "${STOP_FILE}" >> "${LOG}"
   exit 1
 fi
-if ! can_afford $((TOTAL_ARMS * MINUTES)); then
+if ! can_afford $((TOTAL_ARMS * MINUTES)) "${TOTAL_ARMS}"; then
   say "REFUSING TO START: this sitting cannot pay for itself"
   exit 1
 fi
