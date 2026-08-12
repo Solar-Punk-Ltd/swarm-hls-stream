@@ -15,9 +15,15 @@ WORKDIR /app
 ARG VITE_READER_BEE_URL=/bee
 ARG VITE_APP_OWNER=
 ARG VITE_APP_RAW_TOPIC=swarm-stream
+# ⛔ Empty by default, and a deployment serving viewers must leave it that way. Set, the bundle
+# publishes the hls.js instance on `globalThis` so a measurement harness can move the player's
+# latency target between arms of one broadcast (task #87). Unset, Vite substitutes the flag with a
+# literal and the whole thing is eliminated, which `packages/client/test/bundle.test.ts` asserts.
+ARG VITE_EXPOSE_PLAYER=
 ENV VITE_READER_BEE_URL=$VITE_READER_BEE_URL \
     VITE_APP_OWNER=$VITE_APP_OWNER \
-    VITE_APP_RAW_TOPIC=$VITE_APP_RAW_TOPIC
+    VITE_APP_RAW_TOPIC=$VITE_APP_RAW_TOPIC \
+    VITE_EXPOSE_PLAYER=$VITE_EXPOSE_PLAYER
 
 RUN corepack enable && corepack prepare pnpm@9 --activate
 

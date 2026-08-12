@@ -159,6 +159,8 @@ services:
         VITE_READER_BEE_URL: ${VITE_READER_BEE_URL:-/bee}
         VITE_APP_OWNER: ${VITE_APP_OWNER:-}
         VITE_APP_RAW_TOPIC: ${VITE_APP_RAW_TOPIC:-swarm-stream}
+        # ⛔ Leave empty for anything viewers use. See Dockerfile.client.
+        VITE_EXPOSE_PLAYER: ${VITE_EXPOSE_PLAYER:-}
     profiles: ['client']
     restart: unless-stopped
     logging: *default-logging
