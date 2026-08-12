@@ -205,6 +205,16 @@ async function proveTimerCanFail(browser: Browser): Promise<InstrumentProof> {
 async function proveVisibilityCanFail(browser: Browser): Promise<InstrumentProof> {
   return onThrowawayPage(browser, async (page) => {
     await page.evaluate((state: string) => {
+      // ⛔ The getter below is a named function, and that is not obvious from looking at it. tsx
+      // compiles with esbuild's `keepNames`, which gives an arrow assigned to a `get` property the
+      // inferred name `get` and rewrites it to `__name(fn, 'get')` against a helper defined at
+      // module scope. Playwright serialises this body alone, so the helper is absent and the call
+      // dies on `ReferenceError: __name is not defined` before the override is installed.
+      //
+      // `installClockOverlay` states the rule and `playerProbe` carries the same shim. Both were
+      // written after the rule was learned from a function that looked anonymous, which is what this
+      // one looked like too.
+      (globalThis as unknown as { __name?: unknown }).__name ??= (fn: unknown) => fn;
       Object.defineProperty(document, 'visibilityState', { get: () => state, configurable: true });
     }, PROOF_VISIBILITY_STATE);
     // Let the probe fire at least once after navigation, so a slow start does not trip the timer
