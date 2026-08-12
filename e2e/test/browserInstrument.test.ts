@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  describeProof,
+  describeProofs,
   type InstrumentProof,
   type InstrumentReading,
   judgeInstrument,
@@ -21,7 +21,7 @@ const reading = (overrides: Partial<InstrumentReading>): InstrumentReading => ({
 
 describe('judging whether a browser is fit to measure through', () => {
   it('accepts a visible page with running timers and the codecs a viewer needs', () => {
-    assert.deepEqual(judgeInstrument(SOUND), { sound: true, failures: [] });
+    assert.deepEqual(judgeInstrument(SOUND), { sound: true, failures: [], firedChecks: [] });
   });
 
   /**
@@ -88,7 +88,7 @@ describe('judging a whole run rather than one sample', () => {
   });
 
   it('accepts a run whose every sample was sound', () => {
-    assert.deepEqual(judgeRun([SOUND, SOUND]), { sound: true, failures: [], soundSamples: 2 });
+    assert.deepEqual(judgeRun([SOUND, SOUND]), { sound: true, failures: [], firedChecks: [], soundSamples: 2 });
   });
 });
 
@@ -98,22 +98,54 @@ describe('judging a whole run rather than one sample', () => {
  * the three checks cannot fail at all.
  */
 describe('reporting whether the guard could have failed', () => {
-  const FIRED: InstrumentProof = {
+  const TIMER: InstrumentProof = {
+    sensor: 'timerDriftRatio',
     degradation: 'its main thread blocked for 3000ms',
     rejected: true,
     firedChecks: ['timerDriftRatio'],
   };
+  const VISIBILITY: InstrumentProof = {
+    sensor: 'visibilityState',
+    degradation: "document.visibilityState overridden to 'hidden'",
+    rejected: true,
+    firedChecks: ['visibilityState'],
+  };
 
-  it('says nothing when the proof fired, so a real verdict reads as one', () => {
-    assert.deepEqual(describeProof(FIRED), []);
+  it('says nothing when every sensor was proven, so a real verdict reads as one', () => {
+    assert.deepEqual(describeProofs([TIMER, VISIBILITY]), []);
   });
 
   it('names the degradation the instrument failed to notice', () => {
-    const caveats = describeProof({ ...FIRED, rejected: false, firedChecks: [] });
+    const caveats = describeProofs([{ ...TIMER, rejected: false, firedChecks: [] }, VISIBILITY]);
 
     assert.equal(caveats.length, 1);
     assert.match(caveats[0], /main thread blocked for 3000ms/);
     assert.match(caveats[0], /restatement of the launch flags rather than evidence/);
+  });
+
+  /**
+   * The failure this exists to stop: proving one sensor and letting the report imply the other was
+   * proven too. Before 2026-08-12 only the timer sensor had a proof and the report said "the check"
+   * as though there were one.
+   */
+  it('names a sensor that has no proof at all, rather than passing on the strength of another', () => {
+    const caveats = describeProofs([TIMER]);
+
+    assert.equal(caveats.length, 1);
+    assert.match(caveats[0], /visibilityState check was never shown able to fail/);
+  });
+
+  /**
+   * A proof that fired for the wrong reason has demonstrated the wrong sensor. A stalled page reports
+   * hidden nowhere, but a visibility proof taken on a page that happened to also stall would be
+   * rejected, and without this it would read as the visibility check working.
+   */
+  it('rejects a proof that fired by a different check than the one it claims', () => {
+    const caveats = describeProofs([TIMER, { ...VISIBILITY, firedChecks: ['timerDriftRatio'] }]);
+
+    assert.equal(caveats.length, 1);
+    assert.match(caveats[0], /by timerDriftRatio rather than by visibilityState/);
+    assert.match(caveats[0], /still untested/);
   });
 
   /**
@@ -122,9 +154,11 @@ describe('reporting whether the guard could have failed', () => {
    * would be indistinguishable from a proof that fired.
    */
   it('treats a missing proof as untested rather than as passing', () => {
-    const caveats = describeProof(undefined);
+    for (const absent of [undefined, []]) {
+      const caveats = describeProofs(absent);
 
-    assert.equal(caveats.length, 1);
-    assert.match(caveats[0], /untested/);
+      assert.equal(caveats.length, 1);
+      assert.match(caveats[0], /untested/);
+    }
   });
 });

@@ -138,6 +138,33 @@ comfortably, and a measured ratio meaningfully below 1.0 refutes it.
    segments twice as long as configured, which doubles the latency floor a viewer waits through. That
    is a product consequence, not just an instrument one, and it deserves its own investigation rather
    than another guess from me.
+
+   > ### ✅ 2026-08-12: ANSWERED, AND IT IS NOT THE FRAGMENT VALUE
+   >
+   > A twenty-arm bracket on stock SRS settles it: **`median = ceil(fragment / GOP) * GOP`**, and all
+   > three pairs above are GOP equal to fragment, so all three should land on the knob.
+   > `gop-vs-fragment-2026-08-12.md`, every arm replicated to three decimals.
+   >
+   > | pair | predicted paced | this table measured |
+   > | --- | ---: | ---: |
+   > | 0.5 / 0.5 | 0.50s | **0.50s** ✓ |
+   > | **1.0 / 1.0** | **1.00s** | **1.90s** ✗ |
+   > | 2.0 / 2.0 | 2.00s | **2.00s** ✓ |
+   >
+   > ⭐⭐ **So the 1.0 row is the odd one out because that sitting was starved, not because 1.0 is a
+   > special number.** The publisher has no rate limit of its own, so its frame rate is whatever the
+   > socket accepts, and its wallclock timestamps write that straight into the media timeline.
+   > 30 frames at the ~15.8 fps that sitting achieved is 1.90s. See `segment-stretch-2026-08-12.md`,
+   > whose replicate of one identical configuration moved **1.8x**, which is the same variance showing
+   > up here as a single anomalous row.
+   >
+   > ⛔⛔ **And "GOP equal to the fragment doubles the segment" is WITHDRAWN.** Three equal pairs were
+   > run paced and none doubled.
+   >
+   > ⭐⭐⭐ **The product consequence is the opposite of the one recorded above.** A deployment on
+   > defaults does not publish "twice as long as configured" because of the fragment. It publishes
+   > **one GOP**, and at `hls_fragment 0.25` with `gopSeconds: 2` that is **8x** the fragment. The knob
+   > to reach for is `gopSeconds`, and `HLS_FRAGMENT` at 0.25 is doing nothing at all.
 2. **The bench's `6000 kbps` is a request, not a delivered bitrate.** On this synthetic source it
    delivered 3.37 Mbps.
 

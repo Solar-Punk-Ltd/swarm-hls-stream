@@ -267,7 +267,7 @@ describe('reporting a fault that is supposed to end the broadcast', () => {
     fault,
     summary: summarize(samples),
     recovery: judgeRecovery(samples, fault),
-    instrument: { sound: true, failures: [], soundSamples: samples.length },
+    instrument: { sound: true, failures: [], firedChecks: [], soundSamples: samples.length },
     samples,
     screenshots: [],
   });

@@ -31,7 +31,7 @@ import {
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
-import { launchViewer, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import { launchViewer, proveInstrumentCanFail, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, type SampledStretch, sampleFor } from '../src/browser/watchLoop.js';
 import { containerName, type E2EConfig, loadConfig } from '../src/config.js';
 import { type Host, makeHost } from '../src/harness/host.js';
@@ -142,6 +142,9 @@ async function main(): Promise<void> {
 
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
+  // Taken before the measurement so an early failure downstream cannot leave the run reporting a
+  // soundness verdict nothing ever tried to break.
+  const instrumentProofs = await proveInstrumentCanFail(browser);
   console.log(`browser: ${chromeVersion}, scenario ${scenario.name} against ${container}`);
   console.log(`browser: ${scenario.action} for ${scenario.downMs / 1000}s, breaking ${scenario.breaks}`);
 
@@ -214,6 +217,7 @@ async function main(): Promise<void> {
     fault: { injectedAtMs, liftedAtMs, servingAtMs },
     summary: summarize(samples),
     recovery: judgeRecovery(samples, { injectedAtMs, liftedAtMs, servingAtMs }),
+    instrumentProofs,
     instrument: judgeRun(stretches.flatMap((stretch) => stretch.readings)),
     network,
     samples,

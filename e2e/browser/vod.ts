@@ -27,7 +27,14 @@ import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { installPlayerProbe, type PlayerProbe, readPlayerProbe } from '../src/browser/playerProbe.js';
 import { envNumber, requireEnv, runIdFrom, thinRequestLog, writeRunArtifacts } from '../src/browser/runFiles.js';
-import { installTimerProbe, launchViewer, readInstrument, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import {
+  installTimerProbe,
+  launchViewer,
+  proveInstrumentCanFail,
+  readInstrument,
+  recordRequests,
+  VIEWPORT,
+} from '../src/browser/viewer.js';
 
 /** How long to watch from the start before seeking, so ordinary playback is established first. */
 const SETTLE_SECONDS = 8;
@@ -176,6 +183,9 @@ async function main(): Promise<void> {
 
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
+  // Taken before the measurement so an early failure downstream cannot leave the run reporting a
+  // soundness verdict nothing ever tried to break.
+  const instrumentProofs = await proveInstrumentCanFail(browser);
   console.log(`browser: ${chromeVersion}, playing back ${watchUrl}`);
 
   const requests: RequestRecord[] = [];
@@ -263,6 +273,7 @@ async function main(): Promise<void> {
       seeks,
       player: await readPlayerProbe(page),
       messages,
+      instrumentProofs,
       instrument: judgeRun([await readInstrument(page)]),
       network: summarizeNetwork(requests),
     };

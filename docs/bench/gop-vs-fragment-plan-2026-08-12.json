@@ -1,0 +1,23 @@
+[
+ { "recipe": "probe", "fragment": 0.25, "gop": 0.25, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 0.25, "gop": 0.5, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 0.25, "gop": 1.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 0.25, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 1.0, "gop": 0.5, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 1.0, "gop": 1.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 1.0, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 2.0, "gop": 1.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "bench-nostamp", "fragment": 0.25, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "bench", "fragment": 0.25, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+
+ { "recipe": "bench", "fragment": 0.25, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "bench-nostamp", "fragment": 0.25, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 2.0, "gop": 1.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 1.0, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 1.0, "gop": 1.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 1.0, "gop": 0.5, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 0.25, "gop": 2.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 0.25, "gop": 1.0, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 0.25, "gop": 0.5, "size": "1280x720", "bitrateKbps": 2500 },
+ { "recipe": "probe", "fragment": 0.25, "gop": 0.25, "size": "1280x720", "bitrateKbps": 2500 }
+]
