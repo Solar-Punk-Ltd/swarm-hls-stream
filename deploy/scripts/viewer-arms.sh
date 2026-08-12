@@ -72,8 +72,25 @@ PUBLISHER_MARGIN_S="${PUBLISHER_MARGIN_S:-90}"
 
 # The same measured burn and margin `sweep-interleaved.sh` uses, for the same reason: a sitting that
 # stops partway leaves rows measured on a node its peers have stopped serving.
-UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-325000000000000}"
-GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-267000000000000}"
+#
+# ⭐ Refitted to measurement 2026-08-12. Two independent readings exist per node and the HIGHER of
+# each is used here, because one reading is not a replicate:
+#
+#   uploader   0.0214 BZZ/min over 50 min (2026-08-05)   0.0162 over 17.4 min (2026-08-12)
+#   gateway    0.0002 BZZ/min over 50 min (2026-08-05)   0.0095 over 17.4 min (2026-08-12)
+#
+# ⛔ The old 0.0325 and 0.0267 were 1.5x and 2.8x the highest measured value, and conservatism was
+# then applied a SECOND time by the margin below. That already cost the owner an on-chain deposit
+# that was not needed, and it refuses a four-hour soak the balance covers comfortably. The margin is
+# where safety belongs; a constant that is already high makes the guard refuse affordable work.
+#
+# ⚠️ 1080p burns about 2.2x this. Override both for a sitting that is not 720p.
+#
+# What makes the refit safe rather than optimistic is that it is no longer the only protection: the
+# sampler reads both chequebooks THROUGH an arm and stops the broadcast at the reserve, so being
+# wrong here costs a stopped sitting instead of an hour of starved measurement.
+UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-214000000000000}"
+GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-95000000000000}"
 FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-140}"
 
 # What the nodes themselves say they did, either side of every arm, and periodically through a long

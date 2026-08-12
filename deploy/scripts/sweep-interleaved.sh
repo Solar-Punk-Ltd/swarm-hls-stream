@@ -60,8 +60,14 @@ MINUTES="${MINUTES:-3}"
 # the gateway pays to pull them back. Measured 2026-08-05 by sampling `/chequebook/balance` every 45s
 # through a running sweep, against an idle control that did not move at all across 90 seconds, so the
 # burn is the sweep's own and not a background drain. PLUR per minute of publishing, 1 BZZ = 10^16.
-UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-325000000000000}"
-GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-267000000000000}"
+#
+# ⭐ Refitted to measurement 2026-08-12, taking the HIGHER of the two readings each node has, since
+# one reading is not a replicate: uploader 0.0214 (50 min, 2026-08-05) against 0.0162 (17.4 min,
+# 2026-08-12), gateway 0.0002 against 0.0095. The previous 0.0325 and 0.0267 were 1.5x and 2.8x the
+# highest measured value, and the margin below then applied conservatism a second time. See
+# `viewer-arms.sh` for why that is safe now and was not before.
+UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-214000000000000}"
+GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-95000000000000}"
 
 # Headroom over the straight-line estimate. The burn was measured on one mix of picture sizes and a
 # heavier one costs more per minute, so a sweep that only just fits is a sweep that stops early.
