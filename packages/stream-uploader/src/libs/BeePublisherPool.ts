@@ -131,14 +131,14 @@ export class BeePublisherPool {
 }
 
 /**
- * Parses BEE_PUBLISHERS: space-separated `<rung>@<url>#<batch>`, empty when unset.
+ * Parses BEE_PUBLISHERS: space-separated `rung@url<batch>`, empty when unset.
  *
  * Deliberately the same shape as ABR_LADDER — one variable, one entry per rung, parsed and
  * validated eagerly so a typo refuses to start rather than silently publishing a rung to the wrong
  * node and the wrong batch.
  *
- * Split on the *first* `@` and the *last* `#`, so a URL carrying userinfo or a port survives intact.
- * A rung name cannot contain either, and a batch id is hex, so the tail is unambiguous.
+ * Split on the *first* `@` and the *last* bracket, so a URL carrying userinfo or a port survives
+ * intact. A rung name cannot contain either, and a batch id is hex, so the tail is unambiguous.
  */
 export function parsePublisherSpecs(spec: string): PublisherSpec[] {
   const entries = spec.trim().split(/\s+/).filter(Boolean);
@@ -159,17 +159,31 @@ export function parsePublisherSpecs(spec: string): PublisherSpec[] {
   return specs;
 }
 
+/**
+ * One entry: `rung@url<batch>`.
+ *
+ * The batch is bracketed rather than introduced by a `#`, which is what this used to use and which
+ * was a bad choice: `#` opens a comment in a `.env` file, so dotenv truncated the value at the first
+ * one and handed the parser a URL with no batch on it. The error that produced named a string the
+ * operator had never typed.
+ *
+ * `#` is still accepted, so a config already written that way keeps working — a quoted value was
+ * always a legal way to escape it.
+ */
 function parseEntry(entry: string): PublisherSpec {
   const at = entry.indexOf('@');
-  const hash = entry.lastIndexOf('#');
+  const open = entry.endsWith('>') ? entry.lastIndexOf('<') : entry.lastIndexOf('#');
+  const close = entry.endsWith('>') ? entry.length - 1 : entry.length;
 
-  if (at <= 0 || hash <= at + 1 || hash === entry.length - 1) {
-    throw new Error(`BEE_PUBLISHERS entry "${entry}" must be <rung>@<url>#<batch>`);
+  if (at <= 0 || open <= at + 1 || open >= close - 1) {
+    throw new Error(
+      `BEE_PUBLISHERS entry "${entry}" must be rung@url<batch>, ` + `e.g. 360p@http://localhost:1633<0a1b2c…>`,
+    );
   }
 
   const rung = entry.slice(0, at);
-  const url = entry.slice(at + 1, hash);
-  const stamp = entry.slice(hash + 1);
+  const url = entry.slice(at + 1, open);
+  const stamp = entry.slice(open + 1, close);
 
   if (!RUNG_NAME.test(rung)) {
     throw new Error(`BEE_PUBLISHERS rung name "${rung}" must match ${RUNG_NAME}`);

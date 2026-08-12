@@ -85,7 +85,7 @@ Validation is against `BEE_PUBLISHERS` rather than `ABR_LADDER`, which lives in 
 ```
   Batch ID: 88fb1a…5628
 --- Put it in BEE_PUBLISHERS, replacing this rung's entry:
----   360p@http://localhost:1633#88fb1a…5628
+---   360p@http://localhost:1633<88fb1a…5628>
 ```
 
 Amount and depth are the same for every rung. Sizing a batch to the rung it pays for is a real concern — 1080p exhausts a given depth roughly 7× sooner than 360p — and is deliberately left out.

@@ -51,7 +51,7 @@ export async function stampBuy(
     table('Batch ID', batchIdHex);
     console.log('');
     info('Put it in BEE_PUBLISHERS, replacing this rung’s entry:');
-    info(`  ${publisher.rung}@${configuredUrl}#${batchIdHex}`);
+    info(`  ${publisher.rung}@${configuredUrl}<${batchIdHex}>`);
   } catch (err) {
     error(`Failed: ${err instanceof Error ? err.message : 'unknown error'}`);
     process.exit(1);

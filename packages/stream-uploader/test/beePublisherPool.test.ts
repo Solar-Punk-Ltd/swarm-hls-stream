@@ -22,7 +22,7 @@ const spec = (rung: keyof typeof BATCH, port: number) => ({
 describe('parsePublisherSpecs', () => {
   it('parses one entry per rung', () => {
     const specs = parsePublisherSpecs(
-      `360p@http://localhost:1633#${BATCH['360p']} 1080p@http://localhost:1663#${BATCH['1080p']}`,
+      `360p@http://localhost:1633<${BATCH['360p']}> 1080p@http://localhost:1663<${BATCH['1080p']}>`,
     );
 
     assert.deepEqual(specs, [
@@ -38,7 +38,7 @@ describe('parsePublisherSpecs', () => {
 
   it('tolerates arbitrary whitespace between entries, as ABR_LADDER does', () => {
     const specs = parsePublisherSpecs(
-      `  360p@http://a.example#${BATCH['360p']}\n  720p@http://b.example#${BATCH['720p']}  `,
+      `  360p@http://a.example<${BATCH['360p']}>\n  720p@http://b.example<${BATCH['720p']}>  `,
     );
 
     assert.deepEqual(
@@ -48,40 +48,55 @@ describe('parsePublisherSpecs', () => {
   });
 
   it('keeps a URL that carries a port and a path intact', () => {
-    // Split on the first @ and the last #, so neither a port's colon nor a path's slashes are
-    // mistaken for a delimiter.
-    const [parsed] = parsePublisherSpecs(`720p@https://bee.example:1633/api#${BATCH['720p']}`);
+    // Split on the first @ and the last bracket, so neither a port's colon nor a path's slashes
+    // are mistaken for a delimiter.
+    const [parsed] = parsePublisherSpecs(`720p@https://bee.example:1633/api<${BATCH['720p']}>`);
 
     assert.equal(parsed.url, 'https://bee.example:1633/api');
     assert.equal(parsed.stamp, BATCH['720p']);
   });
 
-  it('rejects an entry that is not rung@url#batch', () => {
-    assert.throws(() => parsePublisherSpecs('360p'), /must be <rung>@<url>#<batch>/);
-    assert.throws(() => parsePublisherSpecs('360p@http://a.example'), /must be <rung>@<url>#<batch>/);
-    assert.throws(() => parsePublisherSpecs(`@http://a.example#${BATCH['360p']}`), /must be <rung>@<url>#<batch>/);
-    assert.throws(() => parsePublisherSpecs('360p@http://a.example#'), /must be <rung>@<url>#<batch>/);
+  it('rejects an entry that is not rung@url<batch>', () => {
+    assert.throws(() => parsePublisherSpecs('360p'), /must be rung@url<batch>/);
+    assert.throws(() => parsePublisherSpecs('360p@http://a.example'), /must be rung@url<batch>/);
+    assert.throws(() => parsePublisherSpecs(`@http://a.example<${BATCH['360p']}>`), /must be rung@url<batch>/);
+    assert.throws(() => parsePublisherSpecs('360p@http://a.example<>'), /must be rung@url<batch>/);
+  });
+
+  it('still reads the older # form, so an existing config keeps working', () => {
+    assert.deepEqual(parsePublisherSpecs(`360p@http://localhost:1633#${BATCH['360p']}`), [
+      { rung: '360p', url: 'http://localhost:1633', stamp: BATCH['360p'] },
+    ]);
+  });
+
+  it('survives a value dotenv has truncated at a #, by not needing one', () => {
+    // The bug the brackets exist for. `#` opens a comment in a .env file, so an unquoted
+    // BEE_PUBLISHERS lost everything from the first one and the parser was handed a bare URL —
+    // reporting a string the operator had never typed. Brackets are not special to dotenv.
+    const asDotenvWouldTruncateIt = '360p@http://localhost:1633';
+    assert.throws(() => parsePublisherSpecs(asDotenvWouldTruncateIt), /must be rung@url<batch>/);
+    assert.doesNotThrow(() => parsePublisherSpecs(`360p@http://localhost:1633<${BATCH['360p']}>`));
   });
 
   it('rejects a batch id that is not 32 bytes of hex', () => {
     // The failure this prevents is a truncated paste: Bee would reject every upload at runtime,
     // hours into a stream, with nothing pointing back at the config.
-    assert.throws(() => parsePublisherSpecs('360p@http://a.example#abc123'), /must be 64 hex characters/);
-    assert.throws(() => parsePublisherSpecs(`360p@http://a.example#${'z'.repeat(64)}`), /must be 64 hex characters/);
+    assert.throws(() => parsePublisherSpecs('360p@http://a.example<abc123>'), /must be 64 hex characters/);
+    assert.throws(() => parsePublisherSpecs(`360p@http://a.example<${'z'.repeat(64)}>`), /must be 64 hex characters/);
   });
 
   it('rejects a url that is not http or https', () => {
-    assert.throws(() => parsePublisherSpecs(`360p@localhost:1633#${BATCH['360p']}`), /must be http or https/);
-    assert.throws(() => parsePublisherSpecs(`360p@not a url#${BATCH['360p']}`), /must be <rung>@<url>#<batch>/);
+    assert.throws(() => parsePublisherSpecs(`360p@localhost:1633<${BATCH['360p']}>`), /must be http or https/);
+    assert.throws(() => parsePublisherSpecs(`360p@not a url<${BATCH['360p']}>`), /must be rung@url<batch>/);
   });
 
   it('rejects a rung name that could not survive being spliced into a config', () => {
-    assert.throws(() => parsePublisherSpecs(`360p;evil@http://a.example#${BATCH['360p']}`), /must match/);
+    assert.throws(() => parsePublisherSpecs(`360p;evil@http://a.example<${BATCH['360p']}>`), /must match/);
   });
 
   it('rejects two nodes for the same rung', () => {
     assert.throws(
-      () => parsePublisherSpecs(`360p@http://a.example#${BATCH['360p']} 360p@http://b.example#${BATCH['480p']}`),
+      () => parsePublisherSpecs(`360p@http://a.example<${BATCH['360p']}> 360p@http://b.example<${BATCH['480p']}>`),
       /two nodes for rung "360p"/,
     );
   });

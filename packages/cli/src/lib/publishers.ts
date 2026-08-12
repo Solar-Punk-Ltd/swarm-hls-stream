@@ -13,7 +13,7 @@
  * same split `BEE_URL` already has.
  */
 
-/** One node named in BEE_PUBLISHERS. */
+/** One node named in BEE_PUBLISHERS, written `rung@url<batch>`. */
 export interface PublisherSpec {
   rung: string;
   url: string;
@@ -29,16 +29,20 @@ export function parsePublishers(spec: string | undefined): PublisherSpec[] {
 
   for (const entry of spec.trim().split(/\s+/).filter(Boolean)) {
     const at = entry.indexOf('@');
-    const hash = entry.lastIndexOf('#');
+    // `rung@url<batch>`, with the older `rung@url#batch` still read so a config written before the
+    // separator changed keeps resolving.
+    const bracketed = entry.endsWith('>');
+    const open = bracketed ? entry.lastIndexOf('<') : entry.lastIndexOf('#');
+    const close = bracketed ? entry.length - 1 : entry.length;
 
-    if (at <= 0 || hash <= at + 1) {
+    if (at <= 0 || open <= at + 1 || open >= close) {
       continue;
     }
 
     parsed.push({
       rung: entry.slice(0, at),
-      url: entry.slice(at + 1, hash),
-      stamp: entry.slice(hash + 1),
+      url: entry.slice(at + 1, open),
+      stamp: entry.slice(open + 1, close),
     });
   }
 
