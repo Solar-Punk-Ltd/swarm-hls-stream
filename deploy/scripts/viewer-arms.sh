@@ -48,6 +48,18 @@ GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT:-$((10007 + PORT_SLOT * 10))}"
 STREAM_TIMEOUT_S="${STREAM_TIMEOUT_S:-180}"
 QUIET_TIMEOUT_S="${QUIET_TIMEOUT_S:-120}"
 
+# Arm names, space separated, whose gateway is restarted after the broadcast is live and before the
+# browser opens. That is a **cold join**: an empty retrieval cache and no warm peer connections, which
+# is the state a real viewer arrives in and the one behind the blank-player failure nobody has
+# diagnosed. Named by arm rather than by a flag, so the treatment is visible in every row it produced.
+#
+# ⚠️ A cold gateway answers `/health` long before it is useful, measured at 2-3x read cost for about
+# two minutes. That is the finding, not a problem to wait out, so this waits only for the node to
+# answer at all and records how long that took.
+COLD_ARMS="${COLD_ARMS:-}"
+GATEWAY_CONTAINER="${GATEWAY_CONTAINER:-latbench-bee-gateway-1}"
+GATEWAY_READY_TIMEOUT_S="${GATEWAY_READY_TIMEOUT_S:-300}"
+
 # How much of an arm's broadcast is spent outside the watch: the stream has to exist before the
 # browser opens and has to still be live when the last sample is taken. Subtracted from the arm, so
 # a short MINUTES eats the watch rather than the margin, and at MINUTES=1 the watch would be negative.
@@ -143,8 +155,35 @@ wait_for_quiet() {
   return 1
 }
 
+is_cold_arm() {
+  local name="$1" candidate
+  for candidate in ${COLD_ARMS}; do
+    [ "${candidate}" = "${name}" ] && return 0
+  done
+  return 1
+}
+
+# Restarts the gateway and returns how many seconds it took to answer at all, or the word `never`.
+#
+# ⛔ Answering is not readiness and this does not pretend otherwise. It is the earliest moment a
+# viewer could be served, which is exactly when a real one arrives.
+restart_gateway() {
+  local started deadline
+  started="$(date -u +%s)"
+  docker restart "${GATEWAY_CONTAINER}" >/dev/null 2>&1 || { echo never; return; }
+  deadline=$((started + GATEWAY_READY_TIMEOUT_S))
+  while [ "$(date -u +%s)" -lt "${deadline}" ]; do
+    if curl -s --max-time 5 "http://127.0.0.1:${GATEWAY_BEE_PORT}/health" >/dev/null 2>&1; then
+      echo $(($(date -u +%s) - started))
+      return
+    fi
+    sleep 2
+  done
+  echo never
+}
+
 run_arm() {
-  local name="$1" gop="$2" round="$3" counted="$4"
+  local name="$1" gop="$2" round="$3" counted="$4" coldFor="-"
   local watch_seconds=$((MINUTES * 60 - PUBLISHER_MARGIN_S))
   say "round ${round}: ${name} (gop ${gop}) starting, watching ${watch_seconds}s"
 
@@ -158,8 +197,13 @@ run_arm() {
   start_publisher $((MINUTES * 60)) "${gop}"
   if ! wait_for_active_stream; then
     stop_publisher
-    printf '%s\t%s\t%s\t%s\t%s\tNO-STREAM\n' "$(date -u +%FT%TZ)" "${round}" "${name}" "${gop}" "${counted}" >> "${STATE}"
+    printf '%s\t%s\t%s\t%s\t%s\tcold=%s\tNO-STREAM\n' "$(date -u +%FT%TZ)" "${round}" "${name}" "${gop}" "${counted}" "${coldFor}" >> "${STATE}"
     return 0
+  fi
+
+  if is_cold_arm "${name}"; then
+    coldFor="$(restart_gateway)"
+    say "  gateway restarted for a cold join, answered after ${coldFor}s"
   fi
 
   (
@@ -173,8 +217,8 @@ run_arm() {
 
   stop_publisher
   wait_for_quiet
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${round}" "${name}" "${gop}" "${counted}" \
-    "$([ ${status} -eq 0 ] && echo ok || echo "WATCH-FAILED(${status})")" >> "${STATE}"
+  printf '%s\t%s\t%s\t%s\t%s\tcold=%s\t%s\n' "$(date -u +%FT%TZ)" "${round}" "${name}" "${gop}" "${counted}" \
+    "${coldFor}" "$([ ${status} -eq 0 ] && echo ok || echo "WATCH-FAILED(${status})")" >> "${STATE}"
   say "round ${round}: ${name} finished, status ${status}"
   return 0
 }
@@ -192,6 +236,7 @@ fi
 TOTAL_ARMS=$((${#ARM_LIST[@]} * ROUNDS))
 say "viewer-arms starting: ${#ARM_LIST[@]} arms x ${ROUNDS} rounds x ${MINUTES} min = ${TOTAL_ARMS} broadcasts"
 say "  round 1 is warm-up and is discarded"
+[ -n "${COLD_ARMS}" ] && say "  cold-join arms (gateway restarted before the browser opens): ${COLD_ARMS}"
 if ! can_afford $((TOTAL_ARMS * MINUTES)); then
   say "REFUSING TO START: this sitting cannot pay for itself"
   exit 1

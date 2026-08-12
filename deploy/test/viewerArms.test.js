@@ -55,10 +55,20 @@ async function startChequebook(availableBzz) {
  * state the script exists to notice, so the test would sit out a real timeout per arm and prove
  * nothing about the ordering it is measuring.
  */
-function stubBin(binDir, recordPath, watchedFlag, chequebookPort) {
+function stubBin(binDir, recordPath, watchedFlag, restartLog, chequebookPort) {
   mkdirSync(binDir, { recursive: true });
 
-  writeFileSync(join(binDir, 'docker'), '#!/bin/sh\nexit 0\n');
+  // Records `restart`, so a cold arm is distinguishable from a warm one, and succeeds at everything
+  // else, since arm teardown shells out to docker too.
+  writeFileSync(
+    join(binDir, 'docker'),
+    `#!/usr/bin/env node
+if (process.argv[2] === 'restart') {
+  require('node:fs').appendFileSync(${JSON.stringify(restartLog)}, process.argv[3] + '\\n');
+}
+process.exit(0);
+`,
+  );
   writeFileSync(
     join(binDir, 'curl'),
     `#!/usr/bin/env node
@@ -94,14 +104,16 @@ process.exit(0);
   }
 }
 
-async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin = '10' }) {
+async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin = '10', cold = '' }) {
   const port = await startChequebook(bzz);
   const out = mkdtempSync(join(tmpdir(), 'viewer-arms-'));
   cleanups.push(() => rmSync(out, { recursive: true, force: true }));
   const bin = join(out, 'bin');
   const record = join(out, 'gops.txt');
   writeFileSync(record, '');
-  stubBin(bin, record, join(out, 'watched.flag'), port);
+  const restarts = join(out, 'restarts.txt');
+  writeFileSync(restarts, '');
+  stubBin(bin, record, join(out, 'watched.flag'), restarts, port);
 
   const env = {
     ...process.env,
@@ -111,6 +123,8 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
     // stubbed health check is what carries the arm forward. The ordering is what this measures.
     BENCH_REPO: out,
     ARMS: arms,
+    COLD_ARMS: cold,
+    GATEWAY_READY_TIMEOUT_S: '5',
     ROUNDS: String(rounds),
     MINUTES: '1',
     // The stubbed health endpoint always reports a live stream, so wait_for_quiet would sit out its
@@ -134,6 +148,7 @@ async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin 
   return {
     code,
     gops: readFileSync(record, 'utf8').split('\n').filter(Boolean),
+    restarts: readFileSync(restarts, 'utf8').split('\n').filter(Boolean),
     log: readFileSync(join(out, 'viewer-arms.log'), 'utf8'),
   };
 }
@@ -190,6 +205,32 @@ describe('a viewer sitting runs its arms in an order that cannot fake a result',
     assert.equal(code, 1);
     assert.equal(gops.length, 0);
     assert.match(log, /REFUSING TO START: MINUTES=1 leaves -30s to watch/);
+  });
+
+  /**
+   * A cold join is an empty retrieval cache and no warm peer connections, which is the state a real
+   * viewer arrives in. Restarting the gateway for every arm would make it the condition rather than
+   * the treatment, so only the named arms get it and the rest are the control taken beside them.
+   */
+  it('restarts the gateway only for the arms named cold', async () => {
+    const { restarts, gops } = await runArms({ arms: 'cold:0.5 warm:0.5', rounds: 2, cold: 'cold' });
+
+    assert.equal(gops.length, 4);
+    assert.equal(restarts.length, 2, 'a cold arm per round, and no more');
+    assert.deepEqual(new Set(restarts), new Set(['latbench-bee-gateway-1']));
+  });
+
+  it('restarts nothing when no arm is named cold', async () => {
+    const { restarts } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 2 });
+
+    assert.deepEqual(restarts, []);
+  });
+
+  it('records the cold treatment on every row, so a table cannot lose which arms got it', async () => {
+    const { log } = await runArms({ arms: 'cold:0.5 warm:0.5', rounds: 2, cold: 'cold' });
+
+    assert.match(log, /cold-join arms \(gateway restarted before the browser opens\): cold/);
+    assert.match(log, /gateway restarted for a cold join, answered after/);
   });
 
   it('says which round is warm-up, since the arms are otherwise identical in the log', async () => {
