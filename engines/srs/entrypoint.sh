@@ -96,12 +96,14 @@ if abr_enabled; then
   ABR_THREADS="${ABR_THREADS:-0}"
   ABR_ACODEC="${ABR_ACODEC:-copy}"
   ABR_AUDIO_BITRATE="${ABR_AUDIO_BITRATE:-128}"
+  ABR_VBV_SECONDS="${ABR_VBV_SECONDS:-1}"
   ABR_LADDER="${ABR_LADDER:-1080p:1920:1080:5000 720p:1280:720:2800 480p:854:480:1200 360p:640:360:700}"
 
   require_name ABR_VHOST "$ABR_VHOST"
   require_int ABR_RTMP_PORT "$ABR_RTMP_PORT"
   require_int ABR_FPS "$ABR_FPS"
   require_int ABR_THREADS "$ABR_THREADS"
+  require_int ABR_VBV_SECONDS "$ABR_VBV_SECONDS"
   require_int ABR_AUDIO_BITRATE "$ABR_AUDIO_BITRATE"
   require_name ABR_PRESET "$ABR_PRESET"
   require_name ABR_PROFILE "$ABR_PROFILE"
@@ -166,6 +168,16 @@ if abr_enabled; then
       echo "                keyint_min          ${ABR_GOP};"
       echo "                sc_threshold        0;"
       echo "                force_key_frames    expr:gte(t,n_forced*${HLS_FRAGMENT});"
+      # vbitrate alone reaches x264 as -b:v, which is an average it is free to overshoot: measured
+      # against a 700kbps rung it ran 40% over, and every one of those bytes is a chunk a viewer has
+      # to retrieve. maxrate plus bufsize is the VBV constraint that makes the target a ceiling.
+      #
+      # bufsize equal to maxrate is one second of buffer — tight, which is what a live ladder wants:
+      # a larger buffer lets a complex scene borrow bitrate from its neighbours and produces exactly
+      # the segment-size spikes that stall retrieval. Raise ABR_VBV_SECONDS if quality suffers more
+      # than the spikes cost.
+      echo "                maxrate             ${vbitrate}k;"
+      echo "                bufsize             $((vbitrate * ABR_VBV_SECONDS))k;"
       echo "            }"
       echo "            acodec          ${ABR_ACODEC};"
       if [ "$ABR_ACODEC" != "copy" ]; then
