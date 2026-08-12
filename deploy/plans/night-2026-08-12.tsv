@@ -1,30 +1,14 @@
-# A night of three sittings, 8.6 wall hours, 7.9 broadcast hours, ~7.7 BZZ on the uploader.
+# Revised at 16:45 after sitting 1 measured the real burn: 2.62 BZZ/broadcast hour on the uploader,
+# 2.7x what the night was costed with. What is left in the chequebooks buys about 166 broadcast
+# minutes above the reserve, so the two soaks planned for 240 and 180 become ONE of 120.
 #
-# Columns are tab separated: name, deadline minutes, driver, settings.
-# Read `overnight-chain.sh` for what stops this and `docs/bench/night-2026-08-12-prediction.md` for
-# what each sitting is expected to find, registered before any of it was spent.
+# ⭐ Sitting 1 (obs-default vs shipped, 8 arms, all ok) is COMPLETE and is not repeated here. Its
+# result lives in the chain directory from 20260812-155429.
 #
-# ⭐ ORDER IS DELIBERATE. The short sitting goes first because it exercises the whole chain end to
-# end for 56 broadcast minutes and 0.9 BZZ. If the gates, the publisher, the browser, the sampler or
-# the teardown are broken, that is when it is found, not four hours into a soak.
+# 120 minutes at the shipping profile is still twelve times the longest broadcast this project has
+# ever run, and it answers the whole of #89 except the four-hour figure itself: manifest growth on
+# real segments, the targetduration ratchet in the wild, whether the read path degrades over hours,
+# and eight chances at the fourteen-minute collapse.
 #
-# The two soaks then go longest-first, so the one that can absorb a late start is the one that runs
-# last. A soak cut short is still a result: three hours beats every ten-minute run in the corpus.
-#
-# ⛔ 720p throughout. The burn constants in the drivers are 720p figures and 1080p costs about 2.2x.
-
-# #91, and the only sitting here with a control arm. OBS ships a 2.0s GOP, so 2.0 is the GOP most
-# likely to arrive uninvited, and everything known about it is inference. 2 arms x 4 rounds x 7 min,
-# first round discarded, direction reversed each round.
-obs-default-vs-shipped	95	viewer-arms.sh	ARMS=obs-default:2.0 shipped:0.5|ROUNDS=4|WARMUP_ROUNDS=1|MINUTES=7|PUBLISHER_MARGIN_S=90|METRICS_INTERVAL_S=60
-
-# #89, the single biggest gap in the corpus: nothing here has ever run past ten minutes, and every
-# claim about a longer broadcast is a projection from a synthetic fill. Four hours at the shipping
-# profile reaches ~28,800 real segments. WARMUP_ROUNDS=0 because a soak has nothing to warm up for
-# and labelling its only round as discarded would file four hours as a warm-up nobody counted.
-long-broadcast-shipped	270	viewer-arms.sh	ARMS=soak-shipped:0.5|ROUNDS=1|WARMUP_ROUNDS=0|MINUTES=240|PUBLISHER_MARGIN_S=120|METRICS_INTERVAL_S=120
-
-# #89 again at the GOP a broadcaster actually sends, which makes this a second question rather than a
-# replicate: at 2.0s the segment peaks at 2.133s so TARGETDURATION is 3, and the stall penalty caps at
-# 3.0s instead of 1.0s. Whether that ratchet bites over hours has never been watched.
-long-broadcast-obs	210	viewer-arms.sh	ARMS=soak-obs:2.0|ROUNDS=1|WARMUP_ROUNDS=0|MINUTES=180|PUBLISHER_MARGIN_S=120|METRICS_INTERVAL_S=120
+# ⛔ 720p. The burn constants are 720p figures.
+long-broadcast-shipped	140	viewer-arms.sh	ARMS=soak-shipped:0.5|ROUNDS=1|WARMUP_ROUNDS=0|MINUTES=120|PUBLISHER_MARGIN_S=120|METRICS_INTERVAL_S=120

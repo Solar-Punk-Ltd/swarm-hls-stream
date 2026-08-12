@@ -73,24 +73,27 @@ PUBLISHER_MARGIN_S="${PUBLISHER_MARGIN_S:-90}"
 # The same measured burn and margin `sweep-interleaved.sh` uses, for the same reason: a sitting that
 # stops partway leaves rows measured on a node its peers have stopped serving.
 #
-# ⭐ Refitted to measurement 2026-08-12. Two independent readings exist per node and the HIGHER of
-# each is used here, because one reading is not a replicate:
+# ⛔⛔⛔ MEASURED ACROSS A WHOLE REAL SITTING, 2026-08-12 night, and it is 2.7x what every earlier
+# reading here said. Eight arms over 41 minutes cost the uploader 1.792 BZZ and the gateway 1.455:
 #
-#   uploader   0.0214 BZZ/min over 50 min (2026-08-05)   0.0162 over 17.4 min (2026-08-12)
-#   gateway    0.0002 BZZ/min over 50 min (2026-08-05)   0.0095 over 17.4 min (2026-08-12)
+#   uploader   2.62 BZZ per broadcast hour = 0.0437 per minute
+#   gateway    2.13 BZZ per broadcast hour = 0.0355 per minute
 #
-# ⛔ The old 0.0325 and 0.0267 were 1.5x and 2.8x the highest measured value, and conservatism was
-# then applied a SECOND time by the margin below. That already cost the owner an on-chain deposit
-# that was not needed, and it refuses a four-hour soak the balance covers comfortably. The margin is
-# where safety belongs; a constant that is already high makes the guard refuse affordable work.
+# ⛔ Earlier the same day these were refitted DOWN to 0.0214 and 0.0095, on the argument that the old
+# 0.0325 and 0.0267 were over-conservative. That refit was wrong in the dangerous direction: it would
+# have approved a four-hour soak the balance could not finish, and the sitting would have spent its
+# last hour measuring a node its peers had stopped serving. The original constants were closer to
+# right than the refit that replaced them.
 #
-# ⚠️ 1080p burns about 2.2x this. Override both for a sitting that is not 720p.
+# ⭐⭐⭐ WHY THE PER-ARM READINGS DISAGREE, AND WHICH ONE TO BELIEVE. The node-metrics diff for a
+# single arm reported 0.65 BZZ/hr over the same sitting that cost 2.62. `availableBalance` falls when
+# a cheque is ISSUED, and issuance lags the traffic that earned it, so a snapshot taken at an arm's
+# last second misses that arm's own cheques. **A per-arm figure is a floor. Price a sitting off the
+# sitting.**
 #
-# What makes the refit safe rather than optimistic is that it is no longer the only protection: the
-# sampler reads both chequebooks THROUGH an arm and stops the broadcast at the reserve, so being
-# wrong here costs a stopped sitting instead of an hour of starved measurement.
-UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-214000000000000}"
-GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-95000000000000}"
+# ⚠️ 1080p burns more again. Override both for a sitting that is not 720p.
+UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-437000000000000}"
+GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-355000000000000}"
 FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-140}"
 
 # What the nodes themselves say they did, either side of every arm, and periodically through a long
