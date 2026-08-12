@@ -123,7 +123,12 @@ if (process.argv[2] === 'run') {
 // Lists one publisher already on the box, so a run that tears down everything matching the
 // pattern shows up as a removal here.
 if (process.argv[2] === 'ps') {
-  process.stdout.write('someone-elses-publisher\\n');
+  const filter = process.argv.find((a) => a.startsWith('name='));
+  if (filter && filter.includes('viewer-arms-browser')) {
+    process.stdout.write('viewer-arms-browser\\n');
+  } else {
+    process.stdout.write('someone-elses-publisher\\n');
+  }
 }
 process.exit(0);
 `,
@@ -495,8 +500,30 @@ describe('a sitting refuses what it cannot finish, and records what the nodes di
 
     assert.equal(code, 1);
     assert.deepEqual(gops, [], 'an arm published after the selfcheck failed');
-    assert.deepEqual(removals, [], 'a refused sitting removed a container');
+    // It reclaims its OWN browser container by then, which is cleanup and not a teardown. What it
+    // must never touch is a publisher, because one of those may be serving somebody else's sitting.
+    assert.deepEqual(
+      removals.filter((line) => line.includes('publish')),
+      [],
+      'a refused sitting removed a publisher',
+    );
     assert.match(log, /the browser selfcheck failed/);
+  });
+
+  /**
+   * ⛔ A killed chain leaves its browser container behind: the driver dies, its `docker run` does
+   * not. The image serves one Xvfb display, so the next sitting fails with `Cannot establish any
+   * listening sockets`, which reads as a broken browser rather than as a stale one. That is exactly
+   * how the revised soak refused on 2026-08-12, two hours after the container that blocked it had
+   * stopped being useful.
+   */
+  it('reclaims its own leftover browser container before opening one', async () => {
+    const { removals } = await runArms({ arms: 'a:2.0', rounds: 1, warmupRounds: '0' });
+
+    assert.ok(
+      removals.some((line) => line.includes('viewer-arms-browser')),
+      'a sitting started without reclaiming a browser container that would hold the display',
+    );
   });
 
   it('leaves no reading unpaired, so every arm can be differenced', async () => {

@@ -289,6 +289,25 @@ wait_for_quiet() {
   return 1
 }
 
+# Reclaim this driver's own browser container, by the exact name it gives them and nothing else.
+#
+# ⛔ The image serves one Xvfb display, so a leftover container makes every later run fail with
+# `Cannot establish any listening sockets`, which reads as a broken browser rather than as a stale
+# one. Killing a chain leaves exactly that: the driver dies, its `docker run` does not.
+#
+# ⛔⛔ By exact name, never by pattern. A teardown keyed on a name pattern killed a live paid
+# broadcast on 2026-08-12, and this box carries forty other bee nodes and eight unrelated stacks
+# whose containers are not ours to touch.
+reclaim_browser_containers() {
+  local name
+  for name in "${BROWSER_CONTAINER_NAME}" "${BROWSER_CONTAINER_NAME}-selfcheck"; do
+    if docker ps -aq --filter "name=^${name}$" 2>/dev/null | grep -q .; then
+      say "  removing a leftover ${name}, which would hold the Xvfb display against every arm"
+      docker rm -f "${name}" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 # Run a browser script in the image that actually has a browser in it.
 #
 # ⛔ The host has no Chrome. `e2e/Dockerfile.browser` is where it lives, together with the Xvfb
@@ -455,14 +474,11 @@ if ! docker image inspect "${BROWSER_IMAGE}" >/dev/null 2>&1; then
   exit 1
 fi
 say "  watching in ${BROWSER_IMAGE}"
-if [ "${RUN_SELFCHECK}" = "1" ]; then
-  say "  running the free selfcheck before spending anything"
-  if ! run_selfcheck >> "${LOG}" 2>&1; then
-    say "REFUSING TO START: the browser selfcheck failed, so no arm here could measure a viewer"
-    exit 1
-  fi
-  say "  selfcheck passed"
-fi
+
+# ⛔ Every refusal that costs nothing comes first, and only then does anything get touched or run.
+# A sitting that is going to refuse should leave the box exactly as it found it, which is why the
+# container reclaim and the fifteen-second selfcheck sit below all four cheap gates rather than
+# above them.
 if [ -f "${STOP_FILE}" ]; then
   say "REFUSING TO START: a floor was already crossed and ${STOP_FILE} says so:"
   sed 's/^/  /' "${STOP_FILE}" >> "${LOG}"
@@ -481,9 +497,19 @@ fi
 snapshot_metrics "${METRICS_DIR}/sitting-before.json" "sitting-before"
 [ "${PREFLIGHT_ONLY:-0}" = "1" ] && { say "PREFLIGHT_ONLY, so stopping here without publishing anything"; exit 0; }
 
+reclaim_browser_containers
+if [ "${RUN_SELFCHECK}" = "1" ]; then
+  say "  running the free selfcheck before spending anything"
+  if ! run_selfcheck >> "${LOG}" 2>&1; then
+    say "REFUSING TO START: the browser selfcheck failed, so no arm here could measure a viewer"
+    exit 1
+  fi
+  say "  selfcheck passed"
+fi
+
 # Installed only here, past every exit that publishes nothing, so a run that starts no broadcast can
 # never tear one down on its way out.
-trap 'stop_sampler; stop_publisher' EXIT INT TERM
+trap 'stop_sampler; stop_publisher; reclaim_browser_containers' EXIT INT TERM
 
 for round in $(seq 1 "${ROUNDS}"); do
   order=("${ARM_LIST[@]}")
