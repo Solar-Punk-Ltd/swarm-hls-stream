@@ -161,7 +161,12 @@ export class StreamUploader {
       // Not gated on the manifest publish any more, now that it is queued rather than awaited. The
       // drift check guards on isFirstManifestReady itself, so before the first publish lands it is
       // a no-op and the next segment retries it.
-      await this.refreshBandwidthIfDrifted();
+     
+      try {
+        await this.refreshBandwidthIfDrifted();
+      } catch (error) {
+        this.errorHandler.handleError(error, 'StreamUploader.refreshBandwidthIfDrifted');
+      }
       this.persistState();
     });
   }
@@ -271,11 +276,10 @@ export class StreamUploader {
   private async announceRendition(final?: { index: number; duration: number }): Promise<void> {
     const rendition = this.buildRendition(final);
 
-    this.announcedBandwidth = rendition.bandwidth;
     this.lastBandwidthAnnounceAt = Date.now();
 
     this.logger.log(`Publishing rendition ${rendition.name} of ladder ${this.ladder!.group}`);
-    return this.streamCatalog.upsertRendition(
+    await this.streamCatalog.upsertRendition(
       {
         title: this.getFormattedDate(),
         owner: this.streamSigner.publicKey().address().toHex(),
@@ -284,6 +288,8 @@ export class StreamUploader {
       },
       rendition,
     );
+
+    this.announcedBandwidth = rendition.bandwidth;
   }
 
   private async refreshBandwidthIfDrifted(): Promise<void> {
