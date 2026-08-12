@@ -36,6 +36,7 @@
     "browser:selfcheck": "pnpm --filter @swarm-hls-stream/e2e browser:selfcheck",
     "browser:watch": "pnpm --filter @swarm-hls-stream/e2e browser:watch",
     "browser:crash": "pnpm --filter @swarm-hls-stream/e2e browser:crash",
+    "browser:buffer-sweep": "pnpm --filter @swarm-hls-stream/e2e browser:buffer-sweep",
     "audit:check": "tsx packages/audit-gate/src/index.ts",
     "mutate": "stryker run",
     "verify": "pnpm lint && pnpm typecheck && pnpm build && pnpm test && git ls-files -z | xargs -0 -r npx prettier --check --ignore-unknown",
