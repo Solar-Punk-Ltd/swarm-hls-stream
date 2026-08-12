@@ -149,6 +149,29 @@ def render_diff(before: dict, after: dict) -> list[str]:
     return lines
 
 
+def breached_floors(snapshot: dict, reserve_plur: int, max_utilization_pct: float) -> list[str]:
+    """The reasons this snapshot says a sitting should stop, or an empty list to carry on.
+
+    ⛔ The point of reading these DURING a run rather than after it. A single continuous arm has one
+    funding check, at minute zero, so a four-hour broadcast that runs its chequebook dry at hour three
+    spends its last hour measuring what a starved node does and files it as a result. A node at zero
+    is refused service by its peers, which looks like the network being slow.
+    """
+    reasons = []
+    for who in ("uploader", "gateway"):
+        available = snapshot.get("chequebook", {}).get(who, {}).get("availableBalance")
+        if available is None:
+            reasons.append(f"the {who} chequebook stopped answering, so the budget is unknown")
+        elif int(available) < reserve_plur:
+            reasons.append(f"{who} available {int(available) / 1e16:.4f} BZZ is under the {reserve_plur / 1e16:.2f} reserve")
+
+    for batch_id, (used, buckets, ttl_days) in _batches(snapshot).items():
+        pct = 100.0 * used / buckets
+        if pct >= max_utilization_pct:
+            reasons.append(f"batch {batch_id[:8]} is {pct:.0f}% full, at the {max_utilization_pct:.0f}% stop line")
+    return reasons
+
+
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[1] == "diff":
         before = json.load(open(argv[2]))
@@ -159,7 +182,17 @@ def main(argv: list[str]) -> int:
         payload = json.load(sys.stdin)
         print(json.dumps(build_snapshot(payload["label"], payload["atMs"], payload["hostLoad"], payload), indent=2))
         return 0
-    print("usage: node_metrics.py build < payload.json | diff <before.json> <after.json>", file=sys.stderr)
+    if len(argv) >= 5 and argv[1] == "floors":
+        snapshot = json.load(open(argv[2]))
+        reasons = breached_floors(snapshot, int(argv[3]), float(argv[4]))
+        for reason in reasons:
+            print(reason)
+        return 1 if reasons else 0
+    print(
+        "usage: node_metrics.py build < payload.json | diff <before.json> <after.json>"
+        " | floors <snapshot.json> <reserve_plur> <max_utilization_pct>",
+        file=sys.stderr,
+    )
     return 2
 
 
