@@ -131,31 +131,37 @@ feed and says nothing about segment throughput.
 
 ### 3.1 Two things the code already answers, at no cost at all
 
-**The uploader's live window caps the player's startup buffer, and it is counted in segments while the
-buffer is counted in seconds.** `LIVE_WINDOW_SIZE = 10` in
-[`ManifestManager.ts`](../../packages/stream-uploader/src/libs/ManifestManager.ts) means the first
-manifest a viewer ever sees holds ten segments, so it is 20 seconds of media at a 2.0s segment and
-**5 seconds at a 0.5s one**. hls.js clamps its sync position to the start of the playlist:
+⛔ **The first of these is WITHDRAWN, checked 2026-08-12 and false.** It read `LIVE_WINDOW_SIZE = 10`
+in [`ManifestManager.ts`](../../packages/stream-uploader/src/libs/ManifestManager.ts) and predicted
+that the first manifest a viewer sees holds ten segments, so a player asking for
+`LIVE_SYNC_DURATION_S = 6` would be silently clamped to 5 seconds at a 0.5s segment. **That constant
+no longer exists.** The window is now a byte budget, `LIVE_WINDOW_MAX_BYTES = 4096`, and what it holds
+was measured against the running class rather than reasoned about:
 
-```js
-var syncPosition = liveEdge - targetLatency - this.edgeStalled;
-var min = edge - levelDetails.totalduration;
-return Math.min(Math.max(min, syncPosition), max);
-```
+|  segment |    window holds | in seconds |
+| -------: | --------------: | ---------: |
+|    0.25s |     50 segments |      12.5s |
+| **0.5s** | **51 segments** |  **25.5s** |
+|     1.0s |     52 segments |      52.0s |
+|     2.0s |     52 segments |     104.0s |
 
-So at 0.5s segments a player asking for `LIVE_SYNC_DURATION_S = 6` is silently given 5, and starts on
-the oldest segment it holds with no history behind it. **The best row in the retired profile grid was
-720p at 0.5s**, which is to say the configuration this campaign is most likely to pick is the one
-where the cap bites hardest.
+So the shipped 6s target clears the window by four times over at the shortest segment this project
+ships, and `the window covers the buffer the client asks for` in
+`packages/stream-uploader/test/ManifestManager.test.ts` already guards it at 0.25s, shorter than the
+0.5 floor #155 shipped. **There is no clamp and there is nothing to confirm in a browser.**
 
-It bounds startup rather than steady state, because the client accumulates: `ManifestStateManager`
-appends every segment it has seen and never trims, so the playlist it hands hls.js grows past the cap
-within a few polls. Worth confirming in a browser (#48) rather than in another bench run.
+⭐ The prediction was not wrong when it was written. It went stale when the window changed shape, and
+it survived as a live to-do because nothing re-read the constant it named. **A doc that quotes a
+constant is a claim with an expiry date on it.**
 
-**That same accumulation is unbounded for the life of the session.** Ten hours at a 0.5s segment is
-about 72,000 entries in `state.segments` and as many in `state.segmentUris`, re-serialised into one
-string on every poll that finds something new. Nothing has ever run long enough to notice, which is
-its own finding: the longest run this project has ever done is ten minutes.
+✅ **The second holds, and is now measured.** The accumulation is unbounded for the life of the
+session: `ManifestStateManager` appends every segment it has seen and never trims, so ten hours at a
+0.5s segment is about 72,000 entries re-serialised into one string on every poll that finds something
+new. Measured at **13.90 ms per rebuild and a 7.6 MB manifest** at that size, against 0.76 ms and
+774 KB at one hour. Nothing has ever run long enough to notice, which is its own finding: the longest
+run this project has ever done is ten minutes. See
+[`manifest-growth-2026-08-12.md`](../bench/manifest-growth-2026-08-12.md), which also records that
+our rebuild is a floor rather than the whole per-poll cost, because hls.js re-parses the same string.
 
 Neither is a change to make on reading alone. They are candidates for Phase 4 with a browser check
 first, and the reason for that caution is `a4f9841`.
