@@ -32,8 +32,12 @@ FPS=30
 # bitrate it stops stretching at, and that is the same arm with one number changed.
 SIZE="${PROBE_SIZE:-1920x1080}"
 BITRATE_KBPS="${PROBE_BITRATE_KBPS:-6000}"
-# Our deployment's value, high enough that SRS's absolute-overflow path cannot fire.
-AOF_RATIO=10
+# Deliberately high so SRS's absolute-overflow path cannot fire, which is what isolates the
+# fragment-versus-GOP relationship from the ceiling. Overridable, because the ceiling is itself worth
+# probing: `HLS_FRAGMENT * HLS_AOF_RATIO` is what SRS force-closes at, and the shipped pair is 0.5 and
+# 4.2 rather than the 10 assumed here. ⛔ An arm run with a non-default ratio is NOT comparable with
+# `gop-vs-fragment-2026-08-12.md`, every row of which was measured at 10.
+AOF_RATIO="${PROBE_AOF_RATIO:-10}"
 # Held at 200 throughout the bench profiles.
 SRT_LATENCY_MS=200
 
