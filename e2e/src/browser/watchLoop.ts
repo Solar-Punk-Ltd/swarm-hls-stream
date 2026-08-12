@@ -79,6 +79,17 @@ export interface SamplingOptions {
   screenshotDir: string;
   /** Where this stretch's samples start in the run as a whole, so screenshots stay numbered in order. */
   startIndex: number;
+  /**
+   * The highest sample index the whole run will reach, which sets how wide the filenames are padded.
+   *
+   * ⛔ Not a cosmetic choice, and not something a stretch can work out for itself. The padding was a
+   * fixed four, so a run passing 9,999 samples wrote `sample-10020.png` next to `sample-9990.png` and
+   * every later image sorted before the earlier ones. At one sample a second that is 2h47m, longer
+   * than anything measured here until the four-hour broadcast, and the images are the only
+   * glass-to-glass evidence a run leaves. Derived from the plan rather than widened to a number that
+   * looked big enough, since that is the assumption that broke.
+   */
+  totalSamples: number;
 }
 
 export interface SampledStretch {
@@ -95,8 +106,18 @@ export interface SampledStretch {
  * at load: Chromium throttles a hidden page's timers to about one a minute once playback stops, and
  * that is precisely the moment a crash scenario is measuring.
  */
+/**
+ * How wide a screenshot's index is padded, so the files sort in the order they were taken.
+ *
+ * Exported because the arithmetic is the whole defect and `sampleFor` needs a live browser to reach.
+ */
+export function screenshotIndexWidth(totalSamples: number): number {
+  return String(Math.max(1, Math.ceil(totalSamples))).length;
+}
+
 export async function sampleFor(options: SamplingOptions): Promise<SampledStretch> {
-  const { page, forMs, intervalMs, screenshotDir, startIndex } = options;
+  const { page, forMs, intervalMs, screenshotDir, startIndex, totalSamples } = options;
+  const indexWidth = screenshotIndexWidth(totalSamples);
   const samples: ViewerSample[] = [];
   const readings: InstrumentReading[] = [];
   const screenshots: string[] = [];
@@ -110,7 +131,7 @@ export async function sampleFor(options: SamplingOptions): Promise<SampledStretc
 
     const index = startIndex + samples.length;
     if (index % SCREENSHOT_EVERY === 1) {
-      const path = join(screenshotDir, `sample-${String(index).padStart(4, '0')}.png`);
+      const path = join(screenshotDir, `sample-${String(index).padStart(indexWidth, '0')}.png`);
       if (!(await screenshotBothClocks(page, path))) {
         throw new Error(
           `the viewer clock overlay is not in the page, so ${path} carries the publisher's clock and ` +

@@ -87,6 +87,7 @@ async function main(): Promise<void> {
       intervalMs,
       screenshotDir: screenshotDirFor(runId),
       startIndex: 0,
+      totalSamples: Math.ceil((watchSeconds * 1000) / intervalMs),
     });
   } finally {
     gatewaySamples = await gatewaySampling.stop();

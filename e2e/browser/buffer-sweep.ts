@@ -196,6 +196,7 @@ async function main(): Promise<void> {
         intervalMs,
         screenshotDir: screenshotDirFor(runId),
         startIndex: index * Math.ceil((armSeconds * 1000) / intervalMs),
+        totalSamples: plan.length * Math.ceil((armSeconds * 1000) / intervalMs),
       });
 
       const summary = summarize(stretch.samples);

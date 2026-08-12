@@ -167,8 +167,9 @@ async function main(): Promise<void> {
     recordRequests(page, requests);
     watchUrl = await openViewer(page, clientUrl);
 
+    const totalSamples = Math.ceil((settleMs + scenario.downMs + recoverMs) / intervalMs);
     const watch = (forMs: number): Promise<SampledStretch> =>
-      sampleFor({ page, forMs, intervalMs, screenshotDir, startIndex: sampled() });
+      sampleFor({ page, forMs, intervalMs, screenshotDir, startIndex: sampled(), totalSamples });
 
     console.log(`browser: settling for ${settleMs / 1000}s before the fault`);
     collect(await watch(settleMs));
