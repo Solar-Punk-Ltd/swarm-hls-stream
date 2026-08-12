@@ -19,6 +19,7 @@
     "browser:crash": "tsx browser/crash.ts",
     "probe:ahead": "node src/probes/feed-ahead-probe.mjs",
     "browser:vod": "tsx browser/vod.ts",
+    "browser:buffer-sweep": "tsx browser/buffer-sweep.ts",
     "make:recording": "tsx browser/make-recording.ts"
   },
   "dependencies": {
