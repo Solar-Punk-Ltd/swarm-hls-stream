@@ -73,6 +73,50 @@ intercept from a two-point extrapolation into something with a third anchor.
 **Refutation condition, stated in advance:** a measured 0.267 latency at or above **1.53s** (inside
 the instrument's 1% replication spread of the 0.5 arm) refutes H2 and says the curve has flattened.
 
+### ⭐ H2b, added before any arm of this sitting finished: the floor is measurable, not extrapolated
+
+The longrun report carries a **five-hop split per segment**, which the sittings so far have never been
+read for. Re-reading the nine already-paid-for arms of `gop-sustain-2026-08-12` (warm arms only)
+decomposes the latency directly instead of inferring a floor from three totals:
+
+| GOP | segment hop | everything else |
+| ---: | ---: | ---: |
+| 0.5 | 500, 499 | **1053, 1032** |
+| 1.0 | 1000, 1000 | **1258, 1262** |
+| 2.0 | 1999 x3 | **1805, 1819, 1808** |
+
+⭐ **The non-segment time is not a constant.** It grows with the GOP, because a longer segment is also
+a larger one. Fitting the totals gives `latency = 790 + 1500 x GOP`, which reproduces the 0.78s
+intercept above **independently at 0.790s** and predicts **1.19s at 0.267** by a third route.
+
+Fitting each hop separately says where that floor lives:
+
+| hop | fit | predicted at 0.267 |
+| --- | --- | ---: |
+| `manifestPublish` | **225 + 2 x GOP**, so flat to within noise | **225 ms** |
+| `fetch` | **449 + 119 x GOP** | **481 ms** |
+| `upload` | 185 + 183 x GOP | 233 ms |
+| `feedPropagation` | proportional to GOP, it is the idle poll interval | ~0 ms |
+
+⭐⭐ **`fetch`'s 449 ms intercept independently matches the ~480 ms announcement floor** measured off
+the archived request logs by a completely different method. Two instruments, one number.
+
+⭐⭐⭐ **So roughly 800 ms of the remaining latency is GOP-independent, and about two thirds of it is
+Swarm round trip** (`fetch` plus the `manifestPublish` SOC write) rather than anything the encoder
+does. **If this holds, it says the GOP change is the last cheap win, and further latency work has to
+target retrieval and the feed write rather than segmentation.**
+
+**Predictions this sitting will test, all registered before the data:**
+
+1. `manifestPublish` at GOP 0.267 stays **215 to 235 ms**. It is flat or the model is wrong.
+2. `fetch` at GOP 0.267 lands **460 to 500 ms**.
+3. Summed non-segment time lands **900 to 980 ms**, against 1042 measured at GOP 0.5.
+4. Total lands **1.19 to 1.21s**, which is where all three routes agree.
+
+⛔ **This is a re-analysis of one sitting, so it is a prediction and not a finding.** It is written
+here rather than reported because the arms testing it are already publishing, and the rule is that a
+mechanism proposed while its replicate is in flight is a hypothesis with a date on it.
+
 ## H3 cost: more keyframes, no per-byte premium
 
 **BZZ per MB stays flat**, in the 0.00059 to 0.00068 band measured across the last nine arms. Total
