@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { armIsComparable, type ArmSetup } from '../src/browser/bufferSweep.js';
+import { armIsComparable, type ArmSetup, perArmFromSessionTotals } from '../src/browser/bufferSweep.js';
 
 function armThatTook(over: Partial<ArmSetup> = {}): ArmSetup {
   return {
@@ -72,5 +72,43 @@ describe('deciding whether an arm can be counted', () => {
    */
   it('allows an arm whose player reported no stall count', () => {
     assert.equal(armIsComparable(armThatTook({ stallCountAtStart: null }), 1), null);
+  });
+});
+
+/**
+ * That an arm is scored on what it did, not on what the sweep had accumulated by the time it ran.
+ *
+ * `summarize` reads rebuffers through `totalAcrossRestarts`, which takes the peak of a monotonic
+ * session counter. Right for a whole watch, wrong for one arm: the sweep is scored on this column,
+ * and left cumulative it can only ever go up, so every arm after a bad one inherits its damage and
+ * the sweep reports a floor wherever the first trouble happened.
+ *
+ * Found in a live sitting reading 5, 5, 5 across three different buffer targets, which is the shape
+ * this produces and is indistinguishable from a real invariance.
+ */
+describe('scoring an arm on its own rebuffers', () => {
+  it('differences a rising session counter into per-arm contributions', () => {
+    assert.deepEqual(perArmFromSessionTotals([0, 4, 5, 5, 5]), [0, 4, 1, 0, 0]);
+  });
+
+  it('reports nothing for an arm that added nothing, rather than the running total', () => {
+    assert.deepEqual(perArmFromSessionTotals([7, 7, 7]), [7, 0, 0]);
+  });
+
+  it('leaves a sweep where nothing ever rebuffered at zero throughout', () => {
+    assert.deepEqual(perArmFromSessionTotals([0, 0, 0, 0]), [0, 0, 0, 0]);
+  });
+
+  /**
+   * A total that falls is the player's counter resetting, which `totalAcrossRestarts` handles inside
+   * an arm and cannot see across them. The arm still did the work it reached from zero, so crediting
+   * it with a negative would hide a real rebuffer.
+   */
+  it('credits an arm whose counter restarted with what it reached, never a negative', () => {
+    assert.deepEqual(perArmFromSessionTotals([5, 2, 3]), [5, 2, 1]);
+  });
+
+  it('handles an empty sweep without inventing an arm', () => {
+    assert.deepEqual(perArmFromSessionTotals([]), []);
   });
 });

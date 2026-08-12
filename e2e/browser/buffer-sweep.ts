@@ -20,7 +20,7 @@
  *   deploy/scripts/browser-on-host.sh --script browser:buffer-sweep -- BROWSER_ARM_SECONDS=240
  */
 
-import { armIsComparable, type ArmSetup, setArm } from '../src/browser/bufferSweep.js';
+import { armIsComparable, type ArmSetup, perArmFromSessionTotals, setArm } from '../src/browser/bufferSweep.js';
 import {
   DEFAULT_GATEWAY_SAMPLE_INTERVAL_MS,
   gatewayReader,
@@ -65,6 +65,17 @@ interface ArmResult {
   setup: ArmSetup;
   excludedBecause: string | null;
   samples: number;
+  /**
+   * Rebuffers this arm caused, not the session total at the end of it.
+   *
+   * ⛔ `summarize` reads `rebufferCount` through `totalAcrossRestarts`, which takes the peak of a
+   * **monotonic session counter**. Correct for a whole watch and wrong for one arm of a sweep: every
+   * arm would report whatever its predecessors accumulated, so an arm that caused nothing reports the
+   * running total and the sweep's own score reads as flat. This is the number the sweep is scored on,
+   * which is why it is differenced here rather than left for a reader to notice.
+   *
+   * ⚠️ `stalledSamples` beside it needs no such treatment: it counts samples inside the arm.
+   */
   rebufferCount: number;
   stalledSamples: number;
   medianLatencyS: number | null;
@@ -164,6 +175,9 @@ async function main(): Promise<void> {
 
   const requests: RequestRecord[] = [];
   const results: ArmResult[] = [];
+  // Collected as session totals and differenced after the loop, because the counter behind them is
+  // monotonic across the whole sweep. See `perArmFromSessionTotals`.
+  const rebufferTotals: number[] = [];
   let gatewaySamples: GatewaySample[] = [];
   let firstTargetDurationS: number | null = null;
   let watchUrl = clientUrl;
@@ -200,6 +214,7 @@ async function main(): Promise<void> {
 
       const summary = summarize(stretch.samples);
       const instrument = judgeRun(stretch.readings);
+      rebufferTotals.push(summary.rebufferCount);
       results.push({
         label: arm.label,
         requestedTargetS: arm.targetS,
@@ -207,6 +222,7 @@ async function main(): Promise<void> {
         setup,
         excludedBecause: arm.counted ? armIsComparable(setup, firstTargetDurationS) : 'warm-up',
         samples: stretch.samples.length,
+        // Replaced with this arm's own contribution once the sweep ends and the series is known.
         rebufferCount: summary.rebufferCount,
         stalledSamples: summary.stalledSamples,
         medianLatencyS: summary.latency.medianLatencyS ?? null,
@@ -217,7 +233,7 @@ async function main(): Promise<void> {
       const last = results[results.length - 1];
       console.log(
         `  ${last.label}: held at ${setup.targetLatencyS ?? '—'}s, ${last.samples} samples, ` +
-          `${last.rebufferCount} rebuffers, ${last.stalledSamples} stalled` +
+          `${last.rebufferCount} rebuffers so far this sweep, ${last.stalledSamples} stalled in this arm` +
           `${last.excludedBecause ? `  [EXCLUDED: ${last.excludedBecause}]` : ''}`,
       );
     }
@@ -225,6 +241,10 @@ async function main(): Promise<void> {
     gatewaySamples = await gatewaySampling.stop();
     await browser.close();
   }
+
+  perArmFromSessionTotals(rebufferTotals).forEach((own, index) => {
+    results[index].rebufferCount = own;
+  });
 
   const cost = judgeCost(resourcesBefore, await readResources(host, cfg), 0);
   const run = {
