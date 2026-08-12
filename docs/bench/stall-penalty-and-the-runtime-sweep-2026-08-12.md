@@ -80,3 +80,36 @@ permanent, but it is **bounded at one second at the shipping profile**, which is
 
 It also gets cheaper: no per-arm redeploy, so a sitting is one broadcast long enough to hold every arm
 plus the warm-up ones to discard.
+
+---
+
+# ⛔ AMENDMENT, same day: the second half above is NARROWED
+
+**"#87 needs no rebuild per arm" was checked against hls.js and not against our client, and the
+client is the half that decides it.**
+
+Everything said about hls.js holds: `set targetLatency` writes `config.liveSyncDuration` and resets
+`stallCount`, and the getter re-reads config on every access. What is missing is a way to reach the
+instance. `SwarmHlsPlayer.tsx` holds it as `let hls: Hls | null = null` **inside a `useEffect`**,
+nothing assigns it to a global, and the QoE hook only ever **reads** `hls.targetLatency`. The
+`setTargetLatency` that appears in `hlsQoeStallPenalty.test.ts` is on a mock player, not on ours.
+
+So a Playwright harness has no handle, and **#87 needs a client change either way**. Two options,
+and the choice is a product one rather than a harness one:
+
+| | what it costs |
+| --- | --- |
+| **Expose the instance under a build-time flag** | one build, one broadcast, arms set live. Adds a debug surface to a hardening branch |
+| **Read the value from `import.meta.env` at build time** | ships a real operator knob. Rebuild and redeploy per arm, so every arm is a fresh join |
+
+⛔ **The second trips a cross-package trap.** `packages/stream-uploader/test/ManifestManager.test.ts`
+reads `LIVE_SYNC_DURATION_S` **out of the client's source with a regex**,
+`export const LIVE_SYNC_DURATION_S\s*=\s*([0-9.]+)\s*;`, deliberately, so that the window guard
+cannot be satisfied by a constant asserted against a copy of itself. Turning the export into a
+computed expression **breaks that test in another package**, and pointing it at the default instead
+means an operator override is unguarded. That is a real weakening and would have to be said out loud.
+
+⭐ **The lesson: I verified the library and not the integration.**
+A capability in a dependency is not a capability in the product until something in the product
+reaches it. The first half of this document, which is about the penalty cap, is unaffected: it is
+arithmetic over hls.js's own expression and our uploader's `ceil`, and neither needs a handle.
