@@ -1,0 +1,200 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const SCRIPT = join(ROOT, 'deploy/scripts/viewer-arms.sh');
+const PLUR_PER_BZZ = 10n ** 16n;
+
+/**
+ * That a viewer sitting runs the arms it says it will, in an order that cannot fake a result.
+ *
+ * Both guarantees are invisible in the output. A sitting whose rounds never reverse still produces a
+ * full table of plausible numbers, and any drift across the hour lines up with the swept axis and
+ * reads as the configuration. Two sittings have already been thrown away here for that shape, which
+ * is why `sweep-interleaved.sh` reverses and why this does too.
+ */
+
+const cleanups = [];
+
+after(() => {
+  for (const cleanup of cleanups) {
+    cleanup();
+  }
+});
+
+async function startChequebook(availableBzz) {
+  const plur = ((BigInt(Math.round(availableBzz * 1000)) * PLUR_PER_BZZ) / 1000n).toString();
+  const server = createServer((req, reply) => {
+    if (!req.url.startsWith('/chequebook/balance')) {
+      reply.writeHead(404).end();
+      return;
+    }
+    reply
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ totalBalance: plur, availableBalance: plur }));
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  cleanups.push(() => server.close());
+  return server.address().port;
+}
+
+/**
+ * Stubs everything an arm touches so the ordering can be read without publishing anything.
+ *
+ * The health endpoint is **stateful**, and that is what makes the test both fast and faithful: it
+ * reports a live stream until the watch has run, then reports none. A stub that always answered "one
+ * active stream" would send every arm through the whole `wait_for_quiet` budget, which is exactly the
+ * state the script exists to notice, so the test would sit out a real timeout per arm and prove
+ * nothing about the ordering it is measuring.
+ */
+function stubBin(binDir, recordPath, watchedFlag, chequebookPort) {
+  mkdirSync(binDir, { recursive: true });
+
+  writeFileSync(join(binDir, 'docker'), '#!/bin/sh\nexit 0\n');
+  writeFileSync(
+    join(binDir, 'curl'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
+if (url.includes('/chequebook/balance')) {
+  process.stdout.write(require('node:child_process').execFileSync('/usr/bin/curl',
+    ['-s', 'http://127.0.0.1:${chequebookPort}/chequebook/balance'], { encoding: 'utf8' }));
+} else if (url.includes('/health')) {
+  // Live until this arm's watch has run, then quiet, which is what a real publisher teardown looks
+  // like and what lets wait_for_quiet return instead of expiring.
+  const watched = fs.existsSync(${JSON.stringify(watchedFlag)});
+  if (watched) {
+    fs.rmSync(${JSON.stringify(watchedFlag)});
+  }
+  process.stdout.write(JSON.stringify({ activeStreams: watched ? 0 : 1 }));
+}
+`,
+  );
+  writeFileSync(
+    join(binDir, 'pnpm'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv[2] === 'browser:watch') {
+  fs.appendFileSync(${JSON.stringify(recordPath)}, process.env.BROWSER_GOP_SECONDS + '\\n');
+  fs.writeFileSync(${JSON.stringify(watchedFlag)}, '');
+}
+process.exit(0);
+`,
+  );
+  for (const name of ['docker', 'curl', 'pnpm']) {
+    chmodSync(join(binDir, name), 0o755);
+  }
+}
+
+async function runArms({ arms, rounds, bzz = 500, preflightOnly = false, margin = '10' }) {
+  const port = await startChequebook(bzz);
+  const out = mkdtempSync(join(tmpdir(), 'viewer-arms-'));
+  cleanups.push(() => rmSync(out, { recursive: true, force: true }));
+  const bin = join(out, 'bin');
+  const record = join(out, 'gops.txt');
+  writeFileSync(record, '');
+  stubBin(bin, record, join(out, 'watched.flag'), port);
+
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    OUT_DIR: out,
+    // A tree with no publish-clock.sh, so `start_publisher` fails harmlessly in its subshell and the
+    // stubbed health check is what carries the arm forward. The ordering is what this measures.
+    BENCH_REPO: out,
+    ARMS: arms,
+    ROUNDS: String(rounds),
+    MINUTES: '1',
+    // The stubbed health endpoint always reports a live stream, so wait_for_quiet would sit out its
+    // whole budget on every arm. What this measures is the order the arms ran in, not the timeouts.
+    STREAM_TIMEOUT_S: '5',
+    QUIET_TIMEOUT_S: '5',
+    // A one-minute arm cannot carry the real 90s publisher margin, and the margin is not what these
+    // measure. The refusal that margin exists to produce has its own case below.
+    PUBLISHER_MARGIN_S: margin,
+    UPLOADER_BEE_PORT: String(port),
+    GATEWAY_BEE_PORT: String(port),
+    ...(preflightOnly ? { PREFLIGHT_ONLY: '1' } : {}),
+  };
+
+  let code = 0;
+  try {
+    await run('bash', [SCRIPT], { env, encoding: 'utf8' });
+  } catch (failure) {
+    code = failure.code;
+  }
+  return {
+    code,
+    gops: readFileSync(record, 'utf8').split('\n').filter(Boolean),
+    log: readFileSync(join(out, 'viewer-arms.log'), 'utf8'),
+  };
+}
+
+describe('a viewer sitting runs its arms in an order that cannot fake a result', () => {
+  it('reverses the arm order on even rounds', async () => {
+    const { gops } = await runArms({ arms: 'obs:2.0 shipped:0.5', rounds: 3 });
+
+    assert.deepEqual(gops, ['2.0', '0.5', '0.5', '2.0', '2.0', '0.5']);
+  });
+
+  it('reverses three arms as well, not only a pair', async () => {
+    const { gops } = await runArms({ arms: 'a:2.0 b:1.0 c:0.5', rounds: 2 });
+
+    assert.deepEqual(gops, ['2.0', '1.0', '0.5', '0.5', '1.0', '2.0']);
+  });
+
+  it('runs every arm in every round, so a sitting is the size it claims', async () => {
+    const { gops, log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 3 });
+
+    assert.equal(gops.length, 6);
+    assert.match(log, /2 arms x 3 rounds x 1 min = 6 broadcasts/);
+  });
+
+  /**
+   * A sitting that stops partway leaves arms measured on a node its peers have stopped serving, so
+   * the rows on either side of the exhaustion are not comparable and interleaving them bought
+   * nothing.
+   */
+  it('refuses to start when it cannot pay for every arm it intends to run', async () => {
+    const { code, gops, log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 3, bzz: 0 });
+
+    assert.equal(code, 1);
+    assert.equal(gops.length, 0, 'it published despite refusing to start');
+    assert.match(log, /REFUSING TO START/);
+  });
+
+  it('answers whether it can afford a sitting without publishing one', async () => {
+    const { code, gops, log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 3, preflightOnly: true });
+
+    assert.equal(code, 0);
+    assert.equal(gops.length, 0);
+    assert.match(log, /PREFLIGHT_ONLY/);
+  });
+
+  /**
+   * `watch_seconds` is the arm minus a margin the publisher needs on both ends. Below about two
+   * minutes that goes negative, and a negative watch still produces a full set of arms, a full ledger
+   * and no samples, which reads as a sitting that ran.
+   */
+  it('refuses a sitting too short to watch anything, rather than running empty arms', async () => {
+    const { code, gops, log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 2, margin: '90' });
+
+    assert.equal(code, 1);
+    assert.equal(gops.length, 0);
+    assert.match(log, /REFUSING TO START: MINUTES=1 leaves -30s to watch/);
+  });
+
+  it('says which round is warm-up, since the arms are otherwise identical in the log', async () => {
+    const { log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 2 });
+
+    assert.match(log, /round 1 is warm-up and is discarded/);
+  });
+});
