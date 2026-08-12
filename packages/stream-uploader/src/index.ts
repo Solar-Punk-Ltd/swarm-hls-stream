@@ -115,6 +115,7 @@ async function start() {
       manifestBeeUrl: config.manifestAccessUrl,
       maxQueueSize: config.maxQueueSize,
       recoveryTimeout: config.recoveryTimeout,
+      segmentRedundancy: config.segmentRedundancy,
       ladder: config.abr?.ladder,
     });
 

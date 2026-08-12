@@ -28,6 +28,7 @@ interface StreamOrchestratorConfig {
   manifestBeeUrl: string;
   maxQueueSize: number;
   recoveryTimeout: number;
+  segmentRedundancy: number;
   ladder?: AbrLadder;
 }
 
@@ -100,6 +101,7 @@ export class StreamOrchestrator {
         recoveryStore: this.recoveryStore,
         streamKey: this.config.streamKey,
         stamp: publisher.stamp,
+        redundancyLevel: this.config.segmentRedundancy,
         streamId,
         streamTopic,
         mediatype,
@@ -193,6 +195,7 @@ export class StreamOrchestrator {
         recoveryStore: this.recoveryStore,
         streamKey: this.config.streamKey,
         stamp: publisher.stamp,
+        redundancyLevel: this.config.segmentRedundancy,
         streamId: state.streamId,
         streamTopic: state.streamRawTopic,
         mediatype: state.mediatype,

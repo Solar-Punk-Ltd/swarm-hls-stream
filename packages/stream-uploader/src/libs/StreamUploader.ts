@@ -56,6 +56,15 @@ export interface StreamUploaderOptions {
    */
   streamTopic: string;
   mediatype: MediaType;
+  /**
+   * Erasure-coding level for segment uploads.
+   *
+   * Parity is durability insurance, and it is paid for twice on a live stream: once on upload, and
+   * again by every viewer, because the extra chunks widen the retrieval fan-out that dominates how
+   * long a segment takes to arrive. A segment that outlives its playlist window is of no use to
+   * anyone, so for live the insurance mostly buys nothing. 0 turns it off.
+   */
+  redundancyLevel: number;
   ladder?: LadderMembership;
   restoreState?: RestoreState;
 }
@@ -73,6 +82,7 @@ export class StreamUploader {
   private recoveryStore: RecoveryStore;
   private streamId: string;
   private stamp: string;
+  private redundancyLevel: number;
   private socIndex: number | null = null;
   private mediatype: MediaType;
   private ladder?: LadderMembership;
@@ -92,6 +102,7 @@ export class StreamUploader {
     this.recoveryStore = options.recoveryStore;
     this.streamId = options.streamId;
     this.stamp = options.stamp;
+    this.redundancyLevel = options.redundancyLevel;
     this.mediatype = options.mediatype;
     this.ladder = options.ladder;
     this.streamRawTopic = options.streamTopic;
@@ -313,7 +324,9 @@ export class StreamUploader {
 
   private async uploadDataToBee(data: Uint8Array) {
     try {
-      return retryAwaitableAsync(() => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1 }));
+      return retryAwaitableAsync(() =>
+        this.bee.uploadData(this.stamp, data, { redundancyLevel: this.redundancyLevel }),
+      );
     } catch (error) {
       this.errorHandler.handleError(error, 'StreamUploader.uploadDataToBee');
       return null;

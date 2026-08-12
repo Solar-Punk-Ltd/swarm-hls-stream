@@ -45,6 +45,10 @@ export const config = {
   stateDir: optional('STATE_DIR', './state'),
   maxQueueSize: optionalInt('MAX_QUEUE_SIZE', 100),
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000),
+  // Erasure-coding parity on segment uploads. Defaults to what this has always used; 0 turns it
+  // off, which cuts both upload bytes and — the part that shows on a live stream — the number of
+  // chunks a viewer has to retrieve before a segment can play.
+  segmentRedundancy: optionalInt('SEGMENT_REDUNDANCY', 1),
   engine: optional('ENGINE', ''),
   abr: readAbrConfig(),
 };
