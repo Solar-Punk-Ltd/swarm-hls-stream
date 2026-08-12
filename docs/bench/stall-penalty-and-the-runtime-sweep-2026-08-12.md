@@ -1,7 +1,15 @@
-# #155 halved what a stall costs a viewer, and #87 does not need a rebuild after all
+# What a stall costs at the shipping profile, and what #87 still needs
 
 **2026-08-12, free.** Two reads of `hls.js@1.6.15`'s own source against our uploader's arithmetic. No
-broadcast, no browser, no BZZ. Both answers were a grep, and both change #87 before it is booked.
+broadcast, no browser, no BZZ.
+
+⛔⛔ **READ THE TWO AMENDMENTS AT THE FOOT BEFORE QUOTING ANYTHING HERE.** This document was written in
+one pass and corrected twice within the hour. Its second section, "#87 needs one build and one
+broadcast", is **WITHDRAWN**: our client exposes no handle to the player, so #87 needs a client change
+either way. Its first section survives but is **narrower than its heading**: the 1.0s cap holds for a
+broadcaster publishing the GOP we recommend, and the cap **ratchets to 3.0s permanently** after any
+one force-closed segment. Both headings below are left as written rather than quietly fixed, because
+what they claimed is the point.
 
 ## ⭐ A stall costs less than it used to, because the cap is our segment length
 
@@ -80,3 +88,66 @@ permanent, but it is **bounded at one second at the shipping profile**, which is
 
 It also gets cheaper: no per-arm redeploy, so a sitting is one broadcast long enough to hold every arm
 plus the warm-up ones to discard.
+
+---
+
+# ⛔ AMENDMENT, same day: the second half above is NARROWED
+
+**"#87 needs no rebuild per arm" was checked against hls.js and not against our client, and the
+client is the half that decides it.**
+
+Everything said about hls.js holds: `set targetLatency` writes `config.liveSyncDuration` and resets
+`stallCount`, and the getter re-reads config on every access. What is missing is a way to reach the
+instance. `SwarmHlsPlayer.tsx` holds it as `let hls: Hls | null = null` **inside a `useEffect`**,
+nothing assigns it to a global, and the QoE hook only ever **reads** `hls.targetLatency`. The
+`setTargetLatency` that appears in `hlsQoeStallPenalty.test.ts` is on a mock player, not on ours.
+
+So a Playwright harness has no handle, and **#87 needs a client change either way**. Two options,
+and the choice is a product one rather than a harness one:
+
+| | what it costs |
+| --- | --- |
+| **Expose the instance under a build-time flag** | one build, one broadcast, arms set live. Adds a debug surface to a hardening branch |
+| **Read the value from `import.meta.env` at build time** | ships a real operator knob. Rebuild and redeploy per arm, so every arm is a fresh join |
+
+⛔ **The second trips a cross-package trap.** `packages/stream-uploader/test/ManifestManager.test.ts`
+reads `LIVE_SYNC_DURATION_S` **out of the client's source with a regex**,
+`export const LIVE_SYNC_DURATION_S\s*=\s*([0-9.]+)\s*;`, deliberately, so that the window guard
+cannot be satisfied by a constant asserted against a copy of itself. Turning the export into a
+computed expression **breaks that test in another package**, and pointing it at the default instead
+means an operator override is unguarded. That is a real weakening and would have to be said out loud.
+
+⭐ **The lesson: I verified the library and not the integration.**
+A capability in a dependency is not a capability in the product until something in the product
+reaches it. The first half of this document, which is about the penalty cap, is unaffected: it is
+arithmetic over hls.js's own expression and our uploader's `ceil`, and neither needs a handle.
+
+# ⚠️ SECOND AMENDMENT: the cap was already known, and it RATCHETS
+
+Two things found by reading `docs/bench/one-stall-costs-a-second-2026-08-07.md` **after** writing the
+above, which is the wrong order.
+
+**The cap being `targetduration` is not new.** That document derived it on 2026-08-07 and states it
+plainly. What is new here is only the arithmetic against #155's segment lengths, and it should have
+been presented that way. **Read the corpus before claiming a mechanism.**
+
+⛔⛔ **And the cap RATCHETS.** `ManifestManager.addSegment` keeps `targetDuration` as a running maximum
+of `Math.ceil(duration)` that **never comes back down**, so the table above gives the cap only while
+every segment is normally cut. **One force-closed segment sets it for the rest of the broadcast.**
+
+With the shipped `fragment 0.5 × aof 5.0`, a force-close lands at **2.5s**, and `ceil(2.5) = 3`. So
+the worst a stall can cost is:
+
+| what the broadcaster sends | segment | cap |
+| --- | ---: | ---: |
+| the recommended 0.5s GOP | 0.5s, peaks 0.636 | **1.0s** |
+| a 2.0s GOP, OBS's default | 2.0s, peaks 2.133 | 3.0s |
+| **any GOP, after one force-close** | 2.5s once | **3.0s, permanently** |
+
+**"#155 halved it" is therefore scoped to a broadcaster publishing the GOP we recommend**, which is
+the case the row above measures and the one the shipping profile describes. It says nothing about a
+2.0s publisher, whose cap was 3 before and is 3 now.
+
+⭐ **This matters for #87 directly**: a single force-close during the sitting moves the cap mid-run,
+so the sweep has to read `#EXT-X-TARGETDURATION` per arm rather than assume it, and an arm that saw
+one is not comparable with an arm that did not.
