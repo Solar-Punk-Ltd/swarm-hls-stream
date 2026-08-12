@@ -67,11 +67,30 @@ function renderSrsConf(env) {
 
 const VALID = { SRS_WEBHOOK_TOKEN: 'x'.repeat(64) };
 
-describe('the SRS latency knobs', () => {
-  it('binds what the operator configured', () => {
-    const conf = renderSrsConf({ ...VALID, HLS_FRAGMENT: '0.5', HLS_WINDOW: '7.5', SRT_LATENCY: '120' });
+/**
+ * The keyframe interval a broadcaster is told to publish, from two funded sittings on 2026-08-12
+ * that bounded it on both sides. See `docs/bench/gop-sustain-2026-08-12.md` for why not larger and
+ * `docs/bench/gop-floor-2026-08-12.md` for why not smaller.
+ *
+ * The engine cannot set this, since nothing here transcodes. It is a number the config has to be
+ * able to *accept*, which is what the range test below checks.
+ */
+const RECOMMENDED_GOP_SECONDS = 0.5;
 
-    assert.match(conf, /hls_fragment\s+0\.5;/, 'the fragment has to reach srs.conf');
+describe('the SRS latency knobs', () => {
+  // ⛔ None of these values may equal a default asserted below, or the assertion passes against a
+  // template that still hard-codes it. 0.75 is deliberately not 0.5.
+  it('binds what the operator configured', () => {
+    const conf = renderSrsConf({
+      ...VALID,
+      HLS_FRAGMENT: '0.75',
+      HLS_AOF_RATIO: '3.3',
+      HLS_WINDOW: '7.5',
+      SRT_LATENCY: '120',
+    });
+
+    assert.match(conf, /hls_fragment\s+0\.75;/, 'the fragment has to reach srs.conf');
+    assert.match(conf, /hls_aof_ratio\s+3\.3;/, 'the aof ratio has to reach srs.conf');
     assert.match(conf, /hls_window\s+7\.5;/, 'the window has to reach srs.conf');
     assert.match(conf, /latency\s+120;/, 'the SRT latency has to reach srs.conf');
   });
@@ -84,11 +103,45 @@ describe('the SRS latency knobs', () => {
   it('falls back to the documented defaults when none is set', () => {
     const conf = renderSrsConf({ ...VALID, HLS_FRAGMENT: '', HLS_WINDOW: '', SRT_LATENCY: '' });
 
-    // 1.0 rather than main's 1.5, from the 2026-08-03 sweep. `LIVE_SYNC_DURATION_S` is 6 for this
-    // exact default, so the two move together or a viewer rebuffers.
-    assert.match(conf, /hls_fragment\s+1\.0;/);
+    // 0.5 from the 2026-08-12 funded sittings, which bounded the segment on both sides: a 0.5s GOP
+    // beats a 2.0s one by 2.34s of latency and takes confirmed feed stalls from 3-of-3 to 0-of-3,
+    // and a 0.25s GOP loses 18-21% of live-edge reads to 404. The fragment is a FLOOR on the segment
+    // rather than the segment, so it has to sit at or below the GOP broadcasters are told to
+    // publish, or their request is silently rounded up.
+    assert.match(conf, /hls_fragment\s+0\.5;/);
+    // Doubled from SRS's own 2.1 when the fragment halved, so the product stays 2.1s and the valid
+    // GOP range only widens, 1.0-2.1 to 0.5-2.1. No existing broadcaster's GOP leaves it.
+    assert.match(conf, /hls_aof_ratio\s+4\.2;/);
     assert.match(conf, /hls_window\s+15;/);
     assert.match(conf, /latency\s+200;/);
+  });
+
+  /**
+   * The pair is a range, not two numbers. SRS cuts on the first keyframe at or after the fragment and
+   * force-closes at `fragment * aof_ratio` whether one arrived or not, so a GOP outside
+   * `[fragment, fragment * aof_ratio]` is either rounded up or yields keyframeless segments. Measured
+   * over 20 arms in `docs/bench/gop-vs-fragment-2026-08-12.md`, and the ceiling half of that rule
+   * once invalidated twelve runs.
+   *
+   * This is the check the config did not have: the shipped fragment was 1.0 while the profile two
+   * funded sittings selected is a 0.5s GOP, so the recommendation could not be produced by the
+   * defaults and nothing said so.
+   */
+  it('ships a range that contains the GOP broadcasters are told to publish', () => {
+    const conf = renderSrsConf({ ...VALID, HLS_FRAGMENT: '', HLS_WINDOW: '', SRT_LATENCY: '' });
+    const fragment = Number(conf.match(/hls_fragment\s+([\d.]+);/)[1]);
+    const ratio = Number(conf.match(/hls_aof_ratio\s+([\d.]+);/)[1]);
+
+    assert.ok(
+      RECOMMENDED_GOP_SECONDS >= fragment && RECOMMENDED_GOP_SECONDS <= fragment * ratio,
+      `a ${RECOMMENDED_GOP_SECONDS}s GOP is outside the shipped [${fragment}, ${fragment * ratio}] range, ` +
+        'so the profile we recommend cannot be produced by the config we ship',
+    );
+    assert.equal(
+      Math.ceil(fragment / RECOMMENDED_GOP_SECONDS) * RECOMMENDED_GOP_SECONDS,
+      RECOMMENDED_GOP_SECONDS,
+      'the shipped fragment rounds the recommended GOP up into a longer segment',
+    );
   });
 
   /**

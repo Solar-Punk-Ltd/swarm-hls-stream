@@ -212,13 +212,21 @@ services:
       SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
       SRS_HTTP_PORT: ${SRS_HTTP_PORT:-8080}
       SRS_SRT_PORT: ${SRS_SRT_PORT:-10080}
-      # The latency knobs. `HLS_FRAGMENT` is the segment length a viewer waits a whole one of, and it
-      # is the largest lever on this side. `main` passed the first two and this branch stopped, which
-      # left the entrypoint substituting defaults into a template that no longer had placeholders.
-      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.0}
+      # The latency knobs. `main` passed the first two and this branch stopped, which left the
+      # entrypoint substituting defaults into a template that no longer had placeholders.
+      #
+      # ⛔ `HLS_FRAGMENT` is NOT the segment length. Measured over 20 arms and replicated to three
+      # decimals, the segment is `ceil(HLS_FRAGMENT / GOP) * GOP`, so the publisher's keyframe
+      # interval decides it and the fragment only sets a floor. This was 1.0, which put the floor
+      # above the 0.5s GOP that a funded sitting found best and silently produced 1.0s segments for a
+      # broadcaster who asked for 0.5s ones. See `docs/bench/gop-vs-fragment-2026-08-12.md`.
+      HLS_FRAGMENT: ${HLS_FRAGMENT:-0.5}
       # SRS force-closes a segment at `HLS_FRAGMENT * HLS_AOF_RATIO` regardless of keyframes, so this
-      # is the ceiling on the pair rather than a detail. 2.1 is SRS's own default. See the entrypoint.
-      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-2.1}
+      # is the ceiling on the pair rather than a detail. Raised from SRS's own 2.1 alongside the
+      # fragment halving **to hold the product at 2.1s exactly where it was**: a broadcaster
+      # publishing the common 2s GOP is unaffected, and the valid range only widens, 1.0-2.1 to
+      # 0.5-2.1. See the entrypoint.
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-4.2}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
 

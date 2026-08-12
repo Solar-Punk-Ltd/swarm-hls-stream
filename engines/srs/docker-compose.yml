@@ -54,8 +54,14 @@ services:
       # healthcheck went into one and not the other. Enumerating rather than inheriting is right, for
       # the SEC-28 reason above, and its cost is exactly this: a knob added to one list is missing
       # from the other until someone notices.
-      HLS_FRAGMENT: ${HLS_FRAGMENT:-1.0}
-      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-2.1}
+      #
+      # ⛔ The `HLS_FRAGMENT=0.5 produced 1.0s segments` above had a second cause as well as the
+      # placeholder bug, and the bug fix alone would not have delivered 0.5s segments: the segment is
+      # `ceil(HLS_FRAGMENT / GOP) * GOP`, so a 1.0s publisher GOP yields 1.0s segments whatever the
+      # fragment says. Both have to move. `HLS_AOF_RATIO` doubles alongside the halved fragment so
+      # their product stays 2.1s and no existing broadcaster's GOP leaves the valid range.
+      HLS_FRAGMENT: ${HLS_FRAGMENT:-0.5}
+      HLS_AOF_RATIO: ${HLS_AOF_RATIO:-4.2}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
     # Asks whether a broadcaster could reach this engine, not whether the process is alive. See
