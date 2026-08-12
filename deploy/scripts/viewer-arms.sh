@@ -109,6 +109,15 @@ UPLOADER_CONTAINER="${UPLOADER_CONTAINER:-latbench-stream-uploader-1}"
 # overridable.
 STOP_POLL_S="${STOP_POLL_S:-5}"
 
+BROWSER_IMAGE="${BROWSER_IMAGE:-swarm-hls-browser:latest}"
+BROWSER_CONTAINER_NAME="${BROWSER_CONTAINER_NAME:-viewer-arms-browser}"
+
+# The free canary, run once per sitting before anything is published. It launches the browser, loads
+# the client page and proves the instrument can fail, for no broadcast and no BZZ.
+# ⭐ Three separate faults on 2026-08-12 were found by a paid arm when a free check could have found
+# them, which is the lesson the selfcheck was written for in the first place.
+RUN_SELFCHECK="${RUN_SELFCHECK:-1}"
+
 # `name:gop`, in the order round 1 runs them. Even rounds run the reverse, so position within a round
 # cannot favour a configuration.
 read -r -a ARM_LIST <<< "${ARMS:-obs-default:2.0 shipped:0.5}"
@@ -129,19 +138,6 @@ mkdir -p "${OUT_DIR}" "${METRICS_DIR}"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "${LOG}"; }
 
-# `pnpm` reaches an interactive shell through nvm's profile hook, which a detached non-interactive
-# shell never reads. ⛔ On 2026-08-12 the first launch of the overnight chain published a full arm,
-# paid for it, and then died on `pnpm: command not found` with nothing watching. An arm that cannot
-# run its watch still starts a broadcast, still spends, and still writes a row.
-ensure_pnpm_on_path() {
-  command -v pnpm >/dev/null 2>&1 && return 0
-  local nvm_bin
-  nvm_bin="$(ls -d "${HOME}"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)"
-  [ -n "${nvm_bin}" ] || return 1
-  PATH="${nvm_bin}:${PATH}"
-  export PATH
-  command -v pnpm >/dev/null 2>&1
-}
 bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
 
 available_plur() {
@@ -290,6 +286,55 @@ wait_for_quiet() {
   return 1
 }
 
+# Run a browser script in the image that actually has a browser in it.
+#
+# ⛔ The host has no Chrome. `e2e/Dockerfile.browser` is where it lives, together with the Xvfb
+# display that makes the page genuinely foregrounded, and this script runs ON the host. A first
+# version called `pnpm browser:watch` directly and every arm published, paid, and then died on
+# `Failed to launch chromium because executable doesn't exist at /opt/google/chrome/chrome`.
+#
+# `E2E_SSH_TARGET=local` for the same reason `sweep-interleaved.sh` sets it: the harness's default
+# transport is `ssh`, and neither the container nor the host has a key with which to reach the host.
+#
+# ⛔ One at a time. The image shares a single Xvfb display, so a second container fails with
+# `Cannot establish any listening sockets`, which is why arms are sequential.
+run_browser() {
+  local seconds="$1" gop="$2"
+  docker run --rm --network host \
+    --name "${BROWSER_CONTAINER_NAME}" \
+    -u "$(id -u):$(id -g)" \
+    --group-add "$(getent group docker | cut -d: -f3)" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "${BENCH_REPO}:/repo" \
+    -e HOME=/tmp \
+    -w /repo \
+    -e E2E_SSH_TARGET=local \
+    -e E2E_PUBLIC_HOST=127.0.0.1 \
+    -e "E2E_PROFILE=${PROFILE}" \
+    -e "E2E_PORT_SLOT=${PORT_SLOT}" \
+    -e "BROWSER_CLIENT_URL=http://127.0.0.1:$((10004 + PORT_SLOT * 10))" \
+    -e "BROWSER_WATCH_SECONDS=${seconds}" \
+    -e "BROWSER_GOP_SECONDS=${gop}" \
+    "${BROWSER_IMAGE}" pnpm browser:watch
+}
+
+# The free canary, in the same image the arms will use. A selfcheck run anywhere else proves nothing
+# about the browser that does the measuring.
+run_selfcheck() {
+  docker run --rm --network host \
+    --name "${BROWSER_CONTAINER_NAME}-selfcheck" \
+    -u "$(id -u):$(id -g)" \
+    -v "${BENCH_REPO}:/repo" \
+    -e HOME=/tmp \
+    -w /repo \
+    -e E2E_SSH_TARGET=local \
+    -e E2E_PUBLIC_HOST=127.0.0.1 \
+    -e "E2E_PROFILE=${PROFILE}" \
+    -e "E2E_PORT_SLOT=${PORT_SLOT}" \
+    -e "BROWSER_CLIENT_URL=http://127.0.0.1:$((10004 + PORT_SLOT * 10))" \
+    "${BROWSER_IMAGE}" pnpm browser:selfcheck
+}
+
 is_cold_arm() {
   local name="$1" candidate
   for candidate in ${COLD_ARMS}; do
@@ -354,13 +399,7 @@ run_arm() {
   snapshot_metrics "${METRICS_DIR}/${slug}-before.json" "${slug}-before"
   start_sampler "${METRICS_DIR}/${slug}-series" "${slug}"
 
-  (
-    cd "${BENCH_REPO}" || exit 1
-    BROWSER_CLIENT_URL="http://127.0.0.1:$((10004 + PORT_SLOT * 10))" \
-      BROWSER_WATCH_SECONDS="${watch_seconds}" \
-      BROWSER_GOP_SECONDS="${gop}" \
-      pnpm browser:watch
-  ) >> "${LOG}" 2>&1 &
+  run_browser "${watch_seconds}" "${gop}" >> "${LOG}" 2>&1 &
   local watch_pid=$! status=0
 
   # ⭐ The publisher is what spends, so a floor crossed mid-arm is answered by stopping the broadcast
@@ -408,12 +447,19 @@ else
   say "  no warm-up round, so every arm counts"
 fi
 [ -n "${COLD_ARMS}" ] && say "  cold-join arms (gateway restarted before the browser opens): ${COLD_ARMS}"
-if ! ensure_pnpm_on_path; then
-  say "REFUSING TO START: pnpm is not on PATH and no nvm install was found under ${HOME}/.nvm"
-  say "  Every arm would publish, spend, and record nothing, because the watch is a pnpm script."
+if ! docker image inspect "${BROWSER_IMAGE}" >/dev/null 2>&1; then
+  say "REFUSING TO START: ${BROWSER_IMAGE} is not on this host, so no arm could open a browser"
   exit 1
 fi
-say "  watching with $(command -v pnpm)"
+say "  watching in ${BROWSER_IMAGE}"
+if [ "${RUN_SELFCHECK}" = "1" ]; then
+  say "  running the free selfcheck before spending anything"
+  if ! run_selfcheck >> "${LOG}" 2>&1; then
+    say "REFUSING TO START: the browser selfcheck failed, so no arm here could measure a viewer"
+    exit 1
+  fi
+  say "  selfcheck passed"
+fi
 if [ -f "${STOP_FILE}" ]; then
   say "REFUSING TO START: a floor was already crossed and ${STOP_FILE} says so:"
   sed 's/^/  /' "${STOP_FILE}" >> "${LOG}"

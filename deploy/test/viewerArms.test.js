@@ -57,7 +57,17 @@ async function startChequebook(availableBzz) {
  */
 const BATCH_ID = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
 
-function stubBin(binDir, recordPath, watchedFlag, restartLog, removalLog, chequebookPort, batch, omitPnpm) {
+function stubBin(
+  binDir,
+  recordPath,
+  watchedFlag,
+  restartLog,
+  removalLog,
+  chequebookPort,
+  batch,
+  missingImage,
+  selfcheckFails,
+) {
   mkdirSync(binDir, { recursive: true });
   const stamps = {
     stamps: [
@@ -92,6 +102,24 @@ if (process.argv[2] === 'rm') {
 if (process.argv[2] === 'inspect') {
   process.stdout.write(${JSON.stringify(batch.env)});
 }
+if (process.argv[2] === 'image' && process.argv[3] === 'inspect') {
+  process.exit(${missingImage ? 1 : 0});
+}
+if (process.argv[2] === 'run') {
+  const args = process.argv.slice(3);
+  const script = args[args.length - 1];
+  const envOf = (name) => {
+    const hit = args.find((a, i) => args[i - 1] === '-e' && a.startsWith(name + '='));
+    return hit ? hit.slice(name.length + 1) : '';
+  };
+  if (script === 'browser:selfcheck') {
+    process.exit(${selfcheckFails ? 1 : 0});
+  }
+  if (script === 'browser:watch') {
+    fs.appendFileSync(${JSON.stringify(recordPath)}, envOf('BROWSER_GOP_SECONDS') + '\\n');
+    fs.writeFileSync(${JSON.stringify(watchedFlag)}, '');
+  }
+}
 // Lists one publisher already on the box, so a run that tears down everything matching the
 // pattern shows up as a removal here.
 if (process.argv[2] === 'ps') {
@@ -123,22 +151,8 @@ if (url.includes('/chequebook/balance')) {
 }
 `,
   );
-  writeFileSync(
-    join(binDir, 'pnpm'),
-    `#!/usr/bin/env node
-const fs = require('node:fs');
-if (process.argv[2] === 'browser:watch') {
-  fs.appendFileSync(${JSON.stringify(recordPath)}, process.env.BROWSER_GOP_SECONDS + '\\n');
-  fs.writeFileSync(${JSON.stringify(watchedFlag)}, '');
-}
-process.exit(0);
-`,
-  );
-  for (const name of ['docker', 'curl', 'pnpm']) {
+  for (const name of ['docker', 'curl']) {
     chmodSync(join(binDir, name), 0o755);
-  }
-  if (omitPnpm) {
-    rmSync(join(binDir, 'pnpm'));
   }
 }
 
@@ -160,7 +174,8 @@ async function runArms({
   warmupRounds,
   batch = HEALTHY_BATCH,
   stopFileFirst = false,
-  withoutPnpm = false,
+  withoutImage = false,
+  selfcheck = false,
 }) {
   const port = await startChequebook(bzz);
   const out = mkdtempSync(join(tmpdir(), 'viewer-arms-'));
@@ -172,7 +187,7 @@ async function runArms({
   const removals = join(out, 'removals.txt');
   writeFileSync(restarts, '');
   writeFileSync(removals, '');
-  stubBin(bin, record, join(out, 'watched.flag'), restarts, removals, port, batch, withoutPnpm);
+  stubBin(bin, record, join(out, 'watched.flag'), restarts, removals, port, batch, withoutImage, selfcheck === 'fails');
   if (stopFileFirst) {
     writeFileSync(join(out, 'STOP'), 'a previous sitting crossed a floor\n');
   }
@@ -217,8 +232,9 @@ exit 0
     GATEWAY_BEE_PORT: String(port),
     NODE_METRICS: metricsStub,
     STOP_POLL_S: '0.05',
-    // An empty HOME so the nvm fallback finds no install, which is what makes the refusal reachable.
-    ...(withoutPnpm ? { HOME: join(out, 'empty-home'), PATH: `${bin}:/usr/bin:/bin` } : {}),
+    // The selfcheck launches a real browser. Its own refusal has a case below that turns it back on.
+    RUN_SELFCHECK: selfcheck ? '1' : '0',
+
     ...(preflightOnly ? { PREFLIGHT_ONLY: '1' } : {}),
   };
 
@@ -442,23 +458,45 @@ describe('a sitting refuses what it cannot finish, and records what the nodes di
   });
 
   /**
-   * ⛔⛔ This published a real arm, paid for it, and recorded nothing, on 2026-08-12.
+   * ⛔⛔ This published real arms, paid for them, and recorded nothing, on 2026-08-12.
    *
-   * `pnpm` reaches an interactive shell through nvm's profile hook, which the detached shell the
-   * overnight chain runs in never reads. The arm started its broadcast, waited for the stream, ran
-   * `pnpm browser:watch`, got `command not found`, and wrote a row like any other arm.
+   * The deployment host has no Chrome. It lives in `e2e/Dockerfile.browser`, with the Xvfb display
+   * that makes the page genuinely foregrounded, and this driver runs ON the host. A first version
+   * called `pnpm browser:watch` directly: every arm started a broadcast, waited for the stream, and
+   * died on `Failed to launch chromium because executable doesn't exist`, then wrote a row like any
+   * other arm.
    *
-   * ⭐ The shape worth remembering: a missing tool is discovered AFTER the money is spent unless
-   * something checks for it before the publisher starts. The broadcast is the cost; the watch is the
-   * only reason to pay it.
+   * ⭐ The shape worth remembering: a missing instrument is discovered AFTER the money is spent
+   * unless something checks for it before the publisher starts. The broadcast is the whole cost of
+   * an arm and the watch is the only reason to pay it.
    */
-  it('refuses before publishing when it has no way to watch', async () => {
-    const { code, gops, removals, log } = await runArms({ arms: 'a:2.0', rounds: 2, withoutPnpm: true });
+  it('refuses before publishing when the browser image is not on the host', async () => {
+    const { code, gops, removals, log } = await runArms({ arms: 'a:2.0', rounds: 2, withoutImage: true });
 
     assert.equal(code, 1);
     assert.deepEqual(gops, [], 'an arm published a broadcast it could not watch');
     assert.deepEqual(removals, [], 'a refused sitting removed a container');
-    assert.match(log, /pnpm is not on PATH/);
+    assert.match(log, /is not on this host, so no arm could open a browser/);
+  });
+
+  /**
+   * ⛔⛔ The second fault on 2026-08-12 that a paid arm found and a free check could have.
+   *
+   * The watch reads both chequebooks through the harness, whose default transport is
+   * `ssh ${E2E_SSH_TARGET}`. The deployment host has no private key with which to ssh to itself, and
+   * an interactive session hides that behind agent forwarding while a detached one does not. Four
+   * arms published, paid, and died on `Permission denied (publickey)`.
+   *
+   * ⭐ So the sitting now runs the free selfcheck first. It costs no broadcast, no postage and no
+   * BZZ, and a failure there names the harness instead of looking like the deployment.
+   */
+  it('refuses when the free selfcheck fails, before any arm is published', async () => {
+    const { code, gops, removals, log } = await runArms({ arms: 'a:2.0', rounds: 2, selfcheck: 'fails' });
+
+    assert.equal(code, 1);
+    assert.deepEqual(gops, [], 'an arm published after the selfcheck failed');
+    assert.deepEqual(removals, [], 'a refused sitting removed a container');
+    assert.match(log, /the browser selfcheck failed/);
   });
 
   it('leaves no reading unpaired, so every arm can be differenced', async () => {
