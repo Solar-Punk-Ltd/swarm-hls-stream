@@ -10,7 +10,15 @@
 
 import { FAULT_PAST_TENSE, type FaultScenario } from './faults.js';
 import type { RecoveryVerdict } from './recovery.js';
-import { type BrowserRun, instrumentSection, networkSection, orDash, playbackSection, seconds } from './report.js';
+import {
+  type BrowserRun,
+  describeGop,
+  instrumentSection,
+  networkSection,
+  orDash,
+  playbackSection,
+  seconds,
+} from './report.js';
 
 export interface CrashRun extends BrowserRun {
   scenario: FaultScenario;
@@ -170,7 +178,7 @@ export function renderCrashReport(run: CrashRun): string {
     `# ${run.scenario.name}: what a viewer saw`,
     '',
     `**${run.measuredAt}.** ${run.chromeVersion}, headed against an X display on the deployment host, ` +
-      `watching a ${run.gopSeconds}s-GOP broadcast through the shipped client while \`${run.container}\` ` +
+      `watching ${describeGop(run.gopSeconds)} through the shipped client while \`${run.container}\` ` +
       `was ${FAULT_PAST_TENSE[run.scenario.action]}.`,
     '',
     `\`${run.watchUrl}\``,

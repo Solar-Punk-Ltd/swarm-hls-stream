@@ -103,6 +103,25 @@ export function envNumber(name: string, fallback: number): number {
   return value;
 }
 
+/**
+ * The same reading, for a value a report describes rather than computes.
+ *
+ * ⛔ A fallback is the wrong shape for those. `BROWSER_GOP_SECONDS` defaulted to 0.25 and only ever
+ * reached the report's opening sentence, so a run nobody parameterised published a headline naming a
+ * GOP that had not shipped since #155 and that no part of the run had measured. Nothing was wrong
+ * with the numbers underneath, which is what made it survive: a mislabelled artefact reads as a
+ * finding about the configuration it names.
+ *
+ * Absent stays absent, and the renderer says so.
+ */
+export function envNumberOrNull(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') {
+    return null;
+  }
+  return envNumber(name, 0);
+}
+
 export function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
