@@ -8,7 +8,6 @@ import { BeePublisherPool } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
 import { buildMasterPlaylist } from './MasterPlaylist.js';
 
-/** Matches the catalog's window: the master is the other coordination write, and fails the same way. */
 const MASTER_RETRY_WINDOW_MS = 10_000;
 
 /** Where a published master lives, and which of its indices holds the version just written. */
@@ -64,8 +63,6 @@ export class MasterFeedWriter {
 
       const writer = publisher.bee.makeFeedWriter(topic, this.signer);
       await retryUntilDeadlineAsync(
-        // deferred for the same reason as the catalog and manifest feeds: a direct SOC write blocks
-        // on push-sync.
         () => writer.uploadPayload(publisher.stamp, playlist, { index, deferred: true }),
         MASTER_RETRY_WINDOW_MS,
       );

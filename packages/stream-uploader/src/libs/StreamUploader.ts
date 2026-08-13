@@ -100,8 +100,8 @@ export class StreamUploader {
   private consecutiveManifestFailures = 0;
 
   private bitrate: BitrateSample = emptyBitrateSample();
-  private announcedBandwidth = 0;
-  private lastBandwidthAnnounceAt = 0;
+  private driftBaselineBps = 0;
+  private lastAnnounceAttemptAt = 0;
 
   private manifestManager: ManifestManager;
 
@@ -158,15 +158,7 @@ export class StreamUploader {
       this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
 
       this.uploadLiveManifest();
-      // Not gated on the manifest publish any more, now that it is queued rather than awaited. The
-      // drift check guards on isFirstManifestReady itself, so before the first publish lands it is
-      // a no-op and the next segment retries it.
-     
-      try {
-        await this.refreshBandwidthIfDrifted();
-      } catch (error) {
-        this.errorHandler.handleError(error, 'StreamUploader.refreshBandwidthIfDrifted');
-      }
+      await this.refreshBandwidthIfDrifted();
       this.persistState();
     });
   }
@@ -276,7 +268,7 @@ export class StreamUploader {
   private async announceRendition(final?: { index: number; duration: number }): Promise<void> {
     const rendition = this.buildRendition(final);
 
-    this.lastBandwidthAnnounceAt = Date.now();
+    this.lastAnnounceAttemptAt = Date.now();
 
     this.logger.log(`Publishing rendition ${rendition.name} of ladder ${this.ladder!.group}`);
     await this.streamCatalog.upsertRendition(
@@ -289,24 +281,30 @@ export class StreamUploader {
       rendition,
     );
 
-    this.announcedBandwidth = rendition.bandwidth;
+    this.driftBaselineBps = rendition.bandwidth;
   }
 
   private async refreshBandwidthIfDrifted(): Promise<void> {
-    if (!this.ladder || !this.isFirstManifestReady || this.announcedBandwidth <= 0) {
+    if (!this.ladder || !this.isFirstManifestReady || this.driftBaselineBps <= 0) {
       return;
     }
 
-    if (Date.now() - this.lastBandwidthAnnounceAt < BITRATE_REFRESH_INTERVAL_MS) {
+    if (Date.now() - this.lastAnnounceAttemptAt < BITRATE_REFRESH_INTERVAL_MS) {
       return;
     }
 
-    const drift = Math.abs(this.bitrate.peakBps - this.announcedBandwidth) / this.announcedBandwidth;
+    const drift = Math.abs(this.bitrate.peakBps - this.driftBaselineBps) / this.driftBaselineBps;
     if (drift < BITRATE_REFRESH_RATIO) {
       return;
     }
 
-    await this.announceRendition();
+    // Swallowed rather than propagated: the caller is an unawaited segment task that must go on to
+    // persist its progress, and this is a correction to a bandwidth already published.
+    try {
+      await this.announceRendition();
+    } catch (error) {
+      this.errorHandler.handleError(error, 'StreamUploader.refreshBandwidthIfDrifted');
+    }
   }
 
   private uploadLiveManifest(): void {
