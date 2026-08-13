@@ -299,6 +299,35 @@ describe('the sitting reads one broadcast through two gateways', () => {
     assert.equal(watches(result).length, 4);
   });
 
+  /**
+   * ⛔⛔ The broadcast has to outlive every arm, and an arm is longer than its watch. It also starts a
+   * container, joins the stream, and takes four node readings, and `openViewer` waits up to 90s for
+   * playback before giving up. A publisher budgeted at watch-plus-gap runs out during the last arms of
+   * a sitting: the broadcast is paid for in full, the arms find no live stream, and the sitting comes
+   * back short of the replicates it was booked for. The preflight cannot show this, because it
+   * publishes nothing.
+   */
+  it('publishes for longer than the arms can possibly take', async () => {
+    const armMinutes = 6;
+    const rounds = 4;
+    const result = await runSitting(setup(), {
+      ROUNDS: String(rounds),
+      ARM_MINUTES: String(armMinutes),
+      ARM_GAP_S: '20',
+      PUBLISHER_LEAD_S: '60',
+      PREFLIGHT_ONLY: '1',
+    });
+
+    const declared = /one broadcast of (\d+) min/.exec(result.log);
+    assert.ok(declared, 'the sitting did not say how long it publishes for');
+    // The watch and the gaps alone, which is what an earlier version budgeted and is not enough.
+    const watchOnlySeconds = 60 * 2 + rounds * 2 * (armMinutes * 60 + 20);
+    assert.ok(
+      Number(declared[1]) * 60 > watchOnlySeconds,
+      `budgets ${declared[1]} min for arms whose watches alone are ${Math.ceil(watchOnlySeconds / 60)} min`,
+    );
+  });
+
   it('sends each arm to its own gateway', async () => {
     const result = await runSitting(setup());
 

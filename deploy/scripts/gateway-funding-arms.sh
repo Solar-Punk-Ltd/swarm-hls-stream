@@ -50,6 +50,15 @@ WARMUP_ROUNDS="${WARMUP_ROUNDS:-1}"
 ARM_MINUTES="${ARM_MINUTES:-6}"
 # Between arms: the previous browser has to be gone and the uploader quiet before the next one opens.
 ARM_GAP_S="${ARM_GAP_S:-20}"
+# ⛔⛔ What an arm costs BESIDES its watch, and it is not optional padding. An arm also starts a
+# container, joins the stream, and takes four node readings, and `openViewer` will wait up to 90s for
+# playback before giving up. A publisher budgeted at watch-plus-gap therefore runs out before the last
+# arms of a sitting, and those arms find no live stream: the broadcast is paid for, the arms are lost,
+# and the sitting comes back short of the replicates it was booked for.
+#
+# ⭐ The trade is one-sided. Overshooting costs a few minutes of publishing nobody watches, at about
+# 0.013 BZZ a minute. Undershooting costs whole arms.
+ARM_OVERHEAD_S="${ARM_OVERHEAD_S:-90}"
 # How long the broadcast leads the first arm and outlives the last. A viewer joining a stream that
 # started a moment ago is measuring the publisher warming up rather than the gateway.
 PUBLISHER_LEAD_S="${PUBLISHER_LEAD_S:-60}"
@@ -391,7 +400,7 @@ run_arm() {
 }
 
 TOTAL_ARMS=$((ROUNDS * 2))
-SITTING_SECONDS=$((PUBLISHER_LEAD_S * 2 + TOTAL_ARMS * (ARM_MINUTES * 60 + ARM_GAP_S)))
+SITTING_SECONDS=$((PUBLISHER_LEAD_S * 2 + TOTAL_ARMS * (ARM_MINUTES * 60 + ARM_GAP_S + ARM_OVERHEAD_S)))
 SITTING_MINUTES=$(((SITTING_SECONDS + 59) / 60))
 
 if [ "${ARM_MINUTES}" -lt 2 ]; then
@@ -480,6 +489,8 @@ fi
 trap 'stop_sampler; stop_publisher; reclaim_browser_containers' EXIT INT TERM
 
 say "starting the one broadcast this sitting reads, for ${SITTING_SECONDS}s"
+say "  budget per arm: ${ARM_MINUTES}m watch + ${ARM_GAP_S}s gap + ${ARM_OVERHEAD_S}s for the join and the readings"
+BROADCAST_STARTED_AT="$(date -u +%s)"
 start_publisher "${SITTING_SECONDS}"
 if ! wait_for_active_stream; then
   stop_publisher
@@ -495,6 +506,17 @@ for index in $(seq 1 "${TOTAL_ARMS}"); do
     "$([ "${round}" -le "${WARMUP_ROUNDS}" ] && echo warm-up || echo counted)" || break
   [ "${index}" -lt "${TOTAL_ARMS}" ] && sleep "${ARM_GAP_S}"
 done
+
+# ⭐ Whether the broadcast outlasted the arms, as a recorded fact rather than something to infer from a
+# NO-STREAM row. An overrun means ARM_OVERHEAD_S is too small for this host, and the next sitting
+# should be told a number rather than left to rediscover it.
+ARMS_TOOK=$(($(date -u +%s) - BROADCAST_STARTED_AT))
+if [ "${ARMS_TOOK}" -gt "${SITTING_SECONDS}" ]; then
+  say "⚠️ the arms took ${ARMS_TOOK}s against a ${SITTING_SECONDS}s broadcast, so the last of them ran past it"
+  say "   raise ARM_OVERHEAD_S above ${ARM_OVERHEAD_S} before the next sitting"
+else
+  say "the arms took ${ARMS_TOOK}s of a ${SITTING_SECONDS}s broadcast, $((SITTING_SECONDS - ARMS_TOOK))s to spare"
+fi
 
 stop_publisher
 wait_for_quiet
