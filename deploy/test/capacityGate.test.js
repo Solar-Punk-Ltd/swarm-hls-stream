@@ -36,12 +36,21 @@ after(() => {
   }
 });
 
-/** Every driver that prices a sitting, discovered rather than listed, so a new one cannot opt out. */
+/**
+ * Every driver that prices a sitting, discovered rather than listed, so a new one cannot opt out.
+ *
+ * A shebang is what separates a driver from a sourced library: the shared files here carry
+ * `# shellcheck shell=bash` instead, precisely because running one on its own does nothing useful.
+ * Without that split this picks up `capacity-gate.sh` itself, which names `burn-rates.sh` only to
+ * explain the rule it enforces.
+ */
 function scriptsThatPriceASitting() {
   return readdirSync(SCRIPTS)
     .filter((name) => name.endsWith('.sh'))
-    .filter((name) => readFileSync(join(SCRIPTS, name), 'utf8').includes('burn-rates.sh'))
-    .filter((name) => name !== 'burn-rates.sh');
+    .filter((name) => {
+      const body = readFileSync(join(SCRIPTS, name), 'utf8');
+      return body.startsWith('#!') && body.includes('burn-rates.sh');
+    });
 }
 
 describe('the postage capacity gate', () => {
