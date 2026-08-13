@@ -19,8 +19,6 @@ import { ManifestManager } from '../src/libs/ManifestManager.js';
  * and the only report would have been a viewer seeing no segments.
  */
 
-const BEE_URL = 'http://bee.test/bytes';
-
 interface AddedSegment {
   index: number;
   duration: number;
@@ -29,7 +27,7 @@ interface AddedSegment {
 }
 
 function managerWith(segments: AddedSegment[]): ManifestManager {
-  const manager = new ManifestManager(BEE_URL);
+  const manager = new ManifestManager();
   for (const segment of segments) {
     manager.addSegment(segment.index, segment.duration, segment.ref, segment.discontinuity ?? false);
   }
@@ -40,8 +38,8 @@ function managerWith(segments: AddedSegment[]): ManifestManager {
  * Far more segments than one chunk of manifest can name, so the window has certainly slid.
  *
  * A stream long enough to overflow rather than a count one past the window, because the window is a
- * byte budget: how many segments overflow it depends on the reference and gateway URL lengths. The
- * tests below read where the window starts out of the manifest instead of asserting a number.
+ * byte budget: how many segments overflow it depends on how long a reference is. The tests below
+ * read where the window starts out of the manifest instead of asserting a number.
  */
 const OVERFLOWING_SEGMENTS: AddedSegment[] = Array.from({ length: 500 }, (_, index) => ({
   index,
@@ -77,7 +75,7 @@ describe('manifest round trip (ARCH-1)', () => {
       assert.equal(parsed.segments.length, SEGMENTS.length, `the ${name} manifest lost or invented a segment`);
       assert.deepEqual(
         parsed.segments.map((s) => s.uri),
-        SEGMENTS.map((s) => `${BEE_URL}/${s.ref}`),
+        SEGMENTS.map((s) => s.ref),
         'segment URIs did not survive the round trip in order',
       );
     });
@@ -125,7 +123,7 @@ describe('manifest round trip (ARCH-1)', () => {
     assertWindowSlid(parsed.segments.length);
     assert.deepEqual(
       parsed.segments.map((s) => s.uri),
-      OVERFLOWING_SEGMENTS.slice(-parsed.segments.length).map((s) => `${BEE_URL}/${s.ref}`),
+      OVERFLOWING_SEGMENTS.slice(-parsed.segments.length).map((s) => s.ref),
       'the live window did not round-trip as the newest segments it holds',
     );
   });
@@ -168,7 +166,7 @@ describe('manifest round trip (ARCH-1)', () => {
     assert.ok(first > 0, `the media sequence stayed at ${first} while the window slid`);
     assert.equal(
       parsed.segments[0].uri,
-      `${BEE_URL}/ref-${first}`,
+      `ref-${first}`,
       'the media sequence does not name the first segment in the window',
     );
   });
@@ -198,7 +196,7 @@ describe('manifest round trip (ARCH-1)', () => {
   });
 
   it('reports an empty manifest as no segments rather than throwing', () => {
-    const parsed = parseManifest(new ManifestManager(BEE_URL).buildLiveManifest());
+    const parsed = parseManifest(new ManifestManager().buildLiveManifest());
 
     assert.deepEqual(parsed.segments, []);
     assert.equal(parsed.isFinalized, false);
