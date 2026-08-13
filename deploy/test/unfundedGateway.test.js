@@ -262,6 +262,18 @@ describe('the unfunded gateway is warmed before it is measured', () => {
     assert.match(stdout, /40/);
   });
 
+  /**
+   * ⛔⛔⛔ A sitting gates its unfunded arms on this exit code, so a missing node answering zero is a
+   * gate stuck OPEN. It would clear a condition that is not there, and the arms would then run
+   * against a port nothing is listening on while the ledger recorded them as the unfunded arm.
+   */
+  it('refuses the arm when there is no node at all, rather than reporting nothing is wrong', async () => {
+    const { code, stdout } = await runScript(['status']);
+
+    assert.equal(code, 1);
+    assert.match(stdout, /not running/);
+  });
+
   it('reports it has no chequebook, which is the arm rather than a fault', async () => {
     const { code, stdout } = await runScript(['status'], { existing: `${CONTAINER}\n`, chequebookCode: 405 });
 
