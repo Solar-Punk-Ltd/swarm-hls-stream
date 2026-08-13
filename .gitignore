@@ -54,3 +54,6 @@ docs/bench/browser-vod-*.md
 # Stryker drains the command runner's stdout slowly, and the uploader suite times out against
 # that backpressure. Redirecting it to a file is what makes the dry run pass.
 .stryker-test-output.log
+
+# The night's spend authorisation. Host state, written when the owner gives it, never committed.
+.spend-ledger.env

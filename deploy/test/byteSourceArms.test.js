@@ -50,6 +50,13 @@ function setup({
   selfcheckFails = false,
   missingImage = false,
   armOrder = STUB_ARM_ORDER,
+  /**
+   * 100 BZZ, which no stubbed sitting here comes near, so the ceiling never decides by accident.
+   *
+   * ⚠️ Kept well inside 2^63: the gate does its arithmetic in bash, where a wrapped negative would
+   * make every comparison pass.
+   */
+  ceilingPlur = String(100n * 10n ** 16n),
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'byte-source-arms-'));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -174,7 +181,21 @@ exit 0
     chmodSync(path, 0o755);
   }
 
-  return { dir, bin, out, dockerLog, metricsLog, publishLog, benchRepo, nodeMetrics, stampGuard };
+  // The night's authorisation. Both nodes start where the stub chequebook answers, so a default
+  // sitting has spent nothing yet and the ceiling is what decides.
+  const ledger = join(dir, 'spend-ledger.env');
+  writeFileSync(
+    ledger,
+    [
+      'authorised_at=2026-08-14T00:00:00Z',
+      `ceiling_plur=${ceilingPlur}`,
+      `uploader_start_plur=${plur}`,
+      `gateway_start_plur=${plur}`,
+      '',
+    ].join('\n'),
+  );
+
+  return { dir, bin, out, dockerLog, metricsLog, publishLog, benchRepo, nodeMetrics, stampGuard, ledger };
 }
 
 async function runSitting(stubs, env = {}) {
@@ -189,6 +210,7 @@ async function runSitting(stubs, env = {}) {
         NODE_METRICS: stubs.nodeMetrics,
         STAMP_GUARD: stubs.stampGuard,
         STAMP: BATCH,
+        SPEND_LEDGER: stubs.ledger,
         ROUNDS: '2',
         ARM_MINUTES: '2',
         ARM_GAP_S: '0',
@@ -375,5 +397,43 @@ describe('a sitting that refuses leaves the box as it found it', () => {
     const removed = result.docker.filter((call) => call[0] === 'rm').flat();
 
     assert.ok(!removed.includes('someone-elses-publisher'), 'this sitting tore down a stranger’s broadcast');
+  });
+});
+
+describe('the spend ceiling stands between the operator and the broadcast', () => {
+  it('refuses a sitting with no authorisation at all, and publishes nothing', async () => {
+    const stubs = setup();
+    // The owner authorises a night by writing the ledger. Without one there is no authorisation, and
+    // the safe reading of a missing file is zero rather than unlimited.
+    rmSync(stubs.ledger);
+
+    const result = await runSitting(stubs);
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.log, /no spend ledger/);
+    assert.equal(result.publishes.length, 0, 'a sitting refused on budget must not have published');
+  });
+
+  it('refuses once earlier sittings have spent the authorisation, which can_afford cannot see', async () => {
+    // 0.1 BZZ authorised. Both nodes still answer with 5 BZZ, so `can_afford` is happy and only the
+    // ceiling knows this night is over.
+    const stubs = setup({ ceilingPlur: String(1n * 10n ** 15n) });
+
+    const result = await runSitting(stubs);
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.log, /REFUSING/);
+    assert.match(result.log, /authorisation/);
+    assert.equal(result.publishes.length, 0);
+  });
+
+  it('lets a sitting that fits run, so the gate is not simply stuck closed', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs);
+
+    assert.equal(result.code, 0);
+    assert.equal(result.publishes.length, 1);
+    assert.match(result.log, /BZZ authorised/);
   });
 });

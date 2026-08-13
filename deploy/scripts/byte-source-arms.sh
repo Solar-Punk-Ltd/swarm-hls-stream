@@ -111,6 +111,7 @@ BRACKET="${HERE}/metrics-bracket.sh"
   echo "cannot read ${BRACKET}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+CEILING="${HERE}/spend-ceiling.sh"
 
 bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
 
@@ -143,6 +144,14 @@ can_afford() {
     fi
   done
   return ${short}
+}
+
+# Sourced here rather than beside the other gates, because it reads a chequebook through
+# available_plur() and refuses a caller that has not defined one yet.
+# shellcheck source=deploy/scripts/spend-ceiling.sh
+. "${CEILING}" || {
+  echo "cannot read ${CEILING}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
 }
 
 # ⛔⛔ Only removes publishers this run created. The names present beforehand are recorded once and
@@ -369,6 +378,13 @@ if ! can_afford "${SITTING_MINUTES}"; then
 fi
 if ! has_capacity "${SITTING_MINUTES}"; then
   say "REFUSING TO START: the postage batch cannot carry this sitting"
+  exit 1
+fi
+# ⛔ Distinct from can_afford above, which asks whether the node CAN pay and so authorises the whole
+# balance. This asks whether the owner said it may, and it is the only one of the two that can see
+# what an earlier sitting tonight already spent.
+if ! within_ceiling "${SITTING_MINUTES}"; then
+  say "REFUSING TO START: this sitting would spend past the authorisation in ${SPEND_LEDGER}"
   exit 1
 fi
 
