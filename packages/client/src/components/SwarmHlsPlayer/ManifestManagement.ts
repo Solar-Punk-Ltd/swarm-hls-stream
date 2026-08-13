@@ -283,6 +283,17 @@ export class ManifestStateManager {
     return headers.map((h) => (h.startsWith(HLS_MEDIA_SEQUENCE) ? HLS_MEDIA_SEQUENCE_ZERO : h));
   }
 
+  /**
+   * Re-hosts a segment against this viewer's gateway, which is what makes the gateway theirs to pick.
+   *
+   * ⛔⛔ The absolute and rooted branches look dead and are not. The uploader writes a bare reference
+   * and has done since 2026-08-13, but a recording keeps the manifest it was published with, so every
+   * broadcast recorded before then names an absolute `http://<host>/bytes/<ref>` for ever. Deleting
+   * these branches would send those segments to `<viewer gateway>/bytes/http://...`.
+   *
+   * ⚠️ It is also why those recordings still fetch from the publisher's gateway no matter what their
+   * viewer configured. That cannot be repaired from this side: the address is in the published bytes.
+   */
   private buildUri(uri: string, bytesUrl: string): string {
     if (!bytesUrl || uri.startsWith('http://') || uri.startsWith('https://') || uri.startsWith('/bytes/')) {
       return uri;

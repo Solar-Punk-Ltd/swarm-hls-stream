@@ -130,8 +130,13 @@ publish into three. Ten segments spent **864** of those bytes, so 79% of the chu
 for and unused.
 
 The window is a byte budget, so what it holds depends on how long a segment line is. On **latbench**
-`MANIFEST_ACCESS_URL` is set and each line costs 111 bytes against the 79 a bare Swarm reference
-costs, so a deployment that leaves it empty gets 50 segments where this one gets 36.
+`MANIFEST_ACCESS_URL` was set and each line cost 111 bytes against the 79 a bare Swarm reference
+costs, so a deployment that left it empty got 50 segments where that one got 36.
+
+> ✅ **Corrected 2026-08-13: the variable is gone and the bare column is the only one.** It made the
+> publisher choose the gateway for the whole audience, which the owner ruled against, so the uploader
+> now always writes a bare reference. Measured against the shipped builder: **50 segments / 12.50s at
+> a 0.25s segment, 51 / 25.50s at the 0.5s profile that ships, 52 / 104s at 2.0s.**
 
 | segment   | window before | window now (latbench) | bare ref | required | old verdict            |
 | --------- | ------------: | --------------------- | -------: | -------: | ---------------------- |
@@ -1142,11 +1147,14 @@ unreadable until today.
 
 **A second bound came out of 0.1, and it is close rather than already binding.** One chunk of
 manifest names about **50** media lines with a bare Swarm reference and about **37** once
-`MANIFEST_ACCESS_URL` is set. A window has to hold the buffer the client asks for, so at a 6 second
+`MANIFEST_ACCESS_URL` was set. A window has to hold the buffer the client asks for, so at a 6 second
 target the shortest media unit a one-chunk manifest can name is **0.12s** bare and **0.162s** with a
 gateway URL. Parts of 200ms clear that, and a manifest naming parts **and** the segments they belong
-to does not. Past one chunk every publish costs three round trips instead of one, at the moment the
-publish rate is going up.
+to does not.
+
+> ✅ **Corrected 2026-08-13: `MANIFEST_ACCESS_URL` is removed, so the bare figures are the live ones**
+> and this bound relaxed to the **0.12s** column everywhere. Past one chunk every publish costs three round trips instead of one, at the moment the
+> publish rate is going up.
 
 **So the question worth answering is not "does OME do LL-HLS".** It is: **can a segment be fetched
 without being announced?**

@@ -46,7 +46,6 @@ async function start() {
     const streamOrchestrator = new StreamOrchestrator(bee, streamCatalog, recoveryStore, {
       streamKey: config.streamKey,
       stamp: config.stamp,
-      manifestBeeUrl: config.manifestAccessUrl,
       maxQueueSize: config.maxQueueSize,
       recoveryTimeout: config.recoveryTimeout,
       orphanReapMs: config.orphanReapMs,

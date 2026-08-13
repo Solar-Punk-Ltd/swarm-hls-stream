@@ -96,7 +96,6 @@ function newUploader(
   const feedControl = opts.feedControl ?? (opts.feedWriteFails ? { fail: permanentError } : {});
   return new StreamUploader(
     makeBee(segmentControl, feedControl),
-    '',
     makeFakeCatalog(),
     makeFakeRecoveryStore(),
     TEST_STREAM_KEY,
@@ -284,7 +283,6 @@ describe('StreamUploader discontinuity lifecycle', () => {
     } as unknown as RecoveryStore;
     const uploader = new StreamUploader(
       makeBee({ fail: permanentError }),
-      '',
       makeFakeCatalog(),
       recovery,
       TEST_STREAM_KEY,
@@ -335,7 +333,6 @@ describe('StreamUploader Swarm write options', () => {
 
     const uploader = new StreamUploader(
       bee,
-      '',
       makeFakeCatalog(),
       makeFakeRecoveryStore(),
       TEST_STREAM_KEY,
@@ -494,7 +491,6 @@ describe('StreamUploader finalization (CON-25)', () => {
 
     const uploader = new StreamUploader(
       bee,
-      '',
       catalog,
       makeFakeRecoveryStore(),
       TEST_STREAM_KEY,
@@ -548,7 +544,6 @@ describe('StreamUploader finalization (CON-25)', () => {
 
     const uploader = new StreamUploader(
       bee,
-      '',
       makeFakeCatalog(),
       makeFakeRecoveryStore(),
       TEST_STREAM_KEY,
@@ -615,7 +610,6 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
   function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs?: number): StreamUploader {
     return new StreamUploader(
       makeBee({}),
-      '',
       catalog,
       makeFakeRecoveryStore(),
       TEST_STREAM_KEY,
@@ -753,7 +747,6 @@ describe('StreamUploader recovery persist failures (OBS-4)', () => {
   function newUploaderWithStore(recoveryStore: RecoveryStore): StreamUploader {
     return new StreamUploader(
       makeBee({}),
-      '',
       makeFakeCatalog(),
       recoveryStore,
       TEST_STREAM_KEY,
@@ -801,17 +794,35 @@ describe('StreamUploader recovery persist failures (OBS-4)', () => {
 });
 
 /**
- * A segment line long enough that only a few fit in one chunk, so a modest fixture overflows the
- * window. The real deployment reaches the same state with 36 segments and a 0.25s GOP, which is nine
- * seconds of a stalled publish, and a publish may retry for fifteen.
+ * A Swarm reference at the width the uploader really publishes, which is what sizes the live window.
+ *
+ * The window is a byte budget and a segment line is a duration and a reference, so how many segments
+ * fit is decided by how long a reference is. The `ref0` the fixtures elsewhere in this file use is
+ * four characters against a real one's sixty-four, and at that width it would take about 250
+ * segments to overflow one chunk rather than the {@link OVERFLOWING_SEGMENT_COUNT} used here.
+ *
+ * This replaces a 1,000-character `MANIFEST_ACCESS_URL` that used to be prepended to every line for
+ * the same purpose. That variable is gone, and the fixture is the better for it: overflowing at a
+ * real reference width is the state the deployment actually reaches, at 36 segments and a 0.25s GOP.
  */
-const WIDE_MANIFEST_URL = `http://bee.test/${'p'.repeat(1_000)}`;
+function wideRef(index: number): string {
+  return index.toString(16).padStart(64, '0');
+}
+
+/**
+ * More segments than one chunk of manifest can name, so the window outruns a held publish.
+ *
+ * Fifty-two fit at this reference width and a 2s segment, so this leaves a margin either side of the
+ * boundary rather than sitting on it. Nine seconds of a stalled publish at the 0.25s profile, and a
+ * publish may retry for fifteen.
+ */
+const OVERFLOWING_SEGMENT_COUNT = 60;
 
 /** How many of `count` segments a live manifest built the same way would actually name. */
-function liveWindowSize(count: number, manifestBeeUrl: string): number {
-  const probe = new ManifestManager(manifestBeeUrl);
+function liveWindowSize(count: number): number {
+  const probe = new ManifestManager();
   for (let i = 0; i < count; i++) {
-    probe.addSegment(i, 2, `ref${i}`);
+    probe.addSegment(i, 2, wideRef(i));
   }
   return probe
     .buildLiveManifest()
@@ -828,7 +839,7 @@ function liveWindowSize(count: number, manifestBeeUrl: string): number {
 function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void, socWrites: number[] = []): Bee {
   let refCounter = 0;
   const bee = {
-    uploadData: async () => ({ reference: { toHex: () => `ref${refCounter++}` } }),
+    uploadData: async () => ({ reference: { toHex: () => wideRef(refCounter++) } }),
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, _data: unknown, opts: { index: number }) => {
         socWrites.push(opts.index);
@@ -848,10 +859,9 @@ interface UploaderFixtureOptions {
   metrics?: ServiceMetrics;
 }
 
-function uploaderWith(bee: Bee, manifestBeeUrl: string, options: UploaderFixtureOptions = {}): StreamUploader {
+function uploaderWith(bee: Bee, options: UploaderFixtureOptions = {}): StreamUploader {
   return new StreamUploader(
     bee,
-    manifestBeeUrl,
     makeFakeCatalog(),
     makeFakeRecoveryStore(),
     TEST_STREAM_KEY,
@@ -892,7 +902,7 @@ describe('StreamUploader live manifest publish coalescing', () => {
   it('publishes once for a burst that arrives behind an in-flight publish', async () => {
     const socWrites: number[] = [];
     const publish = heldPublish(socWrites);
-    const uploader = uploaderWith(publish.bee, '');
+    const uploader = uploaderWith(publish.bee);
 
     uploader.handleSegment(0, 2, Buffer.from('a'));
     await publish.started;
@@ -926,14 +936,14 @@ describe('segments the live window outran before anything published them', () =>
   it('counts the segments no published manifest ever named, and says so', async () => {
     await withCapturedLog(async (lines) => {
       const publish = heldPublish();
-      const uploader = uploaderWith(publish.bee, WIDE_MANIFEST_URL);
+      const uploader = uploaderWith(publish.bee);
 
       // The first publish names segment 0 alone, and is held there.
       uploader.handleSegment(0, 2, Buffer.from('a'));
       await publish.started;
 
-      // Nine more upload while it is held, so the next publish is built from all ten.
-      for (let index = 1; index <= 9; index++) {
+      // The rest upload while it is held, so the next publish is built from all of them.
+      for (let index = 1; index < OVERFLOWING_SEGMENT_COUNT; index++) {
         uploader.handleSegment(index, 2, Buffer.from('a'));
       }
       await uploader.segmentQueue.onIdle();
@@ -941,10 +951,13 @@ describe('segments the live window outran before anything published them', () =>
       publish.release();
       await drain(uploader);
 
-      const named = liveWindowSize(10, WIDE_MANIFEST_URL);
-      assert.ok(named < 9, `fixture must overflow the window, but it named ${named} of 10`);
-      // Everything after segment 0 and before the window: ten segments, less the window, less segment 0.
-      const lost = 10 - named - 1;
+      const named = liveWindowSize(OVERFLOWING_SEGMENT_COUNT);
+      assert.ok(
+        named < OVERFLOWING_SEGMENT_COUNT - 1,
+        `fixture must overflow the window, but it named ${named} of ${OVERFLOWING_SEGMENT_COUNT}`,
+      );
+      // Everything after segment 0 and before the window: the whole fixture, less the window, less segment 0.
+      const lost = OVERFLOWING_SEGMENT_COUNT - named - 1;
       assert.equal(uploader.getSegmentsNeverNamed(), lost);
       // The counter is read by /health. The line is what says which segments and when, and it is the
       // last thing the publish does, so it also proves the publish finished rather than threw.
@@ -961,7 +974,7 @@ describe('segments the live window outran before anything published them', () =>
     metrics.recordSegmentsNeverNamed = (count: number) => {
       reported.push(count);
     };
-    const uploader = uploaderWith(makeBee({}), '', { metrics });
+    const uploader = uploaderWith(makeBee({}), { metrics });
 
     for (let index = 0; index < 5; index++) {
       uploader.handleSegment(index, 2, Buffer.from('a'));
@@ -981,13 +994,13 @@ describe('segments the live window outran before anything published them', () =>
    * the whole outage as segments this session uploaded and failed to name, when nothing here failed.
    */
   it('does not count reloaded segments as segments it failed to name', async () => {
-    const restored = Array.from({ length: 10 }, (_, index) => ({
+    const restored = Array.from({ length: OVERFLOWING_SEGMENT_COUNT }, (_, index) => ({
       index,
       duration: 2,
-      ref: `ref${index}`,
+      ref: wideRef(index),
       discontinuity: false,
     }));
-    const uploader = uploaderWith(makeBee({}), WIDE_MANIFEST_URL, {
+    const uploader = uploaderWith(makeBee({}), {
       restoreState: {
         streamRawTopic: 'topic-abc',
         socIndex: 5,
@@ -998,11 +1011,12 @@ describe('segments the live window outran before anything published them', () =>
       },
     });
 
-    uploader.handleSegment(10, 2, Buffer.from('a'));
+    uploader.handleSegment(OVERFLOWING_SEGMENT_COUNT, 2, Buffer.from('a'));
     await drain(uploader);
 
+    const offered = OVERFLOWING_SEGMENT_COUNT + 1;
     assert.ok(
-      liveWindowSize(11, WIDE_MANIFEST_URL) < 11,
+      liveWindowSize(offered) < offered,
       'fixture must overflow the window, or a restored high-water would count nothing either',
     );
     assert.equal(uploader.getSegmentsNeverNamed(), 0, 'a restart published one manifest and lost nothing');
@@ -1123,7 +1137,6 @@ describe('StreamUploader catalog entry title', () => {
     const published: { title: string }[] = [];
     const uploader = new StreamUploader(
       makeBee({}),
-      '',
       makeFakeCatalog({
         addStream: async (entry: { title: string }) => {
           published.push(entry);

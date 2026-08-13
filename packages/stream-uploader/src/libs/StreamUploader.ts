@@ -108,7 +108,6 @@ export class StreamUploader {
 
   constructor(
     bee: Bee,
-    manifestBeeUrl: string,
     streamCatalog: StreamCatalog,
     recoveryStore: RecoveryStore,
     streamKey: string,
@@ -128,7 +127,7 @@ export class StreamUploader {
     this.stamp = stamp;
     this.mediatype = mediatype;
 
-    this.manifestManager = new ManifestManager(manifestBeeUrl);
+    this.manifestManager = new ManifestManager();
 
     if (restoreState) {
       this.streamRawTopic = restoreState.streamRawTopic;

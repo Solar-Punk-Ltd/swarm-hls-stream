@@ -209,7 +209,6 @@ export function makeTestOrchestrator(
   return new StreamOrchestrator(makeFakeBee(uploads), catalog, recoveryStore, {
     streamKey: TEST_STREAM_KEY,
     stamp: 'stamp',
-    manifestBeeUrl: '',
     maxQueueSize: 100,
     recoveryTimeout: 60_000,
     orphanReapMs: 60_000,
