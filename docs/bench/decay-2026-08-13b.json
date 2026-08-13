@@ -1,0 +1,194 @@
+[
+ {
+  "arm": "his",
+  "round": 0,
+  "ref": "feee07028b4d",
+  "ms": 6169,
+  "bytes": 4541516,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 0,
+  "ref": "7773f81c9030",
+  "ms": 1813,
+  "bytes": 818740,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 0,
+  "ref": "2b41bf88bab3",
+  "ms": 11032,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 0,
+  "ref": "24339fc1135c",
+  "ms": 3266,
+  "bytes": 4430032,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 0,
+  "ref": "45b83ac1cb65",
+  "ms": 1609,
+  "bytes": 819116,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 0,
+  "ref": "694df7def621",
+  "ms": 11523,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 1,
+  "ref": "9fdd4c638110",
+  "ms": 1408,
+  "bytes": 844872,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 1,
+  "ref": "d1a1eee2206c",
+  "ms": 12168,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 1,
+  "ref": "3cd03381d33c",
+  "ms": 3290,
+  "bytes": 4434356,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 1,
+  "ref": "9b6a51b8cc65",
+  "ms": 1636,
+  "bytes": 820808,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 1,
+  "ref": "34e3ba605924",
+  "ms": 14070,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 1,
+  "ref": "a23ba392cb0d",
+  "ms": 3223,
+  "bytes": 4210636,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 2,
+  "ref": "295ffe8284eb",
+  "ms": 11640,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 2,
+  "ref": "231f363d6265",
+  "ms": 3347,
+  "bytes": 4382844,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 2,
+  "ref": "0336d85b6239",
+  "ms": 1489,
+  "bytes": 783208,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 2,
+  "ref": "534e7c305240",
+  "ms": 10911,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 2,
+  "ref": "384de8e1adcb",
+  "ms": 3254,
+  "bytes": 4377768,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 2,
+  "ref": "910aba8c98a4",
+  "ms": 1397,
+  "bytes": 815920,
+  "status": 200
+ },
+ {
+  "arm": "his",
+  "round": 3,
+  "ref": "515a41252210",
+  "ms": 3568,
+  "bytes": 4432476,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 3,
+  "ref": "a175354a0710",
+  "ms": 2213,
+  "bytes": 797496,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 3,
+  "ref": "064c34b1f208",
+  "ms": 11394,
+  "bytes": 32,
+  "status": 503
+ },
+ {
+  "arm": "his",
+  "round": 3,
+  "ref": "72ec7c59e7e4",
+  "ms": 3293,
+  "bytes": 4385476,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 3,
+  "ref": "07f9556453de",
+  "ms": 1685,
+  "bytes": 810280,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 3,
+  "ref": "b0a3a29c5653",
+  "ms": 11817,
+  "bytes": 32,
+  "status": 503
+ }
+]

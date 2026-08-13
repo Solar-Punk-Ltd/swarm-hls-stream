@@ -33,7 +33,7 @@ applied to the control, and it cannot be undone. That is why it is not in the da
 ## Running the daily read
 
 ```bash
-node deploy/scripts/corpus-delivery.mjs docs/bench/decay-cohort-daily-2026-08-11.json docs/bench/decay-$(date -u +%Y-%m-%d).json
+node deploy/scripts/corpus-delivery.mjs docs/bench/decay-cohort-daily-2026-08-11.json docs/bench/decay-$(date -u +%Y-%m-%dT%H%M).json
 ```
 
 The control arm is **his** content, so a bad day for the node is distinguishable from a bad day for
@@ -54,10 +54,21 @@ than reads is at work. The interesting outcomes are:
 
 Every daily read goes here, so the series is one table rather than a directory of files to diff.
 
-| day | date | **read arm** | control `his` | `ours-aug03` | reading |
-| ---: | --- | ---: | ---: | ---: | --- |
-| 1 | 2026-08-12 | **8/8** | 8/8 | 0/8 | no decay at 24h |
-| 2 | 2026-08-13 | **8/8** | 8/8 | 0/8 | no decay at 48h |
+⛔⛔ **THE HOUR COLUMN WAS WRONG ON EVERY ROW UNTIL 2026-08-13, and it was wrong in the direction
+that flatters the result.** The first two rows were labelled 24h and 48h from their calendar dates.
+The cohort was seeded at **2026-08-11T15:48Z** and those reads ran at 01:53Z and 01:54Z, so they were
+taken at **10.1h and 34.1h**. A read is a calendar day after the one before it and that is not the
+same as a day after the seed. Elapsed hours below are computed from the seed, and a date alone is not
+enough to place a row.
+
+| read | taken (UTC) | age | **read arm** | control `his` | `ours-aug03` |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 2026-08-12T01:53Z | **10.1h** | **8/8** | 8/8 | 0/8 |
+| 2 | 2026-08-13T01:54Z | **34.1h** | **8/8** | 8/8 | 0/8 |
+| 3 | 2026-08-13T17:06Z | **49.3h** | **8/8** | 8/8 | 0/8 |
+
+**Nothing has decayed by 49.3 hours.** The read arm delivered 8/8 at a mean 795 KB and 490 KB/s, the
+control delivered 8/8 at 4,296 KB and 1,218 KB/s, and `ours-aug03` returned 503 on all eight.
 
 ⚠️ **The untouched arm is deliberately absent from this table**, because reading it to fill a column
 is the treatment being applied to the control. It gets read once, after the read arm shows decay.
@@ -67,4 +78,6 @@ shows the harness can still tell a dead object from a live one, so an 8/8 on the
 positive reading rather than a check that passes for everything.
 
 ⚠️ **Two days is not yet informative about the interesting outcome.** The aug03 corpus was still
-partly retrievable at a week and dead by nine days, so the window that matters starts around day 5.
+partly retrievable at a week and dead by nine days, so the window that matters starts around **120
+hours from the seed**, which is 2026-08-16. ⛔ Stated in hours rather than in "day 5" on purpose:
+counting days is what put the two wrong labels in the table above.
