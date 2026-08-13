@@ -1,0 +1,379 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const SCRIPT = join(ROOT, 'deploy/scripts/byte-source-arms.sh');
+const BATCH = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+
+/**
+ * That a gateway-versus-in-tab-node sitting measures two byte sources rather than one path twice.
+ *
+ * ⛔⛔⛔ THE FAILURE THIS FILE EXISTS FOR PRODUCES A COMPLETE, PLAUSIBLE, WRONG RESULT, and a more
+ * attractive one than the funding sitting's. If the switch is dead, every arm reads segments through
+ * the gateway, both columns agree, the tables fill, nothing errors, and the report concludes that **an
+ * in-tab Swarm node holds a live edge exactly as well as a gateway does**. That is the headline this
+ * whole line of work would most like to be true, so nothing about it invites a second look.
+ *
+ * ⛔⛔ AND A STUB PROVES THE GATES, NEVER THE DRIVER. On 2026-08-13 `unfunded-gateway.sh` passed nine
+ * stubbed tests while being completely broken, and one real start found five defects in a row. On the
+ * same day twelve stubbed tests passed over a fetch backend that was handing hls.js a corrupt
+ * transport stream, and one free run in a real browser caught it. Nothing below shows that this script
+ * can run. ⭐ Run one short real arm before trusting it with a paid sitting.
+ */
+
+const cleanups = [];
+
+after(() => {
+  for (const cleanup of cleanups) {
+    cleanup();
+  }
+});
+
+/**
+ * An arm order the counterbalance would never produce for two rounds.
+ *
+ * ⭐ Deliberately not `gateway weeb3 gateway weeb3`. The driver must run what the harness printed; a
+ * driver that derived the order itself would produce the natural one and pass regardless, which is the
+ * whole reason `browser:byte-source-order` exists as a separate command.
+ */
+const STUB_ARM_ORDER = 'weeb3 gateway gateway weeb3';
+
+function setup({
+  backendCheckFails = false,
+  selfcheckFails = false,
+  missingImage = false,
+  armOrder = STUB_ARM_ORDER,
+} = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'byte-source-arms-'));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  const out = join(dir, 'out');
+  mkdirSync(out, { recursive: true });
+
+  const dockerLog = join(dir, 'docker.jsonl');
+  const metricsLog = join(dir, 'node-metrics.jsonl');
+  const publishLog = join(dir, 'publish.jsonl');
+  // Its presence is "a broadcast is running", which makes the health endpoint and the publisher
+  // listing stateful. A stub that always reported a live stream would send the teardown through the
+  // whole wait_for_quiet budget, which is the very state the script exists to notice.
+  const liveFlag = join(dir, 'BROADCAST-LIVE');
+
+  for (const path of [dockerLog, metricsLog, publishLog]) {
+    writeFileSync(path, '');
+  }
+
+  writeFileSync(
+    join(bin, 'docker'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const argv = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(dockerLog)}, JSON.stringify(argv) + '\\n');
+
+if (argv[0] === 'image' && argv[1] === 'inspect') process.exit(${missingImage ? 1 : 0});
+
+if (argv[0] === 'ps') {
+  const filter = argv.find((a) => a.startsWith('name=')) || '';
+  if (filter.includes('publish')) {
+    process.stdout.write(fs.existsSync(${JSON.stringify(liveFlag)})
+      ? 'ours-publisher\\nsomeone-elses-publisher\\n'
+      : 'someone-elses-publisher\\n');
+  }
+  process.exit(0);
+}
+
+if (argv[0] === 'rm') {
+  if (argv.includes('ours-publisher')) {
+    try { fs.unlinkSync(${JSON.stringify(liveFlag)}); } catch {}
+  }
+  process.exit(0);
+}
+
+if (argv[0] === 'run') {
+  // By presence, not by position: the order command carries a rounds argument after it.
+  const ran = (script) => argv.includes(script);
+  const envOf = (name) => {
+    const hit = argv.find((a, i) => argv[i - 1] === '-e' && a.startsWith(name + '='));
+    return hit ? hit.slice(name.length + 1) : '';
+  };
+  if (ran('browser:byte-source-order')) process.stdout.write(${JSON.stringify(armOrder)} + '\\n');
+  if (ran('browser:selfcheck')) process.exit(${selfcheckFails ? 1 : 0});
+  if (ran('browser:fetch-backend-check')) process.exit(${backendCheckFails ? 1 : 0});
+  if (ran('browser:watch')) {
+    fs.appendFileSync(${JSON.stringify(dockerLog)},
+      JSON.stringify(['WATCH', envOf('BROWSER_FETCH_BACKEND'), envOf('BROWSER_GATEWAY_URL'),
+        envOf('BROWSER_SETTLE_SECONDS'), envOf('BROWSER_WATCH_SECONDS')]) + '\\n');
+  }
+}
+process.exit(0);
+`,
+  );
+
+  const plur = String(5000n * 10n ** 13n);
+  writeFileSync(
+    join(bin, 'curl'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
+if (url.includes('/health')) {
+  process.stdout.write(JSON.stringify({
+    activeStreams: fs.existsSync(${JSON.stringify(liveFlag)}) ? 1 : 0,
+    segmentsSkipped: 0,
+  }));
+} else if (url.includes('/chequebook/balance')) {
+  process.stdout.write(JSON.stringify({ availableBalance: '${plur}' }));
+} else if (url.includes('/stamps')) {
+  process.stdout.write(JSON.stringify({ stamps: [{ batchID: '${BATCH}', utilization: 254, usable: true,
+    depth: 25, bucketDepth: 16, immutableFlag: true, exists: true, batchTTL: 900000 }] }));
+} else if (url.includes('/metrics')) {
+  process.stdout.write('bee_retrieval_request_count 1\\n');
+}
+process.exit(0);
+`,
+  );
+
+  // `run_browser_arm` passes the host docker group through, and this box is not the host.
+  writeFileSync(join(bin, 'getent'), `#!/usr/bin/env node\nprocess.stdout.write('docker:x:999:\\n');\n`);
+
+  const nodeMetrics = join(dir, 'node-metrics.sh');
+  writeFileSync(
+    nodeMetrics,
+    `#!/usr/bin/env bash
+printf '{"cmd":"%s","out":"%s","label":"%s","gateway":"%s"}\\n' \\
+  "\${1:-}" "\${2:-}" "\${3:-}" "\${GATEWAY_BEE_PORT:-}" >> ${JSON.stringify(metricsLog)}
+[ "\${1:-}" = snapshot ] && printf '{}' > "\${2}"
+exit 0
+`,
+  );
+
+  const stampGuard = join(dir, 'stamp-guard.sh');
+  writeFileSync(stampGuard, `#!/usr/bin/env bash\nexit 0\n`);
+
+  // The publisher is reached through the bench checkout, so the checkout needs one.
+  const benchRepo = join(dir, 'bench');
+  mkdirSync(join(benchRepo, 'deploy/scripts'), { recursive: true });
+  writeFileSync(
+    join(benchRepo, 'deploy/scripts/publish-clock.sh'),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(publishLog)}
+: > ${JSON.stringify(liveFlag)}
+exit 0
+`,
+  );
+  chmodSync(join(benchRepo, 'deploy/scripts/publish-clock.sh'), 0o755);
+
+  for (const path of [join(bin, 'docker'), join(bin, 'curl'), join(bin, 'getent'), nodeMetrics, stampGuard]) {
+    chmodSync(path, 0o755);
+  }
+
+  return { dir, bin, out, dockerLog, metricsLog, publishLog, benchRepo, nodeMetrics, stampGuard };
+}
+
+async function runSitting(stubs, env = {}) {
+  let code = 0;
+  try {
+    await run('bash', [SCRIPT], {
+      env: {
+        ...process.env,
+        PATH: `${stubs.bin}:${process.env.PATH}`,
+        OUT_DIR: stubs.out,
+        BENCH_REPO: stubs.benchRepo,
+        NODE_METRICS: stubs.nodeMetrics,
+        STAMP_GUARD: stubs.stampGuard,
+        STAMP: BATCH,
+        ROUNDS: '2',
+        ARM_MINUTES: '2',
+        ARM_GAP_S: '0',
+        PUBLISHER_LEAD_S: '0',
+        STOP_POLL_S: '0.05',
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+  } catch (failure) {
+    code = failure.code;
+  }
+
+  const read = (name) => (existsSync(join(stubs.out, name)) ? readFileSync(join(stubs.out, name), 'utf8') : '');
+  const jsonl = (path) =>
+    readFileSync(path, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+
+  return {
+    code,
+    log: read('byte-source-arms.log'),
+    state: read('byte-source-arms-state.tsv'),
+    docker: jsonl(stubs.dockerLog),
+    metrics: jsonl(stubs.metricsLog),
+    publishes: readFileSync(stubs.publishLog, 'utf8').split('\n').filter(Boolean),
+  };
+}
+
+const watches = (result) => result.docker.filter((call) => call[0] === 'WATCH');
+
+describe('the sitting reads one live broadcast through two byte sources', () => {
+  it('starts exactly one publisher for every arm', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs);
+
+    assert.equal(result.publishes.length, 1, 'a sitting that publishes twice measures two corpora');
+    assert.equal(watches(result).length, 4);
+  });
+
+  /**
+   * ⛔⛔⛔ The treatment reaching the arm. Without this the driver could pass every other case here
+   * while running four identical gateway arms.
+   */
+  it('sends each arm its own byte source', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs);
+    const sources = watches(result).map((call) => call[1]);
+
+    assert.deepEqual(sources, ['weeb3', 'gateway', 'gateway', 'weeb3']);
+  });
+
+  /**
+   * ⭐ The gateway is the variable held FIXED. A sitting that moved it as well would be varying two
+   * things, and this project has already withdrawn one finding for exactly that.
+   */
+  it('holds every arm on one gateway, so the byte source is the only thing that moves', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs);
+    const gateways = new Set(watches(result).map((call) => call[2]));
+
+    assert.equal(gateways.size, 1, `arms read ${[...gateways].join(' and ')}, so the gateway moved too`);
+    assert.match([...gateways][0], /10077$/);
+  });
+
+  it('passes the settle each arm has to wait before its window opens', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs, { SETTLE_SECONDS: '45' });
+
+    assert.deepEqual(new Set(watches(result).map((call) => call[3])), new Set(['45']));
+  });
+
+  it('runs the order the harness printed rather than one of its own', async () => {
+    const stubs = setup({ armOrder: 'gateway gateway weeb3 weeb3' });
+
+    const result = await runSitting(stubs);
+
+    assert.deepEqual(
+      watches(result).map((call) => call[1]),
+      ['gateway', 'gateway', 'weeb3', 'weeb3'],
+    );
+  });
+
+  it('refuses when the printed order is not the number of arms it asked for', async () => {
+    const stubs = setup({ armOrder: 'weeb3 gateway' });
+
+    const result = await runSitting(stubs);
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.log, /gave 2 arms for 2 rounds/);
+    assert.equal(result.publishes.length, 0);
+  });
+});
+
+describe('the two arms are two conditions, or nothing is published', () => {
+  /**
+   * ⛔⛔⛔ The free check that stands between this sitting and its most attractive wrong answer. It
+   * proves the deployed client publishes a switch, that the switch moves both ways, that it refuses a
+   * value it does not know, and that an in-tab node can actually reach a peer from this host.
+   */
+  it('refuses when the deployed client cannot be moved between byte sources', async () => {
+    const stubs = setup({ backendCheckFails: true });
+
+    const result = await runSitting(stubs);
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.log, /cannot be moved between byte sources/);
+    assert.equal(result.publishes.length, 0, 'a broadcast was paid for with no contrast to spend it on');
+  });
+
+  it('publishes nothing when the free selfcheck fails', async () => {
+    const stubs = setup({ selfcheckFails: true });
+
+    const result = await runSitting(stubs);
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0);
+  });
+
+  it('publishes nothing when the browser image is not on the host', async () => {
+    const stubs = setup({ missingImage: true });
+
+    const result = await runSitting(stubs);
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0);
+  });
+});
+
+describe('the arm budget covers what an arm actually does', () => {
+  /**
+   * ⛔⛔ The gate this driver needed and the gateway one did not.
+   *
+   * Every arm here waits out the settle before its window opens, and a weeb-3 arm spends part of it
+   * booting a node. An overhead budgeted for the gateway sitting's 90s would leave the broadcast
+   * running out under the last arms: the sitting is paid for in full and comes back with fewer
+   * replicates than it was booked for, which is the expensive way to learn an arithmetic error.
+   */
+  it('refuses an overhead that does not cover the settle, before publishing anything', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs, { SETTLE_SECONDS: '60', ARM_OVERHEAD_S: '60' });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.log, /does not cover the 60s settle/);
+    assert.equal(result.publishes.length, 0);
+  });
+
+  it('accepts an overhead with room above the settle', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs, { SETTLE_SECONDS: '60', ARM_OVERHEAD_S: '170' });
+
+    assert.equal(result.code, 0);
+    assert.equal(result.publishes.length, 1);
+  });
+});
+
+describe('a sitting that refuses leaves the box as it found it', () => {
+  it('takes a preflight reading and stops without publishing anything', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs, { PREFLIGHT_ONLY: '1' });
+
+    assert.equal(result.code, 0);
+    assert.match(result.log, /every gate passed and nothing was published/);
+    assert.equal(result.publishes.length, 0);
+    assert.equal(watches(result).length, 0);
+  });
+
+  /**
+   * ⛔⛔ A teardown keyed on a name pattern killed a live paid broadcast on this box on 2026-08-12.
+   * The names present before the run are recorded once and excluded from every teardown.
+   */
+  it('never removes a publisher it did not start', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs);
+    const removed = result.docker.filter((call) => call[0] === 'rm').flat();
+
+    assert.ok(!removed.includes('someone-elses-publisher'), 'this sitting tore down a stranger’s broadcast');
+  });
+});
