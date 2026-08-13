@@ -143,7 +143,7 @@ function pageWithSwitch(gatewaySwitch: { current: () => string; select: (url: st
   const holder = globalThis as unknown as Record<string, unknown>;
   return {
     evaluate: async <A, R>(fn: (arg: A) => R, arg: A): Promise<R> => {
-      const had = Object.hasOwn(holder, '__swarmGatewaySwitch');
+      const had = '__swarmGatewaySwitch' in holder;
       const previous = holder.__swarmGatewaySwitch;
       if (gatewaySwitch === undefined) {
         delete holder.__swarmGatewaySwitch;
