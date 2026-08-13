@@ -13,7 +13,7 @@ import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { StreamClaimant } from '../src/types.js';
 import { redactUrlSecrets } from '../src/utils/urlSecrets.js';
 
-import { startTestApi } from './helpers/apiTestServer.js';
+import { startTestApi, withheldBodyRequest } from './helpers/apiTestServer.js';
 import { makeFakeOrchestrator } from './helpers/fakes.js';
 import { listenOnLoopback } from './helpers/loopbackServer.js';
 
@@ -269,7 +269,8 @@ describe('SRS webhook gate on the production app', () => {
   }
 
   const UNPARSEABLE_BODY = '{"action":';
-  const OVERSIZED_BODY = JSON.stringify({ pad: 'x'.repeat(200_000) });
+  /** Comfortably over `MAX_CONTROL_BODY`, so a parser reached ahead of the gate refuses on the length alone. */
+  const OVERSIZED_BODY_BYTES = 200_000;
 
   // Both routes, not just /streams. Mutation showed that moving the gate out of the shared mount
   // and into the /streams handler left /hls answering anonymous callers 200 with the suite green.
@@ -353,13 +354,29 @@ describe('SRS webhook gate on the production app', () => {
     });
 
     it(`refuses an anonymous oversized body on ${route} before parsing it`, async () => {
-      // A 500 here would mean the parser ran first: the gate must be ahead of it, or an anonymous
-      // caller costs the process a full parse and gets an unhandled-error line into the log.
+      // Anything but a 401 here would mean the parser ran first: the gate must be ahead of it, or an
+      // anonymous caller costs the process a full parse and gets an unhandled-error line into the log.
+      //
+      // ⭐ The oversized body is announced and never sent, which is what makes the 401 an answer to
+      // that question rather than to a race. The gate answers while the 200 KB is still owed, so it
+      // demonstrably did not read or parse it. Sending the body instead asserted less, because a
+      // status read after the body went out is equally consistent with a parser that read all of it
+      // first, and it lost the answer to an RST often enough to fail CI. See `withheldBodyRequest`.
+      //
+      // Mounting the engine gate behind `express.json` was tried against this: both routes fail on
+      // the `readStatusCode` timeout rather than on a 413, because body-parser drains the request
+      // before it surfaces the error it already has, and a body that never arrives never drains.
       const { orchestrator } = startedStreamsSpy();
       const api = await startTestApi(orchestrator, [createSrsEngine('/tmp/media-unused', { webhookToken: TOKEN })]);
 
       try {
-        assert.equal(await api.rawRequest(rawPost(route, OVERSIZED_BODY)), 401);
+        const oversized = withheldBodyRequest({
+          path: route,
+          declaredBodyBytes: OVERSIZED_BODY_BYTES,
+          headers: { 'Content-Type': 'application/json' },
+        });
+
+        assert.equal(await api.rawRequest(oversized), 401);
         assert.equal(await api.rawRequest(rawPost(route, UNPARSEABLE_BODY)), 401);
       } finally {
         await api.close();
