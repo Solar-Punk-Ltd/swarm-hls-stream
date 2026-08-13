@@ -123,6 +123,12 @@ BRACKET="${HERE}/metrics-bracket.sh"
   echo "cannot read ${BRACKET}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+STOPS="${HERE}/publisher-stop.sh"
+# shellcheck source=deploy/scripts/publisher-stop.sh
+. "${STOPS}" || {
+  echo "cannot read ${STOPS}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
 
 bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
 
@@ -173,6 +179,9 @@ PUBLISHERS_NOT_OURS="$(docker ps -aq --filter 'name=^swarm-hls-publish-' 2>/dev/
 
 stop_publisher() {
   local id
+  # ⛔⛔ Before the removal and never after it, so the publisher cannot look between the two and report
+  # a broadcast this script ended on purpose as a failed publish. See `publisher-stop.sh`.
+  request_publisher_stop
   for id in $(docker ps -aq --filter 'name=^swarm-hls-publish-' 2>/dev/null); do
     case " ${PUBLISHERS_NOT_OURS} " in
       *" ${id} "*) continue ;;
@@ -188,7 +197,8 @@ start_publisher() {
     cd "${BENCH_REPO}" || exit 1
     deploy/scripts/publish-clock.sh \
       "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}" --host=localhost \
-      "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${gop}"
+      "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${gop}" \
+      "--stop-file=${PUBLISHER_STOP_FILE}"
   ) >> "${LOG}" 2>&1 &
 }
 
