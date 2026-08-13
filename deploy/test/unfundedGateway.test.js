@@ -83,7 +83,9 @@ if (url.includes('/health')) {
   writeFileSync(
     join(bin, 'ss'),
     `#!/usr/bin/env node
-process.stdout.write(${portInUse ? JSON.stringify('LISTEN 0 4096 *:10087 *:*\n') : JSON.stringify('LISTEN 0 4096 *:22 *:*\n')});
+process.stdout.write(${
+      portInUse ? JSON.stringify('LISTEN 0 4096 *:10087 *:*\n') : JSON.stringify('LISTEN 0 4096 *:22 *:*\n')
+    });
 `,
   );
 
