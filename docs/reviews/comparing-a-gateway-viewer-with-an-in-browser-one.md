@@ -40,6 +40,13 @@ nginx gateway proxy, selected by `BROWSER_FETCH_BACKEND=gateway|weeb3`. Then `br
 completely unchanged and emits **the identical report** for both arms, `viewer-arms.sh` drives it,
 and every gate, sampler and refusal built last night applies without modification.
 
+⭐⭐ **The extension point already exists and the client is already using it.**
+`packages/client/src/components/SwarmHlsPlayer/CustomManifestLoader.ts` defines `CustomManifestLoader`
+and `CustomFragmentLoader`, both subclassing `Hls.DefaultConfig.loader`, because hls.js constructs its
+own loaders and there is no constructor to inject through. **The weeb-3 backend is a third
+implementation behind the same hook, not a new interception layer**, so phase A is smaller than a
+fetch-level shim would have been and it cannot alter the player's own timing path.
+
 ⭐⭐ **And the backend is switchable under a running stream**, the way the buffer target is in
 `browser:buffer-sweep`. It is a page reload, not an encoder setting. So **one continuous broadcast
 serves every arm**, which removes the between-sitting confound that weakens last night's 0.5s-vs-2.0s
