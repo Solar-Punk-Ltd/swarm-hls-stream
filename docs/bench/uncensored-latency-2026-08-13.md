@@ -192,13 +192,13 @@ and at or below 1.0 in five of six gateway arms. Magnitudes are 0.04% to 0.3%.
 | 7 | weeb3 | 1,443 | 0.00068 BZZ |
 | 8 | gateway | 28,978 | 0.05456 BZZ |
 
-**21.6x fewer retrievals and 103x less gateway spend, no overlap on either counter.**
+**21.6x fewer retrievals and 104x less gateway spend, no overlap on either counter.**
 
 | target | retrievals | gateway spend | stalls, both conditions |
 | ---: | ---: | ---: | :---: |
 | 6s | 24.4x | 143x | 0 |
 | 2s | 20.3x | 75x | 0 |
-| 1.5s | 21.6x | 103x | 0 |
+| 1.5s | 21.6x | 104x | 0 |
 
 ⭐⭐⭐ **Three sittings, three broadcasts, three targets, zero overlap every time.** The economic case
 for an in-tab node does not depend on the latency target, and no viewer stalled in any arm of any
