@@ -100,6 +100,18 @@ FULL_WARM_SECONDS="${FULL_WARM_SECONDS:-180}"
 # must not end under it. A broadcast that stops mid-watch is measured as a viewer losing the stream.
 PUBLISH_MARGIN_SECONDS="${PUBLISH_MARGIN_SECONDS:-120}"
 
+# ⭐ This sitting doubles its margin, which is its own choice: it runs one arm on a node with NO
+# chequebook, where a mid-sitting stop is not a lost run but a lost contrast.
+#
+# ⛔⛔⛔ SET BEFORE THE SOURCE, AND THAT ORDER IS THE WHOLE FIX. `burn-rates.sh` assigns this same
+# name with its own `:-140`. Placed after the source, the 200 below was reached with the variable
+# already set, so `:-` declined and this sitting quietly ran at the shared default for a day. The
+# comment claiming the doubled margin had survived was the only thing left saying 200.
+#
+# ⭐ The shape generalises: a `:-` default written after a source that sets the same name is not a
+# default, it is dead code that reads like a decision.
+FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-200}"
+
 RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
 # shellcheck source=deploy/scripts/burn-rates.sh
 . "${RATES}" || {
@@ -108,15 +120,6 @@ RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
   echo "cannot read ${RATES}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
-# ⭐ This sitting keeps its doubled margin, which is its own choice and survives the rate correction:
-# it runs one arm on a node with NO chequebook, where a mid-sitting stop is not a lost run but a lost
-# contrast. The rate itself now comes from the file above, measured on real sittings.
-FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-200}"
-
-# `utilization` is the fullest of sixty-five thousand buckets and the batch is immutable, so crossing
-# it is not recoverable by topping up. 80% of 256 is where every run already warns.
-POSTAGE_WARN_BUCKETS="${POSTAGE_WARN_BUCKETS:-204}"
-POSTAGE_DEPTH_BUCKETS="${POSTAGE_DEPTH_BUCKETS:-256}"
 
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/phase06.log"
@@ -126,6 +129,23 @@ mkdir -p "${REPORTS}"
 
 say() {
   echo "[$(date -u +%H:%M:%S)] $*" >> "${LOG}"
+}
+
+# ⛔⛔⛔ THE READER THIS REPLACES GATED ON A BATCH THAT DOES NOT EXIST.
+#
+# It selected `depth == 24 and immutableFlag` out of `/stamps` and compared the winner against a
+# hardcoded 256 buckets. The measurement batch on the host is depth 25 with 512 buckets, diluted
+# there by the fix `stamp-guard.sh` itself prints, so the filter matched nothing, `max(default="")`
+# returned an empty string and this sitting would have refused with "postage utilization could not be
+# read" while the batch it publishes to sat at a comfortable 50%.
+#
+# ⭐ Stuck closed is the safe direction and is still not a gate. The batch has to be selected by the
+# id the uploader is configured with, which is the one thing that cannot drift under it.
+GATES="$(dirname "${BASH_SOURCE[0]}")/capacity-gate.sh"
+# shellcheck source=deploy/scripts/capacity-gate.sh
+. "${GATES}" || {
+  echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
 }
 
 bzz() {
@@ -139,16 +159,6 @@ bzz() {
 chequebook_available_plur() {
   curl -s --max-time 10 "http://127.0.0.1:${1}/chequebook/balance" 2>/dev/null |
     python3 -c 'import sys,json;print(json.load(sys.stdin)["availableBalance"])' 2>/dev/null
-}
-
-postage_utilization() {
-  curl -s --max-time 10 "http://127.0.0.1:${UPLOADER_BEE_PORT}/stamps" 2>/dev/null |
-    python3 -c '
-import sys,json
-d=json.load(sys.stdin)["stamps"]
-w=[s for s in d if s["depth"]==24 and s["immutableFlag"]]
-print(max((s["utilization"] for s in w), default=""))
-' 2>/dev/null
 }
 
 # Zero when both nodes can pay for the given minutes, non-zero otherwise. Reports every node rather
@@ -183,21 +193,6 @@ funds_cover_minutes() {
     fi
   done
   return ${short}
-}
-
-postage_has_room() {
-  local label="$1" used
-  used="$(postage_utilization)"
-  if [ -z "${used}" ]; then
-    say "  ${label}: postage utilization could not be read"
-    return 1
-  fi
-  if [ "${used}" -ge "${POSTAGE_WARN_BUCKETS}" ]; then
-    say "  ${label}: postage at ${used}/${POSTAGE_DEPTH_BUCKETS}, past the ${POSTAGE_WARN_BUCKETS} warn line"
-    return 1
-  fi
-  say "  ${label}: postage at ${used}/${POSTAGE_DEPTH_BUCKETS}, ok"
-  return 0
 }
 
 container_spec() {
@@ -469,7 +464,7 @@ run_arm() {
     record_row "${round}" "${label}" "${swap}" "${watch_seconds}" "NOT-RUN(funds)"
     return 1
   fi
-  if ! postage_has_room "before ${label}"; then
+  if ! has_capacity "${minutes}"; then
     record_row "${round}" "${label}" "${swap}" "${watch_seconds}" "NOT-RUN(postage)"
     return 1
   fi
@@ -577,8 +572,8 @@ if ! funds_cover_minutes "${TOTAL_MINUTES}" "preflight"; then
   say "REFUSING TO START: this sitting cannot pay for itself. Nothing has been changed."
   exit 1
 fi
-if ! postage_has_room "preflight"; then
-  say "REFUSING TO START: the postage batch has no room for this sitting."
+if ! has_capacity "${TOTAL_MINUTES}"; then
+  say "REFUSING TO START: the postage batch cannot carry this sitting."
   exit 1
 fi
 

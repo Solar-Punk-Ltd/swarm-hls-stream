@@ -37,9 +37,29 @@ after(() => {
   }
 });
 
+const BATCH = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+
+/** Room and time, so nothing here is decided by the capacity gate, which has its own cases. */
+const HEALTHY_BATCH = {
+  batchID: BATCH,
+  utilization: 254,
+  usable: true,
+  label: 'stub',
+  depth: 25,
+  amount: '36043833600',
+  bucketDepth: 16,
+  immutableFlag: true,
+  exists: true,
+  batchTTL: 941760,
+};
+
 async function startChequebook(availableBzz) {
   const plur = (BigInt(Math.round(availableBzz * 1000)) * PLUR_PER_BZZ) / 1000n;
   const server = createServer((req, reply) => {
+    if (req.url.startsWith('/stamps')) {
+      reply.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ stamps: [HEALTHY_BATCH] }));
+      return;
+    }
     if (!req.url.startsWith('/chequebook/balance')) {
       reply.writeHead(404).end();
       return;
@@ -102,6 +122,8 @@ async function runSweep(extraEnv) {
     SWEEP_CONFIGS: 'ref:1280x720:2500:2.0 small:1280x720:2500:0.5',
     UPLOADER_BEE_PORT: String(port),
     GATEWAY_BEE_PORT: String(port),
+    // Named directly rather than read off the stub docker, which records argv and answers nothing.
+    STAMP: BATCH,
     ...(extraEnv === undefined ? {} : { SWEEP_EXTRA_ENV: extraEnv }),
   };
 
