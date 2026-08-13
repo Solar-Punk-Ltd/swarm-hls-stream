@@ -14,10 +14,17 @@ There are two harnesses and they do not measure the same thing.
 | **shipped client**  | Chrome → client nginx → `bee-gateway:10077` → Swarm | `e2e/browser/watch.ts`                   | latency, stalls, target ratchet, advance ratio, rebuffers, per-5-min windows, instrument soundness |
 | **in-browser node** | Chrome → weeb-3 in the page → Swarm over wss        | `deploy/scripts/in-browser-*.js` via CDP | throughput, service time, concurrency                                                              |
 
-⛔ **`client/src` contains no weeb-3, no libp2p, no p2p of any kind.** The shipped client only knows
-how to ask a gateway. So the in-browser path has **never had a player in it**, which is why it has no
-latency, no stall count and no advance ratio, and why nothing from it can be set beside last night's
-tables.
+⛔ **`packages/client` contains no weeb-3, no libp2p, no p2p of any kind**, and its only Swarm
+dependency is `@ethersphere/bee-js`, an HTTP client for a gateway. So the in-browser path has **never
+had a player in it**, which is why it has no latency, no stall count and no advance ratio, and why
+nothing from it can be set beside last night's tables.
+
+⛔⛔ **The first version of this document cited `client/src`, which does not exist.** The path is
+`packages/client/src`. The grep returned nothing because it was pointed at nothing, and the
+conclusion happened to be right for a reason that had not been checked. Re-run against the real path
+it holds, and the dependency list above is the positive evidence rather than an absence. **"I could
+not find X" and "there is no X" are the same return value from a grep**, which is the same defect
+that produced the videoless-opening finding.
 
 ⭐⭐⭐ **This is the whole reason #44's headline was withdrawn.** "A gateway-less in-browser node does
 not sustain 2.7 Mbps" was true of a throughput probe and said nothing about the product, because a
