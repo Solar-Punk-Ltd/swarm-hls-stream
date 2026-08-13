@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
+    "@lat-murmeldjur/weeb_3": "0.0.329001",
     "@swarm-hls-stream/shared": "workspace:*",
     "hls.js": "^1.6.2",
     "p-queue": "^8.1.0",
