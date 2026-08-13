@@ -1,3 +1,7 @@
+# shellcheck shell=bash
+#
+# Sourced, never executed, so it carries a shell directive instead of a shebang.
+#
 # What a minute of publishing costs each node, in PLUR. 1 BZZ = 10^16 PLUR.
 #
 # ⛔⛔⛔ THIS FILE EXISTS BECAUSE THE NUMBER WAS WRONG IN THREE PLACES AT ONCE.
