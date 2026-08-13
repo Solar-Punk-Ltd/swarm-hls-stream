@@ -70,50 +70,16 @@ GATEWAY_READY_TIMEOUT_S="${GATEWAY_READY_TIMEOUT_S:-300}"
 # a short MINUTES eats the watch rather than the margin, and at MINUTES=1 the watch would be negative.
 PUBLISHER_MARGIN_S="${PUBLISHER_MARGIN_S:-90}"
 
-# The same measured burn and margin `sweep-interleaved.sh` uses, for the same reason: a sitting that
-# stops partway leaves rows measured on a node its peers have stopped serving.
-#
-# ⭐⭐⭐ COST IS PER BROADCAST, NOT ONLY PER MINUTE. Measured 2026-08-12 night, two sittings.
-#
-# The 120-minute soak burned **0.78 BZZ/hr on the uploader and 0.64 on the gateway, and the rate was
-# FLAT**: four independent 30-minute windows read 0.80, 0.75, 0.79, 0.80. That is a replicate inside
-# one sitting, and it is the marginal cost of broadcasting.
-#
-# ⛔ The arm sitting earlier the same night cost **2.06 BZZ/hr of broadcast**, idle-to-idle, which is
-# 2.6x that. Eight broadcasts in 56 minutes against one in 119. Subtracting the marginal rate leaves
-# about **1.19 BZZ across 8 starts, so roughly 0.15 BZZ per broadcast STARTED**, independent of how
-# long it then runs.
-#
-# ⚠️ That per-broadcast figure is a FIT across two sittings, not a measurement. Its window also
-# contains four failed launches and an alternating GOP. What would test it is two sittings of equal
-# total broadcast time and different arm counts. Until then it is priced conservatively here, because
-# being wrong about a fixed cost overstates a sweep's runway and understates a soak's.
-#
-# ⛔⛔ Three different values were used for these constants in one evening. The 0.0325/0.0267 that
-# stood for a week, a refit DOWN to 0.0214/0.0095 that would have approved a soak the balance could
-# not finish, and a refit UP to 0.0437/0.0355 derived from an arm sitting whose cost was mostly
-# setup. Each was defended with arithmetic. **The one that survives is the one measured over a long
-# continuous window and replicated within it.**
-#
-# ⚠️ 1080p burns more again. Override for a sitting that is not 720p.
-UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-130000000000000}"
-GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-107000000000000}"
-# ⛔⛔⛔ MEASURED AT ZERO 2026-08-13, having been 0.15/0.12 BZZ since the night before.
-#
-# The premise was that a sitting reading 2.06 BZZ per broadcast hour against a soak's 0.78 differed
-# by how many broadcasts it STARTED. That 2.06 is not reproducible from the node: the sitting's own
-# snapshots bracket 48.1 of its 48.5 minutes and record 0.5650 BZZ, so 0.70 BZZ/hr with eight
-# broadcast starts inside it, which is cheaper than the soak with one.
-#
-# Each of its six counted arms holds exactly one broadcast start, so the marginal rate subtracts out
-# and leaves the setup term alone: -0.0089 to +0.0030 BZZ, five of six negative. Held above by about
-# 0.003, against a constant of 0.15.
-#
-# ⭐ Kept as a knob rather than deleted, because a real fixed cost per broadcast is a plausible thing
-# to find later on another profile. It is zero here and a sweep of short arms is not expensive.
-UPLOADER_SETUP_PLUR="${UPLOADER_SETUP_PLUR:-0}"
-GATEWAY_SETUP_PLUR="${GATEWAY_SETUP_PLUR:-0}"
-FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-140}"
+# What a sitting costs, and the margin over it. One file, because the number was wrong in three
+# places at once and only the place somebody was looking got corrected.
+RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
+# shellcheck source=deploy/scripts/burn-rates.sh
+. "${RATES}" || {
+  # `set -u` without `set -e` would carry on to an "unbound variable" inside a funding function,
+  # naming neither the file nor the fix. A script that prices a sitting does not guess.
+  echo "cannot read ${RATES}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
 
 # What the nodes themselves say they did, either side of every arm, and periodically through a long
 # one. ⛔ This is not decoration on the result. Seventeen arms of the buffer sweep were scored

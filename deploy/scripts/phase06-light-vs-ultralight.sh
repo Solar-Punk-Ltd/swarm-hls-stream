@@ -47,15 +47,16 @@
 #      returns a balance; a node started with swap disabled has no chequebook at all and answers 405.
 #      That is the difference between the two arms, read off the node rather than off the intent.
 #
-# ## Funding, and why the constants here are not the sweep's
+# ## Funding, and why the margin here is doubled
 #
-# `sweep-interleaved.sh` prices a run at 0.0325 BZZ/min for the uploader, measured across a mix that
-# included 1080p. This sitting is fixed at 720p 2500kbps, where seventeen runs measured 0.0179 BZZ/min
-# and the best-instrumented run measured 0.0134. The higher of the two 720p figures is used with a
-# doubled margin, which is honest about this sitting rather than borrowing another one's mix.
+# ⛔ This section used to argue for constants of its own, on the grounds that `sweep-interleaved.sh`
+# priced a run at 0.0325 BZZ/min across a mix including 1080p. Both numbers were stale by 2026-08-13,
+# and the argument had produced a THIRD set of values in a project that only ever needed one. The
+# rate now comes from `burn-rates.sh`, measured on whole sittings that bracketed themselves.
 #
-# The gateway rate is the corrected one: 0.306 BZZ per 30 minutes of 720p, measured continuously,
-# against the 0.123 this project budgeted on until 2026-08-07.
+# ⭐ What survives the correction is the doubled margin, and for a reason specific to this sitting:
+# one arm runs on a node with no chequebook at all, so a mid-sitting stop does not cost a run, it
+# costs the contrast the sitting exists to draw.
 #
 # Checked before the sitting against the whole of it, and again before every arm against that arm, so
 # running out is a clean stop with a named reason rather than a slide into measuring starvation.
@@ -99,9 +100,17 @@ FULL_WARM_SECONDS="${FULL_WARM_SECONDS:-180}"
 # must not end under it. A broadcast that stops mid-watch is measured as a viewer losing the stream.
 PUBLISH_MARGIN_SECONDS="${PUBLISH_MARGIN_SECONDS:-120}"
 
-# PLUR per minute of publishing, 1 BZZ = 1e16. See the header for where each comes from.
-UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-179000000000000}"
-GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-102000000000000}"
+RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
+# shellcheck source=deploy/scripts/burn-rates.sh
+. "${RATES}" || {
+  # `set -u` without `set -e` would carry on to an "unbound variable" inside a funding function,
+  # naming neither the file nor the fix. A script that prices a sitting does not guess.
+  echo "cannot read ${RATES}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+# ⭐ This sitting keeps its doubled margin, which is its own choice and survives the rate correction:
+# it runs one arm on a node with NO chequebook, where a mid-sitting stop is not a lost run but a lost
+# contrast. The rate itself now comes from the file above, measured on real sittings.
 FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-200}"
 
 # `utilization` is the fullest of sixty-five thousand buckets and the batch is immutable, so crossing
