@@ -7,6 +7,8 @@ import { Stream } from '@/types/stream';
 import { CatalogFeedReader } from '@/utils/catalogFeed';
 import { config } from '@/utils/config';
 
+import { exposeGatewayForInstrumentation } from './gatewayTestHandle';
+
 type AppContextState = {
   streamList: Stream[];
   setNewStreamList: (data: any) => void;
@@ -111,6 +113,17 @@ export const AppContextProvider = ({ children }: Props) => {
   useEffect(() => {
     initAppState();
   }, [initAppState]);
+
+  // Only present in a build made with VITE_EXPOSE_PLAYER, which no shipping build is. `setGatewayUrl`
+  // holds no dependencies, so this publishes once per mount rather than on every render.
+  useEffect(
+    () =>
+      exposeGatewayForInstrumentation({
+        current: () => gatewayRef.current,
+        select: setGatewayUrl,
+      }) ?? undefined,
+    [setGatewayUrl],
+  );
 
   return (
     <AppContext.Provider value={{ streamList, setNewStreamList, fetchAppState, gatewayUrl, setGatewayUrl }}>
