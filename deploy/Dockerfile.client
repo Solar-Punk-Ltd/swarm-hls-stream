@@ -20,10 +20,16 @@ ARG VITE_APP_RAW_TOPIC=swarm-stream
 # latency target between arms of one broadcast (task #87). Unset, Vite substitutes the flag with a
 # literal and the whole thing is eliminated, which `packages/client/test/bundle.test.ts` asserts.
 ARG VITE_EXPOSE_PLAYER=
+# ⛔ Empty by default, meaning segments come from the viewer's bee gateway. Set to `weeb3`, the bundle
+# fetches segment bytes from a Swarm node running in the viewer's own tab instead. Experimental: it
+# pulls in 4.5 MB of WebAssembly, as a lazy chunk no gateway-backed viewer ever downloads. The feed
+# and the manifests still travel through the gateway either way.
+ARG VITE_BROWSER_FETCH_BACKEND=
 ENV VITE_READER_BEE_URL=$VITE_READER_BEE_URL \
     VITE_APP_OWNER=$VITE_APP_OWNER \
     VITE_APP_RAW_TOPIC=$VITE_APP_RAW_TOPIC \
-    VITE_EXPOSE_PLAYER=$VITE_EXPOSE_PLAYER
+    VITE_EXPOSE_PLAYER=$VITE_EXPOSE_PLAYER \
+    VITE_BROWSER_FETCH_BACKEND=$VITE_BROWSER_FETCH_BACKEND
 
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
