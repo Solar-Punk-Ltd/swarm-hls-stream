@@ -1,0 +1,8 @@
+2026-08-13T17:21:12Z	1	1	gateway	warm-up	ok
+2026-08-13T17:26:54Z	2	1	weeb3	warm-up	ok
+2026-08-13T17:32:35Z	3	2	gateway	counted	ok
+2026-08-13T17:38:16Z	4	2	weeb3	counted	ok
+2026-08-13T17:43:57Z	5	3	weeb3	counted	ok
+2026-08-13T17:49:38Z	6	3	gateway	counted	ok
+2026-08-13T17:55:20Z	7	4	weeb3	counted	ok
+2026-08-13T18:01:01Z	8	4	gateway	counted	ok
