@@ -36,13 +36,6 @@ const REQUIRED_ENV: EnvVar[] = [
 ];
 
 const OPTIONAL_ENV: OptionalEnvVar[] = [
-  {
-    name: 'MANIFEST_ACCESS_URL',
-    field: 'manifestAccessUrl',
-    sample: 'http://manifest.test',
-    fallback: '',
-    refused: [],
-  },
   { name: 'API_PORT', field: 'apiPort', sample: '4444', fallback: 3000, refused: ['-1', '65536'] },
   { name: 'STATE_DIR', field: 'stateDir', sample: '/var/lib/uploader', fallback: './state', refused: [] },
   { name: 'MAX_QUEUE_SIZE', field: 'maxQueueSize', sample: '7', fallback: 100, refused: ['0'] },

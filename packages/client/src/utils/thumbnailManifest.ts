@@ -10,10 +10,11 @@ import { feedSlotPath, nextFeedRequest } from '@swarm-hls-stream/shared';
  * blob id are both consumed, so nothing downstream can work out which gateway was meant. The line has
  * to name it here or it cannot be named at all.
  *
- * The two relative shapes both come from the uploader's `buildSegmentUri`. A bare reference is what it
- * writes with `MANIFEST_ACCESS_URL` unset, and a rooted path is what it writes when that variable is a
- * path rather than a full URL. Only the second reached hls.js unresolved, because the caller used to
- * pass it through untouched.
+ * A bare reference is what the uploader writes, and what every manifest published since 2026-08-13
+ * holds. The other two shapes come from content published before that, when `MANIFEST_ACCESS_URL`
+ * could prepend either a full URL or a rooted path, and only the rooted one reached hls.js
+ * unresolved because the caller used to pass it through untouched. All three are still handled,
+ * since a recording keeps whatever its manifest was published with.
  */
 export function previewSegmentUrl(uri: string, gatewayUrl: string): string {
   if (uri.startsWith('http://') || uri.startsWith('https://')) {

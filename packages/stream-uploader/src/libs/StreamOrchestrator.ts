@@ -62,7 +62,6 @@ const DEFAULT_STOP_OUTCOME_TTL_MS = 15 * 60 * 1000; // 15 minutes
 export interface StreamOrchestratorConfig {
   streamKey: string;
   stamp: string;
-  manifestBeeUrl: string;
   maxQueueSize: number;
   recoveryTimeout: number;
   /** How long a live stream may receive nothing before it is reaped as an orphan. See #86. */
@@ -489,7 +488,6 @@ export class StreamOrchestrator {
   private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant): void {
     const uploader = new StreamUploader(
       this.bee,
-      this.config.manifestBeeUrl,
       this.streamCatalog,
       this.recoveryStore,
       this.config.streamKey,
@@ -918,7 +916,6 @@ export class StreamOrchestrator {
 
     const uploader = new StreamUploader(
       this.bee,
-      this.config.manifestBeeUrl,
       this.streamCatalog,
       this.recoveryStore,
       this.config.streamKey,

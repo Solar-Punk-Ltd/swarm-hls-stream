@@ -31,8 +31,8 @@ function ref(index: number): string {
   return index.toString(16).padStart(64, '0');
 }
 
-function withSegments(count: number, duration: number, manifestBeeUrl = ''): ManifestManager {
-  const manager = new ManifestManager(manifestBeeUrl);
+function withSegments(count: number, duration: number): ManifestManager {
+  const manager = new ManifestManager();
   for (let i = 0; i < count; i++) {
     manager.addSegment(i, duration, ref(i));
   }
@@ -51,7 +51,7 @@ function mediaSequence(manifest: string): number {
 
 describe('ManifestManager discontinuity handling', () => {
   it('emits a discontinuity tag before a flagged segment in the VOD manifest', () => {
-    const manager = new ManifestManager('');
+    const manager = new ManifestManager();
     manager.addSegment(0, 2, 'ref0');
     manager.addSegment(1, 2, 'ref1', true);
     manager.addSegment(2, 2, 'ref2');
@@ -64,7 +64,7 @@ describe('ManifestManager discontinuity handling', () => {
   });
 
   it('emits a discontinuity tag before a flagged segment in the live manifest', () => {
-    const manager = new ManifestManager('');
+    const manager = new ManifestManager();
     manager.addSegment(0, 2, 'ref0');
     manager.addSegment(1, 2, 'ref1', true);
 
@@ -75,7 +75,7 @@ describe('ManifestManager discontinuity handling', () => {
   });
 
   it('does not emit a discontinuity tag when no segment is flagged', () => {
-    const manager = new ManifestManager('');
+    const manager = new ManifestManager();
     manager.addSegment(0, 2, 'ref0');
     manager.addSegment(1, 2, 'ref1');
 
@@ -136,8 +136,18 @@ describe('the live window is bounded by bytes rather than by a segment count', (
     assert.ok(held > 10, `held ${held} segments, which is no better than the fixed count it replaces`);
   });
 
-  it('still emits a segment when one alone overruns the budget', () => {
-    const manager = withSegments(3, 2, `http://gateway.invalid/${'p'.repeat(LIVE_WINDOW_MAX_BYTES)}`);
+  /**
+   * A segment line is a duration and a reference, so no live sequence can spend the whole budget on
+   * one. `restoreState` can, because it takes its headers from a manifest recovered off disk, and a
+   * header that spends the budget leaves every segment overrunning what is left.
+   *
+   * This used to reach the same state through a 4KB `MANIFEST_ACCESS_URL`. That variable is gone,
+   * and the path that remains is the one external input can actually reach.
+   */
+  it('still emits a segment when the header alone overruns the budget', () => {
+    const manager = withSegments(3, 2);
+    const { segments } = manager.getState();
+    manager.restoreState(segments, ['#EXTM3U', `#EXT-X-SESSION-DATA:${'p'.repeat(LIVE_WINDOW_MAX_BYTES)}`]);
 
     assert.equal(segmentUris(manager.buildLiveManifest()).length, 1);
   });
@@ -180,7 +190,7 @@ describe('segments the window slid past before anything named them', () => {
   // A segment whose own upload failed was never added, and `recordSegmentDropped` already owns it.
   // Counting the hole it left here would report the same loss twice under two different causes.
   it('counts only segments it actually holds, so a dropped one is not counted twice', () => {
-    const manager = new ManifestManager('');
+    const manager = new ManifestManager();
     for (let i = 0; i < 500; i++) {
       if (i !== 50 && i !== 51) {
         manager.addSegment(i, 2, ref(i));
@@ -194,7 +204,7 @@ describe('segments the window slid past before anything named them', () => {
 
   it('names the newest segment the window reaches, which is what was announced', () => {
     assert.equal(withSegments(500, 2).liveWindowNewestIndex(), 499);
-    assert.equal(new ManifestManager('').liveWindowNewestIndex(), null);
+    assert.equal(new ManifestManager().liveWindowNewestIndex(), null);
   });
 });
 
@@ -267,7 +277,7 @@ describe('ending a broadcast that live viewers are still following', () => {
   });
 
   it('says nothing when there was never a segment to end', () => {
-    assert.equal(new ManifestManager('').buildClosingLiveManifest(), '');
+    assert.equal(new ManifestManager().buildClosingLiveManifest(), '');
   });
 
   /** The recording is a separate resource with a separate reader, and it is not what changed. */

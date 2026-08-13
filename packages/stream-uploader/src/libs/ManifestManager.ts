@@ -44,13 +44,31 @@ function joinManifest(lines: string[]): string {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Builds the playlists a broadcast publishes, naming every segment by its bare Swarm reference.
+ *
+ * ## ⛔⛔ A segment line names no gateway, and that is the product decision
+ *
+ * A manifest line is a content address and nothing else, so the viewer's own client decides which
+ * gateway fetches it. This used to be configurable through `MANIFEST_ACCESS_URL`, which wrote
+ * `http://<host>:<port>/bytes/<ref>` into every line, and an absolute URI is passed straight through
+ * by every reader: the publisher therefore chose the gateway for the entire audience, and that
+ * gateway was a single point of load and failure for every viewer of the broadcast no matter what
+ * they had configured. Owner decision of 2026-08-13, asked directly: **each viewer fetches
+ * themselves**.
+ *
+ * ⭐ It was invisible from the viewer side, which is why it survived so long. On 2026-08-13 both arms
+ * of a funded-versus-unfunded smoke reported their own gateway honestly and truthfully while fetching
+ * all 253 of their video segments from one node. Nothing in the viewer-facing output disagreed.
+ *
+ * ⚠️ Recordings published before this carry absolute URIs permanently, so the client keeps passing an
+ * absolute segment URI through untouched. That path is for old content, not for new.
+ */
 export class ManifestManager {
   private segments: SegmentEntry[] = [];
   private hlsHeaders: string[] = [HLS_M3U, `${HLS_VERSION}:3`];
   private targetDuration = 0;
   private logger = Logger.getInstance();
-
-  constructor(private manifestBeeUrl: string) {}
 
   public addSegment(index: number, duration: number, ref: string, discontinuity = false): void {
     this.segments.push({ index, duration, ref, discontinuity });
@@ -178,8 +196,10 @@ export class ManifestManager {
    * array, and this runs once per segment for the life of the stream.
    *
    * A segment that overruns the budget on its own is still emitted. A manifest naming nothing is
-   * worse than a manifest costing an extra round trip, and only an unusually long
-   * `manifestBeeUrl` can produce one.
+   * worse than a manifest costing an extra round trip. A segment line is now a duration and a
+   * reference, so no live sequence can reach that state: {@link restoreState} can, because it takes
+   * its headers from a recovered manifest, and a header long enough to spend the budget leaves every
+   * segment overrunning what is left.
    */
   private liveWindowLength(): number {
     // Reserved against the largest media sequence there could be, since it can name no more
@@ -211,10 +231,6 @@ export class ManifestManager {
 
   private segmentLines(seg: SegmentEntry): string[] {
     const discontinuity = seg.discontinuity ? [HLS_DISCONTINUITY] : [];
-    return [...discontinuity, buildExtinf(seg.duration), this.buildSegmentUri(seg.ref)];
-  }
-
-  private buildSegmentUri(ref: string): string {
-    return this.manifestBeeUrl ? `${this.manifestBeeUrl}/${ref}` : ref;
+    return [...discontinuity, buildExtinf(seg.duration), seg.ref];
   }
 }

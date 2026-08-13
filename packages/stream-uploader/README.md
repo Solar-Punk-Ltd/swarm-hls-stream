@@ -62,7 +62,6 @@ The API server starts on port 3000 (default).
 | Variable               | Default   | Description                                                                                                          |
 | ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
 | `PUBLISH_KEY_SECRET`   | _(empty)_ | Master secret for per-stream publish keys, minimum 32 characters. Empty leaves publishers unauthenticated. See below |
-| `MANIFEST_ACCESS_URL`  | _(empty)_ | Base URL for segment refs in manifests                                                                               |
 | `API_PORT`             | `3000`    | HTTP API port                                                                                                        |
 | `STATE_DIR`            | `./state` | Directory for crash recovery state                                                                                   |
 | `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                       |
