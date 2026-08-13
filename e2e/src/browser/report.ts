@@ -52,12 +52,35 @@ export interface BrowserRun {
    * client said it was using, never what the run asked for.
    */
   arm?: ArmCondition;
+  /**
+   * Where this run's segment bytes came from, when a sitting moved them.
+   *
+   * Separate from {@link ArmCondition} rather than folded into it, because the two sittings vary
+   * different things: a funding arm holds the byte path fixed and moves the gateway, and this one
+   * holds the gateway fixed and moves the byte path. A run can carry either, both, or neither.
+   */
+  byteSource?: ByteSourceCondition;
 }
 
 export interface ArmCondition {
   name: string;
   requestedGateway: string;
   reportedGateway: string;
+}
+
+export interface ByteSourceCondition {
+  /** What the driver asked for, kept beside the readback so a disagreement is legible afterwards. */
+  requested: string;
+  /** What the client says it is using, which is what the arm actually is. */
+  reported: string;
+  /**
+   * How long the run played before its measurement window opened.
+   *
+   * ⛔ Recorded because it is not padding. A weeb-3 arm boots its node inside this period and reads
+   * through the gateway while it does, so the window start is what makes the request log decisive:
+   * every `/bytes/` request before it is expected and every one after it is a refusal.
+   */
+  settledForMs: number;
 }
 
 /**
@@ -370,6 +393,15 @@ export function renderBrowserReport(run: BrowserRun): string {
       ? [
           `Arm **${run.arm.name}**, read through the gateway the client itself reports: ` +
             `\`${run.arm.reportedGateway}\`.`,
+          '',
+        ]
+      : []),
+    ...(run.byteSource
+      ? [
+          `Segment bytes came from **${run.byteSource.reported}**, which is what the client reports ` +
+            `rather than what was asked for. The window opened ` +
+            `${(run.byteSource.settledForMs / 1000).toFixed(1)}s after playback started, and only ` +
+            `requests from that instant on decide whether this arm is the condition it is filed under.`,
           '',
         ]
       : []),

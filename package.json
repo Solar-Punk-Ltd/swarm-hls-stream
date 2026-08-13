@@ -39,6 +39,8 @@
     "browser:buffer-sweep": "pnpm --filter @swarm-hls-stream/e2e browser:buffer-sweep",
     "browser:arm-order": "pnpm --filter @swarm-hls-stream/e2e browser:arm-order",
     "browser:gateway-check": "pnpm --filter @swarm-hls-stream/e2e browser:gateway-check",
+    "browser:fetch-backend-check": "pnpm --filter @swarm-hls-stream/e2e browser:fetch-backend-check",
+    "browser:byte-source-order": "pnpm --filter @swarm-hls-stream/e2e browser:byte-source-order",
     "audit:check": "tsx packages/audit-gate/src/index.ts",
     "mutate": "stryker run",
     "verify": "pnpm lint && pnpm typecheck && pnpm build && pnpm test && git ls-files -z | xargs -0 -r npx prettier --check --ignore-unknown",

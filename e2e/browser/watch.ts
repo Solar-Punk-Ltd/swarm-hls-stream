@@ -13,6 +13,12 @@
  */
 
 import {
+  armBytesCameFromItsSource,
+  type ByteSourceArm,
+  byteSourceFromEnv,
+  openByteSourceArm,
+} from '../src/browser/fetchBackendSweep.js';
+import {
   DEFAULT_GATEWAY_SAMPLE_INTERVAL_MS,
   gatewayReader,
   type GatewaySample,
@@ -46,6 +52,15 @@ import { makeHost } from '../src/harness/host.js';
 
 const DEFAULT_WATCH_SECONDS = 180;
 
+/**
+ * How long a byte-source arm plays before its measurement window opens.
+ *
+ * Generous on purpose. A2 measured the in-tab node's join at 9.4-10.5s and the client gives up on it
+ * at 30s, so a boot that fits at all fits inside this with room to spare, and the refusal in
+ * `openByteSourceArm` then only fires on an arm that was never going to be comparable.
+ */
+const DEFAULT_BYTE_SOURCE_SETTLE_SECONDS = 60;
+
 async function main(): Promise<void> {
   const clientUrl = requireEnv('BROWSER_CLIENT_URL');
   const watchSeconds = envNumber('BROWSER_WATCH_SECONDS', DEFAULT_WATCH_SECONDS);
@@ -55,6 +70,11 @@ async function main(): Promise<void> {
   // an unset gateway leaves this run exactly the watch it has always been.
   const armGateway = process.env.BROWSER_GATEWAY_URL || null;
   const armName = process.env.BROWSER_GATEWAY_ARM || 'arm';
+  // Set by a sitting that alternates where segment bytes come from under one broadcast. Unset for
+  // every other caller, and an unset source leaves this run exactly the watch it has always been.
+  // ⛔ Parsed rather than compared later: a value that is neither condition is a refusal here.
+  const armByteSource = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
+  const settleSeconds = envNumber('BROWSER_SETTLE_SECONDS', DEFAULT_BYTE_SOURCE_SETTLE_SECONDS);
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
@@ -76,6 +96,7 @@ async function main(): Promise<void> {
   let watched: SampledStretch | undefined;
   let watchUrl = clientUrl;
   let arm: ArmCondition | undefined;
+  let byteSource: ByteSourceArm | undefined;
 
   // Started before the page opens and stopped in the same `finally` as the browser, so the node-side
   // series brackets the browser one rather than being a subset of it. A slowdown that begins during
@@ -97,6 +118,9 @@ async function main(): Promise<void> {
     recordRequests(page, requests);
 
     watchUrl = await openViewer(page, clientUrl);
+    // `openViewer` returns once the player is actually playing, so this is the age a byte-source arm
+    // settles from. Both conditions open their window the same distance from here.
+    const playbackStartedAtMs = Date.now();
 
     // ⛔⛔⛔ Checked here, between playback starting and the first sample. An arm on the wrong gateway
     // is not a weaker arm, it is an arm of the other condition, and counting one would put the funded
@@ -110,6 +134,23 @@ async function main(): Promise<void> {
       }
       arm = { name: armName, requestedGateway: armGateway, reportedGateway: setup.gatewayUrl as string };
       console.log(`browser: arm ${armName} confirmed on ${arm.reportedGateway}`);
+    }
+
+    // After playback is established and before the first sample, for the same reason the gateway
+    // readback sits above: an arm on the wrong byte source is an arm of the other condition. It also
+    // boots the in-tab node and waits out the settle, so the window below opens on a player of the
+    // same age in both conditions.
+    if (armByteSource !== null) {
+      byteSource = await openByteSourceArm({
+        page,
+        source: armByteSource,
+        playbackStartedAtMs,
+        settleMs: settleSeconds * 1000,
+      });
+      console.log(
+        `browser: bytes come from ${byteSource.reported}, window opens ` +
+          `${(byteSource.settledForMs / 1000).toFixed(1)}s after playback started`,
+      );
     }
 
     watched = await sampleFor({
@@ -148,6 +189,11 @@ async function main(): Promise<void> {
     gateway,
     gatewaySamples,
     arm,
+    byteSource: byteSource && {
+      requested: byteSource.requested,
+      reported: byteSource.reported,
+      settledForMs: byteSource.settledForMs,
+    },
   };
 
   const stem = await writeRunArtifacts('browser-watch', runId, {
@@ -185,6 +231,20 @@ async function main(): Promise<void> {
       throw new Error(`arm ${arm.name} is not the condition it claims: ${notServedByIt}`);
     }
     console.log(`browser: arm ${arm.name} fetched only from ${arm.reportedGateway}`);
+  }
+
+  // ⛔⛔⛔ The same place and the same reason, for the byte source. The readback above proves the
+  // client selected a backend; this proves the bytes went that way. It matters more here than it does
+  // for gateways, because a weeb-3 arm's headline is a ZERO, and a client that never loaded the
+  // backend at all produces exactly the same zero. `armBytesCameFromItsSource` requires the wasm as a
+  // witness for that reason, and judges only from the instant the window opened, since an arm reads
+  // through the gateway while its node is still booting.
+  if (byteSource) {
+    const notFromIt = armBytesCameFromItsSource(requests, byteSource.requested, byteSource.windowStartedAtMs);
+    if (notFromIt !== null) {
+      throw new Error(`the ${byteSource.requested} arm is not the condition it claims: ${notFromIt}`);
+    }
+    console.log(`browser: the ${byteSource.requested} arm's segment bytes came from where it says they did`);
   }
 }
 
