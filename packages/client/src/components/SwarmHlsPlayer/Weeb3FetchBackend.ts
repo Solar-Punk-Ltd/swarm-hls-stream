@@ -61,6 +61,18 @@ export class Weeb3FetchBackend {
 
   constructor(private readonly loadModule: Weeb3ModuleLoader = importWeeb3) {}
 
+  /**
+   * Boot the node and reach the network without fetching anything.
+   *
+   * ⛔ The join is 4.5 MB of wasm and several seconds of dialling, and it happens once per tab.
+   * Measured in A2: a first retrieval right after `ready(1)` took 9,423-10,466ms against 3,185-4,003ms
+   * warm. An arm that switches to this backend and immediately starts scoring is measuring the join
+   * rather than the backend, so a harness calls this before the arm it wants to count.
+   */
+  async prewarm(): Promise<void> {
+    await this.node();
+  }
+
   /** The segment, as the gateway would have served it. See {@link withoutSwarmSpan}. */
   async retrieveBytes(ref: string): Promise<Uint8Array> {
     const node = await this.node();

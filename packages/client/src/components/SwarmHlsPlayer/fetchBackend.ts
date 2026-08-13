@@ -29,6 +29,42 @@ export function selectedFetchBackend(): FetchBackend {
     : FETCH_BACKEND_GATEWAY;
 }
 
+/**
+ * A runtime choice that outranks the build's, or `null` when nothing has chosen.
+ *
+ * Module state rather than anything React owns, because the only reader is a loader hls.js constructs
+ * per fragment and hands nothing but its own config.
+ */
+let override: FetchBackend | null = null;
+
+/** Where segment bytes come from right now: the runtime choice if one was made, else the build's. */
+export function activeFetchBackend(): FetchBackend {
+  return override ?? selectedFetchBackend();
+}
+
+/**
+ * Point subsequent fragments at another backend, or pass `null` to fall back to the build's.
+ *
+ * ## ⛔⛔⛔ Why an unrecognised value throws instead of being ignored
+ *
+ * A harness drives this through CDP, where TypeScript does not exist and `'weeb-3'`, a typo or an
+ * `undefined` all arrive as ordinary values. On 2026-08-13 an arm ran on a gateway switch that
+ * silently did nothing: both arms read one node, every metric agreed, and the sitting was on course to
+ * report that funding makes no difference to a viewer.
+ *
+ * **A silent no-op produces a wrong answer that looks like a result.** A throw produces an arm that
+ * fails on its first fragment and names the value it was given.
+ */
+export function selectFetchBackend(backend: FetchBackend | null): void {
+  if (backend !== null && backend !== FETCH_BACKEND_GATEWAY && backend !== FETCH_BACKEND_WEEB3) {
+    throw new Error(
+      `unknown fetch backend ${JSON.stringify(backend)}, expected ${FETCH_BACKEND_GATEWAY} or ${FETCH_BACKEND_WEEB3}`,
+    );
+  }
+
+  override = backend;
+}
+
 const BYTES_ROUTE = '/bytes/';
 
 /**

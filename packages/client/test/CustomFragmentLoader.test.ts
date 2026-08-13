@@ -8,7 +8,11 @@ import {
   requestJitter,
 } from '../src/components/SwarmHlsPlayer/CustomManifestLoader';
 import { FEED_STATE_LIVE, FEED_STATE_RECONNECTING } from '../src/components/SwarmHlsPlayer/feedState';
-import { FETCH_BACKEND_WEEB3 } from '../src/components/SwarmHlsPlayer/fetchBackend';
+import {
+  FETCH_BACKEND_GATEWAY,
+  FETCH_BACKEND_WEEB3,
+  selectFetchBackend,
+} from '../src/components/SwarmHlsPlayer/fetchBackend';
 import { weeb3FetchBackend } from '../src/components/SwarmHlsPlayer/Weeb3FetchBackend';
 
 const TOPIC = 'a-topic-being-watched';
@@ -460,5 +464,60 @@ describe('CustomFragmentLoader fetching through weeb-3 instead of a gateway', ()
     assert.equal(retrieve.mock.calls.length, 0, 'a malformed reference was sent into the wasm anyway');
     assert.equal(errors().length, 1);
     assert.match(errors()[0].text, /no Swarm reference/);
+  });
+});
+
+/**
+ * ⛔⛔ The switch has to bite on the NEXT fragment, not the next player.
+ *
+ * hls.js constructs a loader per fragment, so reading the backend at construction would look correct
+ * and lag by one: a harness that switched between arms would score the first fragment of arm two on
+ * arm one's backend. Over an arm of a few hundred fragments that is invisible in a summary and wrong
+ * in exactly the direction that hides a difference.
+ */
+describe('CustomFragmentLoader honouring a backend switched at runtime', () => {
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    runStaggerInline();
+  });
+
+  afterEach(() => {
+    selectFetchBackend(null);
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  /** One fragment through a loader built BEFORE the switch was moved. */
+  function loadAfterSwitchingTo(backend: 'gateway' | 'weeb3') {
+    vi.stubEnv('VITE_BROWSER_FETCH_BACKEND', '');
+    const reachedGateway = vi.spyOn(transport, 'load').mockImplementation(() => {});
+    const retrieve = vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array([1]));
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    selectFetchBackend(backend);
+
+    loader.load(
+      { url: WEEB3_FRAGMENT_URL } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      { onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn() } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+
+    return { gatewayCalls: reachedGateway.mock.calls.length, weeb3Calls: retrieve.mock.calls.length };
+  }
+
+  it('sends the next fragment to weeb-3 when the switch moved after construction', () => {
+    const { gatewayCalls, weeb3Calls } = loadAfterSwitchingTo(FETCH_BACKEND_WEEB3);
+
+    assert.equal(weeb3Calls, 1, 'the switch did not reach the fragment that followed it');
+    assert.equal(gatewayCalls, 0, 'the fragment went to the gateway despite the switch');
+  });
+
+  // The control. Without it the case above passes on a loader that always uses weeb-3.
+  it('still sends it to the gateway when the switch says gateway', () => {
+    const { gatewayCalls, weeb3Calls } = loadAfterSwitchingTo(FETCH_BACKEND_GATEWAY);
+
+    assert.equal(gatewayCalls, 1);
+    assert.equal(weeb3Calls, 0, 'a gateway fragment woke the in-tab node');
   });
 });

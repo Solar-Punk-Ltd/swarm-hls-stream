@@ -11,7 +11,7 @@ import Hls from 'hls.js';
 
 import { RequestJitter, StaggeredTask } from '@/utils/requestJitter';
 
-import { FETCH_BACKEND_WEEB3, segmentRefFromUrl, selectedFetchBackend } from './fetchBackend';
+import { activeFetchBackend, FETCH_BACKEND_WEEB3, segmentRefFromUrl } from './fetchBackend';
 import { ManifestFetcher } from './ManifestManagement';
 import { weeb3FetchBackend } from './Weeb3FetchBackend';
 
@@ -76,8 +76,6 @@ export class CustomFragmentLoader extends FragmentLoader {
    */
   private abandoned = false;
 
-  private readonly backend = selectedFetchBackend();
-
   constructor(config: HlsConfig) {
     super(config);
   }
@@ -122,7 +120,12 @@ export class CustomFragmentLoader extends FragmentLoader {
       // exactly the same path and differ in one thing: where the bytes come from. The stagger is
       // currently a synchronous no-op (`GATEWAY_REQUEST_JITTER_MS` is 0), so this costs nothing
       // today, and it keeps the arms comparable for an operator who turns it back on.
-      if (this.backend === FETCH_BACKEND_WEEB3) {
+      //
+      // ⛔ Read here rather than held from the constructor, so a switch mid-broadcast takes effect on
+      // the next fragment. hls.js builds a loader per fragment, so a constructor read would look like
+      // it worked and lag by one, and a loader already in flight would finish on the old backend
+      // while the harness had moved on. That is the shape of an arm that measures the wrong thing.
+      if (activeFetchBackend() === FETCH_BACKEND_WEEB3) {
         this.retrieveThroughWeeb3(context, callbacks);
         return;
       }

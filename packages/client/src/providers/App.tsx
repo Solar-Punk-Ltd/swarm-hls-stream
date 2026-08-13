@@ -2,6 +2,7 @@ import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, u
 import { Topic } from '@ethersphere/bee-js';
 
 import { manifestFetcher } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
+import { exposeFetchBackendForInstrumentation } from '@/components/SwarmHlsPlayer/fetchBackendTestHandle';
 import { ManifestStateManager } from '@/components/SwarmHlsPlayer/ManifestManagement';
 import { Stream } from '@/types/stream';
 import { CatalogFeedReader } from '@/utils/catalogFeed';
@@ -131,6 +132,10 @@ export const AppContextProvider = ({ children }: Props) => {
       }) ?? undefined,
     [setGatewayUrl],
   );
+
+  // The byte-source switch, beside the gateway one and behind the same flag. It holds no React state
+  // of its own, so it publishes once per mount and depends on nothing.
+  useEffect(() => exposeFetchBackendForInstrumentation() ?? undefined, []);
 
   return (
     <AppContext.Provider value={{ streamList, setNewStreamList, fetchAppState, gatewayUrl, setGatewayUrl }}>
