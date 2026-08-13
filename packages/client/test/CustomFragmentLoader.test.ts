@@ -8,9 +8,13 @@ import {
   requestJitter,
 } from '../src/components/SwarmHlsPlayer/CustomManifestLoader';
 import { FEED_STATE_LIVE, FEED_STATE_RECONNECTING } from '../src/components/SwarmHlsPlayer/feedState';
+import { FETCH_BACKEND_WEEB3 } from '../src/components/SwarmHlsPlayer/fetchBackend';
+import { weeb3FetchBackend } from '../src/components/SwarmHlsPlayer/Weeb3FetchBackend';
 
 const TOPIC = 'a-topic-being-watched';
 const FRAGMENT_URL = 'http://127.0.0.1:1633/bytes/0123456789abcdef';
+const REF = '9c4e1f60b8a2d357e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7';
+const WEEB3_FRAGMENT_URL = `http://127.0.0.1:1633/bytes/${REF}`;
 
 /** hls.js's own loader, which `CustomFragmentLoader` extends and hands the transfer down to. */
 const transport = Object.getPrototypeOf(CustomFragmentLoader.prototype) as {
@@ -301,5 +305,160 @@ describe('CustomFragmentLoader holding a fragment back', () => {
     );
 
     assert.equal(staggered.length, 0, 'a url that names no gateway was queued for a stagger anyway');
+  });
+});
+
+/**
+ * The other byte source: a Swarm node inside the tab, selected at build time.
+ *
+ * ⚠️ These hold the wiring only. Whether weeb-3 boots and retrieves anything in a browser is phase
+ * A2's question, run against a real Chrome on recorded content, and nothing that stubs the backend
+ * can answer it.
+ */
+describe('CustomFragmentLoader fetching through weeb-3 instead of a gateway', () => {
+  /** Drive one fragment through a loader built while the weeb-3 backend was selected. */
+  function loadThroughWeeb3(url = WEEB3_FRAGMENT_URL) {
+    vi.stubEnv('VITE_BROWSER_FETCH_BACKEND', FETCH_BACKEND_WEEB3);
+    const reachedGateway = vi.spyOn(transport, 'load').mockImplementation(() => {});
+    vi.spyOn(transport, 'abort').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    const fromHls = {
+      onSuccess: vi.fn(),
+      onError: vi.fn(),
+      onTimeout: vi.fn(),
+    } as unknown as LoaderCallbacks<LoaderContext>;
+
+    loader.load({ url } as FragmentLoaderContext, {} as LoaderConfiguration, fromHls);
+
+    const calls = (fn: unknown) => (fn as { mock: { calls: unknown[][] } }).mock.calls;
+    return {
+      loader,
+      reachedGateway,
+      successes: () => calls(fromHls.onSuccess),
+      errors: () => calls(fromHls.onError).map((call) => call[0] as { code: number; text: string }),
+    };
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    runStaggerInline();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  it('asks the node for the reference and never touches the gateway', async () => {
+    const retrieve = vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array([1, 2, 3, 4]));
+
+    const { reachedGateway, successes } = loadThroughWeeb3();
+    await vi.waitFor(() => assert.equal(successes().length, 1));
+
+    assert.deepEqual(
+      retrieve.mock.calls.map((call) => call[0]),
+      [REF],
+    );
+    assert.equal(reachedGateway.mock.calls.length, 0, 'a weeb-3 fragment was fetched from the gateway as well');
+  });
+
+  it('hands hls.js the bytes the node returned', async () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array([9, 8, 7, 6]));
+
+    const { successes } = loadThroughWeeb3();
+    await vi.waitFor(() => assert.equal(successes().length, 1));
+
+    const response = successes()[0][0] as { data: ArrayBuffer; code: number };
+    assert.equal(response.code, 200);
+    assert.deepEqual(new Uint8Array(response.data), new Uint8Array([9, 8, 7, 6]));
+  });
+
+  // Without timing here a weeb-3 arm has none at all: there is no request for the browser to log.
+  it('records how long the retrieval took, since nothing else can', async () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array(2048));
+
+    const { successes } = loadThroughWeeb3();
+    await vi.waitFor(() => assert.equal(successes().length, 1));
+
+    const stats = successes()[0][1] as { loaded: number; total: number; loading: { start: number; end: number } };
+    assert.equal(stats.loaded, 2048);
+    assert.equal(stats.total, 2048);
+    assert.ok(stats.loading.start > 0, 'the retrieval has no start time');
+    assert.ok(stats.loading.end >= stats.loading.start, 'the retrieval ended before it began');
+  });
+
+  /**
+   * ⛔⛔⛔ The one asymmetry that matters. These bytes came from a node in this tab, so they are no
+   * evidence at all about the gateway. Reporting them as such would end the manifest backoff during a
+   * real gateway outage, and the viewer would keep asking a dead host at full rate while the overlay
+   * said live.
+   */
+  it('does not report the gateway as reachable, because the gateway served nothing', async () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array([1]));
+    manifestFetcher.feedHealth.recordGatewayFailure(TOPIC);
+
+    const { successes } = loadThroughWeeb3();
+    await vi.waitFor(() => assert.equal(successes().length, 1));
+
+    assert.ok(
+      manifestFetcher.feedHealth.backoffRemainingMs(TOPIC) > 0,
+      'a segment from the tab’s own node was treated as proof the gateway is answering',
+    );
+    assert.equal(manifestFetcher.feedHealth.state(TOPIC), FEED_STATE_RECONNECTING);
+  });
+
+  // The control for the block above. Without it, that test passes on a loader that never reports at all.
+  it('still reports the gateway as reachable when the gateway is what served it', () => {
+    manifestFetcher.feedHealth.recordGatewayFailure(TOPIC);
+
+    const { transport: toTransport } = loadFragment();
+    toTransport.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
+
+    assert.equal(manifestFetcher.feedHealth.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  it('reports a failed retrieval to hls.js, naming the reference', async () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockRejectedValue(new Error('no peer had the chunk'));
+
+    const { errors } = loadThroughWeeb3();
+    await vi.waitFor(() => assert.equal(errors().length, 1));
+
+    assert.match(errors()[0].text, /no peer had the chunk/);
+    assert.match(errors()[0].text, new RegExp(REF));
+  });
+
+  /**
+   * `retrieveBytes` takes no abort signal, so an abandoned fragment cannot be called off and the
+   * answer has to be dropped instead. hls.js reuses nothing here, but it does treat a success as
+   * belonging to whatever the loader is loading now.
+   */
+  it('says nothing about a fragment hls.js already abandoned', async () => {
+    let deliver = (_bytes: Uint8Array) => {};
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockReturnValue(
+      new Promise<Uint8Array>((resolve) => {
+        deliver = resolve;
+      }),
+    );
+
+    const { loader, successes, errors } = loadThroughWeeb3();
+    loader.abort();
+    deliver(new Uint8Array([1, 2, 3]));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(successes().length, 0, 'an abandoned fragment was still handed to hls.js');
+    assert.equal(errors().length, 0);
+  });
+
+  it('refuses a url carrying no reference without waking the node', () => {
+    const retrieve = vi.spyOn(weeb3FetchBackend, 'retrieveBytes');
+
+    const { errors } = loadThroughWeeb3('http://127.0.0.1:1633/bytes/not-a-reference');
+
+    assert.equal(retrieve.mock.calls.length, 0, 'a malformed reference was sent into the wasm anyway');
+    assert.equal(errors().length, 1);
+    assert.match(errors()[0].text, /no Swarm reference/);
   });
 });

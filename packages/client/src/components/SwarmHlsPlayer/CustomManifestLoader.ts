@@ -11,7 +11,9 @@ import Hls from 'hls.js';
 
 import { RequestJitter, StaggeredTask } from '@/utils/requestJitter';
 
+import { FETCH_BACKEND_WEEB3, segmentRefFromUrl, selectedFetchBackend } from './fetchBackend';
 import { ManifestFetcher } from './ManifestManagement';
+import { weeb3FetchBackend } from './Weeb3FetchBackend';
 
 export const manifestFetcher = new ManifestFetcher();
 
@@ -64,12 +66,25 @@ export class CustomFragmentLoader extends FragmentLoader {
    */
   private pendingStagger: StaggeredTask | null = null;
 
+  /**
+   * Set once hls.js has abandoned this fragment, so a retrieval still in flight answers nobody.
+   *
+   * ⛔ Only the weeb-3 path needs this. The gateway path hands the transfer to hls.js's own loader,
+   * which owns its cancellation, but `retrieveBytes` takes no abort signal and cannot be called off.
+   * The most that can be done is to drop the answer, and dropping it is required: hls.js treats a
+   * success on a fragment it has finished with as belonging to whatever it is loading now.
+   */
+  private abandoned = false;
+
+  private readonly backend = selectedFetchBackend();
+
   constructor(config: HlsConfig) {
     super(config);
   }
 
   load(context: FragmentLoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<LoaderContext>) {
     const url = context.url;
+    this.abandoned = false;
 
     // Every playlist this client hands hls.js names its segments absolutely, so anything else here is
     // a bug upstream rather than a URL to repair, and it is not repairable anyway. A preview playlist
@@ -102,6 +117,16 @@ export class CustomFragmentLoader extends FragmentLoader {
     // synchronously, exactly as it did before this existed.
     this.pendingStagger = requestJitter.stagger(() => {
       this.pendingStagger = null;
+
+      // ⭐ Inside the stagger rather than in front of it, so the two backends are reached through
+      // exactly the same path and differ in one thing: where the bytes come from. The stagger is
+      // currently a synchronous no-op (`GATEWAY_REQUEST_JITTER_MS` is 0), so this costs nothing
+      // today, and it keeps the arms comparable for an operator who turns it back on.
+      if (this.backend === FETCH_BACKEND_WEEB3) {
+        this.retrieveThroughWeeb3(context, callbacks);
+        return;
+      }
+
       super.load(context, config, {
         ...callbacks,
         // A segment that arrived is proof the gateway is answering, and the manifest side is the only
@@ -118,17 +143,90 @@ export class CustomFragmentLoader extends FragmentLoader {
   }
 
   abort(): void {
-    this.cancelStagger();
+    this.abandon();
     super.abort();
   }
 
   destroy(): void {
-    this.cancelStagger();
+    this.abandon();
     super.destroy();
   }
 
-  private cancelStagger(): void {
+  private abandon(): void {
+    this.abandoned = true;
     this.pendingStagger?.cancel();
     this.pendingStagger = null;
   }
+
+  /**
+   * Fetch this segment from the Swarm node in this tab instead of from a gateway.
+   *
+   * ⛔⛔⛔ **The gateway's health is deliberately not reported here**, which is the one place the two
+   * backends must not be symmetrical. A segment that arrived proves the gateway is answering only when
+   * the gateway is what served it. These bytes came from a node in this tab, so calling
+   * `recordGatewayReachable` would end the manifest side's backoff on evidence about something else,
+   * and a viewer whose gateway had genuinely gone would keep asking it at full rate while believing it
+   * was live. The feed and the manifest still travel through the gateway on this path.
+   *
+   * ⚠️ The stats below are the only timing a weeb-3 segment has. There is no network request for the
+   * browser's request log or a performance entry to describe, so a harness comparing the two backends
+   * reads this, and it has to be filled in rather than left at its zeroes.
+   */
+  private retrieveThroughWeeb3(context: FragmentLoaderContext, callbacks: LoaderCallbacks<LoaderContext>): void {
+    const ref = segmentRefFromUrl(context.url);
+    if (!ref) {
+      callbacks.onError(
+        { code: 0, text: `fragment url carries no Swarm reference: ${context.url}` },
+        context,
+        undefined,
+        this.stats,
+      );
+      return;
+    }
+
+    const stats = this.stats;
+    stats.loading.start = performance.now();
+
+    weeb3FetchBackend.retrieveBytes(ref).then(
+      (bytes) => {
+        if (this.abandoned) {
+          return;
+        }
+        stats.loading.first = performance.now();
+        stats.loading.end = stats.loading.first;
+        stats.loaded = bytes.byteLength;
+        stats.total = bytes.byteLength;
+        callbacks.onSuccess({ url: context.url, data: asArrayBuffer(bytes), code: 200 }, stats, context, undefined);
+      },
+      (error: unknown) => {
+        if (this.abandoned) {
+          return;
+        }
+        callbacks.onError(
+          { code: 0, text: `weeb-3 could not retrieve ${ref}: ${errorText(error)}` },
+          context,
+          undefined,
+          stats,
+        );
+      },
+    );
+  }
+}
+
+/**
+ * hls.js demuxes an `ArrayBuffer`, and wasm hands back a view.
+ *
+ * Copied only when the view is a window onto something larger, because handing over the whole backing
+ * buffer would give hls.js bytes either side of the segment.
+ */
+function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = bytes.buffer as ArrayBuffer;
+  if (bytes.byteOffset === 0 && bytes.byteLength === buffer.byteLength) {
+    return buffer;
+  }
+  return buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
