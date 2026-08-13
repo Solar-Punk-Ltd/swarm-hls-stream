@@ -117,7 +117,8 @@ if (argv[0] === 'run') {
   if (ran('browser:watch')) {
     fs.appendFileSync(${JSON.stringify(dockerLog)},
       JSON.stringify(['WATCH', envOf('BROWSER_FETCH_BACKEND'), envOf('BROWSER_GATEWAY_URL'),
-        envOf('BROWSER_SETTLE_SECONDS'), envOf('BROWSER_WATCH_SECONDS')]) + '\\n');
+        envOf('BROWSER_SETTLE_SECONDS'), envOf('BROWSER_WATCH_SECONDS'),
+        envOf('BROWSER_TARGET_LATENCY_S')]) + '\\n');
   }
 }
 process.exit(0);
@@ -435,5 +436,25 @@ describe('the spend ceiling stands between the operator and the broadcast', () =
     assert.equal(result.code, 0);
     assert.equal(result.publishes.length, 1);
     assert.match(result.log, /BZZ authorised/);
+  });
+});
+
+describe('every arm is held at one latency target', () => {
+  it('passes the same target to both conditions, so it stays a constant and not a second treatment', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs, { TARGET_LATENCY_S: '2' });
+
+    const targets = watches(result).map((call) => call[5]);
+    assert.equal(targets.length, 4);
+    assert.deepEqual([...new Set(targets)], ['2'], 'a target that differs between arms is a second variable');
+  });
+
+  it('carries a changed target through to the browser rather than hard-coding one', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs, { TARGET_LATENCY_S: '4' });
+
+    assert.deepEqual([...new Set(watches(result).map((call) => call[5]))], ['4']);
   });
 });

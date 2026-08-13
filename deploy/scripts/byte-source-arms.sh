@@ -65,6 +65,14 @@ PUBLISHER_LEAD_S="${PUBLISHER_LEAD_S:-60}"
 # Passed to the watch, which measures it from playback starting rather than from the switch, so both
 # conditions open their window on a player of the same age.
 SETTLE_SECONDS="${SETTLE_SECONDS:-60}"
+# What every arm's viewer is held at, applied identically to both conditions so it stays a constant
+# rather than becoming a second treatment.
+#
+# ⛔⛔⛔ 6 IS WHERE THE 2026-08-13 SITTING COULD NOT TELL THE TWO CONDITIONS APART. Every weeb-3 arm
+# read exactly 6.03s against a `LIVE_SYNC_DURATION_S` of 6, and so did two of three gateway arms. A
+# column sitting at a configured cap says both conditions reached the target and nothing at all about
+# which of them could have gone lower. Cutting it is what gives them room to separate.
+TARGET_LATENCY_S="${TARGET_LATENCY_S:-2}"
 
 SIZE="${SIZE:-1280x720}"
 BITRATE_KBPS="${BITRATE_KBPS:-2500}"
@@ -264,6 +272,7 @@ run_browser_arm() {
     -e "BROWSER_GATEWAY_URL=http://127.0.0.1:${GATEWAY_BEE_PORT}" \
     -e "BROWSER_FETCH_BACKEND=${source}" \
     -e "BROWSER_SETTLE_SECONDS=${SETTLE_SECONDS}" \
+    -e "BROWSER_TARGET_LATENCY_S=${TARGET_LATENCY_S}" \
     "${BROWSER_IMAGE}" pnpm browser:watch
 }
 

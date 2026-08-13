@@ -12,6 +12,9 @@
  *   deploy/scripts/browser-on-host.sh -- BROWSER_WATCH_SECONDS=180
  */
 
+import { type Page } from 'playwright-core';
+
+import { type ArmSetup, setArm } from '../src/browser/bufferSweep.js';
 import {
   armBytesCameFromItsSource,
   type ByteSourceArm,
@@ -61,6 +64,32 @@ const DEFAULT_WATCH_SECONDS = 180;
  */
 const DEFAULT_BYTE_SOURCE_SETTLE_SECONDS = 60;
 
+/**
+ * Hold a viewer at a chosen latency target for the whole arm, and report what the player took.
+ *
+ * ⛔⛔⛔ THIS EXISTS BECAUSE A COLUMN AT A CONFIGURED CAP IS NOT A MEASUREMENT.
+ *
+ * The live byte-source sitting on 2026-08-13 could not rank a gateway against an in-tab node on
+ * latency: `LIVE_SYNC_DURATION_S` is 6, every weeb-3 arm read exactly 6.03s and two of three gateway
+ * arms read 6.03 or 6.04. Both conditions sat on one target, which says they both reached it and
+ * nothing about what either could do. Lowering the target is what lets the two separate, if they can.
+ *
+ * Applied TWICE on purpose. Once before the settle, so the player spends the settle catching up to
+ * the new target rather than doing it inside the measured window, and once after, because the setter
+ * is what clears `stallCount` and a stall while the in-tab node was booting would otherwise raise the
+ * target for the whole arm and never lower it.
+ */
+async function holdAtTarget(page: Page, targetS: number, when: string): Promise<ArmSetup> {
+  const setup = await setArm(page, targetS);
+  if (setup.failure !== null) {
+    throw new Error(`could not hold the viewer at ${targetS}s ${when}: ${setup.failure}`);
+  }
+  if (setup.targetLatencyS === null) {
+    throw new Error(`the player reported no target latency ${when}, so nothing says the ${targetS}s took`);
+  }
+  return setup;
+}
+
 async function main(): Promise<void> {
   const clientUrl = requireEnv('BROWSER_CLIENT_URL');
   const watchSeconds = envNumber('BROWSER_WATCH_SECONDS', DEFAULT_WATCH_SECONDS);
@@ -75,6 +104,9 @@ async function main(): Promise<void> {
   // ⛔ Parsed rather than compared later: a value that is neither condition is a refusal here.
   const armByteSource = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
   const settleSeconds = envNumber('BROWSER_SETTLE_SECONDS', DEFAULT_BYTE_SOURCE_SETTLE_SECONDS);
+  // Unset leaves the viewer on the build's own LIVE_SYNC_DURATION_S, which is every run this has ever
+  // done. Set, the arm is held there instead and the report says so.
+  const targetLatencyS = envNumberOrNull('BROWSER_TARGET_LATENCY_S');
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
@@ -97,6 +129,7 @@ async function main(): Promise<void> {
   let watchUrl = clientUrl;
   let arm: ArmCondition | undefined;
   let byteSource: ByteSourceArm | undefined;
+  let latencyTarget: ArmSetup | undefined;
 
   // Started before the page opens and stopped in the same `finally` as the browser, so the node-side
   // series brackets the browser one rather than being a subset of it. A slowdown that begins during
@@ -140,6 +173,12 @@ async function main(): Promise<void> {
     // readback sits above: an arm on the wrong byte source is an arm of the other condition. It also
     // boots the in-tab node and waits out the settle, so the window below opens on a player of the
     // same age in both conditions.
+    // Before the settle, so the catch-up from the build's target to this one happens while nothing is
+    // being counted.
+    if (targetLatencyS !== null) {
+      await holdAtTarget(page, targetLatencyS, 'before the settle');
+    }
+
     if (armByteSource !== null) {
       byteSource = await openByteSourceArm({
         page,
@@ -150,6 +189,16 @@ async function main(): Promise<void> {
       console.log(
         `browser: bytes come from ${byteSource.reported}, window opens ` +
           `${(byteSource.settledForMs / 1000).toFixed(1)}s after playback started`,
+      );
+    }
+
+    // Again, last thing before the window opens. The setter clears `stallCount`, and a stall while
+    // the in-tab node was booting would otherwise raise this arm's target for its whole life.
+    if (targetLatencyS !== null) {
+      latencyTarget = await holdAtTarget(page, targetLatencyS, 'as the window opened');
+      console.log(
+        `browser: held at ${latencyTarget.targetLatencyS}s target, ` +
+          `max ${latencyTarget.maxLatencyS}s, stallCount ${latencyTarget.stallCountAtStart}`,
       );
     }
 
@@ -193,6 +242,16 @@ async function main(): Promise<void> {
       requested: byteSource.requested,
       reported: byteSource.reported,
       settledForMs: byteSource.settledForMs,
+    },
+    // ⛔ The requested value beside what the player reported, never one standing for both. An arm
+    // whose target did not take is an arm of the other condition, and the two numbers are what let a
+    // reader see that rather than take it on trust.
+    latencyTarget: latencyTarget && {
+      requestedS: targetLatencyS,
+      reportedS: latencyTarget.targetLatencyS,
+      maxLatencyS: latencyTarget.maxLatencyS,
+      targetDurationS: latencyTarget.targetDurationS,
+      stallCountAtStart: latencyTarget.stallCountAtStart,
     },
   };
 
