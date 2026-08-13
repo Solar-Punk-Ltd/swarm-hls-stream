@@ -1,7 +1,13 @@
 # Taking the ceiling off the byte-source comparison
 
-**2026-08-13, overnight.** One live broadcast, eight arms, counterbalanced, both conditions held at a
-**2s** latency target instead of the build's 6s.
+**2026-08-13, overnight.** Two live broadcasts, eight arms each, counterbalanced, both conditions held
+at a **2s** target and then at **1.5s**, instead of the build's 6s. 1.6390 BZZ against a 2.4 BZZ
+authorisation.
+
+⭐⭐⭐ **The headline is that the latency column cannot rank these two conditions at any target that
+works.** At 6s and at 2s both conditions sit exactly on the configured target. At 1.5s the target
+mechanism breaks in both, because hls.js's stall penalty drives every arm's effective target to 2.5s.
+What survives all three sittings is the economics and the absence of stalls.
 
 ## Why this sitting exists
 
@@ -15,8 +21,9 @@ A reading at a cap says both conditions reached the cap. It says nothing about w
 have gone lower, and the whole economic case for an in-tab node would be undermined if it turned out
 to cost latency that the 6s target was hiding.
 
-So this sitting changes exactly one thing: **the target**. Everything else is the design that PR #186
-already validated.
+So these sittings change exactly one thing: **the target**. Everything else is the design that PR #186
+already validated. Sitting 1 runs at 2s. Sitting 2 went to 1.5s rather than repeating 2s, because by
+then the 2s arms had shown the same pinning and a repeat would only have re-confirmed it.
 
 ## What was run
 
@@ -42,18 +49,24 @@ the window. It cannot sit at a configured cap, which is exactly the failure that
 unable to rank anything. A latency column is only worth reading once you know the player was not
 pinned to the number you configured.
 
-## Preconditions, so the number can be defended
+## Preconditions, so the numbers can be defended
 
-- The spend was authorised at **2.4 BZZ** and the driver refuses past it. `spend-ceiling.sh` logged
-  `2.400 BZZ authorised, 0.004 BZZ already spent, 1.422 BZZ projected for 60 min` before publishing.
-- Gateway warm and funded throughout: **134 peers**, no bee container restarted at any point.
-- Postage `7849851f`, depth 25, **274/512 buckets (54%)**, TTL 10.3d. This sitting costs about 6.4
-  buckets against 17.2 broadcast hours of headroom to the 75% stop line.
-- **Host load 5.24 to 6.99** on 48 cores across the sitting, and the box carries some forty other bee
-  nodes plus other tenants' stacks.
-- The free checks ran before anything published: `browser:selfcheck` SOUND, and
+- The spend was authorised at **2.4 BZZ** and the driver refuses past it rather than warning after.
+  `spend-ceiling.sh` logged `2.400 authorised, 0.004 already spent, 1.422 projected` before sitting 1
+  and `2.400 authorised, 0.810 already spent, 1.422 projected` before sitting 2, so it genuinely
+  carried the first sitting's cost into the second's decision. **Whole night: 1.6390 BZZ.**
+- Gateway warm and funded throughout: **134 peers at the start and at the end**, no bee container
+  restarted at any point in either sitting.
+- Postage `7849851f`, depth 25, **274 → 285 of 512 buckets**, TTL 244.6h at the end.
+- **Host load 3.90 to 15.00** across sitting 1 and **2.95 to 21.27** across sitting 2, on 48 cores.
+  The box carries some forty other bee nodes plus other tenants' stacks. See the note on sitting 2's
+  load below.
+- The free checks ran before either sitting published: `browser:selfcheck` SOUND, and
   `browser:fetch-backend-check` moved the switch both ways, refused an unknown byte source, and
   **booted a real in-tab node in 959ms**.
+- Every weeb-3 arm was required to have fetched the weeb-3 wasm **and** made zero in-window `/bytes/`
+  requests. A zero without the wasm is a backend that never loaded, and it is the more attractive of
+  the two readings.
 
 ## What a viewer got, at a 2s target
 
@@ -126,6 +139,77 @@ During a weeb-3 arm almost the only traffic left is feed-head lookups, and rough
 legitimately not-founds by design. The rate rises because the denominator changed composition, not
 because anything got worse. **The two rates are measuring different mixes and must not be tabled as if
 they were the same quantity.**
+
+## Sitting 2: going to 1.5s, where a gateway is known to strain
+
+Because both conditions were pinned at 2s, a repeat at 2s would only re-confirm the pinning. Task #87
+had already found 1.5s worse than 2.0s on achieved latency for a gateway, so 1.5s is the target where
+degradation is known to exist and the two can in principle be ranked. Same design, same broadcast
+shape, n=3 per condition, all eight arms passed every gate.
+
+### ⛔⛔⛔ 1.5s is below what this profile holds, in BOTH conditions
+
+hls.js adds `min(stallCount * liveSyncOnStallIncrease, targetduration)` to the configured target and
+**never lowers it**. Sampling `liveTargetLatencyS` alongside `liveLatencyS` shows what that did:
+
+**Every arm of both conditions reached an effective target of 2.5s**, against the 1.5s configured.
+The stall penalty was active everywhere.
+
+So 1.5s does not rank the conditions either. **It breaks the target mechanism in both of them**, which
+is a real result and a mechanism for #87's finding rather than a repeat of it. ⭐ **2.0s remains the
+operating point**, now for a reason rather than by comparison.
+
+### What separates them is the gap, not the raw latency
+
+| | gateway | weeb-3 |
+| --- | --- | --- |
+| behind live | 2.26 / 1.53 / 2.52 | 1.79 / 1.81 / 1.82 |
+| **gap to its own steering target** | +0.02 / −0.16 / +0.03 | **−0.74 / −0.71 / −0.69** |
+| rebuffers | 3 / 2 / 4 | 3 / 5 / 4 |
+| **stalls** | **0 / 0 / 0** | **0 / 0 / 0** |
+| advance | 0.9966 / 0.9992 / 0.9964 | 1.0016 / 1.0013 / 1.0008 |
+
+⭐ **The gateway arms sit on whatever target they have drifted to. The weeb-3 arms sit about 0.7s
+below theirs.** A negative gap is the player closer to live than its own steering required, which for
+a live stream is the better side to be on. And weeb-3's achieved latency is far more consistent:
+a spread of **0.03s** across three arms against the gateway's **0.99s**.
+
+⚠️ **Treat this as an observation with a mechanism, not a headline.** n=3, one sitting, and the target
+drifted differently between arms, so this is not a clean equal-target comparison. What it is not is a
+latency penalty for the in-tab node, which is what the sitting was booked to look for.
+
+⭐ The sign that repeats: **`advance` is above 1.0 in all six counted weeb-3 arms across both sittings**
+and at or below 1.0 in five of six gateway arms. Magnitudes are 0.04% to 0.3%.
+
+### The economics, replicated a third time
+
+| arm | source | gateway retrievals | gateway spend |
+| --- | --- | ---: | ---: |
+| 3 | gateway | 28,912 | 0.05387 BZZ |
+| 4 | weeb3 | 1,340 | 0.00045 BZZ |
+| 5 | weeb3 | 1,243 | 0.00042 BZZ |
+| 6 | gateway | 28,916 | 0.05215 BZZ |
+| 7 | weeb3 | 1,443 | 0.00068 BZZ |
+| 8 | gateway | 28,978 | 0.05456 BZZ |
+
+**21.6x fewer retrievals and 103x less gateway spend, no overlap on either counter.**
+
+| target | retrievals | gateway spend | stalls, both conditions |
+| ---: | ---: | ---: | :---: |
+| 6s | 24.4x | 143x | 0 |
+| 2s | 20.3x | 75x | 0 |
+| 1.5s | 21.6x | 103x | 0 |
+
+⭐⭐⭐ **Three sittings, three broadcasts, three targets, zero overlap every time.** The economic case
+for an in-tab node does not depend on the latency target, and no viewer stalled in any arm of any
+condition at any target.
+
+### ⚠️ Sitting 2 ran on a noisier box
+
+Host load per arm reached **21.27** (a discarded warm-up arm) and **12.71 and 11.81** in counted arms,
+against sitting 1's 3.90 to 15.00. The box carries some forty other bee nodes and other tenants'
+stacks. The counterbalanced order puts one arm of each condition in every round, which is what carries
+a drifting neighbour, but a bracket controls for time and never for co-tenancy.
 
 ## ⚠️ A 404 count that was not what it looked like
 
