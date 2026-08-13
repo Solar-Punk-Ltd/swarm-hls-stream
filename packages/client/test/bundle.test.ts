@@ -7,6 +7,7 @@ import { build } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { PLAYER_HANDLE } from '../src/components/SwarmHlsPlayer/playerTestHandle';
+import { GATEWAY_HANDLE } from '../src/providers/gatewayTestHandle';
 import viteConfig from '../vite.config.js';
 
 const CLIENT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -121,6 +122,18 @@ describe('the emitted bundle honours the declared browser target (TEST-22)', () 
    */
   it('leaves no instrumentation handle in a build that did not ask for one', () => {
     const leaked = emitted.js.filter(({ source }) => source.includes(PLAYER_HANDLE)).map(({ name }) => name);
+
+    expect(leaked).toEqual([]);
+  });
+
+  /**
+   * The gateway switch is a second seam behind the same flag, and it needs its own case rather than
+   * riding on the one above. They are published from different files and either could lose the static
+   * `import.meta.env.VITE_EXPOSE_PLAYER` access independently, which is the exact mistake that shipped
+   * the player handle once already.
+   */
+  it('leaves no gateway switch in a build that did not ask for one', () => {
+    const leaked = emitted.js.filter(({ source }) => source.includes(GATEWAY_HANDLE)).map(({ name }) => name);
 
     expect(leaked).toEqual([]);
   });
