@@ -1,0 +1,25 @@
+window 440s   host load 7.45 7.41 9.24 -> 7.06 9.63 9.68
+
+UPLOADER, the write path
+  chunks push-synced                         47994
+  mean push-sync time                        11.7 ms
+  mean per-peer push                         —
+  push errors, retried                       1632   3.4% of pushes
+  unsynced backlog                           0 -> 0
+  invalid stamps                             0
+
+GATEWAY, the read path
+  retrieval requests                         1613
+  mean retrieval time                        169.1 ms
+  peers asked per request                    11.66
+  failed outright                            393   24.4%
+  invalid chunks retrieved                   0
+
+BUDGET AND CAPACITY
+  uploader spent                             0.0995 BZZ   0.81 BZZ per broadcast hour
+  gateway spent                              0.0003 BZZ   0.00 BZZ per broadcast hour
+  batch 46ad3454                             50 -> 50 of 64 (78%), TTL 4.6d
+  batch 7849851f                             268 -> 268 of 512 (52%), TTL 10.4d
+  uploader segmentsSkipped                   0 -> 0
+  uploader segmentsNeverNamed                0 -> 0
+  uploader maxConsecutiveSegmentFailures     0 -> 0
