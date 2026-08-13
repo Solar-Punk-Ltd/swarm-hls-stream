@@ -89,9 +89,7 @@ RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
 # two endpoints, which is also the only mid-flight funding check a single-arm sitting gets.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NODE_METRICS="${NODE_METRICS:-${HERE}/node-metrics.sh}"
-STAMP_GUARD="${STAMP_GUARD:-${HERE}/stamp-guard.sh}"
 METRICS_INTERVAL_S="${METRICS_INTERVAL_S:-0}"
-UPLOADER_CONTAINER="${UPLOADER_CONTAINER:-latbench-stream-uploader-1}"
 # How often the arm loop looks for a crossed floor while its watch runs. Five seconds against a
 # four-hour arm is under a thousandth of it; a test with a stubbed watch pays it per arm, so it is
 # overridable.
@@ -126,6 +124,15 @@ mkdir -p "${OUT_DIR}" "${METRICS_DIR}"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "${LOG}"; }
 
+# Whether the postage batch can carry what this sitting intends to publish. Sourced after `say`,
+# which it refuses without, so its own refusals land in this log rather than on a lost stderr.
+GATES="${HERE}/capacity-gate.sh"
+# shellcheck source=deploy/scripts/capacity-gate.sh
+. "${GATES}" || {
+  echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
 
 available_plur() {
@@ -157,37 +164,6 @@ can_afford() {
     fi
   done
   return ${short}
-}
-
-# ⛔ Read off the container that is actually publishing, never off a file. `.env.latbench` is
-# gitignored and lives on the host, `/stamps` lists four batches of which three are dead, and
-# "the stamp" has meant a different row on three separate days here. The uploader's own environment
-# is the only source that cannot be stale.
-resolve_stamp() {
-  [ -n "${STAMP:-}" ] && { printf '%s' "${STAMP}"; return 0; }
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${UPLOADER_CONTAINER}" 2>/dev/null |
-    sed -n 's/^STAMP=//p' | head -1
-}
-
-# Capacity, checked the same way funding is: before the spend, as something that refuses.
-#
-# ⛔ The rule this enforces was already written down, in bold, in two places, and read automatically
-# by `e2e/src/browser/resources.ts` — which warns at the END of a run, after the broadcast is paid
-# for. Three sittings ran past the 75% line on 2026-08-12 because remembering to look was the only
-# thing between the threshold and the spend.
-has_capacity() {
-  local minutes="$1" batch
-  batch="$(resolve_stamp)"
-  if [ -z "${batch}" ]; then
-    say "  REFUSING: could not read STAMP off ${UPLOADER_CONTAINER}, so batch capacity is unknown"
-    return 1
-  fi
-  if ! STAMP_GUARD_PORT="${UPLOADER_BEE_PORT}" bash "${STAMP_GUARD}" \
-    --batch "${batch}" --minutes "${minutes}" --port "${UPLOADER_BEE_PORT}" >> "${LOG}" 2>&1; then
-    say "  REFUSING: stamp-guard says this sitting cannot finish on batch ${batch:0:8}"
-    return 1
-  fi
-  return 0
 }
 
 snapshot_metrics() {
