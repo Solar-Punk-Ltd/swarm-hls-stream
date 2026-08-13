@@ -5,7 +5,9 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  armWasServedByItsGateway,
   counterbalancedOrder,
+  foreignHosts,
   FUNDED_ARM,
   gatewayArmIsComparable,
   gatewayArmOrder,
@@ -260,5 +262,74 @@ describe('reading the arm back does not disturb the arm', () => {
 
     assert.deepEqual(state.selections, ['http://127.0.0.1:10087']);
     assert.equal(setup.gatewayUrl, 'http://127.0.0.1:10087');
+  });
+});
+
+/**
+ * ⛔⛔⛔ THE GATE THAT REPLACES A QUESTIONNAIRE WITH EVIDENCE.
+ *
+ * On 2026-08-13 a paid two-arm smoke passed the readback on both arms, honestly, and fetched every
+ * one of its 253 video segments from the SAME node in both. The feed and SOC lookups followed the
+ * viewer's gateway; the segments came from a playlist cached against the previous one. Both arms were
+ * one condition and every metric agreed. These cases are the numbers from that run.
+ */
+describe('an arm is judged on where its bytes came from', () => {
+  const CLIENT = 'http://127.0.0.1:10074';
+  const requestsFrom = (spec: Record<string, number>) =>
+    Object.entries(spec).flatMap(([url, n]) => Array.from({ length: n }, () => ({ url })));
+
+  it('accepts an arm whose every fetch came from its own gateway or the page', () => {
+    const verdict = armWasServedByItsGateway(
+      requestsFrom({ [`${UNFUNDED}/soc/a/b`]: 312, [`${UNFUNDED}/feeds/a/b`]: 5, [`${CLIENT}/`]: 7 }),
+      UNFUNDED,
+      CLIENT,
+    );
+
+    assert.equal(verdict, null);
+  });
+
+  /** The real shape of the 2026-08-13 unfunded arm: lookups on 10087, all the video on 10077. */
+  it('refuses the arm whose segments came from the other gateway, which the readback cleared', () => {
+    const verdict = armWasServedByItsGateway(
+      requestsFrom({
+        [`${UNFUNDED}/soc/a/b`]: 312,
+        [`${UNFUNDED}/feeds/a/b`]: 5,
+        'http://49.12.149.62:10077/bytes/abc': 253,
+        [`${CLIENT}/`]: 7,
+      }),
+      UNFUNDED,
+      CLIENT,
+    );
+
+    assert.match(verdict ?? '', /253 from 49\.12\.149\.62:10077/);
+    assert.match(verdict ?? '', /did not all come from the gateway it claims/);
+  });
+
+  /** ⭐ Zero tolerance: a threshold here is only a number for somebody in a hurry to raise. */
+  it('refuses a single stray fetch rather than calling it a rounding error', () => {
+    const verdict = armWasServedByItsGateway(
+      requestsFrom({ [`${UNFUNDED}/soc/a/b`]: 999, [`${FUNDED}/bytes/x`]: 1 }),
+      UNFUNDED,
+      CLIENT,
+    );
+
+    assert.match(verdict ?? '', /1 from 127\.0\.0\.1:10077/);
+  });
+
+  it('does not call the arm gateway foreign because of a trailing slash', () => {
+    assert.deepEqual(foreignHosts(requestsFrom({ [`${UNFUNDED}/soc/a`]: 3 }), `${UNFUNDED}/`, CLIENT), []);
+  });
+
+  it('reports the busiest stranger first, so a refusal names the real one', () => {
+    const strangers = foreignHosts(
+      requestsFrom({ 'http://a.example/x': 2, 'http://b.example/y': 40, [`${UNFUNDED}/soc/a`]: 9 }),
+      UNFUNDED,
+      CLIENT,
+    );
+
+    assert.deepEqual(strangers, [
+      { host: 'b.example', count: 40 },
+      { host: 'a.example', count: 2 },
+    ]);
   });
 });

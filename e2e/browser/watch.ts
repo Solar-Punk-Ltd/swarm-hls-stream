@@ -19,7 +19,12 @@ import {
   startGatewaySampling,
   summarizeGateway,
 } from '../src/browser/gatewayHealth.js';
-import { gatewayArmIsComparable, readGateway, seedGateway } from '../src/browser/gatewaySweep.js';
+import {
+  armWasServedByItsGateway,
+  gatewayArmIsComparable,
+  readGateway,
+  seedGateway,
+} from '../src/browser/gatewaySweep.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { type ArmCondition, renderBrowserReport } from '../src/browser/report.js';
@@ -168,6 +173,19 @@ async function main(): Promise<void> {
       `service time step ${gateway.serviceStepRatio?.toFixed(2) ?? '—'}x`,
   );
   gateway.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
+
+  // ⛔⛔⛔ LAST, AND AFTER THE ARTIFACTS ARE ON DISK. The readback above proves what the client
+  // BELIEVES; this proves what the network DID, and on 2026-08-13 those disagreed while both arms of
+  // a paid sitting fetched all their video from one node. Failing here rather than before the write
+  // keeps the request log that is the evidence, and the driver files the arm as WATCH-FAILED so
+  // nobody reads it as a viewer result.
+  if (arm) {
+    const notServedByIt = armWasServedByItsGateway(requests, arm.requestedGateway, clientUrl);
+    if (notServedByIt !== null) {
+      throw new Error(`arm ${arm.name} is not the condition it claims: ${notServedByIt}`);
+    }
+    console.log(`browser: arm ${arm.name} fetched only from ${arm.reportedGateway}`);
+  }
 }
 
 main().catch((error) => {

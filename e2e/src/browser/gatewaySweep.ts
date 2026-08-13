@@ -184,6 +184,70 @@ export function counterbalancedOrder<T>(conditions: readonly [T, T], rounds: num
   return order;
 }
 
+/** Only the url is read, so any request record a run collected can be handed straight in. */
+export interface FetchedUrl {
+  url: string;
+}
+
+/** How many times each host that is neither the arm gateway nor the page origin was fetched from. */
+export function foreignHosts(
+  requests: readonly FetchedUrl[],
+  gatewayUrl: string,
+  clientUrl: string,
+): { host: string; count: number }[] {
+  const hostOf = (url: string): string => {
+    try {
+      return new URL(url).host;
+    } catch {
+      return '';
+    }
+  };
+  const ours = new Set([hostOf(normalizeGatewayUrl(gatewayUrl)), hostOf(clientUrl), '']);
+
+  const counts = new Map<string, number>();
+  for (const request of requests) {
+    const host = hostOf(request.url);
+    if (!ours.has(host)) {
+      counts.set(host, (counts.get(host) ?? 0) + 1);
+    }
+  }
+  return [...counts].map(([host, count]) => ({ host, count })).sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Why this arm cannot be read against the others, judged on where its bytes CAME FROM, or null.
+ *
+ * ## ⛔⛔⛔ Why this exists as well as the readback
+ *
+ * {@link gatewayArmIsComparable} asks the client which gateway it is using, and on 2026-08-13 both
+ * arms of a paid smoke answered honestly and correctly while **fetching every one of their 253 video
+ * segments from the same node**. The feed and SOC lookups followed the viewer's gateway; the segments
+ * came from a cached playlist built against the previous one. Both arms were one condition, every
+ * metric agreed, and nothing in the viewer-facing output would have given it away.
+ *
+ * ⭐⭐⭐ **A readback proves what the app BELIEVES. The request log is what the network DID.** The log
+ * was already being recorded and nothing was reading it.
+ *
+ * Zero tolerance, deliberately. After the manifest cache fix there is no legitimate reason for an arm
+ * to fetch from any host but its own gateway and the page it was served from, so a threshold here
+ * would only be a number for somebody in a hurry to raise. A refusal names the hosts and the counts.
+ */
+export function armWasServedByItsGateway(
+  requests: readonly FetchedUrl[],
+  gatewayUrl: string,
+  clientUrl: string,
+): string | null {
+  const strangers = foreignHosts(requests, gatewayUrl, clientUrl);
+  if (strangers.length === 0) {
+    return null;
+  }
+  const named = strangers.map(({ host, count }) => `${count} from ${host}`).join(', ');
+  return (
+    `this arm asked for ${normalizeGatewayUrl(gatewayUrl)} and fetched ${named}, so its bytes did ` +
+    `not all come from the gateway it claims`
+  );
+}
+
 /**
  * The arms of a funded-versus-unfunded sitting, in the order they run.
  *
