@@ -48,6 +48,18 @@ so the backend engaged rather than silently falling through. The two `/feeds/` r
 working as intended: **the manifest still comes from the gateway on both paths**, and only the media
 moved.
 
+⭐ Which two feeds, checked rather than assumed. `Topic.fromString` reproduces both hashes exactly, so
+the 82 kB read is the catalog and the 512 kB read is **this recording's own manifest** rather than
+some other feed that happened to be polled:
+
+| observed | `Topic.fromString(…)` of | |
+| --- | --- | ---: |
+| `cf0eccedb796e2a0d60f0bb03d2f578f441afc…` | `swarm-stream-latbench` | 82,158 |
+| `6d5ea96472f6ead0aa7dbd556e82b4db112745…` | `e8950c8b-33d4-49d3-8e3f-ddac5d9c47ca` | 512,420 |
+
+512 kB is also the right size for the manifest of a 3283.77s recording at the 0.5s profile: about
+6,570 segments at a 79-byte bare-reference line.
+
 ## What playback actually looked like
 
 Both arms built both source buffers (`mp4a.40.2` and `avc1.64001f`) and reported a finite duration,
