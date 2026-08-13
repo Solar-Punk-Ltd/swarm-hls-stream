@@ -61,9 +61,10 @@ export class Weeb3FetchBackend {
 
   constructor(private readonly loadModule: Weeb3ModuleLoader = importWeeb3) {}
 
+  /** The segment, as the gateway would have served it. See {@link withoutSwarmSpan}. */
   async retrieveBytes(ref: string): Promise<Uint8Array> {
     const node = await this.node();
-    return node.retrieveBytes(ref);
+    return withoutSwarmSpan(await node.retrieveBytes(ref));
   }
 
   private node(): Promise<Weeb3Node> {
@@ -93,6 +94,39 @@ export class Weeb3FetchBackend {
 
     return node;
   }
+}
+
+/** Swarm frames a reference's content with its length as a little-endian uint64. */
+const SWARM_SPAN_BYTES = 8;
+
+/**
+ * The payload without the Swarm span weeb-3 leaves on the front of it.
+ *
+ * ## ⛔⛔⛔ The gateway does not do this, and the difference corrupts the stream
+ *
+ * Measured in Chrome on 2026-08-13, against four references the gateway had served the same day:
+ * `retrieveBytes` returned **exactly eight bytes more every time**, and the leading uint64
+ * little-endian was **exactly the gateway's own byte count every time** (818,740 / 819,116 / 844,872 /
+ * 820,808, at three different segment sizes). The MPEG-TS sync byte `0x47` sat at offset 8 rather than
+ * 0, and the 188-byte packet alignment held from 8 and not from 0.
+ *
+ * So this is not a tidy-up. Handing hls.js the framed answer puts eight bytes of length header in
+ * front of the transport stream and the demuxer never finds a valid first packet.
+ *
+ * ⭐ Read rather than assumed, and that is deliberate in both directions. Dropping eight bytes
+ * unconditionally would corrupt every segment just as badly the day a weeb-3 release stops framing its
+ * answer. The prefix is self-describing, so it can simply be checked: strip it when it accounts for
+ * exactly what follows, and otherwise leave the bytes alone.
+ */
+function withoutSwarmSpan(bytes: Uint8Array): Uint8Array {
+  if (bytes.byteLength < SWARM_SPAN_BYTES) {
+    return bytes;
+  }
+
+  const span = new DataView(bytes.buffer, bytes.byteOffset, SWARM_SPAN_BYTES).getBigUint64(0, true);
+  const framed = span === BigInt(bytes.byteLength - SWARM_SPAN_BYTES);
+
+  return framed ? bytes.subarray(SWARM_SPAN_BYTES) : bytes;
 }
 
 /**

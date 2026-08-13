@@ -173,3 +173,72 @@ describe('Weeb3FetchBackend retrieving a segment', () => {
     assert.equal(loadModule.mock.calls.length, 0, 'constructing the backend already pulled in 4.5 MB of wasm');
   });
 });
+
+/**
+ * ⛔⛔⛔ weeb-3 hands back the Swarm span, and the gateway does not.
+ *
+ * Measured in Chrome on 2026-08-13 against four references from the decay cohort that the gateway had
+ * served the same day, at three different sizes:
+ *
+ * | reference | gateway | `retrieveBytes` | span at offset 0 |
+ * | --- | ---: | ---: | ---: |
+ * | `7773f81c` | 818,740 | 818,748 | 818,740 |
+ * | `45b83ac1` | 819,116 | 819,124 | 819,116 |
+ * | `9fdd4c63` | 844,872 | 844,880 | 844,872 |
+ * | `9b6a51b8` | 820,808 | 820,816 | 820,808 |
+ *
+ * Eight bytes longer every time, and the leading uint64 little-endian is the gateway's own byte count
+ * every time. The MPEG-TS sync byte `0x47` sits at offset 8 rather than 0, and the 188-byte packet
+ * alignment holds from 8 and not from 0. So handing these bytes to hls.js unchanged puts eight bytes
+ * of length header in front of the transport stream, and the demuxer never sees a valid first packet.
+ *
+ * ⭐ This is what a free real-browser run buys. Every stubbed test in this file passed while the
+ * backend was going to feed hls.js a corrupt stream, because a stub returns whatever the stub says.
+ */
+describe('Weeb3FetchBackend handing back what a gateway would have', () => {
+  const PAYLOAD = new Uint8Array([0x47, 0x40, 0x00, 0x10, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
+
+  function spanPrefixed(payload: Uint8Array, declaredLength = payload.byteLength): Uint8Array {
+    const framed = new Uint8Array(8 + payload.byteLength);
+    new DataView(framed.buffer).setBigUint64(0, BigInt(declaredLength), true);
+    framed.set(payload, 8);
+    return framed;
+  }
+
+  function backendReturning(bytes: Uint8Array) {
+    const { node } = fakeNode({ bytes });
+    const { module } = fakeModule(node);
+    return new Weeb3FetchBackend(() => Promise.resolve(module));
+  }
+
+  it('strips the span, so the caller gets the same bytes the gateway serves', async () => {
+    const got = await backendReturning(spanPrefixed(PAYLOAD)).retrieveBytes(REF);
+
+    assert.deepEqual(got, PAYLOAD);
+    assert.equal(got[0], 0x47, 'the transport stream does not start at the first byte');
+  });
+
+  /**
+   * Forward compatibility, and the reason this reads the prefix rather than always dropping eight
+   * bytes. A weeb-3 that stopped framing its answer would otherwise lose the first eight bytes of
+   * every segment, which is the same corruption in the other direction.
+   */
+  it('leaves bytes alone when the prefix does not describe them', async () => {
+    const notFramed = spanPrefixed(PAYLOAD, PAYLOAD.byteLength + 999);
+
+    assert.deepEqual(await backendReturning(notFramed).retrieveBytes(REF), notFramed);
+  });
+
+  it('leaves an answer too short to carry a span alone', async () => {
+    const tiny = new Uint8Array([1, 2, 3]);
+
+    assert.deepEqual(await backendReturning(tiny).retrieveBytes(REF), tiny);
+  });
+
+  // An empty payload is still validly framed: the span says zero and zero is what follows.
+  it('strips the span from an empty payload rather than calling it unframed', async () => {
+    const empty = spanPrefixed(new Uint8Array(0));
+
+    assert.deepEqual(await backendReturning(empty).retrieveBytes(REF), new Uint8Array(0));
+  });
+});
