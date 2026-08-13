@@ -19,9 +19,15 @@ import {
   startGatewaySampling,
   summarizeGateway,
 } from '../src/browser/gatewayHealth.js';
+import {
+  armWasServedByItsGateway,
+  gatewayArmIsComparable,
+  readGateway,
+  seedGateway,
+} from '../src/browser/gatewaySweep.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
-import { renderBrowserReport } from '../src/browser/report.js';
+import { type ArmCondition, renderBrowserReport } from '../src/browser/report.js';
 import { judgeCost, readResources } from '../src/browser/resources.js';
 import {
   envNumber,
@@ -45,6 +51,10 @@ async function main(): Promise<void> {
   const watchSeconds = envNumber('BROWSER_WATCH_SECONDS', DEFAULT_WATCH_SECONDS);
   const intervalMs = envNumber('BROWSER_SAMPLE_INTERVAL_MS', DEFAULT_SAMPLE_INTERVAL_MS);
   const gopSeconds = envNumberOrNull('BROWSER_GOP_SECONDS');
+  // Set by a sitting that alternates gateways under one broadcast. Unset for every other caller, and
+  // an unset gateway leaves this run exactly the watch it has always been.
+  const armGateway = process.env.BROWSER_GATEWAY_URL || null;
+  const armName = process.env.BROWSER_GATEWAY_ARM || 'arm';
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
@@ -65,6 +75,7 @@ async function main(): Promise<void> {
   const requests: RequestRecord[] = [];
   let watched: SampledStretch | undefined;
   let watchUrl = clientUrl;
+  let arm: ArmCondition | undefined;
 
   // Started before the page opens and stopped in the same `finally` as the browser, so the node-side
   // series brackets the browser one rather than being a subset of it. A slowdown that begins during
@@ -77,10 +88,30 @@ async function main(): Promise<void> {
 
   try {
     const context = await browser.newContext({ viewport: VIEWPORT });
+    // Before the page exists, so the client reads its gateway on the first render and this arm owns
+    // its own join rather than buying it from whichever gateway the build defaults to.
+    if (armGateway !== null) {
+      await seedGateway(context, armGateway);
+    }
     const page = await context.newPage();
     recordRequests(page, requests);
 
     watchUrl = await openViewer(page, clientUrl);
+
+    // ⛔⛔⛔ Checked here, between playback starting and the first sample. An arm on the wrong gateway
+    // is not a weaker arm, it is an arm of the other condition, and counting one would put the funded
+    // node's numbers in the unfunded column. Failing before the sampling loop costs the sitting about
+    // twenty seconds and writes no artifact anybody could later read as a result.
+    if (armGateway !== null) {
+      const setup = await readGateway(page);
+      const notComparable = gatewayArmIsComparable(setup, armGateway);
+      if (notComparable !== null) {
+        throw new Error(`arm ${armName} is not the condition it claims: ${notComparable}`);
+      }
+      arm = { name: armName, requestedGateway: armGateway, reportedGateway: setup.gatewayUrl as string };
+      console.log(`browser: arm ${armName} confirmed on ${arm.reportedGateway}`);
+    }
+
     watched = await sampleFor({
       page,
       forMs: watchSeconds * 1000,
@@ -116,6 +147,7 @@ async function main(): Promise<void> {
     cost,
     gateway,
     gatewaySamples,
+    arm,
   };
 
   const stem = await writeRunArtifacts('browser-watch', runId, {
@@ -141,6 +173,19 @@ async function main(): Promise<void> {
       `service time step ${gateway.serviceStepRatio?.toFixed(2) ?? '—'}x`,
   );
   gateway.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
+
+  // ⛔⛔⛔ LAST, AND AFTER THE ARTIFACTS ARE ON DISK. The readback above proves what the client
+  // BELIEVES; this proves what the network DID, and on 2026-08-13 those disagreed while both arms of
+  // a paid sitting fetched all their video from one node. Failing here rather than before the write
+  // keeps the request log that is the evidence, and the driver files the arm as WATCH-FAILED so
+  // nobody reads it as a viewer result.
+  if (arm) {
+    const notServedByIt = armWasServedByItsGateway(requests, arm.requestedGateway, clientUrl);
+    if (notServedByIt !== null) {
+      throw new Error(`arm ${arm.name} is not the condition it claims: ${notServedByIt}`);
+    }
+    console.log(`browser: arm ${arm.name} fetched only from ${arm.reportedGateway}`);
+  }
 }
 
 main().catch((error) => {

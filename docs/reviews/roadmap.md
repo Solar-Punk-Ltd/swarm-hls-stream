@@ -138,12 +138,12 @@ costs, so a deployment that left it empty got 50 segments where that one got 36.
 > now always writes a bare reference. Measured against the shipped builder: **50 segments / 12.50s at
 > a 0.25s segment, 51 / 25.50s at the 0.5s profile that ships, 52 / 104s at 2.0s.**
 
-| segment   | window before | window now (latbench) | bare ref | required | old verdict            |
-| --------- | ------------: | --------------------- | -------: | -------: | ---------------------- |
-| **0.25s** |     **2.50s** | **9.00s** (36 seg)    |   12.50s |    2.67s | **short by 172-550ms** |
-| 0.5s      |         5.00s | 18.00s (36 seg)       |   25.50s |    4.91s | fits, by **91ms**      |
-| 1.0s      |        10.00s | 37.00s (37 seg)       |   52.00s |        — | fits                   |
-| 2.0s      |        20.00s | 74.00s (37 seg)       |  104.00s |        — | fits                   |
+| segment   | ten-segment window | with a gateway URL, retired | **bare ref, LIVE** | required | old verdict            |
+| --------- | -----------------: | --------------------------- | -----------------: | -------: | ---------------------- |
+| **0.25s** |          **2.50s** | **9.00s** (36 seg)          |             12.50s |    2.67s | **short by 172-550ms** |
+| 0.5s      |              5.00s | 18.00s (36 seg)             |             25.50s |    4.91s | fits, by **91ms**      |
+| 1.0s      |             10.00s | 37.00s (37 seg)             |             52.00s |        — | fits                   |
+| 2.0s      |             20.00s | 74.00s (37 seg)             |            104.00s |        — | fits                   |
 
 `required` is the worst edge-to-fetchable delay in that configuration's clean runs, plus the cadence
 hls.js reloads a live playlist at, plus one segment of margin. **The ten-segment window was adequate
@@ -1150,11 +1150,11 @@ manifest names about **50** media lines with a bare Swarm reference and about **
 `MANIFEST_ACCESS_URL` was set. A window has to hold the buffer the client asks for, so at a 6 second
 target the shortest media unit a one-chunk manifest can name is **0.12s** bare and **0.162s** with a
 gateway URL. Parts of 200ms clear that, and a manifest naming parts **and** the segments they belong
-to does not.
+to does not. Past one chunk every publish costs three round trips instead of one, at the moment the
+publish rate is going up.
 
 > ✅ **Corrected 2026-08-13: `MANIFEST_ACCESS_URL` is removed, so the bare figures are the live ones**
-> and this bound relaxed to the **0.12s** column everywhere. Past one chunk every publish costs three round trips instead of one, at the moment the
-> publish rate is going up.
+> and this bound relaxed to the **0.12s** column everywhere.
 
 **So the question worth answering is not "does OME do LL-HLS".** It is: **can a segment be fetched
 without being announced?**

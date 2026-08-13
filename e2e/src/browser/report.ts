@@ -44,6 +44,20 @@ export interface BrowserRun {
    * rendered for the archive is a report that cannot be re-derived.
    */
   gateway?: GatewayHealth;
+  /**
+   * Which arm of a two-gateway sitting this run is, when it is one.
+   *
+   * ⛔ Recorded here rather than only in the driver's ledger, because a result whose condition lives
+   * in a separate file is a result somebody eventually reads without it. `reportedGateway` is what the
+   * client said it was using, never what the run asked for.
+   */
+  arm?: ArmCondition;
+}
+
+export interface ArmCondition {
+  name: string;
+  requestedGateway: string;
+  reportedGateway: string;
 }
 
 /**
@@ -352,6 +366,13 @@ export function renderBrowserReport(run: BrowserRun): string {
     '',
     `\`${run.watchUrl}\``,
     '',
+    ...(run.arm
+      ? [
+          `Arm **${run.arm.name}**, read through the gateway the client itself reports: ` +
+            `\`${run.arm.reportedGateway}\`.`,
+          '',
+        ]
+      : []),
     ...instrumentSection(run),
     ...latencySection(run),
     ...playbackSection(run),

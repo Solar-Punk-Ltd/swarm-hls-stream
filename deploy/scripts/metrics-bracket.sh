@@ -64,9 +64,12 @@ STOP_FILE="${STOP_FILE:-${OUT_DIR}/STOP}"
 
 mkdir -p "${METRICS_DIR}"
 
+# The third argument names a gateway other than the caller default, for a sitting that runs more than
+# one. Each reading still carries the uploader, which is one extra scrape of a node this sitting is
+# already reading and gives the two files a shared column to check each other against.
 snapshot_metrics() {
-  local out="$1" label="$2"
-  UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT}" GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT}" \
+  local out="$1" label="$2" gateway_port="${3:-${GATEWAY_BEE_PORT}}"
+  UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT}" GATEWAY_BEE_PORT="${gateway_port}" \
     UPLOADER_API_PORT="${UPLOADER_API_PORT}" bash "${NODE_METRICS}" snapshot "${out}" "${label}" \
     >> "${LOG}" 2>&1 || say "  node-metrics snapshot ${label} failed, so this has no node account"
 }

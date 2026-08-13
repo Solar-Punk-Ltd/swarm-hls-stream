@@ -16,6 +16,8 @@
     "bench:sweep-report": "tsx bench/sweep.ts",
     "browser:selfcheck": "tsx browser/selfcheck.ts",
     "browser:watch": "tsx browser/watch.ts",
+    "browser:arm-order": "tsx browser/arm-order.ts",
+    "browser:gateway-check": "tsx browser/gateway-check.ts",
     "browser:crash": "tsx browser/crash.ts",
     "probe:ahead": "node src/probes/feed-ahead-probe.mjs",
     "browser:vod": "tsx browser/vod.ts",

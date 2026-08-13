@@ -144,3 +144,40 @@ describe('ManifestStateManager serialize', () => {
     );
   });
 });
+
+/**
+ * That a manifest serialized for one gateway is not handed back for another.
+ *
+ * ⛔⛔⛔ FOUND BY A PAID SITTING, WHICH IS THE EXPENSIVE WAY TO FIND ANYTHING. On 2026-08-13 a
+ * two-arm funded-versus-unfunded smoke ran green on every gate and the browser's own request log
+ * showed **both arms fetching their video from the same node**: the feed and SOC lookups followed the
+ * viewer's gateway and all 253 segment fetches did not. Had that reached the booked sitting, both
+ * columns would have held one node, every metric would have agreed, and the report would have said
+ * that funding makes no difference to a viewer.
+ *
+ * ⭐ `serialize` takes the gateway as an argument and then returns `cachedManifest` without looking
+ * at it. `markAllDirty` exists for exactly this and is called by `setGatewayUrl`, so a viewer who
+ * clicks the control is fine. A harness that seeds the gateway before the app runs never calls the
+ * setter, and neither does anything else that changes the gateway without going through it.
+ */
+describe('a cached manifest belongs to the gateway it was built for', () => {
+  const TOPIC = 'cache-vs-gateway';
+  const FUNDED = 'http://127.0.0.1:10077/bytes';
+  const UNFUNDED = 'http://127.0.0.1:10087/bytes';
+
+  beforeEach(() => {
+    ManifestStateManager.getInstance().clear(TOPIC);
+  });
+
+  it('serializes against the gateway it was asked for, not the one it was asked for first', () => {
+    const state = ManifestStateManager.getInstance();
+    state.updateManifest(TOPIC, [M3U], [{ extinf: EXTINF_2S, uri: 'abc123' }], false);
+
+    const first = state.serialize(TOPIC, FUNDED);
+    const second = state.serialize(TOPIC, UNFUNDED);
+
+    assert.match(first, /10077/);
+    assert.match(second, /10087/, `asked for the unfunded gateway and got back: ${second}`);
+    assert.doesNotMatch(second, /10077/);
+  });
+});
