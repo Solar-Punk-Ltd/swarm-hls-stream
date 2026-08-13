@@ -81,15 +81,7 @@ RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
   exit 1
 }
 
-# What the nodes themselves say they did, either side of every arm, and periodically through a long
-# one. ⛔ This is not decoration on the result. Seventeen arms of the buffer sweep were scored
-# entirely on what the harness saw from outside while both bee nodes kept a complete account of the
-# same events that nothing read. `bee_pusher_sync_time` is the publish race; `bee_retrieval_*` is the
-# fetch hop. Set METRICS_INTERVAL_S above zero for an arm long enough to need a series rather than
-# two endpoints, which is also the only mid-flight funding check a single-arm sitting gets.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NODE_METRICS="${NODE_METRICS:-${HERE}/node-metrics.sh}"
-METRICS_INTERVAL_S="${METRICS_INTERVAL_S:-0}"
 # How often the arm loop looks for a crossed floor while its watch runs. Five seconds against a
 # four-hour arm is under a thousandth of it; a test with a stubbed watch pays it per arm, so it is
 # overridable.
@@ -112,24 +104,23 @@ read -r -a ARM_LIST <<< "${ARMS:-obs-default:2.0 shipped:0.5}"
 OUT_DIR="${OUT_DIR:-/home/solarpunk/viewer-arms/$(date -u +%Y%m%d-%H%M%S)}"
 LOG="${OUT_DIR}/viewer-arms.log"
 STATE="${OUT_DIR}/viewer-arms-state.tsv"
-METRICS_DIR="${OUT_DIR}/node-metrics"
-# Written by the sampler when a floor is crossed, read by the arm loop and by whatever runs next.
-# ⭐ Its presence is the record of WHEN a sitting stopped being trustworthy, which two endpoint
-# readings cannot show and which no amount of care after the fact can reconstruct.
-#
-# Overridable so a chain of sittings can share one, which is what makes a crossed floor stop the
-# night rather than one sitting: the node does not refill between them.
-STOP_FILE="${STOP_FILE:-${OUT_DIR}/STOP}"
-mkdir -p "${OUT_DIR}" "${METRICS_DIR}"
+mkdir -p "${OUT_DIR}"
 
 say() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "${LOG}"; }
 
-# Whether the postage batch can carry what this sitting intends to publish. Sourced after `say`,
-# which it refuses without, so its own refusals land in this log rather than on a lost stderr.
+# Whether the postage batch can carry what this sitting intends to publish, and what the nodes
+# themselves say each arm did. Both are sourced after `say`, which they refuse without, so their
+# refusals land in this log rather than on a lost stderr.
 GATES="${HERE}/capacity-gate.sh"
 # shellcheck source=deploy/scripts/capacity-gate.sh
 . "${GATES}" || {
   echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+BRACKET="${HERE}/metrics-bracket.sh"
+# shellcheck source=deploy/scripts/metrics-bracket.sh
+. "${BRACKET}" || {
+  echo "cannot read ${BRACKET}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
 
@@ -164,34 +155,6 @@ can_afford() {
     fi
   done
   return ${short}
-}
-
-snapshot_metrics() {
-  local out="$1" label="$2"
-  UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT}" GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT}" \
-    UPLOADER_API_PORT="${UPLOADER_API_PORT}" bash "${NODE_METRICS}" snapshot "${out}" "${label}" \
-    >> "${LOG}" 2>&1 || say "  node-metrics snapshot ${label} failed, so this arm has no node account"
-}
-
-SAMPLER_PID=""
-start_sampler() {
-  local dir="$1" label="$2"
-  [ "${METRICS_INTERVAL_S}" -gt 0 ] 2>/dev/null || return 0
-  mkdir -p "${dir}"
-  # ⛔ STAMP is passed because the sampler's capacity floor applies to the batch this sitting writes
-  # to and to no other. /stamps lists every batch the node ever bought, three of which are dead here.
-  UPLOADER_BEE_PORT="${UPLOADER_BEE_PORT}" GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT}" \
-    UPLOADER_API_PORT="${UPLOADER_API_PORT}" STAMP="$(resolve_stamp)" bash "${NODE_METRICS}" \
-    watch "${dir}" "${METRICS_INTERVAL_S}" "${STOP_FILE}" "${label}" >> "${LOG}" 2>&1 &
-  SAMPLER_PID=$!
-  say "  sampling both nodes every ${METRICS_INTERVAL_S}s into $(basename "${dir}")"
-}
-
-stop_sampler() {
-  [ -n "${SAMPLER_PID}" ] || return 0
-  kill "${SAMPLER_PID}" 2>/dev/null || true
-  wait "${SAMPLER_PID}" 2>/dev/null || true
-  SAMPLER_PID=""
 }
 
 # `publish-clock.sh` names its container `swarm-hls-publish-$$`, so there is no fixed name and killing
@@ -408,10 +371,8 @@ run_arm() {
   stop_publisher
   wait_for_quiet
   snapshot_metrics "${METRICS_DIR}/${slug}-after.json" "${slug}-after"
-  bash "${NODE_METRICS}" diff "${METRICS_DIR}/${slug}-before.json" "${METRICS_DIR}/${slug}-after.json" \
-    > "${METRICS_DIR}/${slug}-diff.txt" 2>> "${LOG}" || true
-  say "  what the nodes say this arm did:"
-  sed 's/^/    /' "${METRICS_DIR}/${slug}-diff.txt" >> "${LOG}" 2>/dev/null || true
+  diff_metrics "${METRICS_DIR}/${slug}-before.json" "${METRICS_DIR}/${slug}-after.json" \
+    "${METRICS_DIR}/${slug}-diff.txt" "  what the nodes say this arm did:"
 
   printf '%s\t%s\t%s\t%s\t%s\tcold=%s\t%s\n' "$(date -u +%FT%TZ)" "${round}" "${name}" "${gop}" "${counted}" \
     "${coldFor}" "$([ ${status} -eq 0 ] && echo ok || echo "WATCH-FAILED(${status})")" >> "${STATE}"
@@ -491,8 +452,6 @@ for round in $(seq 1 "${ROUNDS}"); do
 done
 
 snapshot_metrics "${METRICS_DIR}/sitting-after.json" "sitting-after"
-bash "${NODE_METRICS}" diff "${METRICS_DIR}/sitting-before.json" "${METRICS_DIR}/sitting-after.json" \
-  > "${METRICS_DIR}/sitting-diff.txt" 2>> "${LOG}" || true
-say "what the nodes say the whole sitting did:"
-sed 's/^/  /' "${METRICS_DIR}/sitting-diff.txt" >> "${LOG}" 2>/dev/null || true
+diff_metrics "${METRICS_DIR}/sitting-before.json" "${METRICS_DIR}/sitting-after.json" \
+  "${METRICS_DIR}/sitting-diff.txt" "what the nodes say the whole sitting did:"
 say "viewer-arms done: $(wc -l < "${STATE}") arms recorded"
