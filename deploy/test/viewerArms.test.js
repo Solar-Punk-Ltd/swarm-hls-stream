@@ -527,20 +527,31 @@ describe('a sitting refuses what it cannot finish, and records what the nodes di
   });
 
   /**
-   * ⭐ Cost is per broadcast as well as per minute. Two sittings on 2026-08-12 night differed by 2.6x
-   * per broadcast hour, and the difference tracks how many broadcasts each STARTED rather than how
-   * long each ran: eight in 56 minutes against one in 119. A gate that prices only minutes lets a
-   * sweep of short arms through on a balance that covers a third of it.
+   * ⛔⛔⛔ THIS TEST ASSERTED THE OPPOSITE UNTIL 2026-08-13, and the premise under it was wrong.
+   *
+   * The claim was that a broadcast costs ~0.15 BZZ to start, fitted from one sitting reading
+   * 2.06 BZZ per broadcast hour against a soak's 0.78. That 2.06 is not reproducible from the
+   * node's own chequebook: the snapshots bracket 48.1 of the sitting's 48.5 minutes and record
+   * 0.5650 BZZ, which is 0.70 BZZ/hr with EIGHT broadcast starts inside it, cheaper than the soak
+   * with one.
+   *
+   * Each of the six counted arms holds exactly one broadcast start, so subtracting the marginal
+   * rate leaves the setup term exposed. It came out between -0.0089 and +0.0030 BZZ, five of six
+   * negative. The constant in the gate was 0.15, fifty times the largest residue.
+   *
+   * ⭐ So the gate prices minutes only, and a sweep of short arms is not expensive. The wrong
+   * constant was charging an eight-arm sitting 1.68 BZZ of margin-inflated cost that does not
+   * exist, on a balance of 3.44, which is the same shape of mistake as the refit that cut a
+   * planned 7.9-hour night to 2 hours.
    */
-  it('charges a sitting for each broadcast it will start, not only for its minutes', async () => {
-    // Enough for the minutes at the per-minute rate, nowhere near enough for eight setups.
-    const perMinuteOnly = 8 * 1 * 0.013 * 1.4 + 0.2;
+  it('does not refuse a sweep of short arms for the number of broadcasts it starts', async () => {
+    // Covers the minutes with the margin on top, and nothing whatever for eight setups.
+    const minutesOnly = 8 * 1 * 0.013 * 1.4 + 0.2;
 
-    const { code, gops, log } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 4, bzz: perMinuteOnly });
+    const { code, gops } = await runArms({ arms: 'a:2.0 b:0.5', rounds: 4, bzz: minutesOnly });
 
-    assert.equal(code, 1);
-    assert.deepEqual(gops, [], 'a sweep published on a balance that covers only its minutes');
-    assert.match(log, /cannot pay for itself/);
+    assert.equal(code, 0);
+    assert.equal(gops.length, 8, 'a sweep was refused for a per-broadcast cost that measured zero');
   });
 
   it('leaves no reading unpaired, so every arm can be differenced', async () => {

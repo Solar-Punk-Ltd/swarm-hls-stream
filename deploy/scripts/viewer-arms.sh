@@ -98,9 +98,21 @@ PUBLISHER_MARGIN_S="${PUBLISHER_MARGIN_S:-90}"
 # ⚠️ 1080p burns more again. Override for a sitting that is not 720p.
 UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-130000000000000}"
 GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-107000000000000}"
-# Charged once per broadcast the sitting will start, on top of the per-minute rate above.
-UPLOADER_SETUP_PLUR="${UPLOADER_SETUP_PLUR:-1500000000000000}"
-GATEWAY_SETUP_PLUR="${GATEWAY_SETUP_PLUR:-1200000000000000}"
+# ⛔⛔⛔ MEASURED AT ZERO 2026-08-13, having been 0.15/0.12 BZZ since the night before.
+#
+# The premise was that a sitting reading 2.06 BZZ per broadcast hour against a soak's 0.78 differed
+# by how many broadcasts it STARTED. That 2.06 is not reproducible from the node: the sitting's own
+# snapshots bracket 48.1 of its 48.5 minutes and record 0.5650 BZZ, so 0.70 BZZ/hr with eight
+# broadcast starts inside it, which is cheaper than the soak with one.
+#
+# Each of its six counted arms holds exactly one broadcast start, so the marginal rate subtracts out
+# and leaves the setup term alone: -0.0089 to +0.0030 BZZ, five of six negative. Held above by about
+# 0.003, against a constant of 0.15.
+#
+# ⭐ Kept as a knob rather than deleted, because a real fixed cost per broadcast is a plausible thing
+# to find later on another profile. It is zero here and a sweep of short arms is not expensive.
+UPLOADER_SETUP_PLUR="${UPLOADER_SETUP_PLUR:-0}"
+GATEWAY_SETUP_PLUR="${GATEWAY_SETUP_PLUR:-0}"
 FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-140}"
 
 # What the nodes themselves say they did, either side of every arm, and periodically through a long
