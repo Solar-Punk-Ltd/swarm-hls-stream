@@ -31,7 +31,14 @@ type Props = {
   children: ReactNode;
 };
 
-const GATEWAY_STORAGE_KEY = 'swarm-gateway-url';
+/**
+ * Where a viewer's chosen gateway survives a reload.
+ *
+ * Exported because the arm harness seeds it before the app runs, which is the only way an arm can be
+ * on its own gateway for the join rather than from the first render onwards. `e2e` mirrors the string
+ * and `e2e/test/gatewaySweep.test.ts` reads this line to prove the two still agree.
+ */
+export const GATEWAY_STORAGE_KEY = 'swarm-gateway-url';
 
 function loadGatewayUrl(): string {
   try {

@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { counterbalancedOrder, gatewayArmIsComparable, normalizeGatewayUrl } from '../src/browser/gatewaySweep.js';
+import {
+  counterbalancedOrder,
+  FUNDED_ARM,
+  gatewayArmIsComparable,
+  gatewayArmOrder,
+  normalizeGatewayUrl,
+  readGateway,
+  seedGateway,
+  selectGateway,
+  UNFUNDED_ARM,
+} from '../src/browser/gatewaySweep.js';
 
 /**
  * That a gateway arm is the condition it claims, and that the order cannot fake a result.
@@ -112,5 +125,140 @@ describe('the arm order cannot fake a result', () => {
     const firsts = order.filter((_, index) => index % 2 === 0);
     assert.equal(firsts.filter((arm) => arm === 'A').length, 2);
     assert.equal(firsts.filter((arm) => arm === 'B').length, 2);
+  });
+
+  /**
+   * ⛔ The shell driver reads this rather than deriving it. Four different burn rates once lived in
+   * three scripts because a rule with two implementations gets corrected in whichever one somebody is
+   * looking at, and this particular rule has already been wrong here once.
+   */
+  it('names the arms of a funding sitting in the same order', () => {
+    assert.deepEqual(gatewayArmOrder(2), [FUNDED_ARM, UNFUNDED_ARM, FUNDED_ARM, UNFUNDED_ARM]);
+    assert.deepEqual(gatewayArmOrder(4), counterbalancedOrder([FUNDED_ARM, UNFUNDED_ARM] as const, 4));
+  });
+});
+
+/** Enough of a Playwright page to run the browser-side body against a globalThis this test controls. */
+function pageWithSwitch(gatewaySwitch: { current: () => string; select: (url: string) => void } | undefined) {
+  const holder = globalThis as unknown as Record<string, unknown>;
+  return {
+    evaluate: async <A, R>(fn: (arg: A) => R, arg: A): Promise<R> => {
+      const had = Object.hasOwn(holder, '__swarmGatewaySwitch');
+      const previous = holder.__swarmGatewaySwitch;
+      if (gatewaySwitch === undefined) {
+        delete holder.__swarmGatewaySwitch;
+      } else {
+        holder.__swarmGatewaySwitch = gatewaySwitch;
+      }
+      try {
+        return fn(arg);
+      } finally {
+        if (had) {
+          holder.__swarmGatewaySwitch = previous;
+        } else {
+          delete holder.__swarmGatewaySwitch;
+        }
+      }
+    },
+  };
+}
+
+function switchAt(url: string) {
+  const state = { url, selections: [] as string[] };
+  return {
+    state,
+    handle: {
+      current: () => state.url,
+      select: (next: string) => {
+        state.selections.push(next);
+        state.url = next.replace(/\/+$/, '');
+      },
+    },
+  };
+}
+
+/**
+ * ⛔⛔ An arm that switches gateway after playback has started bought its JOIN from the default node,
+ * which is the funded one. Joining is the expensive part of a viewer's session, so an unfunded arm
+ * spliced that way is diluted at exactly the phase where the difference should be largest, and it is
+ * diluted TOWARDS the null. Seeding is what makes an arm the arm from its first request.
+ */
+describe('an arm is on its own gateway before the client runs', () => {
+  it('seeds the key the client loads from, so the very first render is on the arm', async () => {
+    const scripts: { fn: (arg: { key: string; value: string }) => void; arg: { key: string; value: string } }[] = [];
+    const context = {
+      addInitScript: async (fn: (arg: { key: string; value: string }) => void, arg: { key: string; value: string }) => {
+        scripts.push({ fn, arg });
+      },
+    };
+
+    await seedGateway(context as never, 'http://127.0.0.1:10087/');
+
+    assert.equal(scripts.length, 1);
+    const stored: Record<string, string> = {};
+    const priorLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { setItem: (key: string, value: string) => void (stored[key] = value) },
+    });
+    try {
+      scripts[0].fn(scripts[0].arg);
+    } finally {
+      if (priorLocalStorage) {
+        Object.defineProperty(globalThis, 'localStorage', priorLocalStorage);
+      } else {
+        delete (globalThis as unknown as Record<string, unknown>).localStorage;
+      }
+    }
+
+    // Trailing slash stripped, because that is what the client stores and what a readback compares to.
+    assert.deepEqual(stored, { 'swarm-gateway-url': 'http://127.0.0.1:10087' });
+  });
+
+  /**
+   * The e2e side spells the key itself, since this package does not depend on the client. This is the
+   * check that keeps the copy honest: a rename in the client that missed here would leave every arm
+   * seeded into a key nobody reads, and every arm would then run on the default gateway.
+   */
+  it('spells the key the client actually reads', () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+    const app = readFileSync(join(root, 'packages/client/src/providers/App.tsx'), 'utf8');
+
+    const declared = /GATEWAY_STORAGE_KEY = '([^']+)'/.exec(app);
+    assert.ok(declared, 'the client no longer declares GATEWAY_STORAGE_KEY as a literal');
+
+    const mirrored = /GATEWAY_STORAGE_KEY = '([^']+)'/.exec(
+      readFileSync(join(root, 'e2e/src/browser/gatewaySweep.ts'), 'utf8'),
+    );
+    assert.equal(mirrored?.[1], declared[1]);
+  });
+});
+
+describe('reading the arm back does not disturb the arm', () => {
+  it('reports the gateway without selecting anything', async () => {
+    const { state, handle } = switchAt('http://127.0.0.1:10087');
+
+    const setup = await readGateway(pageWithSwitch(handle) as never);
+
+    assert.deepEqual(setup, { gatewayUrl: 'http://127.0.0.1:10087', failure: null });
+    // ⛔ `setGatewayUrl` resets the catalog reader and marks every manifest dirty. That is correct for
+    // a mid-stream switch and is a disturbance a seeded arm has no reason to pay.
+    assert.deepEqual(state.selections, []);
+  });
+
+  it('fails the arm when the build published no switch at all', async () => {
+    const setup = await readGateway(pageWithSwitch(undefined) as never);
+
+    assert.equal(setup.gatewayUrl, null);
+    assert.match(setup.failure ?? '', /VITE_EXPOSE_PLAYER/);
+  });
+
+  it('still moves the player when a run asks it to', async () => {
+    const { state, handle } = switchAt('http://127.0.0.1:10077');
+
+    const setup = await selectGateway(pageWithSwitch(handle) as never, 'http://127.0.0.1:10087');
+
+    assert.deepEqual(state.selections, ['http://127.0.0.1:10087']);
+    assert.equal(setup.gatewayUrl, 'http://127.0.0.1:10087');
   });
 });
