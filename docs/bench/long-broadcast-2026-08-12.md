@@ -1,4 +1,57 @@
-# Two hours continuous, and nothing degrades
+# Six hours of continuous broadcast, and the only thing that moves is the stall ratchet
+
+**Two soaks, 2026-08-12 night.** 118.6 minutes at the shipping profile (0.5s GOP) and 238 minutes at
+the OBS default (2.0s GOP), both 720p 2500 kbps, both watched in a real browser throughout, both with
+**every bee-node metric sampled every 120 seconds**: 60 and 119 readings.
+
+⭐⭐⭐ **The longest run this project had ever done before tonight was ten minutes.**
+
+## ⭐⭐⭐ The finding: one stall in four hours costs a viewer a permanent second
+
+| | **0.5s GOP, 2h** | **2.0s GOP, 4h** |
+| --- | ---: | ---: |
+| samples, all sound | 6,974 | 13,983 |
+| **buffer stalls** | **0** | **1** |
+| rebuffers | 0, 0 ms | 1, 195 ms |
+| **player's own target** | **held at 6.00s** | **steered to 7.00s, permanently** |
+| frozen samples | 0 | 0 |
+| advance ratio, whole session | 1.000 | 1.000 |
+| fatal errors | 0 | 0 |
+| latency on joining | 6.26s | 6.38s |
+| latency median | 5.20s | 5.38s |
+| **latency best** | **3.08s** | **5.03s** |
+| latency worst | 18.01s | 20.01s |
+
+**The 2.0s publisher stalled once in four hours and paid a second of latency for the rest of the
+session.** hls.js adds `min(stallCount * liveSyncOnStallIncrease, targetduration)` to its target and
+`stallCount` only falls back to zero on a fresh manifest load, so the raise never comes back. The
+mechanism was derived from source on 2026-08-07; **this is the first time it has been watched firing
+in the wild**, and it took hours of exposure to catch it.
+
+⭐ **Nothing else in the report shows it.** Rebuffers, frozen samples and fatal errors can all read
+zero while the target has moved, because a stall need not fire a `waiting` event.
+
+## ⚠️ And the shipped 6s buffer hides most of the GOP's advantage
+
+Median latency is nearly the same, **5.20s against 5.38s**, because both are pinned by the 6s buffer
+target rather than by the GOP. The GOP shows up in **best** latency, 3.08s against 5.03s, which is the
+segment-duration arithmetic: a 2.0s publisher can never get as close to live.
+
+⭐ Read beside #87, which found the 6s buffer can be cut to 2s for nothing measurable, this says the
+two changes **compound**: the buffer is what a viewer is currently paying, and the GOP is what decides
+how close they could get once it is cut.
+
+## ⚠️ What these two runs cannot settle
+
+- **They are not interleaved.** 0.5s ran 18:31-20:30 and 2.0s ran 20:36-00:35, so time of night and
+  network conditions are confounded with the axis. Every within-sitting comparison below is safe; the
+  between-sitting one is n=1 each.
+- **Different lengths.** The 2.0s run had twice the exposure, so twice the chance to stall. One stall
+  against zero is a weak count on its own, and it is the mechanism that makes it worth reporting.
+
+---
+
+# Nothing degrades over four hours
 
 **2026-08-12 night, funded, 1.5501 BZZ uploader and 1.2633 gateway, 14 postage buckets.** Task #89.
 One unbroken 720p broadcast at the shipping profile (2500 kbps, 0.5s GOP), 7,115 seconds, watched in
@@ -8,9 +61,9 @@ a real browser throughout, with **both bee nodes sampled every 120 seconds: 60 r
 about a longer broadcast was a projection from a synthetic fill. This is twelve times that, and it is
 the first time the nodes' own account of a run has been recorded alongside the viewer's.
 
-## The result: flat
+## The result: flat, on both runs, on every counter
 
-Four independent 30-minute windows, each differenced from its own pair of snapshots.
+**0.5s GOP, four windows of ~30 minutes:**
 
 | window | push-sync | push errors | retrieval | peers asked | retrieval failures | uploader | gateway |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -19,13 +72,28 @@ Four independent 30-minute windows, each differenced from its own pair of snapsh
 | 60-90 min | 11.2 ms | 6.2% | 27.2 ms | 1.62 | 4.9% | 0.79 | 0.64 |
 | 90-120 min | 11.9 ms | 4.8% | 29.0 ms | 1.66 | 5.0% | 0.80 | 0.67 |
 
-**Nothing that matters moves.** Push-sync time is flat to a rounding error. The retrieval failure rate
-is flat to a tenth of a point. Cost per hour is flat on both nodes.
+**2.0s GOP, four windows of ~59 minutes:**
 
-⚠️ **Two things drift slightly and neither is alarming**: mean retrieval time rises 25.4 to 29.0 ms
-(+14% across two hours) and peers asked per request rises 1.59 to 1.66 (+4%). They are consistent
-with each other, since asking more peers takes longer. Whether that continues or plateaus is what the
-four-hour run is for.
+| window | push-sync | push errors | retrieval | peers asked | retrieval failures | uploader | gateway |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0-59 min | 15.4 ms | 4.6% | 32.0 ms | 1.42 | 1.7% | 0.70 BZZ/hr | 0.59 |
+| 59-118 min | 15.1 ms | 4.7% | 32.2 ms | 1.41 | 1.7% | 0.71 | 0.58 |
+| 118-178 min | 14.6 ms | 4.6% | 32.4 ms | 1.46 | 1.7% | 0.71 | 0.60 |
+| 178-237 min | 15.1 ms | 4.8% | 30.5 ms | 1.43 | 1.7% | 0.71 | 0.60 |
+
+**Nothing that matters moves, on either run.** Push-sync flat to a rounding error, retrieval failure
+rate flat to a tenth of a point, cost per hour flat on both nodes.
+
+⭐ **The one drift flagged in the two-hour run does not survive.** Retrieval time there rose 25.4 to
+29.0 ms and peers asked 1.59 to 1.66, and I wrote that whether it plateaus is what the four-hour run
+is for. It is flat at ~32 ms and ~1.43 peers for four hours. **That drift was noise.**
+
+## ⚠️ The 2.0s GOP retrieves more reliably, and this is not the axis anyone was sweeping
+
+**1.7% of retrievals failed outright against 4.9%**, and it asks fewer peers per request, 1.43 against
+1.62. Larger segments mean fewer, larger fetches. ⛔ The two runs are sequential rather than
+interleaved, so this is n=1 each and confounded with time of night, but a 2.9x gap that holds across
+all four windows of both runs is worth a designed test rather than a footnote.
 
 ## Over the whole soak
 
