@@ -160,6 +160,8 @@ services:
         VITE_APP_RAW_TOPIC: ${VITE_APP_RAW_TOPIC:-swarm-stream}
         # ⛔ Leave empty for anything viewers use. See Dockerfile.client.
         VITE_EXPOSE_PLAYER: ${VITE_EXPOSE_PLAYER:-}
+        # Empty for the gateway, `weeb3` for an in-tab Swarm node. See Dockerfile.client.
+        VITE_BROWSER_FETCH_BACKEND: ${VITE_BROWSER_FETCH_BACKEND:-}
     profiles: ['client']
     restart: unless-stopped
     logging: *default-logging

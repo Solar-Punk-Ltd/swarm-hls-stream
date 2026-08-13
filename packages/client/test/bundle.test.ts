@@ -24,6 +24,14 @@ const DECLARED_TARGET = ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'
 /** The prelude of every `@media` rule, which is where a range comparison would appear. */
 const MEDIA_PRELUDE = /@media([^{]*)\{/g;
 
+/**
+ * A wasm-bindgen internal that appears once in weeb-3's glue and nowhere else in this tree.
+ *
+ * An import-object key rather than an identifier, so minification cannot rename it out from under the
+ * assertions below.
+ */
+const WASM_GLUE_MARKER = '__wbindgen_add_to_stack_pointer';
+
 interface EmittedAssets {
   css: { name: string; source: string }[];
   js: { name: string; source: string }[];
@@ -136,6 +144,36 @@ describe('the emitted bundle honours the declared browser target (TEST-22)', () 
     const leaked = emitted.js.filter(({ source }) => source.includes(GATEWAY_HANDLE)).map(({ name }) => name);
 
     expect(leaked).toEqual([]);
+  });
+
+  /**
+   * weeb-3 is 4.5 MB of WebAssembly plus its glue, and only a build that selects it should ever pay
+   * for that. It is reached through an `import()` inside a lazily called method, so the bundler splits
+   * it into a chunk of its own that the entry merely names. A static import would move all of it into
+   * the entry, and nothing else here would notice: the build succeeds, the tests pass, and every
+   * viewer on the shipping gateway path silently downloads it.
+   *
+   * Measured on this change: the entry went 1,000.54 kB to 1,003.28 kB, and the 4,532.92 kB of weeb-3
+   * landed in `weeb_3-<hash>.js` and `weeb_3_bg-<hash>.wasm` beside it.
+   */
+  it('keeps weeb-3 out of the entry chunk, so a gateway viewer never downloads it', () => {
+    const entry = emitted.js.filter(({ name }) => name.startsWith('index-'));
+    expect(entry.length).toBeGreaterThan(0);
+
+    const carryingWeeb3 = entry.filter(({ source }) => source.includes(WASM_GLUE_MARKER)).map(({ name }) => name);
+
+    expect(carryingWeeb3).toEqual([]);
+  });
+
+  /**
+   * The control, and it is not decoration. Without it the case above passes just as well on a build
+   * where weeb-3 was dropped altogether, which is a broken backend rather than a cheap one.
+   */
+  it('still emits weeb-3 as a chunk of its own, so the case above is not passing on its absence', () => {
+    const carryingWeeb3 = emitted.js.filter(({ source }) => source.includes(WASM_GLUE_MARKER)).map(({ name }) => name);
+
+    expect(carryingWeeb3.length).toBe(1);
+    expect(carryingWeeb3[0].startsWith('index-')).toBe(false);
   });
 
   it('emits js that parses at the ecmascript version the target names', () => {
