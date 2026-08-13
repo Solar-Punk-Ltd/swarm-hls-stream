@@ -27,6 +27,7 @@
 # Usage:
 #   deploy/scripts/publish-clock.sh [--profile=<name>] [--portSlot=<N>] [--stream=video/clock]
 #                                   [--seconds=300] [--size=1280x720] [--bitrate=2500] [--gop=1.0]
+#                                   [--stop-file=<path>]
 
 # shellcheck source=_lib.sh
 source "$(cd "$(dirname "$0")" && pwd)/_lib.sh"
@@ -40,9 +41,12 @@ SIZE="1280x720"
 BITRATE_KBPS=2500
 GOP_SECONDS=1.0
 FPS=30
+# Where a harness says it stopped this publisher on purpose. See the block above the wait below.
+STOP_REQUEST_FILE=""
 REMAINING_ARGS=()
 for arg in "$@"; do
   case "$arg" in
+    --stop-file=*) STOP_REQUEST_FILE="${arg#*=}" ;;
     --stream=*) STREAM_ID="${arg#*=}" ;;
     --seconds=*) SECONDS_TO_RUN="${arg#*=}" ;;
     --size=*) SIZE="${arg#*=}" ;;
@@ -120,12 +124,61 @@ run_remote() {
   fi
 }
 
+# ## Telling a stop this run was ASKED for apart from a publisher that died
+#
+# A harness stops the broadcast the moment its arms are done rather than paying for the slack it
+# budgeted, and it does that by removing this container. The wait below then had nothing left to read
+# an exit status from, synthesised 127, and every successful sitting ended with "publish FAILED.
+# Nothing usable was broadcast" against a broadcast that had been fine for the whole run. ⛔⛔⛔ An
+# alarm that fires on every good run is one the operator learns to skip. See `publisher-stop.sh`.
+#
+# ⭐ Only the branch where the container VANISHED consults this. A publisher that exited on its own is
+# still read straight off `.State.ExitCode`, so no marker and no signal can quiet a genuine
+# mid-broadcast death, which is what the rest of this file is arranged around.
+#
+# ⛔⛔ The path arrives as `--stop-file=` and never from the environment, and this clears it here so a
+# marker found later cannot be a previous sitting's. Both halves are load-bearing:
+# `overnight-chain.sh` exports a `STOP_FILE` naming the chain's own halt signal into everything it
+# runs, so an ambient name would have this delete that; and `phase06-light-vs-ultralight.sh` writes
+# every sitting into one fixed `OUT_DIR`, so a marker left by one run would silence the next run's
+# real failure.
+STOP_REQUESTED=0
+if [ -n "${STOP_REQUEST_FILE}" ]; then
+  rm -f "${STOP_REQUEST_FILE}"
+fi
+
+stop_was_requested() {
+  if [ "${STOP_REQUESTED}" = "1" ]; then
+    return 0
+  fi
+  [ -n "${STOP_REQUEST_FILE}" ] && [ -f "${STOP_REQUEST_FILE}" ]
+}
+
+# Set before the trap below can fire, so an interruption during startup still has a number to report.
+BROADCAST_STARTED_AT="$(date -u +%s)"
+
+# How much of the broadcast actually happened, which is the one thing an early stop has to say. A
+# teardown that reads as success without it is how a truncated sitting gets measured against.
+broadcast_so_far() {
+  printf 'after %ss of a %ss broadcast' "$(($(date -u +%s) - BROADCAST_STARTED_AT))" "${SECONDS_TO_RUN}"
+}
+
 # Killed rather than left running when this script is interrupted, so a Ctrl-C does not leave a
 # publisher holding the stream id and blocking every run that follows.
 cleanup_publisher() {
   printf 'docker rm -f %q >/dev/null 2>&1 || true\n' "${CONTAINER}" | run_remote || true
 }
-trap cleanup_publisher INT TERM
+
+# An operator's Ctrl-C is a stop this run was asked for, exactly like a harness's, and the handler has
+# to EXIT. Returning from it put the wait back on a container the handler had just removed, so an
+# interruption produced the same false failure by a second route.
+stop_on_signal() {
+  STOP_REQUESTED=1
+  cleanup_publisher
+  log_ok "publish stopped on request $(broadcast_so_far)"
+  exit 0
+}
+trap stop_on_signal INT TERM
 
 {
   printf 'CONTAINER=%q\nSIZE=%q\nFPS=%q\nBITRATE=%q\nGOP_FRAMES=%q\nSECONDS_TO_RUN=%q\nURL=%q\n' \
@@ -177,6 +230,11 @@ POLL_SECONDS=10
 # network, short enough that a host which is genuinely gone is not waited on for the rest of the run.
 MAX_CONSECUTIVE_POLL_FAILURES=6
 
+# Whether the wait ended because the container was GONE rather than because it had stopped. The two
+# used to collapse into one exit-status read, and that is what made a teardown indistinguishable from
+# a death: only this one is ambiguous about who ended the broadcast.
+CONTAINER_VANISHED=0
+
 POLL_FAILURES=0
 while true; do
   if ! RUNNING=$(printf 'docker inspect -f {{.State.Running}} %q 2>/dev/null || echo missing\n' "${CONTAINER}" | run_remote) ||
@@ -196,6 +254,13 @@ while true; do
   POLL_FAILURES=0
   case "${RUNNING}" in
     true) sleep "${POLL_SECONDS}" ;;
+    # `missing` is the `|| echo missing` above firing: `docker inspect` was answered and the container
+    # was not there to be inspected. `false` is a container that is present and stopped, which still
+    # carries its own exit status and is never ambiguous.
+    missing)
+      CONTAINER_VANISHED=1
+      break
+      ;;
     *) break ;;
   esac
 done
@@ -203,12 +268,33 @@ done
 # Only reached once a poll has actually reported the container is no longer running, which is what
 # makes this read meaningful: `.State.ExitCode` is 0 for a running container, so asking it while the
 # broadcast is live cannot tell a clean finish from anything else.
-if ! PUBLISH_STATUS=$(printf 'docker inspect -f {{.State.ExitCode}} %q 2>/dev/null || echo 127\n' "${CONTAINER}" | run_remote) ||
-  [ -z "${PUBLISH_STATUS}" ]; then
-  # Distinguished from a failed publish, because it is a different thing to act on: the broadcast may
-  # have been fine and this could not find out. Either way it must not read as success.
-  log_error "publish UNKNOWN: could not read the publisher's exit status from ${TARGET}."
-  log_error "Do not measure against this, and check for a leftover ${CONTAINER}."
+PUBLISH_STATUS=""
+if [ "${CONTAINER_VANISHED}" -eq 0 ]; then
+  # `missing` rather than the 127 this used to synthesise. The container can still go between the poll
+  # above and this read, and an exit code invented here is indistinguishable from one ffmpeg actually
+  # returned: 127 was reported as a real failure, with wording naming a cause it could not know.
+  if ! PUBLISH_STATUS=$(printf 'docker inspect -f {{.State.ExitCode}} %q 2>/dev/null || echo missing\n' "${CONTAINER}" | run_remote) ||
+    [ -z "${PUBLISH_STATUS}" ]; then
+    # Distinguished from a failed publish, because it is a different thing to act on: the broadcast may
+    # have been fine and this could not find out. Either way it must not read as success.
+    log_error "publish UNKNOWN: could not read the publisher's exit status from ${TARGET}."
+    log_error "Do not measure against this, and check for a leftover ${CONTAINER}."
+    exit 1
+  fi
+  if [ "${PUBLISH_STATUS}" = "missing" ]; then
+    CONTAINER_VANISHED=1
+  fi
+fi
+
+if [ "${CONTAINER_VANISHED}" -eq 1 ]; then
+  if stop_was_requested; then
+    log_ok "publish stopped on request $(broadcast_so_far)"
+    exit 0
+  fi
+  # Deliberately not the wording below. Nothing here knows how much was broadcast, and the usual cause
+  # is not a stream-id collision: something removed a container this script was still watching.
+  log_error "publish FAILED: the publisher container went away and nothing asked this script to stop."
+  log_error "How much was broadcast is unknown, so do not measure against this. Check who removed ${CONTAINER}."
   exit 1
 fi
 

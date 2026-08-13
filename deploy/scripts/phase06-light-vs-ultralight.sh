@@ -147,6 +147,12 @@ GATES="$(dirname "${BASH_SOURCE[0]}")/capacity-gate.sh"
   echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+STOPS="$(dirname "${BASH_SOURCE[0]}")/publisher-stop.sh"
+# shellcheck source=deploy/scripts/publisher-stop.sh
+. "${STOPS}" || {
+  echo "cannot read ${STOPS}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
 
 bzz() {
   printf '%d.%04d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 1000000000000))"
@@ -320,6 +326,10 @@ PUBLISHER_PID=""
 # outlives its ssh session. Removing by pattern is what actually stops a broadcast. A publisher left
 # running holds the stream id, and the next arm would measure the previous arm's stream.
 stop_publisher() {
+  # ⛔⛔ Before both the kill and the removal. `PUBLISHER_PID` is the subshell's, not the publisher's,
+  # so killing it leaves the publisher watching a container this script is about to remove, and
+  # without the marker it reports that teardown as a failed publish. See `publisher-stop.sh`.
+  request_publisher_stop
   if [ -n "${PUBLISHER_PID}" ]; then
     kill "${PUBLISHER_PID}" >/dev/null 2>&1 || true
     PUBLISHER_PID=""
@@ -353,7 +363,8 @@ start_publisher() {
     cd "${BENCH_REPO}" || exit 1
     deploy/scripts/publish-clock.sh \
       "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}" --host=localhost \
-      "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${GOP_SECONDS}"
+      "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${GOP_SECONDS}" \
+      "--stop-file=${PUBLISHER_STOP_FILE}"
   ) >> "${LOG}" 2>&1 &
   PUBLISHER_PID=$!
 }
