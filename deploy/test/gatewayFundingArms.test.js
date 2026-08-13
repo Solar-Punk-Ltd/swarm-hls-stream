@@ -485,6 +485,28 @@ describe('a sitting that refuses leaves the box as it found it', () => {
   });
 
   /**
+   * ⭐ A dry run has to reach every gate, or the gates it skips are reachable only by paying. An
+   * earlier version stopped above the browser checks, which left the most important precondition here
+   * (can the deployed client be moved between gateways at all) behind a broadcast. Its first real use
+   * found the deployed client was eleven hours too old to have the switch in it.
+   */
+  it('runs every free check in a dry run, including the one about moving gateways', async () => {
+    const result = await runSitting(setup(), { PREFLIGHT_ONLY: '1' });
+
+    const ran = (script) => result.docker.some((call) => call.includes(script));
+    assert.ok(ran('browser:arm-order'), 'a dry run did not read the arm order');
+    assert.ok(ran('browser:selfcheck'), 'a dry run did not run the selfcheck');
+    assert.ok(ran('browser:gateway-check'), 'a dry run did not check the client can change gateway');
+  });
+
+  it('still refuses a dry run whose client cannot be moved between gateways', async () => {
+    const result = await runSitting(setup({ gatewayCheckFails: true }), { PREFLIGHT_ONLY: '1' });
+
+    assert.equal(result.code, 1);
+    assert.match(result.log, /both arms would be one/);
+  });
+
+  /**
    * ⛔⛔⛔ By name, and only the names this run created. A teardown keyed on a name pattern killed a
    * live paid broadcast on 2026-08-12: the pattern matched every publisher on the box, including one
    * serving somebody else's sitting.

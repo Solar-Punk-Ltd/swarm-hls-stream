@@ -431,10 +431,6 @@ if ! has_capacity "${SITTING_MINUTES}"; then
 fi
 
 bracket_both_gateways sitting before
-[ "${PREFLIGHT_ONLY:-0}" = "1" ] && {
-  say "PREFLIGHT_ONLY, so stopping here without publishing anything"
-  exit 0
-}
 
 reclaim_browser_containers
 
@@ -468,6 +464,16 @@ if [ "${RUN_SELFCHECK}" = "1" ]; then
   fi
   say "  free checks passed, and the client can be moved between gateways"
 fi
+
+# ⭐ Below every check and above the only thing that spends, so a dry run is a COMPLETE dry run. An
+# earlier version stopped before the browser checks, which left the most important precondition in the
+# repo, whether the deployed client can be moved between gateways at all, reachable only by starting a
+# broadcast. The first real use of that check found the deployed client was eleven hours too old to
+# have the switch in it, and finding that in a dry run is the entire point.
+[ "${PREFLIGHT_ONLY:-0}" = "1" ] && {
+  say "PREFLIGHT_ONLY: every gate passed and nothing was published"
+  exit 0
+}
 
 # Installed only here, past every exit that publishes nothing, so a run that starts no broadcast can
 # never tear one down on its way out.
