@@ -49,3 +49,22 @@ than reads is at work. The interesting outcomes are:
 - **neither falls in two weeks** → the aug03 corpus died of something specific to it, and the whole
   decay reading needs re-opening. ⚠️ That is a real possibility and the reason the cohort exists
   rather than another round of argument.
+
+## The log
+
+Every daily read goes here, so the series is one table rather than a directory of files to diff.
+
+| day | date | **read arm** | control `his` | `ours-aug03` | reading |
+| ---: | --- | ---: | ---: | ---: | --- |
+| 1 | 2026-08-12 | **8/8** | 8/8 | 0/8 | no decay at 24h |
+| 2 | 2026-08-13 | **8/8** | 8/8 | 0/8 | no decay at 48h |
+
+⚠️ **The untouched arm is deliberately absent from this table**, because reading it to fill a column
+is the treatment being applied to the control. It gets read once, after the read arm shows decay.
+
+⭐ `ours-aug03` returning 503 on all eight every day is doing useful work as a second control: it
+shows the harness can still tell a dead object from a live one, so an 8/8 on the read arm is a
+positive reading rather than a check that passes for everything.
+
+⚠️ **Two days is not yet informative about the interesting outcome.** The aug03 corpus was still
+partly retrievable at a week and dead by nine days, so the window that matters starts around day 5.

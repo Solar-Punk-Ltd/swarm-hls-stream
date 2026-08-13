@@ -1,0 +1,14 @@
+# Revised at 16:45 after sitting 1 measured the real burn: 2.62 BZZ/broadcast hour on the uploader,
+# 2.7x what the night was costed with. What is left in the chequebooks buys about 166 broadcast
+# minutes above the reserve, so the two soaks planned for 240 and 180 become ONE of 120.
+#
+# ⭐ Sitting 1 (obs-default vs shipped, 8 arms, all ok) is COMPLETE and is not repeated here. Its
+# result lives in the chain directory from 20260812-155429.
+#
+# 120 minutes at the shipping profile is still twelve times the longest broadcast this project has
+# ever run, and it answers the whole of #89 except the four-hour figure itself: manifest growth on
+# real segments, the targetduration ratchet in the wild, whether the read path degrades over hours,
+# and eight chances at the fourteen-minute collapse.
+#
+# ⛔ 720p. The burn constants are 720p figures.
+long-broadcast-shipped	140	viewer-arms.sh	ARMS=soak-shipped:0.5|ROUNDS=1|WARMUP_ROUNDS=0|MINUTES=120|PUBLISHER_MARGIN_S=120|METRICS_INTERVAL_S=120

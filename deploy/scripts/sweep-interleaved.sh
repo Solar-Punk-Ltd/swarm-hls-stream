@@ -60,8 +60,15 @@ MINUTES="${MINUTES:-3}"
 # the gateway pays to pull them back. Measured 2026-08-05 by sampling `/chequebook/balance` every 45s
 # through a running sweep, against an idle control that did not move at all across 90 seconds, so the
 # burn is the sweep's own and not a background drain. PLUR per minute of publishing, 1 BZZ = 10^16.
-UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-325000000000000}"
-GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-267000000000000}"
+#
+# ⛔⛔⛔ Measured across a whole real sitting on 2026-08-12 night: eight arms over 41 minutes cost the
+# uploader 1.792 BZZ and the gateway 1.455, so 2.62 and 2.13 BZZ per broadcast hour. Earlier that day
+# these were refitted DOWN to 0.0214 and 0.0095 on the argument the old values were over-conservative;
+# that was wrong in the dangerous direction and would have approved a soak the balance could not
+# finish. ⭐ A per-arm chequebook reading is a FLOOR, because `availableBalance` falls when a cheque
+# is issued and issuance lags the traffic. Price a sitting off the sitting. See `viewer-arms.sh`.
+UPLOADER_BURN_PLUR_PER_MIN="${UPLOADER_BURN_PLUR_PER_MIN:-437000000000000}"
+GATEWAY_BURN_PLUR_PER_MIN="${GATEWAY_BURN_PLUR_PER_MIN:-355000000000000}"
 
 # Headroom over the straight-line estimate. The burn was measured on one mix of picture sizes and a
 # heavier one costs more per minute, so a sweep that only just fits is a sweep that stops early.
