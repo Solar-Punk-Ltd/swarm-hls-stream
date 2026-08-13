@@ -100,6 +100,18 @@ FULL_WARM_SECONDS="${FULL_WARM_SECONDS:-180}"
 # must not end under it. A broadcast that stops mid-watch is measured as a viewer losing the stream.
 PUBLISH_MARGIN_SECONDS="${PUBLISH_MARGIN_SECONDS:-120}"
 
+# ⭐ This sitting doubles its margin, which is its own choice: it runs one arm on a node with NO
+# chequebook, where a mid-sitting stop is not a lost run but a lost contrast.
+#
+# ⛔⛔⛔ SET BEFORE THE SOURCE, AND THAT ORDER IS THE WHOLE FIX. `burn-rates.sh` assigns this same
+# name with its own `:-140`. Placed after the source, the 200 below was reached with the variable
+# already set, so `:-` declined and this sitting quietly ran at the shared default for a day. The
+# comment claiming the doubled margin had survived was the only thing left saying 200.
+#
+# ⭐ The shape generalises: a `:-` default written after a source that sets the same name is not a
+# default, it is dead code that reads like a decision.
+FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-200}"
+
 RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
 # shellcheck source=deploy/scripts/burn-rates.sh
 . "${RATES}" || {
@@ -108,10 +120,6 @@ RATES="$(dirname "${BASH_SOURCE[0]}")/burn-rates.sh"
   echo "cannot read ${RATES}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
-# ⭐ This sitting keeps its doubled margin, which is its own choice and survives the rate correction:
-# it runs one arm on a node with NO chequebook, where a mid-sitting stop is not a lost run but a lost
-# contrast. The rate itself now comes from the file above, measured on real sittings.
-FUNDS_MARGIN_PERCENT="${FUNDS_MARGIN_PERCENT:-200}"
 
 mkdir -p "${OUT_DIR}"
 LOG="${OUT_DIR}/phase06.log"
