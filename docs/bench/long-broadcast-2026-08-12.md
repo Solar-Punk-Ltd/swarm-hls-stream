@@ -119,18 +119,34 @@ never left zero, so the write path kept up with a live encoder for the whole run
 
 **0.78 BZZ per broadcast hour on the uploader, 0.64 on the gateway**, and flat.
 
-The arm sitting three hours earlier the same night, on the same box, cost **2.06 BZZ per broadcast
-hour** idle-to-idle. It started eight broadcasts in 56 minutes where this started one in 119.
-Subtracting the marginal rate leaves about **1.19 BZZ across 8 starts, so roughly 0.15 BZZ per
-broadcast started**, independent of how long it runs.
+⛔⛔⛔ **RETRACTED 2026-08-13: the per-broadcast premium this section claimed does not exist.**
 
-⚠️ **That per-broadcast figure is a fit across two sittings, not a measurement.** The arm sitting's
-window also contains four failed launches and an alternating GOP. What would test it is two sittings
-of equal total broadcast time and different arm counts.
+It said the arm sitting three hours earlier cost **2.06 BZZ per broadcast hour** idle-to-idle against
+this soak's 0.78, and attributed the difference to its eight broadcast starts against this one's
+single start, fitting roughly **0.15 BZZ per broadcast**. That went straight into the funding gate.
 
-⛔ **The operational consequence is large either way.** A sweep of short arms is dominated by setup
-and a soak is dominated by minutes, so a single BZZ-per-minute constant misprices both. Ten BZZ buys
-roughly **twelve hours of continuous broadcast** or roughly **sixty seven-minute arms**.
+**The 2.06 is not reproducible from the node's own chequebook.** The arm sitting's snapshots bracket
+48.1 of its 48.5 minutes and record **0.5650 BZZ, which is 0.70 BZZ per broadcast hour with eight
+starts inside it**, cheaper per hour than this soak with one. There is no spend outside the window,
+because the chain log puts the sitting at 15:54:30 to 16:43:01.
+
+Each of that sitting's six counted arms holds exactly one broadcast start, so the marginal rate
+subtracts out and leaves the setup term alone. It came out between **-0.0089 and +0.0030 BZZ, five of
+six negative**. The constant was fifty times the largest residue.
+
+⭐⭐⭐ **So cost is per minute, and the rate depends on the GOP rather than on the arm count.** The
+0.5s arms burned 0.76 to 0.81 BZZ/hr against this soak's 0.78, and the 2.0s arms 0.62 to 0.67 against
+the four-hour soak's 0.71. Two designs, two GOPs, in agreement.
+
+⭐ **Ten BZZ buys about twelve and a half hours of broadcast however it is divided.** Sixty short arms
+and one long soak of the same total minutes cost the same, which reopens arm-heavy designs the wrong
+constant was pricing out.
+
+⚠️ **The lesson is the one this night already taught and I repeated anyway.** Three burn constants
+were set in one evening and both refits were wrong, and the rule written down at the time was that
+only a rate measured over a long continuous window and replicated inside it survives. The 0.15 was
+fitted from a *difference between two windows* rather than measured in either, which is the same
+mistake wearing different arithmetic. See `interleaved-gop-arms-2026-08-12.md`.
 
 ## What this sitting does not answer
 
