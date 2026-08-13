@@ -32,6 +32,14 @@ interface TopicState {
   isFinalized: boolean;
   dirty: boolean;
   cachedManifest: string;
+  /**
+   * The gateway {@link ManifestStateManager.serialize} built {@link cachedManifest} against.
+   *
+   * ⛔ Every segment line in a serialized playlist is prefixed with this, so a cached manifest is
+   * only valid for the gateway that produced it. Without it, `serialize` takes the gateway as an
+   * argument and then ignores it on every cache hit.
+   */
+  cachedBytesUrl: string;
 }
 
 const manifestQueue = new Pqueue({ concurrency: 1 });
@@ -192,7 +200,12 @@ export class ManifestStateManager {
       return '';
     }
 
-    if (!state.dirty) {
+    // ⛔⛔⛔ The gateway is part of the cache key, not just an argument. A viewer who changes gateway
+    // through `setGatewayUrl` is covered by `markAllDirty`, but anything that changes it another way
+    // was silently served the previous gateway's playlist. On 2026-08-13 that put every segment of
+    // both arms of a funded-versus-unfunded sitting on the SAME node while the client truthfully
+    // reported two different gateways, which would have reported that funding does not matter.
+    if (!state.dirty && state.cachedBytesUrl === bytesUrl) {
       return state.cachedManifest;
     }
 
@@ -215,6 +228,7 @@ export class ManifestStateManager {
     }
 
     state.cachedManifest = lines.join('\n');
+    state.cachedBytesUrl = bytesUrl;
     state.dirty = false;
     return state.cachedManifest;
   }
@@ -259,6 +273,7 @@ export class ManifestStateManager {
         isFinalized: false,
         dirty: true,
         cachedManifest: '',
+        cachedBytesUrl: '',
       });
     }
     return this.topics.get(topicId)!;
