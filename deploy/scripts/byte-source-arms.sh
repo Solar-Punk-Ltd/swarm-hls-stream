@@ -120,6 +120,12 @@ BRACKET="${HERE}/metrics-bracket.sh"
   exit 1
 }
 CEILING="${HERE}/spend-ceiling.sh"
+STOPS="${HERE}/publisher-stop.sh"
+# shellcheck source=deploy/scripts/publisher-stop.sh
+. "${STOPS}" || {
+  echo "cannot read ${STOPS}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
 
 bzz() { printf '%d.%03d' "$(($1 / 10000000000000000))" "$((($1 % 10000000000000000) / 10000000000000))"; }
 
@@ -169,6 +175,10 @@ PUBLISHERS_NOT_OURS="$(docker ps -aq --filter 'name=^swarm-hls-publish-' 2>/dev/
 
 stop_publisher() {
   local id
+  # ⛔⛔ Before the removal and never after it. The publisher polls its own container, so it can see it
+  # go, and a marker written afterwards leaves a window in which it reports a broadcast this script
+  # ended on purpose as a failed publish. See `publisher-stop.sh`.
+  request_publisher_stop
   for id in $(docker ps -aq --filter 'name=^swarm-hls-publish-' 2>/dev/null); do
     case " ${PUBLISHERS_NOT_OURS} " in
       *" ${id} "*) continue ;;
@@ -182,9 +192,12 @@ start_publisher() {
   stop_publisher
   (
     cd "${BENCH_REPO}" || exit 1
+    # The marker above is cleared by the publisher itself at startup, which is what stops one sitting's
+    # teardown from vouching for the next one's failure.
     deploy/scripts/publish-clock.sh \
       "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}" --host=localhost \
-      "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${GOP_SECONDS}"
+      "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${GOP_SECONDS}" \
+      "--stop-file=${PUBLISHER_STOP_FILE}"
   ) >> "${LOG}" 2>&1 &
 }
 
