@@ -3,28 +3,6 @@
   flex-direction: column;
   gap: 16px;
   height: calc(100vh - 190px);
-
-  /**
-   * The player breaks out of the app's 480px column to the full viewport width.
-   *
-   * Not cosmetic. hls.js's `capLevelToPlayerSize` caps ABR at the first rung reaching
-   * `max(playerWidth, playerHeight) x devicePixelRatio`, so a 420px-wide player pins the ladder to
-   * 360p on a non-retina display no matter how fast Swarm answers. That cap is off in
-   * DEFAULT_HLS_TUNING, which makes the top rungs *reachable* — this makes them worth reaching, by
-   * giving 1080p somewhere to land other than a downscale nobody sees.
-   *
-   * `50% - 50vw` is the distance from the content box's left edge back to the viewport's, given
-   * that `body` is horizontally centred: 50% resolves against this container, 50vw against the
-   * viewport, and the difference cancels the centring exactly at any window width.
-   */
-  .swarm-hls-player-wrapper {
-    width: 100vw;
-    margin-left: calc(50% - 50vw);
-
-    video {
-      max-height: 80vh;
-    }
-  }
 }
 .stream-video {
   display: flex;
