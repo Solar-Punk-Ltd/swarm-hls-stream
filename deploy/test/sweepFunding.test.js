@@ -46,14 +46,42 @@ function bzzToPlur(bzz) {
   return (BigInt(Math.round(bzz * 1000)) * PLUR_PER_BZZ) / 1000n;
 }
 
+const BATCH = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+
 /**
- * A stand-in for a bee node's chequebook endpoint.
+ * A batch with room and time, so these cases are decided by funding alone.
+ *
+ * Depth 25 gives 512 buckets, which is what the measurement batch became when it was diluted, and
+ * 254 of them is the 50% the host actually reads. The capacity gate has its own cases in
+ * `sweepGates.test.js`; what it must not do is decide the ones here.
+ */
+const HEALTHY_BATCH = {
+  batchID: BATCH,
+  utilization: 254,
+  usable: true,
+  label: 'stub',
+  depth: 25,
+  amount: '36043833600',
+  bucketDepth: 16,
+  immutableFlag: true,
+  exists: true,
+  batchTTL: 941760,
+};
+
+/**
+ * A stand-in for a bee node, answering the two endpoints a sweep asks before it publishes.
  *
  * `availableBzz` of null answers 405 the way a node with swap disabled does, which is a deployment
  * shape rather than a shortfall and has to be distinguishable from zero.
  */
 async function startChequebook(availableBzz) {
   const server = createServer((req, reply) => {
+    if (req.url.startsWith('/stamps')) {
+      reply
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ stamps: [HEALTHY_BATCH] }));
+      return;
+    }
     if (!req.url.startsWith('/chequebook/balance')) {
       reply.writeHead(404).end();
       return;
@@ -92,6 +120,8 @@ async function runPreflight({ uploaderPort, gatewayPort, rounds = 1, minutes = 3
     ...(configs === undefined ? {} : { SWEEP_CONFIGS: configs }),
     UPLOADER_BEE_PORT: String(uploaderPort),
     GATEWAY_BEE_PORT: String(gatewayPort),
+    // Named directly rather than read off a container, so these cases need no docker at all.
+    STAMP: BATCH,
     UPLOADER_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n), // 0.01 BZZ per minute
     GATEWAY_BURN_PLUR_PER_MIN: String(PLUR_PER_BZZ / 100n),
     FUNDS_MARGIN_PERCENT: '100',
