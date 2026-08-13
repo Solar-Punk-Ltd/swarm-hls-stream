@@ -77,9 +77,7 @@ const HEALTHY_BATCH = {
 async function startChequebook(availableBzz) {
   const server = createServer((req, reply) => {
     if (req.url.startsWith('/stamps')) {
-      reply
-        .writeHead(200, { 'content-type': 'application/json' })
-        .end(JSON.stringify({ stamps: [HEALTHY_BATCH] }));
+      reply.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ stamps: [HEALTHY_BATCH] }));
       return;
     }
     if (!req.url.startsWith('/chequebook/balance')) {

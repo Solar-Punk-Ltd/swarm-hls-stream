@@ -83,7 +83,11 @@ if (url.includes('/chequebook/balance')) {
 const fs = require('node:fs');
 if (process.argv[2] === 'run') {
   fs.appendFileSync(${JSON.stringify(runs)}, 'run\\n');
-  ${stopAfterFirstRun ? `fs.writeFileSync(${JSON.stringify(join(out, 'STOP'))}, 'the gateway crossed its reserve\\n');` : ''}
+  ${
+    stopAfterFirstRun
+      ? `fs.writeFileSync(${JSON.stringify(join(out, 'STOP'))}, 'the gateway crossed its reserve\\n');`
+      : ''
+  }
 }
 `,
   );

@@ -42,7 +42,13 @@ const PLUR_PER_BZZ = 10n ** 16n;
  * The stamps answer is read from a file on every call rather than baked in, so a test can fill the
  * batch partway through and prove the gate is asked again per run rather than only at the preflight.
  */
-function stubBin({ dir, availableBzz = 500, utilization = 254, ttlSeconds = 941760, uploaderEnv = `STAMP=${BATCH}\n` }) {
+function stubBin({
+  dir,
+  availableBzz = 500,
+  utilization = 254,
+  ttlSeconds = 941760,
+  uploaderEnv = `STAMP=${BATCH}\n`,
+}) {
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   const utilizationFile = join(dir, 'utilization');
@@ -180,10 +186,7 @@ describe('a sweep proves the batch can carry it before it publishes anything', (
     const sweep = await runSweep({ rounds: 4, configs: 'a:1280x720:2500:0.5 b:1280x720:2500:2.0' });
 
     assert.ok(sweep.published.length > 0, 'nothing published, so the per-run gate was never reached');
-    assert.ok(
-      sweep.log.split('stamp-guard: 7849851f').length - 1 > 1,
-      'the batch was read once for the whole sweep',
-    );
+    assert.ok(sweep.log.split('stamp-guard: 7849851f').length - 1 > 1, 'the batch was read once for the whole sweep');
   });
 
   it('stops partway with a named reason when the batch fills under it', async () => {
