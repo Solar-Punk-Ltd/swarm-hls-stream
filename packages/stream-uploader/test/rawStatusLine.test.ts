@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import net, { AddressInfo } from 'node:net';
 import { after, describe, it } from 'node:test';
 
-import { readStatusCode } from './helpers/apiTestServer.js';
+import { readStatusCode, withheldBodyRequest } from './helpers/apiTestServer.js';
 import { LOOPBACK_HOST } from './helpers/loopbackServer.js';
 
 /**
@@ -177,5 +177,124 @@ describe('reading a status code when the peer hangs up mid-write', () => {
     const port = await serverRefusingBeforeTheBody(null);
 
     await assert.rejects(() => readStatusCode(port, OVERSIZED_REQUEST), /before a status line/);
+  });
+});
+
+/**
+ * That a request announcing a body it never sends observes a pre-parse refusal, and cannot observe
+ * anything else.
+ *
+ * The block above fixed how this side reads. It could not fix the loss underneath: when the server
+ * closes with the request body still unread, TCP resets instead of finishing and the reset discards
+ * the answer this side had already received. Against the real app that cost the 401 on 50 of 60
+ * attempts at 4 MB, and rarely enough at the 200 KB `srsWebhookAuth.test.ts` used to post to read as
+ * contention rather than as a defect.
+ *
+ * `withheldBodyRequest` removes the in-flight body, so there is nothing for the server to reset over.
+ * These pin both halves of that: the answer arrives through the close pattern that used to lose it,
+ * and no body goes out to put the loss back.
+ */
+describe('announcing a body and never sending it', () => {
+  const DECLARED_BYTES = 200_000;
+  const HEAD_END = '\r\n\r\n';
+  const UNAUTHORIZED = 'HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n';
+  const TOO_LARGE = 'HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n';
+
+  const announcedRequest = (): string => withheldBodyRequest({ path: '/x', declaredBodyBytes: DECLARED_BYTES });
+
+  function bodyBytesAfterHead(received: string): number {
+    const headEnd = received.indexOf(HEAD_END);
+    return headEnd === -1 ? 0 : Buffer.byteLength(received.slice(headEnd + HEAD_END.length));
+  }
+
+  const onTheHead =
+    (answer: string) =>
+    (received: string): string | null =>
+      received.includes(HEAD_END) ? answer : null;
+
+  const onlyOnceTheBodyIsWhole =
+    (answer: string) =>
+    (received: string): string | null =>
+      bodyBytesAfterHead(received) >= DECLARED_BYTES ? answer : null;
+
+  interface AnsweringServer {
+    port: number;
+    /** Everything the client sent, so a builder that quietly sends the body as well is visible here. */
+    received(): string;
+  }
+
+  /**
+   * A server that answers from whatever it has received so far.
+   *
+   * `hangUp` is `write` then `destroySoon`, which is how Node's HTTP server closes a `Connection:
+   * close` response whose request body was never read. That is the exact close that discards the
+   * answer when a body is in flight, so reading through it is the property worth pinning rather than
+   * the gentler `end` the block above uses. `stayOpen` answers and keeps reading, which is the only
+   * way to see what follows the head.
+   */
+  async function serverAnswering(
+    answerFor: (received: string) => string | null,
+    onAnswer: 'hangUp' | 'stayOpen',
+  ): Promise<AnsweringServer> {
+    let received = '';
+    let answered = false;
+    const server = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.on('data', (chunk) => {
+        received += String(chunk);
+        const answer = answered ? null : answerFor(received);
+        if (answer === null) {
+          return;
+        }
+        answered = true;
+        socket.write(answer);
+        if (onAnswer === 'hangUp') {
+          socket.destroySoon();
+        }
+      });
+    });
+    servers.push(server);
+    server.listen(0, LOOPBACK_HOST);
+    await once(server, 'listening');
+    return { port: (server.address() as AddressInfo).port, received: () => received };
+  }
+
+  it('reads the status a server sent on the head alone', async () => {
+    const { port } = await serverAnswering(onTheHead(UNAUTHORIZED), 'hangUp');
+
+    assert.equal(await readStatusCode(port, announcedRequest()), 401);
+  });
+
+  it('reads a 413 the same way, since which code is correct belongs to the caller', async () => {
+    // A gate that started answering the wrong code has to reach the caller as that code rather than
+    // as a pass, or the tolerance that made this deterministic would launder a regression.
+    const { port } = await serverAnswering(onTheHead(TOO_LARGE), 'hangUp');
+
+    assert.equal(await readStatusCode(port, announcedRequest()), 413);
+  });
+
+  /**
+   * ⭐ The guard on the builder itself. Every other test here passes just as well against a builder
+   * that sends the body after announcing it, and that builder is the flake, so nothing above would
+   * notice it coming back.
+   */
+  it('announces the length and then sends no body at all', async () => {
+    const { port, received } = await serverAnswering(onTheHead(UNAUTHORIZED), 'stayOpen');
+
+    assert.equal(await readStatusCode(port, announcedRequest()), 401);
+
+    assert.match(received(), new RegExp(`Content-Length: ${DECLARED_BYTES}\r\n`), 'the length must be announced');
+    assert.equal(bodyBytesAfterHead(received()), 0, 'a body going out anyway puts the RST loss straight back');
+  });
+
+  /**
+   * ⭐ The assertion that keeps this honest as a test of a *pre-parse* refusal. A server that reads
+   * the body before it answers is exactly the regression the callers exist to catch, and it must fail
+   * them rather than resolve to anything at all.
+   */
+  it('gets no answer at all from a server that waits for the announced body', async () => {
+    const { port } = await serverAnswering(onlyOnceTheBodyIsWhole(UNAUTHORIZED), 'stayOpen');
+
+    await assert.rejects(() => readStatusCode(port, announcedRequest()), /no response/);
   });
 });

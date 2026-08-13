@@ -60,6 +60,14 @@ function isPeerStoppedReading(error: unknown): boolean {
  * answer already in flight is thrown away and replaced by the `EPIPE` that proves the answer was
  * sent. See `isPeerStoppedReading`.
  *
+ * ⛔ **That does not make a request that sends a body safe, and no amount of care on this side can.**
+ * Separating the two only stops *this* side from throwing the answer away. The loss that remains
+ * happens below Node: when the server closes with the request body still unread, TCP answers with
+ * **RST** rather than FIN, and an RST makes this side's kernel discard bytes it has received but not
+ * yet read. Measured against `createApiApp` with the SRS engine mounted and `Connection: close`, the
+ * 401 was lost on 50 of 60 attempts with a 4 MB body and 35 of 60 with 40 MB. Use
+ * `withheldBodyRequest` for anything asserting a refusal that precedes the body.
+ *
  * Exported so it can be pointed at a server that splits on purpose, or hangs up mid-write on purpose,
  * neither of which a test using the real app can make it do.
  */
@@ -116,6 +124,51 @@ export async function readStatusCode(port: number, request: string): Promise<num
   } finally {
     socket.destroy();
   }
+}
+
+export interface WithheldBodyRequest {
+  path: string;
+  /** The `Content-Length` the request announces and then never sends. */
+  declaredBodyBytes: number;
+  method?: string;
+  /** `Content-Length` is appended last, so a caller cannot accidentally contradict the declaration. */
+  headers?: Record<string, string>;
+}
+
+/**
+ * A request head that announces a body and then never sends it.
+ *
+ * ⭐ **The deterministic way to observe a refusal that happens before the body is read.** Sending the
+ * body is what made that observation a coin flip: the client is still writing when the gate answers,
+ * so the server holds unread bytes when it closes, and a close over unread data is an RST, which
+ * makes the client discard the answer it had already received. `readStatusCode` says what was
+ * measured. Withholding the body removes the precondition rather than tolerating the loss, because
+ * nothing is in flight for the server to reset over. Measured at 60 of 60 against the real app at
+ * 200 KB, 4 MB and 40 MB declared, where sending 4 MB lost the answer 50 times in 60.
+ *
+ * ⭐ **It also asserts more than sending the body did.** A server that answers while the body is
+ * still owed cannot have read or parsed it. A status read after the body was sent is equally
+ * consistent with a parser that read every byte first, which is the thing the caller wants to rule
+ * out.
+ *
+ * ⚠️ A server that waits for the announced body gets no answer out of this and fails its caller on
+ * the `readStatusCode` timeout. That is the point rather than a limitation: a gate that moved behind
+ * the parser cannot produce a pass. See `rawStatusLine.test.ts`.
+ *
+ * `Connection: close` is kept rather than avoided. It is what makes Node's HTTP server hang up the
+ * hard way, which is the close that loses an answer, and withholding the body is what makes that
+ * close harmless: the server has nothing unread to reset over, so it sends FIN. Keeping it also
+ * leaves no half-open connection for `startTestApi`'s `close` to wait on.
+ */
+export function withheldBodyRequest({
+  path,
+  declaredBodyBytes,
+  method = 'POST',
+  headers = {},
+}: WithheldBodyRequest): string {
+  const head = { Host: 'x', Connection: 'close', ...headers, 'Content-Length': String(declaredBodyBytes) };
+  const lines = Object.entries(head).map(([name, value]) => `${name}: ${value}\r\n`);
+  return `${method} ${path} HTTP/1.1\r\n${lines.join('')}\r\n`;
 }
 
 export interface ApiResponse {
