@@ -139,6 +139,17 @@ GATES="$(dirname "${BASH_SOURCE[0]}")/capacity-gate.sh"
   exit 1
 }
 
+# What the nodes themselves say each run did. ⛔ Every row this sweep has ever produced was scored on
+# what the bench saw across the network, while both bee nodes kept a complete account of the same
+# events that nothing read. `bee_pusher_sync_time` IS the publish race the bench times with a
+# stopwatch, and `bee_retrieval_*` IS the fetch hop.
+BRACKET="$(dirname "${BASH_SOURCE[0]}")/metrics-bracket.sh"
+# shellcheck source=deploy/scripts/metrics-bracket.sh
+. "${BRACKET}" || {
+  echo "cannot read ${BRACKET}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 # PLUR to BZZ at three decimals, because bash has no floats and a raw 16-digit integer is unreadable
 # in a log someone is skimming to find out why their sweep stopped.
 bzz() {
@@ -189,10 +200,16 @@ funds_cover_minutes() {
 
 run_one() {
   local name="$1" size="$2" kbps="$3" gop="$4" round="$5"
-  local started
+  local started slug="round${round}-${name}"
   started="$(date -u +%s)"
 
   say "round ${round}: ${name} (${size} ${kbps}kbps gop ${gop}) starting"
+
+  # ⭐ Bracketed per run rather than per sweep. The sweep interleaves two configurations, so a total
+  # taken across the whole sitting cannot say which of them moved `bee_pusher_sync_time`, which is
+  # the difference the sitting exists to measure.
+  snapshot_metrics "${METRICS_DIR}/${slug}-before.json" "${slug}-before"
+  start_sampler "${METRICS_DIR}/${slug}-series" "${slug}"
 
   # `SWEEP_EXTRA_ENV` is a space-separated list of NAME=VALUE handed to every run, for the bench knobs
   # this driver has no opinion about. It exists because a sitting's expensive part is the broadcast:
@@ -223,6 +240,11 @@ run_one() {
     -e BENCH_FPS=30 \
     "${IMAGE}" pnpm bench:longrun >> "${LOG}" 2>&1
   local status=$?
+
+  stop_sampler
+  snapshot_metrics "${METRICS_DIR}/${slug}-after.json" "${slug}-after"
+  diff_metrics "${METRICS_DIR}/${slug}-before.json" "${METRICS_DIR}/${slug}-after.json" \
+    "${METRICS_DIR}/${slug}-diff.txt" "  what the nodes say this run did:"
 
   # Checked against what it asked for, not merely that it exited zero. A run that swept nothing still
   # exits zero and still writes a report full of plausible numbers.
@@ -255,6 +277,15 @@ run_one() {
 : > "${LOG}"
 : > "${STATE}"
 say "sweep starting: ${#CONFIGS[@]} configs x ${ROUNDS} rounds x ${MINUTES} min, interleaved"
+
+# ⛔ Before anything is priced or published. A floor crossed by an earlier sitting is still crossed:
+# the node does not refill between them, so starting here would measure a starved node and file it as
+# a configuration. `overnight-chain.sh` points a whole night at one shared STOP_FILE for this reason.
+if [ -f "${STOP_FILE}" ]; then
+  say "REFUSING TO START: a floor was already crossed and ${STOP_FILE} says so:"
+  sed 's/^/  /' "${STOP_FILE}" >> "${LOG}"
+  exit 1
+fi
 # Logged rather than assumed remembered: a knob that changes what the instrument counts is part of
 # the configuration a report has to name, and this one is invisible in the row it produces.
 [ -n "${SWEEP_EXTRA_ENV:-}" ] && say "  extra bench env on every arm: ${SWEEP_EXTRA_ENV}"
@@ -287,6 +318,11 @@ if [ "${PREFLIGHT_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
+# The whole instrument surface either side of the sitting as well as either side of each run, so a
+# drift across the hour has a reading that spans it.
+snapshot_metrics "${METRICS_DIR}/sweep-before.json" "sweep-before"
+trap 'stop_sampler' EXIT INT TERM
+
 for round in $(seq 1 "${ROUNDS}"); do
   # Reversed on even rounds. With a fixed order the first configuration is always measured at the top
   # of a round, so any drift within a round would land on it systematically.
@@ -299,6 +335,17 @@ for round in $(seq 1 "${ROUNDS}"); do
 
   for row in "${ordered[@]}"; do
     IFS=: read -r name size kbps gop <<< "${row}"
+
+    # ⭐ A crossed floor is not a reason to throw away the runs already measured. It is a reason not
+    # to buy another one, and a record of where the sitting stopped being trustworthy.
+    if [ -f "${STOP_FILE}" ]; then
+      say "STOPPING after $(wc -l < "${STATE}") runs: a floor was crossed and ${STOP_FILE} says so."
+      sed 's/^/  /' "${STOP_FILE}" >> "${LOG}"
+      printf '%s\t%s\t%s\t%s\t%s\t%ss\t%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${round}" "${name}" "${size}" "${kbps}" "${gop}" \
+        "NOT-RUN(floor crossed)" >> "${STATE}"
+      break 2
+    fi
 
     # Re-checked per run rather than trusted from the preflight, because the estimate is a straight
     # line through a rate measured once and the real cost varies with what is being published.
@@ -325,4 +372,7 @@ for round in $(seq 1 "${ROUNDS}"); do
   done
 done
 
+snapshot_metrics "${METRICS_DIR}/sweep-after.json" "sweep-after"
+diff_metrics "${METRICS_DIR}/sweep-before.json" "${METRICS_DIR}/sweep-after.json" \
+  "${METRICS_DIR}/sweep-diff.txt" "what the nodes say the whole sweep did:"
 say "sweep done: $(grep -c "axis ok" "${STATE}") axis-ok, $(grep -cE "AXIS FAIL|READER BEHIND|RUN-FAILED|NO-REPORT" "${STATE}") bad, $(grep -c "UNREADABLE-HIGH" "${STATE}") with high unreadable share"
