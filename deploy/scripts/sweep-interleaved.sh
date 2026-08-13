@@ -127,6 +127,18 @@ say() {
   echo "[$(date -u +%H:%M:%S)] $*" >> "${LOG}"
 }
 
+# Whether the postage batch can carry what this sweep intends to publish, which until 2026-08-13 this
+# script never asked. Funding and capacity are not interchangeable: a node out of BZZ is refused
+# service by its peers and that is loud, while a full immutable batch refuses the upload and a full
+# mutable one silently overwrites with every health signal still green. Sourced after `say`, which it
+# refuses without, so its refusals land in this log.
+GATES="$(dirname "${BASH_SOURCE[0]}")/capacity-gate.sh"
+# shellcheck source=deploy/scripts/capacity-gate.sh
+. "${GATES}" || {
+  echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 # PLUR to BZZ at three decimals, because bash has no floats and a raw 16-digit integer is unreadable
 # in a log someone is skimming to find out why their sweep stopped.
 bzz() {
@@ -260,6 +272,14 @@ else
   fi
 fi
 
+# Capacity is the other half of the same precondition, and there is deliberately no way to skip it.
+# `SKIP_FUNDS_CHECK` exists because a chequebook can be topped up between rounds; a full immutable
+# batch cannot, so the only answer to this refusal is a dilute, which stamp-guard prints.
+if ! has_capacity "${TOTAL_MINUTES}"; then
+  say "REFUSING TO START: the postage batch cannot carry this sweep."
+  exit 1
+fi
+
 # Answering "can I afford this?" should not require starting it, since the answer decides whether an
 # operator goes on chain first. Exit code is the answer, and the log holds the per-node figures.
 if [ "${PREFLIGHT_ONLY:-0}" = "1" ]; then
@@ -287,6 +307,17 @@ for round in $(seq 1 "${ROUNDS}"); do
       printf '%s\t%s\t%s\t%s\t%s\t%ss\t%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${round}" "${name}" "${size}" "${kbps}" "${gop}" \
         "NOT-RUN(funds exhausted)" >> "${STATE}"
+      break 2
+    fi
+
+    # Re-asked per run like the funding is, and for a sharper reason: the sweep's own broadcasts are
+    # what fill the batch, so a sitting long enough to matter can start inside the stop line and
+    # cross it under itself. Asking once is asking about a batch that no longer exists by run four.
+    if ! has_capacity "${MINUTES}"; then
+      say "STOPPING after $(wc -l < "${STATE}") runs: the batch cannot carry the next one."
+      printf '%s\t%s\t%s\t%s\t%s\t%ss\t%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${round}" "${name}" "${size}" "${kbps}" "${gop}" \
+        "NOT-RUN(postage exhausted)" >> "${STATE}"
       break 2
     fi
 
