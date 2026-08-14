@@ -162,9 +162,18 @@ bzz() {
 #
 # Empty is meaningfully different from zero, and here it is the measurement: a node started with swap
 # disabled has no chequebook and answers 405, which is the arm rather than a shortfall.
-chequebook_available_plur() {
+available_plur() {
   curl -s --max-time 10 "http://127.0.0.1:${1}/chequebook/balance" 2>/dev/null |
     python3 -c 'import sys,json;print(json.load(sys.stdin)["availableBalance"])' 2>/dev/null
+}
+
+# Sourced here rather than beside the other gates, because it reads a chequebook through
+# available_plur() and refuses a caller that has not defined one yet.
+CEILING="$(dirname "${BASH_SOURCE[0]}")/spend-ceiling.sh"
+# shellcheck source=deploy/scripts/spend-ceiling.sh
+. "${CEILING}" || {
+  echo "cannot read ${CEILING}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
 }
 
 # Zero when both nodes can pay for the given minutes, non-zero otherwise. Reports every node rather
@@ -183,7 +192,7 @@ funds_cover_minutes() {
     # costs is twelve orders of magnitude below anything decidable.
     # shellcheck disable=SC2017
     need=$((rate * minutes / 100 * FUNDS_MARGIN_PERCENT))
-    have="$(chequebook_available_plur "${port}")"
+    have="$(available_plur "${port}")"
     if [ -z "${have}" ]; then
       if [ "${who}" = "gateway" ] && [ "${CURRENT_ARM_SWAP:-true}" = "false" ]; then
         say "  ${label}: gateway has no chequebook, which is this arm, so it is not a shortfall"
@@ -246,7 +255,7 @@ wait_for_gateway_api() {
 # chequebook to return, so this is the one check that says the flip reached bee rather than compose.
 chequebook_shape_matches_arm() {
   local have
-  have="$(chequebook_available_plur "${GATEWAY_BEE_PORT}")"
+  have="$(available_plur "${GATEWAY_BEE_PORT}")"
   if [ "${CURRENT_ARM_SWAP}" = "true" ]; then
     if [ -z "${have}" ]; then
       say "  arm L wants a funded gateway and the node has no chequebook"
@@ -480,7 +489,7 @@ run_arm() {
     return 1
   fi
 
-  gw_before="$(chequebook_available_plur "${GATEWAY_BEE_PORT}")"
+  gw_before="$(available_plur "${GATEWAY_BEE_PORT}")"
   start_publisher "$((watch_seconds + PUBLISH_MARGIN_SECONDS))"
   if ! wait_for_active_stream; then
     stop_publisher
@@ -511,7 +520,7 @@ run_arm() {
   local status=$?
   stop_publisher
   wait_for_idle
-  gw_after="$(chequebook_available_plur "${GATEWAY_BEE_PORT}")"
+  gw_after="$(available_plur "${GATEWAY_BEE_PORT}")"
 
   if [ ${status} -ne 0 ]; then
     verdict="RUN-FAILED(${status})"
@@ -585,6 +594,13 @@ if ! funds_cover_minutes "${TOTAL_MINUTES}" "preflight"; then
 fi
 if ! has_capacity "${TOTAL_MINUTES}"; then
   say "REFUSING TO START: the postage batch cannot carry this sitting."
+  exit 1
+fi
+# ⛔ Distinct from funds_cover_minutes above, which asks whether the nodes CAN pay and so authorises
+# the whole balance. This asks whether the owner said they may, and it is the only one of the two
+# that can see what an earlier sitting tonight already spent.
+if ! within_ceiling "${TOTAL_MINUTES}"; then
+  say "REFUSING TO START: this sitting would spend past the authorisation in ${SPEND_LEDGER}"
   exit 1
 fi
 

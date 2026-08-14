@@ -117,6 +117,7 @@ GATES="${HERE}/capacity-gate.sh"
   echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+CEILING="${HERE}/spend-ceiling.sh"
 BRACKET="${HERE}/metrics-bracket.sh"
 # shellcheck source=deploy/scripts/metrics-bracket.sh
 . "${BRACKET}" || {
@@ -161,6 +162,14 @@ can_afford() {
     fi
   done
   return ${short}
+}
+
+# Sourced here rather than beside the other gates, because it reads a chequebook through
+# available_plur() and refuses a caller that has not defined one yet.
+# shellcheck source=deploy/scripts/spend-ceiling.sh
+. "${CEILING}" || {
+  echo "cannot read ${CEILING}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
 }
 
 # `publish-clock.sh` names its container `swarm-hls-publish-$$`, so there is no fixed name and killing
@@ -427,6 +436,13 @@ if ! can_afford $((TOTAL_ARMS * MINUTES)) "${TOTAL_ARMS}"; then
 fi
 if ! has_capacity $((TOTAL_ARMS * MINUTES)); then
   say "REFUSING TO START: the postage batch cannot carry this sitting"
+  exit 1
+fi
+# ⛔ Distinct from can_afford above, which asks whether the nodes CAN pay and so authorises the whole
+# balance. This asks whether the owner said they may, and it is the only one of the two that can see
+# what an earlier sitting tonight already spent.
+if ! within_ceiling $((TOTAL_ARMS * MINUTES)); then
+  say "REFUSING TO START: this sitting would spend past the authorisation in ${SPEND_LEDGER}"
   exit 1
 fi
 # The whole instrument surface either side of the sitting, not only either side of each arm, so a

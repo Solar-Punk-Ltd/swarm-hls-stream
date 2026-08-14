@@ -181,6 +181,7 @@ async function runArms({
   stopFileFirst = false,
   withoutImage = false,
   selfcheck = false,
+  ceilingPlur = 24n * 10n ** 15n,
 }) {
   const port = await startChequebook(bzz);
   const out = mkdtempSync(join(tmpdir(), 'viewer-arms-'));
@@ -213,10 +214,26 @@ exit 0
   );
   chmodSync(metricsStub, 0o755);
 
+  // The night's authorisation. Both nodes start where the chequebook answers, so a default sitting
+  // has spent nothing yet and the ceiling is the only thing left that can refuse it.
+  const ledger = join(out, 'spend-ledger.env');
+  const startPlur = (BigInt(Math.round(bzz * 1000)) * 10n ** 13n).toString();
+  writeFileSync(
+    ledger,
+    [
+      'authorised_at=2026-08-14T00:00:00Z',
+      `ceiling_plur=${ceilingPlur}`,
+      `uploader_start_plur=${startPlur}`,
+      `gateway_start_plur=${startPlur}`,
+      '',
+    ].join('\n'),
+  );
+
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     OUT_DIR: out,
+    SPEND_LEDGER: ledger,
     // A tree with no publish-clock.sh, so `start_publisher` fails harmlessly in its subshell and the
     // stubbed health check is what carries the arm forward. The ordering is what this measures.
     BENCH_REPO: out,
@@ -563,5 +580,31 @@ describe('a sitting refuses what it cannot finish, and records what the nodes di
       snapshots.filter((call) => call.endsWith('-before')).length,
       snapshots.filter((call) => call.endsWith('-after')).length,
     );
+  });
+});
+
+/**
+ * ⛔⛔⛔ PR #179 PUT THE CAPACITY GATE IN ALL THREE DRIVERS AND THE SPEND CEILING IN ONE OF THEM.
+ *
+ * `can_afford` asks whether the nodes hold enough to pay, which stays true right down to an empty
+ * chequebook, so a driver carrying only that authorises the entire balance. It also cannot see what
+ * an earlier sitting the same night already spent, so two runs that each pass it land past the
+ * owner's total together. This driver publishes and had nothing of the sort in front of it.
+ */
+describe('the spend ceiling, which this driver did not have', () => {
+  const ARMS = 'obs-default:2.0 shipped:0.5';
+
+  it('refuses a sitting that would spend past the authorisation, and publishes nothing', async () => {
+    const result = await runArms({ arms: ARMS, rounds: 1, ceilingPlur: 10n ** 14n });
+
+    assert.match(result.log, /REFUSING TO START/);
+    assert.match(result.log, /authorisation/);
+    assert.equal(result.gops.length, 0, 'it printed a refusal and broadcast anyway');
+  });
+
+  it('runs when the authorisation covers it, so the refusal above is the ceiling and not the harness', async () => {
+    const result = await runArms({ arms: ARMS, rounds: 1 });
+
+    assert.ok(result.gops.length > 0, 'nothing published here either, so the refusal proves nothing');
   });
 });
