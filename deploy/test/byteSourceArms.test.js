@@ -118,7 +118,7 @@ if (argv[0] === 'run') {
     fs.appendFileSync(${JSON.stringify(dockerLog)},
       JSON.stringify(['WATCH', envOf('BROWSER_FETCH_BACKEND'), envOf('BROWSER_GATEWAY_URL'),
         envOf('BROWSER_SETTLE_SECONDS'), envOf('BROWSER_WATCH_SECONDS'),
-        envOf('BROWSER_TARGET_LATENCY_S')]) + '\\n');
+        envOf('BROWSER_TARGET_LATENCY_S'), 'VIEWER_CDP_PORT=' + envOf('VIEWER_CDP_PORT')]) + '\\n');
   }
 }
 process.exit(0);
@@ -520,5 +520,55 @@ describe('what the browser cost, per arm', () => {
 
     assert.match(result.log, /NO CPU READING/);
     assert.doesNotMatch(result.log, /mean 0\.00 cores/, 'an unsampled arm was reported as a free one');
+  });
+});
+
+/**
+ * ⛔⛔ The container total and the thread reading are two instruments, and the danger is that a run
+ * takes one and gets quoted for the other. A sitting with no `VIEWER_CDP_PORT` still produces a
+ * complete-looking cost table, so the absence has to be as loud as a failure.
+ */
+describe('whether the viewer had any thread left, per arm', () => {
+  // ⚠️ Counts the refusal the SAMPLER prints when it declines, not every line carrying that phrase.
+  // The summary refuses again at the end of the arm for the same cause, which is deliberate (a run
+  // must not have to remember a line printed forty minutes earlier) and would double the count.
+  it('says plainly at the start of the arm that nothing will measure the thread', async () => {
+    const result = await runSitting(setup());
+
+    assert.ok(watches(result).length > 0, 'no arm ran, so nothing could have been sampled or skipped');
+    assert.equal(
+      (result.log.match(/NO SATURATION READING for [^:]+: VIEWER_CDP_PORT is unset/g) ?? []).length,
+      watches(result).length,
+      'an arm ran with neither a thread reading nor a line saying it was missing',
+    );
+  });
+
+  // ⭐ The control. Without it, a driver that printed the refusal unconditionally would pass the case
+  // above and never sample anything, which is precisely the defect the refusal exists to expose.
+  it('starts the sampler instead of refusing once the port is set', async () => {
+    const result = await runSitting(setup(), { VIEWER_CDP_PORT: '9333' });
+
+    assert.ok(watches(result).length > 0, 'no arm ran');
+    assert.match(result.log, /sampling the page main thread/);
+    assert.doesNotMatch(
+      result.log,
+      /NO SATURATION READING: VIEWER_CDP_PORT is unset/,
+      'the port was set and the driver still said it was not',
+    );
+  });
+
+  // ⚠️ The WATCH containers only, and that is the behaviour rather than a convenience for the test.
+  // The driver also starts short-lived helpers in the same image (selfcheck, arm order, the gateway
+  // and byte-source checks). Handing them the same port would have two Chromes bind it and the second
+  // would lose, so the page under measurement is the only one that gets it.
+  it('passes the port into the watch container, since Chrome opens it and Chrome is in there', async () => {
+    const result = await runSitting(setup(), { VIEWER_CDP_PORT: '9333' });
+    const watched = watches(result);
+
+    assert.ok(watched.length > 0, 'no arm ran, so nothing could carry the port');
+    assert.ok(
+      watched.every((call) => call.join(' ').includes('VIEWER_CDP_PORT=9333')),
+      'an arm was watched without the port, so its Chrome opens no debugging endpoint',
+    );
   });
 });

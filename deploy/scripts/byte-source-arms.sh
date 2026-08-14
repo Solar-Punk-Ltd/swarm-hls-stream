@@ -298,6 +298,7 @@ run_browser_arm() {
     -e "BROWSER_FETCH_BACKEND=${source}" \
     -e "BROWSER_SETTLE_SECONDS=${SETTLE_SECONDS}" \
     -e "BROWSER_TARGET_LATENCY_S=${TARGET_LATENCY_S}" \
+    -e "VIEWER_CDP_PORT=${VIEWER_CDP_PORT:-}" \
     "${BROWSER_IMAGE}" pnpm browser:watch
 }
 
@@ -351,6 +352,11 @@ run_arm() {
   # ⭐ The named CPU gap. Both arms decode the same picture, so anything this separates is the cost of
   # the byte source: a weeb-3 arm runs a Swarm node in the tab and a gateway arm does not.
   start_browser_cpu "${METRICS_DIR}/${slug}-cpu.txt" "${slug}"
+  # ⭐⭐ The other half of the same gap, and the reason the cost reading above cannot be quoted as a
+  # ceiling. weeb-3 is one JS thread, so a gateway arm and a weeb-3 arm that both cost two cores are
+  # still different products if one of them has its node at 0.95 of a thread. Sampled by URL because
+  # this browser has more than one page in it, and one of them is deliberately blocked.
+  start_main_thread "${METRICS_DIR}/${slug}-mainthread.jsonl" "${slug}" '/watch/'
 
   run_browser_arm "${watch_seconds}" "${source}" >> "${LOG}" 2>&1 &
   local watch_pid=$! status=0
@@ -369,7 +375,9 @@ run_arm() {
 
   stop_sampler
   stop_browser_cpu
+  stop_main_thread
   summarize_browser_cpu "${METRICS_DIR}/${slug}-cpu.txt" "${slug}"
+  summarize_main_thread "${METRICS_DIR}/${slug}-mainthread.jsonl" "${slug}"
   bracket_gateway "${slug}" after
   diff_metrics "${METRICS_DIR}/${slug}-on-gateway-before.json" "${METRICS_DIR}/${slug}-on-gateway-after.json" \
     "${METRICS_DIR}/${slug}-on-gateway-diff.txt" "  what the gateway says arm ${index} (${source}) asked of it:"
@@ -478,7 +486,7 @@ fi
 
 # Installed only here, past every exit that publishes nothing, so a run that starts no broadcast can
 # never tear one down on its way out.
-trap 'stop_sampler; stop_browser_cpu; stop_publisher; reclaim_browser_containers' EXIT INT TERM
+trap 'stop_sampler; stop_browser_cpu; stop_main_thread; stop_publisher; reclaim_browser_containers' EXIT INT TERM
 
 say "starting the one broadcast this sitting reads, for ${SITTING_SECONDS}s"
 say "  budget per arm: ${ARM_MINUTES}m watch + ${SETTLE_SECONDS}s settle + ${ARM_GAP_S}s gap + the join"
