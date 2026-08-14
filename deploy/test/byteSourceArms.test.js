@@ -458,3 +458,37 @@ describe('every arm is held at one latency target', () => {
     assert.deepEqual([...new Set(watches(result).map((call) => call[5]))], ['4']);
   });
 });
+
+/**
+ * ⛔⛔⛔ `run_arm` polls STOP_FILE for the whole length of the watch and stops the BROADCAST when it
+ * appears. `node-metrics.sh watch` is the only writer of that file in this repo and `start_sampler`
+ * is its only caller, so a driver that never starts the sampler is polling a path no process in the
+ * run will ever create. The two paid sittings of 2026-08-13 ran exactly that way.
+ *
+ * ⭐ Both assertions below count first and inspect second, deliberately. The defect this covers was
+ * concealed for a week by a sibling test that looped over the `watch` calls and checked a property
+ * of each: with no sampler the list was empty, the body never ran, and it passed.
+ */
+const sampling = (result) => result.metrics.filter((entry) => entry.cmd === 'watch');
+
+describe('the mid-arm floor check has something that writes its file', () => {
+  it('runs a sampler for every arm, so a crossed floor can actually stop the broadcast', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs);
+
+    assert.ok(sampling(result).length > 0, 'no sampler ran at all, so STOP_FILE has no writer');
+    assert.equal(sampling(result).length, watches(result).length, 'an arm ran with no sampler beside it');
+  });
+
+  it('reads the series off the gateway the arms actually used', async () => {
+    const stubs = setup();
+
+    const result = await runSitting(stubs);
+
+    assert.ok(sampling(result).length > 0, 'no sampler ran, so nothing here checked which node it read');
+    for (const call of sampling(result)) {
+      assert.match(call.gateway, /10077$/, 'the series is off a node no arm read');
+    }
+  });
+});

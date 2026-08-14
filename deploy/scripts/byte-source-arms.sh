@@ -113,6 +113,11 @@ GATES="${HERE}/capacity-gate.sh"
   echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+# ⛔⛔⛔ SET BEFORE metrics-bracket.sh IS SOURCED, WHERE IT DEFAULTS TO ZERO AND DISABLES THE SAMPLER.
+# The sampler is the only thing in this repo that writes STOP_FILE, and STOP_FILE is what this
+# driver's three floor checks read. Left at zero, a sitting logs a mid-arm floor check that polls a
+# file no process in the run will ever create. The two sittings of 2026-08-13 ran that way.
+METRICS_INTERVAL_S="${METRICS_INTERVAL_S:-30}"
 BRACKET="${HERE}/metrics-bracket.sh"
 # shellcheck source=deploy/scripts/metrics-bracket.sh
 . "${BRACKET}" || {
@@ -332,6 +337,10 @@ run_arm() {
   fi
 
   bracket_gateway "${slug}" before
+  # ⭐ What makes the mid-arm floor check below a control rather than a poll of a file nobody writes.
+  # It also gives the arm a series, which two endpoint readings cannot: a weeb-3 arm that quietly lost
+  # its node halfway through reads exactly like one that never had it, unless the shape is on record.
+  start_sampler "${METRICS_DIR}/${slug}-series" "${slug}"
 
   run_browser_arm "${watch_seconds}" "${source}" >> "${LOG}" 2>&1 &
   local watch_pid=$! status=0
@@ -348,6 +357,7 @@ run_arm() {
   done
   wait "${watch_pid}" || status=$?
 
+  stop_sampler
   bracket_gateway "${slug}" after
   diff_metrics "${METRICS_DIR}/${slug}-on-gateway-before.json" "${METRICS_DIR}/${slug}-on-gateway-after.json" \
     "${METRICS_DIR}/${slug}-on-gateway-diff.txt" "  what the gateway says arm ${index} (${source}) asked of it:"
