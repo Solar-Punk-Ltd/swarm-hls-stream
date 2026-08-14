@@ -66,7 +66,7 @@ async function firstPageEndpoint(port) {
 }
 
 /** One socket, one in-flight map, no library. Reached off `globalThis` because it is a Node 22 global. */
-function connect(url) {
+export function connect(url) {
   const socket = new globalThis.WebSocket(url);
   const pending = new Map();
   let nextId = 1;
@@ -92,9 +92,28 @@ function connect(url) {
     }
   });
 
+  // ⛔⛔⛔ A CLOSED SOCKET MUST REJECT WHAT IT WILL NEVER ANSWER, and leaving this out cost a real
+  // silent failure. Without it, a call in flight when Chrome goes away is neither resolved nor
+  // rejected, its promise is orphaned, and a closed socket is not a handle that keeps Node alive. So
+  // the process EXITS ZERO, mid-await, skipping every `finally` on the stack. Measured 2026-08-14: a
+  // main-thread sampler pointed at a browser that then closed wrote two samples, no summary, no error,
+  // and reported success. An instrument that dies silently and claims to have succeeded is worse than
+  // one that never ran.
+  const failPending = (why) => {
+    for (const waiter of pending.values()) {
+      waiter.reject(new Error(why));
+    }
+    pending.clear();
+  };
+  socket.addEventListener('close', () => failPending('CDP socket closed while a call was in flight'));
+  socket.addEventListener('error', () => failPending('CDP socket errored while a call was in flight'));
+
   return {
     async send(method, params = {}) {
       await open;
+      if (socket.readyState !== globalThis.WebSocket.OPEN) {
+        throw new Error(`CDP socket is not open, so ${method} can never be answered`);
+      }
       const id = nextId++;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
