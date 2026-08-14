@@ -33,6 +33,19 @@
 # deltas would let a top-up on one node pay for an overrun on the other, which is not what an
 # authorisation of a total means.
 #
+# ⛔⛔⛔ AND A RISE ALSO ENDS THE LEDGER, WHICH THE CLAMP ALONE DOES NOT SAY.
+#
+# Clamping keeps the arithmetic honest and still throws the history away. On 2026-08-14 the owner
+# deposited 12 BZZ into the gateway. That node's 0.5406 BZZ of real spend stopped being a counted
+# term and became a clamped zero, and this gate went on printing a total short by exactly that much
+# with nothing anywhere marking it. The uploader was topped up minutes later, which would have taken
+# the printed total to 0.000 BZZ against a ceiling 1.98 of which was already gone.
+#
+# `availableBalance` has no other way up. Writing a cheque lowers it and a peer cashing one leaves it
+# alone, so a rise is a deposit, and a deposit means these baselines were written before it. Spend
+# measured from stale baselines is not a smaller number, it is an unknown one, and unknown spend is
+# refused here for the same reason an unreadable chequebook is.
+#
 # ## What the caller owes it
 #
 # These drivers run `set -u` without `set -e`, so a gate that quietly did nothing because its caller
@@ -67,10 +80,14 @@ ledger_field() {
 
 # What this night has cost so far, summed over every node that can spend.
 #
-# Prints the total in plur, or nothing at all when any node's balance is unknown. ⛔ An unreadable
-# chequebook is not zero spend: a node that stopped answering is exactly when a run should stop.
+# Prints two lines: the total in plur, then the names of any nodes now holding MORE than their start
+# balance. Prints nothing at all when any node's balance is unknown. ⛔ An unreadable chequebook is
+# not zero spend: a node that stopped answering is exactly when a run should stop.
+#
+# ⛔ The second line exists because this runs inside a command substitution, so a variable set here
+# dies with the subshell and cannot reach the caller.
 spent_so_far_plur() {
-  local total=0 who port start now fell
+  local total=0 rose='' who port start now fell
   for pair in "uploader:${UPLOADER_BEE_PORT}:uploader_start_plur" \
     "gateway:${GATEWAY_BEE_PORT}:gateway_start_plur"; do
     who="${pair%%:*}"
@@ -87,16 +104,20 @@ spent_so_far_plur() {
     fi
     fell=$((start - now))
     # A rise contributes nothing. Signed deltas would let a top-up on one node fund an overrun on the
-    # other, which is not what a total authorisation means.
-    [ "${fell}" -lt 0 ] && fell=0
+    # other, which is not what a total authorisation means. It is also reported, because a clamp that
+    # is silent turns a deposit into permanently missing history.
+    if [ "${fell}" -lt 0 ]; then
+      fell=0
+      rose="${rose}${rose:+ }${who}"
+    fi
     total=$((total + fell))
   done
-  printf '%s' "${total}"
+  printf '%s\n%s' "${total}" "${rose}"
 }
 
 # Zero when this sitting fits inside what is left of the authorisation.
 within_ceiling() {
-  local minutes="$1" ceiling spent projected remaining
+  local minutes="$1" ceiling reading spent rose projected remaining
   if [ ! -r "${SPEND_LEDGER}" ]; then
     say "  REFUSING: no spend ledger at ${SPEND_LEDGER}, so nothing here is authorised to spend"
     return 1
@@ -109,11 +130,20 @@ within_ceiling() {
       ;;
   esac
 
-  spent="$(spent_so_far_plur)" || return 1
+  reading="$(spent_so_far_plur)" || return 1
+  spent="$(printf '%s\n' "${reading}" | sed -n 1p)"
+  rose="$(printf '%s\n' "${reading}" | sed -n 2p)"
   projected=$(((UPLOADER_BURN_PLUR_PER_MIN + GATEWAY_BURN_PLUR_PER_MIN) * minutes))
   remaining=$((ceiling - spent))
 
   say "  spend ceiling: $(spend_bzz "${ceiling}") BZZ authorised, $(spend_bzz "${spent}") BZZ already spent, $(spend_bzz "${projected}") BZZ projected for ${minutes} min"
+  # Printed after the summary on purpose, so the run log carries the number this refusal is rejecting
+  # rather than leaving a reader to wonder what the gate saw.
+  if [ -n "${rose}" ]; then
+    say "  REFUSING: balance is above its start on ${rose}, so a deposit landed after this authorisation was written and the spend above is measured from baselines that predate it"
+    say "  Rewrite ${SPEND_LEDGER} with fresh start balances and the total the owner has now authorised."
+    return 1
+  fi
   if [ "${projected}" -gt "${remaining}" ]; then
     say "  REFUSING: $(spend_bzz "${projected}") BZZ projected against $(spend_bzz "${remaining}") BZZ left of the authorisation"
     return 1

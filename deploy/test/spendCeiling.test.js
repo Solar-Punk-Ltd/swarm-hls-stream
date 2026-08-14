@@ -230,6 +230,32 @@ describe('the spend ceiling', () => {
     assert.match(log, /2\.300 BZZ already spent/);
   });
 
+  it('refuses a balance above its start, because only a deposit raises one and the ledger predates it', async () => {
+    // ⛔⛔⛔ THE CLAMP ABOVE KEEPS THE ARITHMETIC SOUND AND STILL LOSES THE HISTORY. On 2026-08-14 the
+    // owner deposited 12 BZZ into the gateway. Its 0.5406 BZZ of real spend went from a counted term
+    // to a clamped zero, and the ledger went on reporting a total that was short by exactly that
+    // much, with nothing anywhere saying so. A second deposit into the uploader would have taken the
+    // reported total to 0.000 against a ceiling 1.98 of which was already gone.
+    //
+    // `availableBalance` has no other way up: writing a cheque lowers it, a peer cashing one leaves
+    // it alone. So a rise is a deposit, a deposit means these baselines were written before it, and a
+    // spend measured from stale baselines is not a smaller number, it is an unknown one.
+    const { allowed, log } = await askGate({
+      ledger: ledgerAt({
+        ceiling: (24n * BZZ) / 10n,
+        uploaderStart: 35n * BZZ,
+        gatewayStart: 20n * BZZ,
+      }),
+      balances: { 10075: 35n * BZZ, 10077: 21n * BZZ },
+      minutes: 10,
+    });
+
+    assert.equal(allowed, false, 'a 0.237 BZZ projection fits the ceiling, so only staleness can refuse this');
+    assert.match(log, /REFUSING/);
+    assert.match(log, /gateway/);
+    assert.match(log, /deposit/);
+  });
+
   it('reports what it allowed, so a run log says which authorisation it ran under', async () => {
     const { log } = await askGate({
       ledger: ledgerAt({
