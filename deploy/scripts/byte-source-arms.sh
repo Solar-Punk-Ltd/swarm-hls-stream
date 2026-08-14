@@ -125,6 +125,13 @@ BRACKET="${HERE}/metrics-bracket.sh"
   exit 1
 }
 CEILING="${HERE}/spend-ceiling.sh"
+# What the viewer cost a machine. ⛔ The process-tree total and NOT a saturation reading: it cannot
+# say whether weeb-3's single JS thread is pegged. See browser-cpu.sh.
+# shellcheck source=deploy/scripts/browser-cpu.sh
+. "${HERE}/browser-cpu.sh" || {
+  echo "cannot read ${HERE}/browser-cpu.sh: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
 STOPS="${HERE}/publisher-stop.sh"
 # shellcheck source=deploy/scripts/publisher-stop.sh
 . "${STOPS}" || {
@@ -341,6 +348,9 @@ run_arm() {
   # It also gives the arm a series, which two endpoint readings cannot: a weeb-3 arm that quietly lost
   # its node halfway through reads exactly like one that never had it, unless the shape is on record.
   start_sampler "${METRICS_DIR}/${slug}-series" "${slug}"
+  # ⭐ The named CPU gap. Both arms decode the same picture, so anything this separates is the cost of
+  # the byte source: a weeb-3 arm runs a Swarm node in the tab and a gateway arm does not.
+  start_browser_cpu "${METRICS_DIR}/${slug}-cpu.txt" "${slug}"
 
   run_browser_arm "${watch_seconds}" "${source}" >> "${LOG}" 2>&1 &
   local watch_pid=$! status=0
@@ -358,6 +368,8 @@ run_arm() {
   wait "${watch_pid}" || status=$?
 
   stop_sampler
+  stop_browser_cpu
+  summarize_browser_cpu "${METRICS_DIR}/${slug}-cpu.txt" "${slug}"
   bracket_gateway "${slug}" after
   diff_metrics "${METRICS_DIR}/${slug}-on-gateway-before.json" "${METRICS_DIR}/${slug}-on-gateway-after.json" \
     "${METRICS_DIR}/${slug}-on-gateway-diff.txt" "  what the gateway says arm ${index} (${source}) asked of it:"
@@ -466,7 +478,7 @@ fi
 
 # Installed only here, past every exit that publishes nothing, so a run that starts no broadcast can
 # never tear one down on its way out.
-trap 'stop_sampler; stop_publisher; reclaim_browser_containers' EXIT INT TERM
+trap 'stop_sampler; stop_browser_cpu; stop_publisher; reclaim_browser_containers' EXIT INT TERM
 
 say "starting the one broadcast this sitting reads, for ${SITTING_SECONDS}s"
 say "  budget per arm: ${ARM_MINUTES}m watch + ${SETTLE_SECONDS}s settle + ${ARM_GAP_S}s gap + the join"

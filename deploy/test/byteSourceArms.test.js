@@ -492,3 +492,33 @@ describe('the mid-arm floor check has something that writes its file', () => {
     }
   });
 });
+
+/**
+ * ⭐ The CPU gap this sitting has carried since #92: both arms decode the same picture, so whatever
+ * separates them is the cost of the byte source, and a weeb-3 arm runs a Swarm node in the tab.
+ *
+ * ⛔⛔ A reading nobody took is not a cheap viewer. The assertions below decide the COUNT before any
+ * property of the samples, which is gate lesson AHU and the reason the trap line in this driver read
+ * as evidence of wiring that was not there.
+ */
+describe('what the browser cost, per arm', () => {
+  const cpuCalls = (result) => result.docker.filter((argv) => Array.isArray(argv) && argv[0] === 'stats');
+
+  it('samples the browser container for every arm, so neither arm is priced from an empty series', async () => {
+    const result = await runSitting(setup());
+
+    assert.ok(cpuCalls(result).length > 0, 'nothing ever asked docker for CPU, so both arms are unpriced');
+    assert.equal(
+      (result.log.match(/sampling byte-source-browser CPU/g) ?? []).length,
+      watches(result).length,
+      'an arm ran with no CPU sampler beside it',
+    );
+  });
+
+  it('says a reading was missed rather than printing zero cores for it', async () => {
+    const result = await runSitting(setup(), { BROWSER_CPU_INTERVAL_S: '0' });
+
+    assert.match(result.log, /NO CPU READING/);
+    assert.doesNotMatch(result.log, /mean 0\.00 cores/, 'an unsampled arm was reported as a free one');
+  });
+});
