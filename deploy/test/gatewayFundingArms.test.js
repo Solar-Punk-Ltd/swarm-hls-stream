@@ -463,8 +463,15 @@ describe('both gateways are read either side of every arm', () => {
    */
   it('never points the running sampler at the node that has no chequebook', async () => {
     const result = await runSitting(setup(), { METRICS_INTERVAL_S: '1' });
+    const sampling = result.metrics.filter((entry) => entry.cmd === 'watch');
 
-    for (const call of result.metrics.filter((entry) => entry.cmd === 'watch')) {
+    // ⛔⛔⛔ The count is asserted before the ports, and that line is the finding of 2026-08-14. Until
+    // then this test was a `for` over an empty list: the driver never called `start_sampler`, so no
+    // `watch` ever ran, the body never executed, and the assertion below was never reached. Three
+    // lines of ⛔⛔⛔ reasoning above it described a real hazard to a paid sitting, and what guarded
+    // that hazard was a loop that could not fail.
+    assert.ok(sampling.length > 0, 'no sampler ran at all, so nothing here checked which node it read');
+    for (const call of sampling) {
       assert.notEqual(call.gateway, '10087', 'the sampler would stop the sitting for being the treatment');
     }
   });

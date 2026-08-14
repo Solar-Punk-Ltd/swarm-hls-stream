@@ -51,6 +51,34 @@ describe('whether the run was measured against the target it was configured with
     assert.equal(verdict.raisedByS, 0);
   });
 
+  /**
+   * ⛔⛔⛔ The regression this file existed to prevent, reintroduced one level up and shipped.
+   *
+   * `BROWSER_TARGET_LATENCY_S` has moved arms to 6, 2 and 1.5 since PR #186, and until 2026-08-14
+   * this verdict compared every one of them against the compile-time `LIVE_SYNC_DURATION_S`. The
+   * 2026-08-14 sitting ran four arms at 2s that each reported `worstS: 3`, a full second of raise,
+   * beside a verdict reading `raisedByS: 0, held: true`.
+   *
+   * Every test above passes the default target, so none of them could see it. **A parameter with a
+   * default is only tested by a case that passes something else.**
+   */
+  it('judges a moved target against the value this run asked for, not the compiled default', () => {
+    const raisedPastTwo = run({ liveTargetLatencyS: 2 }, { liveTargetLatencyS: 3, bufferStalls: 1 });
+
+    const verdict = judgeLatencyTarget(raisedPastTwo, 2);
+
+    assert.equal(verdict.configuredS, 2, 'the verdict names a target this run never asked for');
+    assert.equal(verdict.raisedByS, 1, 'a second of raise past a 2s target read as none');
+    assert.equal(verdict.held, false, 'a target that moved 2 to 3 cannot be reported as held');
+  });
+
+  it('carries the run target through summarize, which is where the watch loses it', () => {
+    const raisedPastTwo = run({ liveTargetLatencyS: 2 }, { liveTargetLatencyS: 3, bufferStalls: 1 });
+
+    assert.equal(summarize(raisedPastTwo, 2).latencyTarget.held, false);
+    assert.equal(summarize(raisedPastTwo, 2).latencyTarget.configuredS, 2);
+  });
+
   it('catches a target raised part way through, which is the shape a stall makes', () => {
     const verdict = judgeLatencyTarget(run({}, {}, { liveTargetLatencyS: LIVE_SYNC_DURATION_S + 1, bufferStalls: 1 }));
 

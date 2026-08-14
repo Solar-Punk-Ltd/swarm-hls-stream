@@ -66,9 +66,18 @@ enough to place a row.
 | 1 | 2026-08-12T01:53Z | **10.1h** | **8/8** | 8/8 | 0/8 |
 | 2 | 2026-08-13T01:54Z | **34.1h** | **8/8** | 8/8 | 0/8 |
 | 3 | 2026-08-13T17:06Z | **49.3h** | **8/8** | 8/8 | 0/8 |
+| 4 | 2026-08-14T03:56Z | **60.1h** | **8/8** | 8/8 | 0/8 |
 
-**Nothing has decayed by 49.3 hours.** The read arm delivered 8/8 at a mean 795 KB and 490 KB/s, the
-control delivered 8/8 at 4,296 KB and 1,218 KB/s, and `ours-aug03` returned 503 on all eight.
+**Nothing has decayed by 60.1 hours.** The read arm delivered 8/8 at a mean 795 KB and 478 KB/s, the
+control delivered 8/8 at 4,214 KB and 1,259 KB/s, and `ours-aug03` returned 503 on all eight.
+
+⚠️ **The read arm's mean size is 795 KB in both reads 3 and 4 and its rate moved 490 to 478 KB/s.**
+That is the same objects at the same speed, not an improvement or a decline.
+
+⛔ **This read needs Chrome and the deployment host has none**, so it runs from the Mac. The command
+below defaults `CHROME_PATH` to a macOS path, which is why. Running it on the host fails with
+`spawn /Applications/Google Chrome.app/... ENOENT`, and the cohort plan files are not in the bench
+checkout either.
 
 ⚠️ **The untouched arm is deliberately absent from this table**, because reading it to fill a column
 is the treatment being applied to the control. It gets read once, after the read arm shows decay.

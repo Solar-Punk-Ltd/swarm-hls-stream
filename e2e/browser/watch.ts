@@ -228,7 +228,10 @@ async function main(): Promise<void> {
     watchUrl,
     chromeVersion,
     gopSeconds,
-    summary: summarize(watched.samples),
+    // ⛔ The target is passed rather than left to the default. This watch is the one caller that
+    // moves it, so omitting it here is exactly the bug that made every arm since PR #186 report its
+    // target verdict against a hard-coded 6.
+    summary: summarize(watched.samples, targetLatencyS ?? undefined),
     instrumentProofs,
     instrument: judgeRun(watched.readings),
     network,
