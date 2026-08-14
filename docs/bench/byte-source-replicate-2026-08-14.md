@@ -113,6 +113,14 @@ so it was captured all along and never rendered, which is precisely why capture 
 separate halves of one rule. **The action is to check whether any cache-sizing result read this
 counter before trusting either it or them**, not to withdraw anything yet.
 
+✅ **RESOLVED the same day, free, in `the-gateway-cache-is-a-sawtooth-2026-08-14.md`.** No result of
+ours reads that counter, so nothing is withdrawn. The negative is bee's own underflow, and our gateway
+sits in the corner that produces it because `--cache-capacity=0` is the one value where every cached
+chunk is over capacity and each round is then asked to drop a hard-coded minimum of 10,000. **The
+gateway's cache is neither on nor off, it is a sawtooth**, which reconciles the 2026-08-10 two-pass
+result (4ms, cache plainly on) with the 2026-08-08 cyclic scan (0.0% removed, cache plainly doing
+nothing) without either being wrong.
+
 **A second, smaller one:** `libp2p_rcmgr_*` gauges read 0 on a first scrape and populate on the
 second, so the first bracket of any sitting shows them as enormous relative movers. That is
 registration, not movement, and it is why the ranking is read rather than quoted.
