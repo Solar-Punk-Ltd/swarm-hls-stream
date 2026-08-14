@@ -81,6 +81,18 @@ diff_metrics() {
   bash "${NODE_METRICS}" diff "${before}" "${after}" > "${out}" 2>> "${LOG}" || true
   say "${headline}"
   sed 's/^/    /' "${out}" >> "${LOG}" 2>/dev/null || true
+
+  # ⭐⭐⭐ The whole surface, ranked, filed beside the curated read and never instead of it.
+  #
+  # The summary above renders the metrics somebody thought to name. That is the same restriction the
+  # family allowlist in `node-metrics.sh` was, one step later: it can only ever confirm or deny a
+  # cause that was already on the list. This file is where a cause nobody has considered shows up, and
+  # it is written to disk rather than to the log because it is hundreds of lines per arm.
+  #
+  # ⛔ It is not summarised into the run log on purpose. A number quoted from here belongs in a report
+  # only after somebody has read why the series moved, and a line in a log invites the opposite.
+  bash "${NODE_METRICS}" diff-all "${before}" "${after}" > "${out%.txt}-all.txt" 2>> "${LOG}" || true
+  say "  whole-surface diff: $(basename "${out%.txt}-all.txt")"
 }
 
 SAMPLER_PID=""

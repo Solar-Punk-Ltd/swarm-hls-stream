@@ -61,6 +61,7 @@ function setup({
   missingImage = false,
   armOrder = STUB_ARM_ORDER,
   stopFileFirst = false,
+  ceilingPlur = 24n * 10n ** 15n,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'gw-funding-arms-'));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -217,6 +218,20 @@ exit 0
     writeFileSync(join(out, 'STOP'), 'a previous sitting crossed a floor\n');
   }
 
+  // The night's authorisation. Both nodes start where the stub chequebook answers, so a default
+  // sitting has spent nothing yet and the ceiling is the only thing that can refuse.
+  const ledger = join(dir, 'spend-ledger.env');
+  writeFileSync(
+    ledger,
+    [
+      'authorised_at=2026-08-14T00:00:00Z',
+      `ceiling_plur=${ceilingPlur}`,
+      `uploader_start_plur=${plur}`,
+      `gateway_start_plur=${plur}`,
+      '',
+    ].join('\n'),
+  );
+
   return {
     dir,
     bin,
@@ -229,6 +244,7 @@ exit 0
     unfundedGateway,
     nodeMetrics,
     stampGuard,
+    ledger,
   };
 }
 
@@ -245,6 +261,7 @@ async function runSitting(stubs, env = {}) {
         NODE_METRICS: stubs.nodeMetrics,
         STAMP_GUARD: stubs.stampGuard,
         STAMP: BATCH,
+        SPEND_LEDGER: stubs.ledger,
         ROUNDS: '2',
         ARM_MINUTES: '2',
         ARM_GAP_S: '0',
@@ -605,5 +622,31 @@ describe('every arm is filed with the condition it ran under', () => {
     const written = readdirSync(join(stubs.out, 'node-metrics'));
     assert.ok(written.some((name) => name === 'arm01-round1-unfunded-on-unfunded-before.json'));
     assert.ok(written.some((name) => name === 'arm03-round2-funded-on-funded-after.json'));
+  });
+});
+
+/**
+ * ⛔⛔⛔ PR #179 PUT THE CAPACITY GATE IN ALL THREE DRIVERS AND THE SPEND CEILING IN ONE OF THEM.
+ *
+ * The gate this sitting did carry, `can_afford`, asks whether the node holds enough to pay. That
+ * stays true right down to an empty chequebook, so a driver carrying only that authorises the entire
+ * balance, and two sittings that each pass it can still land past the owner's total together because
+ * neither can see the other. This driver spent real BZZ on 2026-08-13 with nothing between it and the
+ * whole chequebook, and the reason it never overran is that nobody asked it to.
+ */
+describe('the spend ceiling, which this driver did not have', () => {
+  it('refuses a sitting that would spend past the authorisation, and publishes nothing', async () => {
+    const stubs = setup({ ceilingPlur: 10n ** 14n });
+    const result = await runSitting(stubs);
+
+    assert.match(result.log, /REFUSING TO START/);
+    assert.match(result.log, /authorisation/);
+    assert.equal(result.publishes.length, 0, 'it printed a refusal and broadcast anyway');
+  });
+
+  it('runs when the authorisation covers it, so the refusal above is the ceiling and not the harness', async () => {
+    const result = await runSitting(setup());
+
+    assert.ok(result.publishes.length > 0, 'nothing published here either, so the refusal proves nothing');
   });
 });

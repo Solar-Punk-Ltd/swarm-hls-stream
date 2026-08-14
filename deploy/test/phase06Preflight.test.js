@@ -30,7 +30,17 @@ after(() => {
 
 const PLUR_PER_BZZ = 10n ** 16n;
 
-function stubHost({ availableBzz = 500, utilization = 254, ttlSeconds = 941760, swapEnable = true }) {
+function stubHost({
+  availableBzz = 500,
+  utilization = 254,
+  ttlSeconds = 941760,
+  swapEnable = true,
+  // ⭐ 12 BZZ rather than the 2.4 the other drivers' tests use, because this sitting is far bigger
+  // than any of them: two proving arms and four full arms at the defaults is TOTAL_MINUTES=142 and a
+  // projection of 3.37 BZZ. A 2.4 BZZ authorisation is genuinely too small for it, so a smaller
+  // default here would refuse every case in this file for the right reason and test nothing.
+  ceilingPlur = 12n * 10n ** 16n,
+}) {
   const out = mkdtempSync(join(tmpdir(), 'phase06-'));
   cleanups.push(() => rmSync(out, { recursive: true, force: true }));
   const bin = join(out, 'bin');
@@ -85,7 +95,22 @@ if (argv[0] === 'inspect' && argv.includes('-f')) {
   for (const name of ['curl', 'docker']) {
     chmodSync(join(bin, name), 0o755);
   }
-  return { out, bin };
+
+  // The night's authorisation. Both nodes start where the stub chequebook answers, so a default
+  // preflight has spent nothing yet and the ceiling is the only thing left that can refuse it.
+  const ledger = join(out, 'spend-ledger.env');
+  writeFileSync(
+    ledger,
+    [
+      'authorised_at=2026-08-14T00:00:00Z',
+      `ceiling_plur=${ceilingPlur}`,
+      `uploader_start_plur=${plur}`,
+      `gateway_start_plur=${plur}`,
+      '',
+    ].join('\n'),
+  );
+
+  return { out, bin, ledger };
 }
 
 async function preflight(options = {}) {
@@ -98,6 +123,7 @@ async function preflight(options = {}) {
         ...process.env,
         PATH: `${host.bin}:${process.env.PATH}`,
         OUT_DIR: host.out,
+        SPEND_LEDGER: host.ledger,
         PREFLIGHT_ONLY: '1',
         ...(options.margin === undefined ? {} : { FUNDS_MARGIN_PERCENT: options.margin }),
       },
@@ -170,5 +196,29 @@ describe('the light-against-ultra-light preflight', () => {
 
     // 254 of 512, not of the 256 a depth-24 assumption would have used and called 99% full.
     assert.match(log, /254\/512 buckets \(50%\)/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ PR #179 PUT THE CAPACITY GATE IN ALL THREE DRIVERS AND THE SPEND CEILING IN ONE OF THEM.
+ *
+ * `funds_cover_minutes` asks whether the nodes hold enough to pay, which stays true right down to an
+ * empty chequebook, so a driver carrying only that authorises the entire balance. It also cannot see
+ * what an earlier sitting the same night already spent. This driver runs six broadcasts and had
+ * nothing of the sort in front of it.
+ */
+describe('the spend ceiling, which this driver did not have', () => {
+  it('refuses a sitting that would spend past the authorisation', async () => {
+    const { code, log } = await preflight({ ceilingPlur: 10n ** 14n });
+
+    assert.notEqual(code, 0);
+    assert.match(log, /REFUSING TO START/);
+    assert.match(log, /authorisation/);
+  });
+
+  it('passes preflight when the authorisation covers it, so the refusal above is the ceiling', async () => {
+    const { code, log } = await preflight();
+
+    assert.equal(code, 0, log);
   });
 });
