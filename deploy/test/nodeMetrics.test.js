@@ -275,3 +275,168 @@ describe('what the nodes say they did, over one window and not over their lives'
     assert.match(out, /uploader segmentsNeverNamed\s+0 -> 1/);
   });
 });
+
+/**
+ * ⛔⛔⛔ THE SNAPSHOT WAS A GREP OF /metrics AND NOT /metrics.
+ *
+ * `snapshot_to` piped both nodes' metrics through an allowlist of thirteen families. Measured against
+ * the live nodes on 2026-08-14 that kept 255 of 1032 non-bucket lines and 13 of 239 families. Never
+ * captured, in any snapshot this project has ever taken: every `go_*` and `process_*` series, so the
+ * node's own CPU, memory, goroutines and file descriptors; `bee_p2p_*` and `bee_libp2p_*`, so
+ * connection churn; `bee_api_*`, so the request surface a client actually hits; `bee_blocker_*`, so
+ * peers being blocklisted; and `bee_topology_*`, `bee_chunk_*`, `bee_storage_*`, `bee_stamp_*`,
+ * `bee_settlement_*`, `bee_chequebook_*`.
+ *
+ * ⭐⭐⭐ The owner's rule is older than the defect: capture the COMPLETE instrument surface and diff
+ * the whole of it, ranked by what moved, because grepping for the subsystem you think you are
+ * measuring is how you publish a number with the wrong cause. That cost a real finding on 2026-08-12,
+ * when a publishing ceiling was attributed to protocol overhead while three metrics in the same HTTP
+ * response said the chequebook was drained and 67% of pushes were blocking on a payment allowance.
+ * Two of those three families were then added to the allowlist. The allowlist itself was the defect.
+ *
+ * ⚠️ `_bucket` rows are still dropped, and that is a stated exclusion rather than a subsystem choice:
+ * the sum and count carry the mean, the edges are fixed configuration, and they are 45% of the bytes.
+ */
+describe('the snapshot the shell takes', () => {
+  const SHELL = join(ROOT, 'deploy/scripts/node-metrics.sh');
+
+  const BODY = [
+    '# HELP bee_retrieval_request_count total',
+    'bee_retrieval_request_count 5',
+    'go_goroutines 42',
+    'process_open_fds 128',
+    'bee_p2p_connected_peers 7',
+    'bee_blocker_blocklisted_count 3',
+    'bee_retrieval_duration_seconds_bucket{le="0.1"} 900',
+    'promhttp_metric_handler_requests_total{code="200"} 11',
+  ].join('\n');
+
+  async function takeSnapshot() {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-surface-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const bin = join(dir, 'bin');
+    writeFileSync(join(dir, 'noop'), '');
+    const { mkdirSync, chmodSync, readFileSync } = await import('node:fs');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'curl'),
+      `#!/bin/sh
+url=""
+for a in "$@"; do case "$a" in http*) url="$a" ;; esac; done
+case "$url" in
+  *"/metrics") cat <<'BODY'
+${BODY}
+BODY
+    ;;
+  *"/stamps") echo '{"stamps":[]}' ;;
+  *"/health") echo '{"activeStreams":0}' ;;
+  *"/chequebook/balance") echo '{"availableBalance":"50000000000000000"}' ;;
+esac
+`,
+    );
+    chmodSync(join(bin, 'curl'), 0o755);
+    const out = join(dir, 'snap.json');
+    await run('bash', [SHELL, 'snapshot', out, 'arm01'], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    return JSON.parse(readFileSync(out, 'utf8'));
+  }
+
+  it('keeps every family, because the wrong cause is never inside the slice you chose', async () => {
+    const snap = await takeSnapshot();
+
+    // The count first. An empty parse would satisfy every absence check below and none of these.
+    assert.ok(Object.keys(snap.uploader).length >= 6, `only ${Object.keys(snap.uploader).length} series parsed`);
+    for (const name of [
+      'go_goroutines',
+      'process_open_fds',
+      'bee_p2p_connected_peers',
+      'bee_blocker_blocklisted_count',
+      'promhttp_metric_handler_requests_total{code="200"}',
+    ]) {
+      assert.ok(name in snap.uploader, `${name} was dropped, so a run that turned on it cannot be explained`);
+      assert.ok(name in snap.gateway, `${name} was dropped from the gateway`);
+    }
+  });
+
+  it('still drops histogram buckets, which is an exclusion it can defend', async () => {
+    const snap = await takeSnapshot();
+
+    assert.ok('bee_retrieval_request_count' in snap.uploader, 'the allowlisted families must survive too');
+    assert.ok(
+      !Object.keys(snap.uploader).some((name) => name.includes('_bucket')),
+      'buckets are 45% of the bytes and carry nothing the sum and count do not',
+    );
+  });
+});
+
+/**
+ * ⭐⭐⭐ THE OTHER HALF OF THE OWNER'S RULE: DIFF THE ENTIRE THING, RANKED BY WHAT MOVED.
+ *
+ * Capturing the whole surface buys nothing on its own. `diff` renders a curated summary of the
+ * metrics somebody thought to name, which is the same restriction the allowlist was, one step later.
+ * `diff-all` ranks every series that moved, so a run whose cause is in a family nobody has thought
+ * about yet says so by appearing at the top rather than by being absent.
+ *
+ * ⛔ Ranked by RELATIVE movement and not absolute. A counter that went 2,250,000 to 2,250,900 is the
+ * largest absolute mover on any bee node and says nothing, while a blocklist that went 0 to 4 is the
+ * whole story. The absolute delta is printed beside it so neither has to be inferred.
+ */
+describe('diffing the whole surface', () => {
+  async function diffAll(before, after) {
+    const dir = workspace();
+    const a = join(dir, 'before.json');
+    const b = join(dir, 'after.json');
+    writeFileSync(a, JSON.stringify(before));
+    writeFileSync(b, JSON.stringify(after));
+    const { stdout } = await run('python3', [METRICS, 'diff-all', a, b], { encoding: 'utf8' });
+    return stdout.split('\n').filter(Boolean);
+  }
+
+  const BEFORE = {
+    bee_retrieval_request_count: 2250000,
+    bee_blocker_blocklisted_count: 0,
+    go_goroutines: 400,
+    process_open_fds: 128,
+  };
+  const AFTER = {
+    bee_retrieval_request_count: 2250900,
+    bee_blocker_blocklisted_count: 4,
+    go_goroutines: 404,
+    process_open_fds: 128,
+  };
+
+  it('ranks the small counter that woke up above the huge one that ticked', async () => {
+    const lines = await diffAll(snapshot({ uploader: BEFORE }), snapshot({ uploader: AFTER }));
+
+    const moved = lines.filter((line) => line.includes('bee_') || line.includes('go_'));
+    assert.ok(moved.length >= 3, `only ${moved.length} movers rendered, so the ranking below is of nothing`);
+    const blocklist = moved.findIndex((line) => line.includes('bee_blocker_blocklisted_count'));
+    const retrieval = moved.findIndex((line) => line.includes('bee_retrieval_request_count'));
+    assert.ok(blocklist >= 0 && retrieval >= 0, 'a metric that moved is missing from the ranking entirely');
+    assert.ok(blocklist < retrieval, 'a 900-tick on 2.25 million outranked a blocklist going 0 to 4');
+  });
+
+  it('leaves out what did not move, and says how many it is showing of how many moved', async () => {
+    const lines = await diffAll(snapshot({ uploader: BEFORE }), snapshot({ uploader: AFTER }));
+
+    assert.ok(
+      !lines.some((line) => line.includes('process_open_fds')),
+      'a series that did not move was rendered, which buries the ones that did',
+    );
+    // ⛔ No silent caps. A ranking that truncates without saying so reads as "this is everything".
+    assert.ok(
+      lines.some((line) => /3 of 4 series moved/.test(line)),
+      `nothing stated the coverage: ${JSON.stringify(lines)}`,
+    );
+  });
+
+  it('names a series that appeared, rather than dropping it for having no before', async () => {
+    const lines = await diffAll(snapshot({ uploader: {} }), snapshot({ uploader: { bee_gsoc_handler_count: 7 } }));
+
+    assert.ok(
+      lines.some((line) => line.includes('bee_gsoc_handler_count')),
+      'a metric that did not exist before the run is exactly the kind that explains it',
+    );
+  });
+});

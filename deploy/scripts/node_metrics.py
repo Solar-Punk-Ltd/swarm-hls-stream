@@ -188,7 +188,54 @@ def breached_floors(
     return reasons
 
 
+def render_diff_all(before: dict, after: dict, top: int = 40) -> list[str]:
+    """Every series that moved, ranked by relative movement.
+
+    ⭐⭐⭐ The other half of the rule that removed the family allowlist from `node-metrics.sh`.
+    Capturing the whole surface buys nothing if the report still renders only the metrics somebody
+    thought to name, which is the same restriction one step later. A run whose cause sits in a family
+    nobody has considered yet says so by appearing at the top of this, rather than by being absent.
+
+    ⛔ Ranked RELATIVE and not absolute. A counter going 2,250,000 to 2,250,900 is the largest
+    absolute mover on any bee node and means nothing; a blocklist going 0 to 4 is the whole story. The
+    absolute delta is printed beside it so neither has to be inferred.
+
+    ⛔ A series with no `before` is reported as NEW rather than dropped. A metric that did not exist
+    when the run started is exactly the kind that explains what the run did.
+    """
+    lines: list[str] = []
+    for who in ("uploader", "gateway"):
+        was_all = before.get(who) or {}
+        now_all = after.get(who) or {}
+        names = set(was_all) | set(now_all)
+        movers = []
+        for name in names:
+            was = was_all.get(name)
+            now = float(now_all.get(name, 0.0))
+            was_value = 0.0 if was is None else float(was)
+            delta = now - was_value
+            if delta == 0:
+                continue
+            scale = abs(was_value) if abs(was_value) > 0 else 1.0
+            movers.append((abs(delta) / scale, name, was, now, delta))
+        movers.sort(key=lambda row: row[0], reverse=True)
+        shown = movers[:top]
+        # ⛔ No silent caps. A ranking that truncates without saying so reads as "this is everything".
+        lines.append(
+            f"  {who.upper()}: {len(movers)} of {len(names)} series moved, showing {len(shown)}"
+        )
+        for relative, name, was, now, delta in shown:
+            origin = "NEW" if was is None else f"{float(was):g}"
+            lines.append(f"    {name}  {origin} -> {now:g}  ({delta:+g}, {relative * 100:.1f}%)")
+    return lines
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) >= 2 and argv[1] == "diff-all":
+        before = json.load(open(argv[2]))
+        after = json.load(open(argv[3]))
+        print("\n".join(render_diff_all(before, after)))
+        return 0
     if len(argv) >= 2 and argv[1] == "diff":
         before = json.load(open(argv[2]))
         after = json.load(open(argv[3]))

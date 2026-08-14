@@ -26,11 +26,27 @@ UPLOADER_API_PORT="${UPLOADER_API_PORT:-10070}"
 RESERVE_PLUR="${RESERVE_PLUR:-5000000000000000}"
 MAX_UTILIZATION_PCT="${MAX_UTILIZATION_PCT:-75}"
 
-# By family rather than by name, so an analysis nobody has thought of yet is not blocked on having
-# named its metric today. Histogram buckets are dropped: they are many, and the sum and count carry
-# the mean, which is what a sitting compares.
-FAMILIES='^bee_(pusher|pushsync|retrieval|localstore|salud|kademlia|postage|batchstore|accounting|swap|pullsync|hive|reacher)_'
-
+# ⛔⛔⛔ NO FAMILY ALLOWLIST. THIS USED TO HAVE ONE AND IT WAS THE DEFECT.
+#
+# Thirteen families were kept, on the reasoning that an analysis nobody has thought of yet should not
+# be blocked on having named its metric today. Measured against the live nodes on 2026-08-14 that
+# kept 255 of 1032 non-bucket lines and 13 of 239 families. Never captured, in any snapshot this
+# project has taken: every `go_*` and `process_*` series, so the node's own CPU, memory, goroutines
+# and file descriptors; `bee_p2p_*` and `bee_libp2p_*`, so connection churn; `bee_api_*`, so the
+# request surface a client hits; `bee_blocker_*`, so peers being blocklisted; and `bee_topology_*`,
+# `bee_chunk_*`, `bee_storage_*`, `bee_stamp_*`, `bee_settlement_*`, `bee_chequebook_*`.
+#
+# ⭐⭐⭐ Grepping for the subsystem you think you are measuring is how you publish a number with the
+# wrong cause. On 2026-08-12 a publishing ceiling was measured over a full day off `bee_pusher_*` and
+# attributed to protocol overhead, while `bee_pushsync_overdraft_refresh`,
+# `bee_accounting_payment_error_count` and `bee_swap_available_balance` sat in the same HTTP response
+# saying the chequebook was 99.9999% drained and 67% of pushes were blocking on a payment allowance.
+# Two of those three families were then added to the allowlist. The allowlist itself was the defect,
+# and the whole surface costs 64 KB a node against the 16 KB the slice cost.
+#
+# ⚠️ `_bucket` rows are still dropped. That is a stated exclusion rather than a subsystem choice: the
+# sum and count carry the mean a sitting compares, the edges are fixed configuration, and they are
+# 45% of the bytes.
 get() { curl -s --max-time 20 "$1" 2>/dev/null || true; }
 
 snapshot_to() {
@@ -38,8 +54,8 @@ snapshot_to() {
   # it, not an environment for it, which is how the first version handed python an empty LABEL.
   local out="$1" LABEL="${2:-}" LOAD UP GW STAMPS HEALTH CHQ_UP CHQ_GW
   LOAD="$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo '')"
-  UP="$(get "http://127.0.0.1:${UPLOADER_PORT}/metrics" | grep -E "${FAMILIES}" | grep -v '_bucket')"
-  GW="$(get "http://127.0.0.1:${GATEWAY_PORT}/metrics" | grep -E "${FAMILIES}" | grep -v '_bucket')"
+  UP="$(get "http://127.0.0.1:${UPLOADER_PORT}/metrics" | grep -v '_bucket')"
+  GW="$(get "http://127.0.0.1:${GATEWAY_PORT}/metrics" | grep -v '_bucket')"
   STAMPS="$(get "http://127.0.0.1:${UPLOADER_PORT}/stamps")"
   HEALTH="$(get "http://127.0.0.1:${UPLOADER_API_PORT}/health")"
   CHQ_UP="$(get "http://127.0.0.1:${UPLOADER_PORT}/chequebook/balance")"
@@ -70,6 +86,12 @@ case "${1:-}" in
   diff)
     [ $# -ge 3 ] || { echo "usage: node-metrics.sh diff <before.json> <after.json>" >&2; exit 2; }
     python3 "${HERE}/node_metrics.py" diff "$2" "$3"
+    ;;
+  # Every series that moved, ranked, rather than the ones a renderer was taught to name. `diff` above
+  # can only ever confirm or deny a cause that is already on its list.
+  diff-all)
+    [ $# -ge 3 ] || { echo "usage: node-metrics.sh diff-all <before.json> <after.json>" >&2; exit 2; }
+    python3 "${HERE}/node_metrics.py" diff-all "$2" "$3"
     ;;
   # A time series through a long arm, and the only funding check a single continuous broadcast gets
   # after minute zero.
