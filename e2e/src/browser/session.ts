@@ -142,7 +142,23 @@ export interface LatencyTargetVerdict {
  * cost that arm happened at its join, so every sample it took was already against the raised target
  * and nothing about the series looked wrong.
  */
-export function judgeLatencyTarget(samples: readonly ViewerSample[]): LatencyTargetVerdict {
+/**
+ * ⛔⛔⛔ `configuredS` IS A PARAMETER BECAUSE THE TARGET MOVES AT RUNTIME, AND THIS READ THE COMPILE-
+ * TIME CONSTANT UNTIL 2026-08-14. `BROWSER_TARGET_LATENCY_S` has steered arms at 6, 2 and 1.5 since
+ * PR #186, and every one of those runs had `raisedByS` and `held` judged against 6.
+ *
+ * The 2026-08-14 sitting is what exposed it: arms configured at 2s reported `worstS: 3`, so the
+ * player had been raised a full second past its target, and the verdict beside it read
+ * `raisedByS: 0, held: true`. Wrong, and wrong in the flattering direction.
+ *
+ * ⭐ Note which field survived: `medianPastTargetS` subtracts the target from the reading **per
+ * sample**, so it was right the whole time. That is gate lesson AHT stated as code. A verdict that
+ * compares against a constant is not measuring a setpoint that can move.
+ */
+export function judgeLatencyTarget(
+  samples: readonly ViewerSample[],
+  configuredS: number = LIVE_SYNC_DURATION_S,
+): LatencyTargetVerdict {
   const observed = samples
     .map((sample) => sample.liveTargetLatencyS)
     .filter((value): value is number => value !== null);
@@ -153,15 +169,15 @@ export function judgeLatencyTarget(samples: readonly ViewerSample[]): LatencyTar
     .map((sample) => sample.liveLatencyS! - sample.liveTargetLatencyS!);
 
   return {
-    configuredS: LIVE_SYNC_DURATION_S,
+    configuredS,
     worstS,
     medianPastTargetS: pastTarget.length > 0 ? median(pastTarget) : null,
-    raisedByS: worstS === null ? 0 : Math.max(0, worstS - LIVE_SYNC_DURATION_S),
+    raisedByS: worstS === null ? 0 : Math.max(0, worstS - configuredS),
     stalls: totalAcrossRestarts(samples, (sample) => sample.bufferStalls),
     // Null rather than true when nothing was observed: a run that never read a target has not shown
     // that the target was steady, and an empty case that reads as a pass is how this project has been
     // caught before.
-    held: worstS !== null && worstS <= LIVE_SYNC_DURATION_S + TARGET_ROUNDING_S,
+    held: worstS !== null && worstS <= configuredS + TARGET_ROUNDING_S,
   };
 }
 
@@ -473,7 +489,15 @@ function mediaPlayed(samples: readonly ViewerSample[]): PlayedMedia {
   return { playedS, forwardSeeks, seekedPastS };
 }
 
-export function summarize(samples: readonly ViewerSample[]): SessionSummary {
+/**
+ * @param configuredTargetS the latency target this run actually asked the player for. ⛔ Defaulting
+ *   to {@link LIVE_SYNC_DURATION_S} keeps callers that never move it honest, but a caller that sets
+ *   `BROWSER_TARGET_LATENCY_S` and omits this gets a target verdict judged against the wrong number.
+ */
+export function summarize(
+  samples: readonly ViewerSample[],
+  configuredTargetS: number = LIVE_SYNC_DURATION_S,
+): SessionSummary {
   const last = samples[samples.length - 1];
   const advances = playbackAdvances(samples);
   const spanMs = samples.length > 1 ? last.atMs - samples[0].atMs : 0;
@@ -494,7 +518,7 @@ export function summarize(samples: readonly ViewerSample[]): SessionSummary {
     deliveredFps: deliveredFps(samples),
     medianBufferAheadS: samples.length > 0 ? median(samples.map((sample) => sample.bufferAheadS)) : 0,
     latency: judgeLatency(samples),
-    latencyTarget: judgeLatencyTarget(samples),
+    latencyTarget: judgeLatencyTarget(samples, configuredTargetS),
   };
 }
 
