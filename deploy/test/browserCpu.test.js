@@ -76,8 +76,16 @@ sed -n "\${i}p" ${JSON.stringify(answersFile)}
   return { dir, bin, callLog };
 }
 
-/** Drive the real script the way an arm does: source it, sample, stop, then summarise. */
-async function sampleAnArm(box, { intervalS = '0.05', runFor = '1.5', container = 'byte-source-browser' } = {}) {
+/**
+ * Drive the real script the way an arm does: source it, sample, stop, then summarise.
+ *
+ * ⛔⛔ It WAITS FOR THE FIRST SAMPLE rather than sleeping a fixed span and hoping. One iteration costs
+ * about 0.4s here and far more when the rest of the suite is running beside it, so a fixed sleep made
+ * the sample count a function of machine load. A timing test that fails on a busy machine gets its
+ * threshold raised until it cannot fail at all, and the arithmetic it was guarding goes untested. The
+ * arithmetic is tested below with no timing in it whatsoever.
+ */
+async function sampleAnArm(box, { intervalS = '0.05', container = 'byte-source-browser' } = {}) {
   const log = join(box.dir, 'run.log');
   const series = join(box.dir, 'cpu.txt');
   // ⛔ Every shell variable reference is escaped. An unescaped ${...} here is read by JavaScript, not
@@ -90,7 +98,10 @@ BROWSER_CONTAINER_NAME=${JSON.stringify(container)}
 BROWSER_CPU_INTERVAL_S=${JSON.stringify(intervalS)}
 . ${JSON.stringify(SCRIPT)}
 start_browser_cpu ${JSON.stringify(series)} arm01
-sleep ${runFor}
+for _ in $(seq 1 200); do
+  [ -s ${JSON.stringify(series)} ] && break
+  sleep 0.1
+done
 stop_browser_cpu
 summarize_browser_cpu ${JSON.stringify(series)} arm01
 `;
@@ -107,6 +118,23 @@ summarize_browser_cpu ${JSON.stringify(series)} arm01
   };
 }
 
+/** Hand the summariser a series directly. No sampler, no clock, no dependence on machine load. */
+async function summariseSeries(box, lines) {
+  const log = join(box.dir, 'summary.log');
+  const series = join(box.dir, 'given.txt');
+  writeFileSync(series, `${lines.join('\n')}\n`);
+  const script = `
+set -u
+LOG=${JSON.stringify(log)}
+say() { printf '%s\\n' "$*" >> "\${LOG}"; }
+BROWSER_CONTAINER_NAME=byte-source-browser
+. ${JSON.stringify(SCRIPT)}
+summarize_browser_cpu ${JSON.stringify(series)} arm01
+`;
+  await run('bash', ['-c', script], { env: { ...process.env, PATH: `${box.bin}:${process.env.PATH}` } });
+  return { log: readFileSync(log, 'utf8') };
+}
+
 describe('what the browser cost while an arm ran', () => {
   it('takes a sample per interval, so a summary has something to summarise', async () => {
     const result = await sampleAnArm(sandbox());
@@ -118,17 +146,26 @@ describe('what the browser cost while an arm ran', () => {
     assert.match(result.log, /samples/);
   });
 
+  /**
+   * ⛔ No sampler and no clock. `summarize_browser_cpu` is handed a series and asked what it says, so
+   * this cannot pass or fail on how busy the machine is. The sampler's job is proved above by the
+   * count; turning what it collected into a mean and a peak is arithmetic and is proved here.
+   */
   it('reports the mean and the peak, because a viewer near a ceiling and one idling average the same', async () => {
-    // 1.00, then 3.00, then 2.00 cores and 2.00 for every sample after, since the stub clamps to its
-    // last answer. Whatever the sample count, the peak is 3.00 and a mean alone cannot tell this run
-    // from a flat 2.00.
-    //
-    // ⚠️ runFor is wall time and not a sample count. One iteration costs about 0.4s here, dominated by
-    // fork and exec rather than by the interval, so asking for three samples means allowing seconds.
-    const result = await sampleAnArm(sandbox({ percentages: ['100.00%', '300.00%', '200.00%'] }), { runFor: '2.5' });
+    // 1.00, 3.00 and 2.00 cores. Mean 2.00, peak 3.00, and a mean alone cannot tell this from a flat
+    // 2.00, which is the difference between a viewer with headroom and one about to stall.
+    const result = await summariseSeries(sandbox(), ['100.00%', '300.00%', '200.00%']);
 
-    assert.ok(result.series.length >= 3, `only ${result.series.length} samples, so the peak below is not the peak`);
+    assert.match(result.log, /3 samples/);
+    assert.match(result.log, /mean 2\.00 cores/);
     assert.match(result.log, /peak 3\.00 cores/);
+  });
+
+  it('drops a line it cannot parse rather than averaging it in as an idle sample', async () => {
+    const result = await summariseSeries(sandbox(), ['200.00%', 'Error response from daemon', '200.00%']);
+
+    assert.match(result.log, /2 samples/, 'an unreadable line was counted, which pulls the mean toward zero');
+    assert.match(result.log, /mean 2\.00 cores/);
   });
 
   /**
