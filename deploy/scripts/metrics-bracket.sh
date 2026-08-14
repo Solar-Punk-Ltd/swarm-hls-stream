@@ -87,7 +87,15 @@ SAMPLER_PID=""
 
 start_sampler() {
   local dir="$1" label="$2"
-  [ "${METRICS_INTERVAL_S}" -gt 0 ] 2>/dev/null || return 0
+  # ⛔⛔⛔ Declining is announced rather than returned quietly, and that line is the whole reason this
+  # branch is four lines instead of one. This function is the only launcher of the only writer of
+  # STOP_FILE, so a caller that lands here has NO mid-flight floor check while its arms go on logging
+  # three checks that read that file. Two drivers shipped in exactly that state and no sitting log
+  # anywhere said so. A control that is off must be as loud as one that fired.
+  if ! [ "${METRICS_INTERVAL_S}" -gt 0 ] 2>/dev/null; then
+    say "  ⛔ NO MID-FLIGHT FLOOR CHECK: METRICS_INTERVAL_S=${METRICS_INTERVAL_S}, so nothing will write ${STOP_FILE}"
+    return 0
+  fi
   mkdir -p "${dir}"
   # ⛔ STAMP is passed because the sampler's capacity floor applies to the batch this sitting writes
   # to and to no other. /stamps lists every batch the node ever bought, and one of them here is dead.
