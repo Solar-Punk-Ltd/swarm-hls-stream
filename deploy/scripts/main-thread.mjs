@@ -38,8 +38,27 @@ import { pathToFileURL } from 'node:url';
 import { connect, sleep } from './cdp.mjs';
 import { enableMetrics, readMetrics } from './chrome-cpu.mjs';
 
-const ENDPOINT_ATTEMPTS = 40;
 const ENDPOINT_RETRY_MS = 250;
+
+/**
+ * How long to keep asking for a page that has routed to the viewer, in seconds.
+ *
+ * ⛔⛔⛔ THIS WAS TEN SECONDS AND IT DECLINED EVERY ARM OF A PAID SITTING.
+ *
+ * Proving the sampler by hand pointed it at a Chrome already sitting on the watch route, so the
+ * attach was instant and ten seconds looked like ample slack. A real arm is nothing like that: the
+ * container starts, pnpm resolves, Playwright launches Chrome, the page loads, and only then does the
+ * client route. Measured 2026-08-14, the page was still at `http://127.0.0.1:10074/` when the window
+ * closed and had reached `#/watch/video/…` well under a minute later.
+ *
+ * ⭐ The client is a HASH ROUTER, so the watch route never appears in a fresh target list and cannot
+ * appear before the app has booted. A window sized for "is the port up" is the wrong question: the
+ * right one is "has the viewer started viewing", which is a page lifecycle away.
+ *
+ * ⚠️ Waiting long costs nothing. Sampling begins when the attach lands, so a generous window only
+ * delays the first reading, while a short one throws the whole arm's column away.
+ */
+export const ATTACH_WINDOW_S = Number(process.env.MAIN_THREAD_ATTACH_S ?? 240);
 
 /** Target types that can run script, so one of them existing means this reading is partial. */
 const SCRIPTABLE_TYPES = Object.freeze(['worker', 'service_worker', 'shared_worker', 'worklet']);
@@ -161,9 +180,10 @@ export function summariseMainThread(samples) {
  * @param {string} wantUrl
  * @returns {Promise<TargetChoice>}
  */
-export async function awaitTarget(port, wantUrl) {
+export async function awaitTarget(port, wantUrl, windowS = ATTACH_WINDOW_S) {
+  const attempts = Math.max(1, Math.round((windowS * 1000) / ENDPOINT_RETRY_MS));
   let lastError = new Error(`nothing ever answered on ${port}`);
-  for (let attempt = 0; attempt < ENDPOINT_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
       return chooseTarget(targets, wantUrl);
@@ -172,7 +192,9 @@ export async function awaitTarget(port, wantUrl) {
     }
     await sleep(ENDPOINT_RETRY_MS);
   }
-  throw lastError;
+  // ⛔ The window is named in the message. A refusal that says only what it wanted reads as "the page
+  // never existed", and the failure this actually had was "the page existed and had not routed yet".
+  throw new Error(`gave up after ${windowS}s waiting for a page matching ${wantUrl}: ${lastError.message}`);
 }
 
 /**
