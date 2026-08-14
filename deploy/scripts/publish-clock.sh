@@ -124,6 +124,25 @@ run_remote() {
   fi
 }
 
+# The last line of an inspect result that carries anything, which is the only line that answers.
+#
+# ⛔⛔⛔ EVERY READ BELOW IS `docker inspect ... || echo missing`, AND THE TWO HALVES CAN BOTH SPEAK.
+# For a container that is gone, docker writes an EMPTY LINE to stdout and then exits non-zero, so the
+# guard appends a second line and the value that comes back is "\nmissing" rather than "missing". A
+# whole-string comparison against `missing` therefore misses, the vanished branch is skipped, and a
+# stop this harness asked for is reported as a failed broadcast. That is what the floor-check sitting
+# of 2026-08-14 printed, in a broadcast the harness had stopped on purpose:
+#
+#   ✗ publish FAILED (exit
+#   missing). Nothing usable was broadcast, so do not measure against this.
+#
+# ⭐⭐⭐ Gate lesson AHL, again: an alarm that fires on every successful stop is one the operator
+# learns to skip, and the next time it is real nobody reads it. PR #188 removed this alarm from one
+# path and this is the other.
+last_line() {
+  printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -1
+}
+
 # ## Telling a stop this run was ASKED for apart from a publisher that died
 #
 # A harness stops the broadcast the moment its arms are done rather than paying for the slack it
@@ -238,7 +257,7 @@ CONTAINER_VANISHED=0
 POLL_FAILURES=0
 while true; do
   if ! RUNNING=$(printf 'docker inspect -f {{.State.Running}} %q 2>/dev/null || echo missing\n' "${CONTAINER}" | run_remote) ||
-    [ -z "${RUNNING}" ]; then
+    [ -z "$(last_line "${RUNNING}")" ]; then
     POLL_FAILURES=$((POLL_FAILURES + 1))
     if [ "${POLL_FAILURES}" -ge "${MAX_CONSECUTIVE_POLL_FAILURES}" ]; then
       log_error "publish UNKNOWN: ${MAX_CONSECUTIVE_POLL_FAILURES} consecutive polls of ${TARGET} could not be taken."
@@ -252,6 +271,7 @@ while true; do
   # Reset on any poll that was actually taken, so this counts a run of failures rather than their
   # total. One blip an hour is the case the whole detached design exists to survive.
   POLL_FAILURES=0
+  RUNNING="$(last_line "${RUNNING}")"
   case "${RUNNING}" in
     true) sleep "${POLL_SECONDS}" ;;
     # `missing` is the `|| echo missing` above firing: `docker inspect` was answered and the container
@@ -274,13 +294,14 @@ if [ "${CONTAINER_VANISHED}" -eq 0 ]; then
   # above and this read, and an exit code invented here is indistinguishable from one ffmpeg actually
   # returned: 127 was reported as a real failure, with wording naming a cause it could not know.
   if ! PUBLISH_STATUS=$(printf 'docker inspect -f {{.State.ExitCode}} %q 2>/dev/null || echo missing\n' "${CONTAINER}" | run_remote) ||
-    [ -z "${PUBLISH_STATUS}" ]; then
+    [ -z "$(last_line "${PUBLISH_STATUS}")" ]; then
     # Distinguished from a failed publish, because it is a different thing to act on: the broadcast may
     # have been fine and this could not find out. Either way it must not read as success.
     log_error "publish UNKNOWN: could not read the publisher's exit status from ${TARGET}."
     log_error "Do not measure against this, and check for a leftover ${CONTAINER}."
     exit 1
   fi
+  PUBLISH_STATUS="$(last_line "${PUBLISH_STATUS}")"
   if [ "${PUBLISH_STATUS}" = "missing" ]; then
     CONTAINER_VANISHED=1
   fi

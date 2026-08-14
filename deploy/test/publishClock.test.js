@@ -135,3 +135,113 @@ describe('publish-clock.sh waiting on a detached publisher', () => {
     assert.equal(readState().killedWhileLive, false);
   });
 });
+
+/**
+ * ⛔⛔⛔ THE ALARM PR #188 REMOVED IS STILL FIRING, THROUGH A SECOND PATH.
+ *
+ * #188 taught this script that a container removed by its own harness is a requested stop rather than
+ * a failed broadcast, and it decides that by comparing the inspect result against the literal string
+ * `missing`. A real `docker inspect` of a container that is gone writes an EMPTY LINE to stdout and
+ * then exits non-zero, so the `|| echo missing` guarding it appends a second line and the value that
+ * comes back is "\nmissing". The equality misses, the vanished branch is skipped, and the run falls
+ * through to the generic failure wording.
+ *
+ * Observed on the floor-check sitting of 2026-08-14, in a broadcast this harness stopped on purpose:
+ *
+ *   ✗ publish FAILED (exit
+ *   missing). Nothing usable was broadcast, so do not measure against this.
+ *
+ * ⭐⭐⭐ Gate lesson AHL is the whole point: an alarm that fires on every successful stop is one the
+ * operator learns to skip, and the next time it is real nobody reads it.
+ */
+function sshStubVanishingAt(statePath, stopFilePath, requestStop) {
+  return `#!/usr/bin/env node
+const fs = require('node:fs');
+const STATE = ${JSON.stringify(statePath)};
+const STOP_FILE = ${JSON.stringify(stopFilePath)};
+const REQUEST_STOP = ${JSON.stringify(Boolean(requestStop))};
+const state = JSON.parse(fs.readFileSync(STATE, 'utf8'));
+state.calls += 1;
+const body = fs.readFileSync(0, 'utf8');
+function save() { fs.writeFileSync(STATE, JSON.stringify(state)); }
+
+// ⛔ Two lines, not one. This is the shape the real docker emits and the reason the comparison failed.
+const gone = () => '\\nmissing\\n';
+
+if (body.includes('.State.Running')) {
+  state.runningPolls += 1;
+  if (state.runningPolls <= ${CONTAINER_RUNS_FOR_POLLS}) {
+    state.running = true;
+    save();
+    process.stdout.write('true\\n');
+    process.exit(0);
+  }
+  // ⛔⛔ The marker is written BEFORE the container goes, which is the order publisher-stop.sh
+  // requires of every caller and the only order in which this can be told apart from a crash.
+  if (REQUEST_STOP) { fs.writeFileSync(STOP_FILE, 'the harness stopped its own publisher\\n'); }
+  state.running = false;
+  save();
+  process.stdout.write(gone());
+  process.exit(0);
+}
+
+if (body.includes('.State.ExitCode')) {
+  save();
+  process.stdout.write(gone());
+  process.exit(0);
+}
+
+if (body.includes('docker rm -f')) {
+  if (state.running) { state.killedWhileLive = true; }
+  save();
+  process.exit(0);
+}
+save();
+process.exit(0);
+`;
+}
+
+function sandboxWithVanishingContainer(requestStop) {
+  const sandbox = makeSandbox({ config: ALL_REMOTE });
+  const statePath = join(sandbox.root, 'ssh-state.json');
+  const stopFile = join(sandbox.root, 'PUBLISHER-STOP-REQUESTED');
+  writeFileSync(statePath, JSON.stringify({ calls: 0, runningPolls: 0, running: true, killedWhileLive: false }));
+  const sshPath = join(sandbox.binDir, 'ssh');
+  writeFileSync(sshPath, sshStubVanishingAt(statePath, stopFile, requestStop));
+  chmodSync(sshPath, 0o755);
+  const sleepPath = join(sandbox.binDir, 'sleep');
+  writeFileSync(sleepPath, '#!/bin/sh\nexit 0\n');
+  chmodSync(sleepPath, 0o755);
+  return { sandbox, stopFile };
+}
+
+describe('a publisher container that was removed while this script watched it', () => {
+  after(removeSandboxes);
+
+  it('reads a blank line before missing as the container being gone, not as an exit status', async () => {
+    const { sandbox, stopFile } = sandboxWithVanishingContainer(true);
+
+    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=1', `--stop-file=${stopFile}`]);
+    const output = `${run.stdout}${run.stderr}`;
+
+    assert.doesNotMatch(output, /publish FAILED/, 'a stop this harness asked for was reported as a failed broadcast');
+    assert.doesNotMatch(
+      output,
+      /Nothing usable was broadcast/,
+      'it told the operator to discard a broadcast it stopped itself',
+    );
+    assert.match(output, /stopped on request/);
+    assert.equal(run.exitCode, 0, output);
+  });
+
+  it('still fails loudly when nothing asked for the stop, so the fix above cannot mute a real one', async () => {
+    const { sandbox, stopFile } = sandboxWithVanishingContainer(false);
+
+    const run = await runScript(sandbox, 'publish-clock.sh', ['--seconds=1', `--stop-file=${stopFile}`]);
+    const output = `${run.stdout}${run.stderr}`;
+
+    assert.notEqual(run.exitCode, 0, 'a container removed by somebody else is a real failure');
+    assert.match(output, /publish FAILED/);
+    assert.match(output, /went away and nothing asked this script to stop/);
+  });
+});
