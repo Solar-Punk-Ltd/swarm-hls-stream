@@ -55,6 +55,18 @@ services:
       # Only read when the chequebook is first deployed: changing it later moves nothing, and a
       # deployed chequebook is topped up through the node's /chequebook/deposit instead.
       - --swap-initial-deposit=${BEE_GATEWAY_SWAP_INITIAL_DEPOSIT:-0}
+      # ⛔⛔ ZERO IS THE ONE VALUE THAT GUARANTEES A THRASH LOOP, so read this before changing it and
+      # before quoting any cache figure gathered at it. Bee's cache Putter never tests capacity, so
+      # chunks enter regardless; eviction triggers whenever size exceeds capacity, which at 0 is every
+      # cached chunk; and every round then asks to drop at least `cacheMinEvictCount`, hard-coded at
+      # 10,000 in bee with no flag. The counter undershoots into negative, and bee's guard
+      # `if size <= capc { continue }` then stops eviction until ordinary caching lifts it back over 0.
+      # Measured 2026-08-14: the gateway reports bee_localstore_cache_size -1844 with 2,989 eviction
+      # rounds behind it, while the uploader on the same host at bee's default capacity reports +2962
+      # and has never evicted once. So this node's cache is neither on nor off, it is a sawtooth whose
+      # phase nothing records, and a measurement's exposure scales with how long it takes to gather.
+      # ⚠️ Left at 0 because every sitting this project has run was gathered at 0 and moving it breaks
+      # comparability AND restarts the gateway. docs/bench/the-gateway-cache-is-a-sawtooth-2026-08-14.md
       - --cache-capacity=${BEE_GATEWAY_CACHE_CAPACITY:-0}
       # ⛔ Capacity does NOT gate caching, and setting it to 0 never turned the cache off. Measured
       # 2026-08-10: with capacity 0 confirmed on the running container, a second walk of the same 1000
