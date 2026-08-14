@@ -107,6 +107,12 @@ GATES="${HERE}/capacity-gate.sh"
   echo "cannot read ${GATES}: sync deploy/scripts as a directory, not one script" >&2
   exit 1
 }
+# ⛔⛔⛔ SET BEFORE metrics-bracket.sh IS SOURCED, WHERE IT DEFAULTS TO ZERO AND DISABLES THE SAMPLER.
+# The sampler is the only thing in this repo that writes STOP_FILE, and STOP_FILE is what all three
+# of this arm's floor checks read. Left at zero, a sitting logs a mid-arm floor check that polls a
+# file no process in the run will ever create. This is a paid broadcast, so the control is on by
+# default and an operator who wants it off has to say so.
+METRICS_INTERVAL_S="${METRICS_INTERVAL_S:-30}"
 BRACKET="${HERE}/metrics-bracket.sh"
 # shellcheck source=deploy/scripts/metrics-bracket.sh
 . "${BRACKET}" || {
@@ -384,6 +390,11 @@ run_arm() {
   fi
 
   bracket_both_gateways "${slug}" before
+  # ⛔⛔⛔ Reads GATEWAY_BEE_PORT and never the ultra-light node. `node_metrics.py` treats a missing
+  # chequebook as "the budget is unknown" and writes the stop file, so pointing the sampler at the
+  # unfunded gateway would abort the sitting on the strength of its own treatment, mid-arm, after the
+  # broadcast was paid for. A node that cannot spend cannot run dry.
+  start_sampler "${METRICS_DIR}/${slug}-series" "${slug}"
 
   run_browser_arm "${watch_seconds}" "${arm}" "${gateway}" >> "${LOG}" 2>&1 &
   local watch_pid=$! status=0
@@ -401,6 +412,7 @@ run_arm() {
   done
   wait "${watch_pid}" || status=$?
 
+  stop_sampler
   bracket_both_gateways "${slug}" after
   diff_both_gateways "${slug}" "  what the nodes say arm ${index} did:"
 
