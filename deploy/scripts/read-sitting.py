@@ -11,6 +11,7 @@ usage:
   read-sitting.py table <sitting-dir>            every column, per arm, warm-up marked
   read-sitting.py drift <sitting-dir> [windows]  utilisation per wall-clock window, and a slope
   read-sitting.py join  <sitting-dir>            opening window of each arm, by broadcast age
+  read-sitting.py shape <dir> [<dir>...]         the whole distribution, with the count behind each
 """
 
 import json
@@ -384,7 +385,126 @@ def cmd_join(root):
     print("\n⭐ A FLAT column across the COUNTED arms means joining a long broadcast is free.")
 
 
+# ⛔⛔⛔ BELOW THIS MANY SAMPLES ABOVE THE CUT, A QUANTILE IS NOT A DISTRIBUTION.
+#
+# On 2026-08-15 the 720p and 1080p sittings were compared quantile by quantile. p90 moved 1.60x with
+# the bytes and p99 moved 1.03x, which reads as a tail that bitrate does not touch, and that is a
+# mechanism worth a paid sitting to chase. With 253 pooled intervals per condition, p99 is the
+# THIRD-HIGHEST VALUE. The invariance was three windows.
+#
+# ⭐ What survived the check is stronger than the claim it killed: every quantile from q25 to q90
+# moves by ONE factor, 1.60x to 1.64x, so the distribution scales uniformly rather than changing
+# shape. A second claim died in the same pass, "the crest factor is compressing", which was
+# mean-against-max where p90/p50 reads 1.129 against 1.105 and has not moved.
+#
+# The count is printed for every row rather than the thin ones being hidden, because a reader who
+# cannot see p99 will compute it by hand from the same file.
+MIN_SAMPLES_FOR_QUANTILE = 20
+SHAPE_QUANTILES = (0.25, 0.50, 0.75, 0.90, 0.95, 0.975, 0.99)
+
+
+def utilisations(path):
+    """Every per-interval utilisation in one arm, as fractions of one thread."""
+    rows = readings(path)
+    out = []
+    for index in range(1, len(rows)):
+        wall = rows[index]["Timestamp"] - rows[index - 1]["Timestamp"]
+        if wall > 0:
+            out.append((rows[index]["TaskDuration"] - rows[index - 1]["TaskDuration"]) / wall)
+    return out
+
+
+def off_profile(root):
+    """Counted arms the axis guard would not vouch for, as `{arm number: verdict}`.
+
+    ⛔ `table` and `shape` read the same sitting, so they must agree about which arms count. On
+    2026-08-15 this pooled 254 gateway intervals where the guard had already refused one of the arms
+    that produced them, and two views of one dataset disagreeing about its own membership is how a
+    figure from a discarded arm ends up beside one from a kept arm.
+    """
+    log = root / "byte-source-arms.log"
+    bench, wanted = bench_dir(root), requested_size(log)
+    verdicts = {}
+    for arm in arms_from_log(log):
+        if arm["round"] <= WARMUP_ROUNDS:
+            continue
+        watch = watch_document(bench, arm["watch"]) if arm.get("watch") else None
+        verdict, _ = axis_verdict(watch, wanted)
+        if verdict != "ok":
+            verdicts[arm["arm"]] = verdict
+    return verdicts
+
+
+def pooled(root, cond, skip=()):
+    """Every counted arm of one condition, pooled. Warm-up rounds are never in here."""
+    out = []
+    for path in sorted((root / "node-metrics").glob(f"*-{cond}-mainthread.jsonl")):
+        if f"-round{WARMUP_ROUNDS}-" in path.name or int(path.name[3:5]) in skip:
+            continue
+        out.extend(utilisations(path))
+    return sorted(out)
+
+
+def quantile(ordered, q):
+    return ordered[min(len(ordered) - 1, int(q * len(ordered)))] if ordered else None
+
+
+def cmd_shape(roots):
+    """The whole distribution per condition, and how it moved between sittings.
+
+    ⭐ Read the ratio column against the count beside it. A distribution that scales UNIFORMLY says
+    the thread is doing proportionally more of one thing, and then the mean, the median and p90 all
+    carry the same information. A ratio that changes only in the top percent is describing whichever
+    handful of windows happened to land there.
+    """
+    # ⚠️ An arm that FAILED the profile is dropped, an arm nobody could CHECK is kept and named. The
+    # two differ because the stakes differ: `table` withholds a headline, which nothing else can undo,
+    # while dropping every unverifiable arm here would leave an older sitting with no distribution at
+    # all and no way to see why.
+    dropped = {}
+    for root in roots:
+        verdicts = off_profile(root)
+        dropped[root.name] = verdicts
+        failed = {arm: v for arm, v in verdicts.items() if v != "unknown"}
+        unknown = sorted(arm for arm, v in verdicts.items() if v == "unknown")
+        if failed:
+            print(f"⛔ {root.name}: dropping arm(s) the axis guard refused: "
+                  + ", ".join(f"{arm} ({v})" for arm, v in sorted(failed.items())))
+        if unknown:
+            print(f"⚠️  {root.name}: arm(s) {unknown} have no readable frame rate and are KEPT unchecked")
+
+    for cond in ("gateway", "weeb3"):
+        sets = []
+        for root in roots:
+            skip = tuple(arm for arm, v in dropped[root.name].items() if v != "unknown")
+            sets.append((root.name, pooled(root, cond, skip)))
+        sets = [(name, values) for name, values in sets if values]
+        if not sets:
+            continue
+        print(f"\n{cond}   " + "   ".join(f"{name} n={len(values)}" for name, values in sets))
+        header = f"  {'quantile':>10}" + "".join(f"{name[:12]:>13}" for name, _ in sets)
+        print(header + f"{'ratio':>9}{'samples above':>15}")
+        for q in SHAPE_QUANTILES:
+            cells = [quantile(values, q) for _, values in sets]
+            above = min(len(values) - int(q * len(values)) for _, values in sets)
+            ratio = f"{cells[-1] / cells[0]:>8.2f}x" if len(cells) > 1 and cells[0] else f"{'':>9}"
+            thin = "  <-- thin" if above < MIN_SAMPLES_FOR_QUANTILE else ""
+            print(f"  {q:>10.3f}" + "".join(f"{value:>13.3f}" for value in cells)
+                  + ratio + f"{above:>15}{thin}")
+    print(f"\n⛔ A ratio backed by fewer than {MIN_SAMPLES_FOR_QUANTILE} samples above the cut describes"
+          " a handful of windows,\n   not a distribution. On 2026-08-15 a p99 built on THREE of them"
+          " read as a tail\n   bitrate could not touch, and it was nothing.")
+    return 0
+
+
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "shape":
+        roots = [Path(arg) for arg in sys.argv[2:]]
+        missing = [str(root) for root in roots if not (root / "byte-source-arms.log").is_file()]
+        if missing:
+            print(f"not a sitting directory: {', '.join(missing)}")
+            return 1
+        return cmd_shape(roots)
     if len(sys.argv) < 3:
         print(__doc__)
         return 2

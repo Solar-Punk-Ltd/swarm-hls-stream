@@ -263,3 +263,85 @@ describe('an arm not delivered at the requested profile voids the headline', () 
     assert.doesNotMatch(stdout, /MAIN THREAD mean/);
   });
 });
+
+/**
+ * That a quantile ratio says how many samples stand behind it, and refuses to be read as a finding
+ * when the answer is three.
+ *
+ * ⛔⛔⛔ THIS EXISTS BECAUSE I NEARLY PUBLISHED FROM THREE WINDOWS, ON 2026-08-15.
+ *
+ * Comparing the 720p and 1080p sittings, p99 moved 1.03x while p90 moved 1.60x, which reads as a
+ * tail that bitrate does not touch and would have been a mechanism worth a paid sitting to chase.
+ * With 253 pooled intervals per condition, p99 is the third-highest value. The apparent invariance
+ * was three windows, and the same check killed a second claim in the same pass: "the crest factor is
+ * compressing" was mean-against-max, and p90/p50 is 1.129 against 1.105, unchanged.
+ *
+ * ⭐ What survived is stronger than either guess. Every quantile from q25 to q90 moves by ONE factor,
+ * 1.60x to 1.64x for the in-tab path against 2.40x the bytes, so the distribution scales uniformly
+ * rather than changing shape. A uniform scaling is what makes the exponent worth measuring.
+ */
+describe('a quantile ratio carries the count it rests on', () => {
+  /** 200 intervals at one utilisation plus a single much larger spike, so a high quantile lands on
+   * the spike and a low one does not. */
+  function armAt(dir, arm, utilisation) {
+    const rows = [];
+    let work = 0;
+    for (let sample = 0; sample <= 200; sample++) {
+      if (sample > 0) {
+        work += 5 * (sample === 200 ? utilisation * 10 : utilisation);
+      }
+      rows.push(
+        JSON.stringify({
+          Timestamp: sample * 5,
+          TaskDuration: Number(work.toFixed(6)),
+          ProcessTime: sample * 5 * utilisation * 4,
+          JSHeapUsedSize: 6_000_000,
+        }),
+      );
+    }
+    writeFileSync(
+      join(dir, `arm${String(arm).padStart(2, '0')}-round2-weeb3-mainthread.jsonl`),
+      `${rows.join('\n')}\n`,
+    );
+  }
+
+  function sittingFor(utilisation) {
+    const dir = workspace();
+    const metrics = join(dir, 'node-metrics');
+    mkdirSync(metrics, { recursive: true });
+    armAt(metrics, 3, utilisation);
+    writeFileSync(
+      join(dir, 'byte-source-arms.log'),
+      '[00:00:00]   one LIVE broadcast of 40 min at a 0.5s GOP, 1280x720 at 2500 kbps\n' +
+        '[00:01:00] arm 3 (round 2): segment bytes from weeb3, watching 360s\n',
+    );
+    return dir;
+  }
+
+  async function shape(dirs) {
+    try {
+      const { stdout } = await run('python3', [READER, 'shape', ...dirs]);
+      return stdout;
+    } catch (error) {
+      return error.stdout ?? '';
+    }
+  }
+
+  it('prints how many samples sit above each quantile it compares', async () => {
+    const out = await shape([sittingFor(0.2), sittingFor(0.4)]);
+
+    assert.match(out, /samples/i, 'a ratio with no count behind it is what caused this test to exist');
+    assert.match(out, /0\.250/, 'the low quantiles are where the robust ratios live');
+  });
+
+  it('marks a quantile too thin to read as a distribution', async () => {
+    const out = await shape([sittingFor(0.2), sittingFor(0.4)]);
+    const thin = out.split('\n').filter((line) => line.includes('0.990'));
+
+    assert.equal(thin.length > 0, true, 'p99 has to appear, since hiding it is not the fix');
+    assert.ok(
+      thin.every((line) => /thin/i.test(line)),
+      'p99 over 200 intervals rests on two samples and must say so',
+    );
+  });
+});
