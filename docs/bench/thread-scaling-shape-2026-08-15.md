@@ -1,7 +1,12 @@
 # The main thread's distribution scales uniformly, and two claims that did not survive being checked
 
-No broadcast, no BZZ. Every number here comes from the fourteen counted arms already recorded by
-`main-thread-saturation-2026-08-14.md` and `1080p-main-thread-2026-08-15.md`.
+No broadcast, no BZZ. Every number here comes from the **eleven** counted arms already recorded by
+`main-thread-saturation-2026-08-14.md` (six) and `1080p-main-thread-2026-08-15.md` (six, of which
+**one was refused by the axis guard** for not being delivered at 1920x1080 30fps), plus the
+forty-minute arms of `long-arm-drift-2026-08-14.md` for the median table in the last section.
+
+⛔ **This line said "fourteen" and no combination of the sources reaches fourteen.** Six and six is
+twelve, and the axis guard this document says it honours takes one of those away.
 
 Written because the next thing on the list was a third resolution at about 1.5 BZZ, bought to draw a
 better line through the peak. The 1080p sitting had just refuted a line drawn through two peaks, and
