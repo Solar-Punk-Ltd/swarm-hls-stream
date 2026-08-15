@@ -71,8 +71,13 @@ function writeMainThread(metricsDir, arm, thread) {
       }),
     );
   }
-  rows.push(JSON.stringify({ summary: { samples: 12, usable: 12, wallS: 55, mean: thread, peak: thread * 2, complete: true } }));
-  writeFileSync(join(metricsDir, `arm${String(arm.arm).padStart(2, '0')}-round${arm.round}-${arm.cond}-mainthread.jsonl`), `${rows.join('\n')}\n`);
+  rows.push(
+    JSON.stringify({ summary: { samples: 12, usable: 12, wallS: 55, mean: thread, peak: thread * 2, complete: true } }),
+  );
+  writeFileSync(
+    join(metricsDir, `arm${String(arm.arm).padStart(2, '0')}-round${arm.round}-${arm.cond}-mainthread.jsonl`),
+    `${rows.join('\n')}\n`,
+  );
 }
 
 const WINDOW_S = 360;
@@ -187,7 +192,11 @@ describe('an arm not delivered at the requested profile voids the headline', () 
     const { code, stdout } = await table(sitting(arms));
 
     assert.notEqual(code, 0, 'a counted arm at 26.5fps against 30 must not exit zero');
-    assert.doesNotMatch(stdout, /MAIN THREAD mean/, 'no ratio may be printed from arms that were not delivered at the profile');
+    assert.doesNotMatch(
+      stdout,
+      /MAIN THREAD mean/,
+      'no ratio may be printed from arms that were not delivered at the profile',
+    );
     assert.match(stdout, /26\.5/);
   });
 
