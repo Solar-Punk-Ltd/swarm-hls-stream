@@ -162,7 +162,8 @@ delivered**. Nothing in the browser causes that. **[OBSERVED]**
 **4. ⛔⛔ Our own profiles are a better match, but "with room to spare" was WRONG and section 5c
 retires it.** That claim rested on a ~580-670 KB/s band which turned out to be a distant gateway's
 round trip rather than anything's delivery capability. **Measured directly at n=500, a browser node
-delivers 115 KB/s sequentially and about 345 KB/s at its own configured concurrency of 3, against the
+delivers 115 KB/s sequentially and about 345 KB/s at its own configured concurrency of 3 (⛔ **on a
+corpus later found to be decaying, so both are floors**), against the
 357 KB/s that 2.86 Mbps needs.** That is **0.99x of realtime at the median and 0.67x at the p90**, on
 an idle laptop with nothing decoding. **The best-fitting profile we have does not fit with room to
 spare, it fits with none.** 1080p/6000k is not a close call. **[OBSERVED]**
@@ -826,25 +827,35 @@ every concurrent viewer from that one fetch. Pooling is the whole reason our num
 | **the synchronised-audience problem**                            | ⛔ **worse**                              | we measured that what limits a gateway is how many viewers want the **same chunk at once**. That constraint does not disappear, it relocates to the storer neighbourhood, and there is no shared fetch to absorb it                                                                                                                                                                                                                                                                                                                 |
 | **cost in BZZ to us**                                            | ✅ **plausibly near zero**                | viewers pay their own retrieval, or pay nothing, see below                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **our infrastructure cost**                                      | ✅ **near zero**                          | no gateway fleet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **quality ceiling per viewer**                                   | ⛔⛔ **much lower**                       | **~345 KB/s measured at n=500** (not the retired ~600 band) against a gateway viewer's share of 43-44 MB/s. That is 0.99x of what our own best-fitting profile needs                                                                                                                                                                                                                                                                                                                                                                |
+| **quality ceiling per viewer**                                   | ⛔⛔⛔ **WITHDRAWN**                       | This row read "**~345 KB/s measured at n=500**". That series was measured on a decaying corpus and is a **floor**, not a ceiling. The same node later sustained **8.34 Mbps (~1,014 KB/s)**, and healthy content gives 1,134-1,189 KB/s. See section 7a                                                                                                                                                                                                                                                                                                                                                                |
 | **time to first frame**                                          | ⚠️ **worse, and the 150s here was wrong** | ⛔ This row read "~150s observed cold" until 2026-08-14. That figure is **Abel's** stream, 8.5 Mbps at 4.43 MB per segment. On **our own** content the same session reached `readyState 4` in **~5s**, which this document records two sections earlier. ⚠️ Both are 2026-08-09, on the 0.266s profile we no longer ship, through weeb-3's native player. Neither describes the client we ship. The current path was measured in A2: first retrieval **9.4-10.5s cold against 3.2-4.0s warm**, n=4, which is why `prewarm()` exists |
 | **page weight**                                                  | ⛔ **+4.15 MB of WASM**                   | per viewer, per cold load                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### The funding question, which is now the default case rather than the edge case
 
-We already measured what an **unfunded** node does: it cannot settle, so bee **skips peers ~37x per
-chunk** and it **asks 38 peers where a funded one asks 1**. We concluded "do not ship unfunded".
+⛔⛔⛔ **CORRECTED 2026-08-15.** This paragraph read: *"it cannot settle, so bee skips peers ~37x per
+chunk and it asks 38 peers where a funded one asks 1"*. **The 38 are loop iterations counted inside
+the node before the accounting call. They never reach the wire.** Bee's own source says so, and the
+correction was published on 2026-08-08 in `docs/bench/why-an-unfunded-gateway-is-slow-2026-08-08.md`.
+
+**Real peer contacts are 1.281 unfunded against 1.142 funded, about 13% more network load, not 34x
+or 38x.** An independent measurement on the nodes themselves later read 30.05 peers asked per request
+against 1.59, a ratio near 19, still nowhere near 38-to-1 and measured a different way. We concluded
+"do not ship unfunded", and that conclusion stands on the 2x-per-segment cost measured in
+`docs/bench/gateway-funding-2026-08-13.md`, not on the retracted multiplier.
 
 ⛔ **Every browser viewer is unfunded.** We watched `Applied refreshment 450000` repeatedly on the
 live page: the node is living on pseudosettle free credit, exactly the regime that produced the 38x.
 **[OBSERVED]**
 
-⚠️ **Do not carry the 38x across without testing it.** That figure came from bee's own counters on a
-bee node. weeb-3 is a different implementation with its own accounting (`refreshment_due`,
-`bee_reconnect_delay_seconds`, a x10 `BEE_LIGHT_ACCOUNTING_FACTOR`). Whether it suffers the same
-amplification is **the single highest-value thing phase 1 could measure**, because if it does, then
-20,000 browser viewers do not put 20,000 requests on the network, they put something closer to
-760,000.
+⚠️ **Do not carry any amplification factor across without testing it.** The bee figure came from
+bee's own counters on a bee node. weeb-3 is a different implementation with its own accounting
+(`refreshment_due`, `bee_reconnect_delay_seconds`, a x10 `BEE_LIGHT_ACCOUNTING_FACTOR`).
+
+⛔ **The 760,000-request projection this paragraph used to carry is deleted, not rescaled.** It was
+20,000 viewers times the retracted 38x. At the corrected 1.13x the same arithmetic gives about
+22,600, which is a different claim entirely and would want its own measurement rather than a second
+multiplication of an unmeasured factor.
 
 ⏸ **DEFERRED BY THE OWNER, 2026-08-10, and it is not being re-proposed.** So that number is not coming
 in this phase. **Anything downstream that needs the amplification factor for a browser node has to
@@ -909,19 +920,36 @@ wrong, because the answer changes shape below about 2,000.
 
 What we can bound:
 
-**a) Per-viewer quality is capped at about 345 KB/s.** ⛔⛔ **This paragraph previously said "roughly
-600 KB/s" and derived 1.7x of headroom from it. Both were wrong.** That band was a distant gateway's
-round trip, and section 5c measured the real figure directly: **115 KB/s sequentially, ~345 KB/s at
-weeb-3's configured concurrency of 3.** **[OBSERVED, n=500]**
+**a)** ⛔⛔⛔ **WITHDRAWN 2026-08-15: THERE IS NO 345 KB/s PER-VIEWER CAP, AND THE TABLE BELOW IS
+KEPT ONLY AS THE RECORD OF WHAT WAS BELIEVED.**
 
-| profile               |      needs | verdict for a browser viewer                                                       |
+This section read "**Per-viewer quality is capped at about 345 KB/s**" and ruled three profiles out
+against it. Every number in it was measured by fetching **our own** references, and on 2026-08-11 that
+corpus was found to have been decaying while it was measured. The whole pre-2026-08-11 in-browser
+series is therefore **floors, not ceilings**: a fetch that timed out on unretrievable content was
+being scored as slow delivery.
+
+The same node, unfunded and gateway-less, then sustained **8.34 Mbps at realtimeRatio 0.9962**, an
+implied **~1,014 KB/s**. That is above the 750 KB/s this table calls "2.2x over" and reaches the
+1,064 KB/s it calls "3.1x over". On healthy content the measured band is **1,134 KB/s at concurrency
+4 and 1,189 at concurrency 16**.
+
+⛔ **The doc also contradicted itself here.** Section 5c, at line 129 of this file, records that 345
+was *arithmetic* and that the *measurement* at concurrency 3 was **212 KB/s**. This section called
+345 "measured, n=500".
+
+| profile               |      needs | ⛔ the verdict AS BELIEVED, all three now void                                      |
 | --------------------- | ---------: | ---------------------------------------------------------------------------------- |
 | **2.86 Mbps**         |   357 KB/s | ⚠️ **0.99x of realtime at the median, 0.67x at the p90. It fits with NO headroom** |
 | **1080p / 6000k**     |   750 KB/s | ⛔⛔ **2.2x over.** Not a close call                                               |
 | Abel's 2560x1600 test | 1,064 KB/s | ⛔⛔ **3.1x over**, and a public gateway cannot serve it either                    |
 
-⚠️ And that is the **delivery** ceiling only, measured with nothing else running. It is not a
-sustained-playback result, which is still step 2 and still open.
+See `docs/bench/fresh-vs-decayed-2026-08-11.md` for the decay,
+`docs/bench/abel-sustain-result-2026-08-11.md` for the 8.34 Mbps, and
+`docs/bench/concurrency-on-healthy-content-2026-08-11.md` for the healthy-corpus band.
+
+⚠️ What is still true is the *shape* of the caveat: these were **delivery** measurements taken with
+nothing else running, and delivery is not sustained playback.
 
 **b) Our own delivery is not the constraint.** The feed scales: a feed read at 128 concurrent readers
 costs what it costs at one. Publishing is unaffected by audience size. The publisher side of a
@@ -1083,9 +1111,11 @@ does between those two numbers is interpolation.
   day the number was written down.
 - **That the median predicts failure.** It does not. Every real failure we have found was visible only
   in a **rate of crossing** a threshold.
-- **That unfunded behaves like funded.** A bee node that cannot settle **asks 38 peers where a funded
-  one asks 1** and is skipped ~37x per chunk. ⚠️ **Every browser viewer is unfunded**, but that figure
-  came from bee's counters on a bee node and has **not** been shown to apply to weeb-3.
+- **That unfunded behaves like funded.** ⛔ **This bullet read "asks 38 peers where a funded one asks
+  1 and is skipped ~37x per chunk". Retracted:** those are local loop iterations, and real contacts
+  are **1.281 against 1.142, about 13%**. What survives is the direction and a cost measured a
+  different way: an unfunded gateway is **2x per segment**, 163ms against 82ms. ⚠️ **Every browser
+  viewer is unfunded**, and neither figure has been shown to apply to weeb-3.
 - **That a gateway result transfers to a browser node.** All of our capacity numbers are
   gateway-side.
 
