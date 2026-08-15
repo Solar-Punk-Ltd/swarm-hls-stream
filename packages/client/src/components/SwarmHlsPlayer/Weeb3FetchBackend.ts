@@ -36,13 +36,21 @@ const importWeeb3: Weeb3ModuleLoader = () => import('@lat-murmeldjur/weeb_3') as
 /**
  * A Swarm node running in this tab, serving segment bytes to our player.
  *
- * ## ⛔⛔⛔ One node per tab, and the failure is silent
+ * ## One node per tab, and the numbers that justified it were wrong
  *
- * Measured 2026-08-11: one weeb-3 node in a tab reaches ~200 peers, two reach 82 each, and three reach
- * **zero, never re-dial, and report no error**. A player asks for a fragment every half second, so a
- * backend that booted a node per request would be well past the three-node case within two seconds of
- * pressing play, and would look like a network that simply had nothing to give. Hence one memoised
- * node, and hence the module singleton below rather than an instance per player.
+ * ⛔ **The 200 / 82 / 0 figures below are refuted for separate processes.** They were measured on
+ * 2026-08-11 and read as a per-machine limit. On 2026-08-15 six separate Chrome processes on one
+ * laptop each reached 200, then twelve did, then twelve penned pens each held all 40 nodes they were
+ * given with flat per-pen cost. See `deploy/scripts/cdp.mjs` for the likely cause, a slow first
+ * contact on a machine's first node combined with a peer floor on a short timeout.
+ *
+ * ⚠️ **What is still untested is the case this file actually cares about**: several weeb-3 nodes
+ * inside ONE tab. Every arm that refuted the per-machine claim ran one node per tab, so none of them
+ * touched this. Treat it as unmeasured rather than as either proven or refuted.
+ *
+ * The singleton below stands on its own reasoning regardless. A player asks for a fragment every half
+ * second and each node costs 4.5 MB of wasm plus seconds of dialling, so booting one per request
+ * would be wasteful whatever the peer tables did.
  *
  * ## What this deliberately does not use
  *

@@ -13,9 +13,25 @@
  *
  * Nothing here sends either. What the page reports is what the page got.
  *
- * ⛔ ONE weeb-3 NODE PER MACHINE, and a separate browser process is not an exemption: two nodes
- * starve each other's peer table whoever launched them. Measured 1 node 200 peers, 2 nodes 82,
- * 3 nodes 0, with no error surfaced anywhere.
+ * ⛔⛔ REFUTED 2026-08-15. THE PARAGRAPH BELOW IS WRONG AND IS KEPT BECAUSE ACTING ON IT SHAPED
+ * EVERY BROWSER ARM IN BOTH REPOS.
+ *
+ *   > ⛔ ONE weeb-3 NODE PER MACHINE, and a separate browser process is not an exemption: two nodes
+ *   > starve each other's peer table whoever launched them. Measured 1 node 200 peers, 2 nodes 82,
+ *   > 3 nodes 0, with no error surfaced anywhere.
+ *
+ * Six separate Chrome processes on one laptop each reached 200, then twelve did, then twelve penned
+ * pens on a lab box each held all 40 nodes they were given, with per-pen CPU and memory flat from 1
+ * to 12. There is no starvation between nodes on one machine.
+ *
+ * ⭐ What almost certainly produced the original numbers: the FIRST weeb-3 node started on a machine
+ * can sit at 0 peers for over 120 seconds, and every node after it attaches within 30. A harness that
+ * gates on a peer floor with a short timeout therefore records "starved" for what is only a slow
+ * first contact, and records it more often the more nodes it starts. **Record time-to-attach as a
+ * curve. Never gate a browser arm on a peer floor with a short timeout.**
+ *
+ * The loadlab write-ups are `docs/measurements/2026-08-15-b3-twelve-browser-nodes-on-one-host.md`
+ * and `2026-08-15-a-penned-browser-node-holds-one-connection-per-node-we-give-it.md`.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
