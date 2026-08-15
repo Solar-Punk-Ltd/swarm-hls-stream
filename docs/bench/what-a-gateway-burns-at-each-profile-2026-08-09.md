@@ -36,7 +36,12 @@ profiles and eight arms. **Use 0.00068. The 0.00085 that was quoted for weeks is
 | profile           | MB/s  | MB/min | **BZZ/min** | **BZZ/hour** |
 | ----------------- | ----: | -----: | ----------: | -----------: |
 | 2500k @ 0.25s     | 0.351 |   21.1 |  **0.0143** |    **0.857** |
-| **6000k @ 0.25s, ships** | **0.799** | **47.9** | **0.0325** | **1.948** |
+| **6000k @ 0.25s**, ⛔ not shipped | **0.799** | **47.9** | **0.0325** | **1.948** |
+
+⛔ **Corrected 2026-08-15: the rows above are labelled by GOP and one of them used to be marked
+"ships". 0.25s never shipped.** It was the latbench rig. A 0.5s GOP ships. The BZZ per MB these
+rows measure is flat across the whole range, so the cost model itself is unaffected, but do not read
+the 0.25s row as the product's operating cost. See `docs/bench/gop-vs-fragment-2026-08-12.md`.
 | 2500k @ 1.0s      | 0.346 |   20.8 |  **0.0141** |    **0.844** |
 | 6000k @ 1.0s      | 0.792 |   47.5 |  **0.0322** |    **1.931** |
 

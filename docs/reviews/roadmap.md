@@ -228,8 +228,12 @@ viewer feels it is decided by the **segment budget**, not by the node:
 
 |              GOP | budget |     light |   ultra-light | outcome at a viewer                                             |
 | ---------------: | -----: | --------: | ------------: | --------------------------------------------------------------- |
-| **0.25s, ships** |  267ms | 21-24% ✅ | **49-53%** ✅ | 2026-08-08: 45 min unfunded, **nothing stalled or rebuffered**  |
-| **0.25s, ships** |  250ms | 26-36% ✅ | **62-69%** ⛔ | 2026-08-06: buffer 4.60s → **1.46s**, **17 rebuffers in 3 min** |
+| **0.25s**, ⛔ rig |  267ms | 21-24% ✅ | **49-53%** ✅ | 2026-08-08: 45 min unfunded, **nothing stalled or rebuffered**  |
+| **0.25s**, ⛔ rig |  250ms | 26-36% ✅ | **62-69%** ⛔ | 2026-08-06: buffer 4.60s → **1.46s**, **17 rebuffers in 3 min** |
+
+⛔ **Corrected 2026-08-15: both rows above said "0.25s, ships" and 0.25s never shipped.** It was
+the bench rig. A 0.5s GOP ships against `HLS_FRAGMENT=0.5`. The budgets in the second column are the
+rig's, so the over-budget shares are scored more strictly than the product would be.
 |             1.0s | 1000ms |    10% ✅ |     41-46% ✅ | 30 min clean, nothing stalled or rebuffered                     |
 
 ⛔ **The outcome is a threshold and the two 0.25s sittings sit on opposite sides of it.** Around half
