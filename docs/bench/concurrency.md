@@ -1,5 +1,23 @@
 # Concurrent viewers
 
+> ## ⛔⛔⛔ THE 1.30x STALENESS MAGNITUDE IS RETIRED, 2026-08-09
+>
+> **The direction survives. The number does not, and neither does the mechanism.**
+>
+> This sitting measured staleness through `/feeds/{owner}/{topic}`, the head lookup.
+> `feed-reader-ab.md` later showed that path is **50-57% frozen on its own**, with no concurrency
+> involved at all, and the client no longer uses it. On the explicit-address path a client actually
+> walks, a feed read at **128 concurrent readers costs what it costs at one**.
+>
+> ⛔ **So the 1.30x is a property of the reader, not of the audience.** The sign test at p = 0.0129 is
+> arithmetically correct and was computed over a biased instrument.
+>
+> - `the-feed-does-not-care-how-many-are-reading-it-2026-08-09.md` measures the corrected path
+> - `sixteen-viewers-cost-what-one-costs-2026-08-08.md` measures the sharing question directly
+> - `feed-reader-ab.md` is where the reader defect was found
+>
+> Everything below is kept as the record of what this sitting measured.
+
 Measured 2026-08-04 on `latbench`, 720p 2500kbps at a 2.0s GOP, gateway in `light` mode with a funded
 chequebook. Three broadcasts, about 95 minutes of publishing.
 

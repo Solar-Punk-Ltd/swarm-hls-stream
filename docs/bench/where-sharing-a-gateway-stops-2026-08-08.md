@@ -1,5 +1,19 @@
 # Where sharing a gateway stops working
 
+> ## ⚠️ THE PER-HOST VIEWER FIGURE IS AN EXTRAPOLATION FIVE TIMES PAST THE DATA
+>
+> The `fixed + marginal` CPU model is fitted on **five concurrency points from one sweep with no
+> replicate**, the largest being 128 viewers. Inverting it to `(48 - 1.5 x gateways) / 0.07` gives
+> roughly **640 to 685 viewers per host**, which is about **5x beyond anything measured**, and the
+> model already overshoots at the low end by 20% (2.6 cores predicted at 16 viewers against 2.17
+> measured).
+>
+> ⛔ **CPU was later shown not to be the binding constraint anyway.** See
+> `the-ceiling-is-bytes-not-viewers-2026-08-08.md`: the knee is a **byte rate**, with a plateau at
+> 43-44 MB/s, and 128 viewers hold where 192 fail.
+>
+> ⭐ Treat the capacity line below as a shape, not a planning number.
+
 **2026-08-08, 11:14 to 11:18 UTC.** Six arms on an unfunded gateway, concurrency alternated
 **1, 32, 1, 64, 1, 128**, every viewer walking the same 100 references at the same moment. **Cost:
 nothing**, because a node with no chequebook cannot spend.
