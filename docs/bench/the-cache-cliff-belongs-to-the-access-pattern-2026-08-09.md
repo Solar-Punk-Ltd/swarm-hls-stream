@@ -1,5 +1,16 @@
 # The cache cliff belongs to the access pattern, not to the cache
 
+> ## ⛔⛔ "SIZE FOR THE HOT SET" WAS RETIRED THE SAME DAY
+>
+> This document promotes that rule to a section heading and a starred conclusion on **one capacity
+> point** at 3.8x the hot set. It does warn, at the bottom, that only one capacity was tested.
+>
+> `the-cache-has-no-cliff-under-skew-2026-08-09.md` then bisected the range and found **no step at
+> the hot set at all**: the value curve is smooth and concave from 500 to 8,000 chunks, so capacity is
+> **a dial, not a gate**, and there is no threshold to size for.
+>
+> ⭐ Read the heading below as the question this sitting asked, not as an answer to carry away.
+
 **2026-08-09, 01:30 to 02:16 UTC.** Eighteen arms on an unfunded gateway, three access patterns over an
 identical working set, interleaved inside one sitting. **Cost: nothing.** `availableBalance` was
 byte-identical before and after.

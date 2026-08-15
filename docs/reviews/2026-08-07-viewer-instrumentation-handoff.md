@@ -1,5 +1,14 @@
 # Viewer-side instrumentation handoff
 
+> ## ⚠️ THE COST FIGURE IN THIS HANDOFF IS RETIRED, 2026-08-09
+>
+> This document is framed as the entry point for whoever picks up the viewer work, so its stale
+> number is the first thing a fresh reader takes away.
+>
+> **It prices runs at ~0.00085 BZZ/MB. Use 0.00068.** Measured across eight arms and four profiles in
+> `../bench/what-a-gateway-burns-at-each-profile-2026-08-09.md`, which found every arm between
+> 0.000644 and 0.000708 with no ordering by segment size. **The 0.00085 is 25% too high.**
+
 Entry point for whoever picks up this work, human or a fresh AI session. Everything below was verified
 at the end of the session that wrote it, 2026-08-07 evening, and every figure was read off the running
 deployment rather than carried forward from notes.

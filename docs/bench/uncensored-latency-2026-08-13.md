@@ -123,11 +123,35 @@ warm-up arms sit inside the same two bands.
 **This replicates 2026-08-13's sitting on a second broadcast at a different target**, which is worth
 more than any caveat attached to the first. That sitting measured 24.4x and 143x at a 6s target.
 
-⚠️ **The spend ratio is smaller tonight, and the reason is interesting.** Normalised per minute, the
-gateway arms cost **0.01314 BZZ/min** against yesterday's 0.01338, which is the same number. The
-weeb-3 arms cost **0.000175 BZZ/min** against yesterday's 0.0000933, which is **1.9x more**. What
-remains in a weeb-3 arm is feed and manifest polling, and that tightens as the target does. An in-tab
-node run closer to the edge costs the operator more, in a column that is still 75x below a gateway.
+⚠️ **The spend ratio is smaller tonight, and the reason is interesting.**
+
+> ### ⛔⛔ CORRECTED 2026-08-15: EVERY RATE HERE DIVIDED BY THE WRONG WINDOW
+>
+> The numerators are chequebook deltas taken from the `on-gateway-before` and `on-gateway-after`
+> snapshots. **Those brackets span 320s, not the 240s of counted playback**, because they open before
+> the arm starts and close after it ends. Dividing a 320s delta by 4 minutes charges the setup and
+> teardown spend to the playback minutes and inflates every figure by **1.34x**.
+>
+> ⛔ **And the two sittings inflate by different factors**, 1.34x here against 1.23x at the 6s target,
+> whose arms are 6 minutes against a 441s bracket. **So the cross-sitting ratio is distorted, not
+> merely shifted**, which is the part that cannot be fixed by reading the numbers as relative.
+
+| | as published | on matched windows |
+| --- | ---: | ---: |
+| gateway, this sitting | 0.01314 BZZ/min | **0.00984** |
+| gateway, the 6s sitting | 0.01338 | **0.01029** |
+| weeb-3, this sitting | 0.000175 | **0.000131** |
+| weeb-3, the 6s sitting | 0.0000933 | **0.0000810** |
+| **the in-tab excess at a tighter target** | **1.9x** | **1.62x** |
+
+✅ **Both conclusions survive.** The gateway rate is still the same number across the two sittings, now
+0.00984 against 0.01029, a 4.6% difference. The in-tab node still costs more the closer to the edge it
+runs, now **1.62x rather than 1.9x**, and is still about 75x below a gateway. What remains in a weeb-3
+arm is feed and manifest polling, and that tightens as the target does.
+
+⚠️ **One number does not reproduce even by the original method.** Recomputing the 6s sitting's weeb-3
+rate the way the doc did, dividing by 6 minutes, gives 0.0000991 against the published 0.0000933. The
+matched-window figure above is the one to quote.
 
 ### ⚠️ The failure-rate column is a composition effect, not a quality difference
 

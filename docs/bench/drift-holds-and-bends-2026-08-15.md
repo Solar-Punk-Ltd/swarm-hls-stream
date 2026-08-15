@@ -3,7 +3,8 @@
 One live broadcast of 195 min at 720p/2500kbps, 0.5s GOP. **One in-tab arm of 180 minutes** behind a
 6-minute warm-up, no gateway arm. **2.477 BZZ.** `~/sittings/drift-3h-2026-08-15`.
 
-#104 measured the in-tab main thread creeping **+0.034/hr within a session** across 41-minute arms and
+#203 and #204 measured the in-tab main thread creeping **+0.034/hr within a session** across
+41-minute arms and
 could not say whether that holds, decays, or bends. Three hours is 4.4 times the lever arm, and it
 contains its own first 41 minutes, so the arm replicates the known result before extending it.
 
@@ -29,10 +30,18 @@ is the conservative one and it is the one quoted.
 
 ### The arm replicates #104 inside its own opening
 
-| | slope |
-| --- | ---: |
-| #104 and #203, separate 41-minute arms | +0.034 /hr |
-| **this arm's own first 40.9 minutes** (n=491) | **+0.0362 /hr** |
+| | slope | estimator |
+| --- | ---: | --- |
+| #203 arm A, #204 arm A, 41 min | +0.034 /hr | q50 per window, fitted on windows |
+| **this arm's own first 40.9 minutes** (n=491) | **+0.0362 /hr** | the same |
+| ⚠️ #104's published headline | +0.026 /hr | pooled over **three** weeb3 arms |
+
+⛔ **This table read "#104 and #203" and attributed +0.034 to #104, which published +0.026.** They are
+not the same estimator over the same arms: #104 pooled three weeb3 arms, #203 and #204 fitted the two
+41-minute ones per window. The replicate above is against the window-level family, which is what this
+arm uses, and **I have not settled which estimator is right** because #104's raw arms are no longer on
+disk. ⚠️ Treat +0.026 and +0.034 as two readings of one effect, not as a contradiction and not as
+agreement.
 
 ⭐ The extension is therefore read against a baseline the same arm reproduced, not against a different
 sitting on a different night.
@@ -42,19 +51,45 @@ sitting on a different night.
 Its slope reads **-0.312/hr**, which is noise. `host-load-is-not-the-creep-2026-08-15.md` predicted a
 7-minute arm could not resolve a 0.034/hr creep, being about 5x too noisy. It could not.
 
-## The host is excluded, empirically this time
+## The host is excluded, and this section was WRONG about how
 
-| | |
-| --- | ---: |
-| corr(elapsed, host load) across the arm | **+0.078** |
-| slope, unconditional | +0.0360 ± 0.0006 /hr |
-| slope, conditioned on host load | **+0.0358 ± 0.0006 /hr** |
+> ### ⛔⛔⛔ CORRECTED 2026-08-15, AFTER PUBLICATION
+>
+> This section originally reported `corr(elapsed, load) = +0.078` and `dU/dLoad = +0.00087 ± 0.00015,
+> t = 5.6`, and concluded from the second that "host load *does* move the thread, unlike the estimate
+> from short arms". **Every one of those three numbers is an interval-level statistic, and this
+> document rejects interval-level standard errors thirty lines above, in its own words, for its own
+> headline.** I applied a rule to the result I wanted to defend and not to the result I wanted to
+> report.
+>
+> Refitted on the same 12 window means the headline uses:
 
-Load did not trend with time, and conditioning on it moves the slope by **0.6%**. The earlier work
-could only bound this from 7-minute arms. Three hours measures it.
+| | on 12 window means | as first published |
+| --- | ---: | ---: |
+| corr(elapsed, host load) | **+0.447** | +0.078 |
+| slope, unconditional | **+0.0359 ± 0.0013** /hr | +0.0360 ± 0.0006 |
+| slope, conditioned on load | **+0.0364 ± 0.0015** /hr | +0.0358 ± 0.0006 |
+| `dU/dLoad` | **−0.00127 ± 0.00165**, t = **−0.77** | +0.00087 ± 0.00015, t = 5.6 |
 
-⚠️ Within this arm `dU/dLoad` is **+0.00087 ± 0.00015**, t = 5.6, so host load *does* move the thread,
-unlike the estimate from short arms. It just did not move in a way that could produce a time trend.
+**The conclusion survives and its argument is now the opposite one.**
+
+⛔ **Load trends with elapsed time more than I said.** +0.447 across the windows, not +0.078. On 12
+points that is not significant (the 5% critical value is 0.576), but it is not the flat line the
+original text described, and it is the number a confounder would have to work through.
+
+⭐ **It cannot be the creep anyway, because conditioning on load makes the slope go UP.** +0.0359
+unconditional to +0.0364 conditioned, a move of **+1.4%**. A confounder carrying the trend would take
+the slope down when removed. This one does not.
+
+⭐⭐ **And `dU/dLoad` is indistinguishable from zero with the wrong sign for the story**, t = −0.77 on
+9 degrees of freedom. ⛔ **So the sentence "host load does move the thread, unlike the estimate from
+short arms" is withdrawn.** It never disagreed with `host-load-is-not-the-creep-2026-08-15.md`, whose
+8-arm estimate is +0.00000 ± 0.00036 over a far wider load range. **The two agree, and I published a
+disagreement that existed only in a standard error I had already declared unusable.**
+
+⚠️ The load range inside this arm is narrow, **7.48 to 10.36**, so this arm alone cannot bound the
+sensitivity well. The 4.7-to-56.1 range in the 8-arm study is what bounds it. What this arm shows is
+that load did not act as a confounder *here*.
 
 ## ⛔⛔ THE MECHANISM I THOUGHT I HAD, AND DID NOT
 

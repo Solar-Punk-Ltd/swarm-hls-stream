@@ -1,7 +1,12 @@
 # The main thread's distribution scales uniformly, and two claims that did not survive being checked
 
-No broadcast, no BZZ. Every number here comes from the fourteen counted arms already recorded by
-`main-thread-saturation-2026-08-14.md` and `1080p-main-thread-2026-08-15.md`.
+No broadcast, no BZZ. Every number here comes from the **eleven** counted arms already recorded by
+`main-thread-saturation-2026-08-14.md` (six) and `1080p-main-thread-2026-08-15.md` (six, of which
+**one was refused by the axis guard** for not being delivered at 1920x1080 30fps), plus the
+forty-minute arms of `long-arm-drift-2026-08-14.md` for the median table in the last section.
+
+⛔ **This line said "fourteen" and no combination of the sources reaches fourteen.** Six and six is
+twelve, and the axis guard this document says it honours takes one of those away.
 
 Written because the next thing on the list was a third resolution at about 1.5 BZZ, bought to draw a
 better line through the peak. The 1080p sitting had just refuted a line drawn through two peaks, and
@@ -85,9 +90,35 @@ did. The forty-minute arms say the opposite.
 | gateway | 0.071 0.079 0.083 0.090 0.096 0.100 | **+0.051** | 0.080 0.092 0.096 0.104 0.107 0.119 | +0.063 |
 | gateway | 0.072 0.079 0.083 0.091 0.093 0.098 | **+0.045** | 0.085 0.091 0.096 0.115 0.110 0.123 | +0.066 |
 
-**The in-tab creep is in the median**, monotonic in both arms, while its q95 is noise. No manifest can
-make the typical window slower. ⭐ The creep `long-arm-drift-2026-08-14.md` measured is the whole
-distribution sliding, not a tail growing, and it remains unexplained.
+**The in-tab creep is in the median**, monotonic in both arms, while its q95 is noise. ⭐ The creep
+`long-arm-drift-2026-08-14.md` measured is the whole distribution sliding, not a tail growing, and it
+remains unexplained.
+
+> ### ⛔⛔ CORRECTED 2026-08-15: THE ARGUMENT HERE WAS WRONG, THOUGH THE CONCLUSION HOLDS
+>
+> This paragraph read "**No manifest can make the typical window slower**", arguing that manifest work
+> could only live in the tail. `manifest-growth-2026-08-12.md` measured the opposite property of the
+> same code path: `serialize` rebuilds the whole string whenever the state is dirty, **a poll that
+> finds a new segment sets dirty, and a viewer at the live edge finds one on nearly every poll**. Its
+> control separates 10.97-12.27 ms per dirty poll from 0.0019 ms per clean one. **Manifest work is
+> paid in the typical window, not the tail.**
+>
+> ⭐ **Replace the location argument with a magnitude one, which is stronger.** At a 0.5s GOP a viewer
+> holds 1,800 segments after 15 minutes and 21,600 after three hours. Interpolating
+> `manifest-growth`'s cost table and paying it about twice a second:
+
+| into a 3-hour arm | segments held | rebuild | manifest CPU |
+| --- | ---: | ---: | ---: |
+| 15 min | 1,800 | 0.21 ms | 0.0004 cores |
+| 3 h | 21,600 | 2.81 ms | **0.0056 cores** |
+
+> **That is +0.0018 cores/hr against a measured +0.0357 cores/hr, so the manifest can account for
+> about 5% of the creep and is roughly 20x too small to be it.**
+>
+> ⚠️ **An order-of-magnitude argument, not a measurement.** `manifest-growth` timed a synthetic fill
+> on a laptop rather than the rebuild inside the tab, and the poll rate is assumed at one per segment.
+> Both could be wrong by a factor of two or three without changing the conclusion, and neither could
+> be wrong by twenty.
 
 ⚠️ The gateway path creeps in both, so this separates the two conditions rather than settling either.
 

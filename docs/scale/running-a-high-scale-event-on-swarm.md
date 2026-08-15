@@ -10,6 +10,26 @@ no context on this codebase.
 
 ## 0. Read this before anything else
 
+### ⛔⛔⛔ CORRECTED 2026-08-15: THE SHIPPING PROFILE IS A 0.5s GOP, AND THIS DOCUMENT SAYS 0.25s
+
+Written 2026-08-08, when this project believed a 0.25s GOP was the product. It was not. **0.25s was
+the bench rig.** What ships is a **0.5s GOP against `HLS_FRAGMENT=0.5`**, which makes the segment
+budget **500ms and not the 267ms every table below is scored against**.
+
+⭐ **Which way it bends the results, because that decides whether you can still use them.** A 267ms
+budget is _stricter_ than 500ms, so every "share over budget" figure in this document flags more
+retrievals than the shipped profile would. **They are upper bounds.** A conclusion of the form "this
+regime hurts" survives. A conclusion of the form "this regime is fine" survives more comfortably
+still. Nothing here becomes optimistic by the correction.
+
+⛔ **Do NOT carry 267ms into a new simulation.** Score against **500ms**, and expect lower
+over-budget shares than the tables below. Re-deriving the old numbers means re-running, not
+rescaling: an over-budget share is a count against a threshold and does not convert.
+
+⛔ Two further corrections that arrived after this was written, both detailed in section 2z:
+the funding multiplier is **13%, not 38x**, and every pre-2026-08-11 in-browser throughput figure is
+a **floor rather than a ceiling**, because the corpus it was measured on was decaying.
+
 ### ⛔ This repository has never exceeded eight viewers actually watching video
 
 **One** gateway, throughout. Nothing here has run a hundred nodes, let alone a thousand. Where this
@@ -89,22 +109,25 @@ and hands it to hls.js, fetching segments through a **bee gateway** of its own.
 
 The parts that matter for load:
 
-|                          |                                                                                                                                                               |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **The viewer's gateway** | a bee node. This is the component under test. Every question in this document is really a question about it                                                   |
-| **The feed**             | one single-owner chunk per publish, **4096 bytes**. Crossing that turns one round trip into three                                                             |
-| **The manifest window**  | about **36-50** segment lines per chunk, depending on whether segment lines carry a gateway URL                                                               |
-| **The segment budget**   | segment duration in milliseconds. At the shipping profile (0.25s GOP, 8 frames at 30fps) it is **267ms**. A retrieval slower than this puts the player behind |
+|                          |                                                                                                                                                                                                                                                             |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The viewer's gateway** | a bee node. This is the component under test. Every question in this document is really a question about it                                                                                                                                                 |
+| **The feed**             | one single-owner chunk per publish, **4096 bytes**. Crossing that turns one round trip into three                                                                                                                                                           |
+| **The manifest window**  | about **36-50** segment lines per chunk, depending on whether segment lines carry a gateway URL                                                                                                                                                             |
+| **The segment budget**   | segment duration in milliseconds. ⛔ **At the shipping profile it is 500ms** (0.5s GOP against `HLS_FRAGMENT=0.5`). Every table below scores against **267ms**, the bench rig, which is stricter. A retrieval slower than the budget puts the player behind |
 
 ### The profiles
 
-✅ **Measured.** 0.25s GOP ships, at 1080p / 6000 kbps. Latency across a 2.4x bitrate range differs by
-**70ms**, so picture quality costs bandwidth (2.24x the BZZ) rather than seconds.
+⛔ **This section said "0.25s GOP ships" and that is wrong.** A **0.5s GOP ships**, at 720p / 2500k,
+with 1080p / 6000k also shipping at about 2.3x the BZZ. 0.25s was the latbench rig. What survives
+unchanged is the finding it was making: latency across a 2.4x bitrate range differs by **70ms**, so
+picture quality costs bandwidth rather than seconds.
 
-⚠️ **But 1.0s is the resilient profile**, and if your simulation is about survival rather than latency
-you should test at 1.0s too. A one-second stall costs a 267ms-budget player **four** segments and a
-1000ms-budget player **one**. That single ratio is the most reliable mitigation this project found for
-every retrieval problem below.
+⚠️ **1.0s is still the resilient profile**, and if your simulation is about survival rather than
+latency you should test at 1.0s too. A one-second stall costs a **500ms**-budget player **two**
+segments and a 1000ms-budget player **one**. ⛔ The ratio below reads "four" against a 267ms budget,
+which is the rig, not the product. The mitigation is the same and its size is halved: a longer
+segment is still the most reliable answer this project found to every retrieval problem below.
 
 ---
 
@@ -1074,12 +1097,12 @@ BZZ/min  =  MB/min x 0.000678
 0.000644 and 0.000708 BZZ per MB, a spread of 9.4%, with no ordering by size. **Mean 0.000678.** Use that.
 The 0.00085 quoted for weeks is 25% too high.
 
-| profile                      |    segment |   MB/min | **BZZ/min** | **BZZ/hour** |
-| ---------------------------- | ---------: | -------: | ----------: | -----------: |
-| 2500 kbps @ 0.25s            |      94 kB |     21.1 |  **0.0143** |    **0.857** |
-| **6000 kbps @ 0.25s, ships** | **213 kB** | **47.9** |  **0.0325** |    **1.948** |
-| 2500 kbps @ 1.0s             |     346 kB |     20.8 |  **0.0141** |    **0.844** |
-| 6000 kbps @ 1.0s             |     792 kB |     47.5 |  **0.0322** |    **1.931** |
+| profile                                       |    segment |   MB/min | **BZZ/min** | **BZZ/hour** |
+| --------------------------------------------- | ---------: | -------: | ----------: | -----------: |
+| 2500 kbps @ 0.25s                             |      94 kB |     21.1 |  **0.0143** |    **0.857** |
+| **6000 kbps @ 0.25s**, ⛔ not the shipped GOP | **213 kB** | **47.9** |  **0.0325** |    **1.948** |
+| 2500 kbps @ 1.0s                              |     346 kB |     20.8 |  **0.0141** |    **0.844** |
+| 6000 kbps @ 1.0s                              |     792 kB |     47.5 |  **0.0322** |    **1.931** |
 
 ⭐⭐ **1080p at 6000 kbps costs a viewer's gateway 0.0325 BZZ a minute, 1.95 BZZ an hour.** It shipped
 without that number existing. The figure derived before it was measured was 0.0315, **right to within

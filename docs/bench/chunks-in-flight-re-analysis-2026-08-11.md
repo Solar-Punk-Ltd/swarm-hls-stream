@@ -1,5 +1,17 @@
 # Bigger fetches are FASTER per byte and MORE likely to miss a deadline, in the same data
 
+> ## ⚠️ THE PER-BYTE RATE IS CONDITIONED ON COMPLETION, AND COMPLETION IS SIZE-DEPENDENT HERE
+>
+> "The largest delivered fetch is the fastest per byte" is computed over **fetches that completed**,
+> on a corpus later shown to be decaying. A large object fails whenever any one of its ~1,000 chunks
+> is missing, so large fetches that survive are selected for having every chunk present, while small
+> ones survive routinely. This document records the selection itself two sections later: in the
+> replicate's healthy round 0, **the two largest references never completed inside the 60s budget**.
+>
+> ⛔ **So the ordering below is a survivor comparison, not a rate comparison.**
+> `size-on-healthy-content-2026-08-11.md` measures the same question on fresh content, where every
+> size delivers 8/8.
+
 **2026-08-11. Free re-analysis, no new measurement.** Phase 1 of `DATA-AUDIT-PLAN.md`, and its first
 worked example: the same rows answer two reasonable questions with opposite conclusions.
 

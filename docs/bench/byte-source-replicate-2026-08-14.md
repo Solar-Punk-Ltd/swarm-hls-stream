@@ -34,9 +34,15 @@ for by 25x and costs the viewer's machine about **0.6 of a core**, with the peak
 
 | sitting | counted arms | retrieval ratio |
 | --- | --- | --- |
-| 2026-08-13 three-target | 4 | 20.3x |
-| 2026-08-14 morning | 4 | 20.5x |
-| **this one** | **6** | **25.3x** |
+| 2026-08-13 three-target | **6** (n=3 per condition) | 20.3x |
+| 2026-08-14 morning | **2** (⚠️ **n=1 per condition**) | 20.5x |
+| **this one** | **6** (n=3 per condition) | **25.3x** |
+
+⛔ **This column read "4" and "4" and both were wrong, in opposite directions.**
+`uncensored-latency-2026-08-13.md` records eight arms of which six are counted, n=3 per condition.
+`the-sampler-that-never-ran-2026-08-14.md` records four arms of which **two** are counted, and states
+n=1 per condition in its own words. ⚠️ **The middle row is a single arm per condition**, which matters
+for reading the spread below.
 
 ⚠️ Three observations of the same direction and rough magnitude. They are not four repeats of one
 number, and the spread across them (20.3 to 25.3) is wider than the spread within this sitting.
