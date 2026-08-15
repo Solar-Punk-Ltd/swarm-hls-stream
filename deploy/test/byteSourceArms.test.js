@@ -217,6 +217,9 @@ async function runSitting(stubs, env = {}) {
         ARM_GAP_S: '0',
         PUBLISHER_LEAD_S: '0',
         STOP_POLL_S: '0.05',
+        // ⚠️ The default here, not in the driver. Most cases below are about gates and ordering and
+        // have no opinion about the thread column, and a real sitting must state one either way.
+        ALLOW_NO_THREAD_READING: '1',
         ...env,
       },
       encoding: 'utf8',
@@ -533,7 +536,7 @@ describe('whether the viewer had any thread left, per arm', () => {
   // The summary refuses again at the end of the arm for the same cause, which is deliberate (a run
   // must not have to remember a line printed forty minutes earlier) and would double the count.
   it('says plainly at the start of the arm that nothing will measure the thread', async () => {
-    const result = await runSitting(setup());
+    const result = await runSitting(setup(), { ALLOW_NO_THREAD_READING: '1' });
 
     assert.ok(watches(result).length > 0, 'no arm ran, so nothing could have been sampled or skipped');
     assert.equal(
@@ -668,5 +671,40 @@ describe('a sitting whose arms are a plan rather than a counterbalanced pair', (
       watched.every((call) => call[4] === '120'),
       'the default path stopped honouring ARM_MINUTES',
     );
+  });
+});
+
+/**
+ * That a sitting cannot quietly produce no saturation reading at all.
+ *
+ * ⛔⛔⛔ THE WARNING WAS ALREADY THERE AND IT DID NOT WORK. `browser-cpu.sh` prints "NO SATURATION
+ * READING ... VIEWER_CDP_PORT is unset" once per arm, and on 2026-08-15 a proof sitting was launched
+ * straight past two of them, in a run whose entire output is the thread column. It surfaced because a
+ * file was missing from a directory listing, not because anything refused.
+ *
+ * ⭐ A warning inside a detached run nobody is watching is not a control. The gate is the refusal.
+ */
+describe('a sitting that would measure no thread at all', () => {
+  it('refuses before publishing anything when nothing would sample the thread', async () => {
+    const stubs = setup();
+    const result = await runSitting(stubs, { ALLOW_NO_THREAD_READING: '0', VIEWER_CDP_PORT: '' });
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0, 'a sitting with no thread column reached a paid broadcast');
+    assert.match(result.log, /VIEWER_CDP_PORT is unset, so no arm would measure the page main thread/);
+  });
+
+  it('runs once the port is set, so the gate is not simply stuck closed', async () => {
+    const result = await runSitting(setup(), { ALLOW_NO_THREAD_READING: '0', VIEWER_CDP_PORT: '9333' });
+
+    assert.equal(result.code, 0, result.log);
+    assert.ok(watches(result).length > 0, 'no arm ran');
+  });
+
+  it('lets a sitting that genuinely does not need the column say so', async () => {
+    const result = await runSitting(setup(), { ALLOW_NO_THREAD_READING: '1', VIEWER_CDP_PORT: '' });
+
+    assert.equal(result.code, 0, result.log);
+    assert.ok(watches(result).length > 0, 'no arm ran');
   });
 });

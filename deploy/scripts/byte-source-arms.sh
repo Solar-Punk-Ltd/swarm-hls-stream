@@ -99,6 +99,16 @@ STREAM_TIMEOUT_S="${STREAM_TIMEOUT_S:-180}"
 QUIET_TIMEOUT_S="${QUIET_TIMEOUT_S:-120}"
 STOP_POLL_S="${STOP_POLL_S:-5}"
 
+# ⛔⛔⛔ A SITTING WITH NO THREAD READING IS REFUSED, BECAUSE THE WARNING WAS NOT ENOUGH.
+#
+# `browser-cpu.sh` has always said "NO SATURATION READING for <arm>: VIEWER_CDP_PORT is unset" once
+# per arm. On 2026-08-15 I launched a proof sitting straight past two of those, in a run whose entire
+# output is the thread column, and only noticed because a file was missing from a directory listing.
+# A warning inside a detached run nobody is watching is not a control.
+#
+# ⚠️ Some sittings genuinely do not need it, which is why this is an opt-out rather than a hard wire.
+ALLOW_NO_THREAD_READING="${ALLOW_NO_THREAD_READING:-0}"
+
 BROWSER_IMAGE="${BROWSER_IMAGE:-swarm-hls-browser:latest}"
 BROWSER_CONTAINER_NAME="${BROWSER_CONTAINER_NAME:-byte-source-browser}"
 RUN_SELFCHECK="${RUN_SELFCHECK:-1}"
@@ -493,6 +503,12 @@ if [ -f "${STOP_FILE}" ]; then
 fi
 if ! docker image inspect "${BROWSER_IMAGE}" > /dev/null 2>&1; then
   say "REFUSING TO START: ${BROWSER_IMAGE} is not on this host, so no arm could open a browser"
+  exit 1
+fi
+if [ -z "${VIEWER_CDP_PORT:-}" ] && [ "${ALLOW_NO_THREAD_READING}" != "1" ]; then
+  say "REFUSING TO START: VIEWER_CDP_PORT is unset, so no arm would measure the page main thread"
+  say "  Set it to any free port, for example VIEWER_CDP_PORT=9222, or pass ALLOW_NO_THREAD_READING=1"
+  say "  if this sitting genuinely does not need the saturation column."
   exit 1
 fi
 if ! can_afford "${SITTING_MINUTES}"; then
