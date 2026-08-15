@@ -56,23 +56,40 @@ function watchStem(arm) {
   return `browser-watch-2026-08-15T00-0${arm}-00-000Z`;
 }
 
-/** The sampler's file, whose summary line is where the main-thread mean is read from. */
+/**
+ * The sampler's file, whose summary line is where the main-thread mean is read from.
+ *
+ * ⚠️ The step is 40s so that twelve samples SPAN THE ARM. A fixture whose series covered 55s of a
+ * 360s watch was the shape of a sampler that died four minutes in, and the reader now refuses that.
+ */
+const THREAD_STEP_S = 40;
+
 function writeMainThread(metricsDir, arm, thread) {
   const rows = [];
   for (let sample = 0; sample < 12; sample++) {
     rows.push(
       JSON.stringify({
-        Timestamp: 1000 + sample * 5,
-        TaskDuration: sample * 5 * thread,
+        Timestamp: 1000 + sample * THREAD_STEP_S,
+        TaskDuration: sample * THREAD_STEP_S * thread,
         ScriptDuration: sample * 0.1,
-        ThreadTime: sample * 5 * thread,
-        ProcessTime: sample * 5 * thread * 4,
+        ThreadTime: sample * THREAD_STEP_S * thread,
+        ProcessTime: sample * THREAD_STEP_S * thread * 4,
         JSHeapUsedSize: 6_000_000 + sample * 1000,
       }),
     );
   }
   rows.push(
-    JSON.stringify({ summary: { samples: 12, usable: 12, wallS: 55, mean: thread, peak: thread * 2, complete: true } }),
+    JSON.stringify({
+      summary: {
+        samples: 12,
+        usable: 12,
+        wallS: arm.wallS ?? 11 * THREAD_STEP_S,
+        mean: thread,
+        peak: thread * 2,
+        complete: true,
+        stoppedEarly: arm.stoppedEarly ?? null,
+      },
+    }),
   );
   writeFileSync(
     join(metricsDir, `arm${String(arm.arm).padStart(2, '0')}-round${arm.round}-${arm.cond}-mainthread.jsonl`),
@@ -343,5 +360,196 @@ describe('a quantile ratio carries the count it rests on', () => {
       thin.every((line) => /thin/i.test(line)),
       'p99 over 200 intervals rests on two samples and must say so',
     );
+  });
+});
+
+/**
+ * That the host, rather than the session ageing, can be ruled out as the cause of a within-arm creep.
+ *
+ * ⛔⛔⛔ THE TWO SERIES DO NOT SHARE A CLOCK, AND JOINING THEM WRONG FAILS QUIETLY.
+ * `*-mainthread.jsonl` carries CDP's monotonic `Timestamp`; `sample-NNNN.json` carries epoch `atMs`.
+ * The two differ by the host's boot time, about 234 million seconds here. A reader that joins on the
+ * raw numbers pairs every thread reading with whichever single sample is nearest, which is always the
+ * same one, and then reports a sensitivity of exactly zero. Zero is also the answer a healthy host
+ * gives, so the defect and the finding are the same output.
+ *
+ * ⭐ So the fixture plants a sensitivity and makes host load ZIG-ZAG rather than drift. A join that is
+ * out by one sampling interval recovers the planted slope with its sign REVERSED, which no amount of
+ * reading a summary would catch.
+ */
+describe('whether host load could account for a creep', () => {
+  const MONOTONIC_START = 20_000_000;
+  const EPOCH_START = 1_786_000_000;
+  const ARM_SECONDS = 360;
+  const THREAD_INTERVAL_S = 5;
+  const SAMPLE_INTERVAL_S = 30;
+  const BASE_UTILISATION = 0.2;
+  const PLANTED_SENSITIVITY = 0.002;
+  const loadAt = (sample) => 10 + 10 * (sample % 2);
+
+  function loadSitting(arms, { sampleSpanS = ARM_SECONDS, writeSeries = true } = {}) {
+    const dir = workspace();
+    const metrics = join(dir, 'node-metrics');
+    mkdirSync(metrics, { recursive: true });
+    const lines = ['[00:36:21]   one LIVE broadcast of 76 min at a 0.5s GOP, 1280x720 at 2500 kbps'];
+
+    for (const arm of arms) {
+      const stem = `arm${String(arm.arm).padStart(2, '0')}-round${arm.round}-${arm.cond}`;
+      const rows = [];
+      let cumulative = 0;
+      for (let i = 0; i * THREAD_INTERVAL_S <= ARM_SECONDS; i++) {
+        if (i > 0) {
+          // The interval's midpoint decides which sample it belongs to, which is what the join must
+          // reproduce from two clocks that share no origin.
+          const midpoint = (i - 0.5) * THREAD_INTERVAL_S;
+          const sample = Math.round(midpoint / SAMPLE_INTERVAL_S);
+          cumulative += THREAD_INTERVAL_S * (BASE_UTILISATION + PLANTED_SENSITIVITY * loadAt(sample));
+        }
+        rows.push(
+          JSON.stringify({
+            Timestamp: MONOTONIC_START + i * THREAD_INTERVAL_S,
+            TaskDuration: cumulative,
+          }),
+        );
+      }
+      rows.push(JSON.stringify({ summary: { samples: rows.length, complete: true } }));
+      writeFileSync(join(metrics, `${stem}-mainthread.jsonl`), `${rows.join('\n')}\n`);
+
+      if (writeSeries) {
+        const series = join(metrics, `${stem}-series`);
+        mkdirSync(series, { recursive: true });
+        const count = Math.floor(sampleSpanS / SAMPLE_INTERVAL_S);
+        for (let j = 0; j <= count; j++) {
+          writeFileSync(
+            join(series, `sample-${String(j + 1).padStart(4, '0')}.json`),
+            JSON.stringify({
+              label: `${stem}-${j + 1}`,
+              atMs: (EPOCH_START + (j * sampleSpanS) / count) * 1000,
+              hostLoad: `${loadAt(j).toFixed(2)} 9.00 8.00`,
+            }),
+          );
+        }
+      }
+      lines.push(
+        `[00:4${arm.arm}:00] arm ${arm.arm} (round ${arm.round}): segment bytes from ${arm.cond}, watching 360s`,
+      );
+    }
+    writeFileSync(join(dir, 'byte-source-arms.log'), `${lines.join('\n')}\n`);
+    return dir;
+  }
+
+  async function loadRead(dir, creep) {
+    const argv = [READER, 'load', dir, ...(creep === undefined ? [] : [String(creep)])];
+    try {
+      const { stdout } = await run('python3', argv);
+      return { code: 0, stdout };
+    } catch (error) {
+      return { code: error.code ?? 1, stdout: error.stdout ?? '' };
+    }
+  }
+
+  const counted = [{ arm: 3, round: 2, cond: 'weeb3' }];
+
+  it('recovers a planted sensitivity across clocks that share no origin', async () => {
+    const result = await loadRead(loadSitting(counted));
+    const row = result.stdout.split('\n').find((line) => line.includes('arm03'));
+
+    assert.ok(row, result.stdout);
+    const recovered = Number(row.trim().split(/\s+/).at(-2));
+    assert.ok(
+      Math.abs(recovered - PLANTED_SENSITIVITY) < 0.0002,
+      `recovered ${recovered} for a planted ${PLANTED_SENSITIVITY}; a join on the raw clocks reads 0 and one interval out reads the negative`,
+    );
+  });
+
+  it('refuses to align two series that cannot be the same window', async () => {
+    const result = await loadRead(loadSitting(counted, { sampleSpanS: 900 }));
+
+    assert.match(result.stdout, /no usable load series/);
+    assert.doesNotMatch(result.stdout, /dU\/dLoad = /);
+  });
+
+  it('says the series is missing rather than reporting a sensitivity of zero', async () => {
+    const result = await loadRead(loadSitting(counted, { writeSeries: false }));
+
+    assert.match(result.stdout, /no usable load series/);
+  });
+
+  it('leaves warm-up arms out, as every other view of a sitting does', async () => {
+    const result = await loadRead(
+      loadSitting([
+        { arm: 1, round: 1, cond: 'weeb3' },
+        { arm: 3, round: 2, cond: 'weeb3' },
+      ]),
+    );
+
+    assert.doesNotMatch(result.stdout, /arm01/);
+    assert.match(result.stdout, /arm03/);
+  });
+
+  it('turns a creep into the load rise that would be needed to fake it', async () => {
+    const result = await loadRead(loadSitting(counted), 0.034);
+
+    assert.match(result.stdout, /to fake \+0\.034 cores\/hr, host load would have to rise \d+ units per hour/);
+  });
+
+  it('says nothing about faking a creep when no creep was named', async () => {
+    const result = await loadRead(loadSitting(counted));
+
+    assert.doesNotMatch(result.stdout, /to fake/);
+  });
+});
+
+/**
+ * That a thread series covering part of an arm cannot be read as covering the arm.
+ *
+ * ⛔⛔⛔ THE SUMMARY'S `complete` FLAG DOES NOT MEAN THIS AND READS EXACTLY LIKE IT. It reports
+ * whether every scriptable target was sampled. A sampler whose CDP connection dies mid-arm still runs
+ * its `finally`, writes `complete: true` beside a short `wallS`, and leaves a well-formed series.
+ *
+ * ⚠️ Worth a gate only because of arm LENGTH. Every arm this had ever run on was six minutes, where a
+ * truncation is a small error. #106 is a three-hour arm whose whole output is a slope, and forty
+ * minutes of it fitted and published as three hours is a wrong number with nothing marking it.
+ */
+describe('a thread series that does not span its arm', () => {
+  it('refuses a counted arm whose sampler stopped a fraction of the way in', async () => {
+    const arms = healthyArms();
+    const result = await table(sitting(arms.map((arm) => (arm.arm === 3 ? { ...arm, wallS: 80 } : arm))));
+
+    assert.equal(result.code, 1, result.stdout);
+    assert.match(result.stdout, /does not span the arm it is labelled with/);
+    assert.match(result.stdout, /arm 3 \(gateway\): covered 80s of 360s/);
+  });
+
+  it('refuses an arm the sampler itself said it stopped early, however long the span', async () => {
+    const arms = healthyArms();
+    const result = await table(
+      sitting(arms.map((arm) => (arm.arm === 4 ? { ...arm, stoppedEarly: 'websocket closed' } : arm))),
+    );
+
+    assert.equal(result.code, 1, result.stdout);
+    assert.match(result.stdout, /arm 4 \(weeb3\): stopped early: websocket closed/);
+  });
+
+  it('accepts the normal case, where the series runs longer than the watch window', async () => {
+    // The sampler opens with the arm and closes at the stop file, so it also covers the settle.
+    const result = await table(sitting(healthyArms()));
+
+    assert.equal(result.code, 0, result.stdout);
+    assert.doesNotMatch(result.stdout, /does not span the arm/);
+  });
+
+  it('does not void a sitting for a truncated warm-up arm, which is discarded anyway', async () => {
+    const arms = healthyArms();
+    const result = await table(sitting(arms.map((arm) => (arm.arm === 1 ? { ...arm, wallS: 80 } : arm))));
+
+    assert.equal(result.code, 0, result.stdout);
+  });
+
+  it('prints the coverage of every arm, so a near miss is visible before it becomes a refusal', async () => {
+    const result = await table(sitting(healthyArms()));
+
+    assert.match(result.stdout, /cover/);
+    assert.match(result.stdout, /1\.22/);
   });
 });

@@ -40,6 +40,8 @@
 #
 # Usage, from the repo root on the deployment host:
 #   ROUNDS=4 ARM_MINUTES=6 bash deploy/scripts/byte-source-arms.sh
+# or, for a question with one condition rather than two:
+#   ARM_PLAN="weeb3:6:warm-up weeb3:180:counted" bash deploy/scripts/byte-source-arms.sh
 set -u
 
 BENCH_REPO="${BENCH_REPO:-/home/solarpunk/swarm-hls-bench}"
@@ -53,6 +55,16 @@ ROUNDS="${ROUNDS:-4}"
 # discarded by default, which at two arms per round is the two the record says to drop.
 WARMUP_ROUNDS="${WARMUP_ROUNDS:-1}"
 ARM_MINUTES="${ARM_MINUTES:-6}"
+# A sitting whose arms are NOT a counterbalanced pair, as `source:minutes:role` entries. Unset by
+# default, and the counterbalance above stays the default for every question that compares two things.
+#
+# ⭐ It exists for the questions that have ONE condition. A drift slope is read WITHIN an arm, so the
+# other byte source answers nothing and a paired sitting would buy a second broadcast hour per hour of
+# result. #106 is `weeb3:6:warm-up weeb3:180:counted`, three hours instead of six.
+#
+# ⛔ Roles are not cosmetic: `read-sitting.py` counts round 1 as warm-up, so the roles here are what
+# decide which arms a published table is allowed to contain.
+ARM_PLAN="${ARM_PLAN:-}"
 ARM_GAP_S="${ARM_GAP_S:-20}"
 # ⛔⛔ HIGHER THAN THE GATEWAY SITTING'S 90, AND THE DIFFERENCE IS NOT PADDING. Every arm here also
 # waits out `BROWSER_SETTLE_SECONDS` before its window opens, and a weeb-3 arm spends part of that
@@ -86,6 +98,16 @@ CLIENT_PORT="${CLIENT_PORT:-$((10004 + PORT_SLOT * 10))}"
 STREAM_TIMEOUT_S="${STREAM_TIMEOUT_S:-180}"
 QUIET_TIMEOUT_S="${QUIET_TIMEOUT_S:-120}"
 STOP_POLL_S="${STOP_POLL_S:-5}"
+
+# ⛔⛔⛔ A SITTING WITH NO THREAD READING IS REFUSED, BECAUSE THE WARNING WAS NOT ENOUGH.
+#
+# `browser-cpu.sh` has always said "NO SATURATION READING for <arm>: VIEWER_CDP_PORT is unset" once
+# per arm. On 2026-08-15 I launched a proof sitting straight past two of those, in a run whose entire
+# output is the thread column, and only noticed because a file was missing from a directory listing.
+# A warning inside a detached run nobody is watching is not a control.
+#
+# ⚠️ Some sittings genuinely do not need it, which is why this is an opt-out rather than a hard wire.
+ALLOW_NO_THREAD_READING="${ALLOW_NO_THREAD_READING:-0}"
 
 BROWSER_IMAGE="${BROWSER_IMAGE:-swarm-hls-browser:latest}"
 BROWSER_CONTAINER_NAME="${BROWSER_CONTAINER_NAME:-byte-source-browser}"
@@ -318,8 +340,8 @@ record() {
 }
 
 run_arm() {
-  local source="$1" index="$2" round="$3" counted="$4"
-  local watch_seconds=$((ARM_MINUTES * 60))
+  local source="$1" index="$2" round="$3" counted="$4" minutes="$5"
+  local watch_seconds=$((minutes * 60))
   local slug
   slug="$(printf 'arm%02d-round%d-%s' "${index}" "${round}" "${source}")"
   say "arm ${index} (round ${round}): segment bytes from ${source}, watching ${watch_seconds}s"
@@ -328,11 +350,11 @@ run_arm() {
     say "STOPPING before arm ${index}: an earlier reading crossed a floor and left ${STOP_FILE}"
     return 1
   fi
-  if ! can_afford "${ARM_MINUTES}"; then
+  if ! can_afford "${minutes}"; then
     say "STOPPING before arm ${index}: cannot pay for it"
     return 1
   fi
-  if ! has_capacity "${ARM_MINUTES}"; then
+  if ! has_capacity "${minutes}"; then
     say "STOPPING before arm ${index}: the postage batch cannot carry it"
     return 1
   fi
@@ -390,14 +412,67 @@ run_arm() {
   return 0
 }
 
-TOTAL_ARMS=$((ROUNDS * 2))
-SITTING_SECONDS=$((PUBLISHER_LEAD_S * 2 + TOTAL_ARMS * (ARM_MINUTES * 60 + ARM_GAP_S + ARM_OVERHEAD_S)))
-SITTING_MINUTES=$(((SITTING_SECONDS + 59) / 60))
+PLAN_SOURCES=()
+PLAN_MINUTES=()
+PLAN_ROLES=()
+PLAN_ROUNDS=()
 
-if [ "${ARM_MINUTES}" -lt 2 ]; then
-  say "REFUSING TO START: ARM_MINUTES=${ARM_MINUTES} is too short for a player to reach steady state"
-  exit 1
+# ⛔ Everything here runs before the first gate and long before the first spend, so a malformed plan
+# costs nothing. The alternative is a typo discovered by a three-hour broadcast.
+parse_arm_plan() {
+  local entry source minutes role counted_so_far=0
+  for entry in ${ARM_PLAN}; do
+    if [ "$(awk -F: '{print NF}' <<< "${entry}")" -ne 3 ]; then
+      say "REFUSING TO START: ARM_PLAN entry '${entry}' is not source:minutes:role"
+      return 1
+    fi
+    source="$(cut -d: -f1 <<< "${entry}")"
+    minutes="$(cut -d: -f2 <<< "${entry}")"
+    role="$(cut -d: -f3 <<< "${entry}")"
+    if ! [ "${minutes}" -ge 2 ] 2>/dev/null; then
+      say "REFUSING TO START: ARM_PLAN entry '${entry}' asks for ${minutes} min, too short for a player to reach steady state"
+      return 1
+    fi
+    case "${role}" in
+      warm-up) PLAN_ROUNDS+=(1) ;;
+      # ⭐ Round 1 is reserved for warm-up because that is the boundary `read-sitting.py` reads. A
+      # counted arm numbered into it would be dropped from its own sitting's table.
+      counted)
+        counted_so_far=$((counted_so_far + 1))
+        PLAN_ROUNDS+=($((counted_so_far + 1)))
+        ;;
+      *)
+        say "REFUSING TO START: ARM_PLAN entry '${entry}' has role '${role}', wanted warm-up or counted"
+        return 1
+        ;;
+    esac
+    PLAN_SOURCES+=("${source}")
+    PLAN_MINUTES+=("${minutes}")
+    PLAN_ROLES+=("${role}")
+  done
+  [ "${#PLAN_SOURCES[@]}" -gt 0 ] || {
+    say "REFUSING TO START: ARM_PLAN is set but parsed to no arms at all"
+    return 1
+  }
+  return 0
+}
+
+if [ -n "${ARM_PLAN}" ]; then
+  parse_arm_plan || exit 1
+  TOTAL_ARMS="${#PLAN_SOURCES[@]}"
+  SITTING_SECONDS=$((PUBLISHER_LEAD_S * 2))
+  for minutes in "${PLAN_MINUTES[@]}"; do
+    SITTING_SECONDS=$((SITTING_SECONDS + minutes * 60 + ARM_GAP_S + ARM_OVERHEAD_S))
+  done
+else
+  TOTAL_ARMS=$((ROUNDS * 2))
+  SITTING_SECONDS=$((PUBLISHER_LEAD_S * 2 + TOTAL_ARMS * (ARM_MINUTES * 60 + ARM_GAP_S + ARM_OVERHEAD_S)))
+  if [ "${ARM_MINUTES}" -lt 2 ]; then
+    say "REFUSING TO START: ARM_MINUTES=${ARM_MINUTES} is too short for a player to reach steady state"
+    exit 1
+  fi
 fi
+SITTING_MINUTES=$(((SITTING_SECONDS + 59) / 60))
 # ⛔ The settle is spent inside the watch and before its window opens, so an overhead that does not
 # cover it makes the broadcast run out under the last arms.
 if [ "${ARM_OVERHEAD_S}" -le "${SETTLE_SECONDS}" ]; then
@@ -405,10 +480,16 @@ if [ "${ARM_OVERHEAD_S}" -le "${SETTLE_SECONDS}" ]; then
   exit 1
 fi
 
-say "byte-source-arms starting: ${ROUNDS} rounds x 2 arms x ${ARM_MINUTES} min"
+if [ -n "${ARM_PLAN}" ]; then
+  say "byte-source-arms starting: a ${TOTAL_ARMS}-arm plan, ${ARM_PLAN}"
+else
+  say "byte-source-arms starting: ${ROUNDS} rounds x 2 arms x ${ARM_MINUTES} min"
+fi
 say "  one LIVE broadcast of ${SITTING_MINUTES} min at a ${GOP_SECONDS}s GOP, ${SIZE} at ${BITRATE_KBPS} kbps"
 say "  each arm settles ${SETTLE_SECONDS}s from playback before its window opens"
-if [ "${WARMUP_ROUNDS}" -gt 0 ]; then
+if [ -n "${ARM_PLAN}" ]; then
+  say "  the plan names each arm's own role, so WARMUP_ROUNDS does not apply"
+elif [ "${WARMUP_ROUNDS}" -gt 0 ]; then
   say "  the first ${WARMUP_ROUNDS} round(s) are warm-up and are discarded"
 else
   say "  no warm-up round, so every arm counts"
@@ -422,6 +503,12 @@ if [ -f "${STOP_FILE}" ]; then
 fi
 if ! docker image inspect "${BROWSER_IMAGE}" > /dev/null 2>&1; then
   say "REFUSING TO START: ${BROWSER_IMAGE} is not on this host, so no arm could open a browser"
+  exit 1
+fi
+if [ -z "${VIEWER_CDP_PORT:-}" ] && [ "${ALLOW_NO_THREAD_READING}" != "1" ]; then
+  say "REFUSING TO START: VIEWER_CDP_PORT is unset, so no arm would measure the page main thread"
+  say "  Set it to any free port, for example VIEWER_CDP_PORT=9222, or pass ALLOW_NO_THREAD_READING=1"
+  say "  if this sitting genuinely does not need the saturation column."
   exit 1
 fi
 if ! can_afford "${SITTING_MINUTES}"; then
@@ -444,14 +531,31 @@ bracket_gateway sitting before
 
 reclaim_browser_containers
 
+# ⭐ Asked for one round even in plan mode, where the order is not wanted but the SOURCE NAMES are.
+# One round of a counterbalance is every condition exactly once, so this is the harness stating which
+# byte sources exist, and a plan is checked against that rather than against a list copied into shell.
+# A plan that named `weeb-3` would otherwise reach a real browser three hours into a paid broadcast.
 ARM_ORDER="$(run_in_browser_image "${BROWSER_CONTAINER_NAME}-check" "${BROWSER_IMAGE}" \
-  pnpm --silent browser:byte-source-order "${ROUNDS}" 2>> "${LOG}" | tr -d '\r')"
+  pnpm --silent browser:byte-source-order "$([ -n "${ARM_PLAN}" ] && echo 1 || echo "${ROUNDS}")" 2>> "${LOG}" | tr -d '\r')"
 read -r -a ARMS <<< "${ARM_ORDER}"
-if [ "${#ARMS[@]}" -ne "${TOTAL_ARMS}" ]; then
+if [ -n "${ARM_PLAN}" ]; then
+  for source in "${PLAN_SOURCES[@]}"; do
+    case " ${ARM_ORDER} " in
+      *" ${source} "*) ;;
+      *)
+        say "REFUSING TO START: ARM_PLAN names byte source '${source}', which the harness does not know. It knows: ${ARM_ORDER}"
+        exit 1
+        ;;
+    esac
+  done
+  ARMS=("${PLAN_SOURCES[@]}")
+  say "  arm plan: ${ARM_PLAN}"
+elif [ "${#ARMS[@]}" -ne "${TOTAL_ARMS}" ]; then
   say "REFUSING TO START: browser:byte-source-order gave ${#ARMS[@]} arms for ${ROUNDS} rounds, wanted ${TOTAL_ARMS}"
   exit 1
+else
+  say "  arm order: ${ARM_ORDER}"
 fi
-say "  arm order: ${ARM_ORDER}"
 
 if [ "${RUN_SELFCHECK}" = "1" ]; then
   say "  running the free checks before spending anything"
@@ -489,7 +593,8 @@ fi
 trap 'stop_sampler; stop_browser_cpu; stop_main_thread; stop_publisher; reclaim_browser_containers' EXIT INT TERM
 
 say "starting the one broadcast this sitting reads, for ${SITTING_SECONDS}s"
-say "  budget per arm: ${ARM_MINUTES}m watch + ${SETTLE_SECONDS}s settle + ${ARM_GAP_S}s gap + the join"
+say "  budget per arm: $([ -n "${ARM_PLAN}" ] && echo "its own minutes" || echo "${ARM_MINUTES}m")" \
+  "watch + ${SETTLE_SECONDS}s settle + ${ARM_GAP_S}s gap + the join"
 BROADCAST_STARTED_AT="$(date -u +%s)"
 start_publisher "${SITTING_SECONDS}"
 if ! wait_for_active_stream; then
@@ -501,9 +606,16 @@ say "  the broadcast is live, leading the first arm by ${PUBLISHER_LEAD_S}s"
 sleep "${PUBLISHER_LEAD_S}"
 
 for index in $(seq 1 "${TOTAL_ARMS}"); do
-  round=$(((index + 1) / 2))
-  run_arm "${ARMS[index - 1]}" "${index}" "${round}" \
-    "$([ "${round}" -le "${WARMUP_ROUNDS}" ] && echo warm-up || echo counted)" || break
+  if [ -n "${ARM_PLAN}" ]; then
+    arm_round="${PLAN_ROUNDS[index - 1]}"
+    arm_role="${PLAN_ROLES[index - 1]}"
+    arm_minutes="${PLAN_MINUTES[index - 1]}"
+  else
+    arm_round=$(((index + 1) / 2))
+    arm_role="$([ "${arm_round}" -le "${WARMUP_ROUNDS}" ] && echo warm-up || echo counted)"
+    arm_minutes="${ARM_MINUTES}"
+  fi
+  run_arm "${ARMS[index - 1]}" "${index}" "${arm_round}" "${arm_role}" "${arm_minutes}" || break
   [ "${index}" -lt "${TOTAL_ARMS}" ] && sleep "${ARM_GAP_S}"
 done
 

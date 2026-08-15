@@ -221,6 +221,14 @@ async function main() {
   await enableMetrics(client);
 
   const samples = [];
+  // ⛔⛔⛔ WHY THE REASON IS RECORDED AND NOT JUST THROWN.
+  //
+  // `complete` above is about unsampled TARGETS, not about the window. Before this, a sampler whose
+  // connection died mid-arm ran its `finally`, wrote `complete: true` beside a short `wallS`, and left
+  // a perfectly well-formed series that covered a fraction of the arm. On the six-minute arms this had
+  // run on, that was a small lie. On a three-hour arm it is a slope fitted over forty minutes and
+  // published as three hours, which is why the arm length made this worth fixing rather than the code.
+  let stoppedEarly = null;
   try {
     while (!(stopFile && existsSync(stopFile))) {
       const reading = await readMetrics(client);
@@ -228,9 +236,13 @@ async function main() {
       appendFileSync(outPath, `${JSON.stringify(reading)}\n`);
       await sleep(intervalMs);
     }
+  } catch (error) {
+    // Rethrown below, so the exit code still reports the failure to whatever started this.
+    stoppedEarly = error.message;
+    throw error;
   } finally {
     client.close();
-    const summary = { ...summariseMainThread(samples), complete: choice.complete };
+    const summary = { ...summariseMainThread(samples), complete: choice.complete, stoppedEarly };
     appendFileSync(outPath, `${JSON.stringify({ summary })}\n`);
     console.log(
       `main-thread: ${summary.usable} readings over ${summary.wallS.toFixed(0)}s, ` +

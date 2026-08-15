@@ -12,6 +12,8 @@ usage:
   read-sitting.py drift <sitting-dir> [windows]  utilisation per wall-clock window, and a slope
   read-sitting.py join  <sitting-dir>            opening window of each arm, by broadcast age
   read-sitting.py shape <dir> [<dir>...]         the whole distribution, with the count behind each
+  read-sitting.py load  <sitting-dir> [creep]    how much HOST LOAD moves the thread, and whether it
+                                                 could fake a creep of the given cores per hour
 """
 
 import json
@@ -271,6 +273,33 @@ def off_main_fraction(rows):
     return None if process <= 0 else max(0.0, (process - main) / process)
 
 
+# The thread series runs from the arm opening to the stop file, so it covers the watch window PLUS the
+# settle and normally reads above 1.0. Materially short of the window is a sampler that stopped early.
+MIN_THREAD_COVERAGE = 0.9
+
+
+def coverage_verdict(summary, watch_s):
+    """Whether the thread series actually spans the arm it is labelled with.
+
+    ⛔⛔⛔ `complete` IN THE SUMMARY DOES NOT MEAN THIS. It reports whether every scriptable target was
+    sampled. A sampler whose CDP connection dies mid-arm still runs its `finally`, writes
+    `complete: true` beside a short `wallS`, and leaves a perfectly well-formed series covering part of
+    the arm. On six-minute arms that was a small lie. On a three-hour arm it is a slope fitted over
+    forty minutes and published as three hours.
+
+    ⚠️ An arm with no series at all is not refused here. It carries no mean, so it never reaches the
+    headline, and `axis` already refuses an arm nobody could check.
+    """
+    if not summary or summary.get("wallS") is None or not watch_s:
+        return "ok", None
+    if summary.get("stoppedEarly"):
+        return f"stopped early: {str(summary['stoppedEarly'])[:24]}", summary["wallS"] / watch_s
+    covered = summary["wallS"] / watch_s
+    if covered < MIN_THREAD_COVERAGE:
+        return f"covered {summary['wallS']:.0f}s of {watch_s}s", covered
+    return "ok", covered
+
+
 def requested_size(log_path):
     """The resolution the sitting told the publisher to produce, from its own opening line."""
     found = PROFILE.search(log_path.read_text(errors="replace"))
@@ -282,10 +311,10 @@ def cmd_table(root):
     metrics = root / "node-metrics"
     bench = bench_dir(root)
     wanted = requested_size(log_path)
-    kept, refused = {}, []
+    kept, refused, truncated = {}, [], []
     header = (f"{'arm':>3} {'rnd':>3} {'cond':<8} {'kept':<7} {'retrievals':>11} {'cores':>6}"
               f" {'peak':>6} {'thread':>7} {'thrPeak':>8} {'stalls':>7} {'behindS':>8} {'complete':>9}"
-              f" {'fps':>6} {'axis':>12}")
+              f" {'cover':>6} {'fps':>6} {'axis':>12}")
     print(header)
     print("-" * len(header))
     for arm in arms_from_log(log_path):
@@ -295,6 +324,9 @@ def cmd_table(root):
         verdict, fps = axis_verdict(watch_document(bench, arm["watch"]) if arm.get("watch") else None, wanted)
         if counted and verdict != "ok":
             refused.append((arm, verdict))
+        covered, coverage = coverage_verdict(summary, arm.get("watchS"))
+        if counted and covered != "ok":
+            truncated.append((arm, covered))
         print(" ".join((
             f"{arm['arm']:>3}", f"{arm['round']:>3}", f"{arm['cond']:<8}",
             f"{'counted' if counted else 'warm-up':<7}", f"{arm.get('retrievals', '—'):>11}",
@@ -302,15 +334,25 @@ def cmd_table(root):
             f"{dashed(summary.get('mean')):>7}", f"{dashed(summary.get('peak')):>8}",
             f"{arm.get('stalls', '—'):>7}", f"{arm.get('behindS', '—'):>8}",
             f"{str(summary.get('complete', '—')):>9}",
+            f"{dashed(coverage):>6}",
             f"{dashed(fps, 1):>6}", f"{verdict:>12}",
         )))
-        if counted and verdict == "ok" and summary.get("mean") is not None:
+        if counted and verdict == "ok" and covered == "ok" and summary.get("mean") is not None:
             kept.setdefault(arm["cond"], []).append((summary["mean"], summary["peak"], arm.get("retrievals")))
 
     print()
     for cond, rows in kept.items():
         print(f"{cond:<8} n={len(rows)}  thread {min(r[0] for r in rows):.3f}-{max(r[0] for r in rows):.3f}"
               f"  peak {min(r[1] for r in rows):.3f}-{max(r[1] for r in rows):.3f}")
+    if truncated:
+        print(f"\n⛔ REFUSING TO SUMMARISE. {len(truncated)} counted arm(s) have a thread series that "
+              f"does not span the arm it is labelled with:")
+        for arm, why in truncated:
+            print(f"    arm {arm['arm']} ({arm['cond']}): {why}")
+        print("  A sampler that stops early still writes complete:true beside a short wallS, so the")
+        print("  series looks whole. Every per-hour figure read off it would be fitted over the part")
+        print("  that survived and published as the whole arm.")
+        return 1
     if refused:
         print(f"\n⛔ REFUSING TO SUMMARISE. {len(refused)} counted arm(s) were not delivered at "
               f"{wanted} {PUBLISHER_FPS}fps, which is the profile this sitting claims to measure:")
@@ -449,6 +491,155 @@ def quantile(ordered, q):
     return ordered[min(len(ordered) - 1, int(q * len(ordered)))] if ordered else None
 
 
+# A thread reading is joined to the nearest load sample inside this many seconds. The sampler runs at
+# METRICS_INTERVAL_S=30, so anything further away has no sample of its own.
+LOAD_JOIN_TOLERANCE_S = 30
+# Refuse to align two series whose spans disagree by more than this. They are meant to cover the same
+# arm, and spans that do not match mean they do not.
+MAX_SPAN_DISAGREEMENT_S = 60
+MIN_POINTS_FOR_SENSITIVITY = 20
+
+
+def load_samples(series_dir):
+    """(epoch seconds, one-minute load average) from one arm's mid-flight node-metrics samples."""
+    out = []
+    for path in sorted(series_dir.glob("sample-*.json")):
+        try:
+            sample = json.loads(path.read_text())
+            out.append((sample["atMs"] / 1000, float(sample["hostLoad"].split()[0])))
+        except (ValueError, KeyError, IndexError):
+            continue
+    return out
+
+
+def clock_offset(rows, samples):
+    """Seconds to add to a CDP timestamp to reach the sampler's epoch clock.
+
+    ⛔⛔⛔ THE TWO FILES DO NOT SHARE A CLOCK. `*-mainthread.jsonl` carries CDP's `Timestamp`, which is
+    the host's monotonic clock, while `sample-NNNN.json` carries `atMs`, which is epoch. Joining them
+    on the raw numbers silently pairs every thread reading with the same one sample.
+
+    The offset is taken from the sitting rather than from `/proc/uptime`, which is only readable on the
+    host, only correct until it reboots, and wrong for anyone reading the sitting anywhere else. Both
+    series cover one arm, so centring them recovers the offset to within the few seconds by which the
+    sampler leads the browser, which is well inside a 30s sampling interval and further inside a
+    one-minute load average.
+
+    Returns None when the two spans disagree enough that they cannot be the same window.
+    """
+    if len(rows) < 2 or len(samples) < 2:
+        return None
+    thread_span = rows[-1]["Timestamp"] - rows[0]["Timestamp"]
+    sample_span = samples[-1][0] - samples[0][0]
+    if abs(thread_span - sample_span) > MAX_SPAN_DISAGREEMENT_S:
+        return None
+    thread_middle = (rows[-1]["Timestamp"] + rows[0]["Timestamp"]) / 2
+    sample_middle = (samples[-1][0] + samples[0][0]) / 2
+    return sample_middle - thread_middle
+
+
+def utilisation_against_load(mainthread_path, series_dir):
+    """(hours since the arm opened, utilisation, host load) for every interval with a load sample."""
+    rows = readings(mainthread_path)
+    samples = load_samples(series_dir)
+    offset = clock_offset(rows, samples)
+    if offset is None:
+        return []
+
+    out = []
+    for index in range(1, len(rows)):
+        wall = rows[index]["Timestamp"] - rows[index - 1]["Timestamp"]
+        if wall <= 0:
+            continue
+        at = offset + (rows[index]["Timestamp"] + rows[index - 1]["Timestamp"]) / 2
+        nearest = min(samples, key=lambda pair: abs(pair[0] - at))
+        if abs(nearest[0] - at) <= LOAD_JOIN_TOLERANCE_S:
+            utilisation = (rows[index]["TaskDuration"] - rows[index - 1]["TaskDuration"]) / wall
+            out.append((at, utilisation, nearest[1]))
+    return [((at - out[0][0]) / 3600, utilisation, load) for at, utilisation, load in out]
+
+
+def slope_of(xs, ys, lost_degrees=2):
+    """Least squares slope of ys on xs, with its standard error. None when xs does not vary."""
+    n = len(xs)
+    if n <= lost_degrees:
+        return None, None
+    mean_x, mean_y = sum(xs) / n, sum(ys) / n
+    spread = sum((x - mean_x) ** 2 for x in xs)
+    if spread <= 0:
+        return None, None
+    beta = sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n)) / spread
+    residual = [ys[i] - mean_y - beta * (xs[i] - mean_x) for i in range(n)]
+    variance = sum(r * r for r in residual) / (n - lost_degrees)
+    return beta, (variance / spread) ** 0.5
+
+
+def correlation(xs, ys):
+    n = len(xs)
+    mean_x, mean_y = sum(xs) / n, sum(ys) / n
+    spread = (sum((x - mean_x) ** 2 for x in xs) * sum((y - mean_y) ** 2 for y in ys)) ** 0.5
+    return sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n)) / spread if spread else None
+
+
+def cmd_load(root, creep_per_hour=None):
+    """Whether the shared host, rather than the session ageing, could account for a within-arm creep.
+
+    ⭐ THE OBJECTION THIS ANSWERS. A single long arm on a box carrying other people's work can read a
+    rising thread because the session is ageing or because the neighbours got busier, and those look
+    identical in one column. The sampler has been recording `/proc/loadavg` beside every arm all
+    along, so the question is answerable from the same files rather than by assurance.
+
+    ⛔ The pooled figure demeans each arm first. Pooling raw would let differences BETWEEN arms, which
+    have their own mean load and their own mean utilisation, masquerade as a sensitivity no single arm
+    exhibits.
+    """
+    by_condition = {}
+    print(f"{'arm':<28}{'n':>5}{'load range':>14}{'corr(t,load)':>14}{'dU/dLoad':>12}{'+- se':>10}")
+    print("-" * 83)
+
+    for path in sorted((root / "node-metrics").glob("*-mainthread.jsonl")):
+        arm = path.name[: -len("-mainthread.jsonl")]
+        if f"-round{WARMUP_ROUNDS}-" in arm:
+            continue
+        points = utilisation_against_load(path, root / "node-metrics" / f"{arm}-series")
+        if len(points) < MIN_POINTS_FOR_SENSITIVITY:
+            print(f"{arm:<28}{len(points):>5}   no usable load series")
+            continue
+
+        hours = [h for h, _, _ in points]
+        utilisation = [u for _, u, _ in points]
+        load = [l for _, _, l in points]
+        beta, error = slope_of(load, utilisation)
+        print(
+            f"{arm:<28}{len(points):>5}{min(load):>7.1f}-{max(load):<6.1f}"
+            f"{correlation(hours, load):>14.3f}{beta:>12.5f}{error:>10.5f}"
+        )
+        by_condition.setdefault("weeb3" if "weeb3" in arm else "gateway", []).append(points)
+
+    print("\nWITHIN-ARM, every arm demeaned first so no between-arm term survives")
+    for condition, arms in sorted(by_condition.items()):
+        load, utilisation = [], []
+        for points in arms:
+            mean_load = sum(p[2] for p in points) / len(points)
+            mean_utilisation = sum(p[1] for p in points) / len(points)
+            load.extend(p[2] - mean_load for p in points)
+            utilisation.extend(p[1] - mean_utilisation for p in points)
+
+        beta, error = slope_of(load, utilisation, lost_degrees=len(arms) + 1)
+        bound = abs(beta) + 2 * error
+        print(
+            f"  {condition:<8} {len(arms)} arms, n={len(load):<5} "
+            f"dU/dLoad = {beta:+.5f} +- {error:.5f} cores per unit  (t = {beta / error:+.2f})"
+        )
+        print(f"           upper bound {bound:.5f} at two standard errors")
+        if creep_per_hour:
+            print(
+                f"           ⭐ to fake {creep_per_hour:+.3f} cores/hr, host load would have to rise "
+                f"{creep_per_hour / bound:.0f} units per hour, monotonically, even at that bound"
+            )
+    return 0
+
+
 def cmd_shape(roots):
     """The whole distribution per condition, and how it moved between sittings.
 
@@ -518,6 +709,8 @@ def main():
         cmd_drift(root, int(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT_WINDOWS)
     elif command == "join":
         cmd_join(root)
+    elif command == "load":
+        return cmd_load(root, float(sys.argv[3]) if len(sys.argv) > 3 else None)
     else:
         print(__doc__)
         return 2

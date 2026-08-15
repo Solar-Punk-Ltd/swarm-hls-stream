@@ -217,6 +217,9 @@ async function runSitting(stubs, env = {}) {
         ARM_GAP_S: '0',
         PUBLISHER_LEAD_S: '0',
         STOP_POLL_S: '0.05',
+        // ⚠️ The default here, not in the driver. Most cases below are about gates and ordering and
+        // have no opinion about the thread column, and a real sitting must state one either way.
+        ALLOW_NO_THREAD_READING: '1',
         ...env,
       },
       encoding: 'utf8',
@@ -533,7 +536,7 @@ describe('whether the viewer had any thread left, per arm', () => {
   // The summary refuses again at the end of the arm for the same cause, which is deliberate (a run
   // must not have to remember a line printed forty minutes earlier) and would double the count.
   it('says plainly at the start of the arm that nothing will measure the thread', async () => {
-    const result = await runSitting(setup());
+    const result = await runSitting(setup(), { ALLOW_NO_THREAD_READING: '1' });
 
     assert.ok(watches(result).length > 0, 'no arm ran, so nothing could have been sampled or skipped');
     assert.equal(
@@ -570,5 +573,138 @@ describe('whether the viewer had any thread left, per arm', () => {
       watched.every((call) => call.join(' ').includes('VIEWER_CDP_PORT=9333')),
       'an arm was watched without the port, so its Chrome opens no debugging endpoint',
     );
+  });
+});
+
+/**
+ * That a sitting can be ONE condition, for the questions where the second one answers nothing.
+ *
+ * ⭐ A drift slope is read WITHIN an arm, so #106 wants one three-hour in-tab arm behind a short
+ * warm-up. Run as a counterbalanced pair that is six hours of broadcast to answer a three-hour
+ * question, and the half that pays for itself is the half nobody asked about.
+ *
+ * ⛔⛔ THE EXPENSIVE FAILURE HERE IS SILENT AND ARITHMETIC. A plan whose arms are longer than
+ * `ARM_MINUTES` while the broadcast is still sized from `ARM_MINUTES` starts a stream that ends
+ * before its own last arm does, and the arm comes back NO-STREAM after the money is spent. Which is
+ * why the length of the broadcast is asserted here rather than the number of arms.
+ */
+describe('a sitting whose arms are a plan rather than a counterbalanced pair', () => {
+  const plan = (entries, env = {}) => runSitting(setup(), { ARM_PLAN: entries, ...env });
+  const secondsPublished = (result) => Number((result.publishes[0]?.match(/--seconds=(\d+)/) ?? [])[1] ?? Number.NaN);
+
+  it('runs each arm for its own length rather than one length for all of them', async () => {
+    const result = await plan('weeb3:2:warm-up weeb3:3:counted');
+    const watched = watches(result);
+
+    assert.equal(result.code, 0, result.log);
+    assert.equal(watched.length, 2);
+    assert.deepEqual(
+      watched.map((call) => call[4]),
+      ['120', '180'],
+      'the arms did not get their own watch windows',
+    );
+  });
+
+  it('sizes the broadcast from the sum of the plan, so the last arm is not cut off', async () => {
+    // 0s lead, 170s overhead each, 0s gap: (120 + 170) + (180 + 170).
+    const result = await plan('weeb3:2:warm-up weeb3:3:counted');
+
+    assert.equal(secondsPublished(result), 640, result.log);
+  });
+
+  it('never numbers a counted arm into round 1, which the reader drops as warm-up', async () => {
+    const result = await plan('weeb3:2:warm-up weeb3:3:counted');
+    const rows = result.state
+      .trim()
+      .split('\n')
+      .map((line) => line.split('\t'));
+
+    assert.deepEqual(
+      rows.map((row) => [row[2], row[4]]),
+      [
+        ['1', 'warm-up'],
+        ['2', 'counted'],
+      ],
+      'a counted arm landed in round 1, so read-sitting.py would discard it',
+    );
+  });
+
+  it('refuses a byte source the harness does not know, and publishes nothing', async () => {
+    const result = await plan('weeb-3:3:counted');
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0, 'a typo in the plan reached a paid broadcast');
+    assert.match(result.log, /does not know/);
+  });
+
+  it('refuses an entry that is not source:minutes:role, and publishes nothing', async () => {
+    const result = await plan('weeb3:3');
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0);
+    assert.match(result.log, /is not source:minutes:role/);
+  });
+
+  it('refuses a role that is neither warm-up nor counted, and publishes nothing', async () => {
+    const result = await plan('weeb3:3:control');
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0);
+    assert.match(result.log, /wanted warm-up or counted/);
+  });
+
+  it('applies the steady-state floor to every entry, not just to ARM_MINUTES', async () => {
+    const result = await plan('weeb3:1:counted');
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0);
+    assert.match(result.log, /too short for a player to reach steady state/);
+  });
+
+  it('leaves the counterbalanced default alone when no plan is given', async () => {
+    const result = await runSitting(setup(), { ROUNDS: '2', ARM_MINUTES: '2' });
+    const watched = watches(result);
+
+    assert.equal(result.code, 0, result.log);
+    assert.equal(watched.length, 4);
+    assert.ok(
+      watched.every((call) => call[4] === '120'),
+      'the default path stopped honouring ARM_MINUTES',
+    );
+  });
+});
+
+/**
+ * That a sitting cannot quietly produce no saturation reading at all.
+ *
+ * ⛔⛔⛔ THE WARNING WAS ALREADY THERE AND IT DID NOT WORK. `browser-cpu.sh` prints "NO SATURATION
+ * READING ... VIEWER_CDP_PORT is unset" once per arm, and on 2026-08-15 a proof sitting was launched
+ * straight past two of them, in a run whose entire output is the thread column. It surfaced because a
+ * file was missing from a directory listing, not because anything refused.
+ *
+ * ⭐ A warning inside a detached run nobody is watching is not a control. The gate is the refusal.
+ */
+describe('a sitting that would measure no thread at all', () => {
+  it('refuses before publishing anything when nothing would sample the thread', async () => {
+    const stubs = setup();
+    const result = await runSitting(stubs, { ALLOW_NO_THREAD_READING: '0', VIEWER_CDP_PORT: '' });
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.publishes.length, 0, 'a sitting with no thread column reached a paid broadcast');
+    assert.match(result.log, /VIEWER_CDP_PORT is unset, so no arm would measure the page main thread/);
+  });
+
+  it('runs once the port is set, so the gate is not simply stuck closed', async () => {
+    const result = await runSitting(setup(), { ALLOW_NO_THREAD_READING: '0', VIEWER_CDP_PORT: '9333' });
+
+    assert.equal(result.code, 0, result.log);
+    assert.ok(watches(result).length > 0, 'no arm ran');
+  });
+
+  it('lets a sitting that genuinely does not need the column say so', async () => {
+    const result = await runSitting(setup(), { ALLOW_NO_THREAD_READING: '1', VIEWER_CDP_PORT: '' });
+
+    assert.equal(result.code, 0, result.log);
+    assert.ok(watches(result).length > 0, 'no arm ran');
   });
 });
