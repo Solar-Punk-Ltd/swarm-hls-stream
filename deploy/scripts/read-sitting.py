@@ -273,6 +273,33 @@ def off_main_fraction(rows):
     return None if process <= 0 else max(0.0, (process - main) / process)
 
 
+# The thread series runs from the arm opening to the stop file, so it covers the watch window PLUS the
+# settle and normally reads above 1.0. Materially short of the window is a sampler that stopped early.
+MIN_THREAD_COVERAGE = 0.9
+
+
+def coverage_verdict(summary, watch_s):
+    """Whether the thread series actually spans the arm it is labelled with.
+
+    ⛔⛔⛔ `complete` IN THE SUMMARY DOES NOT MEAN THIS. It reports whether every scriptable target was
+    sampled. A sampler whose CDP connection dies mid-arm still runs its `finally`, writes
+    `complete: true` beside a short `wallS`, and leaves a perfectly well-formed series covering part of
+    the arm. On six-minute arms that was a small lie. On a three-hour arm it is a slope fitted over
+    forty minutes and published as three hours.
+
+    ⚠️ An arm with no series at all is not refused here. It carries no mean, so it never reaches the
+    headline, and `axis` already refuses an arm nobody could check.
+    """
+    if not summary or summary.get("wallS") is None or not watch_s:
+        return "ok", None
+    if summary.get("stoppedEarly"):
+        return f"stopped early: {str(summary['stoppedEarly'])[:24]}", summary["wallS"] / watch_s
+    covered = summary["wallS"] / watch_s
+    if covered < MIN_THREAD_COVERAGE:
+        return f"covered {summary['wallS']:.0f}s of {watch_s}s", covered
+    return "ok", covered
+
+
 def requested_size(log_path):
     """The resolution the sitting told the publisher to produce, from its own opening line."""
     found = PROFILE.search(log_path.read_text(errors="replace"))
@@ -284,10 +311,10 @@ def cmd_table(root):
     metrics = root / "node-metrics"
     bench = bench_dir(root)
     wanted = requested_size(log_path)
-    kept, refused = {}, []
+    kept, refused, truncated = {}, [], []
     header = (f"{'arm':>3} {'rnd':>3} {'cond':<8} {'kept':<7} {'retrievals':>11} {'cores':>6}"
               f" {'peak':>6} {'thread':>7} {'thrPeak':>8} {'stalls':>7} {'behindS':>8} {'complete':>9}"
-              f" {'fps':>6} {'axis':>12}")
+              f" {'cover':>6} {'fps':>6} {'axis':>12}")
     print(header)
     print("-" * len(header))
     for arm in arms_from_log(log_path):
@@ -297,6 +324,9 @@ def cmd_table(root):
         verdict, fps = axis_verdict(watch_document(bench, arm["watch"]) if arm.get("watch") else None, wanted)
         if counted and verdict != "ok":
             refused.append((arm, verdict))
+        covered, coverage = coverage_verdict(summary, arm.get("watchS"))
+        if counted and covered != "ok":
+            truncated.append((arm, covered))
         print(" ".join((
             f"{arm['arm']:>3}", f"{arm['round']:>3}", f"{arm['cond']:<8}",
             f"{'counted' if counted else 'warm-up':<7}", f"{arm.get('retrievals', '—'):>11}",
@@ -304,15 +334,25 @@ def cmd_table(root):
             f"{dashed(summary.get('mean')):>7}", f"{dashed(summary.get('peak')):>8}",
             f"{arm.get('stalls', '—'):>7}", f"{arm.get('behindS', '—'):>8}",
             f"{str(summary.get('complete', '—')):>9}",
+            f"{dashed(coverage):>6}",
             f"{dashed(fps, 1):>6}", f"{verdict:>12}",
         )))
-        if counted and verdict == "ok" and summary.get("mean") is not None:
+        if counted and verdict == "ok" and covered == "ok" and summary.get("mean") is not None:
             kept.setdefault(arm["cond"], []).append((summary["mean"], summary["peak"], arm.get("retrievals")))
 
     print()
     for cond, rows in kept.items():
         print(f"{cond:<8} n={len(rows)}  thread {min(r[0] for r in rows):.3f}-{max(r[0] for r in rows):.3f}"
               f"  peak {min(r[1] for r in rows):.3f}-{max(r[1] for r in rows):.3f}")
+    if truncated:
+        print(f"\n⛔ REFUSING TO SUMMARISE. {len(truncated)} counted arm(s) have a thread series that "
+              f"does not span the arm it is labelled with:")
+        for arm, why in truncated:
+            print(f"    arm {arm['arm']} ({arm['cond']}): {why}")
+        print("  A sampler that stops early still writes complete:true beside a short wallS, so the")
+        print("  series looks whole. Every per-hour figure read off it would be fitted over the part")
+        print("  that survived and published as the whole arm.")
+        return 1
     if refused:
         print(f"\n⛔ REFUSING TO SUMMARISE. {len(refused)} counted arm(s) were not delivered at "
               f"{wanted} {PUBLISHER_FPS}fps, which is the profile this sitting claims to measure:")
