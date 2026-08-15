@@ -87,7 +87,9 @@ function writeMainThread(metricsDir, arm, thread) {
         mean: thread,
         peak: thread * 2,
         complete: true,
-        stoppedEarly: arm.stoppedEarly ?? null,
+        stoppedBecause: arm.stoppedBecause ?? null,
+        // A sitting recorded before the rename still has to be readable.
+        ...(arm.legacyStoppedEarly ? { stoppedEarly: arm.legacyStoppedEarly } : {}),
       },
     }),
   );
@@ -521,14 +523,47 @@ describe('a thread series that does not span its arm', () => {
     assert.match(result.stdout, /arm 3 \(gateway\): covered 80s of 360s/);
   });
 
-  it('refuses an arm the sampler itself said it stopped early, however long the span', async () => {
+  /**
+   * ⛔⛔⛔ THE ROLLBACK OF A GATE I WROTE THE SAME NIGHT, AND WHY IT IS NOT MOTIVATED REASONING.
+   *
+   * This first refused on the recorded reason alone. The 2026-08-15 three-hour arm sampled 10863s of a
+   * 10800s watch, every second of its own window, and was refused because the sampler's loop had ended
+   * when the browser container was torn down. That teardown races the stop file and wins about half the
+   * time, so a perfectly healthy arm records a reason.
+   *
+   * ⚠️ Loosening a gate so one's own data passes is exactly the move this suite exists to prevent, so
+   * the argument stands without that arm: the stated harm is a slope fitted over PART of an arm and
+   * published as the whole, coverage is what measures that, and a reason cannot, because a normal
+   * ending produces one.
+   */
+  it('does not refuse a full-length arm just because the sampler recorded why it ended', async () => {
     const arms = healthyArms();
     const result = await table(
-      sitting(arms.map((arm) => (arm.arm === 4 ? { ...arm, stoppedEarly: 'websocket closed' } : arm))),
+      sitting(arms.map((arm) => (arm.arm === 4 ? { ...arm, stoppedBecause: 'CDP socket is not open' } : arm))),
+    );
+
+    assert.equal(result.code, 0, result.stdout);
+    assert.doesNotMatch(result.stdout, /does not span the arm/);
+  });
+
+  it('names the recorded reason when the arm IS short, since that is when it explains something', async () => {
+    const arms = healthyArms();
+    const result = await table(
+      sitting(arms.map((arm) => (arm.arm === 4 ? { ...arm, wallS: 80, stoppedBecause: 'websocket closed' } : arm))),
     );
 
     assert.equal(result.code, 1, result.stdout);
-    assert.match(result.stdout, /arm 4 \(weeb3\): stopped early: websocket closed/);
+    assert.match(result.stdout, /arm 4 \(weeb3\): covered 80s of 360s \(websocket closed\)/);
+  });
+
+  it('still reads the reason off a sitting recorded before the field was renamed', async () => {
+    const arms = healthyArms();
+    const result = await table(
+      sitting(arms.map((arm) => (arm.arm === 4 ? { ...arm, wallS: 80, legacyStoppedEarly: 'old key' } : arm))),
+    );
+
+    assert.equal(result.code, 1, result.stdout);
+    assert.match(result.stdout, /arm 4 \(weeb3\): covered 80s of 360s \(old key\)/);
   });
 
   it('accepts the normal case, where the series runs longer than the watch window', async () => {

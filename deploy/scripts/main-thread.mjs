@@ -221,14 +221,20 @@ async function main() {
   await enableMetrics(client);
 
   const samples = [];
-  // ⛔⛔⛔ WHY THE REASON IS RECORDED AND NOT JUST THROWN.
+  // ⛔⛔⛔ WHY THE REASON IS RECORDED, AND WHY IT IS NOT CALLED `stoppedEarly`.
   //
   // `complete` above is about unsampled TARGETS, not about the window. Before this, a sampler whose
   // connection died mid-arm ran its `finally`, wrote `complete: true` beside a short `wallS`, and left
   // a perfectly well-formed series that covered a fraction of the arm. On the six-minute arms this had
   // run on, that was a small lie. On a three-hour arm it is a slope fitted over forty minutes and
   // published as three hours, which is why the arm length made this worth fixing rather than the code.
-  let stoppedEarly = null;
+  //
+  // ⚠️ It was called `stoppedEarly` for one sitting and that name was WRONG. The loop also ends when
+  // the browser container is torn down at the end of the arm, which races the stop file and wins about
+  // half the time. The 2026-08-15 three-hour arm sampled its whole window, 10863s of a 10800s watch,
+  // and still recorded a reason. The reason is information; only the COVERAGE says whether an arm is
+  // short, and the reader decides that.
+  let stoppedBecause = null;
   try {
     while (!(stopFile && existsSync(stopFile))) {
       const reading = await readMetrics(client);
@@ -238,11 +244,11 @@ async function main() {
     }
   } catch (error) {
     // Rethrown below, so the exit code still reports the failure to whatever started this.
-    stoppedEarly = error.message;
+    stoppedBecause = error.message;
     throw error;
   } finally {
     client.close();
-    const summary = { ...summariseMainThread(samples), complete: choice.complete, stoppedEarly };
+    const summary = { ...summariseMainThread(samples), complete: choice.complete, stoppedBecause };
     appendFileSync(outPath, `${JSON.stringify({ summary })}\n`);
     console.log(
       `main-thread: ${summary.usable} readings over ${summary.wallS.toFixed(0)}s, ` +
