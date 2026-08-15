@@ -168,16 +168,25 @@ describe('summarizing a session', () => {
     assert.equal(summarize(samples).stalledSamples, 2);
   });
 
-  it('takes the running totals off the last sample rather than adding them up', () => {
+  /**
+   * ⛔ The counters run from the start of PLAYBACK, and a window opens after a settle, so what the
+   * window cost is what they GAINED inside it.
+   *
+   * There are two wrong answers and this pins both. Adding the samples up gives 3, because a
+   * cumulative counter summed counts every earlier sample again. Taking the last gives 2, which
+   * charges the window with the one rebuffer that happened before it opened. On a real arm on
+   * 2026-08-14 that read 3 rebuffers where 2 occurred and 59 dropped frames where 42 did.
+   */
+  it('reports what the running totals gained inside the window, not their lifetime value', () => {
     const samples = [
       { ...BASE, atMs: 0, rebufferCount: 1, rebufferMs: 200, droppedFrames: 3 },
       { ...BASE, atMs: 1000, currentTime: 1, rebufferCount: 2, rebufferMs: 500, droppedFrames: 9 },
     ];
     const summary = summarize(samples);
 
-    assert.equal(summary.rebufferCount, 2);
-    assert.equal(summary.rebufferMs, 500);
-    assert.equal(summary.droppedFrames, 9);
+    assert.equal(summary.rebufferCount, 1, 'the rebuffer before the window opened is not this window');
+    assert.equal(summary.rebufferMs, 300);
+    assert.equal(summary.droppedFrames, 6);
   });
 
   it('reports the span the samples cover, so a median is read against its own duration', () => {
@@ -331,6 +340,35 @@ describe('the frame rate that actually arrived', () => {
 
   it('reads a healthy stream at the rate it was encoded', () => {
     const samples = [at(0, 0, 0), at(3, 3, 90), at(6, 6, 180), at(9, 9, 270)];
+
+    assert.equal(summarize(samples).deliveredFps, 30);
+  });
+
+  /**
+   * ⛔⛔⛔ THE SETTLE'S FRAMES WERE IN THE NUMERATOR AND ITS SECONDS WERE NOT IN THE DENOMINATOR.
+   *
+   * `decodedFrames` is `totalVideoFrames`, which counts from the moment playback started, and every
+   * arm of a byte-source sitting plays for a 60s settle before its window opens. The rate was built
+   * from the FINAL counter over the window's media, so it read 35.0 on a 6-minute arm and 30.75 on a
+   * 40-minute one, on the same rig, the same night, at the same profile. Both are 30.0: solving for
+   * a fixed excess gives exactly 1800 frames in each, which is the 60 second settle.
+   *
+   * ⛔⛔ AND IT INFLATES, WHICH IS THE DANGEROUS DIRECTION. A starved encoder delivering the historical
+   * 26.5fps would have reported 30.9 on a six-minute arm and passed any guard set against 30.
+   *
+   * ⭐ Every fixture above starts at `at(0, 0, 0)`, where the total and the gain are the same number,
+   * so none of them could tell the two apart. A counter test that starts at zero tests half a counter.
+   */
+  it('counts the frames decoded inside the window, not every frame since playback began', () => {
+    const settled = 60 * 30;
+    const samples = [at(0, 0, settled), at(3, 3, settled + 90), at(6, 6, settled + 180), at(9, 9, settled + 270)];
+
+    assert.equal(summarize(samples).deliveredFps, 30);
+  });
+
+  it('still carries frames across a restart when the window opened mid-playback', () => {
+    // Joins with 1800 already decoded, plays three seconds, then the counter restarts and plays six.
+    const samples = [at(0, 0, 1800), at(3, 3, 1890), at(6, 6, 90), at(9, 9, 180)];
 
     assert.equal(summarize(samples).deliveredFps, 30);
   });

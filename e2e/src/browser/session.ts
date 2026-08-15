@@ -173,7 +173,7 @@ export function judgeLatencyTarget(
     worstS,
     medianPastTargetS: pastTarget.length > 0 ? median(pastTarget) : null,
     raisedByS: worstS === null ? 0 : Math.max(0, worstS - configuredS),
-    stalls: totalAcrossRestarts(samples, (sample) => sample.bufferStalls),
+    stalls: gainedAcrossRestarts(samples, (sample) => sample.bufferStalls),
     // Null rather than true when nothing was observed: a run that never read a target has not shown
     // that the target was steady, and an empty case that reads as a pass is how this project has been
     // caught before.
@@ -393,7 +393,7 @@ function deliveredFps(samples: readonly ViewerSample[]): number | null {
   if (mediaS < MIN_MEDIA_FOR_FPS_S) {
     return null;
   }
-  return totalAcrossRestarts(counted, (sample) => sample.decodedFrames) / mediaS;
+  return gainedAcrossRestarts(counted, (sample) => sample.decodedFrames) / mediaS;
 }
 
 /**
@@ -406,13 +406,31 @@ function deliveredFps(samples: readonly ViewerSample[]): number | null {
 const RESTART_REWIND_S = 5;
 
 /**
- * Total a counter the page maintains as a running total for the session.
+ * How much a counter the page maintains for the whole session GAINED across these samples.
  *
  * A remounted player starts these at zero, so the last sample carries only what happened since the
  * most recent restart. That is zero for exactly the runs worth reading, because the restart is
  * usually the last interesting thing to happen in one.
+ *
+ * ⛔⛔⛔ THE OPENING READING IS SUBTRACTED, AND FOR TWO YEARS IT WAS NOT.
+ *
+ * These counters run from the moment playback starts, and every arm of a byte-source sitting plays a
+ * 60 second settle before its window opens. Returning the final total charged that settle to the
+ * window: `deliveredFps` read 35.0 on a six-minute arm and 30.75 on a forty-minute one, on the same
+ * rig, the same night, at the same profile, when both were 30.0. Solving for a fixed excess gives
+ * exactly 1800 frames in each, which is sixty seconds at thirty frames.
+ *
+ * ⛔⛔ THE FRAME RATE INFLATED, WHICH IS THE DIRECTION THAT HIDES A FAULT. A starved encoder at the
+ * historical 26.5fps would have reported 30.9 on a six-minute arm and passed any guard set against 30.
+ * The counters move the other way: an arm reporting 3 rebuffers had 2, and 59 dropped frames had 42.
+ *
+ * ⭐ Every fixture that covered this started its counter at zero, where the total and the gain are the
+ * same number. A counter test that starts at zero tests half a counter.
  */
-function totalAcrossRestarts<T extends ViewerSample>(samples: readonly T[], of: (sample: T) => number): number {
+function gainedAcrossRestarts<T extends ViewerSample>(samples: readonly T[], of: (sample: T) => number): number {
+  if (samples.length === 0) {
+    return 0;
+  }
   let carried = 0;
   let peak = 0;
 
@@ -424,7 +442,7 @@ function totalAcrossRestarts<T extends ViewerSample>(samples: readonly T[], of: 
     peak = value;
   }
 
-  return carried + peak;
+  return carried + peak - of(samples[0]);
 }
 
 /**
@@ -510,10 +528,10 @@ export function summarize(
     overallAdvanceRatio: spanMs > 0 ? (played.playedS * 1000) / spanMs : 0,
     forwardSeeks: played.forwardSeeks,
     seekedPastS: played.seekedPastS,
-    rebufferCount: totalAcrossRestarts(samples, (sample) => sample.rebufferCount),
-    rebufferMs: totalAcrossRestarts(samples, (sample) => sample.rebufferMs),
-    fatalErrors: totalAcrossRestarts(samples, (sample) => sample.fatalErrors),
-    droppedFrames: totalAcrossRestarts(samples, (sample) => sample.droppedFrames),
+    rebufferCount: gainedAcrossRestarts(samples, (sample) => sample.rebufferCount),
+    rebufferMs: gainedAcrossRestarts(samples, (sample) => sample.rebufferMs),
+    fatalErrors: gainedAcrossRestarts(samples, (sample) => sample.fatalErrors),
+    droppedFrames: gainedAcrossRestarts(samples, (sample) => sample.droppedFrames),
     resolution: last?.resolution ?? null,
     deliveredFps: deliveredFps(samples),
     medianBufferAheadS: samples.length > 0 ? median(samples.map((sample) => sample.bufferAheadS)) : 0,

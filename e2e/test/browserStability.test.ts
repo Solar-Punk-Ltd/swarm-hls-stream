@@ -313,12 +313,22 @@ describe('summarising a run whose player restarted', () => {
     );
   });
 
+  /**
+   * The counters open at a non-zero value here because a real window opens after a settle the player
+   * has already been counting through. What the window cost is what they gained inside it, so a run
+   * that arrives with 2 rebuffers already counted and gains 2 more reports 2, not 4.
+   */
   it('leaves a run that never restarted exactly as it was', () => {
-    const samples = longRun(3).map((sample, i) => ({ ...sample, rebufferCount: 2, droppedFrames: i }));
+    const samples = longRun(3).map((sample, i) => ({
+      ...sample,
+      rebufferCount: i === 0 ? 2 : 4,
+      droppedFrames: i,
+    }));
 
     const summary = summarize(samples);
 
     assert.equal(summary.rebufferCount, 2);
+    assert.equal(summary.droppedFrames, samples.length - 1);
     assert.equal(summary.fatalErrors, 0);
     assert.ok(Math.abs(summary.overallAdvanceRatio - 1) < 0.01);
   });
