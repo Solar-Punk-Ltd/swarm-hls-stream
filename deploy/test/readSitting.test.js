@@ -345,3 +345,136 @@ describe('a quantile ratio carries the count it rests on', () => {
     );
   });
 });
+
+/**
+ * That the host, rather than the session ageing, can be ruled out as the cause of a within-arm creep.
+ *
+ * ⛔⛔⛔ THE TWO SERIES DO NOT SHARE A CLOCK, AND JOINING THEM WRONG FAILS QUIETLY.
+ * `*-mainthread.jsonl` carries CDP's monotonic `Timestamp`; `sample-NNNN.json` carries epoch `atMs`.
+ * The two differ by the host's boot time, about 234 million seconds here. A reader that joins on the
+ * raw numbers pairs every thread reading with whichever single sample is nearest, which is always the
+ * same one, and then reports a sensitivity of exactly zero. Zero is also the answer a healthy host
+ * gives, so the defect and the finding are the same output.
+ *
+ * ⭐ So the fixture plants a sensitivity and makes host load ZIG-ZAG rather than drift. A join that is
+ * out by one sampling interval recovers the planted slope with its sign REVERSED, which no amount of
+ * reading a summary would catch.
+ */
+describe('whether host load could account for a creep', () => {
+  const MONOTONIC_START = 20_000_000;
+  const EPOCH_START = 1_786_000_000;
+  const ARM_SECONDS = 360;
+  const THREAD_INTERVAL_S = 5;
+  const SAMPLE_INTERVAL_S = 30;
+  const BASE_UTILISATION = 0.2;
+  const PLANTED_SENSITIVITY = 0.002;
+  const loadAt = (sample) => 10 + 10 * (sample % 2);
+
+  function loadSitting(arms, { sampleSpanS = ARM_SECONDS, writeSeries = true } = {}) {
+    const dir = workspace();
+    const metrics = join(dir, 'node-metrics');
+    mkdirSync(metrics, { recursive: true });
+    const lines = ['[00:36:21]   one LIVE broadcast of 76 min at a 0.5s GOP, 1280x720 at 2500 kbps'];
+
+    for (const arm of arms) {
+      const stem = `arm${String(arm.arm).padStart(2, '0')}-round${arm.round}-${arm.cond}`;
+      const rows = [];
+      let cumulative = 0;
+      for (let i = 0; i * THREAD_INTERVAL_S <= ARM_SECONDS; i++) {
+        if (i > 0) {
+          // The interval's midpoint decides which sample it belongs to, which is what the join must
+          // reproduce from two clocks that share no origin.
+          const midpoint = (i - 0.5) * THREAD_INTERVAL_S;
+          const sample = Math.round(midpoint / SAMPLE_INTERVAL_S);
+          cumulative +=
+            THREAD_INTERVAL_S * (BASE_UTILISATION + PLANTED_SENSITIVITY * loadAt(sample));
+        }
+        rows.push(
+          JSON.stringify({
+            Timestamp: MONOTONIC_START + i * THREAD_INTERVAL_S,
+            TaskDuration: cumulative,
+          }),
+        );
+      }
+      rows.push(JSON.stringify({ summary: { samples: rows.length, complete: true } }));
+      writeFileSync(join(metrics, `${stem}-mainthread.jsonl`), `${rows.join('\n')}\n`);
+
+      if (writeSeries) {
+        const series = join(metrics, `${stem}-series`);
+        mkdirSync(series, { recursive: true });
+        const count = Math.floor(sampleSpanS / SAMPLE_INTERVAL_S);
+        for (let j = 0; j <= count; j++) {
+          writeFileSync(
+            join(series, `sample-${String(j + 1).padStart(4, '0')}.json`),
+            JSON.stringify({
+              label: `${stem}-${j + 1}`,
+              atMs: (EPOCH_START + (j * sampleSpanS) / count) * 1000,
+              hostLoad: `${loadAt(j).toFixed(2)} 9.00 8.00`,
+            }),
+          );
+        }
+      }
+      lines.push(`[00:4${arm.arm}:00] arm ${arm.arm} (round ${arm.round}): segment bytes from ${arm.cond}, watching 360s`);
+    }
+    writeFileSync(join(dir, 'byte-source-arms.log'), `${lines.join('\n')}\n`);
+    return dir;
+  }
+
+  async function loadRead(dir, creep) {
+    const argv = [READER, 'load', dir, ...(creep === undefined ? [] : [String(creep)])];
+    try {
+      const { stdout } = await run('python3', argv);
+      return { code: 0, stdout };
+    } catch (error) {
+      return { code: error.code ?? 1, stdout: error.stdout ?? '' };
+    }
+  }
+
+  const counted = [{ arm: 3, round: 2, cond: 'weeb3' }];
+
+  it('recovers a planted sensitivity across clocks that share no origin', async () => {
+    const result = await loadRead(loadSitting(counted));
+    const row = result.stdout.split('\n').find((line) => line.includes('arm03'));
+
+    assert.ok(row, result.stdout);
+    const recovered = Number(row.trim().split(/\s+/).at(-2));
+    assert.ok(
+      Math.abs(recovered - PLANTED_SENSITIVITY) < 0.0002,
+      `recovered ${recovered} for a planted ${PLANTED_SENSITIVITY}; a join on the raw clocks reads 0 and one interval out reads the negative`,
+    );
+  });
+
+  it('refuses to align two series that cannot be the same window', async () => {
+    const result = await loadRead(loadSitting(counted, { sampleSpanS: 900 }));
+
+    assert.match(result.stdout, /no usable load series/);
+    assert.doesNotMatch(result.stdout, /dU\/dLoad = /);
+  });
+
+  it('says the series is missing rather than reporting a sensitivity of zero', async () => {
+    const result = await loadRead(loadSitting(counted, { writeSeries: false }));
+
+    assert.match(result.stdout, /no usable load series/);
+  });
+
+  it('leaves warm-up arms out, as every other view of a sitting does', async () => {
+    const result = await loadRead(
+      loadSitting([{ arm: 1, round: 1, cond: 'weeb3' }, { arm: 3, round: 2, cond: 'weeb3' }]),
+    );
+
+    assert.doesNotMatch(result.stdout, /arm01/);
+    assert.match(result.stdout, /arm03/);
+  });
+
+  it('turns a creep into the load rise that would be needed to fake it', async () => {
+    const result = await loadRead(loadSitting(counted), 0.034);
+
+    assert.match(result.stdout, /to fake \+0\.034 cores\/hr, host load would have to rise \d+ units per hour/);
+  });
+
+  it('says nothing about faking a creep when no creep was named', async () => {
+    const result = await loadRead(loadSitting(counted));
+
+    assert.doesNotMatch(result.stdout, /to fake/);
+  });
+});
