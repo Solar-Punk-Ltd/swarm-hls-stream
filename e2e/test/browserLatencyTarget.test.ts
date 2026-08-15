@@ -198,10 +198,15 @@ describe('whether the run was measured against the target it was configured with
     assert.equal(judgeLatencyTarget(run({ liveTargetLatencyS: null })).medianPastTargetS, null);
   });
 
+  /**
+   * Two stalls happen here, not four. The player arrives at the window having already counted 2 from
+   * the settle before it opened, then stalls once more (3), restarts to zero and stalls once more (1).
+   * Charging the window with the opening 2 is what read 3 rebuffers on a real arm that had 2.
+   */
   it('counts stalls across a restart, which resets the player counter to zero', () => {
     const verdict = judgeLatencyTarget(run({ bufferStalls: 2 }, { bufferStalls: 3 }, { bufferStalls: 1 }));
 
-    assert.equal(verdict.stalls, 4);
+    assert.equal(verdict.stalls, 2);
   });
 });
 
