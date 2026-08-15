@@ -87,17 +87,33 @@ fps a 0.5s GOP is `-g 15`.
 
 **Why 0.5 and not something else**, from two funded sittings on 2026-08-12:
 
-|      GOP | capture to fetchable | confirmed feed stalls | live-edge reads that 404 |
-| -------: | -------------------: | --------------------: | -----------------------: |
-|     2.0s |                3.88s |                3 of 3 |                       0% |
-|     1.0s |                2.30s |                1 of 3 |                       0% |
-| **0.5s** |            **1.55s** |            **0 of 3** |                   **0%** |
-|    0.25s |       not comparable |                0 of 3 |               **18-21%** |
+|      GOP | capture to fetchable | confirmed feed stalls |
+| -------: | -------------------: | --------------------: |
+|     2.0s |                3.88s |                3 of 3 |
+|     1.0s |                2.30s |                1 of 3 |
+| **0.5s** |            **1.55s** |            **0 of 3** |
+|    0.25s |       not comparable |                0 of 3 |
 
-Going from 2.0s to 0.5s costs **19% more BZZ**, because the extra bytes are keyframes. Going below
-0.5s is not a trade, it is a failure: roughly one segment in five cannot be retrieved at the live
-edge. See [gop-sustain](../docs/bench/gop-sustain-2026-08-12.md) and
-[gop-floor](../docs/bench/gop-floor-2026-08-12.md).
+Going from 2.0s to 0.5s costs **19% more BZZ**, because the extra bytes are keyframes.
+
+**Why not go below 0.5s**, on the two reasons that survived a replicate:
+
+1. **Shipped config cannot get there.** `HLS_FRAGMENT` is `0.5`, and a segment is
+   `ceil(GOP / fragment) * fragment`, so asking an encoder for 0.25s yields 0.5s segments anyway.
+   Reaching sub-0.5 takes a second deliberate change that no default leads to.
+2. **It buys nothing and costs more.** A 0.25s GOP measured 5.86s behind live against 1.0s's 5.52s
+   and wrote 24% more BZZ.
+
+⛔ **This table used to carry a fourth column reporting 18-21% of live-edge reads 404ing at 0.25s,
+and that number is withdrawn.** A replicate the same afternoon on the same rig gave 2.9%, 13.1% and
+0.0%, and all 19 refusals were retrievable again within 140ms. The cause is a publish race of ours,
+not the GOP: the feed slot naming a segment syncs before the segment bytes do, so a bench reader at
+the live edge asks too early. A viewer's hls.js retries. **The recommendation did not change, the
+reason for it did.**
+
+See [gop-sustain](../docs/bench/gop-sustain-2026-08-12.md),
+[gop-floor](../docs/bench/gop-floor-2026-08-12.md) and, for the withdrawal,
+[gop-floor-replicate](../docs/bench/gop-floor-replicate-2026-08-12.md).
 
 ⚠️ `HLS_FRAGMENT` (default `0.5`) is a **floor** on the segment, not the segment. A GOP below it is
 rounded up, so lowering the encoder's keyframe interval without lowering `HLS_FRAGMENT` to match
