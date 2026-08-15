@@ -17,7 +17,7 @@ the bench rig.** What ships is a **0.5s GOP against `HLS_FRAGMENT=0.5`**, which 
 budget **500ms and not the 267ms every table below is scored against**.
 
 ⭐ **Which way it bends the results, because that decides whether you can still use them.** A 267ms
-budget is *stricter* than 500ms, so every "share over budget" figure in this document flags more
+budget is _stricter_ than 500ms, so every "share over budget" figure in this document flags more
 retrievals than the shipped profile would. **They are upper bounds.** A conclusion of the form "this
 regime hurts" survives. A conclusion of the form "this regime is fine" survives more comfortably
 still. Nothing here becomes optimistic by the correction.
@@ -109,11 +109,11 @@ and hands it to hls.js, fetching segments through a **bee gateway** of its own.
 
 The parts that matter for load:
 
-|                          |                                                                                                                                                               |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **The viewer's gateway** | a bee node. This is the component under test. Every question in this document is really a question about it                                                   |
-| **The feed**             | one single-owner chunk per publish, **4096 bytes**. Crossing that turns one round trip into three                                                             |
-| **The manifest window**  | about **36-50** segment lines per chunk, depending on whether segment lines carry a gateway URL                                                               |
+|                          |                                                                                                                                                                                                                                                             |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The viewer's gateway** | a bee node. This is the component under test. Every question in this document is really a question about it                                                                                                                                                 |
+| **The feed**             | one single-owner chunk per publish, **4096 bytes**. Crossing that turns one round trip into three                                                                                                                                                           |
+| **The manifest window**  | about **36-50** segment lines per chunk, depending on whether segment lines carry a gateway URL                                                                                                                                                             |
 | **The segment budget**   | segment duration in milliseconds. ⛔ **At the shipping profile it is 500ms** (0.5s GOP against `HLS_FRAGMENT=0.5`). Every table below scores against **267ms**, the bench rig, which is stricter. A retrieval slower than the budget puts the player behind |
 
 ### The profiles
@@ -1097,12 +1097,12 @@ BZZ/min  =  MB/min x 0.000678
 0.000644 and 0.000708 BZZ per MB, a spread of 9.4%, with no ordering by size. **Mean 0.000678.** Use that.
 The 0.00085 quoted for weeks is 25% too high.
 
-| profile                      |    segment |   MB/min | **BZZ/min** | **BZZ/hour** |
-| ---------------------------- | ---------: | -------: | ----------: | -----------: |
-| 2500 kbps @ 0.25s            |      94 kB |     21.1 |  **0.0143** |    **0.857** |
+| profile                                       |    segment |   MB/min | **BZZ/min** | **BZZ/hour** |
+| --------------------------------------------- | ---------: | -------: | ----------: | -----------: |
+| 2500 kbps @ 0.25s                             |      94 kB |     21.1 |  **0.0143** |    **0.857** |
 | **6000 kbps @ 0.25s**, ⛔ not the shipped GOP | **213 kB** | **47.9** |  **0.0325** |    **1.948** |
-| 2500 kbps @ 1.0s             |     346 kB |     20.8 |  **0.0141** |    **0.844** |
-| 6000 kbps @ 1.0s             |     792 kB |     47.5 |  **0.0322** |    **1.931** |
+| 2500 kbps @ 1.0s                              |     346 kB |     20.8 |  **0.0141** |    **0.844** |
+| 6000 kbps @ 1.0s                              |     792 kB |     47.5 |  **0.0322** |    **1.931** |
 
 ⭐⭐ **1080p at 6000 kbps costs a viewer's gateway 0.0325 BZZ a minute, 1.95 BZZ an hour.** It shipped
 without that number existing. The figure derived before it was measured was 0.0315, **right to within
