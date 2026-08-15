@@ -1,0 +1,265 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const READER = join(ROOT, 'deploy/scripts/read-sitting.py');
+
+/**
+ * That a sitting is refused rather than summarised when its arms were not delivered at the profile
+ * the sitting claims to be measuring.
+ *
+ * ⛔⛔⛔ A RUN ON A STARVED ENCODER MEASURES THE STARVATION, AND IT LOOKS EXACTLY LIKE A RESULT.
+ *
+ * On 2026-08-05 three of four 1080p rows delivered ~26.5fps against a requested 30: the packet count
+ * per segment was right for the GOP every time while the declared duration ran ~13% long, so the
+ * encoder was falling behind real time rather than dropping frames. A viewer decoding 26.5 frames a
+ * second is doing 12% less work than one decoding 30, and on the main-thread axis that reads as a
+ * CHEAPER viewer. The saturation question this reader exists to answer would have been answered in
+ * the wrong direction, with every other column looking healthy.
+ *
+ * ⛔⛔ AND THE GUARD THAT ALREADY EXISTED WOULD NOT HAVE CAUGHT IT. `phase06-light-vs-ultralight.sh`
+ * checks delivered segment LENGTH against the request and admits anything from 0.7x to 1.4x, so a
+ * 13% stretch passes it comfortably. The frame rate is the sharp instrument for this failure, which
+ * is why it is the one gated here.
+ *
+ * ⛔ The spend has already happened by the time anything here runs, so what this protects is not the
+ * money, it is the CLAIM. A non-zero exit and a withheld headline is the whole mechanism.
+ */
+
+const cleanups = [];
+
+after(() => {
+  for (const cleanup of cleanups) {
+    cleanup();
+  }
+});
+
+/**
+ * @typedef {{ arm: number, round: number, cond: string, fps: number | null,
+ *             resolution?: string, thread?: number }} ArmFixture
+ */
+
+function workspace() {
+  const dir = mkdtempSync(join(tmpdir(), 'read-sitting-'));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+function watchStem(arm) {
+  return `browser-watch-2026-08-15T00-0${arm}-00-000Z`;
+}
+
+/** The sampler's file, whose summary line is where the main-thread mean is read from. */
+function writeMainThread(metricsDir, arm, thread) {
+  const rows = [];
+  for (let sample = 0; sample < 12; sample++) {
+    rows.push(
+      JSON.stringify({
+        Timestamp: 1000 + sample * 5,
+        TaskDuration: sample * 5 * thread,
+        ScriptDuration: sample * 0.1,
+        ThreadTime: sample * 5 * thread,
+        ProcessTime: sample * 5 * thread * 4,
+        JSHeapUsedSize: 6_000_000 + sample * 1000,
+      }),
+    );
+  }
+  rows.push(
+    JSON.stringify({ summary: { samples: 12, usable: 12, wallS: 55, mean: thread, peak: thread * 2, complete: true } }),
+  );
+  writeFileSync(
+    join(metricsDir, `arm${String(arm.arm).padStart(2, '0')}-round${arm.round}-${arm.cond}-mainthread.jsonl`),
+    `${rows.join('\n')}\n`,
+  );
+}
+
+const WINDOW_S = 360;
+const SETTLE_S = 60;
+
+/**
+ * A watch document shaped like the browser leaves one.
+ *
+ * ⭐ `decodedFrames` opens at the settle's tally rather than at zero, because that is what a real
+ * arm's first sample carries and it is the whole reason the reader recomputes the rate instead of
+ * reading `summary.deliveredFps`. That field is left deliberately WRONG here, at the inflated value
+ * a pre-fix browser wrote, so a reader that trusts it fails these tests.
+ */
+function watch(arm) {
+  const settled = Math.round(SETTLE_S * 30);
+  const gained = Math.round(arm.fps * WINDOW_S);
+  const samples = [
+    { atMs: 0, decodedFrames: settled },
+    { atMs: WINDOW_S * 1000, decodedFrames: settled + gained },
+  ];
+  return {
+    samples,
+    summary: {
+      spanMs: WINDOW_S * 1000,
+      deliveredFps: (settled + gained) / WINDOW_S,
+      resolution: arm.resolution ?? '1920×1080',
+      stalledSamples: 0,
+      overallAdvanceRatio: 1.0,
+    },
+  };
+}
+
+/**
+ * A sitting directory shaped like the driver leaves one, plus the `docs/bench` the driver writes its
+ * per-arm watch summaries into.
+ *
+ * @param {ArmFixture[]} arms
+ * @param {string} requested resolution the sitting header says it asked the publisher for
+ */
+function sitting(arms, requested = '1920x1080') {
+  const dir = workspace();
+  const metrics = join(dir, 'node-metrics');
+  const bench = join(dir, 'docs', 'bench');
+  mkdirSync(metrics, { recursive: true });
+  mkdirSync(bench, { recursive: true });
+
+  const lines = [`[00:36:21]   one LIVE broadcast of 76 min at a 0.5s GOP, ${requested} at 6000 kbps`];
+  for (const arm of arms) {
+    const thread = arm.thread ?? (arm.cond === 'weeb3' ? 0.225 : 0.072);
+    lines.push(
+      `[00:4${arm.arm}:00] arm ${arm.arm} (round ${arm.round}): segment bytes from ${arm.cond}, watching 360s`,
+      '  CPU: 72 samples, mean 1.13 cores, peak 2.04 cores',
+      '      retrieval requests                         40324',
+      '  held at 2.0s target, max 3.0s, stallCount 0',
+      '  2.26s behind live, 3 rebuffers, 0 stalled samples',
+    );
+    if (arm.fps !== null) {
+      lines.push(`browser: wrote /repo/docs/bench/${watchStem(arm.arm)}.md`);
+      writeFileSync(join(bench, `${watchStem(arm.arm)}.json`), JSON.stringify(watch(arm)));
+    }
+    writeMainThread(metrics, arm, thread);
+  }
+  writeFileSync(join(dir, 'byte-source-arms.log'), `${lines.join('\n')}\n`);
+  return dir;
+}
+
+/** Runs the reader with `docs/bench` pointed at the fixture rather than at the real checkout. */
+async function table(dir) {
+  try {
+    const { stdout } = await run('python3', [READER, 'table', dir], {
+      env: { ...process.env, SITTING_BENCH_DIR: join(dir, 'docs', 'bench') },
+    });
+    return { code: 0, stdout };
+  } catch (error) {
+    return { code: error.code ?? 1, stdout: error.stdout ?? '' };
+  }
+}
+
+/** Four healthy arms, one warm-up round then one counted round, both conditions in each. */
+function healthyArms() {
+  return [
+    { arm: 1, round: 1, cond: 'gateway', fps: 30.1 },
+    { arm: 2, round: 1, cond: 'weeb3', fps: 30.0 },
+    { arm: 3, round: 2, cond: 'gateway', fps: 30.2 },
+    { arm: 4, round: 2, cond: 'weeb3', fps: 29.9 },
+  ];
+}
+
+describe('the delivered frame rate is a column, not an assumption', () => {
+  it('names what each arm actually delivered, so a starved arm is visible without opening a file', async () => {
+    const { code, stdout } = await table(sitting(healthyArms()));
+
+    assert.equal(code, 0);
+    for (const fps of ['30.1', '30.0', '30.2', '29.9']) {
+      assert.match(stdout, new RegExp(fps.replace('.', '\\.')), `arm delivering ${fps}fps is missing from the table`);
+    }
+  });
+
+  it('summarises a sitting whose arms all held the requested rate', async () => {
+    const { code, stdout } = await table(sitting(healthyArms()));
+
+    assert.equal(code, 0);
+    assert.match(stdout, /MAIN THREAD mean/);
+  });
+});
+
+describe('an arm not delivered at the requested profile voids the headline', () => {
+  it('refuses the 2026-08-05 failure: 26.5fps against a requested 30', async () => {
+    const arms = healthyArms();
+    arms[2].fps = 26.5;
+
+    const { code, stdout } = await table(sitting(arms));
+
+    assert.notEqual(code, 0, 'a counted arm at 26.5fps against 30 must not exit zero');
+    assert.doesNotMatch(
+      stdout,
+      /MAIN THREAD mean/,
+      'no ratio may be printed from arms that were not delivered at the profile',
+    );
+    assert.match(stdout, /26\.5/);
+  });
+
+  // ⛔ The segment-length guard in phase06 admits 0.7x to 1.4x, and 26.5/30 is 0.883, so the historical
+  // failure sits comfortably INSIDE it. Pinning the tolerance here is what stops somebody widening
+  // this one to match that one.
+  it('is tight enough that the historical shortfall could never be inside it', async () => {
+    const arms = healthyArms();
+    arms[2].fps = 30 * 0.93;
+
+    const { code } = await table(sitting(arms));
+
+    assert.notEqual(code, 0, 'a 7% shortfall must already be refused, the historical case was 12%');
+  });
+
+  it('does not void a sitting for a warm-up arm, which is discarded anyway', async () => {
+    const arms = healthyArms();
+    arms[0].fps = 26.5;
+
+    const { code, stdout } = await table(sitting(arms));
+
+    assert.equal(code, 0, 'warm-up arms are not read, so their frame rate cannot void the sitting');
+    assert.match(stdout, /MAIN THREAD mean/);
+  });
+
+  it('refuses an arm delivered at a resolution the sitting did not ask for', async () => {
+    const arms = healthyArms();
+    arms[3].resolution = '1280×720';
+
+    const { code, stdout } = await table(sitting(arms));
+
+    assert.notEqual(code, 0, 'a 720p arm inside a 1080p sitting is a different configuration under this one name');
+    assert.doesNotMatch(stdout, /MAIN THREAD mean/);
+  });
+
+  /**
+   * ⛔⛔⛔ THE READING THE SUMMARY ITSELF GOT WRONG, AND THE REASON THIS RECOMPUTES.
+   *
+   * `summary.deliveredFps` counted every frame decoded since playback began over the window's media
+   * alone, so a healthy 30fps six-minute arm wrote 35.0 into its own summary. A guard reading that
+   * field would admit a starved encoder at 26.5, which reports 30.9 the same way. Every fixture here
+   * carries that inflated value, so a reader that trusts the summary passes this arm and fails.
+   */
+  it('reads the arm rather than the summary, which counted the settle in its own numerator', async () => {
+    const arms = healthyArms();
+    arms[2].fps = 26.5;
+
+    const { code, stdout } = await table(sitting(arms));
+
+    assert.notEqual(code, 0, 'the summary says 30.9 for this arm and the samples say 26.5');
+    assert.match(stdout, /26\.5/);
+  });
+
+  // ⛔⛔ "I could not find it" and "there is nothing wrong with it" are the same return value, and
+  // treating them alike is how #41 shipped. An arm whose watch summary never landed has an UNKNOWN
+  // frame rate, and unknown is refused here for the same reason a shortfall is.
+  it('refuses an arm whose watch summary is missing rather than reading it as healthy', async () => {
+    const arms = healthyArms();
+    arms[2].fps = null;
+
+    const { code, stdout } = await table(sitting(arms));
+
+    assert.notEqual(code, 0, 'an arm with no delivered frame rate must not pass the guard by default');
+    assert.doesNotMatch(stdout, /MAIN THREAD mean/);
+  });
+});
