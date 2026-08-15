@@ -287,16 +287,27 @@ def coverage_verdict(summary, watch_s):
     the arm. On six-minute arms that was a small lie. On a three-hour arm it is a slope fitted over
     forty minutes and published as three hours.
 
+    ⛔⛔⛔ COVERAGE DECIDES, THE RECORDED REASON IS ONLY INFORMATION. This refused on the reason alone
+    for one sitting and that was wrong. The sampler's loop also ends when the browser container is torn
+    down at the END of the arm, which races the stop file and wins about half the time, so a healthy
+    arm records a reason too. The 2026-08-15 three-hour arm sampled 10863s of a 10800s watch, coverage
+    1.006, every second of its own window, and this refused it.
+
+    ⚠️ Loosening a gate to let one's own data through is the exact move this file exists to prevent, so
+    the argument has to stand without that data: the stated harm is a slope fitted over part of an arm
+    and published as the whole, and coverage is what measures that. The reason cannot, because a normal
+    ending produces one.
+
     ⚠️ An arm with no series at all is not refused here. It carries no mean, so it never reaches the
     headline, and `axis` already refuses an arm nobody could check.
     """
     if not summary or summary.get("wallS") is None or not watch_s:
         return "ok", None
-    if summary.get("stoppedEarly"):
-        return f"stopped early: {str(summary['stoppedEarly'])[:24]}", summary["wallS"] / watch_s
     covered = summary["wallS"] / watch_s
     if covered < MIN_THREAD_COVERAGE:
-        return f"covered {summary['wallS']:.0f}s of {watch_s}s", covered
+        # The older `stoppedEarly` key is still read so sittings already on disk keep their reason.
+        why = summary.get("stoppedBecause") or summary.get("stoppedEarly") or "no reason recorded"
+        return f"covered {summary['wallS']:.0f}s of {watch_s}s ({str(why)[:22]})", covered
     return "ok", covered
 
 
