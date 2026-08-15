@@ -16,15 +16,27 @@ Written 2026-08-08, when this project believed a 0.25s GOP was the product. It w
 the bench rig.** What ships is a **0.5s GOP against `HLS_FRAGMENT=0.5`**, which makes the segment
 budget **500ms and not the 267ms every table below is scored against**.
 
-⭐ **Which way it bends the results, because that decides whether you can still use them.** A 267ms
-budget is _stricter_ than 500ms, so every "share over budget" figure in this document flags more
-retrievals than the shipped profile would. **They are upper bounds.** A conclusion of the form "this
-regime hurts" survives. A conclusion of the form "this regime is fine" survives more comfortably
-still. Nothing here becomes optimistic by the correction.
+⭐⭐ **Which way it bends the results, because that decides whether you can still use them. The
+answer is: barely, and the tables below can be read roughly as they stand.**
 
-⛔ **Do NOT carry 267ms into a new simulation.** Score against **500ms**, and expect lower
-over-budget shares than the tables below. Re-deriving the old numbers means re-running, not
-rescaling: an over-budget share is a count against a threshold and does not convert.
+⛔ **This paragraph first said the shares were "upper bounds" and overstated the gap by about six
+times.** A 0.5s GOP does not only double the budget, it **doubles the segment**, 94 kB to 188 kB, and
+a bigger segment takes longer to retrieve. Scoring 764,340 timings already on disk at the threshold
+each case implies:
+
+|  threshold | over budget |                                            |
+| ---------: | ----------: | ------------------------------------------ |
+| **267 ms** |   **20.6%** | as published below                         |
+|     272 ms |       19.8% | shipped profile, pessimistic size exponent |
+|     346 ms |       15.1% | shipped profile, optimistic size exponent  |
+| ~~500 ms~~ |   ~~11.3%~~ | ⛔ ignores the bigger segment, do not use  |
+
+See `../bench/rig-budget-vs-shipped-budget-2026-08-15.md`.
+
+⛔ **Do NOT carry 267ms into a new simulation, and do NOT simply swap in 500ms either.** Score the
+shipped profile against 500ms **with 188 kB segments**. Re-deriving the old numbers means re-running,
+not rescaling: an over-budget share is a count against a threshold and does not convert, and per-arm
+the shift here ranges from 0.0 to 26.3 points.
 
 ⛔ Two further corrections that arrived after this was written, both detailed in section 2z:
 the funding multiplier is **13%, not 38x**, and every pre-2026-08-11 in-browser throughput figure is
