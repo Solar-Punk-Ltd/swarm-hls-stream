@@ -587,8 +587,7 @@ describe('whether the viewer had any thread left, per arm', () => {
  */
 describe('a sitting whose arms are a plan rather than a counterbalanced pair', () => {
   const plan = (entries, env = {}) => runSitting(setup(), { ARM_PLAN: entries, ...env });
-  const secondsPublished = (result) =>
-    Number((result.publishes[0]?.match(/--seconds=(\d+)/) ?? [])[1] ?? Number.NaN);
+  const secondsPublished = (result) => Number((result.publishes[0]?.match(/--seconds=(\d+)/) ?? [])[1] ?? Number.NaN);
 
   it('runs each arm for its own length rather than one length for all of them', async () => {
     const result = await plan('weeb3:2:warm-up weeb3:3:counted');
@@ -612,7 +611,10 @@ describe('a sitting whose arms are a plan rather than a counterbalanced pair', (
 
   it('never numbers a counted arm into round 1, which the reader drops as warm-up', async () => {
     const result = await plan('weeb3:2:warm-up weeb3:3:counted');
-    const rows = result.state.trim().split('\n').map((line) => line.split('\t'));
+    const rows = result.state
+      .trim()
+      .split('\n')
+      .map((line) => line.split('\t'));
 
     assert.deepEqual(
       rows.map((row) => [row[2], row[4]]),

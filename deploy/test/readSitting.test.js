@@ -386,8 +386,7 @@ describe('whether host load could account for a creep', () => {
           // reproduce from two clocks that share no origin.
           const midpoint = (i - 0.5) * THREAD_INTERVAL_S;
           const sample = Math.round(midpoint / SAMPLE_INTERVAL_S);
-          cumulative +=
-            THREAD_INTERVAL_S * (BASE_UTILISATION + PLANTED_SENSITIVITY * loadAt(sample));
+          cumulative += THREAD_INTERVAL_S * (BASE_UTILISATION + PLANTED_SENSITIVITY * loadAt(sample));
         }
         rows.push(
           JSON.stringify({
@@ -414,7 +413,9 @@ describe('whether host load could account for a creep', () => {
           );
         }
       }
-      lines.push(`[00:4${arm.arm}:00] arm ${arm.arm} (round ${arm.round}): segment bytes from ${arm.cond}, watching 360s`);
+      lines.push(
+        `[00:4${arm.arm}:00] arm ${arm.arm} (round ${arm.round}): segment bytes from ${arm.cond}, watching 360s`,
+      );
     }
     writeFileSync(join(dir, 'byte-source-arms.log'), `${lines.join('\n')}\n`);
     return dir;
@@ -459,7 +460,10 @@ describe('whether host load could account for a creep', () => {
 
   it('leaves warm-up arms out, as every other view of a sitting does', async () => {
     const result = await loadRead(
-      loadSitting([{ arm: 1, round: 1, cond: 'weeb3' }, { arm: 3, round: 2, cond: 'weeb3' }]),
+      loadSitting([
+        { arm: 1, round: 1, cond: 'weeb3' },
+        { arm: 3, round: 2, cond: 'weeb3' },
+      ]),
     );
 
     assert.doesNotMatch(result.stdout, /arm01/);
