@@ -230,6 +230,7 @@ Defects in the measuring apparatus itself.
 
 | date | what it establishes | |
 | --- | --- | --- |
+| 2026-08-15 | [The rig's 267ms tables are between exactly right and 5.5 points pessimistic, because a 0.5s GOP doubles the budget AND the segment, and this corrects my own correction from the same morning](rig-budget-vs-shipped-budget-2026-08-15.md) | ✏️ |
 | 2026-08-15 | [A 14-agent audit of all 147 documents: 28 candidates, 9 killed by skeptics, 19 confirmed and fixed, and retraction leakage was the highest-yield lens by a distance](corpus-audit-2026-08-15.md) | ✏️ |
 | 2026-08-14 | [Neither byte-source driver ever called start_sampler, so the mid-arm floor check polled a file nothing wrote, and its test could not fail](the-sampler-that-never-ran-2026-08-14.md) |  |
 | 2026-08-13 | [retrieveBytes returns the Swarm span with the 8-byte prefix a gateway strips, and twelve stubbed tests passed over the corrupt stream](weeb3-fetch-backend-2026-08-13.md) |  |
