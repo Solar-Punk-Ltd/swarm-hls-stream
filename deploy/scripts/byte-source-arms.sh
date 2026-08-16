@@ -307,6 +307,19 @@ discover_native_stream() {
     return 1
   fi
 
+  # ⛔⛔⛔ THE ANNOUNCE HAS TO BELONG TO THIS BROADCAST, AND `tail -1` ALONE DOES NOT SAY THAT.
+  # Proved against the real log on 2026-08-16: the newest announce in the uploader's container was
+  # from the PREVIOUS DAY. A publisher that starts but fails to announce would leave that line in
+  # place, and the native arm would open a broadcast that finished yesterday, hold its end frame, and
+  # be filed as a live arm. The driver's own exhaustion guard would catch that only if the recording
+  # happened to run out inside the window.
+  local announced_at=$((NATIVE_BROADCAST_START_MS / 1000))
+  if [ "${announced_at}" -lt "${BROADCAST_STARTED_AT}" ]; then
+    say "  the newest catalog announce is from $(date -u -d "@${announced_at}" +%FT%TZ), before this"
+    say "  sitting started at $(date -u -d "@${BROADCAST_STARTED_AT}" +%FT%TZ), so it is a STALE stream"
+    return 1
+  fi
+
   # ⚠️ The announce time, not the first frame. It carries a constant offset from media position zero
   # that nothing here can measure, and that offset CANCELS in both the arm-to-arm contrast and the
   # within-arm drift, which is what the sitting reads. It does NOT cancel in the absolute value, so
