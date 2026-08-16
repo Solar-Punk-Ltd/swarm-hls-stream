@@ -32,7 +32,11 @@ PORT="${STAMP_GUARD_PORT:-10075}"
 MAX_UTILIZATION_PCT="${MAX_UTILIZATION_PCT:-75}"
 MIN_TTL_DAYS="${MIN_TTL_DAYS:-2}"
 # Measured 2026-08-12 across 2.8 broadcast hours on a depth-24 batch: 180 to 198, so 6.4 an hour.
-# Used only to say whether a named sitting length fits, never to decide the gate above.
+# Decides only the sitting-length refusals, never whether the batch is already past the line.
+#
+# ⚠️ **Measured at depth 24 and now applied to a depth-25 batch, which has not been checked.**
+# `bucketDepth` is 16 in both, so the fullest bucket should fill at the same absolute rate and only
+# the denominator doubles. That is an argument, not a reading.
 BUCKETS_PER_BROADCAST_HOUR="${BUCKETS_PER_BROADCAST_HOUR:-6.4}"
 
 while [ $# -gt 0 ]; do
@@ -87,9 +91,12 @@ usable = batch["usable"]
 immutable = batch["immutableFlag"]
 print(f"stamp-guard: {batch_id[:8]} depth {depth} {used}/{buckets} buckets ({pct:.0f}%), "
       f"TTL {ttl_days:.1f}d, usable {usable}, immutable {immutable}")
+projected = used + minutes / 60.0 * per_hour
+projected_pct = 100.0 * projected / buckets
 if minutes > 0:
     print(f"  this sitting is {minutes:.0f} min and costs about "
-          f"{minutes / 60.0 * per_hour:.1f} buckets at the measured {per_hour}/broadcast hour")
+          f"{minutes / 60.0 * per_hour:.1f} buckets at the measured {per_hour}/broadcast hour, "
+          f"ending at {projected_pct:.0f}%")
 print(f"  headroom to the {max_pct:.0f}% stop line: {headroom_hours:.1f} broadcast hours")
 
 reasons = []
@@ -99,6 +106,11 @@ if ttl_days < min_ttl_days:
     reasons.append(f"TTL {ttl_days:.1f}d is under the {min_ttl_days:.0f}d floor")
 if not batch["usable"]:
     reasons.append("the batch reports itself unusable")
+if minutes > 0 and projected_pct > max_pct:
+    reasons.append(
+        f"this sitting ends at {projected_pct:.0f}%, past the {max_pct:.0f}% stop line, so the "
+        f"mid-flight sampler would cut it short after about {headroom_hours:.1f} broadcast hours"
+    )
 if minutes > 0 and minutes / 60.0 * per_hour > (buckets - used):
     reasons.append(f"this sitting needs more buckets than the {buckets - used} left")
 
