@@ -307,7 +307,9 @@ async function main(): Promise<void> {
       ``,
       `| | |`,
       `| --- | ---: |`,
-      `| gateway-less | ${gatewayLess ? '✅ **yes**, no off-shell host contacted' : `⛔ **NO**, ${JSON.stringify(offShell)}`} |`,
+      `| gateway-less | ${
+        gatewayLess ? '✅ **yes**, no off-shell host contacted' : `⛔ **NO**, ${JSON.stringify(offShell)}`
+      } |`,
       `| realtimeRatio, whole window | ${report.realtimeRatio} over ${report.countedSeconds}s |`,
       `| **realtimeRatio, once moving** | **${report.steadyRealtimeRatio}** |`,
       `| startup before the playhead moved | ${report.startupSeconds}s |`,
@@ -318,7 +320,9 @@ async function main(): Promise<void> {
       `| resolutions seen | ${tally.resolutions.join(', ') || 'not reported'} |`,
       `| peers at end | ${last.peers ?? '?'} |`,
       `| requests, all hosts | ${requests.length} |`,
-      `| off-shell contact | ${JSON.stringify(offShell.contacted)} (served bytes: ${JSON.stringify(offShell.servedBytes)}) |`,
+      `| off-shell contact | ${JSON.stringify(offShell.contacted)} (served bytes: ${JSON.stringify(
+        offShell.servedBytes,
+      )}) |`,
       `| playhead exhausted the recording | ${exhausted ? '⛔ **yes, the ratio is void**' : 'no'} |`,
       ``,
       `⚠️ The visibility sensor passes by construction here, because Playwright forces a visible page.`,
