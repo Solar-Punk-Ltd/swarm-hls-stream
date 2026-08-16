@@ -289,12 +289,33 @@ wait_for_quiet() {
 NATIVE_OWNER=""
 NATIVE_TOPIC=""
 NATIVE_BROADCAST_START_MS=""
+# ⛔⛔ THE ANNOUNCE LANDS AFTER `activeStreams` REACHES 1, AND READING ONCE CATCHES THE PREVIOUS DAY'S.
+# Measured on the first real run: ingest was live at 09:54:37, the catalog entry was written at
+# 09:54:39.642, and a single read in between returned an announce from 26 hours earlier. Polled with a
+# budget instead. The uploader retries a failed announce on its own cadence, so this waits rather than
+# giving up on the first miss.
+CATALOG_ANNOUNCE_TIMEOUT_S="${CATALOG_ANNOUNCE_TIMEOUT_S:-180}"
+
+# The newest catalog announce this sitting produced, or empty. ⭐ `--since` the sitting's own start, so
+# a previous day's entry cannot be read at all and the timestamp check below is a second line rather
+# than the only one.
+newest_announce() {
+  docker logs --since "${BROADCAST_STARTED_AT}" "${UPLOADER_CONTAINER}" 2>&1 |
+    grep 'Adding stream to list:' | tail -1
+}
 
 discover_native_stream() {
-  local line
-  line="$(docker logs "${UPLOADER_CONTAINER}" 2>&1 | grep 'Adding stream to list:' | tail -1)" || true
+  local line="" deadline=$(($(date -u +%s) + CATALOG_ANNOUNCE_TIMEOUT_S))
+  while [ "$(date -u +%s)" -lt "${deadline}" ]; do
+    line="$(newest_announce)" || true
+    [ -n "${line}" ] && break
+    sleep 3
+  done
+
   if [ -z "${line}" ]; then
-    say "  the uploader logged no catalog announce, so a native arm has no stream to open"
+    say "  no catalog announce in ${CATALOG_ANNOUNCE_TIMEOUT_S}s of this broadcast, so a native arm"
+    say "  has no stream to open. The uploader keeps retrying a failed announce, so this is not a"
+    say "  timing miss: check msSinceCatalogAnnounceFailed on the uploader health endpoint."
     return 1
   fi
 
