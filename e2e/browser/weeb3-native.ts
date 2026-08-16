@@ -28,16 +28,34 @@
  * ⚠️ **The visibility sensor proves nothing here.** Playwright forces a visible page, so that check
  * passes by construction and is recorded rather than relied on.
  *
- * Usage, against a broadcast that already exists:
+ * Usage, against a recording that already exists:
  *   WEEB3_NATIVE_OWNER=<owner> WEEB3_NATIVE_TOPIC=<rawTopic> pnpm browser:weeb3-native
+ *
+ * Usage, against a broadcast that is still running:
+ *   WEEB3_NATIVE_LIVE=1 WEEB3_NATIVE_BROADCAST_START_MS=<unix ms the publisher started> \
+ *     WEEB3_NATIVE_OWNER=<owner> WEEB3_NATIVE_TOPIC=<rawTopic> pnpm browser:weeb3-native
  */
 
 import { execFileSync } from 'node:child_process';
 import { type Page } from 'playwright-core';
 
 import { judgeRun } from '../src/browser/instrument.js';
+import {
+  behindProductionS,
+  edgeGrowthS,
+  edgeLagSummary,
+  type EdgeSample,
+  isExhausted,
+} from '../src/browser/liveEdge.js';
 import { type RequestRecord } from '../src/browser/network.js';
-import { envNumber, requireEnv, runIdFrom, thinRequestLog, writeRunArtifacts } from '../src/browser/runFiles.js';
+import {
+  envNumber,
+  envNumberOrNull,
+  requireEnv,
+  runIdFrom,
+  thinRequestLog,
+  writeRunArtifacts,
+} from '../src/browser/runFiles.js';
 import { installTimerProbe, launchViewer, readInstrument, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 
 /** weeb-3's published deployment. Overridable so a pinned build can be measured against this one. */
@@ -91,10 +109,7 @@ function diffNodeMetrics(host: string, dir: string): string {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-interface Sample {
-  atMs: number;
-  currentTime: number;
-  bufferedEnd: number | null;
+interface Sample extends EdgeSample {
   readyState: number;
   paused: boolean;
   peers: number | null;
@@ -132,6 +147,8 @@ async function readSample(page: Page): Promise<Sample> {
       atMs: Date.now(),
       currentTime: v ? v.currentTime : 0,
       bufferedEnd: v && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : null,
+      seekableEnd: v && v.seekable.length ? v.seekable.end(v.seekable.length - 1) : null,
+      duration: v && Number.isFinite(v.duration) ? v.duration : null,
       readyState: v ? v.readyState : 0,
       paused: v ? v.paused : true,
       peers: peers ? Number(peers[1]) : null,
@@ -211,14 +228,35 @@ async function main(): Promise<void> {
   const watchSeconds = envNumber('WEEB3_NATIVE_WATCH_S', 180);
   /** Where to put the playhead before counting. Negative counts back from the end. 0 is the start. */
   const startAtSeconds = envNumber('WEEB3_NATIVE_START_S', 0);
+  /** A live arm holds the edge weeb-3 opened at. A recording arm seeks back to have media ahead. */
+  const isLive = process.env.WEEB3_NATIVE_LIVE === '1';
+  /** Unix ms the publisher started, which is the only clock that ranks a live arm honestly. */
+  const broadcastStartMs = envNumberOrNull('WEEB3_NATIVE_BROADCAST_START_MS');
 
   const metricsHost = process.env.WEEB3_NATIVE_METRICS_SSH ?? '';
   const metricsRoot = process.env.WEEB3_NATIVE_METRICS_DIR ?? '/home/solarpunk/node-metrics-weeb3native';
-  if (metricsHost === '' && process.env.ALLOW_NO_NODE_METRICS !== '1') {
+  // ⭐ A caller that brackets the arm itself names itself here, and the name is written into the
+  // artefact. Without it an arms wrapper would have to pass ALLOW_NO_NODE_METRICS=1, and the run
+  // would then carry "this run has no node-side evidence" while its wrapper was holding exactly that
+  // evidence one directory up. A gate that can only be satisfied by lying about it teaches lying.
+  const metricsBracketedBy = process.env.WEEB3_NATIVE_METRICS_BRACKETED_BY ?? '';
+  if (metricsHost === '' && metricsBracketedBy === '' && process.env.ALLOW_NO_NODE_METRICS !== '1') {
     throw new Error(
       'refusing to run without node metrics. Set WEEB3_NATIVE_METRICS_SSH=<host> to bracket the run ' +
-        'with the bee nodes own counters, or ALLOW_NO_NODE_METRICS=1 to record that this run has no ' +
+        'with the bee nodes own counters, WEEB3_NATIVE_METRICS_BRACKETED_BY=<caller> if the caller ' +
+        'already brackets this arm, or ALLOW_NO_NODE_METRICS=1 to record that this run has no ' +
         'node-side evidence for its gateway-less claim.',
+    );
+  }
+
+  // ⛔⛔ A LIVE ARM WITH NO PUBLISHER CLOCK CANNOT BE RANKED, ONLY DESCRIBED. Its own appended-edge
+  // distance shrinks when retrieval slows, because the edge falls back with it, so the arm that
+  // struggles most is the one that looks closest to live. Refusing is cheaper than publishing that.
+  if (isLive && broadcastStartMs === null && process.env.ALLOW_NO_PRODUCTION_CLOCK !== '1') {
+    throw new Error(
+      'refusing a live arm with no publisher clock. Set WEEB3_NATIVE_BROADCAST_START_MS=<unix ms the ' +
+        'publisher started> so the lag is read from outside the viewer, or ALLOW_NO_PRODUCTION_CLOCK=1 to ' +
+        'record that this arm can only report its own appended-edge distance.',
     );
   }
 
@@ -271,20 +309,27 @@ async function main(): Promise<void> {
       throw new Error(`no decodable media within ${bootSeconds}s. This is a delivery failure, not a playback one.`);
     }
 
-    // ⛔⛔⛔ weeb-3 opens a finished broadcast AT ITS LIVE EDGE, which is the end of the recording.
-    // The first run of this driver counted 180s in which the playhead sat on the final frame and
-    // reported realtimeRatio 0.068, which reads as a delivery failure and is nothing of the kind.
-    // Seek back so there is media ahead of the playhead, then count.
-    await page.evaluate((startAt: number) => {
-      const v = document.querySelector('video');
-      if (!v) {
-        return;
-      }
-      if (Number.isFinite(v.duration) && v.duration > 0) {
-        v.currentTime = startAt >= 0 ? startAt : Math.max(0, v.duration + startAt);
-      }
-      void v.play();
-    }, startAtSeconds);
+    // ⛔⛔⛔ weeb-3 opens a broadcast AT ITS LIVE EDGE. On a FINISHED one that edge is the end of the
+    // recording: the first run of this driver counted 180s in which the playhead sat on the final
+    // frame and reported realtimeRatio 0.068, which reads as a delivery failure and is nothing of
+    // the kind. A recording arm therefore seeks back so there is media ahead of the playhead.
+    //
+    // ⛔⛔ A LIVE ARM MUST NOT SEEK. The edge is the entire question there, and seeking away from it
+    // would measure catch-up playback through a buffer the broadcast has already filled, which is
+    // the easiest thing in this harness to mistake for a live result.
+    await page.evaluate(
+      ({ startAt, live }: { startAt: number; live: boolean }) => {
+        const v = document.querySelector('video');
+        if (!v) {
+          return;
+        }
+        if (!live && Number.isFinite(v.duration) && v.duration > 0) {
+          v.currentTime = startAt >= 0 ? startAt : Math.max(0, v.duration + startAt);
+        }
+        void v.play();
+      },
+      { startAt: startAtSeconds, live: isLive },
+    );
     await sleep(SAMPLE_INTERVAL_MS);
 
     const samples: Sample[] = [];
@@ -317,13 +362,23 @@ async function main(): Promise<void> {
     const offShell = offShellTraffic(requests);
     const gatewayLess = Object.keys(offShell.servedBytes).length === 0;
 
-    // A window whose playhead reached the end measured the recording running out, not delivery.
+    // A window whose playhead reached the end measured the media running out, not the delivery of it.
+    // ⛔⛔⛔ Judged from the SERIES rather than from a snapshot: `duration - currentTime < 2` read
+    // once is the failure state on a recording and the HEALTHY state on live. See {@link isExhausted}.
     const endedAt = await page.evaluate(() => {
       const v = document.querySelector('video');
       return v ? { ended: v.ended, currentTime: v.currentTime, duration: v.duration } : null;
     });
-    const exhausted =
-      endedAt !== null && Number.isFinite(endedAt.duration) && endedAt.duration - endedAt.currentTime < 2;
+    const exhausted = isExhausted(samples);
+    const edgeLag = edgeLagSummary(samples);
+    const edgeGrew = edgeGrowthS(samples);
+    // ⛔⛔ READ OFF THE STEADY SLICE, FOR THE REASON THE RATIO ABOVE IS. A playhead that has not
+    // started moving still accumulates wall clock, so every second of startup lands in this column
+    // as a second of falling behind production, and the drift would then report the join. The ratio
+    // beside it already learned that lesson and this was written without it.
+    const behindProductionStartS = broadcastStartMs === null ? null : behindProductionS(steady[0], broadcastStartMs);
+    const behindProductionEndS =
+      broadcastStartMs === null ? null : behindProductionS(steady[steady.length - 1], broadcastStartMs);
 
     const report = {
       measuredAt,
@@ -346,7 +401,19 @@ async function main(): Promise<void> {
       gatewayLess,
       offShellContacted: offShell.contacted,
       offShellServedBytes: offShell.servedBytes,
+      live: isLive,
       exhausted,
+      edgeGrowthS: edgeGrew === null ? null : Number(edgeGrew.toFixed(2)),
+      appendedEdgeLagMedianS: edgeLag.medianS === null ? null : Number(edgeLag.medianS.toFixed(2)),
+      appendedEdgeLagMaxS: edgeLag.maxS === null ? null : Number(edgeLag.maxS.toFixed(2)),
+      behindProductionStartS: behindProductionStartS === null ? null : Number(behindProductionStartS.toFixed(2)),
+      behindProductionEndS: behindProductionEndS === null ? null : Number(behindProductionEndS.toFixed(2)),
+      // ⭐ The signal, not either endpoint. A viewer that holds a live edge ends the window as far
+      // behind production as it started it, whatever that distance happened to be.
+      behindProductionDriftS:
+        behindProductionStartS === null || behindProductionEndS === null
+          ? null
+          : Number((behindProductionEndS - behindProductionStartS).toFixed(2)),
       endedAt,
       totalRequests: requests.length,
       instrumentSound: instrument.sound,
@@ -354,7 +421,10 @@ async function main(): Promise<void> {
       samples,
     };
 
-    let nodeMetricsDiff = 'not collected, ALLOW_NO_NODE_METRICS=1';
+    let nodeMetricsDiff =
+      metricsBracketedBy === ''
+        ? 'not collected, ALLOW_NO_NODE_METRICS=1'
+        : `not collected here: ${metricsBracketedBy} brackets this arm`;
     if (metricsHost !== '') {
       bracketNodeMetrics(metricsHost, metricsDir, 'after');
       nodeMetricsDiff = diffNodeMetrics(metricsHost, metricsDir);
@@ -385,13 +455,31 @@ async function main(): Promise<void> {
       `| off-shell contact | ${JSON.stringify(offShell.contacted)} (served bytes: ${JSON.stringify(
         offShell.servedBytes,
       )}) |`,
-      `| playhead exhausted the recording | ${exhausted ? '⛔ **yes, the ratio is void**' : 'no'} |`,
+      `| arm | ${
+        isLive ? '**LIVE**, the edge was held, nothing was sought' : 'recording, sought to have media ahead'
+      } |`,
+      `| edge advanced across the window | ${edgeGrew === null ? 'no edge readings' : `${edgeGrew.toFixed(1)}s`} |`,
+      `| distance from the **appended** edge, median | ${edgeLag.medianS?.toFixed(2) ?? '—'}s (max ${
+        edgeLag.maxS?.toFixed(2) ?? '—'
+      }s) |`,
+      `| **behind production, start → end** | ${
+        behindProductionStartS === null
+          ? '⚠️ no publisher clock, this arm cannot be ranked'
+          : `**${behindProductionStartS.toFixed(2)}s → ${behindProductionEndS?.toFixed(2) ?? '—'}s** ` +
+            `(drift ${((behindProductionEndS ?? 0) - behindProductionStartS).toFixed(2)}s)`
+      } |`,
+      `| media ran out inside the window | ${exhausted ? '⛔ **yes, the ratio is void**' : 'no'} |`,
       ``,
       `## What the bee nodes themselves recorded over the same window`,
       ``,
       '```',
       nodeMetricsDiff.trimEnd(),
       '```',
+      ``,
+      `⛔⛔ **The appended-edge distance is NOT hls.js's \`latency\` and cannot be compared with one.**`,
+      `weeb-3's page exposes no player handle, so that figure is unreachable from outside it. An edge`,
+      `only moves once a segment has been fetched and appended, so a SLOWER node reports a SMALLER`,
+      `distance. Rank arms on the behind-production row, which is read off the publisher's clock.`,
       ``,
       `⚠️ The visibility sensor passes by construction here, because Playwright forces a visible page.`,
       `Instrument verdict: ${instrument.sound ? 'sound' : instrument.failures.join('; ')}`,
