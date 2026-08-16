@@ -14,7 +14,9 @@
  * service worker, and shows a worst timer drift of **1.08x over 145 seconds**. That is a better peer
  * table, sooner, than the human sittings this replaces, which typically plateaued at 134-147.
  *
- * ⛔ ONE weeb-3 node per machine, still. See `cdp.mjs`.
+ * ⛔ REFUTED 2026-08-15: there is no one-node-per-machine limit. Six, then twelve, separate
+ * browser processes each reached 200 peers on one host. See `cdp.mjs` for what produced the
+ * original numbers and for the harness rule that survives it.
  *
  * Usage:
  *   node deploy/scripts/run-sustain-headless.mjs <stream> [minutes] [out.json]
