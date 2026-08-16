@@ -188,6 +188,24 @@ Native 3.01 to 3.12 cores, hybrid 1.68 to 1.75. ⛔ The process-tree total flatt
 by 2x once before (`main-thread-saturation-2026-08-14`), which is why the thread column above is the
 one that carries the argument.
 
+## What else was running on the box, read after the fact
+
+⚠️ **Filed 2026-08-16 evening, not captured by the harness at the time.** A peer session measuring
+from Frankfurt through the `loadlab` stack on this same host got in touch, which is what prompted
+the check.
+
+`loadlab-manager-host-srs-1` and `loadlab-manager-host-stream-uploader-1` emitted **zero log lines
+between 09:50Z and 11:45Z**, which brackets the whole sitting. They were restarted at 13:50Z, after
+it ended. So the loudest co-tenant on the host was not streaming during any arm.
+
+⛔ **Zero log lines is not zero CPU**, and this is a reading taken afterwards rather than a snapshot
+either side of each arm, which is what the standing rule asks for. The other compose projects on the
+box (`pacbench-*`, `bee-1` through `bee-40`, `srs-check-test1-*`, `ome-e2e-test1-*`) were not read at
+all. Treat this as ruling out one specific neighbour, not as a clean co-tenancy record.
+
+⭐ It also does not carry the argument. **The flat hybrid control does**, because a neighbour heavy
+enough to move the native arm 72% would have moved the control too.
+
 ## ⛔ An instrument defect found in this sitting, not fixed in it
 
 **The segment tally is a rolling window of weeb-3's own log panel, not a total.** It reads about 24
