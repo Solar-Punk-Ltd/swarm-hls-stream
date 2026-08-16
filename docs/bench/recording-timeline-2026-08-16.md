@@ -24,8 +24,14 @@ which would have extended the range from 88 minutes to about 130, and cost rough
 
 ⭐ **The question is about what the player lands on, not about fresh content.** Three recordings
 already on Swarm share one profile, **0.5s GOP at 1280x720 and 2500 kbps**, and carry timelines of
-**62, 100 and 195 minutes**. No publisher, no encoder, no upload, so no postage. weeb-3's own page
-asks a gateway for nothing, so no node spends either. See [[cheap-measurement-method]].
+**62, 100 and 190 minutes**. No publisher, no encoder, no upload, so no postage, and weeb-3's own
+page asks a gateway for nothing, so no node spends either. See [[cheap-measurement-method]].
+
+⭐ **The profile is verified per arm from its own artefact**, not taken from the sitting logs that
+produced the recordings: every arm reports `1280x720` with 0.5s segments of 0.172 to 0.174 MB.
+⚠️ The timelines are read the same way, off `seekableEnd`. A sitting log names the broadcast that was
+**planned**, which is longer than what the publisher left behind: 125 planned against 100 recorded on
+one of these.
 
 ## The two factors
 
@@ -80,13 +86,72 @@ pulled *more* data, arm 1 at 3.10 Mbps, has the *lowest* thread of the four.
 So the main-thread cost this project has been tracking is **not retrieval volume, and not timeline
 length**. Both are now measured and neither moves it.
 
-## Result 2: timeline length does not set the level
+### ⭐⭐⭐ And being live costs more than nearly tripling the bitrate
 
-<!-- filled from deploy/scripts/read-recording-timeline.py once both sweeps complete -->
+The sweep also carries a 1080p recording, which is the same page reading **2.62x the bytes**.
 
-## Result 3: playhead position does not set the level either
+| | steady Mbps | main thread | against 720p recording |
+| --- | ---: | ---: | ---: |
+| 720p recording | 2.77 | 0.253 | — |
+| **1080p recording** | **7.25** | **0.450** | 2.62x the bytes, **1.78x** the thread |
+| **720p live** | **2.77** | **0.768** | **1.00x** the bytes, **3.03x** the thread |
 
-<!-- filled once both sweeps complete -->
+⭐ **Bytes do cost thread, and they cost it sub-linearly**, which independently reproduces
+`1080p-main-thread-2026-08-15`.
+
+⛔⛔⛔ **But being live costs more than that, for no extra bytes at all.** A gateway-less viewer on a
+1080p recording pulling 7.25 Mbps is **cheaper** than the same viewer on a 720p live broadcast
+pulling 2.77. Whatever live playback is doing, it is a larger effect than the quality ladder.
+
+## Result 2: ⭐⭐⭐ TIMELINE LENGTH IS A NULL OVER A 3.05x RANGE
+
+Three recordings, one profile, playhead at the start, steady thread from the last three windows.
+
+| recording | **timeline** | steady thread | Mbps |
+| --- | ---: | ---: | ---: |
+| `34b57c4a` | 3,738s | **0.248, 0.249** | 2.81, 2.77 |
+| `be608ecf` | 5,980s | **0.249, 0.253** | 2.77, 2.77 |
+| `05abe325` | **11,410s** | **0.251, 0.250** | 2.79, 2.81 |
+
+**A 3.05-fold range in timeline length, and every reading lands between 0.248 and 0.253.** The
+withdrawn mechanism in `gateway-less-live-2026-08-16.md` required this column to rise. It does not
+move at all.
+
+## Result 3: ⭐⭐ PLAYHEAD POSITION IS A NULL TOO
+
+One recording, 5,980s of timeline, only `WEEB3_NATIVE_START_S` moving. Content, encoder, profile and
+network are identical across these four.
+
+| asked | **landed** | steady thread | Mbps |
+| ---: | ---: | ---: | ---: |
+| 0 | **1** | 0.249, 0.253 | 2.77, 2.77 |
+| 1,800 | **1,801** | 0.258, 0.227 | 2.76, 2.76 |
+| 3,600 | **3,601** | 0.247, 0.236 | 2.76, 2.77 |
+| 5,000 | **5,001** | 0.232, 0.245 | 2.77, 2.77 |
+
+⭐ **The `landed` column is the check that this factor varied at all**, and it did: weeb-3 honoured
+every seek to within a second. A flat thread column here means position does not matter, not that
+position was never tested.
+
+⚠️ **Seeked arms are noisier and two of them open high**, at1800 running 0.390 → 0.258 and 0.342 →
+0.227 across its own window, and at5000 similarly. at3600 and at0 do not. **The transient replicates
+but it is not monotonic in seek distance and this sweep does not explain it.** The steady windows
+agree regardless.
+
+## Result 4: bytes cost thread, and the live premium is larger
+
+| | Mbps | steady thread |
+| --- | ---: | ---: |
+| 720p recording | 2.77 | 0.249, 0.253 |
+| 1080p recording | 7.25 | 0.450 |
+| 1080p recording | **8.80** | **0.513** |
+| **720p LIVE** | **2.77** | **0.768** |
+
+⛔⛔⛔ **A 1080p recording pulling 8.80 Mbps, 3.2 times the bytes, still costs a third less than a
+720p live broadcast pulling 2.77.** Retrieval volume is a real cost and it is the smaller one.
+
+⚠️ Two 1080p arms is two points. They are reported because the direction is unambiguous, not because
+a slope has been fitted to them.
 
 ## ⛔⛔ What else was running on the box, and why it does not rescue the live figures
 
