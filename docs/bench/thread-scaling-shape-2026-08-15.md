@@ -1,5 +1,24 @@
 # The main thread's distribution scales uniformly, and two claims that did not survive being checked
 
+> ## ⛔⛔⛔ WHAT THE CLIENT UNDER TEST ACTUALLY WAS, AND WHO CHOSE IT
+>
+> The `weeb3` arms here fetch **segment bytes only** from the in-tab node. The feed and every
+> manifest still come from a **bee gateway**, in both conditions. Verified in source: `ManifestManagement`
+> has no weeb-3 path, only `CustomManifestLoader` does.
+>
+> That split was my design decision in PR #183 and **nobody authorised it**. The owner's instruction
+> of **2026-08-11T07:07Z** was *"Abel optimized the player as much as possible let's measure and
+> experiment with his setup as it is"*, and this is not that.
+>
+> ⛔ **So any residual gateway load reported below is a floor THIS CLIENT imposes, not one weeb-3
+> imposes.** Abel's own live page drives it to zero, proved free on 2026-08-16. Every saving figure
+> here is a **lower bound** on what an in-tab node can do.
+>
+> ✅ **The arithmetic and the arm-to-arm contrasts are unaffected.** Both conditions read the
+> manifest the same way, so the comparison is clean. What is limited is the **subject**, not the sums.
+>
+> See [`abel-gateway-less-live-2026-08-16.md`](abel-gateway-less-live-2026-08-16.md).
+
 No broadcast, no BZZ. Every number here comes from the **eleven** counted arms already recorded by
 `main-thread-saturation-2026-08-14.md` (six) and `1080p-main-thread-2026-08-15.md` (six, of which
 **one was refused by the axis guard** for not being delivered at 1920x1080 30fps), plus the

@@ -71,6 +71,25 @@ things that make it a different animal:
 | it is **demand only**: it never serves, caches or announces for anyone else                                      | so an audience of them adds load and no capacity             |
 | fragments above roughly **1 MB stop arriving at all**, which is a ceiling and not a delay                        | ≤ 500 KB completed 20/20, 3.5 MB completed **0 of 5**        |
 
+> ## ⛔⛔⛔ AND OUR OWN `weeb3` CLIENT IS A **FOURTH** KIND, NOT THE THIRD ONE ABOVE
+>
+> Everything this project measured under the name "in-tab node" ran a **hybrid**: segment bytes from
+> the node, **feed and manifest still from a bee gateway**. It is not gateway-less. Do not model our
+> published in-tab figures as the third kind described above.
+>
+> ⛔ The saving figures we published (24.4x, 25.3x, 20.3x, 21.6x, 44.5x fewer gateway retrievals) are
+> therefore **lower bounds**. A genuinely gateway-less viewer exists, and on 2026-08-16 Abel's own
+> live page was observed making **5 network requests in a whole session, all of them app shell**, with
+> every feed read and every segment answered in-node.
+>
+> ⚠️ It also did not reach playback in that window: 2 of 5 segments failed and the video held
+> `readyState` 1. ⭐ **That is his content, not his architecture.** 2560x1600 at ~8.5 Mbps needs
+> 1.6x what any measured retrieval path delivers, a public gateway included, and this document's own
+> section on his link says so. **Gateway-less and working are two claims, do not merge them in
+> either direction.**
+>
+> See [`../bench/abel-gateway-less-live-2026-08-16.md`](../bench/abel-gateway-less-live-2026-08-16.md).
+
 ⛔ **The 203 KB/s in that first row is a fact about our client, not about weeb-3.** The run that
 produced it offered far less work than we believed: `RETRIEVE_DATA_GROUP_CONCURRENCY = 8` bounds
 Merkle-node expansions, each carrying up to 128 chunk requests, so the node was never saturated.

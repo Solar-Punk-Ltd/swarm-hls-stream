@@ -1,5 +1,24 @@
 # What an in-tab node costs, and what it saves, 2026-08-14
 
+> ## ⛔⛔⛔ WHAT THE CLIENT UNDER TEST ACTUALLY WAS, AND WHO CHOSE IT
+>
+> The `weeb3` arms here fetch **segment bytes only** from the in-tab node. The feed and every
+> manifest still come from a **bee gateway**, in both conditions. Verified in source: `ManifestManagement`
+> has no weeb-3 path, only `CustomManifestLoader` does.
+>
+> That split was my design decision in PR #183 and **nobody authorised it**. The owner's instruction
+> of **2026-08-11T07:07Z** was *"Abel optimized the player as much as possible let's measure and
+> experiment with his setup as it is"*, and this is not that.
+>
+> ⛔ **So any residual gateway load reported below is a floor THIS CLIENT imposes, not one weeb-3
+> imposes.** Abel's own live page drives it to zero, proved free on 2026-08-16. Every saving figure
+> here is a **lower bound** on what an in-tab node can do.
+>
+> ✅ **The arithmetic and the arm-to-arm contrasts are unaffected.** Both conditions read the
+> manifest the same way, so the comparison is clean. What is limited is the **subject**, not the sums.
+>
+> See [`abel-gateway-less-live-2026-08-16.md`](abel-gateway-less-live-2026-08-16.md).
+
 **Six counted arms on one live broadcast at a 0.5s GOP and a 2.0s target, 1.109 BZZ.** The retrieval
 saving replicates for the third time and the CPU price is measured for the first time. Both separate
 with **zero overlap between the conditions**.
