@@ -27,15 +27,16 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load_slope_module():
-    """`main-thread-slope.py` is hyphenated because it is a command, so it cannot be imported by name."""
-    spec = importlib.util.spec_from_file_location("main_thread_slope", os.path.join(HERE, "main-thread-slope.py"))
+def _load_module(name, filename):
+    """Sibling scripts are hyphenated because they are commands, so they cannot be imported by name."""
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-SLOPE = _load_slope_module()
+SLOPE = _load_module("main_thread_slope", "main-thread-slope.py")
+THROUGHPUT = _load_module("segment_throughput", "segment-throughput.py")
 
 
 def parse_iso(text):
@@ -88,39 +89,6 @@ def artefacts_between(directory, started):
         if measured and parse_iso(measured) >= started:
             found.append((parse_iso(measured), run, path))
     return [(run, path) for _, run, path in sorted(found, key=lambda triple: triple[0])]
-
-
-BUCKET_MS = 30_000
-SEGMENT_PATH = "/hls/bytes/"
-
-
-def steady_mbps(requests_path):
-    """Median 30-second segment throughput, which is what says two arms did comparable work.
-
-    ⛔⛔ The run's own `segments` tally cannot answer this and says so: it is weeb-3's log panel,
-    a rolling window that reads about 24 whatever the arm length. Against it, one 2026-08-16 arm
-    logged 24 while its request log carried **671** segment fetches.
-
-    ⭐ The median across buckets rather than the mean over the arm, because a VOD arm opens with a
-    pre-buffer burst: one measured 7.15 Mbps in its first thirty seconds and settled to 2.76, and a
-    mean over the whole arm would report neither.
-    """
-    try:
-        rows = [r for r in json.load(open(requests_path)) if SEGMENT_PATH in r.get("url", "")]
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not rows:
-        return None
-    first = min(r["startedAtMs"] for r in rows)
-    buckets = {}
-    for row in rows:
-        key = int((row["startedAtMs"] - first) // BUCKET_MS)
-        buckets[key] = buckets.get(key, 0) + (row.get("bytes") or 0)
-    if len(buckets) < 3:
-        return None
-    # The last bucket is a partial one, so it would drag a median down for no reason.
-    full = [buckets[k] for k in sorted(buckets)[:-1]]
-    return st.median(full) * 8 / (BUCKET_MS / 1000) / 1e6
 
 
 def thread_column(metrics_dir, slug_prefix):
@@ -180,7 +148,7 @@ def main(argv):
             f"{cell(thread and thread['median'], '8.3f')}"
             f"{cell(thread and thread['first'], '8.3f')}"
             f"{cell(thread and thread['last'], '8.3f')}"
-            f"{cell(steady_mbps(requests_sibling(run_path)) if run_path else None, '7.2f')}"
+            f"{cell(THROUGHPUT.steady_mbps(requests_sibling(run_path)) if run_path else None, '7.2f')}"
             f"{cell(run.get('realtimeRatio'), '10.4f')}"
             f"{cell(run.get('stalls'), '7d')}"
             f"{off_shell:>9}"
