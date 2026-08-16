@@ -1,5 +1,18 @@
 # The bench corpus, indexed
 
+> ## ⛔⛔⛔ READ BEFORE TRUSTING ANY ROW THAT SAYS "IN-TAB"
+>
+> Every in-tab result in this index measured a **hybrid client**: segment bytes from the node, **feed
+> and manifest still from a bee gateway**. That split was an unauthorised design decision of mine in
+> PR #183, taken two days after an instruction to measure Abel's setup as it is.
+>
+> The arm-to-arm contrasts are clean, because both conditions read the manifest the same way. The
+> **saving figures are lower bounds**, because a genuinely gateway-less client removes the residual
+> the hybrid keeps. See
+> [`abel-gateway-less-live-2026-08-16.md`](abel-gateway-less-live-2026-08-16.md), which also records
+> that Abel's live page did **not** reach playback in the observed window.
+
+
 **147 tracked finding documents.** This index exists because they sat flat in one directory with no
 map, and a 2026-08-15 audit found claims that had been retired years-of-corpus-time earlier still
 reading as live because nobody landing on the file could tell.
@@ -96,6 +109,7 @@ A viewer that retrieves for itself instead of asking a gateway.
 
 | date | what it establishes | |
 | --- | --- | --- |
+| 2026-08-16 | [Abel's live path is fully gateway-less (5 network requests, all app shell) while our own in-tab client keeps the gateway for the feed, and his did not reach playback](abel-gateway-less-live-2026-08-16.md) |  |
 | 2026-08-15 | [Every quantile from q25 to q90 moves by one factor, 1.61x in-tab and 1.23x gateway over 2.40x the bytes, so exponents are 0.55 and 0.23](thread-scaling-shape-2026-08-15.md) | ✏️ |
 | 2026-08-15 | [dU/dLoad is +0.00000 ± 0.00036, so faking the in-tab creep needs 47 load units/hr monotonic; but the creep itself is only t≈4.3 on 4 df](host-load-is-not-the-creep-2026-08-15.md) |  |
 | 2026-08-15 | [The in-tab main-thread creep holds across three hours and accelerates: +0.0357 ± 0.0013/hr with a quadratic term at t = 3.64, 0 stalls.](drift-holds-and-bends-2026-08-15.md) | ✏️ |

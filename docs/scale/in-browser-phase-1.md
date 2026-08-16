@@ -1,5 +1,24 @@
 # In-browser viewer nodes, phase 1: what weeb-3 is, and what it does to the scaling model
 
+> ## ⛔⛔⛔ WHAT THE CLIENT UNDER TEST ACTUALLY WAS, AND WHO CHOSE IT
+>
+> The `weeb3` arms here fetch **segment bytes only** from the in-tab node. The feed and every
+> manifest still come from a **bee gateway**, in both conditions. Verified in source: `ManifestManagement`
+> has no weeb-3 path, only `CustomManifestLoader` does.
+>
+> That split was my design decision in PR #183 and **nobody authorised it**. The owner's instruction
+> of **2026-08-11T07:07Z** was _"Abel optimized the player as much as possible let's measure and
+> experiment with his setup as it is"_, and this is not that.
+>
+> ⛔ **So any residual gateway load reported below is a floor THIS CLIENT imposes, not one weeb-3
+> imposes.** Abel's own live page drives it to zero, proved free on 2026-08-16. Every saving figure
+> here is a **lower bound** on what an in-tab node can do.
+>
+> ✅ **The arithmetic and the arm-to-arm contrasts are unaffected.** Both conditions read the
+> manifest the same way, so the comparison is clean. What is limited is the **subject**, not the sums.
+>
+> See [`abel-gateway-less-live-2026-08-16.md`](../bench/abel-gateway-less-live-2026-08-16.md).
+
 **2026-08-09.** Assessment of the in-browser Swarm node option ahead of Phase 3, written to be read
 by the lab or parsed for a presentation.
 

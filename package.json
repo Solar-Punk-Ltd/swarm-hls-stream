@@ -49,7 +49,8 @@
     "bench:sweep-report": "pnpm --filter @swarm-hls-stream/e2e bench:sweep-report",
     "probe:ahead": "pnpm --filter @swarm-hls-stream/e2e probe:ahead",
     "browser:vod": "pnpm --filter @swarm-hls-stream/e2e browser:vod",
-    "make:recording": "pnpm --filter @swarm-hls-stream/e2e make:recording"
+    "make:recording": "pnpm --filter @swarm-hls-stream/e2e make:recording",
+    "browser:weeb3-native": "pnpm --filter @swarm-hls-stream/e2e browser:weeb3-native"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.0",
