@@ -34,12 +34,20 @@ import sys
 
 BUCKET_MS = 30_000
 SEGMENT_PATH = "/hls/bytes/"
+# ⭐⭐⭐ Counted beside the segments because the difference between a live arm and a recording arm is
+# here and nowhere else. Measured 2026-08-16: a live arm re-fetches this ONE url 1,110 times in 661
+# seconds and moves 1,195 MB through it, against 261 MB of video. A recording arm fetches it once.
+MANIFEST_PATH = "/feeds/"
 MIN_BUCKETS = 3
 
 
-def segment_rows(path):
+def rows_matching(path, needle):
     with open(path) as handle:
-        return [row for row in json.load(handle) if SEGMENT_PATH in row.get("url", "")]
+        return [row for row in json.load(handle) if needle in row.get("url", "")]
+
+
+def segment_rows(path):
+    return rows_matching(path, SEGMENT_PATH)
 
 
 def steady_mbps(path):
@@ -63,17 +71,26 @@ def main(argv):
     if not argv:
         print("usage: segment-throughput.py <run.requests.json>...", file=sys.stderr)
         return 2
-    print(f"{'run':<34}{'steady Mbps':>12}{'fetches':>9}{'span s':>8}{'total MB':>10}")
+    print(f"{'run':<30}{'steady Mbps':>12}{'segments':>10}{'seg MB':>9}"
+          f"{'manifests':>11}{'per s':>7}{'median MB':>10}{'man MB':>9}{'man/seg':>9}")
     for path in argv:
         rows = segment_rows(path)
         if not rows:
-            print(f"{os.path.basename(path):<34}{'no segment fetches':>39}")
+            print(f"{os.path.basename(path)[:30]:<30}{'no segment fetches':>39}")
             continue
-        span = (max(r["startedAtMs"] for r in rows) - min(r["startedAtMs"] for r in rows)) / 1000
-        total = sum(r.get("bytes") or 0 for r in rows)
+        seg_total = sum(r.get("bytes") or 0 for r in rows)
+        manifests = rows_matching(path, MANIFEST_PATH)
+        man_total = sum(r.get("bytes") or 0 for r in manifests)
+        man_span = ((max(r["startedAtMs"] for r in manifests) - min(r["startedAtMs"] for r in manifests)) / 1000
+                    if len(manifests) > 1 else 0.0)
         mbps = steady_mbps(path)
-        print(f"{os.path.basename(path)[:34]:<34}"
-              f"{('-' if mbps is None else f'{mbps:.2f}'):>12}{len(rows):>9}{span:>8.0f}{total / 1e6:>10.1f}")
+        print(f"{os.path.basename(path)[:30]:<30}"
+              f"{('-' if mbps is None else f'{mbps:.2f}'):>12}{len(rows):>10}{seg_total / 1e6:>9.1f}"
+              f"{len(manifests):>11}"
+              f"{(len(manifests) / man_span if man_span else 0):>7.2f}"
+              f"{(st.median((r.get('bytes') or 0) for r in manifests) / 1e6 if manifests else 0):>10.3f}"
+              f"{man_total / 1e6:>9.1f}"
+              f"{(man_total / seg_total if seg_total else 0):>8.2f}x")
     return 0
 
 

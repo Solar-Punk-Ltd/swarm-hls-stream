@@ -169,15 +169,51 @@ across twenty-one arms whose thread column does not move, which independently re
 shared box carrying forty other bee nodes. The two sittings are four hours apart and nothing here
 brackets that.
 
-## What is now open
+## Result 5: ⭐⭐⭐ THE LIVE PREMIUM IS MANIFEST RE-FETCHING, AND IT IS 1,110 TO 1
 
-⛔ **What live playback does that recorded playback does not** is unresolved, and this sweep cannot
-separate the two candidates, because a recording has neither of them:
+The two regimes were compared on video bytes and found identical. Counting **every** request rather
+than only the segment ones finds the difference immediately.
 
-1. **chasing a moving edge**, where the player repeatedly reaches for a segment that does not exist
-   yet, and
-2. **the timeline rebase** of Result 2 in `gateway-less-live-2026-08-16.md`.
+| | segment fetches | **manifest fetches** | manifest bytes |
+| --- | ---: | ---: | ---: |
+| live arm, 661s | 1,508 | **1,110** | **1,195 MB** |
+| recording arm, 242s | 671 | **1** | 0.72 MB |
 
-⛔ Separating them needs a live broadcast in which the rebase does not fire, and our live window is
-fixed at one bee chunk, so we cannot produce one. That makes it upstream work again, filed as
-`lat-murmeldjur/weeb-3#2`.
+⛔⛔⛔ **A live arm re-fetches the whole manifest from one URL about 1.7 times a second. A recording
+arm fetches it once.** Every one of those is served by the in-tab node through weeb-3's service
+worker and parsed on the same single thread that decodes the video.
+
+And the payload grows with the broadcast, which is what produces the climb the live sitting measured:
+
+| joined at | manifest fetches | per second | **median manifest** | manifest ÷ video | thread |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 86s | 1,202 | 1.82 | **0.078 MB** | 0.37x | 0.398 |
+| 1,556s | 1,291 | 1.95 | **0.322 MB** | 1.67x | 0.676 |
+| 3,789s | 1,091 | 1.65 | **0.791 MB** | 3.29x | 0.717 |
+| 5,313s | 1,110 | 1.68 | **1.083 MB** | 4.58x | 0.768 |
+
+⭐ **Roughly 205 bytes of manifest per second of broadcast**, re-read at a constant rate. At the
+oldest join the viewer moves **4.58 times more manifest than video**.
+
+⭐⭐ **This is why Results 2 and 3 are nulls and this is not a contradiction.** A recording's manifest
+is fetched once, so its length cannot cost anything per second; a live viewer's is fetched 1.7 times
+a second, so its length is multiplied by the poll rate. **Timeline length only costs when something
+re-reads it.**
+
+⚠️ **The response saturates**, +0.278 of a thread for the first +0.244 MB and +0.051 for the last
++0.292 MB, which is why an eleven-minute arm's ~135 KB of manifest growth does not move its own
+window. That saturation is what makes a large between-arm effect and no within-arm effect consistent,
+and misreading it is what caused the withdrawal in `gateway-less-live-2026-08-16.md` to be reinstated.
+
+## What is still open
+
+⛔ **How much of the live premium is the polling and how much is the rebase** is not separated here.
+The rebase is a single event and cannot produce a sustained cost, so polling is the leading candidate
+by a wide margin, but no arm has isolated it.
+
+⛔ **The per-fetch cost is not measured.** Attributing all of the 0.25 → 0.77 gap to 1.7 manifest
+parses a second would imply a per-parse cost this sweep never measured, so it is not claimed.
+
+⭐ **What this does change upstream:** `lat-murmeldjur/weeb-3#2` was filed as a correctness defect
+about the playhead. The re-fetch rate and payload growth are a **separate, larger** cost, and a
+viewer on a three-hour broadcast would be re-reading roughly 2.2 MB about 1.7 times a second.
