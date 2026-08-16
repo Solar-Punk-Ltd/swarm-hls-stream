@@ -49,6 +49,7 @@ import {
 } from '../src/browser/liveEdge.js';
 import { type RequestRecord } from '../src/browser/network.js';
 import {
+  envFiniteNumber,
   envNumber,
   envNumberOrNull,
   requireEnv,
@@ -235,7 +236,7 @@ async function main(): Promise<void> {
   const bootSeconds = envNumber('WEEB3_NATIVE_BOOT_S', 180);
   const watchSeconds = envNumber('WEEB3_NATIVE_WATCH_S', 180);
   /** Where to put the playhead before counting. Negative counts back from the end. 0 is the start. */
-  const startAtSeconds = envNumber('WEEB3_NATIVE_START_S', 0);
+  const startAtSeconds = envFiniteNumber('WEEB3_NATIVE_START_S', 0);
   /** A live arm holds the edge weeb-3 opened at. A recording arm seeks back to have media ahead. */
   const isLive = process.env.WEEB3_NATIVE_LIVE === '1';
   /** Unix ms the publisher started, which is the only clock that ranks a live arm honestly. */

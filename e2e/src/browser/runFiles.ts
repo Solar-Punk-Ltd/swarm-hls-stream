@@ -104,6 +104,30 @@ export function envNumber(name: string, fallback: number): number {
 }
 
 /**
+ * A setting whose whole range includes zero and negative values, such as a seek offset.
+ *
+ * ⛔⛔ {@link envNumber} is right for a duration, where zero is a mistake, and it was wrong for
+ * `WEEB3_NATIVE_START_S`, which documents "negative counts back from the end, 0 is the start". Both
+ * of those threw. Only strictly positive offsets were reachable, so the default could not be written
+ * down and the documented negative form had never been run. Found 2026-08-16 when the first arm of a
+ * sweep passed `0` explicitly and the driver refused it.
+ *
+ * ⭐ Split rather than loosened: relaxing `envNumber` would have taken the zero check off every
+ * duration in the harness to fix one offset.
+ */
+export function envFiniteNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${name} must be a finite number, got '${raw}'`);
+  }
+  return value;
+}
+
+/**
  * The same reading, for a value a report describes rather than computes.
  *
  * ⛔ A fallback is the wrong shape for those. `BROWSER_GOP_SECONDS` defaulted to 0.25 and only ever

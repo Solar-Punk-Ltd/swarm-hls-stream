@@ -273,4 +273,41 @@ if (process.argv[2] === 'inspect') process.stdout.write(${JSON.stringify(uploade
     assert.equal(code, 1);
     assert.match(log, /could not read STAMP/);
   });
+
+  /**
+   * ⛔⛔ That the printed stop line is also the enforced one, for the length of sitting being asked
+   * for.
+   *
+   * The guard used to refuse only a batch ALREADY at the line, or a sitting needing more than the
+   * absolute buckets left. On 2026-08-16 the live batch sat at 369/512, the guard reported "headroom
+   * to the 75% stop line: 2.3 broadcast hours", and then returned 0 for a 180-minute sitting, because
+   * 19.2 buckets is comfortably inside the 143 that remained. The mid-flight sampler would have
+   * stopped that sitting at about 2.3 hours, so roughly 42 minutes of booked and paid broadcast would
+   * have produced an arm that never completed.
+   *
+   * That is not an overrun, the floor check does hold. It is a sitting that could have been refused
+   * before it was paid for.
+   */
+  it('refuses a sitting that would END past the stop line, while buckets still remain', async () => {
+    // 369 of 512 is 72%. Three hours costs 19.2 buckets, landing at 388 of 512, which is 76%.
+    // 143 buckets are still free, so the absolute-capacity refusal alone would have let this run.
+    const { code, log } = await checkCapacity(stubNode({ utilization: 369 }), 180);
+
+    assert.equal(code, 1);
+    assert.match(log, /REFUSING/);
+    assert.match(log, /past the 75% stop line/);
+  });
+
+  it('allows the same batch a sitting that finishes inside the stop line', async () => {
+    // One hour costs 6.4 buckets, landing at 375 of 512, which is 73%.
+    const { code } = await checkCapacity(stubNode({ utilization: 369 }), 60);
+
+    assert.equal(code, 0);
+  });
+
+  it('names where the sitting would end, so the length can be chosen rather than guessed', async () => {
+    const { log } = await checkCapacity(stubNode({ utilization: 369 }), 60);
+
+    assert.match(log, /ending at 73%/);
+  });
 });
