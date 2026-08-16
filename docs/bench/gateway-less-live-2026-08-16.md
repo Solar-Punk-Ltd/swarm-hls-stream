@@ -131,9 +131,27 @@ the fallback and not the computed position, but this project has not run weeb-3'
 branch it took.
 
 ⭐⭐⭐ **So this is a defect with a location, not a missing feature.** The distance-preserving
-arithmetic already exists in weeb-3 and does not reach the media element. And **our own manifest is
-half the trigger**: the moving media sequence of our trailing window is what makes a rebase look
-required at all. Either side can fix it.
+arithmetic already exists in weeb-3 and does not reach the media element.
+
+### ⛔ And our half of the trigger is not ours to remove
+
+The rebase needs a trailing window whose media sequence moves, which is exactly what we publish. The
+obvious response is to publish the whole playlist instead. **That is not available.**
+
+`LIVE_WINDOW_MAX_BYTES` is **4096**, and it is not a taste: it is one bee single-owner chunk. bee-js
+writes a feed payload straight into the chunk while it fits, and past that uploads the payload
+separately, downloads its root chunk back and wraps that instead. **Crossing it turns one round trip
+per publish into three, on a path that runs once per segment.** An 88-minute broadcast at a 0.5s GOP
+is thousands of segments, so a full playlist is orders of magnitude over the limit.
+
+⭐ **And the window is demonstrably workable**, because our own client reads the same feed and sits
+2.02s behind. It accumulates history as it goes, from the start of its own session, so its timeline
+origin never moves. weeb-3 opens on the window and then fetches history behind it, which is what
+changes the origin mid-session.
+
+**Reported upstream as [lat-murmeldjur/weeb-3#2](https://github.com/lat-murmeldjur/weeb-3/issues/2)**,
+with both candidate code paths named and neither asserted, because separating them needs their code
+run rather than read.
 
 ## Result 3: ⭐⭐⭐ THE MAIN THREAD COST GROWS WITH THE BROADCAST, AND THE CONTROL DOES NOT
 
@@ -186,9 +204,10 @@ cannot be quoted as throughput, and the label in `weeb3-native.ts` is being corr
 - ⛔ **DO NOT SHIP IT AS A LIVE VIEWER YET.** A timeline rebase drops the playhead seconds after the
   join, and the viewer then sits behind by the broadcast's age at that moment, permanently. A
   three-hour broadcast still opens three hours behind.
-- ⭐ **RAISE IT WITH weeb-3 AS A DEFECT, WITH THE FUNCTION NAMED.** `hls_timeline_rebase_position()`
-  already computes the right position and the caller drops it. Offer our trailing-window media
-  sequence as the trigger, because that half is ours.
+- ✅ **DONE: raised as [lat-murmeldjur/weeb-3#2](https://github.com/lat-murmeldjur/weeb-3/issues/2)**,
+  with `hls_timeline_rebase_position()` named and both candidate code paths listed, neither asserted.
+- ⛔ **DO NOT try to fix it by widening our live window.** 4096 bytes is one bee single-owner chunk,
+  and crossing it costs three round trips per segment instead of one.
 - ⛔ **DO NOT extrapolate the main thread past 88 minutes or past 720p** from this. What is measured
   is that it climbs and that the control does not.
 - ⚠️ **Nothing here speaks to the multi-hour thread creep** measured over three hours in
