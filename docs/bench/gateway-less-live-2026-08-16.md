@@ -179,16 +179,16 @@ gateway-less path is closer to its ceiling at 720p than the hybrid is at 1080p.
 which ran 1st, 3rd, 6th and 8th. Counterbalancing does not break that particular confound. The flat
 control is the argument, not the sample size.
 
-### ⛔⛔⛔ THE MECHANISM PARAGRAPH IS WITHDRAWN, 2026-08-16 evening
+### ⛔⛔⛔ THE MECHANISM PARAGRAPH WAS WITHDRAWN, THEN REINSTATED, 2026-08-16 evening
 
 **What stood here** was: a viewer that keeps the whole broadcast pays per segment **count**, hls.js
 re-parses the entire playlist on every refresh (`swarm-hls-viewer-manifest-growth`), the native arm
 holds a playlist spanning the entire broadcast after the rebase, so the later the arm joined the more
 of it there is to re-parse. It was marked "a mechanism that fits".
 
-**It does not fit, and the sitting's own saved samples say so.** The per-arm JSONL the sampler wrote
-was never read past its mean and peak. Read with `deploy/scripts/main-thread-slope.py`, on
-sixty-second window medians:
+**It was withdrawn on the strength of the within-arm readings below, and then reinstated when the
+request logs were counted.** Read both parts. The per-arm JSONL the sampler wrote was never read
+past its mean and peak. With `deploy/scripts/main-thread-slope.py`, on sixty-second window medians:
 
 | native arm | joined at | median | first 3 windows | last 3 windows | **change** |
 | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -201,19 +201,46 @@ sixty-second window medians:
 **Within its own session a native arm does not move, and it does not move by more than the control
 does.** The climb is entirely between arms.
 
-⛔ **Both branches of the mechanism fail, which is why it is withdrawn rather than qualified.**
+### ⛔⛔⛔ AND THIS WITHDRAWAL WAS ITSELF WRONG, CORRECTED THE SAME EVENING
 
-- **If the re-parsed playlist grows during the session**, cost must rise inside every arm. Fitting
-  `cost = a + b x playlist_seconds` on the four arm medians gives `b = 6.2e-5 /s`, which demands
-  **+0.042 inside every arm** against the four changes above. Arm 1 is the sharpest case: its
-  playlist grew **8.9x** during its own eleven minutes and its cost changed by +0.001.
-- **If the re-parsed playlist does not grow**, the same fixed parse cost applies to every arm and the
-  mechanism cannot produce the between-arm climb either. Our live manifest is capped at
-  `LIVE_WINDOW_MAX_BYTES = 4096`, one bee single-owner chunk, so what our uploader serves is a
-  bounded trailing window by construction.
+**The mechanism is right. My reason for withdrawing it was not.** Both were settled by counting the
+arms' own request logs, which nothing had read.
 
-The same variable cannot have a 1.7x effect between arms whose playlists differ 62x and no effect
-inside an arm whose playlist grows 8.9x.
+| joined at | **manifest re-fetches** | per second | **median manifest** | manifest ÷ video bytes | thread |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 86s | 1,202 | 1.82 | **0.078 MB** | 0.37x | 0.398 |
+| 1,556s | 1,291 | 1.95 | **0.322 MB** | 1.67x | 0.676 |
+| 3,789s | 1,091 | 1.65 | **0.791 MB** | 3.29x | 0.717 |
+| 5,313s | 1,110 | 1.68 | **1.083 MB** | 4.58x | 0.768 |
+
+⭐⭐⭐ **weeb-3 re-fetches the whole manifest from one URL about 1.7 times a second, and its size
+tracks the broadcast's age at roughly 205 bytes per broadcast second.** The last arm moved
+**1,195 MB of manifest against 261 MB of video**. A recording arm fetches it **once**.
+
+**So the playlist really is re-read continuously, and it really does grow with the broadcast.** That
+is what the withdrawn paragraph said.
+
+⛔ **What was actually wrong was my prediction, not the mechanism.** I derived "+0.042 inside every
+arm" by fitting `cost = a + b x playlist_seconds`, which assumes the cost is **linear** in playlist
+size. It is not: the measured response saturates, +0.278 of a thread for the first +0.244 MB and
++0.051 for the last +0.292 MB. Inside an eleven-minute arm the manifest grows by about 135 KB, which
+in the flat region predicts a rise of roughly +0.02 — under this instrument's noise. **The absence of
+a within-arm rise therefore does not refute the mechanism, and I treated it as though it did.**
+
+⛔ **The second branch was refuted by measurement, not reasoning.** I argued the re-parsed playlist
+could not be growing because `LIVE_WINDOW_MAX_BYTES` caps what our uploader publishes at 4096 bytes.
+The payload actually fetched reaches **1.083 MB**, so whatever weeb-3 is polling is not our capped
+live window.
+
+✅ **What survives from the withdrawal:** the within-arm flatness is real and correctly measured, and
+the per-sample fitting artefact below is real and worth keeping.
+
+⛔⛔ **What is retracted:** "the mechanism does not fit", "both branches fail", and the claim that one
+variable cannot have a large between-arm effect and no within-arm effect. **A saturating response
+does exactly that.**
+
+See `recording-timeline-2026-08-16.md`, where the recording arms make the same point from the other
+side: one manifest fetch instead of 1,110, at identical video throughput.
 
 ### ⛔⛔ And the method that nearly published the opposite
 
@@ -233,12 +260,13 @@ carries the reason so the next reader does not have to rediscover it.
 ✅ **Stands:** the native arm's cost rises with the broadcast, 0.435 to 0.746, while the hybrid
 control holds 0.220 ± 0.005. The flat control is still the argument.
 
-⭐ **Sharper than before:** the cost is **set at join and then flat for the session**. That is a
-stronger claim than "grows with the broadcast" and it is the one the data supports.
+⭐ **Sharper than before:** the cost is **set at join and then flat for the session**, and what sets
+it is the manifest weeb-3 re-fetches about 1.7 times a second, whose size tracks the broadcast's age.
+Within a session that manifest grows too little to move a saturating response.
 
-⛔ **Open, and not guessed at here:** what sets the level at join. Naming it needs a design that
-varies timeline length and playhead position independently, which existing recordings can do for no
-BZZ at all.
+✅ **No longer open.** `recording-timeline-2026-08-16.md` closes it: timeline length and playhead
+position are both nulls on a recording, retrieval volume is the smaller cost, and the live premium
+lands on manifest re-fetching, one fetch against 1,110 at identical video throughput.
 
 ## Container CPU, for completeness and not as the ceiling
 
