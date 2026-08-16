@@ -25,7 +25,8 @@
     "browser:vod": "tsx browser/vod.ts",
     "browser:buffer-sweep": "tsx browser/buffer-sweep.ts",
     "make:recording": "tsx browser/make-recording.ts",
-    "browser:weeb3-native": "tsx browser/weeb3-native.ts"
+    "browser:weeb3-native": "tsx browser/weeb3-native.ts",
+    "browser:viewer-order": "tsx browser/viewer-order.ts"
   },
   "dependencies": {
     "@ethersphere/bee-js": "^9.0.3",
