@@ -115,7 +115,15 @@ interface Sample extends EdgeSample {
   peers: number | null;
 }
 
-/** What weeb-3's own log says about each segment it tried. Its wording, not ours. */
+/**
+ * What weeb-3's own log says about each segment it tried. Its wording, not ours.
+ *
+ * ⛔⛔ **A ROLLING WINDOW, NOT A TOTAL, AND IT MUST NEVER BE QUOTED AS THROUGHPUT.** Measured across
+ * eight arms on 2026-08-16: it reads about 24 in every one, whatever the window length, because the
+ * page's log panel keeps roughly that many entries. 24 segments at 0.5s is twelve seconds of media
+ * against arms of 660 seconds. It is useful for the failed count and for the mean segment size, and
+ * for nothing that has a denominator.
+ */
 interface SegmentTally {
   done: number;
   failed: number;
@@ -447,7 +455,10 @@ async function main(): Promise<void> {
       `| startup before the playhead moved | ${report.startupSeconds}s |`,
       `| stalls | ${stalls} |`,
       `| mean buffer ahead | ${report.meanBufferAheadS}s |`,
-      `| segments done / failed | **${tally.done} / ${tally.failed}** |`,
+      `| segments in the log panel, done / failed | ${tally.done} / ${tally.failed} |`,
+      `| ⛔ that is a ROLLING WINDOW, not a total | ${(tally.done * (tally.meanDurationS ?? 0)).toFixed(
+        0,
+      )}s of media against a ${report.countedSeconds}s window |`,
       `| mean segment | ${tally.meanMB ?? '?'} MB, ${tally.meanDurationS ?? '?'}s |`,
       `| resolutions seen | ${tally.resolutions.join(', ') || 'not reported'} |`,
       `| peers at end | ${last.peers ?? '?'} |`,
