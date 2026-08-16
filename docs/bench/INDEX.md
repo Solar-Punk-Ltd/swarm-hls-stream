@@ -13,7 +13,7 @@
 > that Abel's live page did **not** reach playback in the observed window.
 
 
-**147 tracked finding documents.** This index exists because they sat flat in one directory with no
+**153 tracked finding documents.** This index exists because they sat flat in one directory with no
 map, and a 2026-08-15 audit found claims that had been retired years-of-corpus-time earlier still
 reading as live because nobody landing on the file could tell.
 
@@ -109,6 +109,7 @@ A viewer that retrieves for itself instead of asking a gateway.
 
 | date | what it establishes | |
 | --- | --- | --- |
+| 2026-08-16 | [It is LIVE that costs the gateway-less viewer's thread, not the bytes and not the timeline: 0.25 of one thread on a recording against 0.77 live at the **identical 2.77 Mbps**, timeline length a null over 3.05x and playhead position a null, and a 1080p recording at 3.2x the bytes still cheaper than a 720p live arm. 21 arms, **zero BZZ**](recording-timeline-2026-08-16.md) |  |
 | 2026-08-16 | [A fully gateway-less viewer sustains a live broadcast at realtime with **0** gateway retrievals against 2,346-2,563, and it **does join the live edge** at 2.9-4.7s before a timeline rebase drops the playhead and leaves it behind by the broadcast's age, and its main thread climbs to 0.899 of one, **set at join and flat within the session**, the playlist-re-parse mechanism withdrawn](gateway-less-live-2026-08-16.md) |  |
 | 2026-08-16 | [Abel's live path is fully gateway-less (5 network requests, all app shell) while our own in-tab client keeps the gateway for the feed, and his did not reach playback](abel-gateway-less-live-2026-08-16.md) |  |
 | 2026-08-15 | [Every quantile from q25 to q90 moves by one factor, 1.61x in-tab and 1.23x gateway over 2.40x the bytes, so exponents are 0.55 and 0.23](thread-scaling-shape-2026-08-15.md) | ✏️ |
