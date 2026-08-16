@@ -137,9 +137,18 @@ def main(argv):
           f"{'first3':>8}{'last3':>8}{'Mbps':>7}{'realtime':>10}{'stalls':>7}{'offshell':>9}")
     for index, arm in enumerate(ok_arms):
         run, run_path = files[index] if index < len(files) else ({}, None)
+        # ⛔⛔ A join that shifted by one is otherwise invisible when the counts happen to match, and
+        # every row after the shift would carry another arm's numbers under this arm's label.
+        if run and run.get("topic") and run["topic"] != arm["topic"]:
+            print(f"⛔ arm {arm['arm']} is labelled {arm['topic'][:8]} and its artefact says "
+                  f"{run['topic'][:8]}, so this join is shifted and the table below is wrong",
+                  file=sys.stderr)
         first_sample = (run.get("samples") or [{}])[0]
         thread = thread_column(metrics_dir, "arm%02d-" % int(arm["arm"]))
-        off_shell = sum((run.get("offShellServedBytes") or {}).values())
+        # ⛔ None rather than 0 when there is no artefact. A zero here reads as "measured and clean",
+        # and "I could not find any" and "there are none" must not share a rendering.
+        served = run.get("offShellServedBytes")
+        off_shell = sum(served.values()) if served is not None else None
         print(
             f"{arm['label']:<18}{arm['start_s']:>7}"
             f"{cell(first_sample.get('currentTime'), '8.0f')}"
@@ -151,7 +160,7 @@ def main(argv):
             f"{cell(THROUGHPUT.steady_mbps(requests_sibling(run_path)) if run_path else None, '7.2f')}"
             f"{cell(run.get('realtimeRatio'), '10.4f')}"
             f"{cell(run.get('stalls'), '7d')}"
-            f"{off_shell:>9}"
+            f"{cell(off_shell, '9d')}"
         )
     return 0
 
