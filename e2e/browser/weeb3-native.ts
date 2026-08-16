@@ -372,8 +372,13 @@ async function main(): Promise<void> {
     const exhausted = isExhausted(samples);
     const edgeLag = edgeLagSummary(samples);
     const edgeGrew = edgeGrowthS(samples);
-    const behindProductionEndS = broadcastStartMs === null ? null : behindProductionS(last, broadcastStartMs);
-    const behindProductionStartS = broadcastStartMs === null ? null : behindProductionS(first, broadcastStartMs);
+    // ⛔⛔ READ OFF THE STEADY SLICE, FOR THE REASON THE RATIO ABOVE IS. A playhead that has not
+    // started moving still accumulates wall clock, so every second of startup lands in this column
+    // as a second of falling behind production, and the drift would then report the join. The ratio
+    // beside it already learned that lesson and this was written without it.
+    const behindProductionStartS = broadcastStartMs === null ? null : behindProductionS(steady[0], broadcastStartMs);
+    const behindProductionEndS =
+      broadcastStartMs === null ? null : behindProductionS(steady[steady.length - 1], broadcastStartMs);
 
     const report = {
       measuredAt,
