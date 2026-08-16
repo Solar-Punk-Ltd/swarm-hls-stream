@@ -29,6 +29,46 @@ the path.** Not one of the 201 requests carried bytes from any host outside the 
 1.0000 is what the session did once the playhead moved. **The steady figure is the answer and the
 startup is a separate cost**, which is why both are in the table rather than one.
 
+## ⭐⭐⭐ AND THE NODES AGREE, WHICH THE FIRST THREE RUNS COULD NOT SHOW
+
+⛔⛔⛔ **The first three runs of this driver published "gateway-less" on the browser's own request log
+and nothing else.** That is the shape of a defect this project has already paid for: a sitting once
+reported two byte sources while both arms fetched every segment from one node, and the client's
+readback was honest throughout. **The nodes keep a complete account and nothing was reading it.**
+
+Replicate `weeb3-native-2026-08-16T07-26-24-975Z`, bracketed by a full snapshot of both bee nodes
+either side, 484 uploader and 445 gateway metric keys, differenced over a **267 s** window containing
+the arm:
+
+| | |
+| --- | ---: |
+| **gateway, retrieval requests** | **0** |
+| gateway, failed outright | 0 |
+| uploader, chunks push-synced | 0 |
+| **uploader spent** | **0.0000 BZZ** |
+| **gateway spent** | **0.0000 BZZ** |
+| postage `7849851f` | 357 → 357 of 512, unchanged |
+| postage `46ad3454` | 50 → 50 of 64, unchanged |
+| host load | 6.87 → 5.04 |
+
+⭐⭐⭐ **Gateway-less is now proved from the other side of the wire.** Our gateway served zero
+retrievals while the browser fetched and played 24 of our segments.
+
+⭐ **The driver now refuses to start without this.** `WEEB3_NATIVE_METRICS_SSH=<host>` brackets the
+run, or `ALLOW_NO_NODE_METRICS=1` records out loud that a run has no node-side evidence. The diff is
+written into the run's own report rather than a directory somebody has to remember to read.
+
+## Replicates
+
+| run | steady ratio | startup | segments | off-shell bytes |
+| --- | ---: | ---: | ---: | ---: |
+| `06-33-22` | **1.0000** | 26.1 s | 24 done, 0 failed | none |
+| `07-09-59` | **1.0000** | 28.1 s | 24 done, 0 failed | none |
+| `07-26-24` | **1.0000** | 29.1 s | 24 done, 0 failed | none |
+
+⭐⭐ **Three runs, the same answer on every column.** ⚠️ Same machine, same connection, same
+recording, so this is repeatability and not independence.
+
 ## ⛔⛔ WHAT THIS IS NOT
 
 ⛔ **It is not a live-edge result and does not compare to the in-tab arms yet.** The mean buffer ahead

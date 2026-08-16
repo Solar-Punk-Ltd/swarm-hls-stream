@@ -32,6 +32,7 @@
  *   WEEB3_NATIVE_OWNER=<owner> WEEB3_NATIVE_TOPIC=<rawTopic> pnpm browser:weeb3-native
  */
 
+import { execFileSync } from 'node:child_process';
 import { type Page } from 'playwright-core';
 
 import { judgeRun } from '../src/browser/instrument.js';
@@ -52,6 +53,41 @@ const DEFAULT_PAGE = 'https://lat-murmeldjur.github.io/weeb-3/';
 const APP_SHELL_HOSTS = new Set(['lat-murmeldjur.github.io', 'cdn.jsdelivr.net', 'weeb-3-secure.github.io']);
 
 const SAMPLE_INTERVAL_MS = 1_000;
+
+/**
+ * Bracket the run with the bee nodes' own counters, or refuse to run.
+ *
+ * ⛔⛔⛔ **This is a gate and not a reminder.** The first three runs of this driver published
+ * "gateway-less" on the strength of the browser's own request log and nothing else, which is the
+ * shape of a defect this project has already paid for: a sitting once reported two byte sources while
+ * both arms fetched every segment from one node, and the client's readback was honest throughout.
+ * The nodes were keeping a complete account the whole time and nothing read it.
+ *
+ * ⭐ The corroboration is worth having even when the answer is boring. The first bracketed run
+ * returned `retrieval requests 0` on the gateway across 843 seconds, which is the claim proved from
+ * the other side of the wire.
+ *
+ * Set `WEEB3_NATIVE_METRICS_SSH` to the host running the nodes, or `ALLOW_NO_NODE_METRICS=1` to say
+ * out loud that this run has no node-side evidence.
+ */
+function bracketNodeMetrics(host: string, dir: string, phase: 'before' | 'after'): void {
+  execFileSync(
+    'ssh',
+    [
+      host,
+      `mkdir -p ${dir} && cd ~/swarm-hls-bench && bash deploy/scripts/node-metrics.sh snapshot ${dir}/${phase}.json weeb3-native-${phase}`,
+    ],
+    { stdio: 'inherit' },
+  );
+}
+
+function diffNodeMetrics(host: string, dir: string): string {
+  return execFileSync(
+    'ssh',
+    [host, `cd ~/swarm-hls-bench && bash deploy/scripts/node-metrics.sh diff ${dir}/before.json ${dir}/after.json`],
+    { encoding: 'utf8' },
+  );
+}
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -176,12 +212,30 @@ async function main(): Promise<void> {
   /** Where to put the playhead before counting. Negative counts back from the end. 0 is the start. */
   const startAtSeconds = envNumber('WEEB3_NATIVE_START_S', 0);
 
+  const metricsHost = process.env.WEEB3_NATIVE_METRICS_SSH ?? '';
+  const metricsRoot = process.env.WEEB3_NATIVE_METRICS_DIR ?? '/home/solarpunk/node-metrics-weeb3native';
+  if (metricsHost === '' && process.env.ALLOW_NO_NODE_METRICS !== '1') {
+    throw new Error(
+      'refusing to run without node metrics. Set WEEB3_NATIVE_METRICS_SSH=<host> to bracket the run ' +
+        'with the bee nodes own counters, or ALLOW_NO_NODE_METRICS=1 to record that this run has no ' +
+        'node-side evidence for its gateway-less claim.',
+    );
+  }
+
   const watchUrl = `${pageUrl.replace(/\/$/, '')}/#/live/stream/${owner}/${topic}`;
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
+  // ⛔⛔ Per run, never shared. A shared bracket directory let a later FAILED run overwrite the
+  // before-snapshot of an earlier good one, destroying the node-side evidence for a result that had
+  // already been reported. An unpaired bracket is a defect, and so is a bracket a rerun can eat.
+  const metricsDir = `${metricsRoot}/${runId}`;
 
   console.log(`weeb3-native: ${watchUrl}`);
   console.log(`weeb3-native: boot budget ${bootSeconds}s, counted window ${watchSeconds}s`);
+
+  if (metricsHost !== '') {
+    bracketNodeMetrics(metricsHost, metricsDir, 'before');
+  }
 
   const browser = await launchViewer();
   const requests: RequestRecord[] = [];
@@ -300,6 +354,14 @@ async function main(): Promise<void> {
       samples,
     };
 
+    let nodeMetricsDiff = 'not collected, ALLOW_NO_NODE_METRICS=1';
+    if (metricsHost !== '') {
+      bracketNodeMetrics(metricsHost, metricsDir, 'after');
+      nodeMetricsDiff = diffNodeMetrics(metricsHost, metricsDir);
+      console.log(nodeMetricsDiff);
+    }
+    Object.assign(report, { nodeMetricsDiff });
+
     const markdown = [
       `# weeb-3's own page, our broadcast, no gateway`,
       ``,
@@ -324,6 +386,12 @@ async function main(): Promise<void> {
         offShell.servedBytes,
       )}) |`,
       `| playhead exhausted the recording | ${exhausted ? '⛔ **yes, the ratio is void**' : 'no'} |`,
+      ``,
+      `## What the bee nodes themselves recorded over the same window`,
+      ``,
+      '```',
+      nodeMetricsDiff.trimEnd(),
+      '```',
       ``,
       `⚠️ The visibility sensor passes by construction here, because Playwright forces a visible page.`,
       `Instrument verdict: ${instrument.sound ? 'sound' : instrument.failures.join('; ')}`,

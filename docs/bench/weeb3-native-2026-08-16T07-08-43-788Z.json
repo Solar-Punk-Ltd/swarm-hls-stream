@@ -1,0 +1,280 @@
+{
+  "measuredAt": "2026-08-16T07:08:43.788Z",
+  "watchUrl": "https://lat-murmeldjur.github.io/weeb-3/#/live/stream/8d8a30ff4cbcf8ad0e0773547686295f8157feb0/7e87a2d9-82fe-422f-a66a-5b1e42281636",
+  "owner": "8d8a30ff4cbcf8ad0e0773547686295f8157feb0",
+  "topic": "7e87a2d9-82fe-422f-a66a-5b1e42281636",
+  "countedSeconds": 29.2,
+  "realtimeRatio": 0.12,
+  "steadyRealtimeRatio": 0.9995,
+  "startupSeconds": 26.1,
+  "mediaGainedS": 3.5,
+  "stalls": 2,
+  "segments": {
+    "done": 18,
+    "failed": 6,
+    "running": 1,
+    "meanMB": 0.609,
+    "meanDurationS": 1.831,
+    "resolutions": [
+      "1920x1080"
+    ]
+  },
+  "peersAtEnd": 200,
+  "meanBufferAheadS": 1189.18,
+  "gatewayLess": true,
+  "offShellContacted": {
+    "docs.libp2p.io": 2
+  },
+  "offShellServedBytes": {},
+  "exhausted": false,
+  "endedAt": {
+    "ended": false,
+    "currentTime": 4.535482,
+    "duration": 43553.413353
+  },
+  "totalRequests": 60,
+  "instrumentSound": true,
+  "instrumentFailures": [],
+  "samples": [
+    {
+      "atMs": 1786864146292,
+      "currentTime": 0,
+      "bufferedEnd": 1183.01,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864147294,
+      "currentTime": 0,
+      "bufferedEnd": 1184.911,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864148303,
+      "currentTime": 0,
+      "bufferedEnd": 1188.045,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864149307,
+      "currentTime": 0,
+      "bufferedEnd": 1188.045,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864150312,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864151314,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864152317,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864153318,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864154320,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864155324,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864156331,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864157370,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864158405,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864159409,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864160410,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864161411,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864162415,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864163417,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864164418,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864165420,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864166424,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864167426,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864168429,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864169431,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864170433,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864171434,
+      "currentTime": 0,
+      "bufferedEnd": 1189.979,
+      "readyState": 1,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864172437,
+      "currentTime": 0.487608,
+      "bufferedEnd": 1189.979,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864173440,
+      "currentTime": 1.491379,
+      "bufferedEnd": 1189.979,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864174443,
+      "currentTime": 2.494429,
+      "bufferedEnd": 1189.979,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786864175451,
+      "currentTime": 3.500124,
+      "bufferedEnd": 1189.979,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    }
+  ]
+}
