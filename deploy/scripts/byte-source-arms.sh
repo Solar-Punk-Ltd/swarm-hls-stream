@@ -86,6 +86,21 @@ SETTLE_SECONDS="${SETTLE_SECONDS:-60}"
 # which of them could have gone lower. Cutting it is what gives them room to separate.
 TARGET_LATENCY_S="${TARGET_LATENCY_S:-2}"
 
+# ⛔⛔ WHICH PAIR THIS SITTING RUNS. Unset it and nothing changes: gateway against our hybrid client,
+# which is every byte-source sitting run so far.
+#
+# `gateway-less` swaps the gateway condition for weeb-3's OWN PAGE, which is what the owner asked for
+# on 2026-08-11 and what the split of PR #183 never measured.
+#
+# ⚠️ That contrast moves TWO things, whose page and player, and whether a gateway serves the
+# manifest. It bounds the cost of going fully gateway-less rather than isolating either one.
+ARM_PAIR="${ARM_PAIR:-byte-source}"
+
+# A native arm downloads 4.5 MB of wasm and dials its own peers before it can show a frame, and A2
+# timed a first retrieval right after `ready(1)` at 9.4 to 10.5 seconds. Its own boot budget, so
+# raising it does not lengthen a hybrid arm that does not need it.
+NATIVE_BOOT_S="${NATIVE_BOOT_S:-180}"
+
 SIZE="${SIZE:-1280x720}"
 BITRATE_KBPS="${BITRATE_KBPS:-2500}"
 GOP_SECONDS="${GOP_SECONDS:-0.5}"
@@ -262,6 +277,44 @@ wait_for_quiet() {
   return 1
 }
 
+# ⭐ WHO THE NATIVE ARM WATCHES, TAKEN FROM THE PUBLISHER'S OWN LOG.
+#
+# weeb-3's route is `#/live/stream/<owner>/<uuid>` and our uploader's `streamRawTopic` is a
+# `crypto.randomUUID()`, so our identifiers paste straight in. `notifyStart` logs the catalog entry
+# it announces, which carries the owner, the topic and the announce time in one line.
+#
+# ⭐⭐ Read from the log rather than from the catalog feed on purpose. A feed read would be a gateway
+# retrieval taken during a sitting whose whole question is what reaches a gateway, and it would need
+# bee-js on the host. The publisher's own record needs neither.
+NATIVE_OWNER=""
+NATIVE_TOPIC=""
+NATIVE_BROADCAST_START_MS=""
+
+discover_native_stream() {
+  local line
+  line="$(docker logs "${UPLOADER_CONTAINER}" 2>&1 | grep 'Adding stream to list:' | tail -1)" || true
+  if [ -z "${line}" ]; then
+    say "  the uploader logged no catalog announce, so a native arm has no stream to open"
+    return 1
+  fi
+
+  NATIVE_OWNER="$(printf '%s' "${line}" | python3 -c 'import sys,json,re;m=re.search(r"\{.*\}",sys.stdin.read());print(json.loads(m.group(0))["owner"] if m else "")')"
+  NATIVE_TOPIC="$(printf '%s' "${line}" | python3 -c 'import sys,json,re;m=re.search(r"\{.*\}",sys.stdin.read());print(json.loads(m.group(0))["topic"] if m else "")')"
+  NATIVE_BROADCAST_START_MS="$(printf '%s' "${line}" | python3 -c 'import sys,json,re;m=re.search(r"\{.*\}",sys.stdin.read());print(json.loads(m.group(0))["timestamp"] if m else "")')"
+
+  if [ -z "${NATIVE_OWNER}" ] || [ -z "${NATIVE_TOPIC}" ] || [ -z "${NATIVE_BROADCAST_START_MS}" ]; then
+    say "  the catalog announce did not parse into owner, topic and timestamp: ${line}"
+    return 1
+  fi
+
+  # ⚠️ The announce time, not the first frame. It carries a constant offset from media position zero
+  # that nothing here can measure, and that offset CANCELS in both the arm-to-arm contrast and the
+  # within-arm drift, which is what the sitting reads. It does NOT cancel in the absolute value, so
+  # no table may quote the absolute distance from live as if it were the viewer's true latency.
+  say "  native arm will open owner ${NATIVE_OWNER} topic ${NATIVE_TOPIC}, announced at ${NATIVE_BROADCAST_START_MS}"
+  return 0
+}
+
 # ⛔⛔ By exact name, never by pattern. The image also serves a single Xvfb display, so a leftover
 # container makes every later arm fail with `Cannot establish any listening sockets`, which reads as a
 # broken browser rather than a stale one.
@@ -298,8 +351,39 @@ run_in_browser_image() {
 # treatment here, it is held fixed: seeding it makes the sitting state its gateway rather than inherit
 # whatever the build defaults to, and it turns on the second request-log gate, which refuses an arm
 # that fetched from any host but this one.
+# weeb-3's own page, opened on OUR broadcast, with nothing served by a gateway. A different driver
+# because it is a different viewer: our client is not in this arm at all.
+#
+# ⭐ `WEEB3_NATIVE_METRICS_BRACKETED_BY` rather than `ALLOW_NO_NODE_METRICS=1`. This wrapper already
+# brackets every arm through `bracket_gateway`, and the opt-out would make the artefact say it has no
+# node-side evidence while the evidence sits beside it.
+run_native_arm() {
+  local seconds="$1"
+  docker run --rm --network host \
+    --name "${BROWSER_CONTAINER_NAME}" \
+    -u "$(id -u):$(id -g)" \
+    --group-add "$(getent group docker | cut -d: -f3)" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "${BENCH_REPO}:/repo" \
+    -e HOME=/tmp \
+    -w /repo \
+    -e "WEEB3_NATIVE_LIVE=1" \
+    -e "WEEB3_NATIVE_OWNER=${NATIVE_OWNER}" \
+    -e "WEEB3_NATIVE_TOPIC=${NATIVE_TOPIC}" \
+    -e "WEEB3_NATIVE_BROADCAST_START_MS=${NATIVE_BROADCAST_START_MS}" \
+    -e "WEEB3_NATIVE_WATCH_S=${seconds}" \
+    -e "WEEB3_NATIVE_BOOT_S=${NATIVE_BOOT_S}" \
+    -e "WEEB3_NATIVE_METRICS_BRACKETED_BY=byte-source-arms" \
+    -e "VIEWER_CDP_PORT=${VIEWER_CDP_PORT:-}" \
+    "${BROWSER_IMAGE}" pnpm browser:weeb3-native
+}
+
 run_browser_arm() {
   local seconds="$1" source="$2"
+  if [ "${source}" = "native" ]; then
+    run_native_arm "${seconds}"
+    return $?
+  fi
   docker run --rm --network host \
     --name "${BROWSER_CONTAINER_NAME}" \
     -u "$(id -u):$(id -g)" \
@@ -378,7 +462,11 @@ run_arm() {
   # ceiling. weeb-3 is one JS thread, so a gateway arm and a weeb-3 arm that both cost two cores are
   # still different products if one of them has its node at 0.95 of a thread. Sampled by URL because
   # this browser has more than one page in it, and one of them is deliberately blocked.
-  start_main_thread "${METRICS_DIR}/${slug}-mainthread.jsonl" "${slug}" '/watch/'
+  # ⛔ The two conditions are DIFFERENT PAGES, so one URL filter cannot find both. A native arm
+  # sampled for '/watch/' would report no main thread at all, which reads as a free viewer.
+  local thread_url='/watch/'
+  [ "${source}" = "native" ] && thread_url='lat-murmeldjur'
+  start_main_thread "${METRICS_DIR}/${slug}-mainthread.jsonl" "${slug}" "${thread_url}"
 
   run_browser_arm "${watch_seconds}" "${source}" >> "${LOG}" 2>&1 &
   local watch_pid=$! status=0
@@ -535,15 +623,17 @@ reclaim_browser_containers
 # One round of a counterbalance is every condition exactly once, so this is the harness stating which
 # byte sources exist, and a plan is checked against that rather than against a list copied into shell.
 # A plan that named `weeb-3` would otherwise reach a real browser three hours into a paid broadcast.
+ORDER_SCRIPT="browser:byte-source-order"
+[ "${ARM_PAIR}" = "gateway-less" ] && ORDER_SCRIPT="browser:viewer-order"
 ARM_ORDER="$(run_in_browser_image "${BROWSER_CONTAINER_NAME}-check" "${BROWSER_IMAGE}" \
-  pnpm --silent browser:byte-source-order "$([ -n "${ARM_PLAN}" ] && echo 1 || echo "${ROUNDS}")" 2>> "${LOG}" | tr -d '\r')"
+  pnpm --silent "${ORDER_SCRIPT}" "$([ -n "${ARM_PLAN}" ] && echo 1 || echo "${ROUNDS}")" 2>> "${LOG}" | tr -d '\r')"
 read -r -a ARMS <<< "${ARM_ORDER}"
 if [ -n "${ARM_PLAN}" ]; then
   for source in "${PLAN_SOURCES[@]}"; do
     case " ${ARM_ORDER} " in
       *" ${source} "*) ;;
       *)
-        say "REFUSING TO START: ARM_PLAN names byte source '${source}', which the harness does not know. It knows: ${ARM_ORDER}"
+        say "REFUSING TO START: ARM_PLAN names condition '${source}', which the harness does not know. It knows: ${ARM_ORDER}"
         exit 1
         ;;
     esac
@@ -551,7 +641,7 @@ if [ -n "${ARM_PLAN}" ]; then
   ARMS=("${PLAN_SOURCES[@]}")
   say "  arm plan: ${ARM_PLAN}"
 elif [ "${#ARMS[@]}" -ne "${TOTAL_ARMS}" ]; then
-  say "REFUSING TO START: browser:byte-source-order gave ${#ARMS[@]} arms for ${ROUNDS} rounds, wanted ${TOTAL_ARMS}"
+  say "REFUSING TO START: ${ORDER_SCRIPT} gave ${#ARMS[@]} arms for ${ROUNDS} rounds, wanted ${TOTAL_ARMS}"
   exit 1
 else
   say "  arm order: ${ARM_ORDER}"
@@ -602,6 +692,17 @@ if ! wait_for_active_stream; then
   say "REFUSING TO CONTINUE: the broadcast never reached the uploader"
   exit 1
 fi
+# ⛔⛔ BEFORE THE LEAD, NOT AT THE FIRST NATIVE ARM. A native arm that cannot find the stream would
+# fail three quarters of an hour into a paid broadcast, having already spent for it. Discovering here
+# costs a `docker logs` and turns that into a refusal before the lead is even waited out.
+if printf '%s\n' "${ARMS[@]}" | grep -qx native; then
+  if ! discover_native_stream; then
+    stop_publisher
+    say "REFUSING TO CONTINUE: a native arm is planned and the publisher announced no catalog entry"
+    exit 1
+  fi
+fi
+
 say "  the broadcast is live, leading the first arm by ${PUBLISHER_LEAD_S}s"
 sleep "${PUBLISHER_LEAD_S}"
 
