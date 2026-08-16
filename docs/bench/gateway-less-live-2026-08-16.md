@@ -40,31 +40,100 @@ including four hybrid arms, was **0.0070 BZZ**.
 elapsed minus media seconds played. It needs no agreement about where the live edge is, and the
 origin offset cancels, which matters because the two players do not share one.
 
-## Result 2: ⛔⛔⛔ IT DOES NOT JOIN AT THE LIVE EDGE, IT STARTS AT THE BEGINNING
+## Result 2: ⛔⛔⛔ IT JOINS AT THE EDGE, THEN A TIMELINE REBASE LEAVES THE PLAYHEAD BEHIND
 
-| arm joined, into the broadcast | measured lag behind production | difference |
+> ### ⛔⛔⛔ CORRECTED THE SAME EVENING, AFTER THIS FILE WAS MERGED
+>
+> The first version of this section was headed "IT DOES NOT JOIN AT THE LIVE EDGE, IT STARTS AT THE
+> BEGINNING", and offered reading-the-feed-from-index-zero as the mechanism, marked as an inference.
+> **Both clauses of that heading are wrong.** weeb-3 joins at the live edge and is moved off it a few
+> seconds later. The measured lag is unchanged and every number in the old table still stands. What
+> causes it, and therefore what to do about it, is completely different.
+>
+> ⭐ It was found by doing the free bundle read the old section itself asked for, and then re-reading
+> the arms' own `seekable` ranges, **which were already on disk when the wrong version was written**.
+
+### The arms open at the live edge, on weeb-3's own clock
+
+`currentTime` and `seekableEnd` are read from weeb-3's own media element, so this needs no agreement
+with our publisher's clock and no shared origin.
+
+| arm | joined, into the broadcast | at the first sample | **behind its own edge** |
+| ---: | ---: | --- | ---: |
+| 1 | 86.2s | 22.57s of a 25.50s timeline | **2.93s** |
+| 3 | 1,555.7s | 22.92s of a 27.03s timeline | **4.11s** |
+| 6 | 3,788.8s | 22.90s of a 27.60s timeline | **4.70s** |
+| 8 | 5,313.3s | 22.57s of a 25.50s timeline | **2.93s** |
+
+**Four arms of four, at 2.9 to 4.7 seconds behind the edge**, against our own client's 2.02s. A
+gateway-less viewer joins live.
+
+### Then the timeline expands and the playhead does not follow
+
+Between one and four seconds later, `seekableEnd` jumps from about 27 seconds to the broadcast's
+whole age in a single sample.
+
+| arm | at | edge before | **edge after** | jump | broadcast age then |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | t=1.1s | 25.5s | **82.0s** | +56.5 | 86.2s |
+| 3 | t=2.0s | 28.5s | **1,557.0s** | +1,528.5 | 1,555.7s |
+| 6 | t=3.0s | 28.6s | **3,790.0s** | +3,761.4 | 3,788.8s |
+| 8 | t=4.0s | 29.0s | **5,315.5s** | +5,286.5 | 5,313.3s |
+
+⭐ **The new edge is the broadcast's age at that instant**, within 4 seconds every time across a
+62-fold range. weeb-3 is discovering the history behind the window it opened on. The playhead stays
+where it was, near 25 seconds, and from there plays forward at realtime and never catches up.
+
+⭐⭐ **The harness had already recorded this and nobody read it.** `appendedEdgeLagMaxS` is 82.0,
+1,557.0 and 3,766.5 on the three counted arms, which is the jump itself. It sat in the same JSON as
+every figure that was quoted.
+
+### The lag is real, measured inside weeb-3 alone
+
+At the last sample, `seekableEnd - currentTime` on weeb-3's own element:
+
+| arm | behind its own edge, at the end | behind production, our clock |
 | ---: | ---: | ---: |
-| 86.2s | 64.5s | 21.7 |
-| 1,555.7s | 1,532.8s | 22.9 |
-| 3,788.8s | 3,765.9s | 22.9 |
-| 5,313.3s | 5,290.7s | 22.6 |
+| 1 | 57.2s | 64.5s |
+| 3 | **1,056.4s** | **1,532.8s** |
+| 6 | 3,765.7s | 3,765.9s |
+| 8 | 5,290.5s | 5,290.7s |
 
-**A constant 22.5 ± 0.6 seconds across a 62-fold range of elapsed broadcast.** The lag is simply how
-late the viewer joined. The constant is the offset between the catalog announce and media position
-zero, which nothing here measures and which cancels in every comparison below.
+Arms 6 and 8 agree to a quarter of a second across two independent clocks, which is what makes the
+lag a finding rather than an artefact of mixing them.
 
-Our own client, running **the same hls.js** against the same broadcast, sat **2.02s behind live**
-(median across three counted arms, 1.79 to 2.04).
+⚠️ **Arm 3 disagrees by 476 seconds and is not explained here.** Its own reported edge, 1,738.6s,
+sits well behind the broadcast's true age of 2,215.7s at that moment, so for that arm weeb-3's
+timeline had not caught up with production either. Whatever that is, it is separate from the rebase
+and this sitting does not resolve it.
 
-⭐ The mechanism is bounded by one fact from our own source: the uploader's live manifest is a
-**byte-budgeted trailing window**, so it cannot contain the start of an 88-minute broadcast. A viewer
-that begins at media position zero is therefore **not positioning from that manifest**. ⚠️ What it
-does instead is an inference, not a measurement: reading the feed as an ordered sequence from index 0
-would produce exactly this. Confirming it means reading weeb-3's bundle, which is free and not done.
+### What the source says, read but not executed
 
-⛔ **So "can a gateway-less viewer hold a live edge" has two answers.** It sustains live-rate delivery
-indefinitely with no gateway. It does not currently start at the edge, so as shipped it is a
-from-the-beginning viewer. On a three-hour broadcast a viewer opening it is three hours behind.
+weeb-3 is open source and the deployed build carries the same strings as the npm package we depend
+on, checked both ways.
+
+- The route selects the mode. `src/stream_conventions.rs` maps `/stream/...` to `HlsStart::Beginning`
+  and `/live/stream/...` to `HlsStart::Live`. **The sitting used the live route**, so live was asked
+  for and granted.
+- `src/stream_hls.rs` emits `#EXT-X-START:TIME-OFFSET=-<tail>,PRECISE=NO` for a live start and
+  `TIME-OFFSET=0,PRECISE=YES` only for a beginning start. The live tag is what we observed.
+- `hls_timeline_rebase_required()` fires when a newly discovered playlist starts at a **lower media
+  sequence** than the one in play. Our uploader publishes a byte-budgeted trailing window with a
+  moving media sequence, so a full-history playlist discovered afterwards always satisfies it.
+- `hls_timeline_rebase_position(previous_edge, current_time, candidate_edge)` computes
+  `candidate_edge - (previous_edge - current_time)`, which **preserves the distance behind the edge**
+  and is exactly right. For arm 8 it would have produced 5,312.1s and kept the viewer live.
+- Its caller takes that position only when both the old and new edges are known, and otherwise falls
+  back to the session's `initial_position`.
+
+⚠️ **The last step is an inference, not a measurement.** The observed post-rebase playhead matches
+the fallback and not the computed position, but this project has not run weeb-3's code to see which
+branch it took.
+
+⭐⭐⭐ **So this is a defect with a location, not a missing feature.** The distance-preserving
+arithmetic already exists in weeb-3 and does not reach the media element. And **our own manifest is
+half the trigger**: the moving media sequence of our trailing window is what makes a rebase look
+required at all. Either side can fix it.
 
 ## Result 3: ⭐⭐⭐ THE MAIN THREAD COST GROWS WITH THE BROADCAST, AND THE CONTROL DOES NOT
 
@@ -91,8 +160,9 @@ control is the argument, not the sample size.
 
 ⭐ A mechanism that fits and is already documented: a viewer that keeps the whole broadcast pays per
 segment **count**, and hls.js re-parses the entire playlist on every refresh
-(`swarm-hls-viewer-manifest-growth`). A player starting at index 0 of a never-trimmed sequence would
-grow exactly this way.
+(`swarm-hls-viewer-manifest-growth`). After the rebase in Result 2 the native arm holds a playlist
+spanning the entire broadcast, so the later the arm joined the more of it there is to re-parse. That
+also makes the climb and the join lag the **same** confound rather than two.
 
 ## Container CPU, for completeness and not as the ceiling
 
@@ -111,7 +181,14 @@ cannot be quoted as throughput, and the label in `weeb3-native.ts` is being corr
 - ✅ **KEEP: a fully gateway-less viewer sustains a live broadcast at realtime**, three counted arms,
   zero gateway retrievals each, drift under a second in eleven minutes.
 - ✅ **KEEP: it costs the gateway nothing.** 0.0000 BZZ on every native arm.
-- ⛔ **DO NOT CLAIM a gateway-less live viewer.** It starts at the broadcast's beginning.
+- ✅ **KEEP, NEW: it does join at the live edge**, 2.9 to 4.7s behind on its own clock, four arms of
+  four. The gateway-less path is not architecturally a from-the-beginning viewer.
+- ⛔ **DO NOT SHIP IT AS A LIVE VIEWER YET.** A timeline rebase drops the playhead seconds after the
+  join, and the viewer then sits behind by the broadcast's age at that moment, permanently. A
+  three-hour broadcast still opens three hours behind.
+- ⭐ **RAISE IT WITH weeb-3 AS A DEFECT, WITH THE FUNCTION NAMED.** `hls_timeline_rebase_position()`
+  already computes the right position and the caller drops it. Offer our trailing-window media
+  sequence as the trigger, because that half is ours.
 - ⛔ **DO NOT extrapolate the main thread past 88 minutes or past 720p** from this. What is measured
   is that it climbs and that the control does not.
 - ⚠️ **Nothing here speaks to the multi-hour thread creep** measured over three hours in
