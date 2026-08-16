@@ -65,11 +65,11 @@ a Swarm node inside the tab (weeb-3) and fetches from the network directly, with
 and the swarm. **Every figure in this document assumes a gateway.** None of them transfer. The three
 things that make it a different animal:
 
-|                                                                                                                  |                                                              |
-| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| ⚠️ it delivered **0.59x of realtime** for a 2.86 Mbps stream **on our harness**, which is not the node's ceiling | 203 KB/s against the 357 KB/s needed, but see the note below |
-| it is **demand only**: it never serves, caches or announces for anyone else                                      | so an audience of them adds load and no capacity             |
-| fragments above roughly **1 MB stop arriving at all**, which is a ceiling and not a delay                        | ≤ 500 KB completed 20/20, 3.5 MB completed **0 of 5**        |
+|                                                                                                                  |                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ⚠️ it delivered **0.59x of realtime** for a 2.86 Mbps stream **on our harness**, which is not the node's ceiling | 203 KB/s against the 357 KB/s needed, but see the note below                                                                                                                                                                                                   |
+| it is **demand only**: it never serves, caches or announces for anyone else                                      | so an audience of them adds load and no capacity                                                                                                                                                                                                               |
+| ⛔ ~~fragments above roughly **1 MB stop arriving at all**~~ **WITHDRAWN 2026-08-11, it was corpus decay**       | on content of known health, 3,361 KB delivered **8/8 at 1,007 KB/s** and abel-1's 4,262 KB delivered **8/8**. Re-confirmed 2026-08-16: Abel's live page pulls **4.32 to 4.40 MB** segments to completion. See `../bench/size-on-healthy-content-2026-08-11.md` |
 
 > ## ⛔⛔⛔ AND OUR OWN `weeb3` CLIENT IS A **FOURTH** KIND, NOT THE THIRD ONE ABOVE
 >

@@ -52,25 +52,25 @@ is really checking.
 
 ## 3. Settled, with the file that settles it
 
-| claim                       | number                                                      | where                                                          |
-| --------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------- |
-| Gateway throughput ceiling  | **344-352 Mbps**, cache-off and cache-warm alike            | `docs/bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md`    |
-| Viewers per gateway, 720p   | **~123**, bracketed 128 held / 192 drained                  | same                                                           |
-| Viewers per gateway, 1080p  | **~55** ⚠️ derived                                          | `running-a-high-scale-event-on-swarm.md` §2.4e                 |
-| Chunks per segment          | **26.2** for a 94 kB segment, includes merkle-tree overhead | §2.5 cache sizing                                              |
-| Retrieval cost              | **0.000678 BZZ/MB**, flat over an 8.5x size range           | §2 cost table                                                  |
-| GOP premium                 | **does not exist**, 1.4% not 15%                            | same                                                           |
-| Viewers pool for free       | 16 cost what 1 costs                                        | §2.4b                                                          |
-| Feed reads under load       | flat to 128 concurrent readers **through gateways**         | §2.6                                                           |
-| Not-found cost              | ~480ms, **zero BZZ**, ~45% of live-edge reads               | §2.7                                                           |
-| Funding is a switch at zero | 0.05 BZZ performs like 6.4 BZZ                              | §2.1b                                                          |
-| Unfunded network cost       | **~13% in bytes, ~50% in messages** ⛔ say which            | §2.1, §2z.3                                                    |
-| Unfunded viewer cost        | **11.6-15.0% of segments late** vs 0.0-0.3%                 | §2.1                                                           |
-| Synchronised audience       | 128 on one tick drain **12.8s of buffer**                   | `a-synchronised-audience-is-the-failure-2026-08-08.md`         |
-| Cold gateway                | **2-3x cost for ~2 min**, no readiness signal catches it    | `a-cold-gateway-is-idle-long-before-it-is-cheap-2026-08-09.md` |
-| Browser node throughput     | **~0.6x of realtime**, 100% crossing rate                   | `docs/scale/in-browser-phase-1.md` §5c                         |
-| Browser node is demand-only | never accepts inbound retrieval                             | same §6                                                        |
-| Browser fragment ceiling    | ≤500 kB **20/20**, 3.5 MB **0/5**                           | `in-browser-fragment-profile-*-2026-08-10.tsv`                 |
+| claim                                                       | number                                                                                                               | where                                                          |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Gateway throughput ceiling                                  | **344-352 Mbps**, cache-off and cache-warm alike                                                                     | `docs/bench/the-ceiling-is-bytes-not-viewers-2026-08-08.md`    |
+| Viewers per gateway, 720p                                   | **~123**, bracketed 128 held / 192 drained                                                                           | same                                                           |
+| Viewers per gateway, 1080p                                  | **~55** ⚠️ derived                                                                                                   | `running-a-high-scale-event-on-swarm.md` §2.4e                 |
+| Chunks per segment                                          | **26.2** for a 94 kB segment, includes merkle-tree overhead                                                          | §2.5 cache sizing                                              |
+| Retrieval cost                                              | **0.000678 BZZ/MB**, flat over an 8.5x size range                                                                    | §2 cost table                                                  |
+| GOP premium                                                 | **does not exist**, 1.4% not 15%                                                                                     | same                                                           |
+| Viewers pool for free                                       | 16 cost what 1 costs                                                                                                 | §2.4b                                                          |
+| Feed reads under load                                       | flat to 128 concurrent readers **through gateways**                                                                  | §2.6                                                           |
+| Not-found cost                                              | ~480ms, **zero BZZ**, ~45% of live-edge reads                                                                        | §2.7                                                           |
+| Funding is a switch at zero                                 | 0.05 BZZ performs like 6.4 BZZ                                                                                       | §2.1b                                                          |
+| Unfunded network cost                                       | **~13% in bytes, ~50% in messages** ⛔ say which                                                                     | §2.1, §2z.3                                                    |
+| Unfunded viewer cost                                        | **11.6-15.0% of segments late** vs 0.0-0.3%                                                                          | §2.1                                                           |
+| Synchronised audience                                       | 128 on one tick drain **12.8s of buffer**                                                                            | `a-synchronised-audience-is-the-failure-2026-08-08.md`         |
+| Cold gateway                                                | **2-3x cost for ~2 min**, no readiness signal catches it                                                             | `a-cold-gateway-is-idle-long-before-it-is-cheap-2026-08-09.md` |
+| Browser node throughput                                     | **~0.6x of realtime**, 100% crossing rate                                                                            | `docs/scale/in-browser-phase-1.md` §5c                         |
+| Browser node is demand-only                                 | never accepts inbound retrieval                                                                                      | same §6                                                        |
+| ⛔ ~~Browser fragment ceiling~~ **WITHDRAWN, it was decay** | ~~≤500 kB 20/20, 3.5 MB 0/5~~ → on healthy content **3,361 KB is 8/8** and Abel's live page runs **4.4 MB** segments | `../bench/size-on-healthy-content-2026-08-11.md`               |
 
 ---
 
