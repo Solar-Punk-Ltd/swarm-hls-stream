@@ -165,3 +165,53 @@ boundary because their artefacts have left the host.
    incompatibility, and I filed it under methodology instead. A constraint invites a decision and a
    principle invites agreement, so dressing the first as the second is how a choice stops being the
    owner's.
+
+---
+
+# ⭐⭐⭐ ADDENDUM, SAME DAY: HIS PAGE READS **OUR** FEED, AND THE BLOCKER IS REFUTED
+
+An hour after the above, the obvious test that nobody had run. His route is
+`#/live/stream/<owner>/<topic>`, our uploader's topic is `crypto.randomUUID()`, so **our own stream
+identifiers go straight into his URL**. No change to his code, no change to ours, no broadcast, no
+BZZ.
+
+Target: our 2026-08-11 shipping-profile broadcast, owner `8d8a30ff…`, topic
+`7e87a2d9-82fe-422f-a66a-5b1e42281636`.
+
+## ⛔⛔⛔ "weeb-3 cannot read bee-js sequential feeds" IS DEAD
+
+That claim is in `docs/reviews/roadmap.md`, sourced to the POC repository, and **I cited it in this
+very document two hours ago as the real constraint behind the split.** It is wrong now, whatever it
+was when written.
+
+| step | result |
+| --- | --- |
+| topic derivation | ⭐ `45a19acd01d1a1f8…4ed4bdec` from weeb-3, **byte-identical** to bee-js `Topic.fromString` on our UUID |
+| feed frontier | ✅ `resolved bounded candidate index 255` |
+| our manifest | ✅ `HLS manifest ready through weeb-3` |
+| **our segments** | ✅ **23 of 23 delivered, ZERO failures**, mean **0.809 MB / 1.842 s** |
+| buffer | ✅ `readyState` **4** (HAVE_ENOUGH_DATA), **10.75 s** ahead of the playhead |
+| picture | ✅ our test pattern and burned-in clock rendered at **10:08 of 11:03** |
+| **gateway requests** | ✅ **0.** Real network egress for the whole session: **0** |
+
+⭐⭐⭐ **Our content plays in his page, gateway-less, today, with nothing changed on either side.**
+
+⚠️ **No realtime ratio is reported.** `play()` resolved but the playhead held at 608.8 s with the
+browser pane hidden, which is an instrument limitation and not an observation about weeb-3. Sustained
+delivery needs the visible-tab harness (`VIEWER_CDP_PORT`), and until then **23/23 with a 10.75 s
+buffer is a delivery result, not a playback result.**
+
+## What this changes
+
+⛔ **I was wrong two hours ago when I said the next step was blocked on a question for Abel.** It was
+blocked on a ten-minute test I had not run, and the answer was in our own uploader source the whole
+time: our topic is a UUID, his route takes a UUID.
+
+⭐ **#52 no longer needs anything from anyone.** A live sitting can point a real browser at his page
+with our own owner and topic, and measure the fully gateway-less path against the hybrid we have been
+measuring for five days.
+
+⭐⭐⭐ **The generalisable one: I inherited a blocker from a document instead of testing it.** The
+roadmap's sentence was two removes from evidence, a report about a POC repository, and it survived
+because it sounded like a technical fact and cost nothing to repeat. **A constraint that has never
+been re-tested is a rumour with a citation.** See [[swarm-hls-gate-lesson]] AIO.
