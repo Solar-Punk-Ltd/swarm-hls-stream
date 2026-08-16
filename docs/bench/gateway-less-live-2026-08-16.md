@@ -153,7 +153,10 @@ changes the origin mid-session.
 with both candidate code paths named and neither asserted, because separating them needs their code
 run rather than read.
 
-## Result 3: ⭐⭐⭐ THE MAIN THREAD COST GROWS WITH THE BROADCAST, AND THE CONTROL DOES NOT
+## Result 3: ⭐⭐⭐ THE MAIN THREAD COST IS SET AT JOIN BY THE BROADCAST'S AGE, AND THE CONTROL IS FLAT
+
+> ⛔ **The mechanism this section originally offered was withdrawn the same evening**, from the
+> sitting's own saved samples. The measured climb below stands. See the withdrawal after the table.
 
 The ceiling that matters for weeb-3 is a single JS thread.
 
@@ -176,11 +179,66 @@ gateway-less path is closer to its ceiling at 720p than the hybrid is at 1080p.
 which ran 1st, 3rd, 6th and 8th. Counterbalancing does not break that particular confound. The flat
 control is the argument, not the sample size.
 
-⭐ A mechanism that fits and is already documented: a viewer that keeps the whole broadcast pays per
-segment **count**, and hls.js re-parses the entire playlist on every refresh
-(`swarm-hls-viewer-manifest-growth`). After the rebase in Result 2 the native arm holds a playlist
-spanning the entire broadcast, so the later the arm joined the more of it there is to re-parse. That
-also makes the climb and the join lag the **same** confound rather than two.
+### ⛔⛔⛔ THE MECHANISM PARAGRAPH IS WITHDRAWN, 2026-08-16 evening
+
+**What stood here** was: a viewer that keeps the whole broadcast pays per segment **count**, hls.js
+re-parses the entire playlist on every refresh (`swarm-hls-viewer-manifest-growth`), the native arm
+holds a playlist spanning the entire broadcast after the rebase, so the later the arm joined the more
+of it there is to re-parse. It was marked "a mechanism that fits".
+
+**It does not fit, and the sitting's own saved samples say so.** The per-arm JSONL the sampler wrote
+was never read past its mean and peak. Read with `deploy/scripts/main-thread-slope.py`, on
+sixty-second window medians:
+
+| native arm | joined at | median | first 3 windows | last 3 windows | **change** |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 86s | 0.398 | 0.473 | 0.474 | **+0.001** |
+| 3 | 1,556s | 0.676 | 0.678 | 0.675 | **-0.003** |
+| 6 | 3,789s | 0.717 | 0.722 | 0.730 | **+0.008** |
+| 8 | 5,313s | 0.768 | 0.812 | 0.769 | **-0.043** |
+| *hybrid controls* | | | | | *+0.008, +0.009, +0.005, -0.007* |
+
+**Within its own session a native arm does not move, and it does not move by more than the control
+does.** The climb is entirely between arms.
+
+⛔ **Both branches of the mechanism fail, which is why it is withdrawn rather than qualified.**
+
+- **If the re-parsed playlist grows during the session**, cost must rise inside every arm. Fitting
+  `cost = a + b x playlist_seconds` on the four arm medians gives `b = 6.2e-5 /s`, which demands
+  **+0.042 inside every arm** against the four changes above. Arm 1 is the sharpest case: its
+  playlist grew **8.9x** during its own eleven minutes and its cost changed by +0.001.
+- **If the re-parsed playlist does not grow**, the same fixed parse cost applies to every arm and the
+  mechanism cannot produce the between-arm climb either. Our live manifest is capped at
+  `LIVE_WINDOW_MAX_BYTES = 4096`, one bee single-owner chunk, so what our uploader serves is a
+  bounded trailing window by construction.
+
+The same variable cannot have a 1.7x effect between arms whose playlists differ 62x and no effect
+inside an arm whose playlist grows 8.9x.
+
+### ⛔⛔ And the method that nearly published the opposite
+
+Fitted **per sample** rather than per window, arm 8 reads **+0.176 of one thread over the arm,
+t = 5.28**, and would have been written up as the native path accelerating toward saturation. On
+window medians the same arm is `+0.151 +/- 0.114, t = 1.32`, and its first three windows are
+**higher** than its last three. The entire apparent climb is one low opening window, 0.36 against
+0.73 to 0.84 for the eleven that follow, which is the page still settling.
+
+Five-second readings of a browser's task time are strongly autocorrelated, so an ordinary
+least-squares standard error over them assumes an independence that is not there.
+`drift-holds-and-bends-2026-08-15` already fitted on windows for this reason, and the script now
+carries the reason so the next reader does not have to rediscover it.
+
+### What Result 3 now says, and what is open
+
+✅ **Stands:** the native arm's cost rises with the broadcast, 0.435 to 0.746, while the hybrid
+control holds 0.220 ± 0.005. The flat control is still the argument.
+
+⭐ **Sharper than before:** the cost is **set at join and then flat for the session**. That is a
+stronger claim than "grows with the broadcast" and it is the one the data supports.
+
+⛔ **Open, and not guessed at here:** what sets the level at join. Naming it needs a design that
+varies timeline length and playhead position independently, which existing recordings can do for no
+BZZ at all.
 
 ## Container CPU, for completeness and not as the ceiling
 
