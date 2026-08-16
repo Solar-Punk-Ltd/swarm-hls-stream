@@ -109,7 +109,7 @@ A viewer that retrieves for itself instead of asking a gateway.
 
 | date | what it establishes | |
 | --- | --- | --- |
-| 2026-08-16 | [A fully gateway-less viewer sustains a live broadcast at realtime with **0** gateway retrievals against 2,346-2,563, but starts at the broadcast's beginning rather than the live edge, and its main thread climbs to 0.899 of one](gateway-less-live-2026-08-16.md) |  |
+| 2026-08-16 | [A fully gateway-less viewer sustains a live broadcast at realtime with **0** gateway retrievals against 2,346-2,563, and it **does join the live edge** at 2.9-4.7s before a timeline rebase drops the playhead and leaves it behind by the broadcast's age, and its main thread climbs to 0.899 of one](gateway-less-live-2026-08-16.md) |  |
 | 2026-08-16 | [Abel's live path is fully gateway-less (5 network requests, all app shell) while our own in-tab client keeps the gateway for the feed, and his did not reach playback](abel-gateway-less-live-2026-08-16.md) |  |
 | 2026-08-15 | [Every quantile from q25 to q90 moves by one factor, 1.61x in-tab and 1.23x gateway over 2.40x the bytes, so exponents are 0.55 and 0.23](thread-scaling-shape-2026-08-15.md) | ✏️ |
 | 2026-08-15 | [dU/dLoad is +0.00000 ± 0.00036, so faking the in-tab creep needs 47 load units/hr monotonic; but the creep itself is only t≈4.3 on 4 df](host-load-is-not-the-creep-2026-08-15.md) |  |
