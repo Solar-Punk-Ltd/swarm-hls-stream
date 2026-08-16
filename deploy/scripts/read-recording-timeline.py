@@ -117,51 +117,87 @@ def cell(value, spec):
     return format(value, spec) if value is not None else "-"
 
 
-def main(argv):
-    if len(argv) < 2:
-        print("usage: read-recording-timeline.py <sweep-dir> <artefact-dir> [sweep-start-iso]", file=sys.stderr)
-        return 2
-    sweep_dir, artefact_dir = argv[0], argv[1]
+def rows_for(sweep_dir, artefact_dir, start_override):
+    """Every successful arm of one sweep, joined to its artefact and its thread column."""
     metrics_dir = os.path.join(sweep_dir, "node-metrics")
-    started, arms = read_state(
-        os.path.join(sweep_dir, "recording-timeline-state.tsv"), argv[2] if len(argv) > 2 else None
-    )
+    started, arms = read_state(os.path.join(sweep_dir, "recording-timeline-state.tsv"), start_override)
     ok_arms = [arm for arm in arms if arm["status"] == "ok"]
     files = artefacts_between(artefact_dir, started)
-
     if len(files) != len(ok_arms):
-        print(f"⚠️ {len(ok_arms)} arms succeeded and {len(files)} artefacts were found, so the join may be shifted",
-              file=sys.stderr)
-
-    print(f"{'arm':<18}{'asked':>7}{'landed':>8}{'timeline':>10}{'win':>5}{'thread':>8}"
-          f"{'first3':>8}{'last3':>8}{'Mbps':>7}{'realtime':>10}{'stalls':>7}{'offshell':>9}")
+        print(f"⚠️ {sweep_dir}: {len(ok_arms)} arms succeeded and {len(files)} artefacts were found, "
+              "so the join may be shifted", file=sys.stderr)
+    out = []
     for index, arm in enumerate(ok_arms):
         run, run_path = files[index] if index < len(files) else ({}, None)
-        # ⛔⛔ A join that shifted by one is otherwise invisible when the counts happen to match, and
-        # every row after the shift would carry another arm's numbers under this arm's label.
         if run and run.get("topic") and run["topic"] != arm["topic"]:
             print(f"⛔ arm {arm['arm']} is labelled {arm['topic'][:8]} and its artefact says "
-                  f"{run['topic'][:8]}, so this join is shifted and the table below is wrong",
-                  file=sys.stderr)
-        first_sample = (run.get("samples") or [{}])[0]
-        thread = thread_column(metrics_dir, "arm%02d-" % int(arm["arm"]))
-        # ⛔ None rather than 0 when there is no artefact. A zero here reads as "measured and clean",
-        # and "I could not find any" and "there are none" must not share a rendering.
+                  f"{run['topic'][:8]}, so this join is shifted", file=sys.stderr)
         served = run.get("offShellServedBytes")
-        off_shell = sum(served.values()) if served is not None else None
+        out.append({
+            "arm": arm,
+            "sample": (run.get("samples") or [{}])[0],
+            "thread": thread_column(metrics_dir, "arm%02d-" % int(arm["arm"])),
+            "mbps": THROUGHPUT.steady_mbps(requests_sibling(run_path)) if run_path else None,
+            "realtime": run.get("realtimeRatio"),
+            "stalls": run.get("stalls"),
+            "offShell": sum(served.values()) if served is not None else None,
+        })
+    return out
+
+
+def grouped(rows):
+    """Per condition, every arm's steady reading, so a null is shown rather than averaged into one.
+
+    ⛔ No mean and no standard error. Three arms per condition is what this sweep has, and a spread
+    of three numbers is the honest presentation of three numbers.
+    """
+    order, by_label = [], {}
+    for row in rows:
+        label = row["arm"]["label"]
+        if label not in by_label:
+            order.append(label)
+            by_label[label] = []
+        by_label[label].append(row)
+    print()
+    print(f"{'condition':<18}{'n':>3}{'timeline':>10}{'landed':>8}   "
+          f"{'steady thread, each arm':<30}{'Mbps, each arm':<24}")
+    for label in order:
+        group = by_label[label]
+        steady = ", ".join(f"{r['thread']['last']:.3f}" for r in group if r["thread"])
+        rates = ", ".join(f"{r['mbps']:.2f}" for r in group if r["mbps"] is not None)
+        first = group[0]
+        print(f"{label:<18}{len(group):>3}"
+              f"{cell(first['sample'].get('seekableEnd'), '10.0f')}"
+              f"{cell(first['sample'].get('currentTime'), '8.0f')}   {steady:<30}{rates:<24}")
+
+
+def main(argv):
+    if len(argv) < 2:
+        print("usage: read-recording-timeline.py <artefact-dir> <sweep-dir>[@<start-iso>]...", file=sys.stderr)
+        return 2
+    artefact_dir = argv[0]
+    rows = []
+    for spec in argv[1:]:
+        sweep_dir, _, start_override = spec.partition("@")
+        rows.extend(rows_for(sweep_dir, artefact_dir, start_override or None))
+    print(f"{'arm':<18}{'asked':>7}{'landed':>8}{'timeline':>10}{'win':>5}{'thread':>8}"
+          f"{'first3':>8}{'last3':>8}{'Mbps':>7}{'realtime':>10}{'stalls':>7}{'offshell':>9}")
+    for row in rows:
+        arm, thread = row["arm"], row["thread"]
         print(
             f"{arm['label']:<18}{arm['start_s']:>7}"
-            f"{cell(first_sample.get('currentTime'), '8.0f')}"
-            f"{cell(first_sample.get('seekableEnd'), '10.0f')}"
+            f"{cell(row['sample'].get('currentTime'), '8.0f')}"
+            f"{cell(row['sample'].get('seekableEnd'), '10.0f')}"
             f"{cell(thread and thread['windows'], '5d')}"
             f"{cell(thread and thread['median'], '8.3f')}"
             f"{cell(thread and thread['first'], '8.3f')}"
             f"{cell(thread and thread['last'], '8.3f')}"
-            f"{cell(THROUGHPUT.steady_mbps(requests_sibling(run_path)) if run_path else None, '7.2f')}"
-            f"{cell(run.get('realtimeRatio'), '10.4f')}"
-            f"{cell(run.get('stalls'), '7d')}"
-            f"{cell(off_shell, '9d')}"
+            f"{cell(row['mbps'], '7.2f')}"
+            f"{cell(row['realtime'], '10.4f')}"
+            f"{cell(row['stalls'], '7d')}"
+            f"{cell(row['offShell'], '9d')}"
         )
+    grouped(rows)
     return 0
 
 

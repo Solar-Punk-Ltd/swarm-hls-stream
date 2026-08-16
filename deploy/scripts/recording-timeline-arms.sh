@@ -16,9 +16,14 @@
 #   - there is no publisher, no encoder and no upload, so **no postage at all**
 #   - weeb-3's own page asks a gateway for nothing, so no node spends anything either
 #
-# Three recordings share one profile, 0.5s GOP at 1280x720 and 2500 kbps, and run **76, 125 and 195
-# minutes**. That is a wider timeline range than the 88 minutes the postage left on the batch could
-# have bought, for no BZZ. See [[cheap-measurement-method]].
+# Three recordings share one profile, verified per arm from their own artefacts as 1280x720 with
+# 0.5s segments of 0.172 to 0.174 MB, and carry timelines of **62, 100 and 190 minutes**. That is a
+# wider range than the 88 minutes the postage left on the batch could have bought, for no BZZ.
+#
+# ⚠️ Read the timeline off `seekableEnd`, not off the sitting log that produced the recording. The
+# log names the broadcast the sitting PLANNED, which is longer than what the publisher actually left
+# behind: 125 planned against 100 recorded on one of these.
+# See [[cheap-measurement-method]].
 #
 # ## The two factors, and which one is the clean one
 #
