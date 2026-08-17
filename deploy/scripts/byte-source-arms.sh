@@ -114,6 +114,15 @@ STREAM_TIMEOUT_S="${STREAM_TIMEOUT_S:-180}"
 QUIET_TIMEOUT_S="${QUIET_TIMEOUT_S:-120}"
 STOP_POLL_S="${STOP_POLL_S:-5}"
 
+# The SRS stage this sitting publishes into, which `stage_matches_the_gop_we_asked_for` reads the raw
+# `#EXTINF` out of. Named off the profile the same way the compose stack names it.
+SRS_CONTAINER="${SRS_CONTAINER:-${PROFILE}-srs-1}"
+# How long the fingerprint may wait for the stage to publish enough segments to have a median. At a
+# 2.0s GOP the minimum below takes twelve seconds, and a stage that has not managed it in two minutes
+# is not one to spend a broadcast against.
+STAGE_FINGERPRINT_TIMEOUT_S="${STAGE_FINGERPRINT_TIMEOUT_S:-120}"
+STAGE_FINGERPRINT_MIN_SEGMENTS="${STAGE_FINGERPRINT_MIN_SEGMENTS:-6}"
+
 # ⛔⛔⛔ A SITTING WITH NO THREAD READING IS REFUSED, BECAUSE THE WARNING WAS NOT ENOUGH.
 #
 # `browser-cpu.sh` has always said "NO SATURATION READING for <arm>: VIEWER_CDP_PORT is unset" once
@@ -129,6 +138,11 @@ BROWSER_CONTAINER_NAME="${BROWSER_CONTAINER_NAME:-byte-source-browser}"
 RUN_SELFCHECK="${RUN_SELFCHECK:-1}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# A sibling of this file rather than a path under BENCH_REPO, which names the bench CHECKOUT and is
+# about where a driver runs from, not where its own gates live. Overridable the same way
+# `capacity-gate.sh` names `stamp-guard.sh`.
+STAGE_FINGERPRINT="${STAGE_FINGERPRINT:-${HERE}/stage-fingerprint.sh}"
 
 RATES="${HERE}/burn-rates.sh"
 # shellcheck source=deploy/scripts/burn-rates.sh
@@ -264,6 +278,36 @@ wait_for_active_stream() {
   done
   say "  no stream reached the uploader within ${STREAM_TIMEOUT_S}s of the publisher starting"
   return 1
+}
+
+# ⛔⛔ WHAT THE STAGE PUBLISHED, NOT WHAT THIS DRIVER ASKED FOR.
+#
+# `--gop` above is a request. Until 2026-08-17 nothing checked the answer, so a sitting could run for
+# hours against a stage configured differently and label every artefact with the GOP it wanted. A
+# co-tenant session on this host changed `hls_fragment` on its own SRS stack that day, which is one
+# wrong compose file away from being ours.
+#
+# ⭐ Placed after the stream is live and before the publisher lead, so a mismatch costs the seconds
+# already spent reaching ingest rather than the whole broadcast. It cannot move earlier: there is no
+# playlist to read until something is publishing.
+stage_matches_the_gop_we_asked_for() {
+  local deadline=$(($(date -u +%s) + STAGE_FINGERPRINT_TIMEOUT_S)) status
+  while :; do
+    # ⛔ Appended to the log AND read for its exit code. A gate whose reasoning is not in the sitting
+    # record is a gate nobody can audit afterwards.
+    MIN_SEGMENTS="${STAGE_FINGERPRINT_MIN_SEGMENTS}" \
+      "${STAGE_FINGERPRINT}" --container "${SRS_CONTAINER}" --gop "${GOP_SECONDS}" >> "${LOG}" 2>&1
+    status=$?
+    [ "${status}" -eq 0 ] && return 0
+    # 3 is "the broadcast has not published enough segments yet", which is ordinary at this point in a
+    # sitting. Anything else is a verdict and retrying it only wastes the deadline.
+    [ "${status}" -ne 3 ] && return 1
+    if [ "$(date -u +%s)" -ge "${deadline}" ]; then
+      say "  the stage never published ${STAGE_FINGERPRINT_MIN_SEGMENTS} segments within ${STAGE_FINGERPRINT_TIMEOUT_S}s"
+      return 1
+    fi
+    sleep 3
+  done
 }
 
 wait_for_quiet() {
@@ -724,6 +768,11 @@ start_publisher "${SITTING_SECONDS}"
 if ! wait_for_active_stream; then
   stop_publisher
   say "REFUSING TO CONTINUE: the broadcast never reached the uploader"
+  exit 1
+fi
+if ! stage_matches_the_gop_we_asked_for; then
+  stop_publisher
+  say "REFUSING TO CONTINUE: the stage is not publishing the ${GOP_SECONDS}s GOP this sitting asked for"
   exit 1
 fi
 # ⛔⛔ BEFORE THE LEAD, NOT AT THE FIRST NATIVE ARM. A native arm that cannot find the stream would
