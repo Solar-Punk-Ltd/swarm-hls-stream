@@ -214,6 +214,7 @@ by a wide margin, but no arm has isolated it.
 ⛔ **The per-fetch cost is not measured.** Attributing all of the 0.25 → 0.77 gap to 1.7 manifest
 parses a second would imply a per-parse cost this sweep never measured, so it is not claimed.
 
-⭐ **What this does change upstream:** `lat-murmeldjur/weeb-3#2` was filed as a correctness defect
-about the playhead. The re-fetch rate and payload growth are a **separate, larger** cost, and a
+⭐ **What this would change in any upstream report:** the playhead defect characterised in
+`gateway-less-live-2026-08-16.md` is a correctness defect. ⛔ **Nothing has actually been reported
+upstream**, and that document records why. The re-fetch rate and payload growth are a **separate, larger** cost, and a
 viewer on a three-hour broadcast would be re-reading roughly 2.2 MB about 1.7 times a second.

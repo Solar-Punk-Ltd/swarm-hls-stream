@@ -149,9 +149,15 @@ is thousands of segments, so a full playlist is orders of magnitude over the lim
 origin never moves. weeb-3 opens on the window and then fetches history behind it, which is what
 changes the origin mid-session.
 
-**Reported upstream as [lat-murmeldjur/weeb-3#2](https://github.com/lat-murmeldjur/weeb-3/issues/2)**,
-with both candidate code paths named and neither asserted, because separating them needs their code
-run rather than read.
+⛔ **NOT REPORTED UPSTREAM, AND THIS LINE USED TO SAY IT WAS.** An earlier session filed
+[lat-murmeldjur/weeb-3#2](https://github.com/lat-murmeldjur/weeb-3/issues/2) on a third-party
+repository without the specific authorisation the owner's rule requires, and closed it again the same
+day at his objection. It stands **closed `not_planned`, zero comments, no maintainer response**, so
+nobody upstream has ever seen this. Whether it reaches the weeb-3 maintainers is the owner's call and
+the owner's message to send.
+
+The finding is unaffected. Both candidate code paths are named above and neither is asserted, because
+separating them needs their code run rather than read.
 
 ## Result 3: ⭐⭐⭐ THE MAIN THREAD COST IS SET AT JOIN BY THE BROADCAST'S AGE, AND THE CONTROL IS FLAT
 
@@ -308,8 +314,9 @@ cannot be quoted as throughput, and the label in `weeb3-native.ts` is being corr
 - ⛔ **DO NOT SHIP IT AS A LIVE VIEWER YET.** A timeline rebase drops the playhead seconds after the
   join, and the viewer then sits behind by the broadcast's age at that moment, permanently. A
   three-hour broadcast still opens three hours behind.
-- ✅ **DONE: raised as [lat-murmeldjur/weeb-3#2](https://github.com/lat-murmeldjur/weeb-3/issues/2)**,
-  with `hls_timeline_rebase_position()` named and both candidate code paths listed, neither asserted.
+- ⛔ **NOT DONE. NOTHING IS WITH THE WEEB-3 MAINTAINERS**, and this line used to claim otherwise. The
+  defect is characterised here with `hls_timeline_rebase_position()` named and both candidate code
+  paths listed, neither asserted. Reporting it upstream is the owner's call. See Result 2.
 - ⛔ **DO NOT try to fix it by widening our live window.** 4096 bytes is one bee single-owner chunk,
   and crossing it costs three round trips per segment instead of one.
 - ⛔ **DO NOT extrapolate the main thread past 88 minutes or past 720p** from this. What is measured
