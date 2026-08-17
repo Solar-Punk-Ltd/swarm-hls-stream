@@ -69,6 +69,7 @@ enough to place a row.
 | 4 | 2026-08-14T03:56Z | **60.1h** | **8/8** | 478 | 8/8 | **A** | 1259 | 0/8 |
 | 5 | 2026-08-15T11:13Z | **91.4h** | **8/8** | 362 | 8/8 | **A** | 1101 | 0/8 |
 | 6 | 2026-08-16T08:38Z | **113.1h** | **8/8** | 470 | 8/8 | **A** | 1121 | 0/8 |
+| 7 | 2026-08-17T05:43Z | **133.9h** | **8/8** | 488 | 8/8 | **A** | 1287 | 0/8 |
 
 ⛔⛔ **THE CONTROL'S REFERENCE SET MOVES AND THE READ ARM'S DOES NOT.** The read arm is a fixed
 `refs` list, so all six reads fetch the same eight objects at 795 KB. The control is a **live feed**,
@@ -80,9 +81,14 @@ answers "is the node answering right now", which needs fresh content and does no
 cannot answer "is the node slower today than yesterday" unless two reads happen to share a set.
 ⚠️ **Only reads 1, 4, 5 and 6 are comparable to each other on the control's rate column.**
 
-**Nothing has decayed by 113.1 hours.** The read arm delivered 8/8 at a mean 795 KB and 470 KB/s, the
-control delivered 8/8 at 4,214 KB and 1,121 KB/s, and `ours-aug03` returned 503 on all eight, after
-11.6 to 15.8 seconds each.
+**Nothing has decayed by 133.9 hours.** At read 7 the read arm delivered 8/8 at a mean 795 KB and
+488 KB/s, the control delivered 8/8 at 4,214 KB and 1,287 KB/s, and `ours-aug03` returned 503 on all
+eight. Seven reads, no object lost by either arm.
+
+⭐ **Read 7 is the fastest set-A round on both arms**, read arm 488 against a previous set-A best of
+478, control 1,287 against 1,259. **They moved together and up**, which is a good hour for the node
+and not a statement about the corpus. Its control set was verified reference by reference against
+read 6, all eight identical, rather than inferred from the 4,214 KB mean.
 
 ⚠️ **Both arms slowed on read 5 and neither lost an object.** The read arm went 478 to 362 KB/s and
 the control went 1,259 to 1,101 KB/s, so the read arm fell further in proportion, 24% against 13%.
