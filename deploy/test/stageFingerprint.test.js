@@ -65,7 +65,14 @@ async function gate({ fragment = 0.25, aofRatio = 10, segment = 0.501, segments 
   }
 
   try {
-    const { stdout } = await run(GATE, ['--gop', String(gop), '--conf-file', confPath, '--playlist-file', playlistPath]);
+    const { stdout } = await run(GATE, [
+      '--gop',
+      String(gop),
+      '--conf-file',
+      confPath,
+      '--playlist-file',
+      playlistPath,
+    ]);
     return { code: 0, output: stdout };
   } catch (error) {
     return { code: error.code, output: `${error.stdout ?? ''}${error.stderr ?? ''}` };
