@@ -104,6 +104,26 @@ if (argv[0] === 'rm') {
   process.exit(0);
 }
 
+// The SRS stage, as \`stage-fingerprint.sh\` reads it: the config for hls_fragment and hls_aof_ratio,
+// then the newest playlist for its raw #EXTINF. Driven by env so a case can hand the sitting a stage
+// that disagrees with the GOP it asked for, which is the whole point of the gate.
+if (argv[0] === 'exec') {
+  const asked = argv[argv.length - 1] || '';
+  const fragment = process.env.STUB_HLS_FRAGMENT || '0.25';
+  const aof = process.env.STUB_HLS_AOF || '10';
+  const segment = process.env.STUB_SEGMENT_SECONDS || '0.501';
+  const segments = Number(process.env.STUB_SEGMENT_COUNT || '12');
+  if (asked.includes('srs.conf')) {
+    process.stdout.write('vhost __defaultVhost__ {\\n  hls {\\n    hls_fragment    ' + fragment +
+      ';\\n    hls_aof_ratio   ' + aof + ';\\n    hls_window      30;\\n  }\\n}\\n');
+  } else if (asked.includes('m3u8')) {
+    let out = '#EXTM3U\\n#EXT-X-TARGETDURATION:1\\n';
+    for (let i = 0; i < segments; i += 1) out += '#EXTINF:' + segment + ',\\nseg' + i + '.ts\\n';
+    process.stdout.write(out);
+  }
+  process.exit(0);
+}
+
 if (argv[0] === 'run') {
   // By presence, not by position: the order command carries a rounds argument after it.
   const ran = (script) => argv.includes(script);
@@ -703,6 +723,76 @@ describe('a sitting that would measure no thread at all', () => {
 
   it('lets a sitting that genuinely does not need the column say so', async () => {
     const result = await runSitting(setup(), { ALLOW_NO_THREAD_READING: '1', VIEWER_CDP_PORT: '' });
+
+    assert.equal(result.code, 0, result.log);
+    assert.ok(watches(result).length > 0, 'no arm ran');
+  });
+});
+
+/**
+ * The stage fingerprint, in its real position inside the driver.
+ *
+ * ⛔⛔ `--gop` is a request. Until 2026-08-17 nothing checked the answer, so a sitting could run for
+ * hours against a stage configured differently and label every artefact with the GOP it wanted. A
+ * co-tenant session changed `hls_fragment` on a neighbouring SRS stack on this host that day, which is
+ * one wrong compose file away from being ours.
+ *
+ * ⭐ These assert on `publishes` and `watches` rather than on the log, because the thing that matters
+ * is that no arm and no broadcast is paid for once the stage disagrees.
+ */
+describe('the stage has to be publishing the GOP the sitting asked for', () => {
+  it('runs when the stage matches, so the refusals below are the gate and not the harness', async () => {
+    const result = await runSitting(setup());
+
+    assert.equal(result.code, 0, result.log);
+    assert.ok(watches(result).length > 0, 'no arm ran');
+    assert.match(result.log, /matches what the driver asked for/);
+  });
+
+  /**
+   * ⛔⛔⛔ THE CASE THE GATE EXISTS FOR. `hls_fragment 2.0` makes SRS publish 2.0s segments whatever
+   * GOP is asked for, so a sitting believing it ran at 0.5s would write that into every artefact.
+   */
+  it('refuses when hls_fragment forces a segment longer than the GOP, before any arm runs', async () => {
+    const result = await runSitting(setup(), {
+      STUB_HLS_FRAGMENT: '2.0',
+      STUB_HLS_AOF: '2.1',
+      STUB_SEGMENT_SECONDS: '2.002',
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.equal(watches(result).length, 0, 'an arm ran against a stage that was not what it asked for');
+    assert.match(result.log, /the stage is not publishing the 0\.5s GOP this sitting asked for/);
+  });
+
+  it('refuses when the stage publishes something other than its own config predicts', async () => {
+    const result = await runSitting(setup(), { STUB_SEGMENT_SECONDS: '1.001' });
+
+    assert.notEqual(result.code, 0);
+    assert.equal(watches(result).length, 0);
+    assert.match(result.log, /not delivering the keyframe cadence/);
+  });
+
+  /**
+   * ⛔ A stage that never publishes enough to have a median is not a stage to spend a broadcast
+   * against. The driver retries this case and refuses at its deadline, rather than treating an empty
+   * reading as agreement.
+   */
+  it('refuses rather than passing when the stage publishes nothing to measure', async () => {
+    const result = await runSitting(setup(), {
+      STUB_SEGMENT_COUNT: '0',
+      STAGE_FINGERPRINT_TIMEOUT_S: '0',
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.equal(watches(result).length, 0);
+  });
+
+  it('accepts a deliberate 2.0s sitting on a stage that can serve it', async () => {
+    const result = await runSitting(setup(), {
+      GOP_SECONDS: '2.0',
+      STUB_SEGMENT_SECONDS: '2.002',
+    });
 
     assert.equal(result.code, 0, result.log);
     assert.ok(watches(result).length > 0, 'no arm ran');
