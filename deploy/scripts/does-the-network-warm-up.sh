@@ -29,7 +29,7 @@ STACK_DIR="${STACK_DIR:-/home/solarpunk/swarm-hls-stream-latbench}"
 ENV_FILE="${STACK_DIR}/.env"
 PROBE="${PROBE:-/home/solarpunk/phase06/retrieval-debt-probe.sh}"
 PHASE06="${PHASE06:-/home/solarpunk/phase06}"
-RUN_DIR="${RUN_DIR:-/home/solarpunk/retrieval-probe/warmup-$(date +%Y%m%d-%H%M%S)}"
+RUN_DIR="${RUN_DIR:-/home/solarpunk/retrieval-probe/warmup-$(date -u +%Y%m%d-%H%M%S)}"
 LOG="${RUN_DIR}/warmup.log"
 CONTAINER="${CONTAINER:-latbench-bee-gateway-1}"
 GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT:-10077}"
@@ -51,7 +51,7 @@ WAIT_FOR_MARKER="${WAIT_FOR_MARKER:-=== done,}"
 WAIT_TIMEOUT_S="${WAIT_TIMEOUT_S:-21600}"
 
 mkdir -p "${RUN_DIR}"
-say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
+say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 
 if [ -n "${WAIT_FOR_FILE}" ]; then
   say "waiting for ${WAIT_FOR_FILE} to report '${WAIT_FOR_MARKER}'"

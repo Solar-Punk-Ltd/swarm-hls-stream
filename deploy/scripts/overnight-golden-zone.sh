@@ -32,7 +32,7 @@ set -u
 STACK_DIR="${STACK_DIR:-/home/solarpunk/swarm-hls-stream-latbench}"
 ENV_FILE="${STACK_DIR}/.env"
 PROBE="${PROBE:-/home/solarpunk/phase06/retrieval-debt-probe.sh}"
-RUN_DIR="${RUN_DIR:-/home/solarpunk/retrieval-probe/goldenzone2-$(date +%Y%m%d-%H%M%S)}"
+RUN_DIR="${RUN_DIR:-/home/solarpunk/retrieval-probe/goldenzone2-$(date -u +%Y%m%d-%H%M%S)}"
 LOG="${RUN_DIR}/overnight.log"
 CONTAINER="${CONTAINER:-latbench-bee-gateway-1}"
 GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT:-10077}"
@@ -45,7 +45,7 @@ SOAK_ROUNDS="${SOAK_ROUNDS:-20}"
 CANARY_MIN_RATIO_PCT="${CANARY_MIN_RATIO_PCT:-60}"
 
 mkdir -p "${RUN_DIR}"
-say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
+say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 
 if grep -q "^${RETRIEVAL_KEY}=" "${ENV_FILE}"; then
   WAS_PRESENT=1
