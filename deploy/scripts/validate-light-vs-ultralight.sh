@@ -37,7 +37,7 @@ STACK_DIR="${STACK_DIR:-/home/solarpunk/swarm-hls-stream-latbench}"
 ENV_FILE="${STACK_DIR}/.env"
 PROBE="${PROBE:-/home/solarpunk/phase06/retrieval-debt-probe.sh}"
 BASE="${BASE:-/home/solarpunk/retrieval-probe}"
-RUN_ID="${RUN_ID:-validate-$(date +%Y%m%d-%H%M%S)}"
+RUN_ID="${RUN_ID:-validate-$(date -u +%Y%m%d-%H%M%S)}"
 RUN_DIR="${BASE}/${RUN_ID}"
 LOG="${RUN_DIR}/driver.log"
 CONTAINER="${CONTAINER:-latbench-bee-gateway-1}"
@@ -59,7 +59,7 @@ CACHE_ON_MAX_RATIO_PCT="${CACHE_ON_MAX_RATIO_PCT:-25}"
 
 mkdir -p "${RUN_DIR}"
 
-say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
+say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${LOG}"; }
 
 # Whether the key was in the file at all, because putting it back at bee's default is still a change to
 # a file this script does not own.
