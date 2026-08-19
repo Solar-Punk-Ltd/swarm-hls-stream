@@ -70,6 +70,7 @@ enough to place a row.
 | 5 | 2026-08-15T11:13Z | **91.4h** | **8/8** | 362 | 8/8 | **A** | 1101 | 0/8 |
 | 6 | 2026-08-16T08:38Z | **113.1h** | **8/8** | 470 | 8/8 | **A** | 1121 | 0/8 |
 | 7 | 2026-08-17T05:43Z | **133.9h** | **8/8** | 488 | 8/8 | **A** | 1287 | 0/8 |
+| 8 | 2026-08-19T10:56Z | **187.1h** | **8/8** | 398 | 8/8 | **A** | 1070 | 0/8 | ⚠️ 53.2h after read 7 |
 
 ⛔⛔ **THE CONTROL'S REFERENCE SET MOVES AND THE READ ARM'S DOES NOT.** The read arm is a fixed
 `refs` list, so all six reads fetch the same eight objects at 795 KB. The control is a **live feed**,
@@ -84,6 +85,17 @@ cannot answer "is the node slower today than yesterday" unless two reads happen 
 **Nothing has decayed by 133.9 hours.** At read 7 the read arm delivered 8/8 at a mean 795 KB and
 488 KB/s, the control delivered 8/8 at 4,214 KB and 1,287 KB/s, and `ours-aug03` returned 503 on all
 eight. Seven reads, no object lost by either arm.
+
+⛔⛔ **READ 8 CAME 53.2 HOURS AFTER READ 7, AND THE PROTOCOL IS DAILY.** Two days were missed. The
+daily fetch is not bookkeeping here, it **is** the treatment being applied to the read arm, so a gap
+weakens the very contrast the cohort exists to draw. Recorded rather than absorbed, because a reader
+comparing the arms later cannot see a missing read in a table of readings that happened.
+
+⚠️ **Read 8 is the slowest set-A round on both arms**, read arm 398 against a 362-488 range and the
+control 1,070 against a previous set-A low of 1,101. **They moved down together**, which is the same
+shape as read 5 and resolved there as a slow hour for the node rather than anything about the corpus.
+Its control set was verified reference by reference against read 7, all eight identical. **Neither arm
+lost an object at 187.1 hours.**
 
 ⭐ **Read 7 is the fastest set-A round on both arms**, read arm 488 against a previous set-A best of
 478, control 1,287 against 1,259. **They moved together and up**, which is a good hour for the node
