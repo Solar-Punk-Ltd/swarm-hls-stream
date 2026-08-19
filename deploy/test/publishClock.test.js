@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { chmodSync } from 'node:fs';
+import { chmodSync,readFileSync, writeFileSync  } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 

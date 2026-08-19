@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -21,7 +21,9 @@ function fixture(files, baselineCount) {
   const dir = mkdtempSync(join(tmpdir(), 'unused-exports-'));
   const src = join(dir, 'src');
   mkdirSync(src, { recursive: true });
-  for (const [name, body] of Object.entries(files)) writeFileSync(join(src, name), body);
+  for (const [name, body] of Object.entries(files)) {
+    writeFileSync(join(src, name), body);
+  }
   const baselinePath = join(dir, 'baseline.json');
   writeFileSync(baselinePath, JSON.stringify({ count: baselineCount }));
   return {
