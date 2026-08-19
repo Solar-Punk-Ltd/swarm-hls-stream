@@ -85,6 +85,14 @@ BROWSER_CONTAINER_NAME="${BROWSER_CONTAINER_NAME:-gateway-arms-browser}"
 RUN_SELFCHECK="${RUN_SELFCHECK:-1}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+ARM_RUNTIME="${HERE}/arm-runtime.sh"
+# shellcheck source=deploy/scripts/arm-runtime.sh
+. "${ARM_RUNTIME}" || {
+  echo "cannot read ${ARM_RUNTIME}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 UNFUNDED_GATEWAY="${UNFUNDED_GATEWAY:-${HERE}/unfunded-gateway.sh}"
 
 RATES="${HERE}/burn-rates.sh"
@@ -242,11 +250,6 @@ start_publisher() {
   ) >> "${LOG}" 2>&1 &
 }
 
-active_streams() {
-  curl -s --max-time 5 "http://127.0.0.1:${UPLOADER_API_PORT}/health" 2>/dev/null |
-    python3 -c 'import sys,json;print(json.load(sys.stdin)["activeStreams"])' 2>/dev/null
-}
-
 wait_for_active_stream() {
   local deadline=$(($(date -u +%s) + STREAM_TIMEOUT_S)) active
   while [ "$(date -u +%s)" -lt "${deadline}" ]; do
@@ -280,27 +283,6 @@ reclaim_browser_containers() {
       docker rm -f "${name}" > /dev/null 2>&1 || true
     fi
   done
-}
-
-# ⛔ The host has no Chrome. `e2e/Dockerfile.browser` is where it lives, together with the Xvfb display
-# that makes the page genuinely foregrounded, and this script runs ON the host. `E2E_SSH_TARGET=local`
-# because the harness default transport is ssh and neither the container nor the host has a key with
-# which to reach the host.
-run_in_browser_image() {
-  local name="$1"
-  shift
-  docker run --rm --network host \
-    --name "${name}" \
-    -u "$(id -u):$(id -g)" \
-    -v "${BENCH_REPO}:/repo" \
-    -e HOME=/tmp \
-    -w /repo \
-    -e E2E_SSH_TARGET=local \
-    -e E2E_PUBLIC_HOST=127.0.0.1 \
-    -e "E2E_PROFILE=${PROFILE}" \
-    -e "E2E_PORT_SLOT=${PORT_SLOT}" \
-    -e "BROWSER_CLIENT_URL=http://127.0.0.1:${CLIENT_PORT}" \
-    "$@"
 }
 
 run_browser_arm() {
@@ -354,10 +336,6 @@ diff_both_gateways() {
     diff_metrics "${METRICS_DIR}/${slug}-on-${which}-before.json" "${METRICS_DIR}/${slug}-on-${which}-after.json" \
       "${METRICS_DIR}/${slug}-on-${which}-diff.txt" "${headline} (read off the ${which} gateway)"
   done
-}
-
-record() {
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" "$4" "$5" >> "${STATE}"
 }
 
 run_arm() {

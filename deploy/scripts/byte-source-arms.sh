@@ -139,6 +139,13 @@ RUN_SELFCHECK="${RUN_SELFCHECK:-1}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+ARM_RUNTIME="${HERE}/arm-runtime.sh"
+# shellcheck source=deploy/scripts/arm-runtime.sh
+. "${ARM_RUNTIME}" || {
+  echo "cannot read ${ARM_RUNTIME}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 # A sibling of this file rather than a path under BENCH_REPO, which names the bench CHECKOUT and is
 # about where a driver runs from, not where its own gates live. Overridable the same way
 # `capacity-gate.sh` names `stamp-guard.sh`.
@@ -262,11 +269,6 @@ start_publisher() {
       "--seconds=${seconds}" "--size=${SIZE}" "--bitrate=${BITRATE_KBPS}" "--gop=${GOP_SECONDS}" \
       "--stop-file=${PUBLISHER_STOP_FILE}"
   ) >> "${LOG}" 2>&1 &
-}
-
-active_streams() {
-  curl -s --max-time 5 "http://127.0.0.1:${UPLOADER_API_PORT}/health" 2>/dev/null |
-    python3 -c 'import sys,json;print(json.load(sys.stdin)["activeStreams"])' 2>/dev/null
 }
 
 wait_for_active_stream() {
@@ -406,25 +408,6 @@ reclaim_browser_containers() {
   done
 }
 
-# ⛔ The host has no Chrome. `e2e/Dockerfile.browser` is where it lives, together with the Xvfb display
-# that makes the page genuinely foregrounded, and this script runs ON the host.
-run_in_browser_image() {
-  local name="$1"
-  shift
-  docker run --rm --network host \
-    --name "${name}" \
-    -u "$(id -u):$(id -g)" \
-    -v "${BENCH_REPO}:/repo" \
-    -e HOME=/tmp \
-    -w /repo \
-    -e E2E_SSH_TARGET=local \
-    -e E2E_PUBLIC_HOST=127.0.0.1 \
-    -e "E2E_PROFILE=${PROFILE}" \
-    -e "E2E_PORT_SLOT=${PORT_SLOT}" \
-    -e "BROWSER_CLIENT_URL=http://127.0.0.1:${CLIENT_PORT}" \
-    "$@"
-}
-
 # ⭐ `BROWSER_GATEWAY_URL` is passed for BOTH arms and is the same node in both. It is not the
 # treatment here, it is held fixed: seeding it makes the sitting state its gateway rather than inherit
 # whatever the build defaults to, and it turns on the second request-log gate, which refuses an arm
@@ -495,10 +478,6 @@ bracket_gateway() {
   local slug="$1" phase="$2"
   snapshot_metrics "${METRICS_DIR}/${slug}-on-gateway-${phase}.json" "${slug}-on-gateway-${phase}" \
     "${GATEWAY_BEE_PORT}"
-}
-
-record() {
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" "$4" "$5" >> "${STATE}"
 }
 
 run_arm() {
