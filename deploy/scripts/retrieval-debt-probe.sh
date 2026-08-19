@@ -19,6 +19,20 @@
 # The gateway is restored to the arm it was found in by an EXIT trap on every path.
 set -u
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GATEWAY_PROBE="${HERE}/gateway-probe.sh"
+# shellcheck source=deploy/scripts/gateway-probe.sh
+. "${GATEWAY_PROBE}" || {
+  echo "cannot read ${GATEWAY_PROBE}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+HOST_LOAD="${HERE}/host-load.sh"
+# shellcheck source=deploy/scripts/host-load.sh
+. "${HOST_LOAD}" || {
+  echo "cannot read ${HOST_LOAD}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 OUT_DIR="${OUT_DIR:-/home/solarpunk/retrieval-probe}"
 STACK_DIR="${STACK_DIR:-/home/solarpunk/swarm-hls-stream-latbench}"
 COMPOSE_DIR="${STACK_DIR}/deploy"
@@ -232,34 +246,7 @@ else
 fi
 CURRENT_ARM_CACHE="${BASELINE_CACHE}"
 
-set_env_value() {
-  local key="$1" value="$2"
-  if grep -q "^${key}=" "${ENV_FILE}"; then
-    sed -i "s/^${key}=.*/${key}=${value}/" "${ENV_FILE}"
-  else
-    printf '%s=%s\n' "${key}" "${value}" >>"${ENV_FILE}"
-  fi
-}
-
 CONTAINER="${COMPOSE_PROJECT}-bee-gateway-1"
-
-# CPU seconds the gateway process has burned since it started, read from /proc rather than sampled, so
-# it is an exact total and not a guess between two snapshots.
-#
-# ⭐ This is the number that sizes a fleet. An unfunded node spends ~37 extra peer-selection iterations
-# per chunk and every one of them is local, so what limits running many of these is host CPU and node
-# density rather than network capacity. Nothing had measured it.
-gateway_cpu_seconds() {
-  local pid ticks
-  pid="$(docker inspect --format '{{.State.Pid}}' "${CONTAINER}" 2>/dev/null)"
-  if [ -z "${pid}" ] || [ ! -r "/proc/${pid}/stat" ]; then
-    printf '0'
-    return
-  fi
-  # The comm field is parenthesised and may contain spaces, so count fields after the last ')'.
-  ticks="$(sed 's/.*) //' "/proc/${pid}/stat" | awk '{print $12+$13}')"
-  awk -v t="${ticks:-0}" -v h="$(getconf CLK_TCK)" 'BEGIN{printf "%.2f", (h>0)?t/h:0}'
-}
 
 # The host's own run queue, which the gateway's CPU counter cannot see. Two different things need it.
 #
@@ -271,14 +258,6 @@ gateway_cpu_seconds() {
 # ⛔ It is also the only thing keeping a high-concurrency sweep off the machine's other tenants. This
 # host carries forty other bee nodes and eight unrelated stacks, and they are not ours to slow down.
 host_load() { awk '{print $1}' /proc/loadavg; }
-
-# The instantaneous runnable count, which is the fourth field's numerator. The one-minute average above
-# is smooth and lags by about a minute, which a sitting of 45-second arms cannot afford.
-#
-# ⛔ Measured: four identical 128-viewer arms back to back reported peaks of 19.56, 25.12, 28.79 and
-# 44.50. The load was not climbing, the average was still converging toward it, so the early arms
-# under-read by more than 2x and the ceiling tripped two arms after the box was already full.
-host_runnable() { awk '{split($4, r, "/"); print r[1]}' /proc/loadavg; }
 
 # Above this many runnable tasks the run stops rather than starting a hotter arm. Ordering an arm plan
 # by ascending viewer count is what makes that a real guard: the first arm to push the box too far is
@@ -315,18 +294,6 @@ mean_of() {
 # would never be reached and every arm would pay the full timeout for nothing.
 LOAD_SETTLE_MAX_S="${LOAD_SETTLE_MAX_S:-120}"
 
-# Median of three rather than one sample, because the instantaneous count is noisy: two reads seconds
-# apart on an idle box gave 47 and 30.
-baseline_runnable() {
-  local a b c
-  a="$(host_runnable)"
-  sleep 2
-  b="$(host_runnable)"
-  sleep 2
-  c="$(host_runnable)"
-  printf '%s\n%s\n%s\n' "${a}" "${b}" "${c}" | sort -n | sed -n 2p
-}
-
 # Waits for the box to quieten back to what the neighbours alone were doing, and says so rather than
 # silently giving up when it does not.
 settle_host() {
@@ -342,20 +309,6 @@ settle_host() {
   done
   say "  ⚠️ box did not settle to ${target} runnable within ${LOAD_SETTLE_MAX_S}s, now $(host_runnable)"
   return 0
-}
-
-# Samples until the flag file goes away. The flag rather than a kill, so the sampler can never outlive
-# the arm and leak into the next one's reading.
-#
-# The parent check is the backstop for the path the flag cannot cover: a run killed mid-arm never gets
-# to remove it, and a sampler looping on a flag nobody will ever clear is a process left on a shared
-# host. It notices within one sample interval.
-sample_host_load() {
-  local out="$1" flag="$2" parent="$$"
-  while [ -e "${flag}" ] && kill -0 "${parent}" 2>/dev/null; do
-    printf '%s %s\n' "$(host_load)" "$(host_runnable)" >>"${out}"
-    sleep "${LOAD_SAMPLE_S}"
-  done
 }
 
 recreate_gateway() {
@@ -477,8 +430,6 @@ spendable() {
 }
 
 acct() { bash "${ACCT}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
-metrics() { bash "${METRICS}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
-
 # One retrieval whose timing is thrown away, so the arm is measured against a node that has its peers
 # rather than one that is still finding them.
 warmup_fetch() {

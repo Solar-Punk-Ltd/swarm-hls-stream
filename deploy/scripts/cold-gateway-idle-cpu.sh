@@ -29,6 +29,20 @@
 # The gateway is restored to the arm it was found in by an EXIT trap on every path.
 set -u
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GATEWAY_PROBE="${HERE}/gateway-probe.sh"
+# shellcheck source=deploy/scripts/gateway-probe.sh
+. "${GATEWAY_PROBE}" || {
+  echo "cannot read ${GATEWAY_PROBE}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+HOST_LOAD="${HERE}/host-load.sh"
+# shellcheck source=deploy/scripts/host-load.sh
+. "${HOST_LOAD}" || {
+  echo "cannot read ${HOST_LOAD}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 OUT_DIR="${OUT_DIR:-/home/solarpunk/retrieval-probe}"
 STACK_DIR="${STACK_DIR:-/home/solarpunk/swarm-hls-stream-latbench}"
 COMPOSE_DIR="${STACK_DIR}/deploy"
@@ -72,15 +86,6 @@ else
   BASELINE_CACHE=0 # the compose default
 fi
 ARM_CHANGED=0
-
-set_env_value() {
-  local key="$1" value="$2"
-  if grep -q "^${key}=" "${ENV_FILE}"; then
-    sed -i "s/^${key}=.*/${key}=${value}/" "${ENV_FILE}"
-  else
-    printf '%s=%s\n' "${key}" "${value}" >>"${ENV_FILE}"
-  fi
-}
 
 recreate_gateway() {
   (
@@ -135,24 +140,6 @@ restore_gateway() {
 }
 trap restore_gateway EXIT
 
-# CPU seconds the gateway process has burned since it started, read from /proc rather than sampled
-# between two snapshots, so it is an exact running total.
-gateway_cpu_seconds() {
-  local pid ticks
-  pid="$(docker inspect --format '{{.State.Pid}}' "${CONTAINER}" 2>/dev/null)"
-  if [ -z "${pid}" ] || [ ! -r "/proc/${pid}/stat" ]; then
-    printf '0'
-    return
-  fi
-  # The comm field is parenthesised and may contain spaces, so count fields after the last ')'.
-  ticks="$(sed 's/.*) //' "/proc/${pid}/stat" | awk '{print $12+$13}')"
-  awk -v t="${ticks:-0}" -v h="$(getconf CLK_TCK)" 'BEGIN{printf "%.2f", (h>0)?t/h:0}'
-}
-
-# The instantaneous runnable count, so an idle reading taken while a neighbour was busy is visible
-# afterwards rather than being quietly attributed to the node.
-host_runnable() { awk '{split($4, r, "/"); print r[1]}' /proc/loadavg; }
-
 # A node whose API is up but which has not found a peer yet prints nothing at all, and that is a
 # reading rather than a failure, so it becomes 0 instead of an empty column.
 peer_count() {
@@ -160,8 +147,6 @@ peer_count() {
   out="$(bash "${ACCT}" "${GATEWAY_BEE_PORT}" 2>/dev/null | awk '{print $1}')"
   printf '%s' "${out:-0}"
 }
-metrics() { bash "${METRICS}" "${GATEWAY_BEE_PORT}" 2>/dev/null; }
-
 # One window of samples. The rate is a difference between consecutive totals rather than an average
 # since process start, which is the only form that can show a decay.
 sample_window() {

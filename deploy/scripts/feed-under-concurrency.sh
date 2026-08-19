@@ -48,6 +48,14 @@
 # ladder cannot resolve anything under ~2x on this host.
 set -u
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST_LOAD="${HERE}/host-load.sh"
+# shellcheck source=deploy/scripts/host-load.sh
+. "${HOST_LOAD}" || {
+  echo "cannot read ${HOST_LOAD}: sync deploy/scripts as a directory, not one script" >&2
+  exit 1
+}
+
 GATEWAY_BEE_PORT="${GATEWAY_BEE_PORT:-10077}"
 OUT_DIR="${OUT_DIR:-/home/solarpunk/feed-concurrency}"
 HITS_FILE="${HITS_FILE:-/home/solarpunk/soc-miss/hits.txt}"
@@ -79,23 +87,11 @@ OWNER="$(head -1 "${HITS_FILE}" | cut -d/ -f1)"
 HIT_COUNT="$(wc -l <"${HITS_FILE}")"
 
 host_load() { awk '{print $1}' /proc/loadavg; }
-host_runnable() { awk '{split($4, r, "/"); print r[1]}' /proc/loadavg; }
-
 # One runnable task per core, which is where the box stops having spare capacity and starts making
 # everything queue. ⛔ This host carries forty other bee nodes and eight unrelated stacks and they are
 # not ours to slow down, so the plan is ordered by ascending viewers and the first arm to push the box
 # too far is the last one that runs.
 LOAD_CEILING="${LOAD_CEILING:-$(nproc)}"
-
-baseline_runnable() {
-  local a b c
-  a="$(host_runnable)"
-  sleep 2
-  b="$(host_runnable)"
-  sleep 2
-  c="$(host_runnable)"
-  printf '%s\n%s\n%s\n' "${a}" "${b}" "${c}" | sort -n | sed -n 2p
-}
 
 BASELINE_RUNNABLE="$(baseline_runnable)"
 
@@ -118,14 +114,6 @@ settle_host() {
 # the box. Field 2 is the runnable count; field 1 is the one-minute average, which lags by about a
 # minute and cannot follow arms this short.
 mean_runnable() { awk '{n++; s += $2} END {if (n == 0) print 0; else printf "%d", s / n}' "$1"; }
-
-sample_host_load() {
-  local out="$1" flag="$2" parent="$$"
-  while [ -e "${flag}" ] && kill -0 "${parent}" 2>/dev/null; do
-    printf '%s %s\n' "$(host_load)" "$(host_runnable)" >>"${out}"
-    sleep "${LOAD_SAMPLE_S}"
-  done
-}
 
 spendable() {
   curl -s -m 5 "http://127.0.0.1:${GATEWAY_BEE_PORT}/chequebook/balance" 2>/dev/null |
