@@ -48,10 +48,7 @@ describe('unknown --profile (OPS-4)', () => {
   // health-checking are not: those containers are identified by the compose project name, and an
   // earlier version of this fix refused there too, which stranded a running stack whose env file had
   // been deleted with no way to tear it down.
-  for (const { script, args } of ['stop.sh', 'clean.sh', 'health.sh'].map((script) => ({
-    script,
-    args: script === 'clean.sh' ? ['--yes'] : [],
-  }))) {
+  for (const { script, args } of PROFILE_SCRIPTS.filter(({ script }) => script !== 'deploy.sh')) {
     it(`${script} warns about a profile with no env file and still runs`, async () => {
       const sandbox = makeSandbox({ envFiles: WITH_PROFILE, project: 'streamr1' });
 
