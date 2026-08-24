@@ -71,6 +71,7 @@ enough to place a row.
 | 6 | 2026-08-16T08:38Z | **113.1h** | **8/8** | 470 | 8/8 | **A** | 1121 | 0/8 |
 | 7 | 2026-08-17T05:43Z | **133.9h** | **8/8** | 488 | 8/8 | **A** | 1287 | 0/8 |
 | 8 | 2026-08-19T10:56Z | **187.1h** | **8/8** | 398 | 8/8 | **A** | 1070 | 0/8 | ⚠️ 53.2h after read 7 |
+| 9 | 2026-08-24T09:05Z | **305.3h** | **8/8** | 205 | ⛔ 5/8 | ⚠️ D | 876 | 0/8 | ⛔ control failed, 118.2h after read 8 |
 
 ⛔⛔ **THE CONTROL'S REFERENCE SET MOVES AND THE READ ARM'S DOES NOT.** The read arm is a fixed
 `refs` list, so all six reads fetch the same eight objects at 795 KB. The control is a **live feed**,
@@ -96,6 +97,40 @@ control 1,070 against a previous set-A low of 1,101. **They moved down together*
 shape as read 5 and resolved there as a slow hour for the node rather than anything about the corpus.
 Its control set was verified reference by reference against read 7, all eight identical. **Neither arm
 lost an object at 187.1 hours.**
+
+⛔⛔⛔ **READ 9 IS THE FIRST ROUND WHERE THE CONTROL FAILED, SO IT IS NOT A CLEAN ROW.** `his`
+delivered **5 of 8** where all eight earlier reads delivered 8/8. The rule this table rests on is that
+a round where the control fails means the node and not the corpus, so the read arm's 8/8 at 305.3
+hours has to be read against a node that was visibly unwell through the second half of the round.
+Both arms were slow with it. The read arm averaged **205 KB/s against a 362 to 490 band** and its last
+fetch fell to 58.9, and one control fetch took 66 seconds before failing.
+
+⭐ **The read arm still lost nothing, and how it did that is worth more than the row.** It returned
+all eight of its 795 KB objects in the same minutes the node was failing 4,356 KB fetches of the
+control. That is a size effect on a struggling node rather than decay, and it means this 8/8 held
+under conditions no earlier clean row faced.
+
+⛔⛔ **THE HARNESS CALLED THIS "the node was answering".** `corpus-delivery.mjs` gates the control on
+`control * 2 >= tried`, so anything from half upwards prints the reassuring line and 5/8 clears it.
+Every read before this one put 8/8 in that column, so the threshold had never been exercised, and it
+passed the first round that needed it to speak. **A threshold that prints prose is not a gate.** What
+says 5/8 is anomalous here is the control's own history, not the fraction written into the script.
+
+⚠️ **`ours-aug03` changed how it fails.** Reads 7 and 8 returned a clean **HTTP 503 carrying 32 bytes**
+on all eight. This read returned `status 0` with a `TypeError` at 13 to 18 seconds against a 120
+second budget, so the fetch did not complete rather than the node answering "not found". The second
+control still separates a dead object from a live one, because the read arm delivered through the same
+route in the same session, but it now does so on a different signal from the one recorded above.
+
+⚠️ **The control set is new, set D.** Verified reference by reference and not inferred from the mean:
+none of its eight match set A. Read 9 is therefore comparable to no earlier row on the control's rate
+column.
+
+⛔⛔ **READ 9 CAME 118.2 HOURS AFTER READ 8.** Five days were missed against a daily protocol, and the
+**~216h window this cohort was waiting for passed with nothing recorded**. At **305.3 hours** the read
+arm is **41% past the age at which the aug03 corpus was already dead**, and it has lost nothing. That
+is the strongest statement this cohort has been able to make, and the missed reads are the reason it
+is not stronger.
 
 ⭐ **Read 7 is the fastest set-A round on both arms**, read arm 488 against a previous set-A best of
 478, control 1,287 against 1,259. **They moved together and up**, which is a good hour for the node
@@ -130,7 +165,9 @@ is the treatment being applied to the control. It gets read once, after the read
 
 ⭐ `ours-aug03` returning 503 on all eight every day is doing useful work as a second control: it
 shows the harness can still tell a dead object from a live one, so an 8/8 on the read arm is a
-positive reading rather than a check that passes for everything.
+positive reading rather than a check that passes for everything. ⚠️ **True through read 8 only.** From
+read 9 the same arm fails with a `TypeError` and no status at all, so the second control still works
+and no longer works the way this paragraph describes.
 
 ⛔⛔ **READ 6 IS AT 113.1h AND IS NOT THE 120h READ, THOUGH IT WAS RUN EXPECTING TO BE.** The window
 opens at **2026-08-16T15:48Z** and this read was taken at 08:38Z, seven hours short of it. Nothing

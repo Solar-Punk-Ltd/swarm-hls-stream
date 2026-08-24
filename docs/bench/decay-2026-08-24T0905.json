@@ -1,0 +1,205 @@
+[
+ {
+  "arm": "his",
+  "round": 0,
+  "ref": "71b4aa28d447",
+  "ms": 4659,
+  "bytes": 4343552,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 0,
+  "ref": "7773f81c9030",
+  "ms": 3438,
+  "bytes": 818740,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 0,
+  "ref": "2b41bf88bab3",
+  "ms": 18080,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "his",
+  "round": 0,
+  "ref": "5295720ebb8c",
+  "ms": 4827,
+  "bytes": 4833856,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 0,
+  "ref": "45b83ac1cb65",
+  "ms": 3612,
+  "bytes": 819116,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 0,
+  "ref": "694df7def621",
+  "ms": 14236,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 1,
+  "ref": "9fdd4c638110",
+  "ms": 3618,
+  "bytes": 844872,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 1,
+  "ref": "d1a1eee2206c",
+  "ms": 13005,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "his",
+  "round": 1,
+  "ref": "420f1604a8ef",
+  "ms": 4242,
+  "bytes": 4313660,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 1,
+  "ref": "9b6a51b8cc65",
+  "ms": 3609,
+  "bytes": 820808,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 1,
+  "ref": "34e3ba605924",
+  "ms": 12754,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "his",
+  "round": 1,
+  "ref": "18efb1b804b5",
+  "ms": 5053,
+  "bytes": 4354832,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 2,
+  "ref": "295ffe8284eb",
+  "ms": 11389,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "his",
+  "round": 2,
+  "ref": "8cfccac2ee1c",
+  "ms": 6636,
+  "bytes": 4458984,
+  "status": 200
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 2,
+  "ref": "0336d85b6239",
+  "ms": 3251,
+  "bytes": 783208,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 2,
+  "ref": "534e7c305240",
+  "ms": 18100,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "his",
+  "round": 2,
+  "ref": "619164e14b7e",
+  "ms": 13186,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 2,
+  "ref": "910aba8c98a4",
+  "ms": 3594,
+  "bytes": 815920,
+  "status": 200
+ },
+ {
+  "arm": "his",
+  "round": 3,
+  "ref": "04f4fef4f26c",
+  "ms": 12084,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 3,
+  "ref": "a175354a0710",
+  "ms": 3585,
+  "bytes": 797496,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 3,
+  "ref": "064c34b1f208",
+  "ms": 16706,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "his",
+  "round": 3,
+  "ref": "4f26e133313d",
+  "ms": 66034,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ },
+ {
+  "arm": "ours-read-daily",
+  "round": 3,
+  "ref": "07f9556453de",
+  "ms": 13432,
+  "bytes": 810280,
+  "status": 200
+ },
+ {
+  "arm": "ours-aug03",
+  "round": 3,
+  "ref": "b0a3a29c5653",
+  "ms": 37042,
+  "bytes": 0,
+  "status": 0,
+  "error": "TypeError"
+ }
+]
