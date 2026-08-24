@@ -1,4 +1,4 @@
-import { Bee, BZZ, DAI, type PostageBatch, Utils } from '@ethersphere/bee-js';
+import { Bee, BZZ, DAI, type PostageBatch } from '@ethersphere/bee-js';
 
 /**
  * A Bee stub that models what a real postage batch purchase actually does, so the wait loop can be

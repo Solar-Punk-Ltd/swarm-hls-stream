@@ -1,4 +1,4 @@
-import { FeedIndex, Topic } from '@ethersphere/bee-js';
+import { Topic } from '@ethersphere/bee-js';
 import { describe, expect, it } from 'vitest';
 
 import { CatalogFeedReader } from '@/utils/catalogFeed';

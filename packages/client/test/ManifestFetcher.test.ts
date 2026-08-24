@@ -1363,7 +1363,6 @@ describe('a broadcast ending under a viewer who joined partway through (#94)', (
  * the guard has to hold on the path the probe takes and not only where the manifests are folded in.
  */
 describe('the probe landing on the recording instead of the manifest that ended the stream (#94)', () => {
-  const WINDOW = 4n;
   let fetcher: ManifestFetcher;
   let requested: bigint[];
 
