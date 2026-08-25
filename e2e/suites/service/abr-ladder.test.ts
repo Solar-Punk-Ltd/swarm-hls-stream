@@ -3,7 +3,13 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { isContiguous, ladderRungs, parseUploaderLog, publishedRenditions } from '../../src/harness/logwatch.js';
+import {
+  isContiguous,
+  ladderRungs,
+  parseUploaderLog,
+  type PublishedRendition,
+  publishedRenditions,
+} from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { waitFor } from '../../src/harness/wait.js';
 
@@ -133,7 +139,7 @@ function abrOff(enabled: boolean): string | false {
   return enabled ? false : 'ABR_ENABLED is off on this deployment, so there is no ladder to observe';
 }
 
-function countByRung(publishes: readonly { rung: string }[]): Map<string, number> {
+function countByRung(publishes: readonly PublishedRendition[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const publish of publishes) {
     counts.set(publish.rung, (counts.get(publish.rung) ?? 0) + 1);
