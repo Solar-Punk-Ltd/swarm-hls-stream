@@ -1,15 +1,31 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const SCRIPT = join(ROOT, 'deploy/scripts/overnight-chain.sh');
+const SCRIPTS_DIR = join(ROOT, 'deploy/scripts');
+const SCRIPT = join(SCRIPTS_DIR, 'overnight-chain.sh');
+
+/**
+ * What `deploy/scripts/` held before anything here ran, so the last case in this file can say what
+ * the suite put there. Read at module load, which is before its first test.
+ */
+const scriptsBefore = new Set(readdirSync(SCRIPTS_DIR));
 
 /**
  * That a night of paid sittings stops itself.
@@ -23,6 +39,18 @@ const SCRIPT = join(ROOT, 'deploy/scripts/overnight-chain.sh');
  * each sitting's funding as a fresh question would spend the rest of the night measuring what peers
  * do to a node that cannot pay.
  */
+
+/**
+ * ⛔ Scratch files belong outside the repository, and this is an assertion rather than a comment
+ * because a comment is what was here before. Until 2026-08-25 the stub driver was written into
+ * `deploy/scripts/` under a randomised name, as many as nine at once, and left there for the whole
+ * length of this file. A `git add -A` that ran inside that window staged four of them into a commit,
+ * and nothing failed and nothing warned.
+ */
+function outsideTheRepo(path) {
+  assert.ok(!path.startsWith(`${ROOT}/`), `${path} is inside the repository, so a run can stage it`);
+  return path;
+}
 
 const cleanups = [];
 
@@ -54,21 +82,31 @@ exit 0
   chmodSync(path, 0o755);
 }
 
-async function runChain(planLines, { loadavg = '1.00 1.00 1.00 1/1 1', extraEnv = {} } = {}) {
+async function runChain(
+  planLines,
+  { loadavg = '1.00 1.00 1.00 1/1 1', extraEnv = {}, driverBesideScript = false } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'overnight-chain-'));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
-  // Beside the real script, since the chain resolves a driver relative to its own directory.
-  const driver = join(ROOT, 'deploy/scripts', `stub-driver-${dir.split('-').pop()}.sh`);
+  // A bare driver name is resolved beside the chain script, which is how every plan on the host
+  // names `viewer-arms.sh`. Running a copy of the script from the run's own directory drives that
+  // branch with the stub beside the copy, instead of putting a stub beside the real scripts.
+  const script = driverBesideScript ? join(dir, basename(SCRIPT)) : SCRIPT;
+  if (driverBesideScript) {
+    copyFileSync(SCRIPT, script);
+  }
+
+  const driver = outsideTheRepo(join(dir, 'driver.sh'));
   stubDriver(driver);
-  cleanups.push(() => rmSync(driver, { force: true }));
 
   const record = join(dir, 'record.txt');
   writeFileSync(record, '');
   const loadavgFile = join(dir, 'loadavg');
   writeFileSync(loadavgFile, `${loadavg}\n`);
   const plan = join(dir, 'plan.tsv');
-  writeFileSync(plan, planLines.map((line) => line.replace(/\{driver\}/g, driver.split('/').pop())).join('\n') + '\n');
+  const planDriver = driverBesideScript ? basename(driver) : driver;
+  writeFileSync(plan, planLines.map((line) => line.replace(/\{driver\}/g, () => planDriver)).join('\n') + '\n');
 
   const env = {
     ...process.env,
@@ -84,7 +122,7 @@ async function runChain(planLines, { loadavg = '1.00 1.00 1.00 1/1 1', extraEnv 
 
   let code = 0;
   try {
-    await run('bash', [SCRIPT, plan], { env, encoding: 'utf8' });
+    await run('bash', [script, plan], { env, encoding: 'utf8' });
   } catch (failure) {
     code = failure.code;
   }
@@ -241,5 +279,45 @@ describe('a night of paid sittings runs in order and stops itself', () => {
     ]);
 
     assert.equal(record.length, 2);
+  });
+
+  /**
+   * ⛔ Every plan on the host names its driver as a bare `viewer-arms.sh`, resolved beside the chain
+   * script. Once the stub moved out of `deploy/scripts/` every other case in this file passes an
+   * absolute path, so this is the only cover left on the branch the real plans actually use. Without
+   * it a regression there would break every plan on the host and leave this file green.
+   */
+  it('resolves a bare driver name beside itself, which is how every real plan names one', async () => {
+    const { record, state } = await runChain(['bare\t5\t{driver}\tSITTING_NAME=bare'], {
+      driverBesideScript: true,
+    });
+
+    assert.equal(record.length, 1, 'a plan naming its driver the way the real plans do never ran it');
+    assert.ok(state[0].includes('\tok\t'));
+  });
+
+  it('runs a driver named by absolute path, so a stub need not sit beside the real scripts', async () => {
+    const { record, state } = await runChain(['abs\t5\t{driver}\tSITTING_NAME=abs']);
+
+    assert.equal(record.length, 1, 'an absolute driver path was joined onto the script directory');
+    assert.ok(state[0].includes('\tok\t'));
+  });
+});
+
+/**
+ * ⛔ Last in the file on purpose, and it has to stay last. The stub cleanups run in the `after()`
+ * hook above, so this is the only point at which a file the suite created would still be on disk to
+ * be seen. Move it earlier and it weakens to "the suite tidied up afterwards", which is not the
+ * property: the four scripts staged on 2026-08-25 were all cleaned up correctly, and were staged
+ * while the suite was still running.
+ *
+ * A directory diff rather than `git status`, so a script the operator is part way through writing is
+ * in both snapshots and does not fire this.
+ */
+describe('the suite leaves the source tree alone', () => {
+  it('creates nothing in deploy/scripts, which a `git add -A` mid-run would stage', () => {
+    const appeared = readdirSync(SCRIPTS_DIR).filter((entry) => !scriptsBefore.has(entry));
+
+    assert.deepEqual(appeared, [], `the suite wrote ${appeared.join(', ')} into deploy/scripts`);
   });
 });

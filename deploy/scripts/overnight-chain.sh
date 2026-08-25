@@ -39,6 +39,11 @@
 # Plan file, one sitting per line, TAB separated:
 #   <name>  <deadline_minutes>  <driver>  <KEY=VAL|KEY=VAL|...>
 #
+# The driver is resolved beside this script, so a plan names it as `viewer-arms.sh` and does not
+# repeat the directory. A path starting with `/` is run exactly as given, which is what lets a
+# caller point at a driver kept somewhere else without a stub having to be written into
+# `deploy/scripts/` beside the real ones.
+#
 # ⛔ Settings are separated by `|` and not by spaces, because a value can contain them: the most
 # important setting any sitting here passes is `ARMS=obs-default:2.0 shipped:0.5`, which is one value
 # holding two arms. Split on whitespace and `env` reads the second arm as the name of a command to
@@ -119,9 +124,21 @@ stop_sitting() {
   fi
 }
 
+# A bare name is resolved beside this script, which is how every plan on the host names its driver.
+# An absolute path is honoured as given. Keyed on a leading slash rather than on containing one, so a
+# relative name with a directory in it still resolves here exactly as it did before.
+driver_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s\n' "${HERE}/$1" ;;
+  esac
+}
+
 run_sitting() {
   local name="$1" deadline_min="$2" driver="$3" settings="$4"
   local out="${CHAIN_DIR}/${name}"
+  local driver_script
+  driver_script="$(driver_path "${driver}")"
   local started deadline pid status=0 outcome
 
   if [ -f "${STOP_FILE}" ]; then
@@ -151,7 +168,7 @@ run_sitting() {
 
   # shellcheck disable=SC2086
   ${SETSID} env OUT_DIR="${out}" STOP_FILE="${STOP_FILE}" ${assignments+"${assignments[@]}"} \
-    bash "${HERE}/${driver}" >> "${out}/driver.out" 2>&1 &
+    bash "${driver_script}" >> "${out}/driver.out" 2>&1 &
   pid=$!
 
   while kill -0 "${pid}" 2>/dev/null; do
