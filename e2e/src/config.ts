@@ -85,6 +85,19 @@ export interface E2EConfig {
    * turned SEC-28 on, all of them failed at the first admission and blamed the publisher.
    */
   publishKeySecret: string;
+  /**
+   * Whether the deployment transcodes an ABR ladder, and the rung names it was configured with.
+   *
+   * Read from the deployment's own env for the same reason as {@link publishKeySecret}: it is not a
+   * choice this suite gets to make. The engine either produces four rungs or one, and an ABR suite
+   * run against a single-rendition stack is not applicable rather than failing.
+   *
+   * `abrRungs` comes from `ABR_LADDER`, whose entries are `name:width:height:kbps`. Empty when the
+   * deployment leaves it unset, in which case the engine falls back to its own default ladder and
+   * this cannot name the rungs, so a suite asserting on specific names has to say so.
+   */
+  abrEnabled: boolean;
+  abrRungs: readonly string[];
   /** Env files that were actually found and read, in precedence order. Printed by the smoke test. */
   envFiles: readonly string[];
 }
@@ -259,8 +272,34 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
       `a docker-safe container name (${DOCKER_NAME_RE.source})`,
     ),
     publishKeySecret: requireUsableSecret(env(resolved, 'PUBLISH_KEY_SECRET', '')),
+    abrEnabled: isEnabled(env(resolved, 'ABR_ENABLED', 'false')),
+    abrRungs: ladderRungNames(env(resolved, 'ABR_LADDER', '')),
     envFiles: [rootPath, enginePath],
   };
+}
+
+/**
+ * The spellings the uploader's own `optionalBool` accepts, and only those.
+ *
+ * Deliberately not a truthiness check. The uploader refuses to start on anything else, so reading a
+ * typo as `false` here would have this suite disagree with the service about what the deployment is.
+ */
+function isEnabled(value: string): boolean {
+  return value.trim() === 'true' || value.trim() === '1';
+}
+
+/**
+ * Rung names out of `ABR_LADDER`, whose entries are `name:width:height:kbps` separated by spaces.
+ *
+ * Names only, because that is what the uploader logs and therefore what a suite can observe. The
+ * geometry is the engine's business and asserting on it here would duplicate `AbrLadder.parse`.
+ */
+function ladderRungNames(spec: string): readonly string[] {
+  return spec
+    .split(/\s+/)
+    .filter((entry) => entry.length > 0)
+    .map((entry) => entry.split(':')[0])
+    .filter((name) => name.length > 0);
 }
 
 /**

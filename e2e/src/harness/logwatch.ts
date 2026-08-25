@@ -20,6 +20,8 @@
  * failure is another silent empty result rather than an error.
  */
 
+import { publishingRenditionPattern } from '@swarm-hls-stream/shared';
+
 export interface UploaderEvents {
   uploadedSegments: number[];
   /**
@@ -251,6 +253,45 @@ export function announcedLiveTopics(text: string): string[] {
  */
 export function announcedLiveStreams(text: string): AnnouncedStream[] {
   return announcedLiveEntries(text).filter((entry): entry is AnnouncedStream => Boolean(entry.topic && entry.owner));
+}
+
+/** One rung's publish, as the uploader reported it. */
+export interface PublishedRendition {
+  rung: string;
+  ladder: string;
+}
+
+/**
+ * Every rung publish in the log, in order, which is the only externally visible evidence that a
+ * ladder is publishing all of its rungs rather than one.
+ *
+ * ⛔ The pattern is not written here. It comes from `publishingRenditionPattern` in the shared
+ * package, built from the same composer the uploader logs with, so a reworded message cannot leave
+ * this matching nothing. That failure is silent and it has already happened once in this file, over
+ * JSON envelopes: a scenario blamed the uploader for never announcing a stream it had announced.
+ */
+export function publishedRenditions(text: string): PublishedRendition[] {
+  return [...messageText(text).matchAll(publishingRenditionPattern('g'))].map((match) => ({
+    rung: match[1],
+    ladder: match[2],
+  }));
+}
+
+/**
+ * The distinct rungs seen publishing under one ladder, in first-publish order.
+ *
+ * Deduplicated because a rung publishes on every announce, so the raw count measures how long the
+ * broadcast ran rather than how wide the ladder is. A caller asking "did all four rungs come up"
+ * wants this; one asking "did they keep publishing" wants {@link publishedRenditions}.
+ */
+export function ladderRungs(text: string, ladder?: string): string[] {
+  const seen = new Set<string>();
+  for (const publish of publishedRenditions(text)) {
+    if (ladder === undefined || publish.ladder === ladder) {
+      seen.add(publish.rung);
+    }
+  }
+  return [...seen];
 }
 
 /** True if the sorted unique indices form a gapless run (max − min + 1 === unique count). */

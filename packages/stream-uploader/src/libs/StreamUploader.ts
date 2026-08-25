@@ -1,4 +1,5 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
+import { publishingRendition } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import {
@@ -474,7 +475,7 @@ export class StreamUploader {
 
     this.lastAnnounceAttemptAt = Date.now();
 
-    this.logger.log(`Publishing rendition ${rendition.name} of ladder ${this.ladder!.group}`);
+    this.logger.log(publishingRendition(rendition.name, this.ladder!.group));
     await this.streamCatalog.upsertRendition(
       {
         title: this.getFormattedDate(),

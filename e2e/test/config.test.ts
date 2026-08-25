@@ -65,6 +65,74 @@ describe('env file selection follows the profile', () => {
   });
 });
 
+/**
+ * The ABR ladder, read off the deployment rather than chosen by the suite.
+ *
+ * An ABR suite run against a single-rendition stack is not applicable, not broken, so it needs to be
+ * able to tell the difference. Same reasoning as `publishKeySecret`: the engine either produces four
+ * rungs or one, and this suite does not get a vote.
+ */
+describe('the ABR ladder the deployment configured', () => {
+  it('is off when nothing says otherwise, which is the shipped default', () => {
+    const cfg = loadConfig({ env: {}, rootDir: fixtureRoot() });
+
+    assert.equal(cfg.abrEnabled, false);
+    assert.deepEqual(cfg.abrRungs, []);
+  });
+
+  it('is on for the two spellings the uploader itself accepts', () => {
+    for (const value of ['true', '1']) {
+      const rootDir = fixtureRoot({ root: `ABR_ENABLED=${value}\n` });
+      assert.equal(loadConfig({ env: {}, rootDir }).abrEnabled, true, `ABR_ENABLED=${value}`);
+    }
+  });
+
+  /**
+   * Not a truthiness check. The uploader refuses to start on anything outside that pair, so reading
+   * a typo as `false` here would have this suite disagree with the service about what it is testing.
+   */
+  it('is off for a value the uploader would refuse, rather than guessed at', () => {
+    for (const value of ['yes', 'TRUE', 'on', '2']) {
+      const rootDir = fixtureRoot({ root: `ABR_ENABLED=${value}\n` });
+      assert.equal(loadConfig({ env: {}, rootDir }).abrEnabled, false, `ABR_ENABLED=${value}`);
+    }
+  });
+
+  it('names the rungs in ladder order, which is the order a master lists them', () => {
+    const rootDir = fixtureRoot({
+      root: 'ABR_ENABLED=true\nABR_LADDER=360p:640:360:700 480p:854:480:1200 720p:1280:720:2800\n',
+    });
+
+    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrRungs, ['360p', '480p', '720p']);
+  });
+
+  it('reads the ladder out of the engine env too, since that is where the sample documents it', () => {
+    const rootDir = fixtureRoot({
+      root: 'ABR_ENABLED=true\n',
+      engines: { srs: 'ABR_LADDER=1080p:1920:1080:5000 720p:1280:720:2800\n' },
+    });
+
+    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrRungs, ['1080p', '720p']);
+  });
+
+  /**
+   * An unset `ABR_LADDER` means the engine falls back to its own default, which this cannot see. A
+   * suite asserting on specific rung names therefore has to notice the empty list rather than read
+   * it as a ladder of zero rungs.
+   */
+  it('names nothing when the ladder is left to the engine default', () => {
+    const rootDir = fixtureRoot({ root: 'ABR_ENABLED=true\n' });
+
+    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrRungs, []);
+  });
+
+  it('ignores the geometry, so a reformatted entry does not become a rung name', () => {
+    const rootDir = fixtureRoot({ root: 'ABR_LADDER=  720p:1280:720:2800   1080p:1920:1080:5000  \n' });
+
+    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrRungs, ['720p', '1080p']);
+  });
+});
+
 describe('engine selection', () => {
   it('defaults to srs when nothing says otherwise', () => {
     assert.equal(loadConfig({ env: {}, rootDir: fixtureRoot() }).engine, 'srs');
