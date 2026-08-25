@@ -2,7 +2,7 @@ import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee
 import PQueue from 'p-queue';
 
 import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
-import { retryUntilDeadlineAsync } from '../utils/common.js';
+import { getErrorMessage, retryUntilDeadlineAsync } from '../utils/common.js';
 
 import { BeePublisher, BeePublisherPool } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
@@ -50,6 +50,16 @@ export class StreamCatalog {
   private queue = new PQueue({ concurrency: 1 });
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
+
+  /**
+   * Set when boot found a feed head it could not read, and cleared by the first write that lands.
+   *
+   * While it is set, failing to read the state a write appends to is treated as that state being
+   * gone rather than as an error. Outside that window the same failure stays fatal to the write:
+   * it is usually transient, and continuing from an empty list would drop every other stream's
+   * entry from the catalog.
+   */
+  private previousStateMayBeLost = false;
 
   /**
    * Writes each ladder's master playlist. Absent, ladder entries fall back to pointing at their
@@ -110,8 +120,7 @@ export class StreamCatalog {
       this.feedIndex = data.feedIndex;
       this.logger.info(`[StreamCatalog] Loaded feed at index ${data.feedIndex.toString()}`);
     } catch (error) {
-      if (error instanceof BeeResponseError && (error.status === 404 || error.status === 503)) {
-        // 404 = feed topic never used, 503 = feed exists but has no entries yet
+      if (isFeedAbsent(error)) {
         if (persisted !== null) {
           this.feedIndex = persisted;
           this.logger.warn(
@@ -123,6 +132,28 @@ export class StreamCatalog {
         this.logger.info('[StreamCatalog] No existing feed found, starting fresh');
         return;
       }
+
+      // The head resolved but its payload did not arrive — bee answers a retrieval it cannot
+      // finish with headers and then an aborted body, which is not a status this can match on.
+      // The usual cause is the postage batch that paid for the catalog having expired, so the
+      // chunks are gone from every reserve except the node that wrote them, which is a different
+      // node as soon as the catalog moves onto a publisher pool's coordinator. None of that is
+      // transient and none of it is recoverable, but it must not take the uploader off the air
+      // over a catalog no reader can load either: continue above the last index this uploader
+      // wrote, and let the first write discover whether the entries are still there.
+      if (persisted !== null) {
+        this.feedIndex = persisted;
+        this.previousStateMayBeLost = true;
+        this.logger.warn(
+          `[StreamCatalog] Boot lookup could not read the feed head (${getErrorMessage(error)}); ` +
+            `resuming from persisted index ${persisted.toString()}`,
+        );
+        return;
+      }
+
+      // Without a persisted index the head's index is unknown, and starting at 0 would write into
+      // indices that are already occupied — forking the feed invisibly for every reader that keeps
+      // following the original chain. Refusing to start is the only safe answer.
       this.errorHandler.handleError(error, 'StreamCatalog.init');
       throw error;
     }
@@ -166,7 +197,7 @@ export class StreamCatalog {
     let previous: StreamEntry[] = [];
 
     if (this.feedIndex !== null) {
-      previous = await this.fetchCurrentState();
+      previous = await this.readPreviousState();
     }
 
     const state = await update(previous);
@@ -183,6 +214,9 @@ export class StreamCatalog {
     );
 
     this.feedIndex = nextIndex;
+    // Whatever the boot lookup could not read, this index can be: it is what was just written,
+    // through the same node, so a later read failure here is a real one again.
+    this.previousStateMayBeLost = false;
     const ownerAddr = this.signer.publicKey().address().toString();
     this.indexStore?.save(ownerAddr, this.feedTopic.toString(), nextIndex);
     this.logger.debug(
@@ -190,6 +224,27 @@ export class StreamCatalog {
         result?.reference?.toHex?.() ?? '?'
       } owner=${ownerAddr} topicHex=${this.feedTopic.toString()}`,
     );
+  }
+
+  /**
+   * The entries the next update is appended to.
+   *
+   * Only tolerant while {@link previousStateMayBeLost} is set — see there for why leniency is
+   * confined to the first write after an unreadable boot.
+   */
+  private async readPreviousState(): Promise<StreamEntry[]> {
+    try {
+      return await this.fetchCurrentState();
+    } catch (error) {
+      if (!this.previousStateMayBeLost) {
+        throw error;
+      }
+      this.logger.error(
+        `[StreamCatalog] State at index ${this.feedIndex!.toString()} is unreadable ` +
+          `(${getErrorMessage(error)}); continuing with an empty catalog — earlier entries are lost`,
+      );
+      return [];
+    }
   }
 
   private async fetchCurrentState(): Promise<StreamEntry[]> {
@@ -254,6 +309,11 @@ export function withMaster(entry: StreamEntry, master: PublishedMaster): StreamE
   }
 
   return repointed;
+}
+
+/** Bee's two answers for a feed with nothing to read: 404 topic never used, 503 no entries yet. */
+function isFeedAbsent(error: unknown): boolean {
+  return error instanceof BeeResponseError && (error.status === 404 || error.status === 503);
 }
 
 function withoutTopic(entries: StreamEntry[], owner: string, topic: string): StreamEntry[] {

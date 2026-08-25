@@ -22,11 +22,22 @@ const liveEntry = () => ({
 interface CapturedWrite {
   index: FeedIndex;
   deferred?: boolean;
+  /** The catalog JSON the write carried, so a test can see which entries survived the read. */
+  payload?: string;
 }
 
 interface CatalogBeeOptions {
   lookupIndex?: bigint;
   lookupFails404?: boolean;
+  /**
+   * The head lookup answers with headers and then an aborted body — what bee does with a
+   * retrieval it cannot finish, and the one failure that carries no status to match on.
+   */
+  lookupAborts?: boolean;
+  /** The update at an explicit index is not in the network: its chunk is simply not found. */
+  stateReadFails?: boolean;
+  /** Entries a successful read of the current state returns. */
+  stateEntries?: unknown[];
 }
 
 function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): Bee {
@@ -35,17 +46,23 @@ function makeCatalogBee(writes: CapturedWrite[], opts: CatalogBeeOptions = {}): 
       downloadPayload: async (dlOpts?: { index?: FeedIndex }) => {
         // With an index this is fetchCurrentState; without, it is the init head lookup.
         if (dlOpts?.index) {
-          return { payload: { toJSON: () => [] } };
+          if (opts.stateReadFails) {
+            throw new BeeResponseError('GET', '/chunks', 'Not Found.', undefined, 404, 'Not Found');
+          }
+          return { payload: { toJSON: () => opts.stateEntries ?? [] } };
         }
         if (opts.lookupFails404) {
           throw new BeeResponseError('GET', '/feeds', 'Not Found.', undefined, 404, 'Not Found');
+        }
+        if (opts.lookupAborts) {
+          throw new Error('response stream aborted');
         }
         return { feedIndex: FeedIndex.fromBigInt(opts.lookupIndex ?? 0n), payload: { toJSON: () => [] } };
       },
     }),
     makeFeedWriter: () => ({
-      uploadPayload: async (_stamp: string, _data: unknown, writeOpts: CapturedWrite) => {
-        writes.push(writeOpts);
+      uploadPayload: async (_stamp: string, data: unknown, writeOpts: CapturedWrite) => {
+        writes.push({ ...writeOpts, payload: String(data) });
         return { reference: { toHex: () => 'ref' } };
       },
     }),
@@ -137,5 +154,87 @@ describe('StreamCatalog boot-index hardening', () => {
     assert.equal(saved[0].index.toBigInt(), 0n);
     assert.equal(saved[0].owner, new PrivateKey(TEST_STREAM_KEY).publicKey().address().toString());
     assert.equal(saved[0].topicHex, Topic.fromString(TEST_TOPIC).toString());
+  });
+});
+
+describe('StreamCatalog unreadable-head hardening', () => {
+  it('resumes from the persisted index when the boot lookup cannot read the head', async () => {
+    const writes: CapturedWrite[] = [];
+    const { store } = fakeIndexStore(125n);
+    const catalog = new StreamCatalog(makePublishers(makeCatalogBee(writes, { lookupAborts: true })), TEST_STREAM_KEY, TEST_TOPIC, store);
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.equal(writes[0].index.toBigInt(), 126n, 'an expired batch behind the head must not take the uploader off the air');
+  });
+
+  it('refuses to start when the head is unreadable and no index was persisted', async () => {
+    const writes: CapturedWrite[] = [];
+    const { store } = fakeIndexStore(null);
+    const catalog = new StreamCatalog(makePublishers(makeCatalogBee(writes, { lookupAborts: true })), TEST_STREAM_KEY, TEST_TOPIC, store);
+
+    await assert.rejects(
+      () => catalog.init(),
+      /aborted/,
+      'without a floor to resume above, starting at 0 would fork the feed for every reader',
+    );
+  });
+
+  it('continues with an empty catalog when the state at the resumed index is gone too', async () => {
+    const writes: CapturedWrite[] = [];
+    const { store } = fakeIndexStore(125n);
+    const catalog = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupAborts: true, stateReadFails: true })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      store,
+    );
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].index.toBigInt(), 126n);
+    assert.equal(JSON.parse(writes[0].payload ?? '[]').length, 1, 'the write carries the new entry over an empty previous state');
+
+    // The window closes with the write that landed: the state at 126 is what this uploader just
+    // wrote, so failing to read it again is a real failure.
+    await assert.rejects(() => catalog.addStream(liveEntry()), /Not Found/);
+    assert.equal(writes.length, 1);
+  });
+
+  it('keeps an unreadable state fatal when the head read fine', async () => {
+    const writes: CapturedWrite[] = [];
+    const { store } = fakeIndexStore(null);
+    const catalog = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupIndex: 12n, stateReadFails: true })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+      store,
+    );
+
+    await catalog.init();
+
+    await assert.rejects(
+      () => catalog.addStream(liveEntry()),
+      /Not Found/,
+      'a read that fails outside the boot window must not silently drop every other entry',
+    );
+  });
+
+  it('appends to the entries a successful state read returns', async () => {
+    const writes: CapturedWrite[] = [];
+    const existing = [{ ...liveEntry(), topic: 'other-uuid' }];
+    const catalog = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupIndex: 3n, stateEntries: existing })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+    );
+
+    await catalog.init();
+    await catalog.addStream(liveEntry());
+
+    assert.equal(JSON.parse(writes[0].payload ?? '[]').length, 2);
   });
 });
