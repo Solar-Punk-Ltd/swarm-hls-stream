@@ -1,8 +1,16 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
-import crypto from 'crypto';
 import PQueue from 'p-queue';
 
-import { MediaType, SegmentEntry, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamState } from '../types.js';
+import {
+  BitrateSample,
+  LadderMembership,
+  MediaType,
+  Rendition,
+  SegmentEntry,
+  STREAM_STATUS_LIVE,
+  STREAM_STATUS_VOD,
+  StreamState,
+} from '../types.js';
 import { retryUntilDeadlineAsync } from '../utils/common.js';
 
 import {
@@ -10,10 +18,12 @@ import {
   needsCatalogAnnounce,
   onCatalogAnnounced,
   onFirstSegmentUploaded,
+  READINESS_ANNOUNCED,
   READINESS_PENDING,
   readinessFromPersisted,
   readinessToPersisted,
 } from './AnnounceReadiness.js';
+import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
@@ -37,6 +47,18 @@ const UPLOAD_RETRY_CAP_MS = 2_000;
  */
 const CATALOG_ANNOUNCE_RETRY_MS = 30_000;
 
+/**
+ * How far the measured bitrate has to drift, and how long between corrections, before a rung
+ * rewrites the catalog.
+ *
+ * BANDWIDTH is the whole supply-side input to the player's ABR decision, so it has to end up
+ * honest — but the catalog is one feed shared by every stream, and republishing per segment would
+ * have four rungs contending on it every fragment. Announce on the encoder's target, then correct
+ * only when the measurement has actually moved.
+ */
+const BITRATE_REFRESH_RATIO = 0.15;
+const BITRATE_REFRESH_INTERVAL_MS = 30_000;
+
 interface RestoreState {
   streamRawTopic: string;
   socIndex: number | null;
@@ -45,9 +67,32 @@ interface RestoreState {
   isFirstSegmentReady: boolean;
   isFirstManifestReady: boolean;
   pendingDiscontinuity?: boolean;
+  bitrate?: BitrateSample;
 }
 
 export interface StreamUploaderOptions {
+  bee: Bee;
+  streamCatalog: StreamCatalog;
+  recoveryStore: RecoveryStore;
+  streamKey: string;
+  stamp: string;
+  streamId: string;
+  /**
+   * Feed topic for this stream's manifest. Supplied rather than generated, because a ladder's
+   * rungs derive theirs from a shared group id and the orchestrator is what knows the group.
+   */
+  streamTopic: string;
+  mediatype: MediaType;
+  /**
+   * Erasure-coding level for segment uploads.
+   *
+   * Parity is durability insurance, and it is paid for twice on a live stream: once on upload, and
+   * again by every viewer, because the extra chunks widen the retrieval fan-out that dominates how
+   * long a segment takes to arrive. A segment that outlives its playlist window is of no use to
+   * anyone, so for live the insurance mostly buys nothing. 0 turns it off.
+   */
+  redundancyLevel: number;
+  ladder?: LadderMembership;
   /** State from a previous run of this stream id, so a restart resumes rather than starting over. */
   restoreState?: RestoreState;
   /**
@@ -72,9 +117,11 @@ export class StreamUploader {
   private recoveryStore: RecoveryStore;
   private streamId: string;
   private stamp: string;
+  private redundancyLevel: number;
   private socIndex: number | null = null;
   private mediatype: MediaType;
   private readiness: AnnounceReadiness = READINESS_PENDING;
+  private ladder?: LadderMembership;
   private liveManifestQueued = false;
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
@@ -104,31 +151,29 @@ export class StreamUploader {
   /** Segments this session was handed, so an empty finalize can tell "nothing to record" from "lost it all". */
   private segmentsOffered = 0;
 
+  private bitrate: BitrateSample = emptyBitrateSample();
+  private driftBaselineBps = 0;
+  private lastAnnounceAttemptAt = 0;
+
   private manifestManager: ManifestManager;
 
-  constructor(
-    bee: Bee,
-    streamCatalog: StreamCatalog,
-    recoveryStore: RecoveryStore,
-    streamKey: string,
-    stamp: string,
-    streamId: string,
-    mediatype: MediaType,
-    options: StreamUploaderOptions = {},
-  ) {
-    const { restoreState } = options;
+  constructor(options: StreamUploaderOptions) {
     this.catalogAnnounceRetryMs = options.catalogAnnounceRetryMs ?? CATALOG_ANNOUNCE_RETRY_MS;
     this.metrics = options.metrics;
-    this.bee = bee;
-    this.streamSigner = new PrivateKey(streamKey);
-    this.streamCatalog = streamCatalog;
-    this.recoveryStore = recoveryStore;
-    this.streamId = streamId;
-    this.stamp = stamp;
-    this.mediatype = mediatype;
+    this.bee = options.bee;
+    this.streamSigner = new PrivateKey(options.streamKey);
+    this.streamCatalog = options.streamCatalog;
+    this.recoveryStore = options.recoveryStore;
+    this.streamId = options.streamId;
+    this.stamp = options.stamp;
+    this.redundancyLevel = options.redundancyLevel;
+    this.mediatype = options.mediatype;
+    this.ladder = options.ladder;
+    this.streamRawTopic = options.streamTopic;
 
     this.manifestManager = new ManifestManager();
 
+    const restoreState = options.restoreState;
     if (restoreState) {
       this.streamRawTopic = restoreState.streamRawTopic;
       this.socIndex = restoreState.socIndex;
@@ -139,16 +184,17 @@ export class StreamUploader {
         // corrupted or hand-edited and whoever owns the deployment should know. Repaired rather than
         // refused: see the note on `readinessFromPersisted`.
         this.logger.warn(
-          `[StreamUploader] Recovery entry for ${streamId} claims the catalog announce happened ` +
+          `[StreamUploader] Recovery entry for ${options.streamId} claims the catalog announce happened ` +
             'before its first segment, which is not reachable. Treating the stream as not yet ' +
             'announced so it is published rather than left invisible.',
         );
       }
       this.pendingDiscontinuity = restoreState.pendingDiscontinuity ?? false;
+      if (restoreState.bitrate) {
+        this.bitrate = restoreState.bitrate;
+      }
       this.manifestManager.restoreState(restoreState.segments, restoreState.hlsHeaders);
-      this.logger.info(`[StreamUploader] Restored stream ${streamId} at SOC index ${this.socIndex}`);
-    } else {
-      this.streamRawTopic = crypto.randomUUID();
+      this.logger.info(`[StreamUploader] Restored stream ${options.streamId} at SOC index ${this.socIndex}`);
     }
   }
 
@@ -157,6 +203,7 @@ export class StreamUploader {
     // reports a backlog that drains rather than one that grows forever.
     this.queuedSeconds += duration;
     this.segmentsOffered += 1;
+    recordSegment(this.bitrate, data.length, duration);
     this.segmentQueue.add(async () => {
       try {
         await this.uploadSegment(segmentIndex, duration, data);
@@ -195,6 +242,7 @@ export class StreamUploader {
 
     this.metrics?.recordSegmentUploaded(Date.now());
     this.uploadLiveManifest();
+    await this.refreshBandwidthIfDrifted();
     this.persistState();
   }
 
@@ -244,6 +292,10 @@ export class StreamUploader {
   }
 
   public async notifyStart(): Promise<void> {
+    if (this.ladder) {
+      return this.announceRendition();
+    }
+
     const entry = {
       title: this.getFormattedDate(),
       owner: this.streamSigner.publicKey().address().toHex(),
@@ -314,6 +366,12 @@ export class StreamUploader {
       throw new Error(`Failed to upload VOD manifest for stream ${this.streamId}`);
     }
 
+    if (this.ladder) {
+      await this.announceRendition({ index: this.socIndex!, duration: this.manifestManager.getTotalDuration() });
+      this.recoveryStore.remove(this.streamId);
+      return;
+    }
+
     const entry = {
       title: this.getFormattedDate(),
       owner: this.streamSigner.publicKey().address().toHex(),
@@ -367,6 +425,30 @@ export class StreamUploader {
       pendingDiscontinuity: this.pendingDiscontinuity,
       liveManifestStale: this.hasStaleLiveManifest(),
       updatedAt: Date.now(),
+      ladder: this.ladder,
+      bitrate: this.bitrate,
+    };
+  }
+
+  /**
+   * What the ladder rung looks like to a player right now.
+   *
+   * Falls back to the encoder's configured target until segments have actually been measured, so
+   * the master playlist is complete and usable from the first one rather than advertising a
+   * bandwidth of zero.
+   */
+  private buildRendition(final?: { index: number; duration: number }): Rendition {
+    const rung = this.ladder!.rung;
+    const configuredBps = rung.configuredKbps * 1000;
+
+    return {
+      name: rung.name,
+      width: rung.width,
+      height: rung.height,
+      topic: this.streamRawTopic,
+      bandwidth: peakBandwidth(this.bitrate, configuredBps),
+      avgBandwidth: averageBandwidth(this.bitrate, configuredBps),
+      ...(final ?? {}),
     };
   }
 
@@ -385,6 +467,48 @@ export class StreamUploader {
    */
   public getConsecutiveSegmentFailures(): number {
     return this.consecutiveSegmentFailures;
+  }
+
+  private async announceRendition(final?: { index: number; duration: number }): Promise<void> {
+    const rendition = this.buildRendition(final);
+
+    this.lastAnnounceAttemptAt = Date.now();
+
+    this.logger.log(`Publishing rendition ${rendition.name} of ladder ${this.ladder!.group}`);
+    await this.streamCatalog.upsertRendition(
+      {
+        title: this.getFormattedDate(),
+        owner: this.streamSigner.publicKey().address().toHex(),
+        group: this.ladder!.group,
+        mediatype: this.mediatype,
+      },
+      rendition,
+    );
+
+    this.driftBaselineBps = rendition.bandwidth;
+  }
+
+  private async refreshBandwidthIfDrifted(): Promise<void> {
+    if (!this.ladder || this.readiness !== READINESS_ANNOUNCED || this.driftBaselineBps <= 0) {
+      return;
+    }
+
+    if (Date.now() - this.lastAnnounceAttemptAt < BITRATE_REFRESH_INTERVAL_MS) {
+      return;
+    }
+
+    const drift = Math.abs(this.bitrate.peakBps - this.driftBaselineBps) / this.driftBaselineBps;
+    if (drift < BITRATE_REFRESH_RATIO) {
+      return;
+    }
+
+    // Swallowed rather than propagated: the caller is an unawaited segment task that must go on to
+    // persist its progress, and this is a correction to a bandwidth already published.
+    try {
+      await this.announceRendition();
+    } catch (error) {
+      this.errorHandler.handleError(error, 'StreamUploader.refreshBandwidthIfDrifted');
+    }
   }
 
   private uploadLiveManifest(): void {
@@ -575,7 +699,7 @@ export class StreamUploader {
   private async uploadDataToBee(data: Uint8Array) {
     try {
       return await retryUntilDeadlineAsync(
-        () => this.bee.uploadData(this.stamp, data, { redundancyLevel: 1, deferred: true }),
+        () => this.bee.uploadData(this.stamp, data, { redundancyLevel: this.redundancyLevel, deferred: true }),
         SEGMENT_UPLOAD_RETRY_WINDOW_MS,
         UPLOAD_RETRY_BASE_MS,
         UPLOAD_RETRY_CAP_MS,

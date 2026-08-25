@@ -6,7 +6,6 @@ import { describe, it } from 'node:test';
 import { LIVE_WINDOW_MAX_BYTES, ManifestManager } from '../src/libs/ManifestManager.js';
 
 const DISCONTINUITY_TAG = '#EXT-X-DISCONTINUITY';
-const MEDIA_SEQUENCE_TAG = '#EXT-X-MEDIA-SEQUENCE';
 
 /**
  * Every segment length this project has published a profile for, shortest first.
@@ -21,6 +20,26 @@ const SHORTEST_SEGMENT_DURATION_S = SHIPPED_SEGMENT_DURATIONS_S[0];
 
 const PLAYER_CONFIG_PATH = '../../client/src/components/SwarmHlsPlayer/playerConfig.ts';
 const LIVE_SYNC_DURATION_EXPORT = 'LIVE_SYNC_DURATION_S';
+
+/** The engine's own sequence number for a segment, which is what `addSegment` is handed. */
+function feed(manager: ManifestManager, from: number, count: number, duration = 1.5): void {
+  for (let i = 0; i < count; i++) {
+    manager.addSegment(from + i, duration, `ref-${from + i}`);
+  }
+}
+
+function mediaSequenceOf(manifest: string): number {
+  const line = manifest.split('\n').find((l) => l.startsWith('#EXT-X-MEDIA-SEQUENCE:'));
+  assert.ok(line, 'manifest must carry an EXT-X-MEDIA-SEQUENCE');
+  return Number.parseInt(line!.split(':')[1], 10);
+}
+
+function segmentUris(manifest: string): string[] {
+  return manifest
+    .split('\n')
+    .filter((line) => line && !line.startsWith('#'))
+    .map((line) => line.trim());
+}
 
 function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
@@ -39,15 +58,71 @@ function withSegments(count: number, duration: number): ManifestManager {
   return manager;
 }
 
-function segmentUris(manifest: string): string[] {
-  return manifest.split('\n').filter((line) => line.length > 0 && !line.startsWith('#'));
-}
+describe('ManifestManager media sequence', () => {
+  it('reports the engine sequence number of the playlist’s first segment', () => {
+    const manager = new ManifestManager();
+    feed(manager, 0, 3);
 
-function mediaSequence(manifest: string): number {
-  const line = manifest.split('\n').find((candidate) => candidate.startsWith(MEDIA_SEQUENCE_TAG));
-  assert.ok(line, `no ${MEDIA_SEQUENCE_TAG} in the manifest`);
-  return Number(line.slice(`${MEDIA_SEQUENCE_TAG}:`.length));
-}
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
+  });
+
+  // The sliding-window case is covered by 'names the count it dropped as the media sequence' in the
+  // live-window suite above. ABR's version asserted a media sequence of 4 after 14 segments, which
+  // assumes a window bounded at ten segments. This branch bounds the window by BYTES, at one bee
+  // chunk, so fourteen short refs all fit and it never slides. The surviving test derives its
+  // expectation from what the window actually kept rather than hard-coding a length.
+
+  it('does not renumber a rung whose uploader joined the stream late', () => {
+    // The defect this exists to prevent. Every rung of a ladder is transcoded from one source with
+    // keyframes forced to the same media timestamps, so segment N means the same interval on all of
+    // them — and with no EXT-X-PROGRAM-DATE-TIME in these playlists, the sequence number is the
+    // only thing telling hls.js that two levels share a timeline.
+    //
+    // A count of segments this uploader had seen would make both of these start at 0, claiming the
+    // 1080p rung's first segment covers the same instant as the 360p rung's when it is two segments
+    // (3 seconds) later. Every switch would then land that far off.
+    const early = new ManifestManager();
+    const late = new ManifestManager();
+
+    feed(early, 0, 5);
+    feed(late, 2, 3);
+
+    assert.equal(mediaSequenceOf(early.buildLiveManifest()), 0);
+    assert.equal(mediaSequenceOf(late.buildLiveManifest()), 2);
+  });
+
+  it('uses the first segment it holds even when segments arrive out of order', () => {
+    const manager = new ManifestManager();
+    manager.addSegment(7, 1.5, 'ref-7');
+    manager.addSegment(5, 1.5, 'ref-5');
+    manager.addSegment(6, 1.5, 'ref-6');
+
+    const manifest = manager.buildLiveManifest();
+
+    assert.equal(mediaSequenceOf(manifest), 5);
+    assert.deepEqual(segmentUris(manifest), ['ref-5', 'ref-6', 'ref-7']);
+  });
+
+  it('survives a restore, which is where the sequence numbers come back from disk', () => {
+    const manager = new ManifestManager();
+    manager.restoreState(
+      [
+        { index: 11, duration: 1.5, ref: 'ref-11' },
+        { index: 12, duration: 1.5, ref: 'ref-12' },
+      ],
+      ['#EXTM3U', '#EXT-X-VERSION:3'],
+    );
+
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 11);
+  });
+
+  it('returns nothing at all before the first segment, rather than a headers-only playlist', () => {
+    const manager = new ManifestManager();
+
+    assert.equal(manager.buildLiveManifest(), '');
+    assert.equal(manager.buildVODManifest(), '');
+  });
+});
 
 describe('ManifestManager discontinuity handling', () => {
   it('emits a discontinuity tag before a flagged segment in the VOD manifest', () => {
@@ -120,14 +195,14 @@ describe('the live window is bounded by bytes rather than by a segment count', (
   it('names the count it dropped as the media sequence', () => {
     const manifest = withSegments(500, 2).buildLiveManifest();
 
-    assert.equal(mediaSequence(manifest), 500 - segmentUris(manifest).length);
+    assert.equal(mediaSequenceOf(manifest), 500 - segmentUris(manifest).length);
   });
 
   it('holds every segment while they still fit, and starts at media sequence zero', () => {
     const manifest = withSegments(3, 2).buildLiveManifest();
 
     assert.deepEqual(segmentUris(manifest), [ref(0), ref(1), ref(2)]);
-    assert.equal(mediaSequence(manifest), 0);
+    assert.equal(mediaSequenceOf(manifest), 0);
   });
 
   it('holds more media at a shorter segment than the ten it replaced', () => {
@@ -258,7 +333,7 @@ describe('ending a broadcast that live viewers are still following', () => {
   it('leaves the media sequence exactly where the live manifest had it', () => {
     const manager = withSegments(500, SHORTEST_SEGMENT_DURATION_S);
 
-    assert.equal(mediaSequence(manager.buildClosingLiveManifest()), mediaSequence(manager.buildLiveManifest()));
+    assert.equal(mediaSequenceOf(manager.buildClosingLiveManifest()), mediaSequenceOf(manager.buildLiveManifest()));
   });
 
   it('names the same segments the live manifest named', () => {
@@ -284,7 +359,7 @@ describe('ending a broadcast that live viewers are still following', () => {
   it('leaves the VOD manifest starting at zero and naming everything', () => {
     const manager = withSegments(500, SHORTEST_SEGMENT_DURATION_S);
 
-    assert.equal(mediaSequence(manager.buildVODManifest()), 0);
+    assert.equal(mediaSequenceOf(manager.buildVODManifest()), 0);
     assert.equal(segmentUris(manager.buildVODManifest()).length, 500);
   });
 });

@@ -2,9 +2,17 @@ import { Bee, BZZ } from '@ethersphere/bee-js';
 
 import { batchIdRecoveryNotice, reachedEnvFile, recordBatchId, STAMP_ENV_KEY } from '../lib/batch-id-record.js';
 import { createBee } from '../lib/bee-client.js';
-import { getEnvPath, loadEnv, resolveBeeUploaderTarget, SVC_BEE_UPLOADER } from '../lib/config-reader.js';
+import {
+  getEnvPath,
+  loadEnv,
+  type NamedTarget,
+  resolveBeeUploaderTarget,
+  resolvePublisherTargets,
+  SVC_BEE_UPLOADER,
+} from '../lib/config-reader.js';
 import { confirm } from '../lib/confirm.js';
 import { assertEnvKeyWritable } from '../lib/env-writer.js';
+import { selectPublisherByRung } from '../lib/nodes.js';
 import { error, header, info, ok, table, warn } from '../lib/output.js';
 import {
   buyStamp,
@@ -26,7 +34,7 @@ export interface StampBuySeams {
 }
 
 export async function stampBuy(args: StampCommandArgs = {}, seams: StampBuySeams = {}): Promise<string | null> {
-  const { url: urlOverride, amount, depth, immutable, assumeYes } = args;
+  const { url: urlOverride, rung, amount, depth, immutable, assumeYes } = args;
   const makeBee = seams.createBee ?? createBee;
   const buy = seams.buyStamp ?? buyStamp;
   const exit = seams.exit ?? ((code: number) => process.exit(code));
@@ -34,8 +42,20 @@ export async function stampBuy(args: StampCommandArgs = {}, seams: StampBuySeams
 
   loadEnv();
 
-  const target = resolveBeeUploaderTarget();
-  const url = urlOverride ?? target.url;
+  // A batch can only ever be spent by the node that bought it, so once there is a node per rung the
+  // rung is not optional. Absent one, this is the single-node path unchanged.
+  let publisher: NamedTarget | null = null;
+  if (rung !== undefined) {
+    try {
+      publisher = selectPublisherByRung(resolvePublisherTargets(), rung);
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Unknown rung');
+      return exit(1);
+    }
+  }
+
+  const configuredUrl = publisher ? publisher.target!.url : resolveBeeUploaderTarget().url;
+  const url = urlOverride ?? configuredUrl;
   let options: StampOptions;
   try {
     options = resolveStampOptions(amount, depth, immutable);
@@ -45,7 +65,7 @@ export async function stampBuy(args: StampCommandArgs = {}, seams: StampBuySeams
   }
   const envPath = seams.envPath ?? getEnvPath();
 
-  header(`Buy stamp on ${SVC_BEE_UPLOADER} (${url})`);
+  header(publisher ? `Buy stamp for rung ${publisher.rung} (${url})` : `Buy stamp on ${SVC_BEE_UPLOADER} (${url})`);
 
   // Same guarantee as stamp:setup, for the same reason: this spends money and the batch id is the
   // only durable product of it. Printing "Add to .env: ..." and leaving the operator to copy it out
@@ -112,6 +132,12 @@ export async function stampBuy(args: StampCommandArgs = {}, seams: StampBuySeams
 
   table('Batch ID', batchIdHex);
   console.log('');
+
+  if (publisher) {
+    info('Put it in BEE_PUBLISHERS, replacing this rung\u2019s entry:');
+    info(`  ${publisher.rung}@${configuredUrl}<${batchIdHex}>`);
+    console.log('');
+  }
 
   const record = recordBatchId(envPath, batchIdHex);
   if (!reachedEnvFile(envPath, record)) {

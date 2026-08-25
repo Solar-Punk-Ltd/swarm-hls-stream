@@ -68,6 +68,17 @@ services:
       HLS_AOF_RATIO: ${HLS_AOF_RATIO:-5.0}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
+      # The ABR ladder, read by this entrypoint. Off by default.
+      ABR_ENABLED: ${ABR_ENABLED:-false}
+      ABR_LADDER: ${ABR_LADDER:-}
+      ABR_VHOST: ${ABR_VHOST:-abr}
+      ABR_FPS: ${ABR_FPS:-30}
+      ABR_PRESET: ${ABR_PRESET:-veryfast}
+      ABR_PROFILE: ${ABR_PROFILE:-main}
+      ABR_THREADS: ${ABR_THREADS:-0}
+      ABR_ACODEC: ${ABR_ACODEC:-copy}
+      ABR_AUDIO_BITRATE: ${ABR_AUDIO_BITRATE:-128}
+      ABR_RTMP_PORT: ${ABR_RTMP_PORT:-1935}
     # Asks whether a broadcaster could reach this engine, not whether the process is alive. See
     # OBS-20 and the reasoning in `healthcheck.sh`: SRS ran 44 minutes with a dead SRT listener while
     # every signal the deployment had said it was fine.

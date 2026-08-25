@@ -94,16 +94,18 @@ function newUploader(
   opts: { restoreState?: unknown; feedWriteFails?: boolean; feedControl?: SegmentUploadControl } = {},
 ): StreamUploader {
   const feedControl = opts.feedControl ?? (opts.feedWriteFails ? { fail: permanentError } : {});
-  return new StreamUploader(
-    makeBee(segmentControl, feedControl),
-    makeFakeCatalog(),
-    makeFakeRecoveryStore(),
-    TEST_STREAM_KEY,
-    'stamp',
-    'stream-test',
-    MEDIA_TYPE_VIDEO,
-    { restoreState: opts.restoreState as never },
-  );
+  return new StreamUploader({
+    bee: makeBee(segmentControl, feedControl),
+    streamCatalog: makeFakeCatalog(),
+    recoveryStore: makeFakeRecoveryStore(),
+    streamKey: TEST_STREAM_KEY,
+    stamp: 'stamp',
+    redundancyLevel: 1,
+    streamId: 'stream-test',
+    streamTopic: 'topic-test',
+    mediatype: MEDIA_TYPE_VIDEO,
+    restoreState: opts.restoreState as never,
+  });
 }
 
 async function drain(uploader: StreamUploader): Promise<void> {
@@ -281,15 +283,17 @@ describe('StreamUploader discontinuity lifecycle', () => {
       remove: () => {},
       listActive: () => [],
     } as unknown as RecoveryStore;
-    const uploader = new StreamUploader(
-      makeBee({ fail: permanentError }),
-      makeFakeCatalog(),
-      recovery,
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+    const uploader = new StreamUploader({
+      bee: makeBee({ fail: permanentError }),
+      streamCatalog: makeFakeCatalog(),
+      recoveryStore: recovery,
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
@@ -331,15 +335,17 @@ describe('StreamUploader Swarm write options', () => {
       }),
     } as unknown as Bee;
 
-    const uploader = new StreamUploader(
+    const uploader = new StreamUploader({
       bee,
-      makeFakeCatalog(),
-      makeFakeRecoveryStore(),
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+      streamCatalog: makeFakeCatalog(),
+      recoveryStore: makeFakeRecoveryStore(),
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
@@ -489,15 +495,17 @@ describe('StreamUploader finalization (CON-25)', () => {
       },
     });
 
-    const uploader = new StreamUploader(
+    const uploader = new StreamUploader({
       bee,
-      catalog,
-      makeFakeRecoveryStore(),
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+      streamCatalog: catalog,
+      recoveryStore: makeFakeRecoveryStore(),
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
@@ -542,15 +550,17 @@ describe('StreamUploader finalization (CON-25)', () => {
       }),
     } as unknown as Bee;
 
-    const uploader = new StreamUploader(
+    const uploader = new StreamUploader({
       bee,
-      makeFakeCatalog(),
-      makeFakeRecoveryStore(),
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+      streamCatalog: makeFakeCatalog(),
+      recoveryStore: makeFakeRecoveryStore(),
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
 
     uploader.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(uploader);
@@ -608,16 +618,18 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
 
   /** Omitting the window is a case of its own: it is the one every deployment actually runs. */
   function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs?: number): StreamUploader {
-    return new StreamUploader(
-      makeBee({}),
-      catalog,
-      makeFakeRecoveryStore(),
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-      { catalogAnnounceRetryMs },
-    );
+    return new StreamUploader({
+      bee: makeBee({}),
+      streamCatalog: catalog,
+      recoveryStore: makeFakeRecoveryStore(),
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+      catalogAnnounceRetryMs,
+    });
   }
 
   async function publishSegments(uploader: StreamUploader, count: number): Promise<void> {
@@ -745,15 +757,17 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
 
 describe('StreamUploader recovery persist failures (OBS-4)', () => {
   function newUploaderWithStore(recoveryStore: RecoveryStore): StreamUploader {
-    return new StreamUploader(
-      makeBee({}),
-      makeFakeCatalog(),
+    return new StreamUploader({
+      bee: makeBee({}),
+      streamCatalog: makeFakeCatalog(),
       recoveryStore,
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
   }
 
   /**
@@ -860,16 +874,19 @@ interface UploaderFixtureOptions {
 }
 
 function uploaderWith(bee: Bee, options: UploaderFixtureOptions = {}): StreamUploader {
-  return new StreamUploader(
+  return new StreamUploader({
     bee,
-    makeFakeCatalog(),
-    makeFakeRecoveryStore(),
-    TEST_STREAM_KEY,
-    'stamp',
-    'stream-test',
-    MEDIA_TYPE_VIDEO,
-    { restoreState: options.restoreState as never, metrics: options.metrics },
-  );
+    streamCatalog: makeFakeCatalog(),
+    recoveryStore: makeFakeRecoveryStore(),
+    streamKey: TEST_STREAM_KEY,
+    stamp: 'stamp',
+    redundancyLevel: 1,
+    streamId: 'stream-test',
+    streamTopic: 'topic-test',
+    mediatype: MEDIA_TYPE_VIDEO,
+    restoreState: options.restoreState as never,
+    metrics: options.metrics,
+  });
 }
 
 /** A publish held at the first feed write, with the handles to know it started and to let it finish. */
@@ -1135,19 +1152,21 @@ describe('StreamUploader catalog entry title', () => {
     t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 2, 5, 12, 0, 0).getTime() });
 
     const published: { title: string }[] = [];
-    const uploader = new StreamUploader(
-      makeBee({}),
-      makeFakeCatalog({
+    const uploader = new StreamUploader({
+      bee: makeBee({}),
+      streamCatalog: makeFakeCatalog({
         addStream: async (entry: { title: string }) => {
           published.push(entry);
         },
       }),
-      makeFakeRecoveryStore(),
-      TEST_STREAM_KEY,
-      'stamp',
-      'stream-test',
-      MEDIA_TYPE_VIDEO,
-    );
+      recoveryStore: makeFakeRecoveryStore(),
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+    });
 
     await uploader.notifyStart();
 
@@ -1197,5 +1216,129 @@ describe('StreamUploader restoring an impossible recovery entry', () => {
       restoredFrom({ isFirstSegmentReady: false, isFirstManifestReady: false });
       assert.equal(repairs().length, 1, 'a reachable pair is not a repair');
     });
+  });
+});
+
+describe('StreamUploader catalog failures on the segment path', () => {
+  const LADDER = {
+    group: 'group-1',
+    rung: { name: '360p', width: 640, height: 360, configuredKbps: 800 },
+  };
+
+  function primeForDriftCorrection(uploader: StreamUploader): void {
+    const inner = uploader as unknown as {
+      isFirstManifestReady: boolean;
+      driftBaselineBps: number;
+      lastAnnounceAttemptAt: number;
+      bitrate: { peakBps: number };
+    };
+    inner.isFirstManifestReady = true;
+    inner.driftBaselineBps = 1_000_000;
+    inner.lastAnnounceAttemptAt = 0;
+    inner.bitrate.peakBps = 5_000_000;
+  }
+
+  /** onIdle resolves whether or not a task rejected, so the rejection needs a loop turn to arrive. */
+  function letRejectionsSurface(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  function uploaderWithCatalog(catalog: StreamCatalog, saved: StreamState[] = []): StreamUploader {
+    const recovery = {
+      save: (_id: string, state: StreamState) => {
+        saved.push(state);
+      },
+      load: () => null,
+      remove: () => {},
+      listActive: () => [],
+    } as unknown as RecoveryStore;
+
+    return new StreamUploader({
+      bee: makeBee({}),
+      streamCatalog: catalog,
+      recoveryStore: recovery,
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+      ladder: LADDER,
+    });
+  }
+
+  it('keeps a failed rendition announcement inside the segment task', async () => {
+    // The listener is the assertion. Watching persistState instead proves nothing — commitManifest
+    // persists from the manifest queue too, so state lands either way and the escape hides.
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    const catalog = {
+      addStream: async () => {},
+      upsertRendition: async () => {
+        throw new Error('catalog feed read failed after the retry window');
+      },
+    } as unknown as StreamCatalog;
+
+    try {
+      const uploader = uploaderWithCatalog(catalog);
+      primeForDriftCorrection(uploader);
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+      await letRejectionsSurface();
+
+      assert.equal(uploader.getStreamState().segments.length, 1, 'the segment itself must still be recorded');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    assert.deepEqual(
+      rejections.map((r) => (r as Error)?.message),
+      [],
+      'a failing catalog write must not escape the segment queue as an unhandled rejection',
+    );
+  });
+
+  it('does not advance the drift baseline when the announcement failed to land', async () => {
+    // Advance it on a write the catalog never received and the next comparison measures the new
+    // bandwidth against itself: no drift, and the correction is never retried.
+    const catalog = {
+      addStream: async () => {},
+      upsertRendition: async () => {
+        throw new Error('catalog feed read failed after the retry window');
+      },
+    } as unknown as StreamCatalog;
+
+    const uploader = uploaderWithCatalog(catalog);
+    primeForDriftCorrection(uploader);
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    const inner = uploader as unknown as { driftBaselineBps: number };
+    assert.equal(inner.driftBaselineBps, 1_000_000, 'the unpublished bandwidth must not become the baseline');
+  });
+
+  it('advances the drift baseline once the announcement lands', async () => {
+    const announced: number[] = [];
+    const catalog = {
+      addStream: async () => {},
+      upsertRendition: async (_identity: unknown, rendition: { bandwidth: number }) => {
+        announced.push(rendition.bandwidth);
+      },
+    } as unknown as StreamCatalog;
+
+    const uploader = uploaderWithCatalog(catalog);
+    primeForDriftCorrection(uploader);
+
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    assert.equal(announced.length, 1);
+    const inner = uploader as unknown as { driftBaselineBps: number };
+    assert.equal(inner.driftBaselineBps, announced[0]);
+    assert.notEqual(inner.driftBaselineBps, 1_000_000);
   });
 });

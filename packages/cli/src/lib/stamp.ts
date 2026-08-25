@@ -29,6 +29,8 @@ export interface StampOptions {
 /** What the operator asked for on the command line, before defaults and env vars are applied. */
 export interface StampCommandArgs {
   url?: string;
+  /** Which rung's publisher to buy on. Absent means the single-node path, BEE_URL and STAMP. */
+  rung?: string;
   amount?: string;
   depth?: number;
   immutable?: boolean;

@@ -92,3 +92,25 @@ export function resolvedFeedIndex(headers: Headers): number | null {
   }
   return Number.parseInt(raw.trim(), 16);
 }
+
+/**
+ * The index a `/feeds/` head lookup resolved to, which is where a sequential walk has to start.
+ *
+ * Throws where {@link resolvedFeedIndex} returns null, because the callers differ in what they can
+ * do about it. A follower mid-walk has a fallback and takes the null. A walk that is still choosing
+ * its starting slot has none: continuing without the head means starting from zero and re-reading
+ * the whole feed, so failing loudly is the cheaper outcome.
+ *
+ * Validates the same way as its neighbour rather than handing the raw header to `BigInt`, which
+ * reports a malformed index as a `SyntaxError` naming neither the header nor the feed.
+ */
+export function extractFeedIndex(headers: Headers): FeedIndex {
+  const raw = headers.get('swarm-feed-index');
+  if (raw === null) {
+    throw new Error('Feed head lookup returned no swarm-feed-index header');
+  }
+  if (!/^[0-9a-fA-F]+$/.test(raw.trim())) {
+    throw new Error(`Feed head lookup returned an unreadable swarm-feed-index: ${raw}`);
+  }
+  return FeedIndex.fromBigInt(BigInt(`0x${raw.trim()}`));
+}

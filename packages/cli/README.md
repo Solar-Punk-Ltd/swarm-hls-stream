@@ -11,12 +11,16 @@ Uses [@ethersphere/bee-js](https://github.com/ethersphere/bee-js) for all Bee AP
 | Command            | Description                                           |
 | ------------------ | ----------------------------------------------------- |
 | `pnpm stamp:setup` | Full workflow: wait for node → buy stamp → write .env |
-| `pnpm stamp:buy`   | Buy a stamp (amount/depth args)                       |
+| `pnpm stamp:buy`   | Buy a stamp: `[--rung <rung>] [amount] [depth]`       |
+| `pnpm stamp:check` | List all stamps with status                           |
+
+`--rung` picks which publisher buys, and is required once `BEE_PUBLISHERS` is set:
+a batch can only be spent by the node that bought it. Without it the single-node
+path is used, which is `BEE_URL` and `STAMP`.
 
 Both commands that spend show the batch cost and how long it will last, then ask
 to confirm. `--yes` approves without a prompt, and is required for any run with
 no terminal: without one the confirmation is declined rather than assumed.
-| `pnpm stamp:check` | List all stamps with status |
 
 ### Node info
 
@@ -30,7 +34,21 @@ All commands run from the **monorepo root**.
 
 ## Target Resolution
 
-Commands auto-detect the bee-uploader URL by reading:
+**The read-only commands run against every configured Bee node.** Which nodes those are depends on whether the deployment has been split per ABR rung.
+
+`stamp:buy` is the exception — it takes a rung and acts on exactly one node. See below.
+
+### With `BEE_PUBLISHERS` set — one node per rung
+
+The publishers are read straight out of `BEE_PUBLISHERS` (see [.env.sample](../../.env.sample)), so there is one source of truth and it is the same variable the uploader reads. A node per rung means **four wallets to fund and four batches to watch per stage**, and a command that only looked at one of them would hide three quarters of that.
+
+The URLs are used as written. In a Docker deployment the host's `.env` holds host-reachable URLs while compose overrides the uploader container's copy with compose service names — the same split `BEE_URL` already has.
+
+`stamp:check` looks at the publishers only. The gateway runs with swap disabled and buys nothing, so it appears in the node info commands and not there.
+
+### Without it — the single-node deployment
+
+Falls back to the previous behaviour: the bee-uploader URL, auto-detected from
 
 1. `deploy/config.json` — deployment target for `bee-uploader`
 2. `.env` — `BEE_UPLOADER_API_PORT` (default: 1633)
@@ -41,13 +59,44 @@ Commands auto-detect the bee-uploader URL by reading:
 | `"root@1.2.3.4"` | `http://1.2.3.4:1633`             |
 | `false`          | Falls back to `BEE_URL` from .env |
 
-Override with `--url`:
+### `--url`
+
+Narrows to a single node:
 
 ```bash
-pnpm stamp:check --url http://some-other-node:1633
+pnpm stamp:check --url http://localhost:1663
 ```
 
-Node info commands (`node:status`, `node:addresses`, `node:wallets`) check both bee-uploader and bee-gateway when no `--url` override is given.
+A URL that matches a configured publisher **keeps that node's identity** — its rung and its configured batch — so `stamp:check --url` can still tell you which of that node's batches is the one in use. A URL that matches nothing is reached anyway, as an anonymous node.
+
+## stamp:buy takes a rung
+
+A postage batch is held by the node that bought it and can only be spent by that node, so which node is not something to leave implicit:
+
+```bash
+pnpm stamp:buy 360p
+pnpm stamp:buy 1080p 6000000000 23
+```
+
+The rung is required and validated against `BEE_PUBLISHERS`. An unknown rung, a missing rung, or an unsplit config all fail before any network call, listing the rungs that _are_ configured:
+
+```
+✗ No node configured for rung "1080p". Configured rungs: 360p, 720p
+```
+
+Falling back to some default node would put the batch somewhere that cannot spend it, and nothing would fail at that point — it would fail later, as a rung that stops publishing while a healthy batch sits on the wrong node.
+
+Validation is against `BEE_PUBLISHERS` rather than `ABR_LADDER`, which lives in the engine's own `.env` and is not loaded here. In a working config the two agree: the uploader refuses to start unless the publisher list covers the ladder exactly.
+
+**Nothing is written to `.env`.** The batch id is printed in the form `BEE_PUBLISHERS` wants and putting it there is yours to do, so a config change is always deliberate:
+
+```
+  Batch ID: 88fb1a…5628
+--- Put it in BEE_PUBLISHERS, replacing this rung's entry:
+---   360p@http://localhost:1633<88fb1a…5628>
+```
+
+Amount and depth are the same for every rung. Sizing a batch to the rung it pays for is a real concern — 1080p exhausts a given depth roughly 7× sooner than 360p — and is deliberately left out.
 
 ## stamp:setup Workflow
 
@@ -72,6 +121,10 @@ whose id existed only in terminal scrollback.
 If the write fails after the purchase, the command writes the id to a recovery file, prints it, and
 exits non-zero. It never reports success for a batch it could not record. `pnpm stamp:buy` behaves
 the same way.
+
+> This is the **single-node** workflow and it is unchanged. It writes `STAMP`, which a deployment
+> using `BEE_PUBLISHERS` does not read — with the publishers split, buy per rung with `stamp:buy`
+> and put each batch in `BEE_PUBLISHERS` yourself.
 
 ### Node funding
 
@@ -101,16 +154,21 @@ pnpm stamp:setup -- 6000000000 23 --yes
 src/
   index.ts                     # CLI entry — command routing, --url parsing
   commands/
-    stamp-setup.ts             # Full stamp workflow
-    stamp-buy.ts               # Buy a single stamp
-    stamp-check.ts             # List all stamps
+    stamp-setup.ts             # Full stamp workflow, single node
+    stamp-buy.ts               # Buy a batch for one rung, by name
+    stamp-check.ts             # List all stamps, flagging the configured one
     node-status.ts             # Health + peers
     node-addresses.ts          # Ethereum + overlay addresses
-    node-wallets.ts            # BZZ + xDAI balances
+    node-wallets.ts            # BZZ + xDAI balances, warning on unfunded publishers
   lib/
     bee-client.ts              # Bee instance factory
-    config-reader.ts           # Read config.json + .env, resolve URLs
+    config-reader.ts           # Read config.json + .env, resolve node targets
+    publishers.ts              # Parse BEE_PUBLISHERS (read-only)
+    nodes.ts                   # Iterate nodes, apply --url, select a publisher by rung
     env-writer.ts              # Update a key in .env (line-level replace)
     wait.ts                    # Poll with timeout (node health, stamp usability)
     output.ts                  # Colored console output helpers
+test/
+  publishers.test.ts           # BEE_PUBLISHERS parsing
+  targets.test.ts              # Node target resolution, --url narrowing, rung selection
 ```

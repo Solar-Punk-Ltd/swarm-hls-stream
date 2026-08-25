@@ -19,6 +19,33 @@ export interface QoeMetrics {
   qualitySwitchPerMin: number;
   droppedFrames: number;
 
+  // ABR
+  /** Whether hls.js is choosing the level, or it is pinned. */
+  abrEnabled: boolean;
+  /** The rung ABR has selected, by height — not necessarily what is on screen yet. */
+  selectedHeight: number | null;
+  /** hls.js's own throughput estimate. Over Swarm this is the number expected to oscillate. */
+  bandwidthEstimateKbps: number | null;
+  /**
+   * Every rung hls.js parsed from the master, with the bitrate it was told and whether it is
+   * reachable. `capped` means capLevelToPlayerSize ruled it out for the current player size;
+   * `unaffordable` means the bandwidth estimate does not cover it under abrBandWidthUpFactor.
+   * A rung that is neither, and still not selected, is a rung hls.js excluded — usually because
+   * its playlist or a fragment failed to load.
+   */
+  ladder: LadderLevel[];
+  /** What ABR would pick right now, by height. Differs from selectedHeight while a switch is in flight. */
+  nextHeight: number | null;
+  /**
+   * How long a level switch took: from hls.js deciding, to the first fragment of the new rung
+   * being buffered. This is the measurement the ABR-over-Swarm POC exists to produce — it is
+   * where a stale rung's feed walk would show up.
+   */
+  lastSwitchLatencyMs: number | null;
+  avgSwitchLatencyMs: number | null;
+  maxSwitchLatencyMs: number | null;
+  switchLatencySamples: number;
+
   // Reliability
   fatalErrorCount: number;
   sessionCompleted: boolean;
@@ -47,6 +74,14 @@ export interface QoeMetrics {
   playbackTimeMs: number;
 }
 
+export interface LadderLevel {
+  height: number;
+  bitrateKbps: number;
+  current: boolean;
+  capped: boolean;
+  unaffordable: boolean;
+}
+
 export const initialMetrics = (): QoeMetrics => ({
   startupTimeMs: null,
   firstFrameTimeMs: null,
@@ -60,6 +95,15 @@ export const initialMetrics = (): QoeMetrics => ({
   qualitySwitchCount: 0,
   qualitySwitchPerMin: 0,
   droppedFrames: 0,
+  abrEnabled: false,
+  selectedHeight: null,
+  bandwidthEstimateKbps: null,
+  ladder: [],
+  nextHeight: null,
+  lastSwitchLatencyMs: null,
+  avgSwitchLatencyMs: null,
+  maxSwitchLatencyMs: null,
+  switchLatencySamples: 0,
   fatalErrorCount: 0,
   sessionCompleted: false,
   reconnectAttempts: 0,
@@ -149,6 +193,41 @@ export const attachQoeTracking = (
     flush();
   };
 
+  // A switch is measured from the moment hls.js commits to a rung until a fragment of that rung is
+  // buffered — the interval in which a rung whose feed had gone stale would have to catch up.
+  let switchStartedAt: number | null = null;
+  let switchTargetLevel: number | null = null;
+  let switchLatencyTotalMs = 0;
+  let hasBufferedOnce = false;
+
+  const onLevelSwitching = (_event: unknown, data: { level: number }) => {
+    // The first selection is startup, not a switch; startupTimeMs already covers it.
+    if (!hasBufferedOnce) {
+      return;
+    }
+    switchStartedAt = performance.now();
+    switchTargetLevel = data.level;
+  };
+
+  const onFragBuffered = (_event: unknown, data: { frag: { level: number } }) => {
+    hasBufferedOnce = true;
+
+    if (switchStartedAt === null || data.frag.level !== switchTargetLevel) {
+      return;
+    }
+
+    const elapsed = performance.now() - switchStartedAt;
+    switchStartedAt = null;
+    switchTargetLevel = null;
+
+    switchLatencyTotalMs += elapsed;
+    metrics.switchLatencySamples += 1;
+    metrics.lastSwitchLatencyMs = elapsed;
+    metrics.avgSwitchLatencyMs = switchLatencyTotalMs / metrics.switchLatencySamples;
+    metrics.maxSwitchLatencyMs = Math.max(metrics.maxSwitchLatencyMs ?? 0, elapsed);
+    flush();
+  };
+
   const fragBitrateSamples: number[] = [];
   const onFragLoaded = (_event: unknown, data: { frag: { duration: number; stats?: { loaded?: number } } }) => {
     const { frag } = data;
@@ -186,6 +265,8 @@ export const attachQoeTracking = (
 
   if (hls) {
     hls.on(Events.LEVEL_SWITCHED, onLevelSwitched);
+    hls.on(Events.LEVEL_SWITCHING, onLevelSwitching);
+    hls.on(Events.FRAG_BUFFERED, onFragBuffered);
     hls.on(Events.FRAG_LOADED, onFragLoaded);
     hls.on(Events.ERROR, onHlsError);
   }
@@ -220,6 +301,32 @@ export const attachQoeTracking = (
       metrics.liveLatencySec = typeof latency === 'number' && Number.isFinite(latency) && latency > 0 ? latency : null;
       const target = hls.targetLatency;
       metrics.liveTargetLatencySec = typeof target === 'number' && Number.isFinite(target) ? target : null;
+
+      metrics.abrEnabled = hls.autoLevelEnabled;
+
+      // Defaulted rather than assumed. This poller starts with the player and the ladder does not
+      // exist until a master has been parsed, which `autoStartLoad: false` deliberately delays — and
+      // an overlay that throws inside its own interval takes the tracking down for the session
+      // rather than showing one blank row.
+      const levels = hls.levels ?? [];
+      metrics.selectedHeight = levels[hls.currentLevel]?.height ?? null;
+
+      const estimate = hls.bandwidthEstimate;
+      metrics.bandwidthEstimateKbps = Number.isFinite(estimate) && estimate > 0 ? Math.round(estimate / 1000) : null;
+
+      // The whole ABR decision, laid out. Which rungs exist, what hls.js believes each costs, and
+      // which of the two gates — player size or bandwidth — is holding one back. Without this the
+      // only visible symptom of a stuck ladder is a resolution that never changes.
+      const capping = hls.autoLevelCapping ?? -1;
+      const affordable = estimate * (hls.config?.abrBandWidthUpFactor ?? 1);
+      metrics.ladder = levels.map((level, index) => ({
+        height: level.height,
+        bitrateKbps: Math.round(level.maxBitrate / 1000),
+        current: index === hls.currentLevel,
+        capped: capping > -1 && index > capping,
+        unaffordable: affordable < level.maxBitrate,
+      }));
+      metrics.nextHeight = levels[hls.nextAutoLevel]?.height ?? null;
     }
 
     flush();
@@ -233,6 +340,8 @@ export const attachQoeTracking = (
     video.removeEventListener('ended', onEnded);
     if (hls) {
       hls.off(Events.LEVEL_SWITCHED, onLevelSwitched);
+      hls.off(Events.LEVEL_SWITCHING, onLevelSwitching);
+      hls.off(Events.FRAG_BUFFERED, onFragBuffered);
       hls.off(Events.FRAG_LOADED, onFragLoaded);
       hls.off(Events.ERROR, onHlsError);
     }

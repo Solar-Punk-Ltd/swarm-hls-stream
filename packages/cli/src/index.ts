@@ -26,11 +26,16 @@ function printUsage(): void {
   console.log('  node-addresses    Ethereum + overlay addresses');
   console.log('  node-wallets      Wallet balances (BZZ + xDAI)');
   console.log('  stamp-check       List all stamps with status');
-  console.log('  stamp-buy         Buy a stamp [amount] [depth] [--immutable] [--yes]');
+  console.log('  stamp-buy         Buy a stamp [--rung <rung>] [amount] [depth] [--immutable] [--yes]');
   console.log('  stamp-setup       Full workflow: wait → buy → write .env [--immutable] [--yes]');
   console.log('');
+  console.log('Read-only commands run against every configured Bee node. With BEE_PUBLISHERS set that');
+  console.log('is one node per ABR rung, so a stage has four wallets and four batches to keep an eye on.');
+  console.log('stamp-buy is the exception: it needs the rung, because a batch can only be spent by the');
+  console.log('node that bought it. It prints the batch id and never edits your config.');
+  console.log('');
   console.log('Options:');
-  console.log('  --url <url>       Override bee node URL (auto-detected from config.json)');
+  console.log('  --url <url>       Act on one node only (matched against the configured nodes)');
   console.log('  --immutable       Create immutable stamp (default: mutable)');
   console.log('  --yes, -y         Skip the confirmation before an on-chain spend');
 }

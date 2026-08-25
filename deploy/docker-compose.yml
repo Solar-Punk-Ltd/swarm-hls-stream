@@ -97,6 +97,7 @@ services:
     environment:
       BEE_URL: ${BEE_URL:-http://bee-uploader:1633}
       STAMP: ${STAMP}
+      BEE_PUBLISHERS: ${BEE_PUBLISHERS:-}
       STREAM_KEY: ${STREAM_KEY}
       STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN}
@@ -113,8 +114,15 @@ services:
       SEGMENT_STALL_MS: ${SEGMENT_STALL_MS:-30000}
       SEGMENT_DEDUP_WINDOW: ${SEGMENT_DEDUP_WINDOW:-10000}
       ORPHAN_REAP_MS: ${ORPHAN_REAP_MS:-60000}
+      SEGMENT_REDUNDANCY: ${SEGMENT_REDUNDANCY:-1}
       ENGINE: ${ENGINE:-srs}
       SRS_MEDIA_PATH: /media
+      # The uploader reads the same ladder the engine was configured with: SRS's webhooks carry
+      # the stream name and nothing else, so width, height and the encoder's target bitrate — all
+      # of which the master playlist needs — only exist here.
+      ABR_ENABLED: ${ABR_ENABLED:-false}
+      ABR_LADDER: ${ABR_LADDER:-}
+      ABR_VHOST: ${ABR_VHOST:-abr}
       OME_HLS_URL: ${OME_HLS_URL:-http://ome:8081}
       OME_HLS_POLL_INTERVAL_MS: ${OME_HLS_POLL_INTERVAL_MS:-500}
       OME_FETCH_TIMEOUT_MS: ${OME_FETCH_TIMEOUT_MS:-10000}
@@ -249,6 +257,17 @@ services:
       HLS_AOF_RATIO: ${HLS_AOF_RATIO:-5.0}
       HLS_WINDOW: ${HLS_WINDOW:-15}
       SRT_LATENCY: ${SRT_LATENCY:-200}
+      # The ABR ladder, read by the SRS entrypoint. Off by default.
+      ABR_ENABLED: ${ABR_ENABLED:-false}
+      ABR_LADDER: ${ABR_LADDER:-}
+      ABR_VHOST: ${ABR_VHOST:-abr}
+      ABR_FPS: ${ABR_FPS:-30}
+      ABR_PRESET: ${ABR_PRESET:-veryfast}
+      ABR_PROFILE: ${ABR_PROFILE:-main}
+      ABR_THREADS: ${ABR_THREADS:-0}
+      ABR_ACODEC: ${ABR_ACODEC:-copy}
+      ABR_AUDIO_BITRATE: ${ABR_AUDIO_BITRATE:-128}
+      ABR_RTMP_PORT: ${ABR_RTMP_PORT:-1935}
 
   # --- OvenMediaEngine ---
 
@@ -278,6 +297,8 @@ services:
       # of OPS-30. They were previously publish mappings only, so the container never saw them.
       OME_SRT_PORT: ${OME_SRT_PORT:-10080}
       OME_HLS_PORT: ${OME_HLS_PORT:-8081}
+      HLS_SEGMENT_DURATION: ${HLS_SEGMENT_DURATION:-2}
+      HLS_SEGMENT_COUNT: ${HLS_SEGMENT_COUNT:-5}
 
 volumes:
   srs-media:

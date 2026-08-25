@@ -760,7 +760,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
   it('refuses a 200 that omits the feed index header', async () => {
     stubFetch(() => new Response(manifestForIndex(START_INDEX)));
 
-    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`), /Missing feed index header/);
+    await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`), /no swarm-feed-index header/);
 
     assert.equal(health.state(hexTopic), FEED_STATE_RECONNECTING);
   });

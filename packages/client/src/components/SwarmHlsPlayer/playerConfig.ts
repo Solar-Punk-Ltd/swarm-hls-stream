@@ -132,12 +132,28 @@ export const HLS_TUNING = {
 } as const satisfies Partial<HlsConfig>;
 
 /**
- * The full config for one player instance: the tuning above, plus the loaders that route manifest
- * and fragment requests through Swarm.
+ * The full config for one player instance: a tuning, plus the loaders that route manifest and
+ * fragment requests through Swarm.
  *
  * A function rather than a spread at the call site so that what the component passes to hls.js is
  * one named thing a test can build and hand to a real `new Hls(...)`.
+ *
+ * `tuning` defaults to {@link HLS_TUNING} and is the seam a caller's own overrides arrive through.
+ * The loaders are applied after it on purpose: they are what make this a Swarm player rather than an
+ * HTTP one, and a tuning that replaced them would produce a component which looks like this one and
+ * fetches from somewhere else entirely.
  */
-export function buildPlayerConfig(loaders: Pick<HlsConfig, 'pLoader' | 'fLoader'>): Partial<HlsConfig> {
-  return { ...loaders, ...HLS_TUNING };
+export function buildPlayerConfig(
+  loaders: Pick<HlsConfig, 'pLoader' | 'fLoader'>,
+  tuning: Partial<HlsConfig> = HLS_TUNING,
+): Partial<HlsConfig> {
+  return {
+    ...tuning,
+    ...loaders,
+    // Fragment loading is started by hand once the ladder is known, from the component's
+    // MANIFEST_PARSED handler. Left on, hls.js starts it from its own MANIFEST_LOADED handler, and
+    // whether that runs before or after the component gets to set `startLevel` depends on the order
+    // two internal controllers happened to register for the same event. Not a race worth inheriting.
+    autoStartLoad: false,
+  };
 }

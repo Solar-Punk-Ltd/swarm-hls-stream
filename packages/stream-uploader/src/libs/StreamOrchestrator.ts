@@ -1,8 +1,9 @@
-import { Bee } from '@ethersphere/bee-js';
+import crypto from 'crypto';
 
 import {
   ANONYMOUS_CLAIMANT,
   HealthSignals,
+  LadderMembership,
   MEDIA_TYPE_VIDEO,
   MediaType,
   PRESSURE_HIGH,
@@ -30,6 +31,8 @@ import {
 import { getErrorMessage } from '../utils/common.js';
 import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
+import { AbrLadder } from './AbrLadder.js';
+import { BeePublisherPool } from './BeePublisherPool.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -61,7 +64,6 @@ const DEFAULT_STOP_OUTCOME_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 export interface StreamOrchestratorConfig {
   streamKey: string;
-  stamp: string;
   maxQueueSize: number;
   recoveryTimeout: number;
   /** How long a live stream may receive nothing before it is reaped as an orphan. See #86. */
@@ -76,6 +78,10 @@ export interface StreamOrchestratorConfig {
    * can be driven at all: at its default the record outlives any test worth writing.
    */
   stopOutcomeTtlMs?: number;
+  /** Erasure-coding parity for segment uploads, passed through to each stream's uploader. */
+  segmentRedundancy: number;
+  /** The ABR ladder, when one is configured. Absent means single-rendition. */
+  ladder?: AbrLadder;
 }
 
 /**
@@ -215,11 +221,14 @@ export class StreamOrchestrator {
   private stopOutcomes = new Map<string, RetainedStopOutcome>();
   /** Totals that outlive the streams they describe, which is what `/health` structurally cannot do. */
   private readonly metrics = new ServiceMetrics();
+  /** Ladder id per base stream, so the four rungs of one source share a catalog entry. */
+  private ladderGroups = new Map<string, string>();
+  private streamBases = new Map<string, string>();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
 
   constructor(
-    private bee: Bee,
+    private publishers: BeePublisherPool,
     private streamCatalog: StreamCatalog,
     private recoveryStore: RecoveryStore,
     private config: StreamOrchestratorConfig,
@@ -433,6 +442,9 @@ export class StreamOrchestrator {
     // reading and do nothing, or find its replacement's and finalize a live broadcast.
     this.stallReapers.get(streamId)?.cancel();
     this.stallReapers.delete(streamId);
+    // The ladder maps are per session too, and `performDrain` only releases them on its no-uploader
+    // early return, so every normally-stopped rung would leak its group and base without this.
+    this.releaseLadder(streamId);
   }
 
   /**
@@ -486,16 +498,43 @@ export class StreamOrchestrator {
    * and a uuid.
    */
   private spawnUploader(streamId: string, mediatype: MediaType, claimant: StreamClaimant): void {
-    const uploader = new StreamUploader(
-      this.bee,
-      this.streamCatalog,
-      this.recoveryStore,
-      this.config.streamKey,
-      this.config.stamp,
+    // Resolved before the uploader is built: the rungs of one ladder publish within milliseconds of
+    // each other, and a group id assigned later would let two of them create two groups for one source.
+    const match = this.config.ladder?.match(streamId) ?? null;
+    let ladder: LadderMembership | undefined;
+
+    // A fresh topic per uploader, ladder or not. Deriving a rung's topic from (group, rung) would be
+    // tidier to read, but a rung that stops and restarts while its siblings keep the ladder alive
+    // would be handed the topic it just finished writing and, with no state to resume from, would
+    // start overwriting it at SOC index 0. What has to be stable across a ladder is the group.
+    const streamTopic = crypto.randomUUID();
+
+    if (match) {
+      const group = this.groupFor(match.baseStreamId);
+      ladder = { group, rung: match.rung };
+      this.streamBases.set(streamId, match.baseStreamId);
+      this.logger.info(
+        `[StreamOrchestrator] ${streamId} is rung ${match.rung.name} of ladder ${group}, topic ${streamTopic}`,
+      );
+    }
+
+    // Which node's postage batch pays for this rung. A stream with no rung, single-rendition or
+    // anything arriving through the generic API, rides the coordinator: the longest-lived batch.
+    const publisher = match ? this.publishers.forRung(match.rung.name) : this.publishers.coordinator();
+
+    const uploader = new StreamUploader({
+      bee: publisher.bee,
+      streamCatalog: this.streamCatalog,
+      recoveryStore: this.recoveryStore,
+      streamKey: this.config.streamKey,
+      stamp: publisher.stamp,
+      redundancyLevel: this.config.segmentRedundancy,
       streamId,
+      streamTopic,
       mediatype,
-      { metrics: this.metrics },
-    );
+      ladder,
+      metrics: this.metrics,
+    });
 
     this.activeStreams.set(streamId, uploader);
     this.processedSegments.set(streamId, this.newDuplicateFilter());
@@ -914,27 +953,44 @@ export class StreamOrchestrator {
     // recovery timer can never be cancelled and the stream is always VOD-ed at the timeout.
     const streamId = state.streamId;
 
-    const uploader = new StreamUploader(
-      this.bee,
-      this.streamCatalog,
-      this.recoveryStore,
-      this.config.streamKey,
-      this.config.stamp,
-      state.streamId,
-      state.mediatype,
-      {
-        restoreState: {
-          streamRawTopic: state.streamRawTopic,
-          socIndex: state.socIndex,
-          segments: state.segments,
-          hlsHeaders: state.hlsHeaders,
-          isFirstSegmentReady: state.isFirstSegmentReady,
-          isFirstManifestReady: state.isFirstManifestReady,
-          pendingDiscontinuity: state.pendingDiscontinuity,
-        },
-        metrics: this.metrics,
+    // Reinstate the ladder from what was persisted, not from the current ABR_LADDER: a rung that was
+    // mid-stream keeps the group and topic its siblings already published under, even if the ladder
+    // has been reconfigured since.
+    if (state.ladder) {
+      const base = baseStreamId(streamId, state.ladder.rung.name);
+      this.ladderGroups.set(base, state.ladder.group);
+      this.streamBases.set(streamId, base);
+    }
+
+    // Routed from the persisted rung name rather than from a fresh ladder match, so a recovered rung
+    // resumes on the node that has been paying for it. If the ladder was reconfigured while this
+    // stream was down, the pool warns and routes it to the coordinator rather than dropping a ladder
+    // its siblings are still publishing.
+    const publisher = state.ladder ? this.publishers.forRung(state.ladder.rung.name) : this.publishers.coordinator();
+
+    const uploader = new StreamUploader({
+      bee: publisher.bee,
+      streamCatalog: this.streamCatalog,
+      recoveryStore: this.recoveryStore,
+      streamKey: this.config.streamKey,
+      stamp: publisher.stamp,
+      redundancyLevel: this.config.segmentRedundancy,
+      streamId: state.streamId,
+      streamTopic: state.streamRawTopic,
+      mediatype: state.mediatype,
+      ladder: state.ladder,
+      restoreState: {
+        streamRawTopic: state.streamRawTopic,
+        socIndex: state.socIndex,
+        segments: state.segments,
+        hlsHeaders: state.hlsHeaders,
+        isFirstSegmentReady: state.isFirstSegmentReady,
+        isFirstManifestReady: state.isFirstManifestReady,
+        pendingDiscontinuity: state.pendingDiscontinuity,
+        bitrate: state.bitrate,
       },
-    );
+      metrics: this.metrics,
+    });
 
     this.activeStreams.set(streamId, uploader);
     this.streamActivityAt.set(streamId, this.clock.now());
@@ -1335,11 +1391,39 @@ export class StreamOrchestrator {
     this.logger.info('[StreamOrchestrator] Cleanup complete');
   }
 
+  private groupFor(base: string): string {
+    const existing = this.ladderGroups.get(base);
+    if (existing) {
+      return existing;
+    }
+
+    const group = crypto.randomUUID();
+    this.ladderGroups.set(base, group);
+    return group;
+  }
+
+  private releaseLadder(streamId: string): void {
+    const base = this.streamBases.get(streamId);
+    this.streamBases.delete(streamId);
+
+    if (!base) {
+      return;
+    }
+
+    // The group only dies once its last rung has. A source that restarts while a sibling is
+    // still draining must not be handed a second group for the same ladder.
+    const stillRunning = [...this.streamBases.values()].some((other) => other === base);
+    if (!stillRunning) {
+      this.ladderGroups.delete(base);
+    }
+  }
+
   private async performDrain(streamId: string): Promise<void> {
     const uploader = this.activeStreams.get(streamId);
     if (!uploader) {
       this.logger.warn(`[StreamOrchestrator] No uploader found for ${streamId}`);
       this.recoveryStore.remove(streamId);
+      this.releaseLadder(streamId);
       return;
     }
 
@@ -1415,4 +1499,9 @@ export class StreamOrchestrator {
       drainTimer?.cancel();
     }
   }
+}
+
+function baseStreamId(streamId: string, rung: string): string {
+  const suffix = `_${rung}`;
+  return streamId.endsWith(suffix) ? streamId.slice(0, -suffix.length) : streamId;
 }

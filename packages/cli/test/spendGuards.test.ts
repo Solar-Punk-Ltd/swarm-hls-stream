@@ -50,7 +50,37 @@ describe('the guards on a spend', () => {
   it('keeps the flags and the batch apart however they are ordered', () => {
     const parsed = stampArgs(parseArgs(['node', 'cli', 'stamp-buy', '--yes', '500', '--immutable', '21']));
 
-    assert.deepEqual(parsed, { url: undefined, amount: '500', depth: 21, immutable: true, assumeYes: true });
+    assert.deepEqual(parsed, {
+      url: undefined,
+      rung: undefined,
+      amount: '500',
+      depth: 21,
+      immutable: true,
+      assumeYes: true,
+    });
+  });
+
+  /**
+   * `--rung` is a flag rather than a leading positional precisely so it cannot become the amount.
+   * The separator case above is what that mistake costs, so the new flag is asserted the same way:
+   * it takes its own value and leaves the positionals where they were.
+   */
+  it('takes the rung from its flag without consuming the amount', () => {
+    const parsed = stampArgs(parseArgs(['node', 'cli', 'stamp-buy', '--rung', '360p', '500', '21']));
+
+    assert.deepEqual(parsed, {
+      url: undefined,
+      rung: '360p',
+      amount: '500',
+      depth: 21,
+      immutable: undefined,
+      assumeYes: true,
+    });
+  });
+
+  /** Absent the flag there is no rung, which is what keeps the single-node path working. */
+  it('leaves the rung unset when the flag is absent', () => {
+    assert.equal(stampArgs(parseArgs(['node', 'cli', 'stamp-buy', '500', '21'])).rung, undefined);
   });
 });
 

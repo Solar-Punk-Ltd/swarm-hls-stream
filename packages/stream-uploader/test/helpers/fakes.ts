@@ -1,5 +1,6 @@
 import { Bee } from '@ethersphere/bee-js';
 
+import { BeePublisher, BeePublisherPool, SINGLE_PUBLISHER } from '../../src/libs/BeePublisherPool.js';
 import { RecoveryStore } from '../../src/libs/RecoveryStore.js';
 import { MetricsSnapshot } from '../../src/libs/ServiceMetrics.js';
 import { StreamCatalog } from '../../src/libs/StreamCatalog.js';
@@ -200,20 +201,31 @@ export function toRecoveryFileId(streamId: string): string {
   return streamId.replace(/[/\\]/g, '_');
 }
 
+/**
+ * One node for everything, which is what an unsplit deployment gets from `BeePublisherPool.single`.
+ *
+ * Every rung resolves to the same publisher, so a test that turns the ladder on still writes through
+ * one fake bee and can assert on it without knowing which rung asked.
+ */
+function makeFakePublishers(bee: Bee): BeePublisherPool {
+  const publisher: BeePublisher = { rung: SINGLE_PUBLISHER, url: '', stamp: 'stamp', bee };
+  return { coordinator: () => publisher, forRung: () => publisher } as unknown as BeePublisherPool;
+}
+
 export function makeTestOrchestrator(
   config: Partial<StreamOrchestratorConfig> = {},
   uploads: FakeUploads = {},
   recoveryStore: RecoveryStore = makeFakeRecoveryStore(),
   catalog: StreamCatalog = makeFakeCatalog(),
 ): StreamOrchestrator {
-  return new StreamOrchestrator(makeFakeBee(uploads), catalog, recoveryStore, {
+  return new StreamOrchestrator(makeFakePublishers(makeFakeBee(uploads)), catalog, recoveryStore, {
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
     maxQueueSize: 100,
     recoveryTimeout: 60_000,
     orphanReapMs: 60_000,
     segmentStallMs: 30_000,
     segmentDedupWindow: 10_000,
+    segmentRedundancy: 1,
     ...config,
   });
 }

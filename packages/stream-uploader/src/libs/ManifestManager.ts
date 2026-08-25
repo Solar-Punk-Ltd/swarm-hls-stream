@@ -63,6 +63,19 @@ function joinManifest(lines: string[]): string {
  *
  * ⚠️ Recordings published before this carry absolute URIs permanently, so the client keeps passing an
  * absolute segment URI through untouched. That path is for old content, not for new.
+ *
+ * ## One rung’s media playlist
+ *
+ ** One rung's media playlist.
+ **
+ ** `EXT-X-MEDIA-SEQUENCE` carries the engine's own sequence number for the playlist's first
+ ** segment, not a count of what this uploader has seen. On a single-rendition stream the two are
+ ** interchangeable; across an ABR ladder they are not, and the difference is what makes a switch
+ ** land where it should. Every rung is transcoded from the same source with keyframes forced to the
+ ** same media timestamps, so segment N of 360p and segment N of 1080p cover the same interval —
+ ** which is the only thing telling hls.js that two levels share a timeline, since these playlists
+ ** carry no `EXT-X-PROGRAM-DATE-TIME`. A count would drift the moment one rung's uploader started a
+ ** fragment later than another's, and a switch would then jump by however far apart they were.
  */
 export class ManifestManager {
   private segments: SegmentEntry[] = [];
@@ -107,14 +120,18 @@ export class ManifestManager {
       return [];
     }
 
-    // The media sequence is the count of segments the window left behind, so it is also where the
-    // window starts.
-    const mediaSequence = this.segments.length - this.liveWindowLength();
+    const windowSegments = this.segments.slice(this.segments.length - this.liveWindowLength());
 
-    return [
-      ...this.liveHeaderLines(mediaSequence),
-      ...this.segments.slice(mediaSequence).flatMap((seg) => this.segmentLines(seg)),
-    ];
+    // The engine's own sequence number for the window's first segment, not a count of what this
+    // uploader has seen. On a single-rendition stream the two are interchangeable; across an ABR
+    // ladder they are not, and the difference is what makes a level switch land where it should.
+    // Every rung forces keyframes to the same media timestamps, so segment N means the same interval
+    // on every rung, and that is the only thing telling hls.js the levels share a timeline — these
+    // playlists carry no `EXT-X-PROGRAM-DATE-TIME`. A count would drift the moment one rung's
+    // uploader started a fragment later than another's.
+    const mediaSequence = windowSegments.length > 0 ? windowSegments[0].index : 0;
+
+    return [...this.liveHeaderLines(mediaSequence), ...windowSegments.flatMap((seg) => this.segmentLines(seg))];
   }
 
   public buildVODManifest(): string {
@@ -202,10 +219,14 @@ export class ManifestManager {
    * segment overrunning what is left.
    */
   private liveWindowLength(): number {
-    // Reserved against the largest media sequence there could be, since it can name no more
-    // segments than exist. Its own digits are part of the header, and this avoids a second pass
-    // over a header whose length depends on the answer.
-    const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(this.segments.length));
+    // Reserved against the largest media sequence there could be. That used to be the segment
+    // count, because the sequence was a count; it is now the engine's own index for the window's
+    // first segment, which can exceed the count outright — a restarted uploader, or an engine that
+    // did not begin at zero. The newest index is the real upper bound, and under-reserving here
+    // spends a budget that is one bee chunk. Its own digits are part of the header, and reserving
+    // this way avoids a second pass over a header whose length depends on the answer.
+    const newestIndex = this.segments.length === 0 ? 0 : this.segments[this.segments.length - 1].index;
+    const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(newestIndex));
 
     let spent = 0;
     let length = 0;

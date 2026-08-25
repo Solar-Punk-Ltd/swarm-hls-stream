@@ -1,42 +1,24 @@
-import { createBee } from '../lib/bee-client.js';
-import {
-  loadEnv,
-  resolveBeeGatewayTarget,
-  resolveBeeUploaderTarget,
-  SVC_BEE_GATEWAY,
-  SVC_BEE_UPLOADER,
-} from '../lib/config-reader.js';
-import { error, header, table } from '../lib/output.js';
+import { loadEnv, resolveNodeTargets } from '../lib/config-reader.js';
+import { forEachNode } from '../lib/nodes.js';
+import { table, warn } from '../lib/output.js';
 
 export async function nodeWallets(urlOverride?: string): Promise<void> {
   loadEnv();
 
-  const targets = [
-    { name: SVC_BEE_UPLOADER, target: resolveBeeUploaderTarget() },
-    { name: SVC_BEE_GATEWAY, target: resolveBeeGatewayTarget() },
-  ];
+  await forEachNode(resolveNodeTargets(), urlOverride, async (bee, node) => {
+    const wallet = await bee.getWalletBalance();
+    table('BZZ', wallet.bzzBalance.toDecimalString());
+    table('xDAI', wallet.nativeTokenBalance.toDecimalString());
+    table('Address', wallet.walletAddress);
 
-  for (const { name, target } of targets) {
-    if (!target) {
-      header(`${name} (disabled)`);
-      continue;
+    // Only publishers buy batches and settle cheques, so only they need funding. Said here because
+    // with a node per rung there are four wallets to keep topped up per stage, and an unfunded one
+    // shows up much later as a rung that silently stops publishing.
+    if (node.rung && wallet.bzzBalance.toPLURBigInt() === 0n) {
+      warn(`No BZZ — rung ${node.rung} cannot buy or extend a postage batch`);
     }
-
-    const url = urlOverride ?? target.url;
-    header(`${name} (${url})`);
-
-    try {
-      const bee = createBee(url);
-      const wallet = await bee.getWalletBalance();
-      table('BZZ', wallet.bzzBalance.toDecimalString());
-      table('xDAI', wallet.nativeTokenBalance.toDecimalString());
-      table('Address', wallet.walletAddress);
-    } catch (err) {
-      error(`Unreachable: ${err instanceof Error ? err.message : 'unknown error'}`);
+    if (node.rung && wallet.nativeTokenBalance.toWeiBigInt() === 0n) {
+      warn(`No xDAI — rung ${node.rung} cannot pay gas`);
     }
-
-    if (urlOverride) {
-      break;
-    }
-  }
+  });
 }

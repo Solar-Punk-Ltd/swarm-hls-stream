@@ -1,8 +1,43 @@
-import { optional, optionalInt, required } from './env.js';
+import { AbrLadder, DEFAULT_LADDER_SPEC } from '../libs/AbrLadder.js';
+import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
+
+import { optional, optionalBool, optionalInt, required } from './env.js';
+
+/**
+ * The ABR ladder, or null when the engine is producing a single rendition.
+ *
+ * Parsed eagerly and allowed to throw: a malformed ABR_LADDER means the uploader would group
+ * rungs it cannot describe, and failing at startup is a great deal easier to diagnose than a
+ * master playlist that silently omits half the ladder.
+ */
+function readAbrConfig(): { vhost: string; ladder: AbrLadder } | null {
+  if (!optionalBool('ABR_ENABLED', false)) {
+    return null;
+  }
+
+  return {
+    // The vhost the engine republishes rungs onto. Anything arriving on another vhost is the
+    // untranscoded source, and the uploader has no business segmenting it.
+    vhost: optional('ABR_VHOST', 'abr'),
+    ladder: AbrLadder.parse(optional('ABR_LADDER', DEFAULT_LADDER_SPEC)),
+  };
+}
+
+/**
+ * One Bee node per rung, or empty for the single-node deployment described by BEE_URL and STAMP.
+ *
+ * Parsed eagerly and allowed to throw, for the same reason ABR_LADDER is: a publisher list that
+ * does not match the ladder means rungs paying out of the wrong postage batch, and a startup
+ * refusal is far easier to diagnose than a rung that goes quiet hours later.
+ */
+function readPublisherSpecs(): PublisherSpec[] {
+  return parsePublisherSpecs(optional('BEE_PUBLISHERS', ''));
+}
 
 export const config = {
   beeUrl: required('BEE_URL'),
   stamp: required('STAMP'),
+  publishers: readPublisherSpecs(),
   streamKey: required('STREAM_KEY'),
   streamListTopic: required('STREAM_LIST_TOPIC'),
   apiAuthToken: required('API_AUTH_TOKEN'),
@@ -33,5 +68,17 @@ export const config = {
   // playlist window, which is single digits of segments. The number exists to bound memory, not to
   // tune behaviour, so it is set where changing it can never change what is accepted. See CON-8.
   segmentDedupWindow: optionalInt('SEGMENT_DEDUP_WINDOW', 10000, { min: 1 }),
+  /**
+   * Erasure-coding parity on segment uploads. `0` turns parity off, which cuts upload bytes and,
+   * the part that shows on a live stream, the number of chunks a viewer retrieves before a segment
+   * can play.
+   *
+   * The default is deliberately `1`, which is what this has always uploaded. Turning parity off is
+   * the new behaviour ABR offers and it trades durability for latency, so it stays opt-in until it
+   * has been measured against the content-decay results. `min: 0` because 0 is a real setting here,
+   * unlike every bound above it.
+   */
+  segmentRedundancy: optionalInt('SEGMENT_REDUNDANCY', 1, { min: 0 }),
   engine: optional('ENGINE', ''),
+  abr: readAbrConfig(),
 };

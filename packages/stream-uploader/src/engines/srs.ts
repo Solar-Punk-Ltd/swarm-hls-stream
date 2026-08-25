@@ -2,10 +2,12 @@ import { NextFunction, Request, RequestHandler, Response, Router } from 'express
 import fs from 'fs';
 import path from 'path';
 
+import { AbrLadder } from '../libs/AbrLadder.js';
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_AUDIO, MEDIA_TYPE_VIDEO, MediaType } from '../types.js';
 import { getErrorMessage } from '../utils/common.js';
+import { config } from '../utils/config.js';
 import { optional, required } from '../utils/env.js';
 import { assertUsablePublishKeySecret, hasValidPublishKey, publishKeyFromParam } from '../utils/publishKey.js';
 import { isUsableStreamId } from '../utils/streamId.js';
@@ -17,6 +19,8 @@ import { EnginePlugin } from './types.js';
 const logger = Logger.getInstance();
 
 export interface SrsEngineOptions {
+  /** The ABR ladder, when one is configured. Absent means single-rendition, which is the default. */
+  abr?: AbrGuard;
   /** Shared secret SRS carries in its hook URL. Empty rejects every webhook, it does not disable the check. */
   webhookToken?: string;
   /**
@@ -51,6 +55,7 @@ type SrsHlsAction = typeof SRS_ACTION_HLS;
 
 interface SrsStreamPayload {
   action: SrsStreamAction;
+  vhost: string;
   app: string;
   stream: string;
   /**
@@ -74,11 +79,18 @@ interface SrsStreamPayload {
 
 interface SrsHlsPayload {
   action: SrsHlsAction;
+  vhost: string;
   app: string;
   stream: string;
   file: string;
   seq_no: number;
   duration: number;
+}
+
+/** The vhost the ladder's rungs are republished onto, and the rungs to expect there. */
+export interface AbrGuard {
+  vhost: string;
+  ladder: AbrLadder;
 }
 
 function srsResponse(res: Response, code: number): void {
@@ -109,7 +121,7 @@ export function createSrsEngineFromEnv(): EnginePlugin {
   const mediaPath = optional('SRS_MEDIA_PATH', './media');
   const webhookToken = required('SRS_WEBHOOK_TOKEN');
   const publishKeySecret = optional('PUBLISH_KEY_SECRET', '');
-  const engine = createSrsEngine(mediaPath, { webhookToken, publishKeySecret });
+  const engine = createSrsEngine(mediaPath, { webhookToken, publishKeySecret, abr: config.abr ?? undefined });
   // After construction, not before. `required` covers a missing or empty value, but the charset and
   // length checks live inside createSrsEngine, so logging first announced a successfully loaded
   // engine and then threw for a token that was merely too short.
@@ -165,6 +177,16 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
     logger.warn('[SRS] No webhook token configured, every webhook will be rejected');
   }
 
+  const abr = options.abr;
+  if (abr) {
+    logger.info(
+      `[Engine] SRS ABR ladder on vhost '${abr.vhost}': ${abr.ladder
+        .rungs()
+        .map((r) => r.name)
+        .join(', ')}`,
+    );
+  }
+
   return {
     name: 'srs',
     prefix: '/engines/srs',
@@ -179,11 +201,11 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
       router.use(createWebhookGate(webhookToken));
 
       router.post('/streams', (req: Request, res: Response) => {
-        handleStreams(req, res, streamOrchestrator, publishKeySecret);
+        handleStreams(req, res, streamOrchestrator, publishKeySecret, abr);
       });
 
       router.post('/hls', (req: Request, res: Response) => {
-        handleHls(req, res, streamOrchestrator, mediaRootPath);
+        handleHls(req, res, streamOrchestrator, mediaRootPath, abr);
       });
 
       return router;
@@ -195,11 +217,41 @@ function resolveMediaType(app: string): MediaType {
   return app === MEDIA_TYPE_AUDIO ? MEDIA_TYPE_AUDIO : MEDIA_TYPE_VIDEO;
 }
 
+/**
+ * Whether this webhook is about a stream the uploader should be publishing.
+ *
+ * With the ladder on, only the ABR vhost carries renditions; the ingest vhost carries the
+ * untranscoded source, which exists to be transcoded and nothing else. A *rendition* arriving on
+ * the ingest vhost is a different matter — it means the engine's `?vhost=` did not match and SRS
+ * fell back to the default vhost, which is also where a rendition starts being transcoded into
+ * further renditions without limit. That is worth saying loudly, because the symptom otherwise is
+ * just a stream that never appears.
+ */
+function isPublishable(payload: SrsStreamPayload | SrsHlsPayload, streamId: string, abr?: AbrGuard): boolean {
+  if (!abr || payload.vhost === abr.vhost) {
+    return true;
+  }
+
+  if (abr.ladder.match(streamId)) {
+    logger.error(
+      `[SRS] Rendition ${streamId} arrived on vhost '${payload.vhost}', expected '${abr.vhost}'. ` +
+        `The transcode output's ?vhost= did not match — SRS falls back to __defaultVhost__, where the ` +
+        `rendition is itself transcoded. Check ABR_VHOST and 'curl localhost:1985/api/v1/streams' for a ` +
+        `stream count that keeps climbing.`,
+    );
+  } else {
+    logger.debug(`[SRS] Ignoring source stream ${streamId} on vhost '${payload.vhost}' — the ladder is what publishes`);
+  }
+
+  return false;
+}
+
 function handleStreams(
   req: Request,
   res: Response,
   streamOrchestrator: StreamOrchestrator,
   publishKeySecret: string,
+  abr?: AbrGuard,
 ): void {
   // Read before the try, so the catch below can tell a publish from anything else. A handler error on
   // a publish has to refuse when a secret is configured, and the action is the only thing that says
@@ -219,6 +271,14 @@ function handleStreams(
     if (!isUsableStreamId(streamId)) {
       logger.warn(`[SRS] Refused a webhook naming an unusable app/stream: ${forLog(streamId)}`);
       srsResponse(res, payload.action === SRS_ACTION_PUBLISH ? SRS_REJECT : SRS_ACCEPT);
+      return;
+    }
+
+    // Orthogonal to the check above and deliberately after it: that one asks whether the name is safe
+    // to handle at all, this asks whether this vhost's copy of it is the one the uploader publishes.
+    // ABR replaced the first with the second, which left the name unscreened whenever the ladder was off.
+    if (!isPublishable(payload, streamId, abr)) {
+      srsResponse(res, SRS_ACCEPT);
       return;
     }
 
@@ -320,7 +380,13 @@ export function resolveSegmentPath(mediaRootPath: string, file: string): string 
  * health signal built on it. `handleSegmentLoss` decides for itself whether the loss is attributable,
  * no-opping for a stream that is unknown or already draining.
  */
-function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrchestrator, mediaRootPath: string): void {
+function handleHls(
+  req: Request,
+  res: Response,
+  streamOrchestrator: StreamOrchestrator,
+  mediaRootPath: string,
+  abr?: AbrGuard,
+): void {
   try {
     const payload = req.body as SrsHlsPayload;
     const streamId = buildStreamId(payload.app, payload.stream);
@@ -330,6 +396,11 @@ function handleHls(req: Request, res: Response, streamOrchestrator: StreamOrches
     // the gap to belong to.
     if (!isUsableStreamId(streamId)) {
       logger.warn(`[SRS] Refused a segment naming an unusable app/stream: ${forLog(streamId)}`);
+      srsResponse(res, SRS_ACCEPT);
+      return;
+    }
+
+    if (!isPublishable(payload, streamId, abr)) {
       srsResponse(res, SRS_ACCEPT);
       return;
     }

@@ -2,7 +2,13 @@ import { FeedIndex, Topic } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { type FeedRequest, feedSlotPath, makeFeedIdentifier, nextFeedRequest } from '../src/feedFollow.js';
+import {
+  extractFeedIndex,
+  type FeedRequest,
+  feedSlotPath,
+  makeFeedIdentifier,
+  nextFeedRequest,
+} from '../src/feedFollow.js';
 
 type SlotRequest = Extract<FeedRequest, { kind: 'slot' }>;
 
@@ -119,5 +125,37 @@ describe('feedSlotPath', () => {
     const request = nextFeedRequest(OWNER, TOPIC, FeedIndex.fromBigInt(41n));
 
     assert.equal(request.path, feedSlotPath(OWNER, TOPIC, FeedIndex.fromBigInt(42n)));
+  });
+});
+
+/**
+ * Tested here rather than beside `resolvedFeedIndex`, whose cases live in `e2e/test/gateway.test.ts`
+ * and are therefore outside the mutation runner's reach. A guard nothing can kill a mutant in is not
+ * a guard.
+ */
+describe('extractFeedIndex', () => {
+  it('reads the index a head lookup resolved to', () => {
+    const headers = new Headers({ 'swarm-feed-index': '0000000000000966' });
+
+    assert.equal(extractFeedIndex(headers).toBigInt(), 2_406n);
+  });
+
+  it('is case insensitive on the header name, because the Headers API is', () => {
+    const headers = new Headers({ 'Swarm-Feed-Index': '0000000000000022' });
+
+    assert.equal(extractFeedIndex(headers).toBigInt(), 34n);
+  });
+
+  /** The walk has no fallback at this point, so a missing head has to stop it rather than start it at zero. */
+  it('throws when the header is absent', () => {
+    assert.throws(() => extractFeedIndex(new Headers()), /no swarm-feed-index header/);
+  });
+
+  /** Named rather than a bare BigInt SyntaxError, which says nothing about which feed failed. */
+  it('throws a header-naming error when the index is not hex', () => {
+    assert.throws(
+      () => extractFeedIndex(new Headers({ 'swarm-feed-index': 'not-hex' })),
+      /unreadable swarm-feed-index/,
+    );
   });
 });

@@ -7,6 +7,7 @@ import {
   HLS_PLAYLIST_TYPE_VOD,
   HLS_TARGET_DURATION,
   HLS_VERSION,
+  type Segment,
 } from '@swarm-hls-stream/shared';
 import Hls, { Events } from 'hls.js';
 import Pqueue from 'p-queue';
@@ -15,10 +16,10 @@ import playIcon from '@/assets/icons/playIcon.png';
 import DefaultPreviewImage from '@/assets/images/defaultPreviewImage.png';
 import { previewSourceFrom } from '@/components/StreamPreview/previewSource';
 import { CustomFragmentLoader } from '@/components/SwarmHlsPlayer/CustomManifestLoader';
-import { parseManifest } from '@/components/SwarmHlsPlayer/ManifestManagement';
+import { isMasterPlaylist, masterVariants, parseManifest } from '@/components/SwarmHlsPlayer/playlist';
 import { useAppContext } from '@/providers/App';
 import { MediaType, StreamState } from '@/types/stream';
-import { fetchWithTimeout } from '@/utils/fetchWithTimeout';
+import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 import { formatDuration } from '@/utils/format';
 import { previewSegmentUrl, thumbnailManifestUrl } from '@/utils/thumbnailManifest';
 
@@ -26,6 +27,45 @@ import './StreamPreview.scss';
 
 const thumbnailQueue = new Pqueue({ concurrency: 1 });
 const STREAM_STATE_LIVE: StreamState = 'live';
+
+/**
+ * The manifest a preview takes its frame from, following one level of indirection.
+ *
+ * A ladder's catalog topic is its master playlist, which has no segments in it — so a thumbnail
+ * taken straight from the feed would find nothing and every ABR stream would show the placeholder
+ * image. The lowest rung is the cheapest frame to fetch and is listed first.
+ *
+ * The response is returned alongside the segments because `previewSourceFrom` needs it: an empty
+ * playlist and a 404 page parse to the same empty segment list, and only the status tells them
+ * apart. It is the response the segments were read from, which on a ladder is the rung's rather than
+ * the master's.
+ */
+async function fetchPreviewManifest(
+  gatewayUrl: string,
+  owner: string,
+  topic: string,
+  index: number | undefined,
+  signal: AbortSignal,
+): Promise<{ res: TimedResponse; segments: Segment[] }> {
+  const res = await fetchWithTimeout(thumbnailManifestUrl(gatewayUrl, owner, topic, index), { signal });
+  if (!isMasterPlaylist(res.text)) {
+    return { res, segments: parseManifest(res.text).segments };
+  }
+
+  const [variant] = masterVariants(res.text);
+  if (!variant) {
+    return { res, segments: [] };
+  }
+
+  // No index for the rung. The catalog entry's `index` addresses the final manifest of the *catalog*
+  // topic, which on a ladder is the master, so this rung pays the head lookup the top level no
+  // longer does. The rungs carry their own indices in `Rendition.index`, which this component is not
+  // handed.
+  const rung = await fetchWithTimeout(thumbnailManifestUrl(gatewayUrl, variant.owner || owner, variant.topic), {
+    signal,
+  });
+  return { res: rung, segments: parseManifest(rung.text).segments };
+}
 
 interface StreamPreviewProps {
   owner: string;
@@ -59,10 +99,7 @@ export const StreamPreview = ({ owner, topic, state, duration, mediatype, title,
       }
 
       try {
-        const res = await fetchWithTimeout(thumbnailManifestUrl(gatewayUrl, owner, topic, index), {
-          signal: abort.signal,
-        });
-        const { segments } = parseManifest(res.text);
+        const { res, segments } = await fetchPreviewManifest(gatewayUrl, owner, topic, index, abort.signal);
 
         // Split from the check below, because the two used to share an early return and only one of
         // them is a reason to leave the spinner up. An aborted card is being unmounted and nobody is

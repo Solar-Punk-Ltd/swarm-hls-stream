@@ -3,6 +3,15 @@ import { StampCommandArgs } from './stamp.js';
 export interface ParsedArgs {
   command: string;
   url?: string;
+  /**
+   * Which ABR rung to act on, as a flag rather than a leading positional.
+   *
+   * A positional whose meaning depends on whether BEE_PUBLISHERS is set would give `stamp-buy` and
+   * `stamp-setup` different argument orders and give a single-node operator's amount to the rung
+   * lookup. This file already carries one instance of a positional silently becoming the wrong
+   * number, below.
+   */
+  rung?: string;
   immutable?: boolean;
   assumeYes: boolean;
   positional: string[];
@@ -17,6 +26,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
   const command = args[0];
   let url: string | undefined;
+  let rung: string | undefined;
   let immutable: boolean | undefined;
   let assumeYes = false;
   const positional: string[] = [];
@@ -24,6 +34,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--url' && args[i + 1]) {
       url = args[i + 1];
+      i++;
+    } else if (args[i] === '--rung' && args[i + 1]) {
+      rung = args[i + 1];
       i++;
     } else if (args[i] === '--immutable') {
       immutable = true;
@@ -39,12 +52,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  return { command, url, immutable, assumeYes, positional };
+  return { command, url, rung, immutable, assumeYes, positional };
 }
 
 export function stampArgs(a: ParsedArgs): StampCommandArgs {
   return {
     url: a.url,
+    rung: a.rung,
     amount: a.positional[0],
     depth: a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
     immutable: a.immutable,
