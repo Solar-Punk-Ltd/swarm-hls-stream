@@ -370,10 +370,15 @@ export class ManifestFetcher {
      * tests, so a stagger is asserted rather than sampled.
      */
     private readonly jitter: RequestJitter = new RequestJitter(),
+    /**
+     * Injected only by tests, so a rung's catch-up is driven rather than waited out. Production takes
+     * the poller's own default, which is tuned against a segment interval.
+     */
+    pollIntervalMs?: number,
   ) {
     // The poller fetches through this instance rather than holding a URL of its own, so switching
     // gateway mid-session moves the walk with it.
-    this.poller = new LadderFeedPoller(stateManager, (path) => this.fetchResource(path));
+    this.poller = new LadderFeedPoller(stateManager, (path) => this.fetchResource(path), pollIntervalMs);
   }
 
   get beeUrl(): string {
