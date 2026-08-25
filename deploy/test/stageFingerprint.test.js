@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -38,6 +38,25 @@ function srsConf(fragment, aofRatio) {
     '  hls {',
     '    enabled         on;',
     `    hls_fragment    ${fragment};`,
+    `    hls_aof_ratio   ${aofRatio};`,
+    '    hls_window      30;',
+    '  }',
+    '}',
+    '',
+  ].join('\n');
+}
+
+/**
+ * The shape `entrypoint.sh` generates once ABR_ENABLED is true: the default vhost SRS always had,
+ * plus a second one carrying the transcoded rungs, each with its own `hls` block.
+ */
+function abrSrsConf(defaultFragment, abrFragment, aofRatio = 10) {
+  return [
+    srsConf(defaultFragment, aofRatio),
+    'vhost abr {',
+    '  hls {',
+    '    enabled         on;',
+    `    hls_fragment    ${abrFragment};`,
     `    hls_aof_ratio   ${aofRatio};`,
     '    hls_window      30;',
     '  }',
@@ -128,6 +147,229 @@ describe('stage-fingerprint refuses a stage that does not', () => {
   it('keeps a small keyframe overshoot inside tolerance', async () => {
     const { code } = await gate({ segment: 0.53 });
     assert.equal(code, 0);
+  });
+});
+
+/**
+ * ⛔⛔⛔ The gate read `hls_fragment` with one `re.search`, which returns the FIRST match. That was
+ * correct only because `srs.conf` held exactly one vhost. `ABR_ENABLED=true` makes `entrypoint.sh`
+ * generate a second one, so a proven gate would have fingerprinted a whole sitting off whichever
+ * vhost's directive came first in the file and said nothing about the other.
+ *
+ * Refusing on disagreement rather than picking a rule for which one wins: the two vhosts serve
+ * different streams, and which one a sitting is actually publishing through is not something this
+ * file can see. A gate that guesses is the failure mode, not the fix.
+ */
+describe('stage-fingerprint and the ABR ladder', () => {
+  it('accepts a ladder config whose vhosts agree, which is what the entrypoint generates', async () => {
+    const { code } = await gate({ gop: '0.5', files: { conf: abrSrsConf(0.25, 0.25) } });
+
+    assert.equal(code, 0);
+  });
+
+  it('refuses when the two vhosts disagree, rather than fingerprinting off whichever came first', async () => {
+    const { code, output } = await gate({ gop: '0.5', files: { conf: abrSrsConf(0.25, 2.0) } });
+
+    assert.equal(code, 1, 'a config with two answers cannot produce one fingerprint');
+    assert.match(output, /hls_fragment/);
+    assert.match(output, /0\.25/);
+    assert.match(output, /2/);
+  });
+
+  it('names both values it found, so the operator knows which vhost to look at', async () => {
+    const { output } = await gate({ gop: '0.5', files: { conf: abrSrsConf(0.25, 1.5) } });
+
+    assert.match(output, /1\.5/);
+  });
+
+  it('refuses a disagreeing aof_ratio too, since the range it bounds is half the prediction', async () => {
+    const conf = [
+      srsConf(0.25, 10),
+      'vhost abr {',
+      '  hls {',
+      '    hls_fragment    0.25;',
+      '    hls_aof_ratio   2.1;',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    const { code, output } = await gate({ gop: '0.5', files: { conf } });
+
+    assert.equal(code, 1);
+    assert.match(output, /hls_aof_ratio/);
+  });
+
+  /**
+   * The premise, read off the real files rather than off the fixture above.
+   *
+   * `abrSrsConf` is a hand-written stand-in, so on its own it proves the gate handles a two-vhost
+   * config without proving the deployment produces one. This reads the template and the entrypoint
+   * that generates the second vhost, so if ABR's config generation changes shape the reason for the
+   * fix stops being true out loud rather than quietly.
+   */
+  it('is handed a config declaring hls_fragment more than once once the ladder is on', () => {
+    const template = readFileSync(join(ROOT, 'engines/srs/srs.conf.template'), 'utf8');
+    const entrypoint = readFileSync(join(ROOT, 'engines/srs/entrypoint.sh'), 'utf8');
+    const inTemplate = (template.match(/^\s*hls_fragment\s/gm) ?? []).length;
+    const inGeneratedVhost = (entrypoint.match(/^\s*hls_fragment\s/gm) ?? []).length;
+
+    assert.ok(inTemplate >= 1, 'the default vhost stopped declaring a fragment');
+    assert.ok(inGeneratedVhost >= 1, 'the generated ABR vhost stopped declaring its own fragment');
+    assert.ok(
+      inTemplate + inGeneratedVhost > 1,
+      'one declaration only, so reading the first match would be safe and this whole arm is moot',
+    );
+  });
+
+  /**
+   * A ladder publishes five playlists, one per rung plus the source. The wrapper used to hand over
+   * the newest single one, so four rungs went unchecked and a sitting could run on a profile nothing
+   * had looked at.
+   */
+  it('judges every playlist it is given, not just the first', async () => {
+    const dir = workspace();
+    const confPath = join(dir, 'srs.conf');
+    writeFileSync(confPath, srsConf(0.25, 10));
+    const good = join(dir, 'rung-720p.m3u8');
+    const bad = join(dir, 'rung-1080p.m3u8');
+    writeFileSync(good, playlist(0.501, 12));
+    writeFileSync(bad, playlist(2.0, 12));
+
+    // ⛔ The bad one FIRST. The wrapper's argument parsing is last-wins, so passing it second would
+    // let a gate that judges only the final `--playlist-file` refuse for the wrong reason and go
+    // green without ever looking at more than one playlist.
+    const result = await run(GATE, [
+      '--gop',
+      '0.5',
+      '--conf-file',
+      confPath,
+      '--playlist-file',
+      bad,
+      '--playlist-file',
+      good,
+    ]).then(
+      () => ({ code: 0, output: '' }),
+      (error) => ({ code: error.code, output: `${error.stdout ?? ''}${error.stderr ?? ''}` }),
+    );
+
+    assert.equal(result.code, 1, 'one rung publishing 2.0s against a 0.5s GOP is a mismatch');
+    assert.match(result.output, /rung-1080p/);
+  });
+
+  it('reports which playlist it judged, so a passing ladder says what it covered', async () => {
+    const dir = workspace();
+    const confPath = join(dir, 'srs.conf');
+    writeFileSync(confPath, srsConf(0.25, 10));
+    const a = join(dir, 'rung-360p.m3u8');
+    const b = join(dir, 'rung-720p.m3u8');
+    writeFileSync(a, playlist(0.501, 12));
+    writeFileSync(b, playlist(0.499, 12));
+
+    const { stdout } = await run(GATE, [
+      '--gop',
+      '0.5',
+      '--conf-file',
+      confPath,
+      '--playlist-file',
+      a,
+      '--playlist-file',
+      b,
+    ]);
+
+    assert.match(stdout, /rung-360p/);
+    assert.match(stdout, /rung-720p/);
+  });
+});
+
+/**
+ * The container path, which the file overrides above deliberately bypass.
+ *
+ * ⛔ A listing and a read are answered differently here because real `docker exec` does: `find ... |
+ * head -n` emits paths and `cat` emits content. A stub that returned playlist text for both would
+ * have the gate looking for a file called `#EXTM3U`, which is exactly how the driver's own stub
+ * starved it of every playlist once the discovery became two steps.
+ */
+describe('stage-fingerprint reading a container', () => {
+  /** A `docker` on PATH that answers the two reads the gate makes, per rung. */
+  function fakeDocker(rungNames, secondsByRung = {}) {
+    const dir = workspace();
+    const bin = join(dir, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'docker'),
+      `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv[0] !== 'exec') process.exit(0);
+const asked = argv[argv.length - 1] || '';
+const rungs = ${JSON.stringify(rungNames)};
+const seconds = ${JSON.stringify(secondsByRung)};
+if (asked.includes('srs.conf')) {
+  process.stdout.write('vhost __defaultVhost__ {\\n  hls {\\n    hls_fragment    0.25;\\n    hls_aof_ratio   10;\\n  }\\n}\\n');
+} else if (asked.includes('-name') && asked.includes('m3u8')) {
+  const limit = Number((asked.match(/head -(\\d+)/) || [])[1] || '1');
+  process.stdout.write(rungs.slice(0, limit).map((r) => '/hls/live/' + r + '/index.m3u8').join('\\n') + '\\n');
+} else if (asked.includes('m3u8')) {
+  const rung = (asked.match(/live\\/([^/]+)\\//) || [])[1];
+  let out = '#EXTM3U\\n';
+  for (let i = 0; i < 12; i += 1) out += '#EXTINF:' + (seconds[rung] ?? '0.501') + ',\\nseg' + i + '.ts\\n';
+  process.stdout.write(out);
+}
+process.exit(0);
+`,
+      { mode: 0o755 },
+    );
+    return bin;
+  }
+
+  async function containerGate(bin, extra = []) {
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+    try {
+      const { stdout } = await run(GATE, ['--container', 'srs-1', '--gop', '0.5', ...extra], { env });
+      return { code: 0, output: stdout };
+    } catch (error) {
+      return { code: error.code, output: `${error.stdout ?? ''}${error.stderr ?? ''}` };
+    }
+  }
+
+  it('judges the newest playlist when no rung count is given, as it did before ABR existed', async () => {
+    const { code, output } = await containerGate(fakeDocker(['live']));
+
+    assert.equal(code, 0);
+    assert.match(output, /live\.m3u8/, 'the rung has to be named, or a refusal cannot say which one');
+  });
+
+  it('judges one playlist per rung when the driver says how many there are', async () => {
+    const { code, output } = await containerGate(fakeDocker(['r360', 'r720', 'r1080', 'r480']), ['--rungs', '4']);
+
+    assert.equal(code, 0);
+    for (const rung of ['r360', 'r720', 'r1080', 'r480']) {
+      assert.match(output, new RegExp(`${rung}\\.m3u8`), `${rung} was never judged`);
+    }
+  });
+
+  it('refuses when one rung of four is publishing the wrong length, and names that rung', async () => {
+    const { code, output } = await containerGate(fakeDocker(['r360', 'r720', 'r1080', 'r480'], { r1080: '2.0' }), [
+      '--rungs',
+      '4',
+    ]);
+
+    assert.equal(code, 1);
+    assert.match(output, /REFUSING TO START\. r1080\.m3u8/);
+    assert.doesNotMatch(output, /REFUSING TO START\. r360/, 'the healthy rungs must not be blamed');
+  });
+
+  it('would have passed that same stage while judging one playlist, which is the hole this closes', async () => {
+    // The bad rung is not the newest, so a gate reading only the newest never sees it.
+    const { code } = await containerGate(fakeDocker(['r360', 'r720', 'r1080', 'r480'], { r1080: '2.0' }));
+
+    assert.equal(code, 0, 'if this refuses, the test above no longer demonstrates anything');
+  });
+
+  it('rejects a rung count that is not a positive whole number', async () => {
+    for (const bad of ['0', '-1', 'four', '']) {
+      const { code } = await containerGate(fakeDocker(['live']), ['--rungs', bad]);
+      assert.equal(code, 2, `--rungs ${JSON.stringify(bad)} was accepted`);
+    }
   });
 });
 

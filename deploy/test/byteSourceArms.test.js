@@ -105,21 +105,36 @@ if (argv[0] === 'rm') {
 }
 
 // The SRS stage, as \`stage-fingerprint.sh\` reads it: the config for hls_fragment and hls_aof_ratio,
-// then the newest playlist for its raw #EXTINF. Driven by env so a case can hand the sitting a stage
+// then a playlist per rung for its raw #EXTINF. Driven by env so a case can hand the sitting a stage
 // that disagrees with the GOP it asked for, which is the whole point of the gate.
+//
+// ⛔ A listing and a read are answered differently, because real \`docker exec\` does. The gate now
+// discovers paths with \`find ... | head -n\` and then reads each one, so a stub that emitted playlist
+// text for any command mentioning m3u8 would answer the listing with content and the gate would go
+// looking for a file called '#EXTM3U'. That is how this stub silently starved the gate of every
+// playlist and the sitting refused with nothing wrong.
 if (argv[0] === 'exec') {
   const asked = argv[argv.length - 1] || '';
   const fragment = process.env.STUB_HLS_FRAGMENT || '0.25';
   const aof = process.env.STUB_HLS_AOF || '10';
   const segment = process.env.STUB_SEGMENT_SECONDS || '0.501';
   const segments = Number(process.env.STUB_SEGMENT_COUNT || '12');
+  const rungs = (process.env.STUB_RUNG_NAMES || 'live').split(',');
+  const playlist = () => {
+    let out = '#EXTM3U\\n#EXT-X-TARGETDURATION:1\\n';
+    for (let i = 0; i < segments; i += 1) out += '#EXTINF:' + segment + ',\\nseg' + i + '.ts\\n';
+    return out;
+  };
+
   if (asked.includes('srs.conf')) {
     process.stdout.write('vhost __defaultVhost__ {\\n  hls {\\n    hls_fragment    ' + fragment +
       ';\\n    hls_aof_ratio   ' + aof + ';\\n    hls_window      30;\\n  }\\n}\\n');
+  } else if (asked.includes('-name') && asked.includes('m3u8')) {
+    // Newest first, bounded by whatever \`head -n\` the gate asked for, which is its --rungs.
+    const limit = Number((asked.match(/head -(\\d+)/) || [])[1] || '1');
+    process.stdout.write(rungs.slice(0, limit).map((r) => '/hls/live/' + r + '/index.m3u8').join('\\n') + '\\n');
   } else if (asked.includes('m3u8')) {
-    let out = '#EXTM3U\\n#EXT-X-TARGETDURATION:1\\n';
-    for (let i = 0; i < segments; i += 1) out += '#EXTINF:' + segment + ',\\nseg' + i + '.ts\\n';
-    process.stdout.write(out);
+    process.stdout.write(playlist());
   }
   process.exit(0);
 }

@@ -60,10 +60,35 @@ EXIT_USAGE = 2
 EXIT_NOT_READY = 3
 
 
+class AmbiguousDirective(Exception):
+    """Raised when one config gives a directive more than one value. See {@link directive}."""
+
+    def __init__(self, name: str, values: list[float]) -> None:
+        super().__init__(name)
+        self.name = name
+        self.values = values
+
+
 def directive(conf: str, name: str) -> float | None:
-    """The numeric value of an SRS config directive, or None when it is absent."""
-    found = re.search(rf"^\s*{name}\s+([0-9.]+)\s*;", conf, re.M)
-    return float(found.group(1)) if found else None
+    """The numeric value of an SRS config directive, or None when it is absent.
+
+    ⛔⛔⛔ This used to be one `re.search`, which returns the FIRST match, and that was correct only
+    for as long as `srs.conf` held exactly one vhost. `ABR_ENABLED=true` makes `entrypoint.sh`
+    generate a second one carrying the transcoded rungs, each vhost with its own `hls` block, so the
+    first match stopped meaning "the stage's fragment" and started meaning "whichever vhost happens
+    to be written first in the file".
+
+    Refuses on disagreement rather than picking a winner. Which vhost a sitting is publishing through
+    is not something this file can see, so a rule for choosing would be a guess, and a gate that
+    guesses is the failure mode rather than the fix. Identical values are not a disagreement, which is
+    what the generated config actually produces today: both vhosts interpolate `${HLS_FRAGMENT}`.
+    """
+    values = [float(v) for v in re.findall(rf"^\s*{name}\s+([0-9.]+)\s*;", conf, re.M)]
+    if not values:
+        return None
+    if len(set(values)) > 1:
+        raise AmbiguousDirective(name, values)
+    return values[0]
 
 
 def extinf_durations(playlist: str) -> list[float]:
@@ -110,6 +135,11 @@ def refusals(fragment: float, aof_ratio: float, gop: float, observed: float, tol
     return reasons
 
 
+def label(path: str) -> str:
+    """A playlist's file name, which is what names the rung once a ladder publishes four of them."""
+    return path.rsplit("/", 1)[-1] or path
+
+
 def read(path: str) -> str:
     try:
         with open(path, encoding="utf-8") as handle:
@@ -122,7 +152,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--gop", type=float, required=True)
     parser.add_argument("--conf", required=True)
-    parser.add_argument("--playlist", required=True)
+    # Repeatable, because a ladder publishes one playlist per rung plus the source. Judging the
+    # newest single one left four rungs unchecked, so a sitting could run on a profile nothing had
+    # looked at, which is the same shape of hole as reading `hls_fragment` off one vhost.
+    parser.add_argument("--playlist", required=True, action="append")
     parser.add_argument("--source", default="the stage")
     parser.add_argument("--min-segments", type=int, default=DEFAULT_MIN_SEGMENTS)
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE)
@@ -138,8 +171,17 @@ def main() -> int:
         print("  An unreadable stage is not a matching stage.")
         return EXIT_REFUSED
 
-    fragment = directive(conf, "hls_fragment")
-    aof_ratio = directive(conf, "hls_aof_ratio")
+    try:
+        fragment = directive(conf, "hls_fragment")
+        aof_ratio = directive(conf, "hls_aof_ratio")
+    except AmbiguousDirective as ambiguous:
+        values = ", ".join(f"{v:g}" for v in sorted(set(ambiguous.values)))
+        print(f"stage-fingerprint: REFUSING, {ambiguous.name} on {args.source} has more than one value ({values}).")
+        print("  The config carries a second vhost, which is what ABR_ENABLED generates, and this")
+        print("  cannot see which one the sitting publishes through. One fingerprint cannot describe")
+        print("  two profiles, and picking whichever came first in the file is how a sitting runs on")
+        print("  a stage nobody checked.")
+        return EXIT_REFUSED
     if fragment is None or aof_ratio is None:
         absent = " and ".join(
             name for name, value in (("hls_fragment", fragment), ("hls_aof_ratio", aof_ratio)) if value is None
@@ -151,35 +193,40 @@ def main() -> int:
         print(f"stage-fingerprint: REFUSING, hls_fragment on {args.source} is {fragment:g}.")
         return EXIT_REFUSED
 
-    playlist = read(args.playlist)
-    durations = extinf_durations(playlist)
-    if len(durations) < args.min_segments:
-        print(
-            f"stage-fingerprint: NOT READY, the playlist on {args.source} holds {len(durations)} "
-            f"segments and this needs {args.min_segments}."
-        )
-        print("  A median over fewer is decided by the opening segment, which is short by construction.")
-        return EXIT_NOT_READY
-
-    observed = median(durations)
     stage_forces = math.ceil(fragment / args.gop) * args.gop
-
     print(
         f"stage-fingerprint: {args.source} hls_fragment {fragment:g} aof_ratio {aof_ratio:g}, "
         f"driver asked for a {args.gop:g}s GOP"
     )
-    print(
-        f"  this stage publishes ceil({fragment:g}/{args.gop:g})*{args.gop:g} = {stage_forces:.3f}s, "
-        f"observed median {observed:.3f}s over {len(durations)} segments"
-    )
+    print(f"  this stage publishes ceil({fragment:g}/{args.gop:g})*{args.gop:g} = {stage_forces:.3f}s")
 
-    reasons = refusals(fragment, aof_ratio, args.gop, observed, args.tolerance)
-    if not reasons:
+    # Every playlist is judged before anything is reported, so a refusal names each rung that failed
+    # rather than only the first. A sitting is stopped by any one of them, and knowing whether one
+    # rung or all four is wrong is the difference between an encoder fault and a config fault.
+    refused: list[str] = []
+    for path in args.playlist:
+        durations = extinf_durations(read(path))
+        if len(durations) < args.min_segments:
+            print(
+                f"stage-fingerprint: NOT READY, {label(path)} holds {len(durations)} segments and "
+                f"this needs {args.min_segments}."
+            )
+            print("  A median over fewer is decided by the opening segment, which is short by construction.")
+            return EXIT_NOT_READY
+
+        observed = median(durations)
+        reasons = refusals(fragment, aof_ratio, args.gop, observed, args.tolerance)
+        verdict = "matches" if not reasons else "; ".join(reasons)
+        print(f"  {label(path)}: observed median {observed:.3f}s over {len(durations)} segments, {verdict}")
+        if reasons:
+            refused.append(f"{label(path)} {'; '.join(reasons)}")
+
+    if not refused:
         print("  the stage matches what the driver asked for")
         return EXIT_MATCHES
 
     print("")
-    print("stage-fingerprint: REFUSING TO START. " + "; ".join(reasons) + ".")
+    print("stage-fingerprint: REFUSING TO START. " + ". ".join(refused) + ".")
     print("")
     print("  The knob is the encoder GOP, not hls_fragment. hls_fragment sets the FLOOR and")
     print("  hls_aof_ratio the ceiling, and the GOP decides where inside that range a segment lands.")
