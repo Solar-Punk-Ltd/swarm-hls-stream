@@ -1,3 +1,9 @@
+import {
+  buildMasterPlaylist as sharedBuildMasterPlaylist,
+  buildSwarmUri as sharedBuildSwarmUri,
+  parseManifest as sharedParseManifest,
+  parseSwarmUri as sharedParseSwarmUri,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
@@ -12,6 +18,7 @@ import {
 } from '../src/components/SwarmHlsPlayer/playlist.js';
 import type { Rendition } from '../src/types/stream.js';
 
+/** A ladder to build a master from, so `masterVariants` has real published text to read back. */
 const rendition = (name: string, width: number, height: number, bandwidth: number): Rendition => ({
   name,
   width,
@@ -21,14 +28,23 @@ const rendition = (name: string, width: number, height: number, bandwidth: numbe
   avgBandwidth: Math.round(bandwidth * 0.9),
 });
 
-describe('swarm URIs', () => {
-  it('round-trips owner and topic', () => {
-    const uri = buildSwarmUri('aabbcc', 'group-1-720p');
-
-    assert.equal(uri, 'swarm://aabbcc/group-1-720p');
-    assert.deepEqual(parseSwarmUri(uri), { owner: 'aabbcc', topic: 'group-1-720p' });
+/**
+ * The shared behaviour is asserted once, in `packages/shared/test/masterPlaylist.test.ts`. There is
+ * one builder and one URI scheme now, rather than a copy in each package promising to match.
+ *
+ * Identity rather than a re-assertion of the output. Re-checking the text would pass just as well
+ * against a fresh local copy, which is exactly the arrangement this replaced.
+ */
+describe('the shared playlist contract', () => {
+  it('re-exports the shared builder and URI helpers rather than copies of them', () => {
+    assert.equal(buildMasterPlaylist, sharedBuildMasterPlaylist);
+    assert.equal(buildSwarmUri, sharedBuildSwarmUri);
+    assert.equal(parseSwarmUri, sharedParseSwarmUri);
+    assert.equal(parseManifest, sharedParseManifest);
   });
+});
 
+describe('swarm URIs, as this loader meets them', () => {
   it('still parses the bare owner/topic form hls.js hands back for a single rendition', () => {
     assert.deepEqual(parseSwarmUri('aabbcc/topic-uuid'), { owner: 'aabbcc', topic: 'topic-uuid' });
   });
@@ -58,52 +74,6 @@ describe('absoluteBytesBase', () => {
     for (const beeUrl of ['/bee', 'http://localhost:1653', 'https://gateway.example/']) {
       assert.match(absoluteBytesBase(beeUrl, origin), /^https?:\/\//, `"${beeUrl}" must absolutise`);
     }
-  });
-});
-
-describe('buildMasterPlaylist', () => {
-  const renditions = [
-    rendition('360p', 640, 360, 700_000),
-    rendition('720p', 1280, 720, 2_800_000),
-    rendition('1080p', 1920, 1080, 5_000_000),
-  ];
-
-  it('emits one EXT-X-STREAM-INF per rung, each followed by its feed URI', () => {
-    const master = buildMasterPlaylist('aabbcc', renditions);
-
-    assert.deepEqual(master.trim().split('\n'), [
-      '#EXTM3U',
-      '#EXT-X-VERSION:3',
-      '#EXT-X-INDEPENDENT-SEGMENTS',
-      '#EXT-X-STREAM-INF:BANDWIDTH=700000,AVERAGE-BANDWIDTH=630000,RESOLUTION=640x360',
-      'swarm://aabbcc/group-1-360p',
-      '#EXT-X-STREAM-INF:BANDWIDTH=2800000,AVERAGE-BANDWIDTH=2520000,RESOLUTION=1280x720',
-      'swarm://aabbcc/group-1-720p',
-      '#EXT-X-STREAM-INF:BANDWIDTH=5000000,AVERAGE-BANDWIDTH=4500000,RESOLUTION=1920x1080',
-      'swarm://aabbcc/group-1-1080p',
-    ]);
-  });
-
-  it('writes variant URIs with a scheme, so hls.js resolves them to themselves', () => {
-    // A bare `owner/topic` would come back out of url-toolkit as `owner/owner/topic`, because a
-    // base URL with no scheme has its first path segment treated as the host.
-    const master = buildMasterPlaylist('aabbcc', renditions);
-
-    for (const line of master.split('\n').filter((l) => l && !l.startsWith('#'))) {
-      assert.ok(line.startsWith('swarm://'), `variant URI "${line}" must carry a scheme`);
-    }
-  });
-
-  it('rounds bandwidths, because BANDWIDTH is an integer in the HLS grammar', () => {
-    const master = buildMasterPlaylist('aabbcc', [
-      { ...rendition('720p', 1280, 720, 2_799_999.6), avgBandwidth: 2_519_999.4 },
-    ]);
-
-    assert.match(master, /BANDWIDTH=2800000,AVERAGE-BANDWIDTH=2519999,/);
-  });
-
-  it('produces a header-only playlist when the ladder is empty', () => {
-    assert.equal(buildMasterPlaylist('aabbcc', []).trim().split('\n').length, 3);
   });
 });
 

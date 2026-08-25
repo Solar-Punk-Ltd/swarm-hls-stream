@@ -1,3 +1,7 @@
+import {
+  buildMasterPlaylist as sharedBuildMasterPlaylist,
+  buildSwarmUri as sharedBuildSwarmUri,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -21,52 +25,20 @@ const LADDER = [
   rendition('1080p', 1920, 1080, 5_000_000),
 ];
 
+/**
+ * The behaviour is asserted once, in `packages/shared/test/masterPlaylist.test.ts`, because there is
+ * now one builder rather than two that promised to agree. What is left to check here is that this
+ * package still reaches that one.
+ *
+ * Identity rather than a re-assertion of the output. Comparing the text again would pass just as well
+ * against a fresh local copy, which is the arrangement this replaced: the client had a byte-identical
+ * builder for catalog entries written before masters were published, and both copies carried a
+ * comment saying a viewer meeting one and then the other must not see the ladder change shape.
+ */
 describe('buildMasterPlaylist', () => {
-  it('emits one EXT-X-STREAM-INF per rung, each followed by its feed URI', () => {
-    // Byte-for-byte, because the client has a builder of its own for entries written before masters
-    // were published (`components/SwarmHlsPlayer/playlist.ts`) and the two have to agree. A viewer
-    // whose session started on one and continued on the other would otherwise see the ladder change
-    // shape mid-stream. The matching assertion lives in the client's playlist.test.ts.
-    assert.deepEqual(buildMasterPlaylist('aabbcc', LADDER).trim().split('\n'), [
-      '#EXTM3U',
-      '#EXT-X-VERSION:3',
-      '#EXT-X-INDEPENDENT-SEGMENTS',
-      '#EXT-X-STREAM-INF:BANDWIDTH=700000,AVERAGE-BANDWIDTH=630000,RESOLUTION=640x360',
-      'swarm://aabbcc/group-1-360p',
-      '#EXT-X-STREAM-INF:BANDWIDTH=1200000,AVERAGE-BANDWIDTH=1080000,RESOLUTION=854x480',
-      'swarm://aabbcc/group-1-480p',
-      '#EXT-X-STREAM-INF:BANDWIDTH=2800000,AVERAGE-BANDWIDTH=2520000,RESOLUTION=1280x720',
-      'swarm://aabbcc/group-1-720p',
-      '#EXT-X-STREAM-INF:BANDWIDTH=5000000,AVERAGE-BANDWIDTH=4500000,RESOLUTION=1920x1080',
-      'swarm://aabbcc/group-1-1080p',
-    ]);
-  });
-
-  it('writes variant URIs with a scheme, so hls.js resolves them to themselves', () => {
-    // A bare `owner/topic` comes back out of url-toolkit's buildAbsoluteURL as `owner/owner/topic`,
-    // because a base URL with no scheme has its first path segment treated as the host. Harmless for
-    // a single media playlist whose URL is never re-resolved; wrong for every variant of a master.
-    for (const line of buildMasterPlaylist('aabbcc', LADDER)
-      .split('\n')
-      .filter((l) => l && !l.startsWith('#'))) {
-      assert.ok(line.startsWith('swarm://'), `variant URI "${line}" must carry a scheme`);
-    }
-  });
-
-  it('rounds bandwidths, because BANDWIDTH is an integer in the HLS grammar', () => {
-    const master = buildMasterPlaylist('aabbcc', [
-      { ...rendition('720p', 1280, 720, 2_799_999.6), avgBandwidth: 2_519_999.4 },
-    ]);
-
-    assert.match(master, /BANDWIDTH=2800000,AVERAGE-BANDWIDTH=2519999,/);
-  });
-
-  it('names no CODECS, so hls.js keeps a rung it would otherwise have discarded', () => {
-    assert.doesNotMatch(buildMasterPlaylist('aabbcc', LADDER), /CODECS/);
-  });
-
-  it('builds a swarm URI from an owner and a topic', () => {
-    assert.equal(buildSwarmUri('aabbcc', 'group-1-720p'), 'swarm://aabbcc/group-1-720p');
+  it('is the shared builder, not a copy of it', () => {
+    assert.equal(buildMasterPlaylist, sharedBuildMasterPlaylist);
+    assert.equal(buildSwarmUri, sharedBuildSwarmUri);
   });
 });
 

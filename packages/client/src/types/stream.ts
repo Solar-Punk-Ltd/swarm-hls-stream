@@ -5,31 +5,15 @@ export {
   MEDIA_TYPE_AUDIO,
   MEDIA_TYPE_VIDEO,
   type MediaType,
+  type Rendition,
   STREAM_STATUS_LIVE,
   STREAM_STATUS_VOD,
 } from '@swarm-hls-stream/shared';
 
-import type { MediaType, StreamStatus } from '@swarm-hls-stream/shared';
+import type { MediaType, Rendition, StreamStatus } from '@swarm-hls-stream/shared';
 
 /** The uploader's name for this is `StreamStatus`, which is what the catalog entry actually says. */
 export type StreamState = StreamStatus;
-
-/**
- * One rung of a stream's ABR ladder, as the uploader published it.
- *
- * `bandwidth` and `avgBandwidth` are measured from real segments rather than taken from the
- * encoder's configuration — they are the entire supply-side input to hls.js's ABR decision.
- */
-export interface Rendition {
-  name: string;
-  width: number;
-  height: number;
-  topic: string;
-  bandwidth: number;
-  avgBandwidth: number;
-  index?: number;
-  duration?: number;
-}
 
 export interface Stream {
   owner: string;

@@ -1,6 +1,11 @@
-import { HLS_STREAM_INF, parseManifest, type Segment } from '@swarm-hls-stream/shared';
-
-import type { Rendition } from '@/types/stream';
+import {
+  buildMasterPlaylist,
+  buildSwarmUri,
+  HLS_STREAM_INF,
+  parseManifest,
+  parseSwarmUri,
+  type Segment,
+} from '@swarm-hls-stream/shared';
 
 /**
  * Playlist text and feed URIs — the pure half of the Swarm HLS loader.
@@ -9,29 +14,14 @@ import type { Rendition } from '@/types/stream';
  * a browser: this is the code that decides what hls.js actually parses, and getting a tag or a URI
  * wrong here fails as a mute player rather than as an error.
  *
- * The parser and the segment shape are not defined here. They live in the shared package beside the
- * tags the uploader builds a manifest with, so the two halves of the manifest contract cannot drift
- * apart, and they are re-exported for the call sites that used to find them in this module. See
- * ARCH-1.
+ * What is *not* defined here lives in the shared package instead: the parser and the segment shape,
+ * beside the tags the uploader builds a manifest with, and the master-playlist builder and the swarm
+ * URI scheme, beside the uploader that publishes the master this one synthesises as a fallback. Both
+ * halves of each contract are then one definition rather than two that promise to agree. They are
+ * re-exported for the call sites that used to find them here. See ARCH-1.
  */
 
-export { parseManifest, type Segment };
-
-/**
- * The URI scheme feeds are addressed by, chosen for what hls.js does to a playlist's URIs rather
- * than for looks.
- *
- * Every URI in a playlist is resolved against the playlist's own URL through url-toolkit's
- * `buildAbsoluteURL`, and a URI carrying a scheme is the one case it returns untouched. Handing it
- * a bare `owner/topic` instead makes it treat the owner as a host and emit `owner/owner/topic` —
- * harmless while there is a single media playlist whose URL is never re-resolved, wrong the moment
- * a master playlist points at four of them.
- */
-const SWARM_SCHEME = 'swarm://';
-
-export function buildSwarmUri(owner: string, topic: string): string {
-  return `${SWARM_SCHEME}${owner}/${topic}`;
-}
+export { buildMasterPlaylist, buildSwarmUri, parseManifest, parseSwarmUri, type Segment };
 
 /**
  * Where segment references are fetched from, as an absolute URL.
@@ -46,12 +36,6 @@ export function buildSwarmUri(owner: string, topic: string): string {
  */
 export function absoluteBytesBase(beeUrl: string, origin: string): string {
   return new URL(`${beeUrl.replace(/\/+$/, '')}/bytes`, origin).href;
-}
-
-export function parseSwarmUri(url: string): { owner: string; topic: string } {
-  const path = url.startsWith(SWARM_SCHEME) ? url.slice(SWARM_SCHEME.length) : url;
-  const [owner, topic] = path.split('/');
-  return { owner, topic };
 }
 
 /**
@@ -94,32 +78,4 @@ export function masterVariants(text: string): { owner: string; topic: string }[]
   }
 
   return variants;
-}
-
-/**
- * A ladder's multivariant playlist, built locally instead of fetched.
- *
- * The uploader publishes the real one to a feed of its own, and that is what a session normally
- * reads — see `libs/MasterPlaylist.ts` in the stream-uploader, whose output this must match. This
- * copy is the fallback for a catalog entry written before masters were published, whose `topic`
- * points at the lowest rung: without it such a stream would play as a single rendition forever.
- *
- * No CODECS attribute — the uploader never sees the codec string, and hls.js takes it from the
- * first parsed fragment anyway. Omitting it is legal; guessing it would let hls.js discard a rung
- * that plays perfectly well.
- */
-export function buildMasterPlaylist(owner: string, renditions: Rendition[]): string {
-  const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-INDEPENDENT-SEGMENTS'];
-
-  for (const rendition of renditions) {
-    const attributes = [
-      `BANDWIDTH=${Math.round(rendition.bandwidth)}`,
-      `AVERAGE-BANDWIDTH=${Math.round(rendition.avgBandwidth)}`,
-      `RESOLUTION=${rendition.width}x${rendition.height}`,
-    ];
-    lines.push(`#EXT-X-STREAM-INF:${attributes.join(',')}`);
-    lines.push(buildSwarmUri(owner, rendition.topic));
-  }
-
-  return lines.join('\n') + '\n';
 }

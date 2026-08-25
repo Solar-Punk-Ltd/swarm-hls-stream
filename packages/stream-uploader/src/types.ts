@@ -5,6 +5,7 @@ export {
   MEDIA_TYPE_AUDIO,
   MEDIA_TYPE_VIDEO,
   type MediaType,
+  type Rendition,
   STREAM_STATUS_LIVE,
   STREAM_STATUS_VOD,
   type StreamStatus,
@@ -64,19 +65,6 @@ export interface SegmentSize {
  * One rung as the player sees it: enough to build an EXT-X-STREAM-INF and to find the feed
  * carrying that rung's media playlist.
  */
-export interface Rendition {
-  name: string;
-  width: number;
-  height: number;
-  topic: string;
-  /** Peak observed segment bitrate, bits/s — HLS's BANDWIDTH. */
-  bandwidth: number;
-  /** Mean bitrate so far, bits/s — HLS's AVERAGE-BANDWIDTH. */
-  avgBandwidth: number;
-  /** Both set once this rung has been finalized as VOD. */
-  index?: number;
-  duration?: number;
-}
 
 export interface SegmentEntry {
   index: number;
