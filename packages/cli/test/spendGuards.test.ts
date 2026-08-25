@@ -38,6 +38,30 @@ describe('the guards on a spend', () => {
     });
   }
 
+  /**
+   * The half of the argv path this file was written for and did not reach.
+   *
+   * `parseArgs` is asserted above, but every command reads its arguments through `stampArgs`, and
+   * nothing asserted that the flag survived the trip. It did not: the docblock at the top of this
+   * file names hardcoding `assumeYes: true` as a mutation the suite cannot catch, and that is
+   * exactly what `stampArgs` was doing, so the confirmation in `stampBuy` and `stampSetup` never
+   * ran and `--yes` documented a flag with nothing behind it. OPS-7 is recorded CLOSED on the
+   * acceptance criterion that a spend "requires confirmation, with a `--yes` escape for
+   * automation", which this reopened without failing anything.
+   */
+  for (const [argv, expected] of [
+    [['stamp-buy'], false],
+    [['stamp-buy', '100', '20'], false],
+    [['stamp-buy', '--yes'], true],
+    [['stamp-buy', '-y'], true],
+    [['stamp-setup'], false],
+    [['stamp-setup', '--yes'], true],
+  ] as [string[], boolean][]) {
+    it(`carries assumeYes=${expected} through stampArgs for ${JSON.stringify(argv)}`, () => {
+      assert.equal(stampArgs(parseArgs(['node', 'cli', ...argv])).assumeYes, expected);
+    });
+  }
+
   // pnpm requires `--` before it forwards arguments and passes the separator through. Left in argv
   // it became the amount, so `pnpm stamp:setup -- 6000000000 23` (the command the CLI README
   // documents) priced a batch of depth 6000000000 and failed inside bee-js.

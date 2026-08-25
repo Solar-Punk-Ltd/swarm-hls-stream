@@ -62,6 +62,6 @@ export function stampArgs(a: ParsedArgs): StampCommandArgs {
     amount: a.positional[0],
     depth: a.positional[1] ? parseInt(a.positional[1], 10) : undefined,
     immutable: a.immutable,
-    assumeYes: true,
+    assumeYes: a.assumeYes,
   };
 }
