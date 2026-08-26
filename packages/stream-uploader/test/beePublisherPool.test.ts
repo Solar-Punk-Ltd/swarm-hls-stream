@@ -121,6 +121,14 @@ describe('BeePublisherPool.single', () => {
   it('does not warn its way to a fallback for an unknown rung — there is nothing else', () => {
     assert.equal(pool.forRung('2160p').rung, SINGLE_PUBLISHER);
   });
+
+  it('refuses a truncated stamp at startup, exactly as the split path does', () => {
+    assert.throws(() => BeePublisherPool.single('http://localhost:1633', 'abc123'), /must be 64 hex characters/);
+  });
+
+  it('refuses a url that is not http or https', () => {
+    assert.throws(() => BeePublisherPool.single('ftp://localhost:1633', BATCH['360p']), /must be http or https/);
+  });
 });
 
 describe('BeePublisherPool.perRung', () => {

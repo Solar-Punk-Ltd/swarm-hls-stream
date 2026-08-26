@@ -55,6 +55,11 @@ export class BeePublisherPool {
    * single-rendition deployment can have — with the ladder off there are no rungs to split by.
    */
   public static single(url: string, stamp: string): BeePublisherPool {
+    // The same eager validation parseEntry applies to each split node, so a truncated STAMP or a
+    // non-http BEE_URL refuses to start here too rather than failing on the first paid write.
+    assertBatchId('STAMP', stamp);
+    assertHttpUrl('BEE_URL', url);
+
     const publisher: BeePublisher = { rung: SINGLE_PUBLISHER, url, stamp, bee: new Bee(url) };
     return new BeePublisherPool([publisher], new Map([[SINGLE_PUBLISHER, publisher]]));
   }
@@ -189,26 +194,27 @@ function parseEntry(entry: string): PublisherSpec {
     throw new Error(`BEE_PUBLISHERS rung name "${rung}" must match ${RUNG_NAME}`);
   }
 
-  if (!BATCH_ID.test(stamp)) {
-    throw new Error(
-      `BEE_PUBLISHERS batch id for "${rung}" must be 64 hex characters, got ${stamp.length} ("${stamp.slice(0, 8)}…")`,
-    );
-  }
-
-  assertHttpUrl(rung, url);
+  assertBatchId(`BEE_PUBLISHERS batch id for "${rung}"`, stamp);
+  assertHttpUrl(`BEE_PUBLISHERS url for "${rung}"`, url);
 
   return { rung, url, stamp };
 }
 
-function assertHttpUrl(rung: string, url: string): void {
+function assertBatchId(subject: string, stamp: string): void {
+  if (!BATCH_ID.test(stamp)) {
+    throw new Error(`${subject} must be 64 hex characters, got ${stamp.length} ("${stamp.slice(0, 8)}…")`);
+  }
+}
+
+function assertHttpUrl(subject: string, url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`BEE_PUBLISHERS url for "${rung}" is not a URL: "${url}"`);
+    throw new Error(`${subject} is not a URL: "${url}"`);
   }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`BEE_PUBLISHERS url for "${rung}" must be http or https, got "${parsed.protocol}"`);
+    throw new Error(`${subject} must be http or https, got "${parsed.protocol}"`);
   }
 }
