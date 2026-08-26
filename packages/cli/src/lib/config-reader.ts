@@ -4,7 +4,7 @@ import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
-import { parsePublishers } from './publishers.js';
+import { readPublishers } from './publishers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -192,15 +192,28 @@ function targetFromUrl(url: string, defaultPort: number): BeeTarget {
  * The gateway is deliberately absent: it runs with swap disabled and buys nothing.
  */
 export function resolvePublisherTargets(): NamedTarget[] {
-  const publishers = parsePublishers(process.env.BEE_PUBLISHERS);
+  const { parsed, dropped } = readPublishers(process.env.BEE_PUBLISHERS);
 
-  if (publishers.length > 0) {
-    return publishers.map((publisher) => ({
+  if (parsed.length > 0) {
+    return parsed.map((publisher) => ({
       name: `bee-publisher-${publisher.rung}`,
       rung: publisher.rung,
       stamp: publisher.stamp,
       target: targetFromUrl(publisher.url, DEFAULT_BEE_UPLOADER_PORT),
     }));
+  }
+
+  // Set, but nothing in it could be read. This is the OPS-8 mistake on a different variable: reading
+  // it as the single node would buy on and report the one uploader while every rung BEE_PUBLISHERS
+  // names went unchecked, on the command whose whole job is catching a batch filling silently. An
+  // unquoted `#` is the usual cause, because dotenv truncates the value at the first one and hands
+  // the parser a url with no batch on it.
+  if (dropped.length > 0) {
+    throw new Error(
+      'BEE_PUBLISHERS is set but no entry could be read, so every rung it names would go unchecked. ' +
+        `Dropped: ${dropped.join(', ')}. Each entry is rung@url<batch>. An unquoted # is truncated by ` +
+        'dotenv, so quote the value or use the <batch> form.',
+    );
   }
 
   return [{ name: SVC_BEE_UPLOADER, stamp: process.env.STAMP, target: resolveBeeUploaderTarget() }];

@@ -1,10 +1,17 @@
+import { config as loadDotenv } from 'dotenv';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, describe, it } from 'node:test';
+import { after, afterEach, describe, it } from 'node:test';
 
-import { readDeployConfig, resolveBeeGatewayTarget, resolveBeeUploaderTarget } from '../src/lib/config-reader.js';
+import {
+  readDeployConfig,
+  resolveBeeGatewayTarget,
+  resolveBeeUploaderTarget,
+  resolvePublisherTargets,
+  SVC_BEE_UPLOADER,
+} from '../src/lib/config-reader.js';
 
 const dirs: string[] = [];
 
@@ -78,5 +85,60 @@ describe('config.json parse failure (OPS-8)', () => {
     const target = resolveBeeUploaderTarget(missingConfigPath());
 
     assert.equal(target.host, 'localhost');
+  });
+});
+
+describe('BEE_PUBLISHERS set but unreadable (finding 22)', () => {
+  const saved = process.env.BEE_PUBLISHERS;
+
+  afterEach(() => {
+    if (saved === undefined) {
+      delete process.env.BEE_PUBLISHERS;
+    } else {
+      process.env.BEE_PUBLISHERS = saved;
+    }
+  });
+
+  /** Load a real `.env` the way the CLI does, so dotenv's own handling of the value is in the loop. */
+  function loadEnvFixture(contents: string): void {
+    const dir = mkdtempSync(join(tmpdir(), 'publishers-env-'));
+    dirs.push(dir);
+    const path = join(dir, '.env');
+    writeFileSync(path, contents);
+    delete process.env.BEE_PUBLISHERS;
+    loadDotenv({ path, override: true });
+  }
+
+  // The trigger publishers.test.ts cannot reach. It passes the string straight in, but a real `.env`
+  // goes through dotenv first, where an unquoted `#` opens a comment. dotenv truncates the value at
+  // the first one, so the parser never sees a batch and every entry after it vanishes. Read as unset,
+  // that silently becomes the single node while the rungs it named go unchecked.
+  it('refuses when an unquoted # form was truncated to nothing readable', () => {
+    loadEnvFixture(`BEE_PUBLISHERS=360p@http://n1:1633#${'1'.repeat(64)} 720p@http://n2:1633#${'3'.repeat(64)}\n`);
+
+    // Proven, not assumed: dotenv kept only up to the first #.
+    assert.equal(process.env.BEE_PUBLISHERS, '360p@http://n1:1633');
+    assert.throws(() => resolvePublisherTargets(), /set but no entry could be read/);
+    assert.throws(() => resolvePublisherTargets(), /360p@http:\/\/n1:1633/);
+  });
+
+  // Unset is the single node, and that must keep working: a fresh deployment has no BEE_PUBLISHERS.
+  it('still reads unset as the single node', () => {
+    delete process.env.BEE_PUBLISHERS;
+
+    const targets = resolvePublisherTargets();
+
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].name, SVC_BEE_UPLOADER);
+  });
+
+  // The bracketed form is not a comment, so a correctly written ladder survives a real `.env`.
+  it('reads the bracketed form from a real .env as the full ladder', () => {
+    loadEnvFixture(`BEE_PUBLISHERS=360p@http://n1:1633<${'1'.repeat(64)}> 720p@http://n2:1633<${'3'.repeat(64)}>\n`);
+
+    assert.deepEqual(
+      resolvePublisherTargets().map((node) => node.rung),
+      ['360p', '720p'],
+    );
   });
 });
