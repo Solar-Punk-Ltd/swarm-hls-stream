@@ -22,7 +22,7 @@ cp .env.sample .env
 # Edit .env — fill in VITE_APP_OWNER, VITE_READER_BEE_URL, etc.
 
 # Start the dev server
-pnpm dev
+pnpm client:start
 ```
 
 Opens at `http://localhost:5173`.
@@ -88,7 +88,7 @@ Standard hls.js expects static manifest URLs. On Swarm, every manifest update pr
 1. **CustomManifestLoader** — Instead of fetching a static URL, performs a Swarm Feed lookup to get the latest manifest. Proactively fetches the next feed index for caching.
 2. **CustomFragmentLoader** — Resolves segment references from the manifest (which contain Swarm hashes) into fetchable blob URLs via the configured Bee node.
 3. **ManifestStateManager** — Merges incoming live manifests into a growing EVENT-type playlist so segments remain available longer than the sliding window. Tracks feed indices, handles deduplication, and caches serialized output.
-4. **LadderFeedPoller** — For ABR streams, owns the feed walk for _every_ rung rather than letting hls.js drive it. A feed is walked one SOC at a time, and hls.js only refreshes the playlist of the level it is playing, so a rung switched away from stops advancing; two minutes later it is ~80 indices behind and catches up at one per refresh. The poller keeps all four at the live edge on its own clock, which is what makes a switch cost nothing. Costs four small SOC lookups per segment interval instead of one.
+4. **LadderFeedPoller** — For ABR streams, owns the feed walk for _every_ rung rather than letting hls.js drive it. A feed is walked one SOC at a time, and hls.js only refreshes the playlist of the level it is playing, so a rung switched away from stops advancing; two minutes later it is ~240 indices behind at the shipped 0.5s segment and catches up at one per refresh. The poller keeps all four at the live edge on its own clock, which is what makes a switch cost nothing. Costs four small SOC lookups per segment interval instead of one.
 
 ## Project Structure
 
@@ -111,8 +111,10 @@ src/
   types/
     stream.ts             # MediaType, StreamState, Stream interface
   utils/
-    bee.ts                # makeFeedIdentifier (keccak256)
+    catalogFeed.ts        # Follows the stream catalog feed by walking slots
     config.ts             # Environment config with auto proxy detection
-    fetch.ts              # retryAwaitableAsync utility
+    fetchWithTimeout.ts   # fetch() with a timeout, returning a timed response
     format.ts             # formatDuration (mm:ss)
+    requestJitter.ts      # Gateway request jitter, to desynchronise pollers
+    thumbnailManifest.ts  # Preview segment URL for stream thumbnails
 ```
