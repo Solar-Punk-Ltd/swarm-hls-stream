@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import { BeePublisherPool, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
 import { CatalogIndexStore } from '../src/libs/CatalogIndexStore.js';
 import { Logger } from '../src/libs/Logger.js';
+import { MasterFeedWriter } from '../src/libs/MasterFeedWriter.js';
 import { StreamCatalog, TREAT_STATE_AS_LOST_AFTER } from '../src/libs/StreamCatalog.js';
 import { MEDIA_TYPE_VIDEO, STREAM_STATUS_LIVE } from '../src/types.js';
 
@@ -649,5 +650,61 @@ describe('StreamCatalog unreadable-head hardening', () => {
 
     reads.fails = true;
     await assert.rejects(() => catalog.addStream(liveEntry()), /Not Found/);
+  });
+});
+
+describe('StreamCatalog ladder write path', () => {
+  const identity = { title: 'title', owner: 'owner', group: 'group-1', mediatype: MEDIA_TYPE_VIDEO };
+  const rung = { name: '360p', width: 640, height: 360, topic: 'rung-topic', bandwidth: 800_000, avgBandwidth: 700_000 };
+
+  it('publishes the master before the catalog entry that points at it, and repoints the entry at the master', async () => {
+    // The catalog entry carries the master's location, so the master has to exist first. Record the
+    // order the two writes land in and assert the master precedes the catalog entry.
+    const events: string[] = [];
+    const writes: CapturedWrite[] = [];
+    const publishedGroups: string[] = [];
+
+    const bee = makeCatalogBee(writes, {
+      lookupThrows: FEED_NOT_FOUND,
+      holdWrite: () => {
+        events.push('catalog');
+        return Promise.resolve();
+      },
+    });
+
+    const masterWriter = {
+      publish: async (group: string) => {
+        events.push('master');
+        publishedGroups.push(group);
+        return { topic: 'master-topic', index: 4 };
+      },
+    } as unknown as MasterFeedWriter;
+
+    const catalog = new StreamCatalog(makePublishers(bee), TEST_STREAM_KEY, TEST_TOPIC, undefined, masterWriter);
+    await catalog.init();
+
+    await catalog.upsertRendition(identity, rung);
+
+    assert.deepEqual(events, ['master', 'catalog'], 'the master must be published before the catalog entry that names it');
+    assert.deepEqual(publishedGroups, ['group-1']);
+
+    const written = JSON.parse(writes[0].payload) as Array<{ topic: string; group: string; renditions: unknown[] }>;
+    assert.equal(written.length, 1);
+    assert.equal(written[0].group, 'group-1');
+    assert.equal(written[0].topic, 'master-topic', 'the catalog entry must point at the master, not the lowest rung');
+    assert.equal(written[0].renditions.length, 1, 'the rung it still carries for a client without master support');
+  });
+
+  it('falls back to pointing the entry at the lowest rung when no master writer is configured', async () => {
+    const writes: CapturedWrite[] = [];
+    const bee = makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND });
+
+    const catalog = new StreamCatalog(makePublishers(bee), TEST_STREAM_KEY, TEST_TOPIC);
+    await catalog.init();
+
+    await catalog.upsertRendition(identity, rung);
+
+    const written = JSON.parse(writes[0].payload) as Array<{ topic: string }>;
+    assert.equal(written[0].topic, 'rung-topic', 'without a master the entry points at the rung a bare client can play');
   });
 });
