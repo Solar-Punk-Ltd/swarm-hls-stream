@@ -162,9 +162,79 @@ describe('stage-fingerprint refuses a stage that does not', () => {
  */
 describe('stage-fingerprint and the ABR ladder', () => {
   it('accepts a ladder config whose vhosts agree, which is what the entrypoint generates', async () => {
-    const { code } = await gate({ gop: '0.5', files: { conf: abrSrsConf(0.25, 0.25) } });
+    const dir = workspace();
+    const confPath = join(dir, 'srs.conf');
+    writeFileSync(confPath, abrSrsConf(0.25, 0.25));
+    const a = join(dir, 'rung-720p.m3u8');
+    const b = join(dir, 'rung-1080p.m3u8');
+    writeFileSync(a, playlist(0.501, 12));
+    writeFileSync(b, playlist(0.501, 12));
 
-    assert.equal(code, 0);
+    // Judged with a rung per playlist, because a ladder config is not something a single-rung run may
+    // pass any more — that is the refusal in the test below. Agreeing vhosts still must not trigger
+    // the ambiguity refusal, which is what this asserts.
+    const { code } = await run(GATE, [
+      '--gop',
+      '0.5',
+      '--conf-file',
+      confPath,
+      '--playlist-file',
+      a,
+      '--playlist-file',
+      b,
+      '--rungs',
+      '2',
+    ]).then(
+      () => ({ code: 0 }),
+      (error) => ({ code: error.code, output: `${error.stdout ?? ''}${error.stderr ?? ''}` }),
+    );
+
+    assert.equal(code, 0, 'agreeing vhosts must not be read as a disagreement');
+  });
+
+  /**
+   * ⛔⛔⛔ The hole `--rungs` closes. A ladder generates a second vhost, and the wrapper defaults to
+   * fetching one playlist, so before this a sitting judged one rung of four and every report named a
+   * segment length nobody had checked on the other three. A two-vhost config judged as a single rung
+   * is refused, with the driver told to pass the rung count.
+   */
+  it('refuses a ladder config judged as a single rung', async () => {
+    const { code, output } = await gate({ gop: '0.5', files: { conf: abrSrsConf(0.25, 0.25) } });
+
+    assert.equal(code, 1, 'a ladder judged as one rung leaves three rungs unchecked');
+    assert.match(output, /ladder/);
+    assert.match(output, /--rungs/);
+  });
+
+  it('refuses when it was told more rungs than playlists it was handed', async () => {
+    const dir = workspace();
+    const confPath = join(dir, 'srs.conf');
+    writeFileSync(confPath, srsConf(0.25, 10));
+    const a = join(dir, 'rung-360p.m3u8');
+    const b = join(dir, 'rung-720p.m3u8');
+    writeFileSync(a, playlist(0.501, 12));
+    writeFileSync(b, playlist(0.501, 12));
+
+    // Two live playlists but four rungs asked for: the two that never went live are exactly what has
+    // to be refused on, not read as an all-clear over the rungs that were found.
+    const { code, output } = await run(GATE, [
+      '--gop',
+      '0.5',
+      '--conf-file',
+      confPath,
+      '--playlist-file',
+      a,
+      '--playlist-file',
+      b,
+      '--rungs',
+      '4',
+    ]).then(
+      () => ({ code: 0, output: '' }),
+      (error) => ({ code: error.code, output: `${error.stdout ?? ''}${error.stderr ?? ''}` }),
+    );
+
+    assert.equal(code, 1, 'fewer live rungs than asked for is a way of learning nothing about the rest');
+    assert.match(output, /asked to judge 4 rungs but found 2/);
   });
 
   it('refuses when the two vhosts disagree, rather than fingerprinting off whichever came first', async () => {
@@ -304,7 +374,11 @@ const asked = argv[argv.length - 1] || '';
 const rungs = ${JSON.stringify(rungNames)};
 const seconds = ${JSON.stringify(secondsByRung)};
 if (asked.includes('srs.conf')) {
-  process.stdout.write('vhost __defaultVhost__ {\\n  hls {\\n    hls_fragment    0.25;\\n    hls_aof_ratio   10;\\n  }\\n}\\n');
+  // A real ladder carries a second vhost with its own hls block, which is the signal that lets the
+  // gate refuse a ladder judged as one rung. A single-rung stage keeps the one vhost SRS always had.
+  let conf = 'vhost __defaultVhost__ {\\n  hls {\\n    hls_fragment    0.25;\\n    hls_aof_ratio   10;\\n  }\\n}\\n';
+  if (rungs.length > 1) conf += 'vhost abr {\\n  hls {\\n    hls_fragment    0.25;\\n    hls_aof_ratio   10;\\n  }\\n}\\n';
+  process.stdout.write(conf);
 } else if (asked.includes('-name') && asked.includes('m3u8')) {
   const limit = Number((asked.match(/head -(\\d+)/) || [])[1] || '1');
   process.stdout.write(rungs.slice(0, limit).map((r) => '/hls/live/' + r + '/index.m3u8').join('\\n') + '\\n');
@@ -358,11 +432,21 @@ process.exit(0);
     assert.doesNotMatch(output, /REFUSING TO START\. r360/, 'the healthy rungs must not be blamed');
   });
 
-  it('would have passed that same stage while judging one playlist, which is the hole this closes', async () => {
-    // The bad rung is not the newest, so a gate reading only the newest never sees it.
-    const { code } = await containerGate(fakeDocker(['r360', 'r720', 'r1080', 'r480'], { r1080: '2.0' }));
+  it('refuses that same stage when no rung count is given, rather than judging one playlist of four', async () => {
+    // The bad rung is not the newest, so a gate reading only the newest never sees it. The second
+    // vhost the ladder carries is what lets this refuse before it ever looks at a single playlist.
+    const { code, output } = await containerGate(fakeDocker(['r360', 'r720', 'r1080', 'r480'], { r1080: '2.0' }));
 
-    assert.equal(code, 0, 'if this refuses, the test above no longer demonstrates anything');
+    assert.equal(code, 1, 'a ladder judged as a single rung leaves the bad rung unchecked');
+    assert.match(output, /ladder/);
+    assert.match(output, /--rungs/);
+  });
+
+  it('refuses when fewer rungs are live than the driver asked for', async () => {
+    const { code, output } = await containerGate(fakeDocker(['r360', 'r720']), ['--rungs', '4']);
+
+    assert.equal(code, 1, 'two live rungs against a four-rung request is a rung that never came up');
+    assert.match(output, /asked to judge 4 rungs but found 2/);
   });
 
   it('rejects a rung count that is not a positive whole number', async () => {

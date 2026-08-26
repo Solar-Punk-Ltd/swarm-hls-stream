@@ -159,6 +159,7 @@ exec python3 "${HERE}/stage-fingerprint.py" \
   --gop "${GOP}" \
   --conf "${CONF_FILE}" \
   "$@" \
+  --rungs "${RUNGS}" \
   --source "${CONTAINER:-$(printf '%s' "${PLAYLIST_FILES}" | head -1)}" \
   --min-segments "${MIN_SEGMENTS}" \
   --tolerance "${TOLERANCE}"

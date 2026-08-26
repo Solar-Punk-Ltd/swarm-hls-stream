@@ -91,6 +91,17 @@ def directive(conf: str, name: str) -> float | None:
     return values[0]
 
 
+def directive_count(conf: str, name: str) -> int:
+    """How many times a directive is declared, which is how many vhosts carry an `hls` block.
+
+    A ladder makes `entrypoint.sh` generate a second vhost with its own `hls_fragment`, so a count
+    above one means a ladder is configured even when the two values agree and {@link directive}
+    returns a single number without raising. It is the one signal here that a ladder exists, because
+    the wrapper only ever fetches as many playlists as the driver asked for.
+    """
+    return len(re.findall(rf"^\s*{name}\s+[0-9.]+\s*;", conf, re.M))
+
+
 def extinf_durations(playlist: str) -> list[float]:
     """Every raw `#EXTINF` in publication order.
 
@@ -157,12 +168,19 @@ def main() -> int:
     # looked at, which is the same shape of hole as reading `hls_fragment` off one vhost.
     parser.add_argument("--playlist", required=True, action="append")
     parser.add_argument("--source", default="the stage")
+    # How many rungs the driver configured, so this can tell a ladder judged whole from one judged a
+    # single rung. Defaults to 1, the single-rendition case this served before ABR existed.
+    parser.add_argument("--rungs", type=int, default=1)
     parser.add_argument("--min-segments", type=int, default=DEFAULT_MIN_SEGMENTS)
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE)
     args = parser.parse_args()
 
     if args.gop <= 0:
         print(f"stage-fingerprint: --gop must be positive, got {args.gop}", file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.rungs < 1:
+        print(f"stage-fingerprint: --rungs must be positive, got {args.rungs}", file=sys.stderr)
         return EXIT_USAGE
 
     conf = read(args.conf)
@@ -191,6 +209,28 @@ def main() -> int:
         return EXIT_REFUSED
     if fragment <= 0:
         print(f"stage-fingerprint: REFUSING, hls_fragment on {args.source} is {fragment:g}.")
+        return EXIT_REFUSED
+
+    # A ladder generates a second vhost with its own hls_fragment, so more than one declaration means
+    # the stage is publishing a ladder. Judging one rung of it is the same hole as reading hls_fragment
+    # off one vhost: the sitting runs on rungs nobody looked at. The wrapper only fetches as many
+    # playlists as --rungs, so this is the one place a ladder-with-one-rung can be caught at all.
+    vhosts = directive_count(conf, "hls_fragment")
+    if vhosts > 1 and args.rungs <= 1:
+        print(f"stage-fingerprint: REFUSING, {args.source} carries {vhosts} vhosts, so it is a ladder, but --rungs is {args.rungs}.")
+        print("  A ladder publishes one playlist per rung and judging a single one leaves the rest")
+        print("  unchecked. Pass --rungs for the ladder the driver configured.")
+        return EXIT_REFUSED
+
+    # Fewer playlists than the driver asked for is a way of learning nothing about the rungs that were
+    # not found. A live rung is written every fragment and outranks any stale leftover in `ls -t`, so a
+    # rung missing from the newest --rungs is one that never went live, which is the fault to refuse on.
+    if len(args.playlist) < args.rungs:
+        print(
+            f"stage-fingerprint: REFUSING, asked to judge {args.rungs} rungs but found "
+            f"{len(args.playlist)} playlist(s) on {args.source}."
+        )
+        print("  A rung that never published is not a passing rung.")
         return EXIT_REFUSED
 
     stage_forces = math.ceil(fragment / args.gop) * args.gop
