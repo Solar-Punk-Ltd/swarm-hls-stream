@@ -1446,7 +1446,11 @@ describe('StreamUploader ladder re-announce safety', () => {
     const outgoing = ladderUploaderOn('outgoing-topic', catalog);
     outgoing.handleSegment(0, 2, Buffer.from('seg0'));
     await drain(outgoing);
-    assert.equal(rungsByName.get('360p')?.topic, 'outgoing-topic', 'the live announce should land while it owns the rung');
+    assert.equal(
+      rungsByName.get('360p')?.topic,
+      'outgoing-topic',
+      'the live announce should land while it owns the rung',
+    );
 
     // A transcode restart re-announces 360p to a new session on a new topic, now the live rung, and
     // retires the outgoing session so it no longer owns the shared entry.

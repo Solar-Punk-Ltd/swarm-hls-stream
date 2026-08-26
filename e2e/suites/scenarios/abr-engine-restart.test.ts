@@ -168,9 +168,7 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
 
     await waitFor(
       async () => {
-        const counts = countByRung(
-          renditionsInFreshLadders(await host.logsSince(uploader, restartedAt), priorLadders),
-        );
+        const counts = countByRung(renditionsInFreshLadders(await host.logsSince(uploader, restartedAt), priorLadders));
         return counts.size >= rungsBefore.length && [...counts.values()].every((n) => n >= 2);
       },
       {

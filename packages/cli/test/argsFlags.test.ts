@@ -21,11 +21,16 @@ describe('assertRungFlagSupported', () => {
   }
 
   it('names stamp-buy as the command that does take it', () => {
-    assert.throws(() => assertRungFlagSupported(parseArgs(['node', 'cli', 'stamp-setup', '--rung', '1080p'])), /run stamp-buy/);
+    assert.throws(
+      () => assertRungFlagSupported(parseArgs(['node', 'cli', 'stamp-setup', '--rung', '1080p'])),
+      /run stamp-buy/,
+    );
   });
 
   it('allows --rung on stamp-buy, the one command that spends per rung', () => {
-    assert.doesNotThrow(() => assertRungFlagSupported(parseArgs(['node', 'cli', 'stamp-buy', '--rung', '360p', '500', '21'])));
+    assert.doesNotThrow(() =>
+      assertRungFlagSupported(parseArgs(['node', 'cli', 'stamp-buy', '--rung', '360p', '500', '21'])),
+    );
   });
 
   for (const command of ['stamp-setup', 'stamp-check', 'node-status', 'stamp-buy']) {

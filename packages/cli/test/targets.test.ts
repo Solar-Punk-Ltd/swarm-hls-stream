@@ -135,8 +135,18 @@ describe('selectPublisherByRung', () => {
     // The uploader's parser refuses this before it starts. Here the spend selection refuses it, so a
     // copy-pasted BEE_PUBLISHERS entry cannot quietly buy on whichever node was listed first.
     const twoFor360: NamedTarget[] = [
-      { name: 'bee-publisher-360p', rung: '360p', stamp: BATCH_360, target: { url: 'http://a:1633', host: 'a', port: 1633 } },
-      { name: 'bee-publisher-360p', rung: '360p', stamp: BATCH_1080, target: { url: 'http://b:1633', host: 'b', port: 1633 } },
+      {
+        name: 'bee-publisher-360p',
+        rung: '360p',
+        stamp: BATCH_360,
+        target: { url: 'http://a:1633', host: 'a', port: 1633 },
+      },
+      {
+        name: 'bee-publisher-360p',
+        rung: '360p',
+        stamp: BATCH_1080,
+        target: { url: 'http://b:1633', host: 'b', port: 1633 },
+      },
     ];
 
     assert.throws(() => selectPublisherByRung(twoFor360, '360p'), /2 nodes for rung "360p"/);

@@ -396,9 +396,7 @@ function isFeedAbsent(error: unknown): boolean {
 /** A request that reached the node and lost the response on the way back. */
 function isTransferLost(error: unknown): boolean {
   return (
-    error instanceof BeeResponseError &&
-    error.status === undefined &&
-    TRANSFER_LOST_CODES.has(error.statusText ?? '')
+    error instanceof BeeResponseError && error.status === undefined && TRANSFER_LOST_CODES.has(error.statusText ?? '')
   );
 }
 

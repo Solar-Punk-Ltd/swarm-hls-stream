@@ -480,7 +480,11 @@ describe('StreamCatalog unreadable-head hardening', () => {
     await catalog.init();
     await catalog.addStream(liveEntry());
 
-    assert.equal(writes[0].index.toBigInt(), 126n, 'an expired batch behind the head must not take the uploader off the air');
+    assert.equal(
+      writes[0].index.toBigInt(),
+      126n,
+      'an expired batch behind the head must not take the uploader off the air',
+    );
   });
 
   it('keeps the boot fatal when the lookup never reached the node', async () => {
@@ -554,7 +558,11 @@ describe('StreamCatalog unreadable-head hardening', () => {
     await catalog.addStream(liveEntry());
     assert.equal(writes.length, 1);
     assert.equal(writes[0].index.toBigInt(), 126n);
-    assert.equal(JSON.parse(writes[0].payload ?? '[]').length, 1, 'the write carries the new entry over an empty previous state');
+    assert.equal(
+      JSON.parse(writes[0].payload ?? '[]').length,
+      1,
+      'the write carries the new entry over an empty previous state',
+    );
 
     // The window closes with the write that landed: index 126 is what this uploader just wrote, so
     // failing to read it again is a real failure from the first attempt.
@@ -579,7 +587,11 @@ describe('StreamCatalog unreadable-head hardening', () => {
     await catalog.addStream(liveEntry());
 
     assert.equal(writes.length, 1);
-    assert.equal(writes[0].index.toBigInt(), 126n, 'a floor ahead of a readable head is still a state this uploader never read');
+    assert.equal(
+      writes[0].index.toBigInt(),
+      126n,
+      'a floor ahead of a readable head is still a state this uploader never read',
+    );
   });
 
   it('keeps an unreadable state fatal when the head read fine', async () => {
@@ -655,7 +667,14 @@ describe('StreamCatalog unreadable-head hardening', () => {
 
 describe('StreamCatalog ladder write path', () => {
   const identity = { title: 'title', owner: 'owner', group: 'group-1', mediatype: MEDIA_TYPE_VIDEO };
-  const rung = { name: '360p', width: 640, height: 360, topic: 'rung-topic', bandwidth: 800_000, avgBandwidth: 700_000 };
+  const rung = {
+    name: '360p',
+    width: 640,
+    height: 360,
+    topic: 'rung-topic',
+    bandwidth: 800_000,
+    avgBandwidth: 700_000,
+  };
 
   it('publishes the master before the catalog entry that points at it, and repoints the entry at the master', async () => {
     // The catalog entry carries the master's location, so the master has to exist first. Record the
@@ -685,7 +704,11 @@ describe('StreamCatalog ladder write path', () => {
 
     await catalog.upsertRendition(identity, rung);
 
-    assert.deepEqual(events, ['master', 'catalog'], 'the master must be published before the catalog entry that names it');
+    assert.deepEqual(
+      events,
+      ['master', 'catalog'],
+      'the master must be published before the catalog entry that names it',
+    );
     assert.deepEqual(publishedGroups, ['group-1']);
 
     const written = JSON.parse(writes[0].payload) as Array<{ topic: string; group: string; renditions: unknown[] }>;
@@ -705,6 +728,10 @@ describe('StreamCatalog ladder write path', () => {
     await catalog.upsertRendition(identity, rung);
 
     const written = JSON.parse(writes[0].payload) as Array<{ topic: string }>;
-    assert.equal(written[0].topic, 'rung-topic', 'without a master the entry points at the rung a bare client can play');
+    assert.equal(
+      written[0].topic,
+      'rung-topic',
+      'without a master the entry points at the rung a bare client can play',
+    );
   });
 });

@@ -60,7 +60,9 @@ interface Run {
   exitCode?: number;
 }
 
-async function run(overrides: StampBuySeams & { buyThrows?: boolean; assumeYes?: boolean; rung?: string }): Promise<Run> {
+async function run(
+  overrides: StampBuySeams & { buyThrows?: boolean; assumeYes?: boolean; rung?: string },
+): Promise<Run> {
   const captured: string[] = [];
   const sinks = ['log', 'info', 'warn', 'error'] as const;
   const originals = sinks.map((name) => [name, console[name]] as const);
