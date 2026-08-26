@@ -13,13 +13,19 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - '${BEE_UPLOADER_API_PORT:-1633}:${BEE_UPLOADER_API_PORT:-1633}'
+      # The API is an unauthenticated write surface — postage spend, chunk upload, feed writes —
+      # so on any host with a public address it must be bound to one interface and firewalled.
+      # P2P stays on every interface: that is how the node reaches Swarm.
+      - '${BEE_UPLOADER_API_BIND:-0.0.0.0}:${BEE_UPLOADER_API_PORT:-1633}:${BEE_UPLOADER_API_PORT:-1633}'
       - '${BEE_UPLOADER_P2P_PORT:-1634}:${BEE_UPLOADER_P2P_PORT:-1634}'
     volumes:
       - ${BEE_UPLOADER_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader}:/home/bee/.bee
     command:
       - start
-      - --api-addr=:${BEE_UPLOADER_API_PORT:-1633}
+      # BEE_UPLOADER_API_LISTEN is the process's own bind address, and it is what protects the API
+      # under COMPOSE_NETWORK=host, where published ports are ignored. Empty means every interface,
+      # which is correct in bridge mode: there the published port above is the boundary.
+      - --api-addr=${BEE_UPLOADER_API_LISTEN:-}:${BEE_UPLOADER_API_PORT:-1633}
       - --p2p-addr=:${BEE_UPLOADER_P2P_PORT:-1634}
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=${BEE_UPLOADER_FULL_NODE:-false}
@@ -34,13 +40,15 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - '${BEE_GATEWAY_API_PORT:-1733}:${BEE_GATEWAY_API_PORT:-1733}'
+      # Read-only in practice, but it can still spend nothing and serve anything: bind it to the
+      # interface the client proxies from rather than to every address the host answers on.
+      - '${BEE_GATEWAY_API_BIND:-0.0.0.0}:${BEE_GATEWAY_API_PORT:-1733}:${BEE_GATEWAY_API_PORT:-1733}'
       - '${BEE_GATEWAY_P2P_PORT:-1734}:${BEE_GATEWAY_P2P_PORT:-1734}'
     volumes:
       - ${BEE_GATEWAY_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-gateway}:/home/bee/.bee
     command:
       - start
-      - --api-addr=:${BEE_GATEWAY_API_PORT:-1733}
+      - --api-addr=${BEE_GATEWAY_API_LISTEN:-}:${BEE_GATEWAY_API_PORT:-1733}
       - --p2p-addr=:${BEE_GATEWAY_P2P_PORT:-1734}
       - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
       - --full-node=false
