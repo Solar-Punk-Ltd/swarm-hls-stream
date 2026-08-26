@@ -149,6 +149,7 @@ services:
       ABR_VHOST: ${ABR_VHOST:-abr}
       ABR_FPS: ${ABR_FPS:-30}
       ABR_PRESET: ${ABR_PRESET:-veryfast}
+      ABR_VBV_SECONDS: ${ABR_VBV_SECONDS:-1}
       ABR_PROFILE: ${ABR_PROFILE:-main}
       ABR_THREADS: ${ABR_THREADS:-0}
       ABR_ACODEC: ${ABR_ACODEC:-copy}
