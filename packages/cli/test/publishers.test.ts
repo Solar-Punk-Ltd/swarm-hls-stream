@@ -51,4 +51,12 @@ describe('parsePublishers', () => {
     assert.deepEqual(parsePublishers('360p@http://localhost:1633'), []);
     assert.deepEqual(parsePublishers('@http://localhost:1633<abc>'), []);
   });
+
+  it('rejects an empty batch rather than storing an empty stamp', () => {
+    // The uploader's parseEntry refuses this with `open >= close - 1`, and this parser now matches.
+    // Accepting `rung@url<>` used to store `stamp: ''`, which read downstream as "no batch
+    // configured" and silenced stamp-check's warning that a node is not holding the batch it should.
+    assert.deepEqual(parsePublishers('360p@http://localhost:1633<>'), []);
+    assert.deepEqual(parsePublishers('360p@http://localhost:1633#'), []);
+  });
 });

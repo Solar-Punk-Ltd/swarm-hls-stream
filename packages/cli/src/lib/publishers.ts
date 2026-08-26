@@ -40,7 +40,10 @@ function readEntry(entry: string): PublisherSpec | null {
   const open = bracketed ? entry.lastIndexOf('<') : entry.lastIndexOf('#');
   const close = bracketed ? entry.length - 1 : entry.length;
 
-  if (at <= 0 || open <= at + 1 || open >= close) {
+  // `close - 1` requires at least one character of batch, matching the uploader's parseEntry. `open
+  // >= close` let an empty batch through as `stamp: ''`, which then read as "no configured batch" and
+  // silenced the very warning stamp-check raises when a node is not holding the batch it should.
+  if (at <= 0 || open <= at + 1 || open >= close - 1) {
     return null;
   }
 
