@@ -28,7 +28,7 @@ export interface PublisherSpec {
  * apart is what stops a garbled list being read as the single node while the rungs it names go
  * unchecked.
  */
-export interface PublisherParse {
+interface PublisherParse {
   parsed: PublisherSpec[];
   dropped: string[];
 }
