@@ -66,6 +66,16 @@ describe('ManifestManager media sequence', () => {
     assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
   });
 
+  it('starts the VOD manifest at the engine index of its first segment, not zero', () => {
+    // A rung whose opening segment was lost, or whose engine restarted mid-broadcast, retains a first
+    // segment that is not index 0. Renumbering the VOD playlist to zero misaligns the ladder's levels
+    // for a VOD viewer exactly as it would live, since the master playlist names all four rungs.
+    const manager = new ManifestManager();
+    feed(manager, 4, 3);
+
+    assert.equal(mediaSequenceOf(manager.buildVODManifest()), 4);
+  });
+
   // The sliding-window case is covered by 'names the count it dropped as the media sequence' in the
   // live-window suite above. ABR's version asserted a media sequence of 4 after 14 segments, which
   // assumes a window bounded at ten segments. This branch bounds the window by BYTES, at one bee

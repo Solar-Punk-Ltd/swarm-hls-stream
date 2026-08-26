@@ -143,7 +143,7 @@ export class ManifestManager {
       ...this.hlsHeaders,
       `${HLS_TARGET_DURATION}:${this.targetDuration}`,
       HLS_PLAYLIST_TYPE_VOD,
-      `${HLS_MEDIA_SEQUENCE}:0`,
+      `${HLS_MEDIA_SEQUENCE}:${this.segments[0].index}`,
       '',
       ...this.segments.flatMap((seg) => this.segmentLines(seg)),
       HLS_ENDLIST,
