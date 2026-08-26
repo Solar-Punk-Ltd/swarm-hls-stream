@@ -369,7 +369,7 @@ export class StreamUploader {
 
     if (this.ladder) {
       await this.announceRendition({ index: this.socIndex!, duration: this.manifestManager.getTotalDuration() });
-      this.recoveryStore.remove(this.streamId);
+      this.clearRecoveryEntry();
       return;
     }
 
