@@ -191,7 +191,7 @@ holds the stream, not as a verdict.
 
 Unlike `/health`, `/metrics` is behind the bearer gate, and the honest reason is narrower than it first
 looks: `/health` already discloses `activeStreams`, `queuePressure` and `msSinceStreamActivity` to anyone
-who asks, so the gate is really protecting the nine process-lifetime counters, which say how many
+who asks, so the gate is really protecting the thirteen process-lifetime counters, which say how many
 broadcasts have run, how many were lost, and how many requests this deployment turned away. Point a scraper at it
 with an `authorization` credential:
 
@@ -341,10 +341,11 @@ The key travels as a `key` query parameter, which was measured on `ossrs/srs:6` 
 | SRS, SRT     | `srt://<host>:<SRS_SRT_PORT>?streamid=#!::r=video/demo?key=<key>,m=publish` |
 | OME, SRT     | `srt://<host>:<OME_SRT_PORT>?streamid=<percent-encoded publish url>`        |
 
-**Take the ports from `publish-key.sh` rather than from here.** This repo's own defaults are not 1935
-and 10080: `apply_port_slot` resolves slot 0 to `SRS_RTMP_PORT=10002`, and `engines/ome/.env.sample`
-sets `OME_SRT_PORT=10081`. The script resolves them the same way the deploy does, so what it prints is
-what the deployment is actually listening on.
+**Take the ports from `publish-key.sh` rather than from here.** At slot 0 SRS uses the stock 1935
+(RTMP) and 10080 (SRT), but `--portSlot N` shifts every host port into a per-slot band in the
+10000-19999 range instead of using those, and `engines/ome/.env.sample` sets `OME_SRT_PORT=10081` so
+OME's SRT does not collide with SRS's. The script resolves them the same way the deploy does, so what
+it prints is what the deployment is actually listening on.
 
 OME's streamid has to be percent-encoded, because the key sits inside a value that is itself inside a
 query and the publisher's own URL parser otherwise splits on the inner `?`. `publish-key.sh` prints
