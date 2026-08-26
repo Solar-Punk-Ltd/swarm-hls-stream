@@ -74,11 +74,13 @@ A URL that matches a configured publisher **keeps that node's identity** — its
 A postage batch is held by the node that bought it and can only be spent by that node, so which node is not something to leave implicit:
 
 ```bash
-pnpm stamp:buy 360p
-pnpm stamp:buy 1080p 6000000000 23
+pnpm stamp:buy --rung 360p
+pnpm stamp:buy --rung 1080p 6000000000 23
 ```
 
-The rung is required and validated against `BEE_PUBLISHERS`. An unknown rung, a missing rung, or an unsplit config all fail before any network call, listing the rungs that _are_ configured:
+The rung is a flag, not a leading positional: a positional whose meaning changed with `BEE_PUBLISHERS`
+would hand a single-node operator's amount to the rung lookup. The rung is required and validated
+against `BEE_PUBLISHERS`. An unknown rung, a missing rung, or an unsplit config all fail before any network call, listing the rungs that _are_ configured:
 
 ```
 ✗ No node configured for rung "1080p". Configured rungs: 360p, 720p
@@ -88,12 +90,19 @@ Falling back to some default node would put the batch somewhere that cannot spen
 
 Validation is against `BEE_PUBLISHERS` rather than `ABR_LADDER`, which lives in the engine's own `.env` and is not loaded here. In a working config the two agree: the uploader refuses to start unless the publisher list covers the ladder exactly.
 
-**Nothing is written to `.env`.** The batch id is printed in the form `BEE_PUBLISHERS` wants and putting it there is yours to do, so a config change is always deliberate:
+**`STAMP=<batchId>` is written to the root `.env`**, the same way `stamp:setup` does it and for the
+same reason: a batch you paid for must never live only in terminal scrollback (OPS-1). It replaces any
+previous `STAMP` value, and the old batch still exists on chain. On a split deployment `STAMP` is not
+the variable that pays for the rung — `BEE_PUBLISHERS` is — and that one is not edited in place because
+it holds an entry per rung, so the line to paste in is printed for you:
 
 ```
   Batch ID: 88fb1a…5628
---- Put it in BEE_PUBLISHERS, replacing this rung's entry:
----   360p@http://localhost:1633<88fb1a…5628>
+
+  Put it in BEE_PUBLISHERS, replacing this rung's entry:
+    360p@http://localhost:1633<88fb1a…5628>
+
+  Written STAMP=88fb1a…5628 to .env
 ```
 
 Amount and depth are the same for every rung. Sizing a batch to the rung it pays for is a real concern — 1080p exhausts a given depth roughly 7× sooner than 360p — and is deliberately left out.
