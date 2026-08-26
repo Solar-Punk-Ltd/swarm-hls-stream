@@ -25,9 +25,12 @@ The plugin registers engine-specific HTTP routes on the uploader's server. No se
 
 ## ABR ladder (SRS only)
 
-Set `ABR_ENABLED=true` in `engines/srs/.env` and SRS produces four renditions instead of one.
-Each rung is a stream in its own right, so the flow above is unchanged — it just happens four
-times, and the uploader gets four feeds it groups back into one ladder.
+Set `ABR_ENABLED=true` in the root `.env` and SRS produces four renditions instead of one. The
+uploader and SRS both read this knob, and for a Docker deployment only the root `.env` reaches
+both, because compose interpolates each service's copy from it. Setting it in `engines/srs/.env`
+turns the ladder on for SRS while the uploader keeps it off and publishes four unrelated streams.
+Each rung is a stream in its own right, so the flow above is unchanged, it just happens four times,
+and the uploader gets four feeds it groups back into one ladder.
 
 The uploader then writes a fifth feed: the ladder's **master playlist**, a multivariant playlist
 naming the four rung feeds, on a topic that _is_ the ladder's group id. The catalog entry points at
@@ -55,8 +58,10 @@ rendition arrive on the wrong vhost and say so.
 and has to be a whole number of frames; the entrypoint refuses to start rather than round it,
 because a fractional GOP drifts the rungs apart and every switch then lands mid-GOP.
 
-Verify a running ladder with `curl http://localhost:1985/api/v1/streams` — five streams (one
-source, four rungs) and _stable_. A count that keeps climbing is the loop.
+Verify a running ladder with `curl http://localhost:1985/api/v1/streams`. That is the SRS stats
+API on `SRS_HTTP_API_PORT`, which defaults to 1985 and shifts with `--portSlot`, and the deploy
+compose now publishes it. Expect five streams (one source, four rungs) and the count _stable_. A
+count that keeps climbing is the loop.
 
 Audio is muxed into each rung rather than split into an `EXT-X-MEDIA` rendition group. With
 `ABR_ACODEC=copy` the four copies are bit-identical and cost no CPU. Splitting it is the right
