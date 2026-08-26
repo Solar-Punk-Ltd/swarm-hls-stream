@@ -92,13 +92,16 @@ describe('the guards on a spend', () => {
   it('takes the rung from its flag without consuming the amount', () => {
     const parsed = stampArgs(parseArgs(['node', 'cli', 'stamp-buy', '--rung', '360p', '500', '21']));
 
+    // No `--yes` here, so `assumeYes` is false. Asserting `true` was what let the merge lock in the
+    // hardcoded `assumeYes: true` this suite exists to catch: the whole object was deepEqual'd, so
+    // the one field that mattered rode along unremarked.
     assert.deepEqual(parsed, {
       url: undefined,
       rung: '360p',
       amount: '500',
       depth: 21,
       immutable: undefined,
-      assumeYes: true,
+      assumeYes: false,
     });
   });
 
