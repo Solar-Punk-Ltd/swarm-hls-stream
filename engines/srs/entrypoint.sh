@@ -140,10 +140,12 @@ ABR_VHOST_FRAGMENT=/tmp/srs-abr-vhost.conf
 
 if abr_enabled; then
   ABR_VHOST="${ABR_VHOST:-abr}"
-  # Deliberately not SRS's `[port]`, which resolves to the port the *source* arrived on. This
-  # deployment ingests over SRT on 10080, so `[port]` would aim the republish at the SRT
-  # listener and nothing would ever appear. See ossrs/srs#4496.
-  ABR_RTMP_PORT="${ABR_RTMP_PORT:-1935}"
+  # The transcode republish dials SRS's own RTMP listener over loopback, so this has to be the port
+  # SRS actually bound, which is SRS_RTMP_PORT and shifts with --portSlot. Default to it rather than
+  # a fixed 1935, or the ladder produces no segments the moment the RTMP port is slotted. Deliberately
+  # not SRS's `[port]` macro, which resolves to the port the source arrived on: this deployment
+  # ingests over SRT on 10080, so `[port]` would aim the republish at the SRT listener. See ossrs/srs#4496.
+  ABR_RTMP_PORT="${ABR_RTMP_PORT:-${SRS_RTMP_PORT:-1935}}"
   ABR_FPS="${ABR_FPS:-30}"
   ABR_PRESET="${ABR_PRESET:-veryfast}"
   ABR_PROFILE="${ABR_PROFILE:-main}"
