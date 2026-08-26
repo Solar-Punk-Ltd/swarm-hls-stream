@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { parsePublishers } from '../src/lib/publishers.js';
+import { parsePublishers, readPublishers } from '../src/lib/publishers.js';
 
 const BATCH_360 = '1'.repeat(64);
 const BATCH_720 = '3'.repeat(64);
@@ -58,5 +58,34 @@ describe('parsePublishers', () => {
     // configured" and silenced stamp-check's warning that a node is not holding the batch it should.
     assert.deepEqual(parsePublishers('360p@http://localhost:1633<>'), []);
     assert.deepEqual(parsePublishers('360p@http://localhost:1633#'), []);
+  });
+});
+
+describe('readPublishers duplicate rungs', () => {
+  const TWICE = `720p@http://localhost:1633<${BATCH_360}> 720p@http://localhost:1653<${BATCH_720}>`;
+
+  it('names a rung that appears more than once', () => {
+    assert.deepEqual(readPublishers(TWICE).duplicated, ['720p']);
+  });
+
+  it('still returns every node, because reaching them is what this parser is for', () => {
+    // The spend path refuses a duplicate rung outright, in resolveSpendTarget: choosing which of two
+    // nodes to buy a batch on is not a guess worth making. Listing is the opposite case. Both nodes
+    // exist, both may be holding stamps, and hiding one of them is how a batch fills unnoticed.
+    assert.deepEqual(
+      readPublishers(TWICE).parsed.map((p) => p.url),
+      ['http://localhost:1633', 'http://localhost:1653'],
+    );
+  });
+
+  it('reports nothing when every rung is distinct', () => {
+    assert.deepEqual(readPublishers(TWO_RUNGS).duplicated, []);
+    assert.deepEqual(readPublishers(undefined).duplicated, []);
+  });
+
+  it('names each repeated rung once however many nodes claim it', () => {
+    const thrice = `720p@http://a:1633<${BATCH_360}> 720p@http://b:1633<${BATCH_720}> 720p@http://c:1633<${BATCH_360}>`;
+
+    assert.deepEqual(readPublishers(thrice).duplicated, ['720p']);
   });
 });

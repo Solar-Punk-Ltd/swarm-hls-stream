@@ -21,16 +21,23 @@ export interface PublisherSpec {
 }
 
 /**
- * What reading BEE_PUBLISHERS yields: the entries that resolved, and the raw entries that did not.
+ * What reading BEE_PUBLISHERS yields: the entries that resolved, the raw entries that did not, and
+ * the rungs more than one entry claims.
  *
  * The dropped list is the whole point of this shape. An empty `parsed` means one of two very
  * different things. The variable was unset, or it was set to something unreadable, and telling them
  * apart is what stops a garbled list being read as the single node while the rungs it names go
  * unchecked.
+ *
+ * A duplicated rung is reported rather than resolved, and both entries stay in `parsed`. The spend
+ * path refuses it already, because choosing which of two nodes to buy a batch on is not a guess
+ * worth making. Listing is the opposite case: both nodes may be holding stamps, and dropping one is
+ * how a batch fills unnoticed. Naming it is all this layer does.
  */
 interface PublisherParse {
   parsed: PublisherSpec[];
   dropped: string[];
+  duplicated: string[];
 }
 
 /** One entry as `rung@url<batch>`, or null when it cannot be read. The `#` form is still accepted. */
@@ -54,10 +61,25 @@ function readEntry(entry: string): PublisherSpec | null {
   };
 }
 
+/** The rung names more than one entry claims, each named once however many entries claim it. */
+function repeatedRungs(parsed: PublisherSpec[]): string[] {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+
+  for (const { rung } of parsed) {
+    if (seen.has(rung)) {
+      repeated.add(rung);
+    }
+    seen.add(rung);
+  }
+
+  return [...repeated];
+}
+
 /** Read BEE_PUBLISHERS into the entries that resolved and the raw entries that did not. */
 export function readPublishers(spec: string | undefined): PublisherParse {
   if (!spec) {
-    return { parsed: [], dropped: [] };
+    return { parsed: [], dropped: [], duplicated: [] };
   }
 
   const parsed: PublisherSpec[] = [];
@@ -72,7 +94,7 @@ export function readPublishers(spec: string | undefined): PublisherParse {
     }
   }
 
-  return { parsed, dropped };
+  return { parsed, dropped, duplicated: repeatedRungs(parsed) };
 }
 
 /** The readable entries only, for callers that do not need to know what was dropped. */

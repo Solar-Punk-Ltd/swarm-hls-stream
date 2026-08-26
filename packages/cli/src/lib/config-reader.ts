@@ -4,6 +4,7 @@ import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
+import { warn } from './output.js';
 import { readPublishers } from './publishers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -192,7 +193,18 @@ function targetFromUrl(url: string, defaultPort: number): BeeTarget {
  * The gateway is deliberately absent: it runs with swap disabled and buys nothing.
  */
 export function resolvePublisherTargets(): NamedTarget[] {
-  const { parsed, dropped } = readPublishers(process.env.BEE_PUBLISHERS);
+  const { parsed, dropped, duplicated } = readPublishers(process.env.BEE_PUBLISHERS);
+
+  // Two targets for one rung also share a name, so a report keyed by name shows one of them twice
+  // with no sign the config is at fault. The spend path refuses a duplicate outright, in
+  // resolveSpendTarget. Listing carries on, because a node that is holding a batch has to stay
+  // visible whether or not the config is tidy.
+  if (duplicated.length > 0) {
+    warn(
+      `BEE_PUBLISHERS names more than one node for rung ${duplicated.join(', ')}. Every node is ` +
+        'still listed, but no stamp can be bought for a duplicated rung until one of them is removed.',
+    );
+  }
 
   if (parsed.length > 0) {
     return parsed.map((publisher) => ({
