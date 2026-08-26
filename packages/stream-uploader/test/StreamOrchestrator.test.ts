@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
@@ -1952,5 +1953,37 @@ describe('a settled stop expires from the status map (TEST-32)', () => {
       STREAM_LIFECYCLE_UNKNOWN,
       'advancing the injected clock well past the window expired nothing, so the sweep reads a different clock',
     );
+  });
+});
+
+describe('StreamOrchestrator ladder group lifecycle', () => {
+  /** Reaches the ladder maps directly, because the group id has no behavioural signal to observe. */
+  interface LadderMaps {
+    ladderGroups: Map<string, string>;
+    streamBases: Map<string, string>;
+  }
+
+  it('frees a ladder group only once its last rung has stopped', async () => {
+    const orch = makeTestOrchestrator({ ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC) });
+    const maps = orch as unknown as LadderMaps;
+
+    orch.startStream('live/stream_360p', MEDIA_TYPE_VIDEO);
+    orch.startStream('live/stream_720p', MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 2, SETTLE_CEILING_MS);
+
+    // Two rungs of one source share a base, so both resolve to a single group.
+    assert.equal(maps.streamBases.get('live/stream_360p'), 'live/stream');
+    assert.equal(maps.streamBases.get('live/stream_720p'), 'live/stream');
+    const group = maps.ladderGroups.get('live/stream');
+    assert.ok(group, 'the first rung to come up must create the ladder group');
+
+    // One rung stops while a sibling is still draining. Freeing the group here would hand a rung that
+    // restarts a second group for the same ladder.
+    await orch.stopStream('live/stream_360p');
+    assert.equal(maps.ladderGroups.get('live/stream'), group, 'the group died while a sibling rung was still live');
+
+    // The last rung stops, and only now is the group released.
+    await orch.stopStream('live/stream_720p');
+    assert.equal(maps.ladderGroups.has('live/stream'), false, 'the group outlived its last rung');
   });
 });
