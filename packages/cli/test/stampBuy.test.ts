@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, beforeEach, describe, it } from 'node:test';
+import { after, afterEach, beforeEach, describe, it } from 'node:test';
 
 import { stampBuy, StampBuySeams } from '../src/commands/stamp-buy.js';
 
@@ -60,7 +60,7 @@ interface Run {
   exitCode?: number;
 }
 
-async function run(overrides: StampBuySeams & { buyThrows?: boolean; assumeYes?: boolean }): Promise<Run> {
+async function run(overrides: StampBuySeams & { buyThrows?: boolean; assumeYes?: boolean; rung?: string }): Promise<Run> {
   const captured: string[] = [];
   const sinks = ['log', 'info', 'warn', 'error'] as const;
   const originals = sinks.map((name) => [name, console[name]] as const);
@@ -76,7 +76,7 @@ async function run(overrides: StampBuySeams & { buyThrows?: boolean; assumeYes?:
 
   try {
     await stampBuy(
-      { ...TEST_BATCH, assumeYes: overrides.assumeYes },
+      { ...TEST_BATCH, assumeYes: overrides.assumeYes, rung: overrides.rung },
       {
         createBee: () => ({ getChainState: async () => CHAIN_STATE } as unknown as Bee),
         // Every test here predates the spend confirmation and is about some other step, so the
@@ -346,5 +346,59 @@ describe('stampBuy, OPS-1: the second command that spends money', () => {
       'the cost needs no chain call and must still be shown',
     );
     assert.match(result.output, /connection refused/, 'an unknown lifetime was shown without saying why');
+  });
+});
+
+describe('stampBuy on a configured ladder, finding 21: the rung is not optional', () => {
+  const LADDER = `360p@http://n1:1633<${'1'.repeat(64)}> 1080p@http://n2:1633<${'4'.repeat(64)}>`;
+  let dir: string;
+  let envPath: string;
+
+  beforeEach(() => {
+    dir = workspace();
+    envPath = join(dir, '.env');
+    process.env.BEE_PUBLISHERS = LADDER;
+  });
+
+  afterEach(() => {
+    delete process.env.BEE_PUBLISHERS;
+  });
+
+  // A batch can only be spent by the node that bought it, so a bare buy on a split deployment has no
+  // rung to land on. Falling back to the single-node uploader would fund a node no rung publishes
+  // through, and the batch would sit there while a rung quietly stopped. It must fail before it ever
+  // reaches the chain, which is exactly what the command's docstring promises.
+  it('refuses a buy with no --rung, before contacting any node', async () => {
+    let beeMade = 0;
+    const result = await run({
+      envPath,
+      createBee: () => {
+        beeMade += 1;
+        return { getChainState: async () => CHAIN_STATE } as unknown as Bee;
+      },
+    });
+
+    assert.equal(beeMade, 0, 'a node was contacted before the missing rung was caught');
+    assert.equal(result.spends, 0, 'a stamp was bought on a ladder with no rung named');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /Which rung\?/);
+  });
+
+  // The positive control: naming a rung still buys, and routes to that rung's node rather than being
+  // over-refused by the guard above.
+  it('buys on the named rung when one is given', async () => {
+    const result = await run({
+      envPath,
+      rung: '1080p',
+      createBee: () =>
+        ({
+          getChainState: async () => CHAIN_STATE,
+          getWalletBalance: async () => ({ bzzBalance: BZZ.fromPLUR(TEST_BATCH_COST_PLUR) }),
+        } as unknown as Bee),
+    });
+
+    assert.equal(result.spends, 1);
+    assert.equal(result.exitCode, undefined);
+    assert.match(result.output, /rung 1080p \(http:\/\/n2:1633\)/);
   });
 });

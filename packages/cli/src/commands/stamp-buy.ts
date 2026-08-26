@@ -42,16 +42,21 @@ export async function stampBuy(args: StampCommandArgs = {}, seams: StampBuySeams
 
   loadEnv();
 
-  // A batch can only ever be spent by the node that bought it, so once there is a node per rung the
-  // rung is not optional. Absent one, this is the single-node path unchanged.
+  // A batch can only ever be spent by the node that bought it, so with a node per rung the rung is
+  // not optional: a bare buy on a configured ladder has no node it could land on without funding
+  // the wrong batch, so `selectPublisherByRung` refuses it here, before any network call, exactly as
+  // this command's contract promises. Only a deployment that was never split falls through to the
+  // single node.
   let publisher: NamedTarget | null = null;
-  if (rung !== undefined) {
-    try {
-      publisher = selectPublisherByRung(resolvePublisherTargets(), rung);
-    } catch (err) {
-      error(err instanceof Error ? err.message : 'Unknown rung');
-      return exit(1);
+  try {
+    const publishers = resolvePublisherTargets();
+    const ladderConfigured = publishers.some((node) => node.rung !== undefined);
+    if (rung !== undefined || ladderConfigured) {
+      publisher = selectPublisherByRung(publishers, rung);
     }
+  } catch (err) {
+    error(err instanceof Error ? err.message : 'Unknown rung');
+    return exit(1);
   }
 
   const configuredUrl = publisher ? publisher.target!.url : resolveBeeUploaderTarget().url;
