@@ -348,7 +348,10 @@ describe('LadderFeedPoller feed health', () => {
     poller.start(OWNER, [topic]);
 
     try {
-      await waitFor(() => health.state(topic.toString()) === FEED_STATE_RECONNECTING, 'the rung to record its gateway down');
+      await waitFor(
+        () => health.state(topic.toString()) === FEED_STATE_RECONNECTING,
+        'the rung to record its gateway down',
+      );
       assert.ok(health.backoffRemainingMs(topic.toString()) > 0, 'a failing rung must earn a backoff');
       assert.ok(backoffAsked.includes(topic.toString()), 'the poller must consult the backoff before a pass');
 
@@ -402,8 +405,16 @@ describe('LadderFeedPoller feed health', () => {
       await waitFor(() => segmentCount(state, topic) === 1, 'the rung to bootstrap');
       await waitFor(() => gateway.requests.filter((p) => p.startsWith('soc/')).length >= 3, 'repeated caught-up polls');
 
-      assert.equal(health.state(topic.toString()), FEED_STATE_LIVE, 'a slot not written yet must not read as an outage');
-      assert.equal(health.backoffRemainingMs(topic.toString()), 0, 'a caught-up rung must keep polling at full cadence');
+      assert.equal(
+        health.state(topic.toString()),
+        FEED_STATE_LIVE,
+        'a slot not written yet must not read as an outage',
+      );
+      assert.equal(
+        health.backoffRemainingMs(topic.toString()),
+        0,
+        'a caught-up rung must keep polling at full cadence',
+      );
     } finally {
       poller.stop([topic]);
     }
