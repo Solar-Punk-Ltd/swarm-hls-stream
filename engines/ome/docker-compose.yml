@@ -7,9 +7,13 @@ services:
     volumes:
       - ./Server.xml.template:/opt/ovenmediaengine/conf-template/Server.xml.template:ro
       - ./entrypoint.sh:/opt/ovenmediaengine/conf-template/entrypoint.sh:ro
+    # Host and container port are the same number on purpose, because the entrypoint binds OME to the
+    # configured port rather than to a fixed one. A mapping from a fixed container port hid the fact
+    # that these two variables never reached the container, which host networking then exposed by
+    # discarding the mapping. See OPS-30 and the matching block in deploy/docker-compose.yml.
     ports:
-      - '${OME_HLS_PORT:-8081}:8081'
-      - '${OME_SRT_PORT:-10080}:10080/udp'
+      - '${OME_HLS_PORT:-8081}:${OME_HLS_PORT:-8081}'
+      - '${OME_SRT_PORT:-10080}:${OME_SRT_PORT:-10080}/udp'
     # Enumerated rather than inherited, deliberately. This used to be `env_file: ../../.env`, which
     # fills the container with **every** root variable, including PUBLISH_KEY_SECRET: the master
     # secret every stream's publish key derives from, handed to the third-party publisher-facing
@@ -24,6 +28,10 @@ services:
       OME_ADAPTER_HOST: ${OME_ADAPTER_HOST:-stream-uploader}
       OME_ADAPTER_PORT: ${OME_ADAPTER_PORT:-3000}
       OME_ADMISSION_SECRET: ${OME_ADMISSION_SECRET:-}
+      # Without these two the entrypoint binds OME to its own defaults while the publish mapping points
+      # at a port nothing is on under host networking. Same defaults as the mapping above. See OPS-30.
+      OME_SRT_PORT: ${OME_SRT_PORT:-10080}
+      OME_HLS_PORT: ${OME_HLS_PORT:-8081}
       HLS_SEGMENT_DURATION: ${HLS_SEGMENT_DURATION:-2}
       HLS_SEGMENT_COUNT: ${HLS_SEGMENT_COUNT:-5}
     extra_hosts:

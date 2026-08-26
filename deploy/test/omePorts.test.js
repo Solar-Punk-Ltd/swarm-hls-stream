@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const TEMPLATE = join(ROOT, 'engines/ome/Server.xml.template');
 const COMPOSE = join(ROOT, 'deploy/docker-compose.yml');
+const STANDALONE = join(ROOT, 'engines/ome/docker-compose.yml');
 const ENTRYPOINT = join(ROOT, 'engines/ome/entrypoint.sh');
 
 /**
@@ -93,27 +94,33 @@ describe('the ports OME binds (OPS-30)', () => {
   });
 
   /**
-   * The container half. The entrypoint cannot bind what compose never hands it, and that was the
-   * actual defect: the variables were in `ports:` and nowhere else.
+   * The container half, over both compose files. The entrypoint cannot bind what compose never hands
+   * it, and that was the actual defect: the variables were in `ports:` and nowhere else. This checked
+   * only deploy/docker-compose.yml, so the standalone engines/ome file kept the fixed container ports
+   * and the missing pass-through that OPS-30 was about, unseen on the `pnpm ome:host` path.
    */
-  it('compose passes both ports into the container environment', () => {
-    const compose = readFileSync(COMPOSE, 'utf8');
-    const ome = compose.slice(compose.indexOf('\n  ome:'));
+  for (const composePath of [COMPOSE, STANDALONE]) {
+    const where = composePath.slice(ROOT.length + 1);
 
-    assert.match(ome, /OME_SRT_PORT:\s*\$\{OME_SRT_PORT/, 'the container never sees the SRT port');
-    assert.match(ome, /OME_HLS_PORT:\s*\$\{OME_HLS_PORT/, 'the container never sees the HLS port');
-  });
+    it(`passes both ports into the container environment from ${where}`, () => {
+      const compose = readFileSync(composePath, 'utf8');
+      const ome = compose.slice(compose.indexOf('\n  ome:'));
 
-  /**
-   * Host and container port must be the same number now that OME binds the configured one. A mapping
-   * onto a fixed container port is exactly what hid the defect, and it would now point at a port
-   * nothing listens on.
-   */
-  it('maps each published port onto itself, not onto a fixed one', () => {
-    const compose = readFileSync(COMPOSE, 'utf8');
-    const ome = compose.slice(compose.indexOf('\n  ome:'));
+      assert.match(ome, /OME_SRT_PORT:\s*\$\{OME_SRT_PORT/, 'the container never sees the SRT port');
+      assert.match(ome, /OME_HLS_PORT:\s*\$\{OME_HLS_PORT/, 'the container never sees the HLS port');
+    });
 
-    assert.match(ome, /\$\{OME_SRT_PORT:-10080\}:\$\{OME_SRT_PORT:-10080\}\/udp/);
-    assert.match(ome, /\$\{OME_HLS_PORT:-8081\}:\$\{OME_HLS_PORT:-8081\}/);
-  });
+    /**
+     * Host and container port must be the same number now that OME binds the configured one. A
+     * mapping onto a fixed container port is exactly what hid the defect, and it would now point at a
+     * port nothing listens on.
+     */
+    it(`maps each published port onto itself in ${where}, not onto a fixed one`, () => {
+      const compose = readFileSync(composePath, 'utf8');
+      const ome = compose.slice(compose.indexOf('\n  ome:'));
+
+      assert.match(ome, /\$\{OME_SRT_PORT:-10080\}:\$\{OME_SRT_PORT:-10080\}\/udp/);
+      assert.match(ome, /\$\{OME_HLS_PORT:-8081\}:\$\{OME_HLS_PORT:-8081\}/);
+    });
+  }
 });
