@@ -123,6 +123,16 @@ SRS_CONTAINER="${SRS_CONTAINER:-${PROFILE}-srs-1}"
 STAGE_FINGERPRINT_TIMEOUT_S="${STAGE_FINGERPRINT_TIMEOUT_S:-120}"
 STAGE_FINGERPRINT_MIN_SEGMENTS="${STAGE_FINGERPRINT_MIN_SEGMENTS:-6}"
 
+# The ladder the stage is running, which decides how many playlists the fingerprint gate must judge.
+# The gate defaults to one rung, so a ladder sitting left to that default would judge a four-rung
+# broadcast on one of its four. Read from the same ABR_ENABLED and ABR_LADDER that configure the SRS
+# stack, so the count the gate is told is the count the stage was asked to publish.
+ABR_ENABLED="${ABR_ENABLED:-false}"
+# Kept in step with the entrypoint's ABR_LADDER default and AbrLadder.DEFAULT_LADDER_SPEC. A shell
+# driver cannot import either, so the fallback is restated here and only its rung count is read.
+DEFAULT_LADDER_SPEC='1080p:1920:1080:5000 720p:1280:720:2800 480p:854:480:1200 360p:640:360:700'
+ABR_LADDER="${ABR_LADDER:-${DEFAULT_LADDER_SPEC}}"
+
 # ⛔⛔⛔ A SITTING WITH NO THREAD READING IS REFUSED, BECAUSE THE WARNING WAS NOT ENOUGH.
 #
 # `browser-cpu.sh` has always said "NO SATURATION READING for <arm>: VIEWER_CDP_PORT is unset" once
@@ -292,13 +302,28 @@ wait_for_active_stream() {
 # ⭐ Placed after the stream is live and before the publisher lead, so a mismatch costs the seconds
 # already spent reaching ingest rather than the whole broadcast. It cannot move earlier: there is no
 # playlist to read until something is publishing.
+
+# The rung count the fingerprint gate should expect. One with the ladder off, so a non-ABR sitting
+# tells the gate exactly what its default already was and nothing changes. With the ladder on it is
+# the word count of ABR_LADDER. The gate cross-checks this against the playlists the stage actually
+# published, so a ladder judged on one rung, or a count that does not match what is running, is
+# refused rather than passed.
+abr_rung_count() {
+  case "${ABR_ENABLED}" in
+    true | 1) ;;
+    *) printf '1'; return ;;
+  esac
+  printf '%s\n' "${ABR_LADDER}" | awk '{ print NF }'
+}
+
 stage_matches_the_gop_we_asked_for() {
   local deadline=$(($(date -u +%s) + STAGE_FINGERPRINT_TIMEOUT_S)) status
   while :; do
     # ⛔ Appended to the log AND read for its exit code. A gate whose reasoning is not in the sitting
     # record is a gate nobody can audit afterwards.
     MIN_SEGMENTS="${STAGE_FINGERPRINT_MIN_SEGMENTS}" \
-      "${STAGE_FINGERPRINT}" --container "${SRS_CONTAINER}" --gop "${GOP_SECONDS}" >> "${LOG}" 2>&1
+      "${STAGE_FINGERPRINT}" --container "${SRS_CONTAINER}" --gop "${GOP_SECONDS}" \
+      --rungs "$(abr_rung_count)" >> "${LOG}" 2>&1
     status=$?
     [ "${status}" -eq 0 ] && return 0
     # 3 is "the broadcast has not published enough segments yet", which is ordinary at this point in a
