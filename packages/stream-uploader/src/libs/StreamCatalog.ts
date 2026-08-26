@@ -2,7 +2,7 @@ import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee
 import PQueue from 'p-queue';
 
 import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
-import { retryUntilDeadlineAsync } from '../utils/common.js';
+import { getErrorMessage, retryUntilDeadlineAsync } from '../utils/common.js';
 
 import { BeePublisher, BeePublisherPool } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
@@ -11,6 +11,23 @@ import { Logger } from './Logger.js';
 import { MasterFeedWriter, PublishedMaster } from './MasterFeedWriter.js';
 
 const CATALOG_RETRY_WINDOW_MS = 10_000;
+
+/**
+ * How many consecutive failures to read the resumed state it takes before the entries there are
+ * treated as gone. Each attempt spends its own retry window and belongs to a different segment, so
+ * this is tens of seconds of trying rather than an instant.
+ */
+export const TREAT_STATE_AS_LOST_AFTER = 3;
+
+/**
+ * Node's error codes for a request that reached bee and then lost the transfer, as opposed to one
+ * that never arrived. bee-js is built on axios and passes its `code` through as `statusText`,
+ * leaving `status` unset when no response completed — which is what separates these from an HTTP
+ * error that came back with a status of its own.
+ *
+ * ECONNREFUSED, ENOTFOUND and the rest deliberately stay out: those say the node was never there.
+ */
+const TRANSFER_LOST_CODES = new Set(['ECONNABORTED', 'ECONNRESET']);
 
 export interface StreamEntry {
   title: string;
@@ -50,6 +67,19 @@ export class StreamCatalog {
   private queue = new PQueue({ concurrency: 1 });
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
+
+  /**
+   * Set when boot resumed to an index whose state it never read — the head was below the persisted
+   * floor, or absent, or unreadable — and cleared by the first read or write that succeeds.
+   *
+   * Only inside this window may a failed read of that state be taken for the state being gone. A
+   * read that fails outside it stays fatal to the write: continuing from an empty list would drop
+   * every other stream's entry from the catalog, which is far worse than losing one update.
+   */
+  private resumedToUnreadState = false;
+
+  /** Consecutive failures to read that unread state. See {@link TREAT_STATE_AS_LOST_AFTER}. */
+  private unreadableStateReads = 0;
 
   /**
    * Writes each ladder's master playlist. Absent, ladder entries fall back to pointing at their
@@ -108,32 +138,82 @@ export class StreamCatalog {
       const data = await feedReader.downloadPayload();
 
       if (persisted !== null && persisted.toBigInt() > data.feedIndex.toBigInt()) {
-        this.feedIndex = persisted;
-        this.logger.warn(
-          `[StreamCatalog] Boot lookup returned stale index ${data.feedIndex.toString()}; resuming from persisted ${persisted.toString()}`,
-        );
+        this.resumeFromPersisted(persisted, `Boot lookup returned stale index ${data.feedIndex.toString()}`);
         return;
       }
 
       this.feedIndex = data.feedIndex;
       this.logger.info(`[StreamCatalog] Loaded feed at index ${data.feedIndex.toString()}`);
     } catch (error) {
-      if (error instanceof BeeResponseError && (error.status === 404 || error.status === 503)) {
-        // 404 = feed topic never used, 503 = feed exists but has no entries yet
+      if (isFeedAbsent(error)) {
         if (persisted !== null) {
-          this.feedIndex = persisted;
-          this.logger.warn(
-            `[StreamCatalog] Boot lookup found no feed; resuming from persisted index ${persisted.toString()}`,
-          );
+          this.resumeFromPersisted(persisted, 'Boot lookup found no feed');
           return;
         }
         this.feedIndex = null;
         this.logger.info('[StreamCatalog] No existing feed found, starting fresh');
         return;
       }
+
+      // The head resolved and its payload did not arrive: bee answers a retrieval it cannot finish
+      // with the headers and then a dropped body, which carries no HTTP status to match on. The
+      // usual cause is the postage batch that paid for the catalog having expired, so the chunks
+      // are gone from every reserve except the node that wrote them — a different node as soon as
+      // the catalog moves onto a publisher pool's coordinator. That must not take the uploader off
+      // the air over a catalog no reader can load either, so continue above the last index this
+      // uploader wrote and let the writes discover whether the entries are still there.
+      if (persisted !== null && (await this.payloadUnreadableOnLiveNode(error))) {
+        this.resumeFromPersisted(persisted, `Boot lookup could not read the feed head (${getErrorMessage(error)})`);
+        return;
+      }
+
+      // Everything else stays as loud as it was. A request that never reached the node — a wrong
+      // url, a wrong port, a node that is down — must fail the boot rather than start an uploader
+      // that cannot publish, and without a persisted index there is no floor to continue above:
+      // the head's index is unknown, and beginning at 0 would write into occupied indices and fork
+      // the feed invisibly for every reader that keeps following the original chain.
       this.errorHandler.handleError(error, 'StreamCatalog.init');
       throw error;
     }
+  }
+
+  /**
+   * Continue the feed from the last index this uploader wrote, without having read the state there.
+   *
+   * Every caller arrives here without a payload in hand, so the entries at `persisted` are unproven
+   * and the writes are allowed to find them gone — see {@link resumedToUnreadState}. Never resume
+   * *below* that index: writing into already-occupied indices forks the feed invisibly for readers,
+   * who keep following the original chain.
+   */
+  private resumeFromPersisted(persisted: FeedIndex, reason: string): void {
+    this.feedIndex = persisted;
+    this.resumedToUnreadState = true;
+    this.unreadableStateReads = 0;
+    this.logger.warn(`[StreamCatalog] ${reason}; resuming from persisted index ${persisted.toString()}`);
+  }
+
+  /**
+   * Whether the node is up and it was only the head's payload that failed to arrive.
+   *
+   * The error codes for a transfer that broke on the way back cover a request that timed out as
+   * well as one whose body was dropped, so the code alone cannot say which happened. A node that
+   * answers a liveness check immediately afterwards is the evidence that the payload was the
+   * problem; one that does not answer keeps the boot failing, which is what a wrong url or a node
+   * that is down deserves.
+   */
+  private async payloadUnreadableOnLiveNode(error: unknown): Promise<boolean> {
+    if (!isTransferLost(error)) {
+      return false;
+    }
+
+    if (await this.publisher.bee.isConnected()) {
+      return true;
+    }
+
+    this.logger.error(
+      `[StreamCatalog] ${this.publisher.url} did not answer a liveness check — the boot lookup failed on the node, not on the catalog`,
+    );
+    return false;
   }
 
   public async addStream(entry: StreamEntry): Promise<void> {
@@ -174,7 +254,7 @@ export class StreamCatalog {
     let previous: StreamEntry[] = [];
 
     if (this.feedIndex !== null) {
-      previous = await this.fetchCurrentState();
+      previous = await this.readPreviousState();
     }
 
     const state = await update(previous);
@@ -191,6 +271,10 @@ export class StreamCatalog {
     );
 
     this.feedIndex = nextIndex;
+    // Whatever boot could not read, this index can be: it is what was just written, through the
+    // same node, so a later read failure here is a real one again.
+    this.resumedToUnreadState = false;
+    this.unreadableStateReads = 0;
     const ownerAddr = this.signer.publicKey().address().toString();
     this.indexStore?.save(ownerAddr, this.feedTopic.toString(), nextIndex);
     this.logger.debug(
@@ -198,6 +282,46 @@ export class StreamCatalog {
         result?.reference?.toHex?.() ?? '?'
       } owner=${ownerAddr} topicHex=${this.feedTopic.toString()}`,
     );
+  }
+
+  /**
+   * The entries the next update is appended to.
+   *
+   * Tolerant only inside the window {@link resumedToUnreadState} opens, and even there only once
+   * the state has failed to read {@link TREAT_STATE_AS_LOST_AFTER} times over. Retrievability on
+   * Swarm flaps — the same index has been watched going unreadable, readable and unreadable again
+   * within an hour — so giving up on the first failure would throw away a catalog that a later
+   * attempt would have loaded, and that loss cannot be undone. Failing the write instead costs one
+   * update, is logged, and is retried by the next segment.
+   */
+  private async readPreviousState(): Promise<StreamEntry[]> {
+    const index = this.feedIndex!.toString();
+
+    try {
+      const state = await this.fetchCurrentState();
+      this.resumedToUnreadState = false;
+      this.unreadableStateReads = 0;
+      return state;
+    } catch (error) {
+      if (!this.resumedToUnreadState) {
+        throw error;
+      }
+
+      this.unreadableStateReads++;
+      if (this.unreadableStateReads < TREAT_STATE_AS_LOST_AFTER) {
+        this.logger.warn(
+          `[StreamCatalog] State at index ${index} did not read (${getErrorMessage(error)}); ` +
+            `attempt ${this.unreadableStateReads} of ${TREAT_STATE_AS_LOST_AFTER} before it counts as gone`,
+        );
+        throw error;
+      }
+
+      this.logger.error(
+        `[StreamCatalog] State at index ${index} failed to read ${this.unreadableStateReads} times; ` +
+          'continuing with an empty catalog — earlier entries are lost',
+      );
+      return [];
+    }
   }
 
   private async fetchCurrentState(): Promise<StreamEntry[]> {
@@ -262,6 +386,20 @@ export function withMaster(entry: StreamEntry, master: PublishedMaster): StreamE
   }
 
   return repointed;
+}
+
+/** Bee's two answers for a feed with nothing to read: 404 topic never used, 503 no entries yet. */
+function isFeedAbsent(error: unknown): boolean {
+  return error instanceof BeeResponseError && (error.status === 404 || error.status === 503);
+}
+
+/** A request that reached the node and lost the response on the way back. */
+function isTransferLost(error: unknown): boolean {
+  return (
+    error instanceof BeeResponseError &&
+    error.status === undefined &&
+    TRANSFER_LOST_CODES.has(error.statusText ?? '')
+  );
 }
 
 function withoutTopic(entries: StreamEntry[], owner: string, topic: string): StreamEntry[] {
