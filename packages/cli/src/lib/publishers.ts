@@ -24,8 +24,8 @@ export interface PublisherSpec {
  * What reading BEE_PUBLISHERS yields: the entries that resolved, and the raw entries that did not.
  *
  * The dropped list is the whole point of this shape. An empty `parsed` means one of two very
- * different things — the variable was unset, or it was set to something unreadable — and telling
- * them apart is what stops a garbled list being read as the single node while the rungs it names go
+ * different things. The variable was unset, or it was set to something unreadable, and telling them
+ * apart is what stops a garbled list being read as the single node while the rungs it names go
  * unchecked.
  */
 export interface PublisherParse {
