@@ -3,7 +3,8 @@ import { extractFeedIndex, nextFeedRequest } from '@swarm-hls-stream/shared';
 
 import { TimedResponse } from '@/utils/fetchWithTimeout';
 
-import { ManifestStateManager } from './ManifestManagement';
+import { FeedHealthTracker } from './feedState';
+import { isSlotNotWrittenYet, ManifestStateManager } from './ManifestManagement';
 import { parseManifest } from './playlist';
 
 /**
@@ -55,6 +56,18 @@ export class LadderFeedPoller {
     private readonly stateManager: ManifestStateManager,
     private readonly fetchResource: (path: string) => Promise<TimedResponse>,
     private readonly pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
+    /**
+     * Shared with the single-rendition path, so a rung read reaching or losing the gateway records
+     * against the same tracker the overlay reads. Defaults to a private tracker so a directly built
+     * poller still runs, but only a poller wired to the shared one reaches a viewer.
+     */
+    private readonly feedHealth: FeedHealthTracker = new FeedHealthTracker(),
+    /**
+     * The jittered backoff this rung's gateway has earned, honoured before each pass. Zero by
+     * default, so a directly built poller keeps polling at {@link pollIntervalMs}; the fetcher wires
+     * this to the same feed health and jitter the single-rendition path backs off through.
+     */
+    private readonly backoffMs: (hexTopic: string) => number = () => 0,
   ) {}
 
   public start(owner: string, topics: Topic[]): void {
@@ -109,6 +122,14 @@ export class LadderFeedPoller {
 
   private async walk(owner: string, entry: PolledTopic): Promise<void> {
     while (!entry.stopped) {
+      // Before the pass, not after it. A gateway recorded as failing has earned a backoff, so a dead
+      // gateway is polled at 2s then 4s then 8s up to the cap rather than flat at the poll interval
+      // times every rung, which was around 160 requests per 30s against a gateway already down.
+      await this.honourBackoff(entry);
+      if (entry.stopped) {
+        return;
+      }
+
       let advanced = 0;
 
       // Nothing thrown in here may end the walk. A rung whose loop dies is not merely stale, it is
@@ -119,7 +140,7 @@ export class LadderFeedPoller {
       try {
         advanced = await this.advance(owner, entry);
       } catch (error) {
-        this.recordMiss(entry, error);
+        this.recordFailure(entry, error);
       }
 
       if (entry.stopped) {
@@ -129,17 +150,26 @@ export class LadderFeedPoller {
       // Anything consumed this pass means more may already be waiting, so try again straight
       // away; only an empty pass is worth sleeping on.
       if (advanced === 0) {
-        await this.pause(entry);
+        await this.pauseFor(entry, this.pollIntervalMs);
       }
     }
   }
 
-  private pause(entry: PolledTopic): Promise<void> {
+  /** The backoff the shared tracker has set for this rung's gateway, waited out interruptibly. */
+  private async honourBackoff(entry: PolledTopic): Promise<void> {
+    const waitMs = this.backoffMs(entry.hexTopic);
+    if (waitMs > 0) {
+      await this.pauseFor(entry, waitMs);
+    }
+  }
+
+  /** Sleeps `ms`, or until `stop` wakes the rung, so a torn-down player never holds the timer. */
+  private pauseFor(entry: PolledTopic, ms: number): Promise<void> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         entry.wake = undefined;
         resolve();
-      }, this.pollIntervalMs);
+      }, ms);
 
       entry.wake = () => {
         clearTimeout(timer);
@@ -165,10 +195,14 @@ export class LadderFeedPoller {
       try {
         response = await this.fetchResource(path);
       } catch (error) {
-        this.recordMiss(entry, error);
+        this.recordFailure(entry, error);
         break;
       }
 
+      // The gateway answered, whatever it carried, so a run of failures against it is over. Narrower
+      // than "a slot was served" on purpose, exactly as the single-rendition path's reachable record
+      // is: it clears the backoff without erasing an unserved-slot run the walk is still riding.
+      this.feedHealth.recordGatewayReachable(entry.hexTopic);
       entry.misses = 0;
       const text = response.text;
 
@@ -202,10 +236,11 @@ export class LadderFeedPoller {
     try {
       response = await this.fetchResource(nextFeedRequest(owner, entry.topic, null).path);
     } catch (error) {
-      this.recordMiss(entry, error);
+      this.recordFailure(entry, error);
       return false;
     }
 
+    this.feedHealth.recordGatewayReachable(entry.hexTopic);
     entry.misses = 0;
     const text = response.text;
     const index = extractFeedIndex(response.headers);
@@ -241,6 +276,23 @@ export class LadderFeedPoller {
     }
 
     return shouldContinue;
+  }
+
+  /**
+   * A failed rung read, recorded against the local miss counter and, when it is a real gateway
+   * fault, the shared feed health.
+   *
+   * A 404 is only the next slot not being published yet, the ordinary case for a viewer at the live
+   * edge, so it earns no backoff, exactly as the single-rendition walk treats it. Anything else, a
+   * transport error or a 5xx, is the gateway not answering: it earns the backoff {@link honourBackoff}
+   * waits out and turns the overlay to reconnecting. Recording every 404 as a fault would back off
+   * every caught-up viewer on nearly every poll.
+   */
+  private recordFailure(entry: PolledTopic, error: unknown): void {
+    this.recordMiss(entry, error);
+    if (!isSlotNotWrittenYet(error)) {
+      this.feedHealth.recordGatewayFailure(entry.hexTopic);
+    }
   }
 
   private recordMiss(entry: PolledTopic, error: unknown): void {

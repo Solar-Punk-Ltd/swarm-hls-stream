@@ -3,8 +3,14 @@ import { makeFeedIdentifier } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'vitest';
 
+import {
+  FEED_STATE_LIVE,
+  FEED_STATE_RECONNECTING,
+  FeedHealthTracker,
+  FeedState,
+} from '../src/components/SwarmHlsPlayer/feedState.js';
 import { LadderFeedPoller } from '../src/components/SwarmHlsPlayer/LadderFeedPoller.js';
-import { ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
+import { ManifestFetchError, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
 import { parseManifest } from '../src/components/SwarmHlsPlayer/playlist.js';
 import { TimedResponse } from '../src/utils/fetchWithTimeout.js';
 
@@ -36,6 +42,12 @@ class FakeGateway {
   public readonly requests: string[] = [];
   /** Reproduces a proxy that drops the header extractFeedIndex needs, which makes it throw. */
   public stripFeedIndexHeader = false;
+  /**
+   * Status a missing path is refused with. Set to 404 to model a slot the publisher has not written
+   * yet, the way the real fetcher does; left undefined it throws a transport-style error, which is a
+   * gateway that is not answering at all.
+   */
+  public missingSlotStatus?: number;
 
   private readonly held = new Map<string, Promise<void>>();
 
@@ -78,6 +90,9 @@ class FakeGateway {
 
     const body = this.responses.get(path);
     if (body === undefined) {
+      if (this.missingSlotStatus !== undefined) {
+        throw new ManifestFetchError(path, this.missingSlotStatus);
+      }
       throw new Error(`Failed to fetch: ${path}`);
     }
 
@@ -304,5 +319,93 @@ describe('LadderFeedPoller', () => {
 
     poller.stop([topic]);
     assert.equal(poller.isPolling(topic.toString()), false);
+  });
+});
+
+describe('LadderFeedPoller feed health', () => {
+  let state: ManifestStateManager;
+
+  beforeEach(() => {
+    state = ManifestStateManager.getInstance();
+    state.clear();
+  });
+
+  it('records a gateway failure and backs off when a rung read hits a real fault', async () => {
+    const topic = Topic.fromString('group-1-720p');
+    // Nothing published and no 404 status set, so every read throws a transport-style error: the
+    // gateway is not answering, which is the outage the backoff exists for.
+    const gateway = new FakeGateway();
+
+    // Clock pinned so the backoff neither elapses nor is jittered away mid-assertion.
+    const health = new FeedHealthTracker(() => 0);
+    const backoffAsked: string[] = [];
+    const backoffMs = (hexTopic: string): number => {
+      backoffAsked.push(hexTopic);
+      return health.backoffRemainingMs(hexTopic);
+    };
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, health, backoffMs);
+    poller.start(OWNER, [topic]);
+
+    try {
+      await waitFor(() => health.state(topic.toString()) === FEED_STATE_RECONNECTING, 'the rung to record its gateway down');
+      assert.ok(health.backoffRemainingMs(topic.toString()) > 0, 'a failing rung must earn a backoff');
+      assert.ok(backoffAsked.includes(topic.toString()), 'the poller must consult the backoff before a pass');
+
+      // The load half of the fix: a backed-off rung stops polling the dead gateway rather than
+      // hammering it at the flat interval, which was around 160 requests per 30s across four rungs.
+      const requestsWhileBackedOff = gateway.requests.length;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(gateway.requests.length, requestsWhileBackedOff, 'a backed-off rung must stop asking');
+    } finally {
+      poller.stop([topic]);
+    }
+  });
+
+  it('reaches the overlay: a ladder outage a subscriber hears as reconnecting', async () => {
+    const topic = Topic.fromString('group-1-1080p');
+    const gateway = new FakeGateway();
+    const health = new FeedHealthTracker(() => 0);
+
+    const seen: FeedState[] = [];
+    const unsubscribe = health.subscribe(topic.toString(), (feedState) => seen.push(feedState));
+
+    // Backoff held at zero so the outage is reached quickly; this test is about the state reaching a
+    // subscriber, not the pacing, which the test above covers.
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, health, () => 0);
+    poller.start(OWNER, [topic]);
+
+    try {
+      await waitFor(() => seen.includes(FEED_STATE_RECONNECTING), 'the overlay to hear reconnecting');
+    } finally {
+      poller.stop([topic]);
+      unsubscribe();
+    }
+
+    assert.equal(seen[0], FEED_STATE_LIVE, 'a fresh subscriber starts from live');
+    assert.ok(seen.includes(FEED_STATE_RECONNECTING), 'a ladder outage must reach the overlay, not stay silent');
+  });
+
+  it('does not back off a rung that has merely caught up with the publisher', async () => {
+    const topic = Topic.fromString('group-1-480p');
+    const gateway = new FakeGateway();
+    // The head answers, the next slot 404s: the publisher has not written it yet, the ordinary case
+    // for a viewer at the live edge and never a gateway fault.
+    gateway.missingSlotStatus = 404;
+    gateway.publishFeedHead(topic, 0, manifest(1));
+
+    const health = new FeedHealthTracker(() => 0);
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, health, () => 0);
+    poller.start(OWNER, [topic]);
+
+    try {
+      await waitFor(() => segmentCount(state, topic) === 1, 'the rung to bootstrap');
+      await waitFor(() => gateway.requests.filter((p) => p.startsWith('soc/')).length >= 3, 'repeated caught-up polls');
+
+      assert.equal(health.state(topic.toString()), FEED_STATE_LIVE, 'a slot not written yet must not read as an outage');
+      assert.equal(health.backoffRemainingMs(topic.toString()), 0, 'a caught-up rung must keep polling at full cadence');
+    } finally {
+      poller.stop([topic]);
+    }
   });
 });

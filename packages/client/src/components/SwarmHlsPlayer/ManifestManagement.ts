@@ -50,7 +50,7 @@ const manifestQueue = new Pqueue({ concurrency: 1 });
  * A feed slot the publisher has not written yet, which is what a viewer who has caught up sees on
  * nearly every poll. Ordinary, so it is not logged as a failure and the next poll asks again.
  */
-const SLOT_NOT_WRITTEN_YET = 404;
+export const SLOT_NOT_WRITTEN_YET = 404;
 
 /**
  * How many feed slots one poll may walk before handing control back.
@@ -103,11 +103,23 @@ export function waitMs(ms: number): Promise<void> {
 }
 
 /** A response that arrived and was refused, as opposed to a transport failure or a timeout. */
-class ManifestFetchError extends Error {
+export class ManifestFetchError extends Error {
   constructor(path: string, readonly status: number) {
     super(`Failed to fetch: ${path}`);
     this.name = 'ManifestFetchError';
   }
+}
+
+/**
+ * Whether a failed read is only the publisher not having written the next slot yet.
+ *
+ * The ordinary answer for a viewer riding the live edge, and never a gateway fault. Everything else,
+ * a transport error or a 5xx, is the gateway not answering. Shared with {@link LadderFeedPoller} so
+ * the ladder classifies a read failure exactly as the single-rendition walk does, rather than
+ * backing off every viewer who has merely caught up with the publisher.
+ */
+export function isSlotNotWrittenYet(error: unknown): boolean {
+  return error instanceof ManifestFetchError && error.status === SLOT_NOT_WRITTEN_YET;
 }
 
 export class ManifestStateManager {
@@ -379,8 +391,16 @@ export class ManifestFetcher {
     pollIntervalMs?: number,
   ) {
     // The poller fetches through this instance rather than holding a URL of its own, so switching
-    // gateway mid-session moves the walk with it.
-    this.poller = new LadderFeedPoller(stateManager, (path) => this.fetchResource(path), pollIntervalMs);
+    // gateway mid-session moves the walk with it. It also shares this instance's feed health and
+    // computes its backoff through the same jitter, so a ladder outage records and paces exactly as
+    // the single-rendition path does rather than polling a dead gateway flat.
+    this.poller = new LadderFeedPoller(
+      stateManager,
+      (path) => this.fetchResource(path),
+      pollIntervalMs,
+      this.feedHealth,
+      (hexTopic) => this.jitter.spread(this.feedHealth.backoffRemainingMs(hexTopic)),
+    );
   }
 
   get beeUrl(): string {
