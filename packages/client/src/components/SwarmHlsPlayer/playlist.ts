@@ -57,6 +57,9 @@ export function isMasterPlaylist(text: string): boolean {
  * reason: the master is what says where its own variants live.
  */
 export function masterVariants(text: string): { owner: string; topic: string }[] {
+  // ⚠️ The per-line trim below covers everything this one does, so dropping this call is an
+  // equivalent mutant that survives `pnpm mutate`. Kept rather than removed because it bounds the
+  // loop to real content, and the equivalence holds only for the line shapes the tests cover.
   const lines = text.trim().split('\n');
   const variants: { owner: string; topic: string }[] = [];
 

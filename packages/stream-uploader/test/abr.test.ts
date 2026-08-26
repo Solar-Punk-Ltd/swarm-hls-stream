@@ -52,6 +52,24 @@ describe('AbrLadder.parse', () => {
   it('rejects duplicate rung names', () => {
     assert.throws(() => AbrLadder.parse('720p:1280:720:2800 720p:640:360:700'), /two rungs named "720p"/);
   });
+
+  /**
+   * Anchored at both ends, and neither anchor is spare. Without the leading one `a12` passes the
+   * guard and `parseInt` answers NaN, which is not `<= 0` so the second check waves it through and
+   * the rung reaches the master playlist with a BANDWIDTH of `NaN`. Without the trailing one `12a`
+   * silently becomes 12, so a rung advertises a bitrate the encoder was never given.
+   */
+  it('rejects a bitrate that is only partly numeric, at either end', () => {
+    assert.throws(() => AbrLadder.parse('720p:1280:720:a12'), /bitrate of "720p" must be a positive integer/);
+    assert.throws(() => AbrLadder.parse('720p:1280:720:12a'), /bitrate of "720p" must be a positive integer/);
+  });
+
+  it('answers `has` for a configured rung and not for one the engine was never given', () => {
+    const ladder = AbrLadder.parse(DEFAULT_LADDER_SPEC);
+
+    assert.equal(ladder.has('720p'), true);
+    assert.equal(ladder.has('1440p'), false);
+  });
 });
 
 describe('AbrLadder.match', () => {

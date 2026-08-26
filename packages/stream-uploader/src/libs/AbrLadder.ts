@@ -32,6 +32,10 @@ export class AbrLadder {
   }
 
   public static parse(spec: string): AbrLadder {
+    // ⚠️ `filter(Boolean)` is doing the work here, and it makes two mutations of this line
+    // equivalent: dropping `.trim()` and narrowing `\s+` to `\s` both only add empty strings, which
+    // the filter then removes. Both survive `pnpm mutate` and neither is a coverage gap, so do not
+    // write a test for them.
     const entries = spec.trim().split(/\s+/).filter(Boolean);
     if (entries.length === 0) {
       throw new Error('ABR_LADDER is empty; expected entries of the form name:width:height:kbps');

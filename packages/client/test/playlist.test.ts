@@ -70,6 +70,14 @@ describe('absoluteBytesBase', () => {
     assert.equal(absoluteBytesBase('http://localhost:1653/', origin), 'http://localhost:1653/bytes');
   });
 
+  it('collapses several trailing slashes and not only the last one', () => {
+    // `/+$` rather than `/$`. A gateway URL assembled from a base and a path arrives with more than
+    // one often enough, and stopping at one leaves `//bytes`, which a URL parser reads as a
+    // protocol-relative reference to a host called "bytes" rather than as a path.
+    assert.equal(absoluteBytesBase('http://localhost:1653//', origin), 'http://localhost:1653/bytes');
+    assert.equal(absoluteBytesBase('/bee///', origin), 'http://localhost:5173/bee/bytes');
+  });
+
   it('always returns something with a scheme, whatever it was given', () => {
     for (const beeUrl of ['/bee', 'http://localhost:1653', 'https://gateway.example/']) {
       assert.match(absoluteBytesBase(beeUrl, origin), /^https?:\/\//, `"${beeUrl}" must absolutise`);
@@ -138,6 +146,51 @@ describe('masterVariants', () => {
     const media = ['#EXTM3U', '#EXTINF:1.5,', 'http://bee/bytes/aaaa'].join('\n');
 
     assert.deepEqual(masterVariants(media), []);
+  });
+
+  /**
+   * A URI is a variant because a STREAM-INF introduced it, not because it looks like one. Drop that
+   * guard and every line becomes a tag, so any line followed by something URI-shaped is walked as a
+   * rung: the poller then holds a feed at the live edge that the master never named.
+   */
+  it('reads a URI as a variant only where a STREAM-INF introduces it', () => {
+    const master = [
+      '#EXTM3U',
+      'swarm://aabbcc/loose-line',
+      '#EXT-X-STREAM-INF:BANDWIDTH=700000',
+      'swarm://aabbcc/group-1-360p',
+    ].join('\n');
+
+    assert.deepEqual(masterVariants(master), [{ owner: 'aabbcc', topic: 'group-1-360p' }]);
+  });
+
+  it('tolerates indentation on both the tag and the URI it introduces', () => {
+    // Not the first line, deliberately: the leading trim would strip the indentation before the
+    // per-line trim was asked to, and the case would pass without testing anything.
+    const master = ['#EXTM3U', '  #EXT-X-STREAM-INF:BANDWIDTH=700000', '   swarm://aabbcc/group-1-360p   '].join('\n');
+
+    assert.deepEqual(masterVariants(master), [{ owner: 'aabbcc', topic: 'group-1-360p' }]);
+  });
+
+  it('returns empty rather than throwing when a STREAM-INF is the very last line', () => {
+    // A read truncated exactly on the tag leaves no line after it. Reaching for `.trim()` on that
+    // absent line throws inside the loader, which surfaces as a player that never starts rather
+    // than as a rung that is merely missing.
+    const master = ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=700000'].join('\n');
+
+    assert.deepEqual(masterVariants(master), []);
+  });
+
+  it('drops a URI missing either half, since half an address names no feed', () => {
+    const master = [
+      '#EXTM3U',
+      '#EXT-X-STREAM-INF:BANDWIDTH=700000',
+      'swarm://aabbcc',
+      '#EXT-X-STREAM-INF:BANDWIDTH=2800000',
+      'swarm:///group-1-720p',
+    ].join('\n');
+
+    assert.deepEqual(masterVariants(master), [], 'a variant needs both an owner and a topic, not either');
   });
 });
 
