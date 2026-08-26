@@ -8,7 +8,9 @@ import { LadderRung } from '../types.js';
  */
 export const DEFAULT_LADDER_SPEC = '1080p:1920:1080:5000 720p:1280:720:2800 480p:854:480:1200 360p:640:360:700';
 
-const RUNG_NAME = /^[a-zA-Z0-9._-]+$/;
+// No underscore, deliberately: match() recovers a rung by splitting the stream id on its last
+// underscore (`live_720p`), so a name that contained one could never be resolved back to its rung.
+const RUNG_NAME = /^[a-zA-Z0-9.-]+$/;
 
 export interface RungMatch {
   /** The stream id with the rung suffix removed — the ladder all four rungs belong to. */
@@ -92,7 +94,10 @@ function parseRung(entry: string): LadderRung {
 
   const [name, width, height, kbps] = parts;
   if (!RUNG_NAME.test(name)) {
-    throw new Error(`ABR_LADDER rung name "${name}" must match ${RUNG_NAME}`);
+    throw new Error(
+      `ABR_LADDER rung name "${name}" may contain only letters, digits, '.' and '-'. An underscore ` +
+        'is not allowed, because the rung suffix is split from the stream id on the last underscore.',
+    );
   }
 
   return {

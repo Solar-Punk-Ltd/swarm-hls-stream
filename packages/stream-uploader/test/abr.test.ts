@@ -46,7 +46,13 @@ describe('AbrLadder.parse', () => {
   });
 
   it('rejects a rung name that could not survive being spliced into a config', () => {
-    assert.throws(() => AbrLadder.parse('720p;evil:1280:720:2800'), /must match/);
+    assert.throws(() => AbrLadder.parse('720p;evil:1280:720:2800'), /may contain only letters/);
+  });
+
+  it('rejects a rung name containing an underscore, which match() could never resolve', () => {
+    // match() splits the stream id on its last underscore, so `live_720p_hq` would look up rung `hq`
+    // and find nothing. The name has to be refused at parse rather than accepted and never matched.
+    assert.throws(() => AbrLadder.parse('720p_hq:1280:720:2800'), /may contain only letters/);
   });
 
   it('rejects duplicate rung names', () => {
