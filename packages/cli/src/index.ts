@@ -32,7 +32,9 @@ function printUsage(): void {
   console.log('Read-only commands run against every configured Bee node. With BEE_PUBLISHERS set that');
   console.log('is one node per ABR rung, so a stage has four wallets and four batches to keep an eye on.');
   console.log('stamp-buy is the exception: it needs the rung, because a batch can only be spent by the');
-  console.log('node that bought it. It prints the batch id and never edits your config.');
+  console.log('node that bought it. It prints the batch id and writes it to .env as STAMP, replacing any');
+  console.log('previous value. It does not edit BEE_PUBLISHERS, so on a ladder it prints that entry for you');
+  console.log('to paste in yourself.');
   console.log('');
   console.log('Options:');
   console.log('  --url <url>       Act on one node only (matched against the configured nodes)');
