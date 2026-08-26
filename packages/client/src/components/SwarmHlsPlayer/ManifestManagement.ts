@@ -4,8 +4,6 @@ import {
   feedSlotPath,
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
-  HLS_MEDIA_SEQUENCE,
-  HLS_MEDIA_SEQUENCE_ZERO,
   HLS_PLAYLIST_TYPE,
   HLS_PLAYLIST_TYPE_EVENT,
   nextFeedRequest,
@@ -159,16 +157,24 @@ export class ManifestStateManager {
     // with no `#EXTM3U`, which hls.js refuses whole as `Missing format identifier #EXTM3U` and
     // reports as a fatal error, and the player answers a fatal error by remounting into the same
     // manifest. A viewer sees a recording that never starts.
+    //
+    // Kept exactly as the uploader wrote them rather than renumbered. The header that matters is
+    // EXT-X-MEDIA-SEQUENCE, the engine's own sequence number for the oldest segment in this first
+    // playlist. It used to be rewritten to zero, which reads fine for one playlist on its own but is
+    // wrong across a ladder: with no EXT-X-PROGRAM-DATE-TIME here it is the only thing telling hls.js
+    // two rungs share a timeline, so four rungs all starting at zero while their first segments cover
+    // different intervals turn every level switch into a gap or an overlap. See ABR media-sequence.
     if (state.headers.length === 0) {
-      state.headers = this.normalizeHeaders(headers);
+      state.headers = [...headers];
     }
 
     if (isFinalized) {
-      // Extended, never replaced. `normalizeHeaders` pins every playlist this client serves to media
-      // sequence zero, so segment N means "the Nth since this viewer joined" and changing the front
-      // of the list changes what every number already handed to hls.js refers to. That is what it
-      // reports as a media sequence mismatch, and both finished playlists would cause it: the
-      // closing one is a live window and starts later than a viewer who joined earlier, while the
+      // Extended, never replaced. The captured headers carry the engine's media sequence for the
+      // first segment this viewer held, and everything appended after it is contiguous, so that
+      // number stays the sequence of the playlist's first segment for the whole session. Changing
+      // the front of the list would change what every number already handed to hls.js refers to,
+      // which it reports as a media sequence mismatch, and both finished playlists would cause it:
+      // the closing one is a live window and starts later than a viewer who joined earlier, while the
       // recording names every segment and starts earlier than a viewer who joined partway through.
       this.appendAfterLastHeld(state, segments);
       state.isFinalized = true;
@@ -293,10 +299,6 @@ export class ManifestStateManager {
       });
     }
     return this.topics.get(topicId)!;
-  }
-
-  private normalizeHeaders(headers: string[]): string[] {
-    return headers.map((h) => (h.startsWith(HLS_MEDIA_SEQUENCE) ? HLS_MEDIA_SEQUENCE_ZERO : h));
   }
 
   /**

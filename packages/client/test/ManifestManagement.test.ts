@@ -86,6 +86,34 @@ describe('ManifestStateManager serialize', () => {
     assert.ok(!out.includes(`${DISCONTINUITY}\n${EXTINF_2S}\nseg0.ts`), 'seg0 must not carry a discontinuity');
   });
 
+  it('keeps the engine media sequence of the first playlist instead of rewinding it to zero', () => {
+    // The relapse guard for ABR's media-sequence fix. Every rung is transcoded from one source with
+    // keyframes on the same timestamps, so segment N is the same interval on all of them, and with no
+    // EXT-X-PROGRAM-DATE-TIME the sequence number is the only thing telling hls.js two rungs share a
+    // timeline. Rewriting it to zero, which every rung would do, lands each level switch in a gap.
+    //
+    // Asserted on the '#' lines on purpose: the fetcher's own tests read only segment URIs, so a
+    // renumbering would pass every one of them, which is how this was lost in the merge.
+    const first = [
+      M3U,
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      '#EXT-X-MEDIA-SEQUENCE:4',
+      '',
+      EXTINF_2S,
+      'seg4.ts',
+      EXTINF_2S,
+      'seg5.ts',
+    ].join('\n');
+    const parsed = parseManifest(first);
+    manager.updateManifest(TOPIC, parsed.headers, parsed.segments, parsed.isFinalized);
+
+    const out = manager.serialize(TOPIC, '');
+
+    assert.ok(out.includes('#EXT-X-MEDIA-SEQUENCE:4'), `the engine sequence must survive, got:\n${out}`);
+    assert.ok(!out.includes('#EXT-X-MEDIA-SEQUENCE:0'), `must not rewind a joining viewer to zero, got:\n${out}`);
+  });
+
   it('serves a playable playlist when the first manifest a viewer ever sees is a finished one', () => {
     // How a recording is opened: nothing has been watched, so the feed head is the VOD manifest and
     // it arrives finalized on the first fetch. Every live path reaches `serialize` having taken a
