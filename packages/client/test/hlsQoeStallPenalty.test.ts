@@ -189,3 +189,24 @@ describe('delivered bitrate follows the rung, not a blend of the rung just left'
     );
   });
 });
+
+describe('switch frequency is a rate over elapsed time, not over playback time', () => {
+  it('counts switches against the wall clock, so a struggling session does not inflate the rate', () => {
+    const player = makeTrackedPlayer();
+
+    // The harness fires no 'playing' event, so no playback time accumulates. Dividing switches by
+    // playback time reported zero however many happened, and a real struggling session, where
+    // playback time shrinks against elapsed while down-switches cluster in the excluded rebuffering,
+    // inflated the rate by the same mechanism.
+    player.levelSwitched();
+    player.levelSwitched();
+
+    player.poll();
+
+    assert.equal(player.metrics().qualitySwitchCount, 2, 'both switches were counted');
+    assert.ok(
+      player.metrics().qualitySwitchPerMin > 0,
+      'switch frequency must divide by elapsed time, so it reports a rate with no playback time banked',
+    );
+  });
+});

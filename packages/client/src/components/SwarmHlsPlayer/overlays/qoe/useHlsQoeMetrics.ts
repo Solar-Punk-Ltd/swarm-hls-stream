@@ -291,7 +291,12 @@ export const attachQoeTracking = (
     }
 
     metrics.rebufferingRatio = total > 0 ? metrics.rebufferingDurationMs / total : 0;
-    const elapsedMin = total / 60_000;
+
+    // Elapsed wall clock, not playback time. Denominated in playback time this inflated exactly when
+    // the session struggled: down-switches cluster in the rebuffering and paused stretches that
+    // playback time leaves out, so the same switches were divided by a smaller number the worse the
+    // session got. Wall clock keeps the rate a rate.
+    const elapsedMin = (performance.now() - sessionStart) / 60_000;
     metrics.qualitySwitchPerMin = elapsedMin > 0 ? metrics.qualitySwitchCount / elapsedMin : 0;
 
     if (video instanceof HTMLVideoElement) {
