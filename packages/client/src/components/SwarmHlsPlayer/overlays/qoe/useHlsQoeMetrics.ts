@@ -188,8 +188,17 @@ export const attachQoeTracking = (
   video.addEventListener('pause', onPause);
   video.addEventListener('ended', onEnded);
 
+  // The delivered-bitrate window, held here so the switch handler can clear it. A three-fragment
+  // running average is smooth enough to read while a rung keeps its bitrate, and stale across a
+  // switch, which is why it is cleared below.
+  const fragBitrateSamples: number[] = [];
+
   const onLevelSwitched = () => {
     metrics.qualitySwitchCount += 1;
+    // Cleared on the switch so the delivered bitrate reflects the new rung within one fragment. Left
+    // uncleared it blended up to three fragments of the rung just left into the average, showing a
+    // bitrate no rung actually had for a beat after every switch.
+    fragBitrateSamples.length = 0;
     flush();
   };
 
@@ -228,7 +237,6 @@ export const attachQoeTracking = (
     flush();
   };
 
-  const fragBitrateSamples: number[] = [];
   const onFragLoaded = (_event: unknown, data: { frag: { duration: number; stats?: { loaded?: number } } }) => {
     const { frag } = data;
     const loaded: number = frag.stats?.loaded ?? 0;

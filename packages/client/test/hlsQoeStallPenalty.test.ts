@@ -56,6 +56,16 @@ function makeTrackedPlayer(targetLatency: number | null = LIVE_SYNC_DURATION_S) 
       assert.ok(listener, 'the tracker never subscribed to hls.js errors');
       listener(Events.ERROR, { fatal, type: ErrorTypes.MEDIA_ERROR, details });
     },
+    fragLoaded: (loadedBytes: number, durationSec: number) => {
+      const listener = hlsListeners.get(Events.FRAG_LOADED);
+      assert.ok(listener, 'the tracker never subscribed to FRAG_LOADED');
+      listener(Events.FRAG_LOADED, { frag: { duration: durationSec, stats: { loaded: loadedBytes } } });
+    },
+    levelSwitched: () => {
+      const listener = hlsListeners.get(Events.LEVEL_SWITCHED);
+      assert.ok(listener, 'the tracker never subscribed to LEVEL_SWITCHED');
+      listener(Events.LEVEL_SWITCHED, {});
+    },
   };
 }
 
@@ -155,5 +165,27 @@ describe('a stall moves the latency target, and nothing used to say so', () => {
     player.poll();
 
     assert.equal(player.metrics().liveTargetLatencySec, LIVE_SYNC_DURATION_S);
+  });
+});
+
+describe('delivered bitrate follows the rung, not a blend of the rung just left', () => {
+  it('clears the sample window on a level switch so the average is the new rung within one fragment', () => {
+    const player = makeTrackedPlayer();
+
+    // Three fragments of a high rung, about 8 Mbps each: 2 MB over a 2s fragment.
+    player.fragLoaded(2_000_000, 2);
+    player.fragLoaded(2_000_000, 2);
+    player.fragLoaded(2_000_000, 2);
+    assert.equal(player.metrics().bitrateKbps, 8000, 'the high rung sets the delivered bitrate');
+
+    // A down-switch, then one fragment of a roughly 700 kbps rung: 175 KB over 2s.
+    player.levelSwitched();
+    player.fragLoaded(175_000, 2);
+
+    assert.equal(
+      player.metrics().bitrateKbps,
+      700,
+      'a switch must not leave the old rung blended into the delivered bitrate',
+    );
   });
 });
