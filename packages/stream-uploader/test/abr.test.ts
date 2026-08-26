@@ -2,8 +2,22 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
+import { Logger } from '../src/libs/Logger.js';
 import { buildLadderEntry, LadderIdentity, StreamEntry } from '../src/libs/StreamCatalog.js';
 import { MEDIA_TYPE_VIDEO, Rendition } from '../src/types.js';
+
+/** The lines AbrLadder.parse logs while parsing `spec`, captured through the logger's sink. */
+function logsFromParsing(spec: string): string[] {
+  const lines: string[] = [];
+  const logger = Logger.getInstance();
+  const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+  try {
+    AbrLadder.parse(spec);
+  } finally {
+    logger.configure(previous);
+  }
+  return lines;
+}
 
 describe('AbrLadder.parse', () => {
   it('parses the default ladder into four rungs, lowest first', () => {
@@ -198,5 +212,22 @@ describe('buildLadderEntry', () => {
       entry.renditions?.map((r) => r.name),
       ['360p'],
     );
+  });
+});
+
+describe('AbrLadder bitrate monotonicity', () => {
+  it('warns when a taller rung is not configured above a shorter one', () => {
+    // BANDWIDTH is what hls.js climbs by, so a 720p rung priced below 360p is dead weight a player
+    // never reaches. Warned rather than refused, so a deliberately odd ladder still starts.
+    const lines = logsFromParsing('360p:640:360:700 720p:1280:720:500');
+
+    assert.ok(
+      lines.some((line) => line.includes('[AbrLadder]') && line.includes('720p')),
+      `expected a monotonicity warning naming 720p, got ${JSON.stringify(lines)}`,
+    );
+  });
+
+  it('says nothing for the default ladder, whose bitrate rises with height', () => {
+    assert.deepEqual(logsFromParsing(DEFAULT_LADDER_SPEC), []);
   });
 });

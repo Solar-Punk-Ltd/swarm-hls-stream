@@ -1,5 +1,7 @@
 import { LadderRung } from '../types.js';
 
+import { Logger } from './Logger.js';
+
 /**
  * Must stay in step with ABR_LADDER's default in `engines/srs/.env.sample`. The engine and the
  * uploader read the same variable, so they only diverge when one of them is left unset — and the
@@ -53,6 +55,8 @@ export class AbrLadder {
       names.add(rung.name);
     }
 
+    warnIfBitrateNotMonotonic(rungs);
+
     return new AbrLadder(rungs);
   }
 
@@ -83,6 +87,28 @@ export class AbrLadder {
     }
 
     return { baseStreamId: streamId.slice(0, separator), rung };
+  }
+}
+
+/**
+ * A taller rung a client would never climb to, warned rather than refused.
+ *
+ * BANDWIDTH is what hls.js selects a level by, so a rung at a higher resolution but no higher bitrate
+ * than a shorter one is dead weight the player has no reason to reach. It is a misconfiguration, not
+ * an impossibility, so it is a startup warning rather than a throw that would keep the stage down.
+ */
+function warnIfBitrateNotMonotonic(rungs: LadderRung[]): void {
+  const byHeight = [...rungs].sort((a, b) => a.height - b.height);
+  for (let i = 1; i < byHeight.length; i++) {
+    const shorter = byHeight[i - 1];
+    const taller = byHeight[i];
+    if (taller.height > shorter.height && taller.configuredKbps <= shorter.configuredKbps) {
+      Logger.getInstance().warn(
+        `[AbrLadder] Rung ${taller.name} (${taller.height}p at ${taller.configuredKbps}kbps) is not configured ` +
+          `above the shorter ${shorter.name} (${shorter.height}p at ${shorter.configuredKbps}kbps), so a client may ` +
+          'never climb to it.',
+      );
+    }
   }
 }
 
