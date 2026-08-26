@@ -252,6 +252,33 @@ describe('the ladder entry points', () => {
       assert.equal(manager.serialize(hexSource, `${BEE_URL}/bytes`), '');
     });
 
+    it('does not start four rung pollers when a master lands after the topic was torn down', async () => {
+      // The master branch of the same race. `startVariants` starts all four rung walks, and their only
+      // stopper is `unregisterLadder`, which the teardown already ran against no rungs. Without the
+      // guard the late master both resolves the read and leaves four orphan walks that nothing stops.
+      const gate = deferred<void>();
+      globalThis.fetch = (async (url: string) => {
+        const path = url.replace(`${BEE_URL}/`, '');
+        requested.push(path);
+        await gate.promise;
+        return feedResponse(buildMasterPlaylist(OWNER, LADDER));
+      }) as typeof fetch;
+
+      const pending = fetcher.fetchSource(`${OWNER}/${SOURCE_TOPIC}`);
+      manager.clear(hexSource);
+      gate.resolve();
+
+      await assert.rejects(pending, /torn down/);
+      await settle();
+
+      for (const hex of RUNG_TOPICS) {
+        assert.ok(
+          !requested.some((path) => path.includes(hex)),
+          `rung ${hex} was walked after teardown, so a torn-down player left an orphan poller running`,
+        );
+      }
+    });
+
     it('refuses a 200 whose body is not a playlist, rather than answering with an empty string', async () => {
       console.error = () => {};
       stubFetch('<html>captive portal</html>');

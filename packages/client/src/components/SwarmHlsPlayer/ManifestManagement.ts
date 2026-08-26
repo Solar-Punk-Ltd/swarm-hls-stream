@@ -485,6 +485,11 @@ export class ManifestFetcher {
       const text = res.text;
 
       if (isMasterPlaylist(text)) {
+        // Before the pollers are started, for the reason the generation was pinned above: a teardown
+        // during the head read has already run `unregisterLadder` against no rungs, so starting four
+        // walks here would leave four orphans that nothing can stop, `unregisterLadder` being their
+        // only stopper and already spent. The single-rendition branch below guards the same way.
+        this.assertTopicSurvived(hexTopic, generation);
         const variants = masterVariants(text);
         this.startVariants(url, source.owner, variants);
         this.logMaster(url, text, 'published');
