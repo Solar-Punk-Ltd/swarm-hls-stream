@@ -6,7 +6,7 @@
     "command": "./packages/client/node_modules/.bin/vitest run --root packages/client --reporter=dot --exclude 'test/bundle.test.ts' > .stryker-test-output.log 2>&1"
   },
   "coverageAnalysis": "off",
-  "mutate": ["packages/client/src/**/*.ts", "!packages/client/src/**/*.d.ts"],
+  "mutate": ["packages/client/src/**/*.{ts,tsx}", "!packages/client/src/**/*.d.ts"],
   "reporters": ["clear-text", "progress-append-only", "json"],
   "jsonReporter": {
     "fileName": "reports/mutation/mutation-client.json"
