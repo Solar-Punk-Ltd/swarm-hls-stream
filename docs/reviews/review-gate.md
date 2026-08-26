@@ -216,12 +216,36 @@ tests and merely uses source as the substrate, so changing the tests changes the
 and unchanged mutants can flip from killed to survived. "Nothing to mutate" confuses the substrate
 with the subject. On a test-only diff, scope the run to the source those tests cover.
 
-**The harness covers `packages/stream-uploader` and nothing else.** `stryker.config.json` mutates that
-package's `src/` and runs that package's suite. `audit-gate`, `cli` and `client` all have `src/` and
+**The harness covers `packages/stream-uploader`, `packages/shared` and `packages/client`.**
+`stryker.config.json` mutates those three `src/` trees and runs all three suites, the first two under
+`node:test` and the client under vitest. `audit-gate`, `cli`, `e2e` and `deploy` all have source and
 none of them has a runner here, so a change to `packages/cli/src/` gets recorded as **unavailable**,
 which is a different word from not applicable and must not read as coverage. Mutating unscoped would
-report on a package the diff never touched, and mutating `cli` with the uploader's suite would survive
+report on a package the diff never touched, and mutating `cli` with the other suites would survive
 every mutant and produce pure noise.
+
+⛔ **Widen the `mutate` glob and the command runner together, or not at all.** Widening the glob alone
+runs the new files against a suite that never imports them, so every mutant survives and the score
+reads as a coverage catastrophe that is really a configuration error. Widening the runner alone adds
+runtime and mutates nothing new. TEST-40 in the 2026-07-29 audit is the same defect from the other
+direction, where code moved out of the scoped package and the gate kept reporting the same kind of
+number over a strictly smaller surface.
+
+⛔ **Two limits on what a score from this harness means.**
+
+`packages/client/test/bundle.test.ts` is excluded from the client run, and it has to be. It builds the
+bundle and asserts that the test-only handles are tree-shaken out, which works because vite folds
+`import.meta.env.VITE_EXPOSE_PLAYER` to a constant and the guarded branch becomes provably dead.
+Stryker's instrumentation wraps that branch in a runtime-mutable switch, so the bundler can no longer
+prove it dead and the handle ships. That test measures the emitted bundle, and instrumentation changes
+exactly the thing it measures. Left in, it fails under every mutant and scores **every mutant as
+killed**, which is a 100% score that means nothing. Stryker's refusal to run against a red baseline is
+what catches it, so never force that baseline green.
+
+A mutant in `packages/shared` is invisible to any test that imports it by package name. The sandbox
+symlinks `node_modules` back to the real tree, so `@swarm-hls-stream/shared` resolves to the unmutated
+original while Stryker mutates a copy nothing imports. Only a test importing by relative path can see
+one, which is why shared's own suite scores it and the uploader's and the client's do not.
 
 **Not applicable means genuinely neither**, as on a docs, deploy or CI diff. The selection comment
 states which of the three it is, and the claims auditor verifies that statement, because it is a
