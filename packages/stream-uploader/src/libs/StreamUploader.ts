@@ -472,6 +472,14 @@ export class StreamUploader {
   }
 
   private async announceRendition(final?: { index: number; duration: number }): Promise<void> {
+    if (!this.ownsRecoveryEntry) {
+      // A re-announce has handed this rung to a newer session. The catalog and master entry are keyed
+      // by rung name, which this outgoing session shares, so any upsert from here overwrites the live
+      // rung with a retired session's topic and a VOD index. The VOD manifest this session published
+      // stands on its own feed; only the shared ladder entry is off limits. Mirrors persistState.
+      return;
+    }
+
     const rendition = this.buildRendition(final);
 
     this.lastAnnounceAttemptAt = Date.now();

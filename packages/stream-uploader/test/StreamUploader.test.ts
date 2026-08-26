@@ -1392,3 +1392,70 @@ describe('StreamUploader ladder finalize metrics', () => {
     assert.equal(finalized, 1, 'the ladder finalize path never counted the recording it published');
   });
 });
+
+describe('StreamUploader ladder re-announce safety', () => {
+  const LADDER = {
+    group: 'group-1',
+    rung: { name: '360p', width: 640, height: 360, configuredKbps: 800 },
+  };
+
+  interface CatalogRung {
+    name: string;
+    topic: string;
+  }
+
+  function ladderUploaderOn(topic: string, catalog: StreamCatalog): StreamUploader {
+    const recovery = {
+      save: () => {},
+      load: () => null,
+      remove: () => {},
+      listActive: () => [],
+    } as unknown as RecoveryStore;
+
+    return new StreamUploader({
+      bee: makeBee({}),
+      streamCatalog: catalog,
+      recoveryStore: recovery,
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: topic,
+      mediatype: MEDIA_TYPE_VIDEO,
+      ladder: LADDER,
+    });
+  }
+
+  it('a retired session does not overwrite the live rung when it finalizes', async () => {
+    // The shared ladder entry, keyed by rung name exactly as the real catalog's mergeRendition keys
+    // it, so an upsert for a name that already exists replaces the previous session's rung.
+    const rungsByName = new Map<string, CatalogRung>();
+    const catalog = {
+      addStream: async () => {},
+      upsertRendition: async (_identity: unknown, rendition: { name: string; topic: string }) => {
+        rungsByName.set(rendition.name, { name: rendition.name, topic: rendition.topic });
+      },
+    } as unknown as StreamCatalog;
+
+    // The outgoing session for the 360p rung, on its own feed topic. Publishing a segment gives it a
+    // recording to finalize and lands its own live announce.
+    const outgoing = ladderUploaderOn('outgoing-topic', catalog);
+    outgoing.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(outgoing);
+    assert.equal(rungsByName.get('360p')?.topic, 'outgoing-topic', 'the live announce should land while it owns the rung');
+
+    // A transcode restart re-announces 360p to a new session on a new topic, now the live rung, and
+    // retires the outgoing session so it no longer owns the shared entry.
+    rungsByName.set('360p', { name: '360p', topic: 'live-topic' });
+    outgoing.retire();
+
+    // The outgoing session finalizes late, after the new session already published live.
+    await outgoing.notifyStop();
+
+    assert.equal(
+      rungsByName.get('360p')?.topic,
+      'live-topic',
+      'the retired session clobbered the live rung on finalize',
+    );
+  });
+});
