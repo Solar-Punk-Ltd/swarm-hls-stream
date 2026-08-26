@@ -32,12 +32,22 @@ export function selectPublisherByRung(publishers: NamedTarget[], rung: string | 
     throw new Error(`Which rung? Pass --rung, e.g. \`pnpm stamp:buy --rung 360p\`. Configured rungs: ${rungs}`);
   }
 
-  const matched = configured.find((node) => node.rung === rung);
-  if (!matched) {
+  const matches = configured.filter((node) => node.rung === rung);
+  if (matches.length === 0) {
     throw new Error(`No node configured for rung "${rung}". Configured rungs: ${rungs}`);
   }
 
-  return matched;
+  // The uploader's parser refuses a duplicate rung outright, before it starts. This list is
+  // deliberately kept forgiving so the other nodes stay reachable for diagnosis, but the one thing it
+  // will not do is guess which of two nodes for the same rung to spend a batch on.
+  if (matches.length > 1) {
+    throw new Error(
+      `BEE_PUBLISHERS names ${matches.length} nodes for rung "${rung}", so which one to spend on is ` +
+        'ambiguous. Remove the duplicate so one rung maps to one node.',
+    );
+  }
+
+  return matches[0];
 }
 
 /**
