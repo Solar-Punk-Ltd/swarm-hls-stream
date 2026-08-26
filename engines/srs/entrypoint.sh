@@ -35,6 +35,15 @@ require_name() {
   esac
 }
 
+# A rung name is stricter than a general name: no underscore. The uploader recovers a rung by
+# splitting the stream id on its last `_`, so a rung whose own name carries one cannot be matched
+# back and would drain the wrong node's batch. Kept in step with AbrLadder's RUNG_NAME.
+require_rung_name() {
+  case "$2" in
+    '' | *[!a-zA-Z0-9.-]*) echo "$1 must match [a-zA-Z0-9.-]+ (no underscore), got '$2'" >&2; exit 1 ;;
+  esac
+}
+
 # Segment length, and how much of it the playlist keeps.
 #
 # **This is the largest latency lever on the engine side**, and it is bounded from below by the
@@ -194,7 +203,7 @@ if abr_enabled; then
       echo "ABR_LADDER entry '$rung' must be name:width:height:kbps" >&2
       exit 1
     fi
-    require_name "ABR_LADDER rung name" "$name"
+    require_rung_name "ABR_LADDER rung name" "$name"
     require_int "ABR_LADDER width ($name)" "$width"
     require_int "ABR_LADDER height ($name)" "$height"
     require_int "ABR_LADDER bitrate ($name)" "$vbitrate"
