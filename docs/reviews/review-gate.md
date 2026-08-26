@@ -206,8 +206,8 @@ both run a model tier down. On #29's 13-line config diff, three lenses a tier do
 byte-level `.gitignore` check and a per-package `outDir` comparison.
 
 **The claims auditor is unconditional. The mutation check runs on every pull request that changes
-`src/` or `test/` inside `packages/stream-uploader`.** Only the auditor is unconditional, because only
-the auditor has an artifact on every pull request.
+`src/` or `test/` inside `packages/stream-uploader`, `packages/shared` or `packages/client`.** Only the
+auditor is unconditional, because only the auditor has an artifact on every pull request.
 
 Three things about that trigger, each of which took getting it wrong first.
 
@@ -216,13 +216,17 @@ tests and merely uses source as the substrate, so changing the tests changes the
 and unchanged mutants can flip from killed to survived. "Nothing to mutate" confuses the substrate
 with the subject. On a test-only diff, scope the run to the source those tests cover.
 
-**The harness covers `packages/stream-uploader`, `packages/shared` and `packages/client`.**
-`stryker.config.json` mutates those three `src/` trees and runs all three suites, the first two under
-`node:test` and the client under vitest. `audit-gate`, `cli`, `e2e` and `deploy` all have source and
+**The harness covers `packages/stream-uploader`, `packages/shared` and `packages/client`, across two
+configs.** `stryker.config.json` (`pnpm mutate`) mutates the uploader's and shared's `src/` trees and
+runs both of their suites under `node:test`. `stryker.client.config.json` (`pnpm mutate:client`)
+mutates the client's `src/` tree and runs its suite under vitest. The client is a second config rather
+than a third tree in the first because the runners do not cross: a `node:test` command cannot execute
+a vitest package's tests, so a client mutant run under the shared config would survive every mutant,
+the same noise the warning below describes. `audit-gate`, `cli`, `e2e` and `deploy` all have source and
 none of them has a runner here, so a change to `packages/cli/src/` gets recorded as **unavailable**,
 which is a different word from not applicable and must not read as coverage. Mutating unscoped would
-report on a package the diff never touched, and mutating `cli` with the other suites would survive
-every mutant and produce pure noise.
+report on a package the diff never touched, and mutating `cli` under either config would survive every
+mutant and produce pure noise.
 
 ⛔ **Widen the `mutate` glob and the command runner together, or not at all.** Widening the glob alone
 runs the new files against a suite that never imports them, so every mutant survives and the score
@@ -403,18 +407,18 @@ reach it, which is the failure rule 4 exists to prevent.
 
 ### Lens catalogue
 
-| Lens                   | Tier       | Blocks?        | Select when                                                                     | Hunts                                                                                                                     |
-| ---------------------- | ---------- | -------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Claims audit           | Mechanical | yes            | **Always**                                                                      | Assertions in the description that were never checked, or are stale                                                       |
-| Mutation triage        | Mechanical | no, deferrable | **Any `src/` change.** Stryker generates and runs, the lens only triages        | Survivors that are real coverage gaps rather than equivalent mutants, and the semantic mutations no AST operator produces |
-| Correctness            | Reasoning  | yes            | Any logic change                                                                | Wrong output for specific inputs, false green, false red                                                                  |
-| Security               | Reasoning  | yes            | Input handling, auth, filesystem paths, CI, dependencies                        | A concrete attack path with a named attacker and what they control                                                        |
-| Concurrency            | Reasoning  | yes            | The orchestrator, queues, timers, recovery                                      | Interleavings that corrupt state, lost updates, races between entry points                                                |
-| Behaviour preservation | Reasoning  | yes            | Refactors, autofixes, anything claimed to be mechanical                         | Hunks where behaviour actually differs from the version they replaced                                                     |
-| Config consistency     | Reasoning  | yes            | Config, scripts, CI, packaging, docs describing commands                        | Two things in the repo that disagree, and what breaks because they do                                                     |
-| Silent failure         | Reasoning  | yes            | Error paths, health and status reporting, retries                               | Swallowed errors, fallbacks that mask a fault, a green that means nothing                                                 |
-| Test integrity         | Reasoning  | no, deferrable | New or changed tests                                                            | Tests that pass without exercising the behaviour, and coverage that lies                                                  |
-| Protocol correctness   | Reasoning  | yes            | This gate, the handoff's working protocol, any rule a later session must follow | Obligations removed or weakened, requirements no artifact can prove, and the cheapest review the new text permits         |
+| Lens                   | Tier       | Blocks?        | Select when                                                                                                            | Hunts                                                                                                                     |
+| ---------------------- | ---------- | -------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Claims audit           | Mechanical | yes            | **Always**                                                                                                             | Assertions in the description that were never checked, or are stale                                                       |
+| Mutation triage        | Mechanical | no, deferrable | **A `src/` or `test/` change in stream-uploader, shared or client.** Stryker generates and runs, the lens only triages | Survivors that are real coverage gaps rather than equivalent mutants, and the semantic mutations no AST operator produces |
+| Correctness            | Reasoning  | yes            | Any logic change                                                                                                       | Wrong output for specific inputs, false green, false red                                                                  |
+| Security               | Reasoning  | yes            | Input handling, auth, filesystem paths, CI, dependencies                                                               | A concrete attack path with a named attacker and what they control                                                        |
+| Concurrency            | Reasoning  | yes            | The orchestrator, queues, timers, recovery                                                                             | Interleavings that corrupt state, lost updates, races between entry points                                                |
+| Behaviour preservation | Reasoning  | yes            | Refactors, autofixes, anything claimed to be mechanical                                                                | Hunks where behaviour actually differs from the version they replaced                                                     |
+| Config consistency     | Reasoning  | yes            | Config, scripts, CI, packaging, docs describing commands                                                               | Two things in the repo that disagree, and what breaks because they do                                                     |
+| Silent failure         | Reasoning  | yes            | Error paths, health and status reporting, retries                                                                      | Swallowed errors, fallbacks that mask a fault, a green that means nothing                                                 |
+| Test integrity         | Reasoning  | no, deferrable | New or changed tests                                                                                                   | Tests that pass without exercising the behaviour, and coverage that lies                                                  |
+| Protocol correctness   | Reasoning  | yes            | This gate, the handoff's working protocol, any rule a later session must follow                                        | Obligations removed or weakened, requirements no artifact can prove, and the cheapest review the new text permits         |
 
 ### What selection has measured
 
@@ -433,17 +437,26 @@ does and the worst possible use of an agent, because generating and executing mu
 non-reproducible between rounds, and self-reported. My own "10 of 10" on #43 did not survive contact
 with the lens's 59, and neither number can be checked against anything today.
 
-`pnpm mutate` runs [Stryker](https://stryker-mutator.io) from the repository root.
+`pnpm mutate` runs [Stryker](https://stryker-mutator.io) from the repository root against
+`stryker.config.json`, which covers the uploader and shared under `node:test`.
 
 ```bash
 pnpm mutate
 ```
 
-Scope it to what the diff touched, because the whole uploader is 1839 mutants against a 14-second
+The client is a separate config and command, because it runs under vitest. A client PR is measured
+with this, never with `pnpm mutate`, which never touches the client tree:
+
+```bash
+pnpm mutate:client
+```
+
+Scope either to what the diff touched, because the whole uploader is 1839 mutants against a 14-second
 suite and that is an overnight run, not a pull request gate:
 
 ```bash
 ./node_modules/.bin/stryker run stryker.config.json --mutate 'packages/stream-uploader/src/engines/ome.ts,packages/stream-uploader/src/engines/ome/**/*.ts'
+./node_modules/.bin/stryker run stryker.client.config.json --mutate 'packages/client/src/components/SwarmHlsPlayer/**/*.ts'
 ```
 
 **On the command line scope with a comma-separated list. In the config use one array entry per
