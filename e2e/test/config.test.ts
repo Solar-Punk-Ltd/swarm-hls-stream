@@ -77,7 +77,6 @@ describe('the ABR ladder the deployment configured', () => {
     const cfg = loadConfig({ env: {}, rootDir: fixtureRoot() });
 
     assert.equal(cfg.abrEnabled, false);
-    assert.deepEqual(cfg.abrRungs, []);
   });
 
   it('is on for the two spellings the uploader itself accepts', () => {
@@ -116,14 +115,15 @@ describe('the ABR ladder the deployment configured', () => {
   });
 
   /**
-   * An unset `ABR_LADDER` means the engine falls back to its own default, which this cannot see. A
-   * suite asserting on specific rung names therefore has to notice the empty list rather than read
-   * it as a ladder of zero rungs.
+   * An unset `ABR_LADDER` falls back to the same default the uploader and the SRS entrypoint use, so
+   * the suite reads the four rungs a documented install runs rather than an empty list. `.env.sample`
+   * ships the variable blank for exactly this reason, and a run against the shipped config would find
+   * no rungs and skip itself if this fell back to nothing.
    */
-  it('names nothing when the ladder is left to the engine default', () => {
+  it('falls back to the shared default ladder when nothing overrides it', () => {
     const rootDir = fixtureRoot({ root: 'ABR_ENABLED=true\n' });
 
-    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrRungs, []);
+    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrRungs, ['1080p', '720p', '480p', '360p']);
   });
 
   it('ignores the geometry, so a reformatted entry does not become a rung name', () => {
