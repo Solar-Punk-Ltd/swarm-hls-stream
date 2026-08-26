@@ -11,7 +11,7 @@ import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './C
 import { FEED_STATE_LIVE, FeedState } from './feedState';
 import { attachLivePlaybackRateGuard } from './livePlaybackRate';
 import { ManifestStateManager } from './ManifestManagement';
-import { nextMediaErrorAction, NO_MEDIA_ERRORS_YET } from './mediaErrorRecovery';
+import { nextMediaErrorAction, NO_MEDIA_ERRORS_YET, recoverFromMediaError } from './mediaErrorRecovery';
 import { attachPlaybackStallReporter } from './playbackHealth';
 import { buildPlayerConfig, HLS_TUNING } from './playerConfig';
 import { exposePlayerForInstrumentation } from './playerTestHandle';
@@ -399,10 +399,11 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
               restartStream();
               break;
             }
-            if (decision.action === 'swap-codec-and-recover') {
-              hls?.swapAudioCodec();
+            // Playhead read before recovery detaches the media. recoverFromMediaError starts loading
+            // by hand when it is zero, which is the case autoStartLoad off leaves stopped for good.
+            if (hls) {
+              recoverFromMediaError(hls, video.currentTime, decision.action === 'swap-codec-and-recover');
             }
-            hls?.recoverMediaError();
             break;
           }
           default:

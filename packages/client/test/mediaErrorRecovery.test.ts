@@ -9,8 +9,10 @@ import { describe, it } from 'vitest';
 
 import {
   MEDIA_ERROR_RECOVERY_WINDOW_MS,
+  MediaErrorRecoverer,
   nextMediaErrorAction,
   NO_MEDIA_ERRORS_YET,
+  recoverFromMediaError,
 } from '../src/components/SwarmHlsPlayer/mediaErrorRecovery';
 
 const T0 = 1_000_000;
@@ -93,5 +95,50 @@ describe('escalating a fatal media error instead of retrying it forever', () => 
       assert.equal(second.action, 'swap-codec-and-recover');
       assert.equal(third.action, 'restart');
     });
+  });
+});
+
+/**
+ * hls.js's recoverMediaError restarts loading only when the playhead is past zero, and the player
+ * runs with autoStartLoad off so it can set startLevel before the first load. A fatal media error
+ * before the first frame therefore re-attached the media and stopped, leaving the recovery ladder's
+ * higher rungs unreachable on a black player.
+ */
+describe('resuming loading after a media-error recovery', () => {
+  class FakeHls implements MediaErrorRecoverer {
+    public readonly calls: string[] = [];
+    swapAudioCodec(): void {
+      this.calls.push('swapAudioCodec');
+    }
+    recoverMediaError(): void {
+      this.calls.push('recoverMediaError');
+    }
+    startLoad(): void {
+      this.calls.push('startLoad');
+    }
+  }
+
+  it('starts loading by hand when the media error struck at playhead zero', () => {
+    const hls = new FakeHls();
+
+    recoverFromMediaError(hls, 0, false);
+
+    assert.deepEqual(hls.calls, ['recoverMediaError', 'startLoad'], 'a zero playhead is left stopped without this');
+  });
+
+  it('leaves the restart to hls.js once the playhead has moved, so loading is not started twice', () => {
+    const hls = new FakeHls();
+
+    recoverFromMediaError(hls, 5, false);
+
+    assert.deepEqual(hls.calls, ['recoverMediaError'], 'recoverMediaError restarts a past-zero playhead itself');
+  });
+
+  it('swaps the audio codec before recovering, and still resumes at playhead zero', () => {
+    const hls = new FakeHls();
+
+    recoverFromMediaError(hls, 0, true);
+
+    assert.deepEqual(hls.calls, ['swapAudioCodec', 'recoverMediaError', 'startLoad']);
   });
 });
