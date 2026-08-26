@@ -208,6 +208,7 @@ services:
       - '${SRS_SRT_PORT:-10080}:${SRS_SRT_PORT:-10080}/udp'
       - '${SRS_RTMP_PORT:-1935}:${SRS_RTMP_PORT:-1935}'
       - '${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
+      - '${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
@@ -235,6 +236,7 @@ services:
       SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
       SRS_HTTP_PORT: ${SRS_HTTP_PORT:-8080}
       SRS_SRT_PORT: ${SRS_SRT_PORT:-10080}
+      SRS_HTTP_API_PORT: ${SRS_HTTP_API_PORT:-1985}
       # The latency knobs. `main` passed the first two and this branch stopped, which left the
       # entrypoint substituting defaults into a template that no longer had placeholders.
       #

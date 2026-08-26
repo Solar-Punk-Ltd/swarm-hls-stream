@@ -62,11 +62,11 @@ REST_ARGS=()
 # The two numbers are different questions and used to be one. `stock` is what a plain deploy falls
 # back to when the variable is unset, and it matches the `${NAME:-NNNN}` fallback in the compose file
 # that publishes it. `base` is the origin of the `base + slot*10` arithmetic, where each service
-# holds a unique last digit (0-8) so slots cannot collide.
+# holds a unique last digit (0-9) so slots cannot collide.
 #
-# Collapsing them hid a real divergence for seven of the nine, because `apply_port_slot` leaves an
-# already-set variable alone at slot 0 and those seven carry a value in `.env.sample`. SRS_RTMP_PORT
-# and SRS_HTTP_PORT carry none, in `.env.sample` or `engines/srs/.env.sample`, so a stock deploy took
+# Collapsing them hid a real divergence for seven of the ten, because `apply_port_slot` leaves an
+# already-set variable alone at slot 0 and those seven carry a value in `.env.sample`. SRS_RTMP_PORT,
+# SRS_HTTP_PORT and SRS_HTTP_API_PORT carry none, in `.env.sample` or `engines/srs/.env.sample`, so a stock deploy took
 # 10002 and 10003 from the arithmetic origin while `engines/srs/docker-compose.yml` documents 1935
 # and 8080. Since d6394a3 passed these into SRS's own config, that is what SRS bound: consistent end
 # to end, and not what the ports are documented as, so an operator opening 1935 for a broadcaster
@@ -81,6 +81,8 @@ readonly PORT_VARS=(
   "BEE_UPLOADER_P2P_PORT:1634:10006"
   "BEE_GATEWAY_API_PORT:1733:10007"
   "BEE_GATEWAY_P2P_PORT:1734:10008"
+  # SRS's read-only stats API. Added so two profiles no longer collide on the fixed 1985 it bound.
+  "SRS_HTTP_API_PORT:1985:10009"
 )
 
 # Parse profile + portSlot flags from argv.

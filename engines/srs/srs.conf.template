@@ -13,7 +13,7 @@ http_server {
 # per rung, and a count that keeps climbing is the loop. Without this the check cannot be run.
 http_api {
     enabled         on;
-    listen          1985;
+    listen          HTTP_API_PORT_PLACEHOLDER;
 }
 
 srt_server {

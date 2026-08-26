@@ -20,7 +20,7 @@ services:
     # behind it.
     ports:
       - '${SRS_RTMP_PORT:-1935}:${SRS_RTMP_PORT:-1935}'
-      - '1985:1985'
+      - '${SRS_HTTP_API_PORT:-1985}:${SRS_HTTP_API_PORT:-1985}'
       - '${SRS_HTTP_PORT:-8080}:${SRS_HTTP_PORT:-8080}'
       - '${SRS_SRT_PORT:-10080}:${SRS_SRT_PORT:-10080}/udp'
     # Enumerated rather than inherited, deliberately. This used to be `env_file: ../../.env`, which
@@ -43,6 +43,7 @@ services:
       SRS_RTMP_PORT: ${SRS_RTMP_PORT:-1935}
       SRS_HTTP_PORT: ${SRS_HTTP_PORT:-8080}
       SRS_SRT_PORT: ${SRS_SRT_PORT:-10080}
+      SRS_HTTP_API_PORT: ${SRS_HTTP_API_PORT:-1985}
       # The latency knobs, restated here because this file is the one behind `pnpm srs:host` and
       # `pnpm srs:local`. `deploy/docker-compose.yml` gained them and this did not, so on the local
       # engine path every one of them was inert: setting `HLS_FRAGMENT=0.5` produced 1.0s segments

@@ -304,6 +304,10 @@ sed -i "s/SRS_ADAPTER_PORT_PLACEHOLDER/${SRS_ADAPTER_PORT:-3000}/g" "$CONF"
 sed -i "s/RTMP_PORT_PLACEHOLDER/${SRS_RTMP_PORT:-1935}/g" "$CONF"
 sed -i "s/HTTP_PORT_PLACEHOLDER/${SRS_HTTP_PORT:-8080}/g" "$CONF"
 sed -i "s/SRT_PORT_PLACEHOLDER/${SRS_SRT_PORT:-10080}/g" "$CONF"
+# The read-only stats API. Was the last SRS listen port left hard-coded, so two profiles on one host
+# collided on it under host networking exactly as 8080 above once did. Left enabled on every interface
+# on purpose: this is a demo stack and the loop check the API exists for has to be reachable.
+sed -i "s/HTTP_API_PORT_PLACEHOLDER/${SRS_HTTP_API_PORT:-1985}/g" "$CONF"
 
 # Ensure HLS output directories exist with open permissions
 # These are shared with the uploader container which needs read + delete access.
