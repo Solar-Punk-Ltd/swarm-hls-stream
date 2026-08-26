@@ -87,9 +87,9 @@ This can be used by any custom integration that sends segment data directly over
 
 1. Add server config: `engines/<engine-name>/` with docker-compose and config files
 2. Add a plugin: `packages/stream-uploader/src/engines/<engine-name>.ts`
-   - Implement the `EnginePlugin` interface from `engines/types.ts`
+   - Implement the `EnginePlugin` interface from `packages/stream-uploader/src/engines/types.ts`
    - Register webhook routes that the engine server will call
-3. Register it in `packages/stream-uploader/src/index.ts` `loadEngines()`
+3. Register it in `packages/stream-uploader/src/engines/registry.ts` (`engineRegistry`), which is what `loadEngines()` reads
 4. Add the engine's docker service to `deploy/docker-compose.yml`
 
 ## Structure
@@ -102,5 +102,7 @@ engines/
 
 packages/stream-uploader/src/engines/
   types.ts                    # EnginePlugin interface
+  registry.ts                 # engineRegistry — maps an engine name to its plugin factory
+  load.ts                     # loadEngines() — builds the configured engine's plugins
   <engine-name>.ts            # Engine plugin implementation
 ```
