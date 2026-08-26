@@ -21,6 +21,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { createOmeEngine, createOmeEngineFromEnv } from '../src/engines/ome.js';
 import { createSrsEngine, createSrsEngineFromEnv } from '../src/engines/srs.js';
+import { AbrLadder } from '../src/libs/AbrLadder.js';
 import { Logger } from '../src/libs/Logger.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { derivePublishKey } from '../src/utils/publishKey.js';
@@ -932,6 +933,191 @@ describe('a refused publish key reaches the health signal (OBS-15)', () => {
       await unpublish(BROADCASTER, `?key=${KEY}`);
 
       assert.equal(orchestrator.getHealthSignals().msSinceAuthRejection, null);
+    });
+  });
+});
+
+/**
+ * Publisher authentication with the ladder on. See SEC-28.
+ *
+ * ABR had folded "is this a stream we publish" and "is this publisher allowed" into one `isPublishable`
+ * gate that answered SRS_ACCEPT above the key check. With the ladder on, a real broadcaster lands on
+ * the ingest vhost, which that gate treats as "not ours" and waved through with no key at all, while
+ * the rungs it does gate carry no key and so were the only thing refused. The two faults masked each
+ * other: a deployment with a secret failed loudly because nothing published, and the tempting fix for
+ * that, exempting rungs, would have shipped the silent hole.
+ *
+ * The rule this pins: a broadcaster on the ingest vhost is authenticated by its own publish key, and a
+ * rung, which SRS republishes from loopback onto the ABR vhost with no key, is admitted only by that
+ * loopback origin and by its base stream having authenticated. No secret is written into any conf.
+ */
+describe('the SRS publisher auth with the ladder on (SEC-28)', () => {
+  const LADDER_SPEC = '720p:1280:720:2800 360p:640:360:700';
+  const ABR_VHOST = 'abr';
+  const INGEST_VHOST = '__defaultVhost__';
+  const LOOPBACK = '127.0.0.1';
+  const RUNG = `${STREAM}_720p`;
+  const RUNG_ID = `${STREAM_ID}_720p`;
+
+  interface LadderCalls {
+    /** Stream ids the engine asked the orchestrator to ingest, in order. Only rungs are ingested. */
+    starts: string[];
+    /** Stream ids the engine asked the orchestrator to stop, in order. */
+    stops: string[];
+    /** How many refusals reached `/health` through `recordAuthRejection`. See OBS-15. */
+    authRejections: number;
+  }
+
+  interface SrsBody {
+    action: 'on_publish' | 'on_unpublish';
+    app: string;
+    stream: string;
+    vhost: string;
+    ip?: string;
+    param?: string;
+  }
+
+  async function withSrsLadder(
+    publishKeySecret: string | undefined,
+    drive: (harness: { calls: LadderCalls; post: (body: SrsBody) => Promise<number> }) => Promise<void>,
+  ): Promise<void> {
+    const calls: LadderCalls = { starts: [], stops: [], authRejections: 0 };
+    const orchestrator = makeFakeOrchestrator({
+      startStream: (streamId: string) => {
+        calls.starts.push(streamId);
+        return true;
+      },
+      stopStream: async (streamId: string) => {
+        calls.stops.push(streamId);
+      },
+      recordAuthRejection: () => {
+        calls.authRejections += 1;
+      },
+    });
+    const engine = createSrsEngine('/srv/media', {
+      webhookToken: SRS_TOKEN,
+      publishKeySecret,
+      abr: { vhost: ABR_VHOST, ladder: AbrLadder.parse(LADDER_SPEC) },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(engine.prefix, engine.createRouter(orchestrator));
+    const { server, baseUrl } = await listenOnLoopback(app);
+
+    async function post(body: SrsBody): Promise<number> {
+      const response = await fetch(`${baseUrl}${engine.prefix}/streams?token=${SRS_TOKEN}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return response.json() as Promise<number>;
+    }
+
+    try {
+      await drive({ calls, post });
+    } finally {
+      server.close();
+    }
+  }
+
+  const source = (extra: Partial<SrsBody> = {}): SrsBody => ({
+    action: 'on_publish',
+    app: APP,
+    stream: STREAM,
+    vhost: INGEST_VHOST,
+    ...extra,
+  });
+
+  const rung = (extra: Partial<SrsBody> = {}): SrsBody => ({
+    action: 'on_publish',
+    app: APP,
+    stream: RUNG,
+    vhost: ABR_VHOST,
+    ip: LOOPBACK,
+    ...extra,
+  });
+
+  /**
+   * The regression, stated as plainly as it can be. Before the fix this answered SRS_ACCEPT above the
+   * key check, so a broadcaster who knows only the stream name published with no key while the ladder
+   * was on, and nothing reached `/health` to say so.
+   */
+  it('rejects a keyless broadcaster on the ingest vhost and records the refusal', async () => {
+    await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
+      assert.equal(await post(source()), 1, 'a broadcaster with no key must be refused even with the ladder on');
+      assert.deepEqual(calls.starts, [], 'nothing may be ingested for a refused broadcaster');
+      assert.equal(calls.authRejections, 1, 'and the refusal has to be visible on /health');
+    });
+  });
+
+  it('refuses a broadcaster on the ingest vhost carrying a wrong key', async () => {
+    await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
+      assert.equal(await post(source({ param: '?key=not-the-key' })), 1);
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 1);
+    });
+  });
+
+  it('admits a broadcaster that proves its key, without ingesting the untranscoded source', async () => {
+    await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
+      assert.equal(await post(source({ param: `?key=${KEY}` })), 0);
+      assert.deepEqual(calls.starts, [], 'the source exists to be transcoded by SRS, not ingested by the uploader');
+    });
+  });
+
+  it('admits a rung republished from loopback once its base has authenticated', async () => {
+    await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
+      assert.equal(await post(source({ param: `?key=${KEY}` })), 0);
+
+      assert.equal(await post(rung()), 0, 'a rung carries no key and is admitted by origin');
+      assert.deepEqual(calls.starts, [RUNG_ID], 'the rung is what the uploader ingests');
+    });
+  });
+
+  it('rejects a rung-shaped publish that is not from the transcode loopback', async () => {
+    await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
+      await post(source({ param: `?key=${KEY}` }));
+
+      assert.equal(await post(rung({ ip: STRANGER })), 1, 'origin trust must not extend off the host');
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 1);
+    });
+  });
+
+  /**
+   * The reason the base-authenticated requirement is not decoration. The bench host carries other bee
+   * nodes and another session, so loopback alone is reachable by a co-tenant. Knowing a stream name
+   * must not be enough to smuggle a rung onto the ladder.
+   */
+  it('rejects a loopback rung whose base never authenticated', async () => {
+    await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
+      assert.equal(await post(rung({ stream: 'attacker_720p' })), 1);
+      assert.deepEqual(calls.starts, []);
+      assert.equal(calls.authRejections, 1);
+    });
+  });
+
+  it('stops a rung on an unpublish from loopback', async () => {
+    await withSrsLadder(PUBLISH_SECRET, async ({ calls, post }) => {
+      await post(source({ param: `?key=${KEY}` }));
+      await post(rung());
+
+      assert.equal(await post(rung({ action: 'on_unpublish' })), 0);
+      assert.deepEqual(calls.stops, [RUNG_ID]);
+    });
+  });
+
+  /**
+   * With no secret the feature is off, and the ladder must go on working exactly as it did. The source
+   * is still recorded as a base so its rungs are admitted, gated by the loopback origin alone.
+   */
+  it('still admits the ladder with no secret configured', async () => {
+    await withSrsLadder(undefined, async ({ calls, post }) => {
+      assert.equal(await post(source()), 0);
+
+      assert.equal(await post(rung()), 0);
+      assert.deepEqual(calls.starts, [RUNG_ID]);
+      assert.equal(calls.authRejections, 0);
     });
   });
 });

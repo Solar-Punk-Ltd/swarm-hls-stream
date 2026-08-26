@@ -198,10 +198,14 @@ export function createSrsEngine(mediaRootPath: string, options: SrsEngineOptions
     createRouter(streamOrchestrator: StreamOrchestrator): Router {
       const router = Router();
 
+      // Base streams that authenticated, so their rungs — republished onto the ABR vhost with no key
+      // of their own — can be admitted by that origin. Empty and unread without a ladder. See SEC-28.
+      const authenticatedBases = new Set<string>();
+
       router.use(createWebhookGate(webhookToken));
 
       router.post('/streams', (req: Request, res: Response) => {
-        handleStreams(req, res, streamOrchestrator, publishKeySecret, abr);
+        handleStreams(req, res, streamOrchestrator, publishKeySecret, abr, authenticatedBases);
       });
 
       router.post('/hls', (req: Request, res: Response) => {
@@ -233,17 +237,78 @@ function isPublishable(payload: SrsStreamPayload | SrsHlsPayload, streamId: stri
   }
 
   if (abr.ladder.match(streamId)) {
-    logger.error(
-      `[SRS] Rendition ${streamId} arrived on vhost '${payload.vhost}', expected '${abr.vhost}'. ` +
-        `The transcode output's ?vhost= did not match — SRS falls back to __defaultVhost__, where the ` +
-        `rendition is itself transcoded. Check ABR_VHOST and 'curl localhost:1985/api/v1/streams' for a ` +
-        `stream count that keeps climbing.`,
-    );
+    logMisroutedRendition(streamId, payload.vhost, abr.vhost);
   } else {
     logger.debug(`[SRS] Ignoring source stream ${streamId} on vhost '${payload.vhost}' — the ladder is what publishes`);
   }
 
   return false;
+}
+
+/** A rendition that reached the wrong vhost, which SRS will re-transcode without limit. See ABR_VHOST. */
+function logMisroutedRendition(streamId: string, actualVhost: string, expectedVhost: string): void {
+  logger.error(
+    `[SRS] Rendition ${streamId} arrived on vhost '${actualVhost}', expected '${expectedVhost}'. ` +
+      `The transcode output's ?vhost= did not match — SRS falls back to __defaultVhost__, where the ` +
+      `rendition is itself transcoded. Check ABR_VHOST and 'curl localhost:1985/api/v1/streams' for a ` +
+      `stream count that keeps climbing.`,
+  );
+}
+
+/**
+ * Loopback is where SRS dials its own transcode republishes: `engines/srs/entrypoint.sh` points every
+ * rung's output at `rtmp://127.0.0.1`, so a rung's publisher address is a loopback one. A rung carries
+ * no publish key, and this origin, together with its base stream having authenticated, is the whole of
+ * what admits it. See SEC-28.
+ */
+const SRS_LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+function isLoopbackPublisher(payload: SrsStreamPayload): boolean {
+  return typeof payload.ip === 'string' && SRS_LOOPBACK_ADDRESSES.has(payload.ip);
+}
+
+/**
+ * How a stream webhook relates to the ladder, which is what decides how the publish authenticates and
+ * whether the uploader ingests it. See SEC-28.
+ *
+ * `single` the ladder is off. The publish authenticates by its own key, exactly as it always has.
+ * `source` the untranscoded broadcast, which a real broadcaster sends to the ingest vhost. It
+ *   authenticates by its publish key like a single-rendition publish, and is then left for SRS to
+ *   transcode rather than ingested, because the ingest vhost stops segmenting once the ladder is on.
+ * `rung` a transcode republish SRS dials from loopback onto the ABR vhost. It presents no key, so it
+ *   is admitted only by that loopback origin and by its base stream having authenticated.
+ * `stray` a rendition whose `?vhost=` missed the ABR vhost, or a name on the ABR vhost that is no
+ *   configured rung. Neither is ingested. A misrouted rendition is logged loudly, because otherwise
+ *   the only symptom is a stream that never appears.
+ */
+type LadderStreamRole =
+  | { kind: 'single' }
+  | { kind: 'source' }
+  | { kind: 'rung'; baseStreamId: string }
+  | { kind: 'stray'; misroutedRendition: boolean };
+
+function classifyLadderStream(payload: SrsStreamPayload, streamId: string, abr?: AbrGuard): LadderStreamRole {
+  if (!abr) {
+    return { kind: 'single' };
+  }
+
+  const match = abr.ladder.match(streamId);
+  if (payload.vhost === abr.vhost) {
+    // Only a transcode republish belongs on the ABR vhost. A name here that is no configured rung is
+    // nothing the uploader can place on a ladder, so it is treated as stray and never ingested.
+    return match ? { kind: 'rung', baseStreamId: match.baseStreamId } : { kind: 'stray', misroutedRendition: false };
+  }
+
+  // Off the ABR vhost with the ladder on. A rung name here is a rendition whose `?vhost=` missed and
+  // fell back to the default vhost. Any other name is the untranscoded source, a real broadcaster.
+  return match ? { kind: 'stray', misroutedRendition: true } : { kind: 'source' };
+}
+
+function stopStreamQuietly(streamOrchestrator: StreamOrchestrator, streamId: string): void {
+  streamOrchestrator.stopStream(streamId).catch((error) => {
+    const msg = getErrorMessage(error);
+    logger.error(`[SRS] Error during stream stop ${streamId}: ${msg}`);
+  });
 }
 
 function handleStreams(
@@ -252,6 +317,7 @@ function handleStreams(
   streamOrchestrator: StreamOrchestrator,
   publishKeySecret: string,
   abr?: AbrGuard,
+  authenticatedBases: Set<string> = new Set(),
 ): void {
   // Read before the try, so the catch below can tell a publish from anything else. A handler error on
   // a publish has to refuse when a secret is configured, and the action is the only thing that says
@@ -274,18 +340,33 @@ function handleStreams(
       return;
     }
 
-    // Orthogonal to the check above and deliberately after it: that one asks whether the name is safe
-    // to handle at all, this asks whether this vhost's copy of it is the one the uploader publishes.
-    // ABR replaced the first with the second, which left the name unscreened whenever the ladder was off.
-    if (!isPublishable(payload, streamId, abr)) {
-      srsResponse(res, SRS_ACCEPT);
-      return;
-    }
+    // How this stream authenticates depends on what it is to the ladder. ABR had folded this decision
+    // into a single `isPublishable` gate that answered SRS_ACCEPT above the key check, so a real
+    // broadcaster on the ingest vhost was admitted with no key whenever the ladder was on. See SEC-28.
+    const role = classifyLadderStream(payload, streamId, abr);
 
     if (payload.action === SRS_ACTION_UNPUBLISH) {
-      // Extracted before anything is answered, so a `param` that cannot be parsed reaches the catch
-      // below with the response still unsent. Answering first and screening after would double-send on
-      // exactly that path. See SEC-29.
+      if (role.kind === 'stray') {
+        srsResponse(res, SRS_ACCEPT);
+        return;
+      }
+
+      if (role.kind === 'rung') {
+        // No key to parse, so the acknowledgement is safe to send first. The base-authenticated
+        // requirement is dropped on the stop side on purpose: a source that has already unpublished
+        // has cleared its base, and a rung has to be able to stop cleanly rather than linger until the
+        // orphan reaper takes it. The loopback origin is the gate.
+        srsResponse(res, SRS_ACCEPT);
+        if (isLoopbackPublisher(payload)) {
+          logger.info(`[SRS] Rung unpublished: ${streamId}`);
+          stopStreamQuietly(streamOrchestrator, streamId);
+        }
+        return;
+      }
+
+      // `single` or `source`: authenticated by the broadcaster's own key, which SRS repeats on the
+      // unpublish. Extracted before anything is answered, so a `param` that cannot be parsed reaches
+      // the catch below with the response still unsent. See SEC-29.
       const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromParam(payload.param));
 
       // SRS reads any non-zero answer as a failure to retry, and an unpublish is not a request that
@@ -301,11 +382,16 @@ function handleStreams(
         return;
       }
 
+      if (role.kind === 'source') {
+        // Its rungs must not outlive their base. Only after the key check, so a forged unpublish
+        // cannot evict a live broadcaster's base and take the whole ladder down with it.
+        authenticatedBases.delete(streamId);
+        logger.info(`[SRS] Ladder source unpublished: ${streamId}`);
+        return;
+      }
+
       logger.info(`[SRS] Stream unpublished: ${streamId}`);
-      streamOrchestrator.stopStream(streamId).catch((error) => {
-        const msg = getErrorMessage(error);
-        logger.error(`[SRS] Error during stream stop ${streamId}: ${msg}`);
-      });
+      stopStreamQuietly(streamOrchestrator, streamId);
       return;
     }
 
@@ -314,6 +400,46 @@ function handleStreams(
       return;
     }
 
+    if (role.kind === 'rung') {
+      // A rung carries no key: the transcode URL in entrypoint.sh has no `?key=`. Its base stream
+      // having authenticated is what an attacker who merely knows the name cannot forge, and the
+      // loopback origin is what keeps a co-tenant on the shared host from publishing a rung of its own.
+      if (!isLoopbackPublisher(payload) || !authenticatedBases.has(role.baseStreamId)) {
+        const reason = isLoopbackPublisher(payload)
+          ? 'its base stream never authenticated'
+          : 'it is not from the transcode loopback';
+        logger.warn(`[SRS] Rejected a rung publish of ${streamId}: ${reason}`);
+        // Reported rather than observed. SRS_REJECT rides inside a 200, so the status-code observer
+        // never sees it. See OBS-15.
+        streamOrchestrator.recordAuthRejection();
+        srsResponse(res, SRS_REJECT);
+        return;
+      }
+
+      logger.info(`[SRS] Rung published: ${streamId}`);
+      const accepted = streamOrchestrator.startStream(streamId, resolveMediaType(payload.app), {
+        address: publisherAddress(payload),
+        isAuthenticated: true,
+      });
+      srsResponse(res, accepted ? SRS_ACCEPT : SRS_REJECT);
+      return;
+    }
+
+    if (role.kind === 'stray') {
+      // Not a stream the uploader publishes. Accept so SRS keeps running, ingest nothing. The
+      // misrouted case is loud because otherwise the only symptom is a stream that never appears.
+      if (role.misroutedRendition && abr) {
+        logMisroutedRendition(streamId, payload.vhost, abr.vhost);
+      } else {
+        logger.debug(`[SRS] Ignoring ${streamId} on vhost '${payload.vhost}', no configured rung by that name`);
+      }
+      srsResponse(res, SRS_ACCEPT);
+      return;
+    }
+
+    // `single` or `source`: a real broadcaster, authenticated by its own publish key. Parsed before
+    // any response so a `param` that cannot be parsed reaches the catch with the response unsent. See
+    // SEC-28 and SEC-29.
     const isAuthenticated = hasValidPublishKey(publishKeySecret, streamId, publishKeyFromParam(payload.param));
     if (publishKeySecret && !isAuthenticated) {
       // The key itself is never logged, and neither is `param`, which is where it lives.
@@ -322,6 +448,16 @@ function handleStreams(
       // never sees it, and a live deployment refusing keyless publishes reported nothing. See OBS-15.
       streamOrchestrator.recordAuthRejection();
       srsResponse(res, SRS_REJECT);
+      return;
+    }
+
+    if (role.kind === 'source') {
+      // The uploader ingests the ladder's rungs, not the untranscoded source. Recording that the
+      // source authenticated is the only thing that later admits those rungs, which arrive on the ABR
+      // vhost with no key of their own. SRS_ACCEPT lets SRS go on to transcode it.
+      authenticatedBases.add(streamId);
+      logger.info(`[SRS] Ladder source authenticated: ${streamId}`);
+      srsResponse(res, SRS_ACCEPT);
       return;
     }
 
