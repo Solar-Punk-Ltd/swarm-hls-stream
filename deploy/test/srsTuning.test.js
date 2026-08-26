@@ -274,10 +274,15 @@ describe('the SRS latency knobs', () => {
 describe('both SRS compose files carry the same tuning knobs', () => {
   const STANDALONE = join(ROOT, 'engines/srs/docker-compose.yml');
 
-  /** Names the entrypoint reads from its environment, which is the list that has to arrive. */
+  /**
+   * Names the entrypoint reads from its environment, which is the list that has to arrive. The ABR
+   * knobs are included because ABR_VBV_SECONDS reached neither compose file and nothing caught it.
+   * Only the `${NAME:-default}` form counts: a bare `${ABR_GOP}` is computed here, not read from the
+   * environment, so requiring the default is what keeps that one out of the list.
+   */
   function knobsTheEntrypointReads() {
     const entrypoint = readFileSync(ENTRYPOINT, 'utf8');
-    return [...entrypoint.matchAll(/\$\{(HLS_[A-Z_]+|SRT_[A-Z_]+)(?::-|\})/g)].map((m) => m[1]);
+    return [...entrypoint.matchAll(/\$\{(HLS_[A-Z_]+|SRT_[A-Z_]+|ABR_[A-Z_]+):-/g)].map((m) => m[1]);
   }
 
   for (const composePath of [COMPOSE, STANDALONE]) {
