@@ -2,6 +2,7 @@ import { Bee } from '@ethersphere/bee-js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { AnnounceReadiness, READINESS_ANNOUNCED } from '../src/libs/AnnounceReadiness.js';
 import { ErrorHandler } from '../src/libs/ErrorHandler.js';
 import { Logger } from '../src/libs/Logger.js';
 import { ManifestManager } from '../src/libs/ManifestManager.js';
@@ -1227,12 +1228,15 @@ describe('StreamUploader catalog failures on the segment path', () => {
 
   function primeForDriftCorrection(uploader: StreamUploader): void {
     const inner = uploader as unknown as {
-      isFirstManifestReady: boolean;
+      readiness: AnnounceReadiness;
       driftBaselineBps: number;
       lastAnnounceAttemptAt: number;
       bitrate: { peakBps: number };
     };
-    inner.isFirstManifestReady = true;
+    // The real guard refreshBandwidthIfDrifted reads. Priming a segment while already ANNOUNCED is
+    // what makes the segment path take the drift-refresh branch rather than the initial announce, so
+    // the announce these tests observe is the correction and not the first publish.
+    inner.readiness = READINESS_ANNOUNCED;
     inner.driftBaselineBps = 1_000_000;
     inner.lastAnnounceAttemptAt = 0;
     inner.bitrate.peakBps = 5_000_000;
