@@ -65,3 +65,24 @@ export function stampArgs(a: ParsedArgs): StampCommandArgs {
     assumeYes: a.assumeYes,
   };
 }
+
+/** The only command that acts on a rung. Every other one parses `--rung` and would drop it. */
+const RUNG_COMMANDS = new Set(['stamp-buy']);
+
+/**
+ * Refuse `--rung` on a command that does not act on one, rather than parsing and silently dropping
+ * it.
+ *
+ * The rung is a global flag so it can be a flag rather than a leading positional, but only
+ * `stamp-buy` spends per rung. `pnpm stamp:setup -- --rung 1080p` was otherwise accepted and
+ * ignored, then bought on the single-node uploader with no prompt: the operator named one node and
+ * funded another. A flag the command cannot honour is a mistake to stop on, not to carry past.
+ */
+export function assertRungFlagSupported(a: ParsedArgs): void {
+  if (a.rung !== undefined && !RUNG_COMMANDS.has(a.command)) {
+    throw new Error(
+      `${a.command} does not take --rung. Only stamp-buy acts on a rung, because a postage batch ` +
+        'can only be spent by the node that bought it. Drop the flag, or run stamp-buy.',
+    );
+  }
+}

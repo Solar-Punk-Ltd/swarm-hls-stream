@@ -4,7 +4,7 @@ import { nodeWallets } from './commands/node-wallets.js';
 import { stampBuy } from './commands/stamp-buy.js';
 import { stampCheck } from './commands/stamp-check.js';
 import { stampSetup } from './commands/stamp-setup.js';
-import { parseArgs, ParsedArgs, stampArgs } from './lib/args.js';
+import { assertRungFlagSupported, parseArgs, ParsedArgs, stampArgs } from './lib/args.js';
 import { error } from './lib/output.js';
 
 const COMMANDS: Record<string, (args: ParsedArgs) => Promise<void>> = {
@@ -54,6 +54,11 @@ async function main(): Promise<void> {
     printUsage();
     process.exit(1);
   }
+
+  // A flag the command cannot act on is rejected here rather than parsed and dropped. See
+  // `assertRungFlagSupported`: `stamp:setup --rung` used to buy on a different node than the operator
+  // named, with no prompt.
+  assertRungFlagSupported(parsed);
 
   await handler(parsed);
 }
