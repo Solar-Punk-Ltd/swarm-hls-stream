@@ -90,6 +90,19 @@ describe('BitrateMeter', () => {
     assert.ok(peakBandwidth(sample, FALLBACK) >= averageBandwidth(sample, FALLBACK));
   });
 
+  it('never lets the average exceed the peak before the window has filled', () => {
+    // A keyframe-heavy opening segment measures above the encoder target, but the peak is still that
+    // target until PEAK_WINDOW_SEGMENTS have arrived. An unclamped average would then report
+    // AVERAGE-BANDWIDTH above BANDWIDTH, which RFC 8216 forbids.
+    const sample = meter([[5000, 1.5]]);
+
+    assert.equal(peakBandwidth(sample, FALLBACK), FALLBACK, 'one segment is too few to call a peak');
+    assert.ok(
+      averageBandwidth(sample, FALLBACK) <= peakBandwidth(sample, FALLBACK),
+      `average ${averageBandwidth(sample, FALLBACK)} exceeded peak ${peakBandwidth(sample, FALLBACK)}`,
+    );
+  });
+
   it('ignores empty and zero-length segments rather than dividing by them', () => {
     const sample = emptyBitrateSample();
     recordSegment(sample, 0, 1.5);

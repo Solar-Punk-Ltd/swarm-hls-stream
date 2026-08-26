@@ -62,5 +62,9 @@ export function peakBandwidth(sample: BitrateSample, fallbackBps: number): numbe
 /** HLS's AVERAGE-BANDWIDTH, on the same terms. */
 export function averageBandwidth(sample: BitrateSample, fallbackBps: number): number {
   const measured = sample.totalDuration > 0 ? (sample.totalBytes * 8) / sample.totalDuration : 0;
-  return Math.round(measured || fallbackBps);
+  // AVERAGE-BANDWIDTH must not exceed BANDWIDTH (RFC 8216). The peak is gated behind PEAK_WINDOW_SEGMENTS
+  // and falls back to the encoder target until then, while the average is measured from the first
+  // segment, so a keyframe-heavy opening segment can measure above that target. Clamp to the peak the
+  // same sample reports so the pair the master playlist carries can never invert.
+  return Math.min(Math.round(measured || fallbackBps), peakBandwidth(sample, fallbackBps));
 }
