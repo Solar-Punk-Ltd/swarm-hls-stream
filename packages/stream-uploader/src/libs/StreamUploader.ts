@@ -369,6 +369,7 @@ export class StreamUploader {
 
     if (this.ladder) {
       await this.announceRendition({ index: this.socIndex!, duration: this.manifestManager.getTotalDuration() });
+      this.metrics?.recordStreamFinalized();
       this.clearRecoveryEntry();
       return;
     }

@@ -1342,3 +1342,53 @@ describe('StreamUploader catalog failures on the segment path', () => {
     assert.notEqual(inner.driftBaselineBps, 1_000_000);
   });
 });
+
+describe('StreamUploader ladder finalize metrics', () => {
+  const LADDER = {
+    group: 'group-1',
+    rung: { name: '360p', width: 640, height: 360, configuredKbps: 800 },
+  };
+
+  function ladderUploader(metrics: ServiceMetrics): StreamUploader {
+    const recovery = {
+      save: () => {},
+      load: () => null,
+      remove: () => {},
+      listActive: () => [],
+    } as unknown as RecoveryStore;
+    const catalog = {
+      addStream: async () => {},
+      upsertRendition: async () => {},
+    } as unknown as StreamCatalog;
+
+    return new StreamUploader({
+      bee: makeBee({}),
+      streamCatalog: catalog,
+      recoveryStore: recovery,
+      streamKey: TEST_STREAM_KEY,
+      stamp: 'stamp',
+      redundancyLevel: 1,
+      streamId: 'stream-test',
+      streamTopic: 'topic-test',
+      mediatype: MEDIA_TYPE_VIDEO,
+      ladder: LADDER,
+      metrics,
+    });
+  }
+
+  it('counts a finalized ABR broadcast in streams_finalized_total', async () => {
+    let finalized = 0;
+    const metrics = new ServiceMetrics();
+    metrics.recordStreamFinalized = () => {
+      finalized += 1;
+    };
+
+    const uploader = ladderUploader(metrics);
+    uploader.handleSegment(0, 2, Buffer.from('seg0'));
+    await drain(uploader);
+
+    await uploader.notifyStop();
+
+    assert.equal(finalized, 1, 'the ladder finalize path never counted the recording it published');
+  });
+});
