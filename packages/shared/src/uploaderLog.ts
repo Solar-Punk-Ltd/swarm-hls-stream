@@ -94,3 +94,35 @@ export function rungAnnouncedPattern(flags = ''): RegExp {
     flags,
   );
 }
+
+const JSON_SLOT = 'JSONSLOT';
+
+/**
+ * Written once when a single-rendition stream's catalog entry flips to VOD. Byte-identical to the
+ * line the uploader has always written; the JSON payload is the entry as published.
+ */
+export function updatingStreamToVod(entryJson: string): string {
+  return `Updating stream in list to VOD: ${entryJson}`;
+}
+
+/** {@link updatingStreamToVod} as a matcher, the entry JSON as capture group 1. */
+export function updatingStreamToVodPattern(flags = ''): RegExp {
+  const escaped = updatingStreamToVod(JSON_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(JSON_SLOT, '(.*)'), flags);
+}
+
+/**
+ * Written once when a ladder's catalog entry flips to VOD, which happens only when its last live
+ * rung finalizes. Until this line existed the flip was visible nowhere but the catalog feed: an
+ * operator could not grep for when a ladder ended, and the harness's clean-stop scenario waited on
+ * the single-rendition line forever.
+ */
+export function ladderFinalized(ladder: string): string {
+  return `Ladder ${ladder} finalized to VOD`;
+}
+
+/** {@link ladderFinalized} as a matcher, the ladder group as capture group 1. */
+export function ladderFinalizedPattern(flags = ''): RegExp {
+  const escaped = ladderFinalized(LADDER_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(LADDER_SLOT, '(\\S+)'), flags);
+}

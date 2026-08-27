@@ -4,7 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { announcedLiveTopics, parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { waitFor } from '../../src/harness/wait.js';
@@ -72,7 +72,7 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
 
   it('gives the reconnecting session its own recording and leaves its recovery entry alone', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const vodCommits = async (): Promise<number> => (await log()).match(/Updating stream in list to VOD/g)?.length ?? 0;
+    const vodCommits = async (): Promise<number> => vodFinalizeCount(await log());
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,

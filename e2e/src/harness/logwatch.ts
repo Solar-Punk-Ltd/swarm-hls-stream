@@ -20,7 +20,13 @@
  * failure is another silent empty result rather than an error.
  */
 
-import { publishingRenditionPattern, rungAnnouncedPattern, segmentUploadedPattern } from '@swarm-hls-stream/shared';
+import {
+  ladderFinalizedPattern,
+  publishingRenditionPattern,
+  rungAnnouncedPattern,
+  segmentUploadedPattern,
+  updatingStreamToVodPattern,
+} from '@swarm-hls-stream/shared';
 
 export interface UploaderEvents {
   uploadedSegments: number[];
@@ -293,6 +299,18 @@ export function segmentUploads(text: string): SegmentUpload[] {
     streamId: match[2],
     index: Number(match[1]),
   }));
+}
+
+/**
+ * How many broadcasts have finalized to VOD, whichever shape the deployment publishes: the
+ * single-rendition catalog update, or the ladder flip. A ladder counts once, not once per rung.
+ */
+export function vodFinalizeCount(text: string): number {
+  const messages = messageText(text);
+  return (
+    [...messages.matchAll(updatingStreamToVodPattern('g'))].length +
+    [...messages.matchAll(ladderFinalizedPattern('g'))].length
+  );
 }
 
 /** One rung-announce line: the only place a session's topic is visible next to its ladder. */

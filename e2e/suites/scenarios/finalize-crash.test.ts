@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { announcedLiveTopics, parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
@@ -79,7 +79,7 @@ describe('H — killed inside finalize: one recording, and the catalog points at
 
   it('does not publish a second recording after a crash mid-finalize', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const vodCommits = (text: string): number => text.match(/Updating stream in list to VOD/g)?.length ?? 0;
+    const vodCommits = (text: string): number => vodFinalizeCount(text);
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,

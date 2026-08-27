@@ -2,12 +2,16 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  ladderFinalized,
+  ladderFinalizedPattern,
   publishingRendition,
   publishingRenditionPattern,
   rungAnnounced,
   rungAnnouncedPattern,
   segmentUploaded,
   segmentUploadedPattern,
+  updatingStreamToVod,
+  updatingStreamToVodPattern,
 } from '../src/uploaderLog.js';
 
 /**
@@ -129,5 +133,33 @@ describe('the rung announce message', () => {
   it('does not match an unpublish or a mere mention of a rung', () => {
     assert.equal(rungAnnouncedPattern().test('Rung unpublished: live/stream_720p'), false);
     assert.equal(rungAnnouncedPattern().test('live/stream_720p is rung 720p of ladder g-1'), false);
+  });
+});
+
+describe('the VOD finalize messages', () => {
+  it('round-trips the single-rendition entry through the derived pattern, byte-identical to the deployed line', () => {
+    const json = '{"topic":"t-1","state":"vod"}';
+
+    const found = updatingStreamToVod(json).match(updatingStreamToVodPattern());
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[0].startsWith('Updating stream in list to VOD: '), true);
+    assert.equal(found[1], json);
+  });
+
+  /**
+   * A ladder flips to VOD only when its last live rung finalizes, and until this line existed the
+   * flip was visible nowhere but the catalog feed: an operator could not grep for when a ladder
+   * ended, and the clean-stop scenario waited on the single-rendition line forever (2026-08-27).
+   */
+  it('round-trips the ladder flip through the derived pattern', () => {
+    const found = ladderFinalized('group-9').match(ladderFinalizedPattern());
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[1], 'group-9');
+  });
+
+  it('does not read a live ladder upsert as a finalize', () => {
+    assert.equal(ladderFinalizedPattern().test('Publishing rendition 720p of ladder group-9'), false);
   });
 });

@@ -1,8 +1,20 @@
-import { publishingRendition, rungAnnounced, segmentUploaded } from '@swarm-hls-stream/shared';
+import {
+  ladderFinalized,
+  publishingRendition,
+  rungAnnounced,
+  segmentUploaded,
+  updatingStreamToVod,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { announcedRungs, ladderRungs, publishedRenditions, segmentUploads } from '../src/harness/logwatch.js';
+import {
+  announcedRungs,
+  ladderRungs,
+  publishedRenditions,
+  segmentUploads,
+  vodFinalizeCount,
+} from '../src/harness/logwatch.js';
 
 /**
  * The ladder half of the log parsers, which arrived with the ABR merge and had nothing reading it.
@@ -164,5 +176,26 @@ describe('segmentUploads', () => {
    */
   it('reads nothing from the pre-ladder line shape', () => {
     assert.deepEqual(segmentUploads(textLine('Segment 5 uploaded: bzz://a1b2c3')), []);
+  });
+});
+
+describe('vodFinalizeCount', () => {
+  it('counts a single-rendition finalize and a ladder flip as one each, in either format', () => {
+    const log = [
+      textLine(updatingStreamToVod('{"topic":"t","state":"vod"}')),
+      jsonLine(ladderFinalized('group-3')),
+    ].join('\n');
+
+    assert.equal(vodFinalizeCount(log), 2);
+  });
+
+  it('counts a ladder once, not once per rung publish', () => {
+    const log = [
+      textLine(publishingRendition('360p', 'g1')),
+      textLine(publishingRendition('720p', 'g1')),
+      textLine(ladderFinalized('g1')),
+    ].join('\n');
+
+    assert.equal(vodFinalizeCount(log), 1);
   });
 });

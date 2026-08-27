@@ -1,4 +1,5 @@
 import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
+import { ladderFinalized } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
@@ -239,7 +240,14 @@ export class StreamCatalog {
   public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<void> {
     return this.queue.add(() =>
       this.writeFeed(async (previous) => {
+        const wasVod =
+          previous.find((e) => e.owner === identity.owner && e.group === identity.group)?.state === STREAM_STATUS_VOD;
         const entry = buildLadderEntry(identity, previous, rendition);
+        if (entry.state === STREAM_STATUS_VOD && !wasVod) {
+          // The one externally visible moment a ladder ends. Everything else about the flip lives in
+          // the catalog feed, which neither an operator's grep nor the harness can wait on cheaply.
+          this.logger.log(ladderFinalized(identity.group));
+        }
         const published = await this.masterWriter?.publish(identity.group, entry.renditions ?? []);
 
         return [

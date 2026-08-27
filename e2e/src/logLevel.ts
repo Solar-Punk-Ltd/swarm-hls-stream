@@ -69,6 +69,18 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy: 'service/happy-path, which asserts the live manifest keeps advancing',
   },
   {
+    what: 'single-rendition VOD finalizes ("Updating stream in list to VOD")',
+    level: 'log',
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'updatingStreamToVod(JSON.stringify(entry))' },
+    neededBy: 'every scenario that waits for a clean stop or a drain to finalize',
+  },
+  {
+    what: 'ladder VOD finalizes ("Ladder <group> finalized to VOD")',
+    level: 'log',
+    emittedBy: { file: 'libs/StreamCatalog.ts', fragment: 'ladderFinalized(identity.group)' },
+    neededBy: 'the same scenarios on an ABR deployment, where the single-rendition line never appears',
+  },
+  {
     what: 'catalog announcements ("Adding stream to list")',
     level: 'log',
     emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'Adding stream to list:' },

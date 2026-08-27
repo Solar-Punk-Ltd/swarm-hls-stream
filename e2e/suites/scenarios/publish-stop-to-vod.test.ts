@@ -4,7 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { parseUploaderLog } from '../../src/harness/logwatch.js';
+import { parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { waitFor } from '../../src/harness/wait.js';
 
@@ -52,7 +52,7 @@ describe('D — clean broadcaster stop: finalize as VOD', () => {
 
     await publisher.stop();
 
-    await waitFor(async () => /Updating stream in list to VOD/.test(await log()), {
+    await waitFor(async () => vodFinalizeCount(await log()) >= 1, {
       timeoutMs: VOD_WAIT_MS,
       intervalMs: 2_000,
       label: 'stream finalizes as a VOD after unpublish',
@@ -60,6 +60,6 @@ describe('D — clean broadcaster stop: finalize as VOD', () => {
 
     const finalLog = await log();
     assert.match(finalLog, engine.unpublishedMarker, `the ${engine.name} engine must report the stream ended`);
-    assert.match(finalLog, /Updating stream in list to VOD/, 'the uploader must finalize the VOD catalog entry');
+    assert.ok(vodFinalizeCount(finalLog) >= 1, 'the uploader must finalize the VOD catalog entry');
   });
 });

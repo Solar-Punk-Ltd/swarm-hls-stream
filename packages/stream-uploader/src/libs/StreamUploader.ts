@@ -1,5 +1,5 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
-import { publishingRendition, segmentUploaded } from '@swarm-hls-stream/shared';
+import { publishingRendition, segmentUploaded, updatingStreamToVod } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import {
@@ -385,7 +385,7 @@ export class StreamUploader {
       timestamp: Date.now(),
     };
 
-    this.logger.log(`Updating stream in list to VOD: ${JSON.stringify(entry)}`);
+    this.logger.log(updatingStreamToVod(JSON.stringify(entry)));
     await this.streamCatalog.addStream(entry);
 
     // Counted here rather than by the orchestrator because `notifyStop` is memoized, so this line
