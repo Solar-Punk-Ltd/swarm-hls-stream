@@ -1,4 +1,4 @@
-import { rungAnnounced } from '@swarm-hls-stream/shared';
+import { replacedSessionFinalized, rungAnnounced, streamStopped } from '@swarm-hls-stream/shared';
 import crypto from 'crypto';
 
 import {
@@ -465,7 +465,7 @@ export class StreamOrchestrator {
         this.metrics.recordStreamFailed();
         return;
       }
-      this.logger.info(`[StreamOrchestrator] Finalized the replaced session for ${streamId}`);
+      this.logger.info(`[StreamOrchestrator] ${replacedSessionFinalized(streamId)}`);
     } catch (error) {
       // A backstop rather than the drain's error path, which answers instead of throwing. Nothing
       // awaits this call, so an unexpected rejection here would be an unhandled one.
@@ -506,9 +506,7 @@ export class StreamOrchestrator {
       const group = this.groupFor(match.baseStreamId);
       ladder = { group, rung: match.rung };
       this.streamBases.set(streamId, match.baseStreamId);
-      this.logger.info(
-        `[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, group, streamTopic)}`,
-      );
+      this.logger.info(`[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, group, streamTopic)}`);
     }
 
     // Which node's postage batch pays for this rung. A stream with no rung, single-rendition or
@@ -1443,7 +1441,7 @@ export class StreamOrchestrator {
     this.recordStopOutcome(outcome);
     this.retireSession(streamId);
 
-    this.logger.info(`[StreamOrchestrator] Stopped stream: ${streamId}`);
+    this.logger.info(`[StreamOrchestrator] ${streamStopped(streamId)}`);
   }
 
   /**

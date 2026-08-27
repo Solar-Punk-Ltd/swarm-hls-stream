@@ -23,8 +23,10 @@
 import {
   ladderFinalizedPattern,
   publishingRenditionPattern,
+  replacedSessionFinalizedPattern,
   rungAnnouncedPattern,
   segmentUploadedPattern,
+  streamStoppedPattern,
   updatingStreamToVodPattern,
 } from '@swarm-hls-stream/shared';
 
@@ -299,6 +301,20 @@ export function segmentUploads(text: string): SegmentUpload[] {
     streamId: match[2],
     index: Number(match[1]),
   }));
+}
+
+/**
+ * Stream ids whose sessions ended successfully, through either of the two ways a session ends: the
+ * ordinary drain (`Stopped stream`), or the replacement path finalizing a session a reconnect
+ * overtook mid-drain (`Finalized the replaced session`). Which one fires per stream is a race the
+ * caller cannot control, so anything asserting "the old session ended" reads both.
+ */
+export function sessionEnds(text: string): string[] {
+  const messages = messageText(text);
+  return [
+    ...[...messages.matchAll(streamStoppedPattern('g'))].map((match) => match[1]),
+    ...[...messages.matchAll(replacedSessionFinalizedPattern('g'))].map((match) => match[1]),
+  ];
 }
 
 /**

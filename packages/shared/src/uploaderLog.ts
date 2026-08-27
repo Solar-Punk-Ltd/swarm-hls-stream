@@ -126,3 +126,33 @@ export function ladderFinalizedPattern(flags = ''): RegExp {
   const escaped = ladderFinalized(LADDER_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(escaped.replace(LADDER_SLOT, '(\\S+)'), flags);
 }
+
+/**
+ * Written once when a session ends through the ordinary drain and nothing replaced it mid-drain.
+ * Byte-identical to the line the orchestrator has always written.
+ */
+export function streamStopped(streamId: string): string {
+  return `Stopped stream: ${streamId}`;
+}
+
+/** {@link streamStopped} as a matcher, the stream id as capture group 1. */
+export function streamStoppedPattern(flags = ''): RegExp {
+  const escaped = streamStopped(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
+}
+
+/**
+ * Written once when a session that was replaced mid-drain has had its recording finalized by the
+ * replacement path. Byte-identical to the line the orchestrator has always written. Together with
+ * {@link streamStopped} these are the two ways a session ends successfully, whichever the
+ * drain-versus-reconnect race produced.
+ */
+export function replacedSessionFinalized(streamId: string): string {
+  return `Finalized the replaced session for ${streamId}`;
+}
+
+/** {@link replacedSessionFinalized} as a matcher, the stream id as capture group 1. */
+export function replacedSessionFinalizedPattern(flags = ''): RegExp {
+  const escaped = replacedSessionFinalized(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
+}

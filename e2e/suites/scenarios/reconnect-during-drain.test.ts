@@ -4,7 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveTopics, parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
+import { announcedSessionTopics, parseUploaderLog, sessionEnds, vodFinalizeCount } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { waitFor } from '../../src/harness/wait.js';
@@ -79,8 +79,9 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
       intervalMs: 2_000,
       label: `warmup: ${WARMUP_SEGMENTS} segments before the disconnect`,
     });
-    const firstTopic = announcedLiveTopics(await log()).at(-1);
-    assert.ok(firstTopic, 'the first session must have announced a topic before it disconnects');
+    // A set, because a ladder announces one topic per rung; any topic outside it is a new session.
+    const firstTopics = new Set(announcedSessionTopics(await log()));
+    assert.ok(firstTopics.size > 0, 'the first session must have announced a topic before it disconnects');
 
     await first.stop();
 
@@ -95,25 +96,29 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
 
     // A second topic is the proof the replacement was registered as its own session rather than
     // folded into the one that is draining.
-    await waitFor(
-      async () => {
-        const topics = announcedLiveTopics(await log());
-        return topics.some((topic) => topic !== firstTopic);
-      },
-      {
-        timeoutMs: RECONNECT_WAIT_MS,
-        intervalMs: 2_000,
-        label: 'the reconnecting broadcaster is registered as a new session with its own topic',
-      },
-    );
-    const secondTopic = announcedLiveTopics(await log()).find((topic) => topic !== firstTopic);
+    await waitFor(async () => announcedSessionTopics(await log()).some((topic) => !firstTopics.has(topic)), {
+      timeoutMs: RECONNECT_WAIT_MS,
+      intervalMs: 2_000,
+      label: 'the reconnecting broadcaster is registered as a new session with its own topic',
+    });
+    const secondTopic = announcedSessionTopics(await log()).find((topic) => !firstTopics.has(topic));
     assert.ok(secondTopic, 'the reconnecting session must announce a topic of its own');
 
-    // The outgoing session finalizes into its own recording, and the incoming one must not go with it.
-    await waitFor(async () => (await vodCommits()) >= 1, {
+    // The outgoing session finalizes into its own recording, and the incoming one must not go with
+    // it. The evidence differs by mode: a single rendition flips its own catalog entry to VOD, while
+    // a ladder's entry is shared with the live replacement and deliberately never flips mid-group,
+    // so the outgoing rungs are seen ending session by session, whichever way each one's
+    // drain-versus-reconnect race went.
+    const outgoingFinalized = async (): Promise<boolean> => {
+      if (!cfg.abrEnabled) {
+        return (await vodCommits()) >= 1;
+      }
+      return new Set(sessionEnds(await log())).size >= cfg.abrRungs.length;
+    };
+    await waitFor(outgoingFinalized, {
       timeoutMs: VOD_WAIT_MS,
       intervalMs: 2_000,
-      label: 'the drained session publishes its own recording',
+      label: 'the drained session finalizes into its own recording',
     });
 
     const health = await uploaderHealth(host, cfg);
@@ -140,7 +145,10 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
 
     await second.stop();
     second = undefined;
-    await waitFor(async () => (await vodCommits()) >= 2, {
+    // Single rendition: a second catalog flip. Ladder: the shared entry flips exactly once, when the
+    // reconnected session's last rung drains with nothing replacing it, so one flip is the proof.
+    const expectedFlips = cfg.abrEnabled ? 1 : 2;
+    await waitFor(async () => (await vodCommits()) >= expectedFlips, {
       timeoutMs: VOD_WAIT_MS,
       intervalMs: 2_000,
       label: 'the reconnected session finalizes into a second recording of its own',

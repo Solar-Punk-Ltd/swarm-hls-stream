@@ -14,6 +14,7 @@ import {
   ladderRungs,
   publishedRenditions,
   segmentUploads,
+  sessionEnds,
   vodFinalizeCount,
 } from '../src/harness/logwatch.js';
 
@@ -217,5 +218,19 @@ describe('announcedSessionTopics', () => {
     ].join('\n');
 
     assert.deepEqual(announcedSessionTopics(log), ['t-720', 't-360']);
+  });
+});
+
+describe('sessionEnds', () => {
+  it('reads both ways a session ends, with their stream ids', () => {
+    const log = [
+      textLine('[StreamOrchestrator] Stopped stream: live/stream_720p'),
+      textLine('[StreamOrchestrator] Finalized the replaced session for live/stream_360p'),
+      textLine(
+        '[StreamOrchestrator] The session replaced under live/stream_480p was not finalized, so its broadcast has no VOD: x',
+      ),
+    ].join('\n');
+
+    assert.deepEqual(sessionEnds(log).sort(), ['live/stream_360p', 'live/stream_720p']);
   });
 });

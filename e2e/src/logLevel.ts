@@ -81,6 +81,18 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy: 'the same scenarios on an ABR deployment, where the single-rendition line never appears',
   },
   {
+    what: 'ordinary session ends ("Stopped stream")',
+    level: 'info',
+    emittedBy: { file: 'libs/StreamOrchestrator.ts', fragment: 'streamStopped(streamId)' },
+    neededBy: 'scenario K, which must see the outgoing session end whichever way the race went',
+  },
+  {
+    what: 'replaced-session finalizes ("Finalized the replaced session")',
+    level: 'info',
+    emittedBy: { file: 'libs/StreamOrchestrator.ts', fragment: 'replacedSessionFinalized(streamId)' },
+    neededBy: 'scenario K, for the sessions a reconnect overtook mid-drain',
+  },
+  {
     what: 'catalog announcements ("Adding stream to list")',
     level: 'log',
     emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'Adding stream to list:' },

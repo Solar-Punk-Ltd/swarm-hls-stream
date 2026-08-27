@@ -6,10 +6,14 @@ import {
   ladderFinalizedPattern,
   publishingRendition,
   publishingRenditionPattern,
+  replacedSessionFinalized,
+  replacedSessionFinalizedPattern,
   rungAnnounced,
   rungAnnouncedPattern,
   segmentUploaded,
   segmentUploadedPattern,
+  streamStopped,
+  streamStoppedPattern,
   updatingStreamToVod,
   updatingStreamToVodPattern,
 } from '../src/uploaderLog.js';
@@ -161,5 +165,23 @@ describe('the VOD finalize messages', () => {
 
   it('does not read a live ladder upsert as a finalize', () => {
     assert.equal(ladderFinalizedPattern().test('Publishing rendition 720p of ladder group-9'), false);
+  });
+});
+
+describe('the session-end messages', () => {
+  it('round-trip their stream ids and match the exact deployed lines', () => {
+    assert.equal(streamStoppedPattern().exec(streamStopped('live/stream_720p'))?.[1], 'live/stream_720p');
+    assert.equal(
+      replacedSessionFinalizedPattern().exec('Finalized the replaced session for live/stream_360p')?.[1],
+      'live/stream_360p',
+    );
+    assert.equal(streamStoppedPattern().exec('[StreamOrchestrator] Stopped stream: live/stream')?.[1], 'live/stream');
+  });
+
+  it('does not read a failed replacement finalize as a success', () => {
+    assert.equal(
+      replacedSessionFinalizedPattern().test('The session replaced under live/stream_720p was not finalized'),
+      false,
+    );
   });
 });
