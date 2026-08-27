@@ -338,7 +338,10 @@ describe('a crash sitting labels every arm and refuses before it publishes', () 
 
     const snapshots = metricsCalls.filter((call) => call.startsWith('snapshot'));
     const labels = snapshots.map((call) => call.split(' ').pop());
-    assert.ok(labels.includes('sitting-before') && labels.includes('sitting-after'), `sitting bracket missing: ${labels}`);
+    assert.ok(
+      labels.includes('sitting-before') && labels.includes('sitting-after'),
+      `sitting bracket missing: ${labels}`,
+    );
     for (const arm of ['arm1-uploader-crash-weeb3', 'arm2-engine-restart-weeb3']) {
       assert.ok(labels.includes(`${arm}-before`), `${arm} has no before snapshot`);
       assert.ok(labels.includes(`${arm}-after`), `${arm} has no after snapshot`);
