@@ -1,6 +1,7 @@
 import { Bee } from '@ethersphere/bee-js';
 
 import { BeePublisher, BeePublisherPool, SINGLE_PUBLISHER } from '../../src/libs/BeePublisherPool.js';
+import { Clock, systemClock } from '../../src/libs/Clock.js';
 import { RecoveryStore } from '../../src/libs/RecoveryStore.js';
 import { MetricsSnapshot } from '../../src/libs/ServiceMetrics.js';
 import { StreamCatalog } from '../../src/libs/StreamCatalog.js';
@@ -212,6 +213,22 @@ function makeFakePublishers(bee: Bee): BeePublisherPool {
   return { coordinator: () => publisher, forRung: () => publisher } as unknown as BeePublisherPool;
 }
 
+/**
+ * Real time, and no timer of it keeps the test process alive.
+ *
+ * Spawning an uploader arms a sixty second stall reaper, and a test that asserts on the spawn and then
+ * ends has nothing to cancel it with, so on the plain system clock that one timer held the test
+ * runner's child process open for a minute after the file had finished. `--test-force-exit` used to
+ * hide that by killing the process, and killing it dropped whole late-registering files uncounted with
+ * exit 0. Nothing here depends on a real timer firing: every test that exercises a timeout injects the
+ * `FakeClock` from `./fakeClock.js` through `config.clock` and steps it, and the spread below leaves
+ * that override winning.
+ */
+const detachedClock: Clock = {
+  now: () => systemClock.now(),
+  setTimer: (handler, delayMs) => systemClock.setTimer(handler, delayMs, { unref: true }),
+};
+
 export function makeTestOrchestrator(
   config: Partial<StreamOrchestratorConfig> = {},
   uploads: FakeUploads = {},
@@ -219,6 +236,7 @@ export function makeTestOrchestrator(
   catalog: StreamCatalog = makeFakeCatalog(),
 ): StreamOrchestrator {
   return new StreamOrchestrator(makeFakePublishers(makeFakeBee(uploads)), catalog, recoveryStore, {
+    clock: detachedClock,
     streamKey: TEST_STREAM_KEY,
     maxQueueSize: 100,
     recoveryTimeout: 60_000,

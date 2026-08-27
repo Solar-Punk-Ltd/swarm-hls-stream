@@ -78,9 +78,53 @@ function makeOrchestratorStub(overrides: Record<string, unknown> = {}): Orchestr
   } as unknown as OrchestratorArg;
 }
 
+/**
+ * Every puller a test builds, so the file can stop them whether or not each test remembered to.
+ *
+ * ⛔ **Not tidiness. A puller left running holds the whole test process open.** Each pass ends by
+ * arming a `setTimeout` for the next one, and most tests here set a 1,000,000ms interval precisely so
+ * that timer never fires, which makes it a sixteen minute hold rather than a short one. Five of the
+ * thirty pullers built here were never stopped, and node:test runs each file in its own child process,
+ * so that child sat there after its last assertion. `--test-force-exit` was added to the package script
+ * to paper over it, and force-exit then killed late-registering FILES uncounted, with exit 0: five
+ * consecutive runs reported 1017, 987, 980, 996 and 1005 tests out of 1025, a different subset each
+ * time. The hook below is what lets that flag stay deleted.
+ *
+ * Enforced by construction rather than by review, because "remember to call stop()" is exactly the
+ * discipline that failed five times out of thirty here.
+ */
+const builtPullers: TrackedPuller[] = [];
+
+class TrackedPuller extends OmeHlsPuller {
+  private stopWasCalled = false;
+
+  constructor(...args: ConstructorParameters<typeof OmeHlsPuller>) {
+    super(...args);
+    builtPullers.push(this);
+  }
+
+  public override stop(): void {
+    this.stopWasCalled = true;
+    super.stop();
+  }
+
+  /** Stops only what a test left running, so the ordinary case adds no second stop and no second log. */
+  public stopIfRunning(): void {
+    if (!this.stopWasCalled) {
+      this.stop();
+    }
+  }
+}
+
+afterEach(() => {
+  while (builtPullers.length > 0) {
+    builtPullers.pop()?.stopIfRunning();
+  }
+});
+
 function makePuller(handleSegment: () => SegmentResult): PullerInternals {
   const orchestrator = { handleSegment } as unknown as OrchestratorArg;
-  const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1000, orchestrator);
+  const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1000, orchestrator);
   return puller as unknown as PullerInternals;
 }
 
@@ -172,7 +216,7 @@ describe('OmeHlsPuller playlist resolution', () => {
     } as unknown as ConstructorParameters<typeof OmeHlsPuller>[5];
 
     // Huge interval so the puller's own scheduled ticks never fire — the test drives tick() by hand.
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -245,7 +289,7 @@ describe('OmeHlsPuller injected fetcher (S0.6)', () => {
 
     // A huge interval by default so the puller's own scheduled ticks never fire and the test drives
     // tick() itself. The timeout tests override it, because rescheduling is what they assert.
-    return new OmeHlsPuller(
+    return new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -490,7 +534,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       handleSegmentLoss: () => true,
     } as unknown as OrchestratorArg;
 
-    return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    return new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
     }) as unknown as PullerInternals;
   }
@@ -536,7 +580,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       String(input).endsWith('segment_1.ts')
         ? Promise.reject(new TypeError('fetch failed'))
         : Promise.resolve(okSegment())) as unknown as Fetcher;
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -570,7 +614,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       String(input).endsWith('segment_1.ts')
         ? Promise.reject(new TypeError('fetch failed'))
         : Promise.resolve(okSegment())) as unknown as Fetcher;
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -599,7 +643,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
 
     const record: LossRecorder = { delivered: [], lost: [] };
     const fetcher = (() => Promise.resolve(okSegment())) as unknown as Fetcher;
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -620,7 +664,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
     // A fetch started before the stop can answer after it, and by then the id may belong to a fresh
     // session whose first segment would carry a discontinuity that never happened.
     const record: LossRecorder = { delivered: [], lost: [] };
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -665,7 +709,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       String(input).endsWith('segment_1.ts')
         ? Promise.reject(new TypeError('fetch failed'))
         : Promise.resolve(okSegment())) as unknown as Fetcher;
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
     }) as unknown as PullerInternals;
 
@@ -687,7 +731,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       Promise.resolve(
         warmingUp && String(input).endsWith('.ts') ? { ok: false, status: 404 } : okSegment(),
       )) as unknown as Fetcher;
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -716,7 +760,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
     const record: LossRecorder = { delivered: [], lost: [] };
     const LATE_JOIN = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:400', '#EXTINF:2.0,', 'segment_400.ts'].join('\n');
     const fetcher = (() => Promise.resolve(okSegment())) as unknown as Fetcher;
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -746,7 +790,7 @@ describe('OmeHlsPuller segment loss (OBS-11)', () => {
       failing && String(input).endsWith('segment_1.ts')
         ? Promise.reject(new TypeError('fetch failed'))
         : Promise.resolve(okSegment())) as unknown as Fetcher;
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
     }) as unknown as PullerInternals;
 
@@ -789,7 +833,7 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
       handleSegment: () => ({ accepted: true }),
       handleSegmentLoss: () => true,
     } as unknown as OrchestratorArg;
-    return new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    return new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
     }) as unknown as { tick(): Promise<void>; stop(): void };
   }
@@ -836,7 +880,7 @@ describe('OmeHlsPuller abort window coverage (TEST-15)', () => {
     const failing = (() =>
       Promise.resolve({ ok: false, status: 500, text: async () => '' } as unknown as Response)) as unknown as Fetcher;
     const orchestrator = makeOrchestratorStub();
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 5, orchestrator, {
       fetcher: failing,
     }) as unknown as { start(): void; stop(): void };
 
@@ -929,7 +973,7 @@ describe('OmeHlsPuller origin discontinuity (CON-9)', () => {
       },
     });
 
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher: (async (input: RequestInfo | URL) =>
         String(input).endsWith('.ts')
           ? ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response)
@@ -983,7 +1027,7 @@ describe('OmeHlsPuller keepalive through an origin outage (CON-10)', () => {
       },
     } as unknown as OrchestratorArg;
 
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
       fetcher: refused,
       haltAfterNotFoundMs: 60_000,
     }) as unknown as StartablePuller;
@@ -1019,7 +1063,7 @@ describe('OmeHlsPuller keepalive through an origin outage (CON-10)', () => {
       keepAlive: () => true,
     } as unknown as OrchestratorArg;
 
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
       fetcher,
       haltAfterNotFoundMs: 0,
       onHalt: () => halts.push('halted'),
@@ -1049,7 +1093,7 @@ describe('OmeHlsPuller keepalive through an origin outage (CON-10)', () => {
 
     // Far above anything these two ticks span, so the puller is still retrying rather than halting.
     // The halt is the other half of the contract: it ends the deferral by stopping the stream itself.
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
       haltAfterNotFoundMs: 60_000,
     }) as unknown as TickablePuller;
@@ -1099,7 +1143,7 @@ describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
       keepAlive: () => false,
     } as unknown as OrchestratorArg;
 
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
     }) as unknown as StoppablePuller;
 
@@ -1132,7 +1176,7 @@ describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
       keepAlive: () => false,
     } as unknown as OrchestratorArg;
 
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
       haltAfterNotFoundMs: 0,
       onHalt: () => halts.push('halted'),
@@ -1160,7 +1204,7 @@ describe('OmeHlsPuller stopped mid-poll (CON-16)', () => {
       keepAlive: () => false,
     } as unknown as OrchestratorArg;
 
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
       haltAfterNotFoundMs: 0,
       onHalt: () => halts.push('halted'),
@@ -1226,7 +1270,7 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
       return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
     }) as unknown as Fetcher;
 
-    const puller = new OmeHlsPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
       staleBefore: FLOOR,
       ...options,
@@ -1306,7 +1350,7 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
       }
       return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
     }) as unknown as Fetcher;
-    const puller = new OmeHlsPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
       staleBefore: FLOOR,
       abandonFloorAfterMs: 0,
@@ -1357,7 +1401,7 @@ describe('OmeHlsPuller handover floor (CON-20)', () => {
       }
       return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
     }) as unknown as Fetcher;
-    const puller = new OmeHlsPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
+    const puller = new TrackedPuller('app/stream', 'app', 'stream', 'http://ome/hls', 1_000_000, orchestrator, {
       fetcher,
       staleBefore: FLOOR,
       abandonFloorAfterMs: 0,
@@ -1513,7 +1557,7 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
   it('halts on a proxy answering 502, not only on a 404', async () => {
     const { halts } = makeCounters();
     const fetcher = (async () => ({ ok: false, status: 502, text: async () => '' } as unknown as Response)) as Fetcher;
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, makeOrchestratorStub(), {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, makeOrchestratorStub(), {
       fetcher,
       haltAfterNotFoundMs: 0,
       onHalt: () => halts.push('halted'),
@@ -1533,7 +1577,7 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
     const refused = (async () => {
       throw Object.assign(new Error('connect ECONNREFUSED 172.18.0.4:8081'), { code: 'ECONNREFUSED' });
     }) as unknown as Fetcher;
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, makeOrchestratorStub(), {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, makeOrchestratorStub(), {
       fetcher: refused,
       haltAfterNotFoundMs: 0,
       onHalt: () => halts.push('halted'),
@@ -1578,7 +1622,7 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
         return true;
       },
     });
-    const puller = new OmeHlsPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
+    const puller = new TrackedPuller('stream-test', 'app', 'stream', 'http://ome/hls', 1, orchestrator, {
       fetcher,
       // Already elapsed by the time the second poll rejects, so the halt is armed. A window that
       // could not fire would prove only that this test never reached the branch.
@@ -1625,7 +1669,7 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
     const armed: ArmedPoll[] = [];
     const fetcher = (async () => ({ ok: false, status: 404, text: async () => '' } as unknown as Response)) as Fetcher;
 
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -1664,7 +1708,7 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
     const fetcher = (async () => ({ ok: false, status: 404, text: async () => '' } as unknown as Response)) as Fetcher;
 
     const startedAt = Date.now();
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',
@@ -1729,7 +1773,7 @@ describe('OmeHlsPuller unusable origin (OBS-6, OBS-18)', () => {
     }) as unknown as Fetcher;
 
     const orchestrator = makeOrchestratorStub({ keepAlive: () => true });
-    const puller = new OmeHlsPuller(
+    const puller = new TrackedPuller(
       'stream-test',
       'app',
       'stream',

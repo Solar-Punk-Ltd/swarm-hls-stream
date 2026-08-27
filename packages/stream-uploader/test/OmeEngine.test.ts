@@ -21,6 +21,40 @@ import {
 import { listenOnLoopback } from './helpers/loopbackServer.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
+/**
+ * Every engine a test builds, so its pull loops can be stopped whether or not the test ended a stream.
+ *
+ * ⛔ **A pulling engine holds the whole test process open, and no test could reach in to stop it.** The
+ * pullers live in a map closed over inside `createOmeEngine`, each one holding a `setTimeout` for its
+ * next pass, and the only things that stop one are an `on_unpublish` for that stream or a replacing
+ * announce. A test that opens a stream and asserts on the first pass leaves the loop armed for a poll
+ * interval, or for the sixty second retry window if the origin went quiet. node:test runs each file in
+ * its own child process, so that child sat there long after its last assertion, and
+ * `--test-force-exit` was added to the package script to paper over it. Force-exit then killed
+ * late-registering FILES uncounted with exit 0: five consecutive runs reported 1017, 987, 980, 996 and
+ * 1005 tests out of 1025, a different subset each time.
+ *
+ * {@link EnginePlugin.stopIngest} was added for this, and it is the reason that flag can stay deleted.
+ */
+const builtEngines: EnginePlugin[] = [];
+
+function tracked(engine: EnginePlugin): EnginePlugin {
+  builtEngines.push(engine);
+  return engine;
+}
+
+const trackedOmeEngine = (...args: Parameters<typeof createOmeEngine>): EnginePlugin =>
+  tracked(createOmeEngine(...args));
+
+const trackedOmeEngineFromEnv = (...args: Parameters<typeof createOmeEngineFromEnv>): EnginePlugin =>
+  tracked(createOmeEngineFromEnv(...args));
+
+afterEach(() => {
+  while (builtEngines.length > 0) {
+    builtEngines.pop()?.stopIngest?.();
+  }
+});
+
 /** The catalog entry shape these tests read back, narrowed from what StreamCatalog accepts. */
 interface VodEntry {
   state: string;
@@ -128,7 +162,7 @@ describe('createOmeEngine resumeRecoveredStream (F: OME crash recovery)', () => 
   });
 
   it('restarts the HLS puller for a recovered stream (polls its OME playlist)', async () => {
-    const engine = createOmeEngine('http://ome:8081', 60_000);
+    const engine = trackedOmeEngine('http://ome:8081', 60_000);
     const orchestrator = makeFakeOrchestrator();
 
     const { resumeRecoveredStream } = engine;
@@ -192,7 +226,7 @@ describe('createOmeEngine resumeRecoveredStream over a stale puller (CON-5)', ()
       },
     });
 
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher });
 
     await postAdmission(engine, orchestrator, 'opening', SECRET, STREAM_URL);
     await waitFor(() => delivered.length === SEGMENTS.length, DELIVERY_TIMEOUT_MS);
@@ -238,14 +272,14 @@ describe('createOmeEngineFromEnv validation (OBS-12)', () => {
     it(`refuses to build an engine with OME_FETCH_TIMEOUT_MS=${badWindow}`, () => {
       process.env.OME_FETCH_TIMEOUT_MS = badWindow;
 
-      assert.throws(() => createOmeEngineFromEnv(), { message: /OME_FETCH_TIMEOUT_MS/ });
+      assert.throws(() => trackedOmeEngineFromEnv(), { message: /OME_FETCH_TIMEOUT_MS/ });
     });
   }
 
   it('builds an engine when the window is a usable integer', () => {
     process.env.OME_FETCH_TIMEOUT_MS = '2500';
 
-    assert.equal(createOmeEngineFromEnv().name, 'ome');
+    assert.equal(trackedOmeEngineFromEnv().name, 'ome');
   });
 });
 
@@ -315,7 +349,7 @@ describe('createOmeEngineFromEnv fetch timeout plumbing (TEST-15)', () => {
       });
     }) as unknown as Fetcher;
 
-    const engine = createOmeEngineFromEnv({ fetcher });
+    const engine = trackedOmeEngineFromEnv({ fetcher });
     const orchestrator = makeFakeOrchestrator();
     try {
       await postAdmission(engine, orchestrator, 'opening', PLUMBING_SECRET, STREAM_URL);
@@ -421,7 +455,7 @@ describe('createOmeEngine origin restart (CON-16)', () => {
   it('delivers the new session after the origin restarts its media sequence', async () => {
     const uploaded: string[] = [];
     const origin = makeOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: RESTART_SECRET,
       fetcher: origin.fetcher,
     });
@@ -478,7 +512,7 @@ describe('createOmeEngine origin restart (CON-16)', () => {
     const RESTARTED_HIGH = mediaPlaylist(['seg_9.ts', 'seg_10.ts', 'seg_11.ts', 'seg_12.ts'], 9);
     const published: VodEntry[] = [];
     const origin = makeOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: RESTART_SECRET,
       fetcher: origin.fetcher,
     });
@@ -527,7 +561,7 @@ describe('createOmeEngine origin restart (CON-16)', () => {
   // thing that shows it.
   it('leaves nothing polling the origin once the replaced stream closes', async () => {
     const origin = makeOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: RESTART_SECRET,
       fetcher: origin.fetcher,
     });
@@ -659,7 +693,7 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
       omePlaylist(RECONNECTED_SEGMENTS, 0, reconnectedStartedAt, RECONNECTED_SEGMENT_SECONDS),
     );
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: SECRET,
       fetcher: origin.fetcher,
     });
@@ -773,7 +807,7 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
       undatedPlaylist(RECONNECTED_SEGMENTS, RECONNECTED_SEGMENT_SECONDS),
     );
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: SECRET,
       fetcher: origin.fetcher,
     });
@@ -847,7 +881,7 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
       omePlaylist(OUTGOING_SEGMENTS, 0, outgoingStartedAt, OUTGOING_SEGMENT_SECONDS),
       omePlaylist(RECONNECTED_SEGMENTS, 0, reconnectedStartedAt, RECONNECTED_SEGMENT_SECONDS),
     );
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: SECRET,
       fetcher: origin.fetcher,
     });
@@ -899,7 +933,7 @@ describe('createOmeEngine reconnect inside the origin idle window (CON-20)', () 
   it('says so when the origin gives it nothing to tell the two sessions apart', async () => {
     const undated = undatedPlaylist(OUTGOING_SEGMENTS, OUTGOING_SEGMENT_SECONDS);
     const origin = makeIdlingOrigin(undated, undated);
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: SECRET,
       fetcher: origin.fetcher,
     });
@@ -1004,7 +1038,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
 
   it('leaves the live session alone when a closing for the session it replaced arrives late', async () => {
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1045,7 +1079,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // The guard must not turn into a stream that never finalizes, which would be the worse failure:
     // a leaked puller and no VOD at all.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1068,7 +1102,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // registry has ever seen for that stream. Judging it foreign for want of anything to compare it
     // against leaves the recovered puller polling with nothing left that can stop it.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1090,7 +1124,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // session does send. Reaching that needs three admissions: only the third, carrying a socket that
     // does not match the stale one, can tell a cleared registry from an uncleared one.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1130,7 +1164,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     const ELSEWHERE = { address: '10.0.0.5', port: SAME_PORT };
 
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1155,7 +1189,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // running forever. Mutation found this: forcing sessionKey to always return a key survived the
     // suite, because in the no-identity test nothing was recorded either.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1176,7 +1210,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // future transport might omit it. Refusing to stop without evidence would leak the stream, so the
     // guard is strict only when it has an identity to be strict with.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1200,7 +1234,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
    */
   it('does not act on a closing twice when OME repeats one it has already been given', async () => {
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1244,7 +1278,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // of a stream already retired and is the trade the bound is worth. The window only has to outlive
     // the one in which a repeat can still arrive, which OME's 3000ms admission timeout bounds.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: SECRET,
       fetcher: origin.fetcher,
       closedSessionTtlMs: 0,
@@ -1287,7 +1321,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     global.Map = RecordingMap as unknown as MapConstructor;
     let engine: EnginePlugin;
     try {
-      engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+      engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
         admissionSecret: SECRET,
         fetcher: makePollCountingOrigin().fetcher,
         closedSessionTtlMs: 0,
@@ -1319,7 +1353,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // never be closed again. The session opening here is a different one on a different socket, which
     // is the ordinary reconnect.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1346,7 +1380,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
     // so this is a contract on the method rather than a reachable interleaving, and it is here because
     // the alternative is an argument about call ordering that the next change is free to invalidate.
     const origin = makePollCountingOrigin();
-    const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+    const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
     const published: VodEntry[] = [];
     const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1385,7 +1419,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
 
     it('leaves the live session alone when the closing was issued before that session opened', async () => {
       const origin = makePollCountingOrigin();
-      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
       const published: VodEntry[] = [];
       const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1419,7 +1453,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       // is the live session's own, and refusing it would leak the puller and publish no VOD, which is
       // worse than what the guard protects against.
       const origin = makePollCountingOrigin();
-      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
       const published: VodEntry[] = [];
       const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1441,7 +1475,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       // recorded time on its own enough to refuse, so every closing from a transport that omits the
       // field would be dropped and its puller left polling with nothing able to stop it.
       const origin = makePollCountingOrigin();
-      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
       const published: VodEntry[] = [];
       const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1463,7 +1497,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       // reachable: OME stamps these itself and a closing can follow an opening immediately when the
       // publisher is refused.
       const origin = makePollCountingOrigin();
-      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
       const published: VodEntry[] = [];
       const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1483,7 +1517,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       // The protocol declares `request.time` optional. Reading an absent one as evidence would make
       // every closing from a transport that omits it look stale.
       const origin = makePollCountingOrigin();
-      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
       const published: VodEntry[] = [];
       const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1503,7 +1537,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
       // A field that is present and not a date is the same amount of evidence as no field at all, and
       // `Date.parse` reports it as NaN rather than throwing, which every comparison then reads as false.
       const origin = makePollCountingOrigin();
-      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
       const published: VodEntry[] = [];
       const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1542,7 +1576,7 @@ describe('createOmeEngine reordered closing (CON-21)', () => {
   for (const { name, client } of INCOMPLETE_SOCKETS) {
     it(`stops the stream when the closing carries ${name}`, async () => {
       const origin = makePollCountingOrigin();
-      const engine = createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
+      const engine = trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, { admissionSecret: SECRET, fetcher: origin.fetcher });
       const published: VodEntry[] = [];
       const orchestrator = makeTestOrchestrator({}, {}, makeFakeRecoveryStore(), makeRecordingCatalog(published));
 
@@ -1584,7 +1618,7 @@ describe('createOmeEngine admission decision (TEST-25)', () => {
     ({ ok: false, status: 404, text: async () => '' } as Response)) as unknown as Fetcher;
 
   function makeEngine(failOpen = false): EnginePlugin {
-    return createOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
+    return trackedOmeEngine(HLS_BASE, POLL_INTERVAL_MS, {
       admissionSecret: SECRET,
       fetcher: silentOrigin,
       failOpen,
