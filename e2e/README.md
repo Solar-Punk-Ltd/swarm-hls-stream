@@ -37,6 +37,7 @@ E2E_PROFILE=streamer1 E2E_PORT_SLOT=2 … pnpm e2e:smoke                        
 | `E2E_OME_SRT_PORT`  | `OME_SRT_PORT` from the engine env | only for a standalone OME that no profile deployed.                                       |
 | `E2E_OME_CONTAINER` | `<profile>-ome-1`                  | same.                                                                                     |
 | `E2E_EXPECT_ABR`    | undeclared                         | what this run covers: `true` a ladder, `false` single-rendition. See below.               |
+| `E2E_MODE`          | `attach`                           | only `attach` exists. `deploy` refuses and points at `deploy/scripts/deploy.sh`.          |
 
 Ports come from `.env` / `.env.<profile>` and `engines/<engine>/.env[.<profile>]`, layered under the
 process environment exactly as `load_env` then `load_engine_envs` layer them. **OME's ports are not
@@ -246,6 +247,9 @@ that money on numbers nobody should trust.
 - A deployed stack with a usable stamp (the smoke test checks TTL first).
 - The uploader node's chequebook funded to ≥ 0.5 BZZ. Fund it yourself. The preflight only reads,
   and prints the exact `curl` to deposit the shortfall if it is short.
+- `PUBLISH_KEY_SECRET` resolves from the same env files, so a deployment that authenticates
+  publishers (SEC-28) needs nothing extra: the harness derives the same per-stream key. Left empty,
+  the harness publishes bare, which such a deployment refuses.
 
 ## Not covered
 
