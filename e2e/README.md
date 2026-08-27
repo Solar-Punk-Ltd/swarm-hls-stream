@@ -104,15 +104,19 @@ Preflight:
 
 Fault scenarios:
 
-| file                                    | proves                                                                           |
-| --------------------------------------- | -------------------------------------------------------------------------------- |
-| `scenarios/bee-outage-short` (A)        | bee frozen under the 15s retry window → buffers, zero loss, **no** discontinuity |
-| `scenarios/bee-outage-long` (B)         | bee down past the window → **arms** a discontinuity, gap, clean resume           |
-| `scenarios/publish-stop-to-vod` (D)     | clean broadcaster stop → immediate VOD finalize                                  |
-| `scenarios/gateway-outage-viewer` (G)   | viewer gateway down → uploads unaffected                                         |
-| `scenarios/engine-restart` (E)          | media engine restart → orchestrator re-announces, a fresh `live` topic resumes   |
-| `scenarios/uploader-crash-recovery` (F) | uploader SIGKILL → same stream recovers and is not VOD-ed by the 60s timer       |
-| `scenarios/abr-engine-restart`          | engine restart under a ladder → every rung returns, as **one** ladder not four   |
+| file                                    | proves                                                                             |
+| --------------------------------------- | ---------------------------------------------------------------------------------- |
+| `scenarios/bee-outage-short` (A)        | bee frozen under the 15s retry window → buffers, zero loss, **no** discontinuity   |
+| `scenarios/bee-outage-long` (B)         | bee down past the window → **arms** a discontinuity, gap, clean resume             |
+| `scenarios/publish-stop-to-vod` (D)     | clean broadcaster stop → immediate VOD finalize                                    |
+| `scenarios/gateway-outage-viewer` (G)   | viewer gateway down → uploads unaffected                                           |
+| `scenarios/engine-restart` (E)          | media engine restart → orchestrator re-announces, a fresh `live` topic resumes     |
+| `scenarios/uploader-crash-recovery` (F) | uploader SIGKILL → same stream recovers and is not VOD-ed by the 60s timer         |
+| `scenarios/finalize-crash` (H)          | killed inside `finalize` → after restart exactly one VOD, and the catalog names it |
+| `scenarios/whole-stack-restart` (I)     | host reboot: finalize races a cold bee → one VOD, no recovery entry left behind    |
+| `scenarios/recovery-entry-corrupt` (J)  | a bad recovery entry quarantines loudly, never silently deleted, health degrades   |
+| `scenarios/reconnect-during-drain` (K)  | reconnect mid-drain → two VODs on two topics, the live session keeps its entry     |
+| `scenarios/abr-engine-restart`          | engine restart under a ladder → every rung returns, as **one** ladder not four     |
 
 Service coverage, no faults:
 
@@ -242,8 +246,8 @@ that money on numbers nobody should trust.
 
 ## Not covered
 
-Seeking, adaptive bitrate, viewer scale, mid-stream join, soak, and audio quality beyond "a tone is
-present". If it is not a row above, this suite does not verify it.
+Seeking, viewer scale, mid-stream join, soak, and audio quality beyond "a tone is present". If it is
+not a row above, this suite does not verify it.
 
 ## Why the unit tests exist
 
