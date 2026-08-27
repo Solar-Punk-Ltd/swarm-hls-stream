@@ -21,6 +21,23 @@ export interface CatalogEntry {
   duration?: number;
   mediatype: string;
   timestamp: number;
+  /** Present on a ladder entry: one per rung, each with its own session topic. */
+  renditions?: { name: string; topic: string }[];
+}
+
+/**
+ * Whether an entry belongs to a broadcast identified by its announced session topics.
+ *
+ * A single-rendition entry's own `topic` is the session topic. A ladder entry's own `topic` is the
+ * MASTER feed's, which is the ladder group and survives engine deaths and recoveries, so the session
+ * identity lives in the rung topics under `renditions`. Matching on `entry.topic` alone therefore
+ * finds single-rendition broadcasts and is blind to ladders (found live 2026-08-27, twice).
+ */
+export function entryCarriesTopic(entry: CatalogEntry, topics: ReadonlySet<string>): boolean {
+  if (topics.has(entry.topic)) {
+    return true;
+  }
+  return (entry.renditions ?? []).some((rendition) => topics.has(rendition.topic));
 }
 
 /** Feed location = signer address (owner) + the hashed `swarm-stream` list topic. */

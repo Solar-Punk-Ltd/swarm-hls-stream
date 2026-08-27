@@ -3,10 +3,10 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, type E2EConfig, loadConfig, type ServiceName, SERVICES } from '../../src/config.js';
 import { discoverStamp, type Host, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { announcedSessionTopics, parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
-import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
+import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -78,15 +78,16 @@ describe('I — whole-stack restart: the recording survives a host reboot', () =
 
   it('finalizes the interrupted broadcast even though bee restarted with it', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const vodCommits = (text: string): number => text.match(/Updating stream in list to VOD/g)?.length ?? 0;
+    const vodCommits = (text: string): number => vodFinalizeCount(text);
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,
       intervalMs: 2_000,
       label: `warmup: ${WARMUP_SEGMENTS} segments before the restart`,
     });
-    const ourTopic = announcedLiveTopics(await log()).at(-1);
-    assert.ok(ourTopic, 'the uploader must have announced a live stream topic before the restart');
+    // A set, because a ladder announces one topic per rung and the catalog entry carries one of them.
+    const ourTopics = new Set(announcedSessionTopics(await log()));
+    assert.ok(ourTopics.size > 0, 'the uploader must have announced a live topic before the restart');
 
     const entriesBefore = await recoveryEntryIds(host, cfg);
     assert.ok(
@@ -138,7 +139,7 @@ describe('I — whole-stack restart: the recording survives a host reboot', () =
     );
 
     const safeFetch = async () => fetchCatalog(host, cfg, feed).catch(() => []);
-    await waitFor(async () => (await safeFetch()).find((e) => e.topic === ourTopic)?.state === 'vod', {
+    await waitFor(async () => (await safeFetch()).find((e) => entryCarriesTopic(e, ourTopics))?.state === 'vod', {
       timeoutMs: CATALOG_WAIT_MS,
       intervalMs: 3_000,
       label: 'the recording of the interrupted broadcast surfaces as a VOD',

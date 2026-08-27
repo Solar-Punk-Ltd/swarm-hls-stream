@@ -6,7 +6,7 @@ import { after, describe, it } from 'node:test';
 
 import { type E2EConfig, loadConfig } from '../src/config.js';
 import type { Host } from '../src/harness/host.js';
-import { type CatalogEntry, discoverCatalogFeed, fetchCatalog } from '../src/harness/viewer.js';
+import { type CatalogEntry, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../src/harness/viewer.js';
 
 /**
  * The catalog feed is located by reading the uploader's own log rather than by hard-coding a
@@ -150,5 +150,31 @@ describe('fetchCatalog', () => {
     const cfg = config({ E2E_PORT_SLOT: '2' });
     assert.deepEqual(await fetchCatalog(host, cfg, { owner: OWNER, topicHex: TOPIC_HEX }), entries);
     assert.deepEqual(calls, [{ port: 10027, path: `/feeds/${OWNER}/${TOPIC_HEX}` }]);
+  });
+});
+
+describe('entryCarriesTopic', () => {
+  const base = { title: 't', owner: 'o', index: 0, mediatype: 'video', timestamp: 1 };
+
+  it('matches a single-rendition entry by its own topic', () => {
+    const entry: CatalogEntry = { ...base, topic: 'session-1', state: 'live' };
+
+    assert.equal(entryCarriesTopic(entry, new Set(['session-1'])), true);
+    assert.equal(entryCarriesTopic(entry, new Set(['other'])), false);
+  });
+
+  it('matches a ladder entry by any rung topic, never only by its group-owned own topic', () => {
+    const entry: CatalogEntry = {
+      ...base,
+      topic: 'group-master',
+      state: 'live',
+      renditions: [
+        { name: '360p', topic: 'rung-360' },
+        { name: '720p', topic: 'rung-720' },
+      ],
+    };
+
+    assert.equal(entryCarriesTopic(entry, new Set(['rung-720'])), true);
+    assert.equal(entryCarriesTopic(entry, new Set(['rung-else'])), false);
   });
 });

@@ -302,6 +302,17 @@ export function segmentUploads(text: string): SegmentUpload[] {
 }
 
 /**
+ * The session topics a broadcast announced, whichever shape the deployment publishes: the single
+ * stream's catalog announce lines, or under a ladder every rung's announce. The two line families
+ * are mode-exclusive (a ladder never writes `Adding stream to list`, a single rendition never
+ * announces a rung), so presence decides and no caller carries a mode flag.
+ */
+export function announcedSessionTopics(text: string): string[] {
+  const single = announcedLiveTopics(text);
+  return single.length > 0 ? single : announcedRungs(text).map((announce) => announce.topic);
+}
+
+/**
  * How many broadcasts have finalized to VOD, whichever shape the deployment publishes: the
  * single-rendition catalog update, or the ladder flip. A ladder counts once, not once per rung.
  */

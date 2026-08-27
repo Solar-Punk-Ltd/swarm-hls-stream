@@ -3,9 +3,9 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { announcedSessionTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
-import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
+import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -71,11 +71,12 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
       intervalMs: 3_000,
       label: 'stream is live and uploading before the crash',
     });
-    // Identify our stream by the topic the uploader assigned in its OWN log — authoritative and
-    // lag-free. Reading it from the gateway catalog here can latch a stale topic from a prior stream
-    // while that eventually-consistent catalog is still catching up.
-    const ourTopic = announcedLiveTopics(await host.logsSince(uploader, startedAt)).at(-1);
-    assert.ok(ourTopic, 'the uploader must have announced a live stream topic before the crash');
+    // Identify our broadcast by the topics the uploader assigned in its OWN log — authoritative and
+    // lag-free. Reading them from the gateway catalog here can latch a stale topic from a prior
+    // stream while that eventually-consistent catalog is still catching up. A set, because a ladder
+    // announces one topic per rung and any of them identifies this broadcast's catalog entry.
+    const ourTopics = new Set(announcedSessionTopics(await host.logsSince(uploader, startedAt)));
+    assert.ok(ourTopics.size > 0, 'the uploader must have announced a live topic before the crash');
     const preKill = Math.max(...(await uploaded()));
 
     // Hard crash: SIGKILL leaves the RecoveryStore state on disk. `docker kill` does not trip the
@@ -121,7 +122,7 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
 
     // End-to-end: it is genuinely live (asserted above), so it must also surface as live to a viewer
     // through the gateway — poll for it, since that catalog trails the uploader by minutes.
-    await waitFor(async () => (await safeFetch()).find((e) => e.topic === ourTopic)?.state === 'live', {
+    await waitFor(async () => (await safeFetch()).find((e) => entryCarriesTopic(e, ourTopics))?.state === 'live', {
       timeoutMs: LIVE_VISIBLE_WAIT_MS,
       intervalMs: 3_000,
       label: 'the recovered stream surfaces as live in the gateway catalog',

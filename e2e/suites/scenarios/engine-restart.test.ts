@@ -5,7 +5,7 @@ import { loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
-import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
+import { type CatalogEntry, type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -45,9 +45,20 @@ describe('E — media-engine restart: broadcaster resumes', () => {
       return [];
     }
   };
+  // A ladder entry's own topic is the master feed's, which is the group and SURVIVES an engine
+  // death (the group is only released once every rung's session ends). The fresh identity of a new
+  // session lives in the rung topics under `renditions`, so freshness is judged over every topic an
+  // entry carries, not the entry's own alone.
+  const topicsOf = (entry: CatalogEntry): string[] => [
+    entry.topic,
+    ...(entry.renditions ?? []).map((rendition) => rendition.topic),
+  ];
   const freshLiveTopics = async (): Promise<string[]> => [
     ...new Set(
-      (await safeFetch()).filter((e) => !baselineTopics.has(e.topic) && e.state === 'live').map((e) => e.topic),
+      (await safeFetch())
+        .filter((entry) => entry.state === 'live')
+        .flatMap(topicsOf)
+        .filter((topic) => !baselineTopics.has(topic)),
     ),
   ];
 
@@ -63,7 +74,7 @@ describe('E — media-engine restart: broadcaster resumes', () => {
     // carries an 8s deadline while these tests budget 300s for the gateway, so it timing out is the
     // ordinary case rather than an exotic one. On the polls `safeFetch` stays, because there "not
     // ready yet" is a real answer.
-    baselineTopics = new Set((await fetchCatalog(host, cfg, feed)).map((e) => e.topic));
+    baselineTopics = new Set((await fetchCatalog(host, cfg, feed)).flatMap(topicsOf));
     first = startPublisher(cfg);
   });
 

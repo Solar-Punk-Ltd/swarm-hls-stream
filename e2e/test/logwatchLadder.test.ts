@@ -10,6 +10,7 @@ import { describe, it } from 'node:test';
 
 import {
   announcedRungs,
+  announcedSessionTopics,
   ladderRungs,
   publishedRenditions,
   segmentUploads,
@@ -197,5 +198,24 @@ describe('vodFinalizeCount', () => {
     ].join('\n');
 
     assert.equal(vodFinalizeCount(log), 1);
+  });
+});
+
+describe('announcedSessionTopics', () => {
+  it('prefers the single-rendition announce when one exists', () => {
+    const log = textLine(
+      'Adding stream to list: {"topic":"single-t","owner":"o","state":"live","title":"x","mediatype":"video","timestamp":1,"index":0}',
+    );
+
+    assert.deepEqual(announcedSessionTopics(log), ['single-t']);
+  });
+
+  it('falls back to the rung topics under a ladder, which never writes the single announce', () => {
+    const log = [
+      textLine(`[StreamOrchestrator] ${rungAnnounced('live/stream_720p', '720p', 'g', 't-720')}`),
+      textLine(`[StreamOrchestrator] ${rungAnnounced('live/stream_360p', '360p', 'g', 't-360')}`),
+    ].join('\n');
+
+    assert.deepEqual(announcedSessionTopics(log), ['t-720', 't-360']);
   });
 });
