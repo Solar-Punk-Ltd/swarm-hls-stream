@@ -22,8 +22,9 @@ const APPEAR_WAIT_MS = 300_000;
 const VOD_WAIT_MS = 300_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('service — viewer catalog via gateway reflects live→VOD', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   let publisher: Publisher;
   let feed: CatalogFeed;

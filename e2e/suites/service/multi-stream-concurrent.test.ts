@@ -23,8 +23,9 @@ const ACTIVE_WAIT_MS = 300_000;
 const IDLE_WAIT_MS = 300_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('service — two concurrent streams upload independently', () => {
-  const cfg = loadConfig();
   // A second, distinct stream on the same engine app (`…/stream` → `…/stream2`) so both engines get
   // a valid concurrent path — OME apps must stay `video`/`audio`, so a fixed `live/…` won't do.
   const secondStreamPath = `${cfg.streamPath}2`;

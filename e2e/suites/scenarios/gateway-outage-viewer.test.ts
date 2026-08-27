@@ -20,8 +20,9 @@ const POST_OUTAGE_SEGMENTS = 4;
 const SEGMENT_WAIT_MS = 90_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('G — gateway (viewer-side) outage: uploads unaffected', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const gateway = containerName(cfg, 'bee-gateway');
   const uploader = containerName(cfg, 'stream-uploader');

@@ -20,8 +20,9 @@ const SEGMENT_WAIT_MS = 90_000;
 const VOD_WAIT_MS = 90_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('D — clean broadcaster stop: finalize as VOD', () => {
-  const cfg = loadConfig();
   const engine = getEngine(cfg);
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');

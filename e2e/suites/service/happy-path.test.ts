@@ -17,8 +17,9 @@ const TARGET_SEGMENTS = 6;
 const SEGMENT_WAIT_MS = 120_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('service — happy-path publish: gapless segments + advancing manifest', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;

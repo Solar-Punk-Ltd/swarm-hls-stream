@@ -33,8 +33,9 @@ const POST_TIMEOUT_MARGIN_MS = 20_000;
 const LIVE_VISIBLE_WAIT_MS = 300_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('F — uploader hard crash: same stream recovers and keeps running', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;

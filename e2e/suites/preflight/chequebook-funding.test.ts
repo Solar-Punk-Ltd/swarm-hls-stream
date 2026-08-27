@@ -36,8 +36,9 @@ function plurToBzz(plur: bigint): string {
 
 const MIN_CHEQUEBOOK_PLUR = bzzToPlur(MIN_CHEQUEBOOK_BZZ);
 
+const cfg = loadConfig();
+
 describe('preflight — bee-uploader chequebook is funded for bandwidth', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const beeUploader = containerName(cfg, 'bee-uploader');
 

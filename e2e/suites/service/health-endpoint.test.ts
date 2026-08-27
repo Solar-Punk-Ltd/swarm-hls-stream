@@ -19,8 +19,9 @@ const SEGMENT_WAIT_MS = 90_000;
 const IDLE_WAIT_MS = 90_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('service — /health reflects the stream lifecycle', () => {
-  const cfg = loadConfig();
   const engine = getEngine(cfg);
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');

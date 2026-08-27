@@ -52,8 +52,9 @@ const SETTLE_PAST_RECOVERY_MS = 90_000;
 const CATALOG_WAIT_MS = 300_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('H — killed inside finalize: one recording, and the catalog points at it', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;

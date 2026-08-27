@@ -12,8 +12,9 @@ const ONE_HOUR_S = 3600;
  * Read-only smoke test: proves the harness can reach the deployed profile and discover its live
  * stamp. No fault injection, no deploy, no BZZ — safe to run anytime. Run: pnpm test:e2e:smoke
  */
+const cfg = loadConfig();
+
 describe('attach smoke (read-only)', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
 
   it('reaches the host over ssh', async () => {

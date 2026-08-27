@@ -54,8 +54,9 @@ async function runningContainers(host: Host, cfg: E2EConfig): Promise<string[]> 
   return running;
 }
 
+const cfg = loadConfig();
+
 describe('I — whole-stack restart: the recording survives a host reboot', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;

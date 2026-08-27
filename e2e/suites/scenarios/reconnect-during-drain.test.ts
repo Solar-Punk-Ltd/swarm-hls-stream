@@ -47,8 +47,9 @@ const RECONNECT_WAIT_MS = 120_000;
 const VOD_WAIT_MS = 150_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('K — reconnect during drain: two recordings, and the live one keeps its recovery entry', () => {
-  const cfg = loadConfig();
   const engine = getEngine(cfg);
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');

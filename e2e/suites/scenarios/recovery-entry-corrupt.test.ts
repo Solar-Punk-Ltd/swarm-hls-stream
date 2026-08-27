@@ -48,8 +48,9 @@ const MIN_STAMP_TTL_S = 600;
 /** A file recovery must not touch: parseable, in the state directory, and not a stream. */
 const FOREIGN_STATE_FILE = 'e2e-not-a-stream';
 
+const cfg = loadConfig();
+
 describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;

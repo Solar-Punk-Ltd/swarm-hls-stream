@@ -32,8 +32,9 @@ const POST_OUTAGE_SEGMENTS = 3;
 const SEGMENT_WAIT_MS = 120_000;
 const MIN_STAMP_TTL_S = 600;
 
+const cfg = loadConfig();
+
 describe('B — bee crash > retry window: discontinuity, clean skip, resume', () => {
-  const cfg = loadConfig();
   const host = makeHost(cfg);
   const bee = containerName(cfg, 'bee-uploader');
   const uploader = containerName(cfg, 'stream-uploader');
