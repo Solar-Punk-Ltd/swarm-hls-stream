@@ -13,6 +13,7 @@ import {
   announcedSessionTopics,
   ladderRungs,
   publishedRenditions,
+  segmentIndicesByStream,
   segmentUploads,
   sessionEnds,
   vodFinalizeCount,
@@ -232,5 +233,22 @@ describe('sessionEnds', () => {
     ].join('\n');
 
     assert.deepEqual(sessionEnds(log).sort(), ['live/stream_360p', 'live/stream_720p']);
+  });
+});
+
+describe('segmentIndicesByStream', () => {
+  it('keeps each stream its own ordered sequence out of an interleaved log', () => {
+    const log = [
+      segmentUploaded('live/stream_720p', 35, 'r'),
+      segmentUploaded('live/stream_360p', 41, 'r'),
+      segmentUploaded('live/stream_720p', 36, 'r'),
+    ]
+      .map(textLine)
+      .join('\n');
+
+    const byStream = segmentIndicesByStream(log);
+
+    assert.deepEqual(byStream.get('live/stream_720p'), [35, 36]);
+    assert.deepEqual(byStream.get('live/stream_360p'), [41]);
   });
 });

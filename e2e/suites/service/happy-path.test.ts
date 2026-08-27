@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { isContiguous, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { waitFor } from '../../src/harness/wait.js';
 
@@ -47,10 +47,14 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
     });
 
     const ev = await events();
-    assert.ok(
-      isContiguous(ev.uploadedSegments),
-      `happy-path segment indices must be gapless; got: ${ev.uploadedSegments.join(',')}`,
-    );
+    // Judged per stream: a ladder is four counters starting at different SRS sequence numbers, so
+    // the merged view holes at window boundaries while no rung has lost anything.
+    for (const [streamId, indices] of segmentIndicesByStream(await host.logsSince(uploader, startedAt))) {
+      assert.ok(
+        isContiguous(indices),
+        `happy-path segment indices of ${streamId} must be gapless; got: ${indices.join(',')}`,
+      );
+    }
     assert.equal(
       ev.discontinuitiesArmed,
       0,

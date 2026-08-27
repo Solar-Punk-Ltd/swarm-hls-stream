@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { isContiguous, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
@@ -82,9 +82,13 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
         events.discontinuitiesArmed
       } (upload-failure segments: ${events.discontinuitySegments.join(',')})`,
     );
-    assert.ok(
-      isContiguous(events.uploadedSegments),
-      `segment indices must be gapless through the outage; got: ${events.uploadedSegments.join(',')}`,
-    );
+    // Per stream: the merged view of a ladder's four counters holes at window boundaries while no
+    // rung has lost anything, and can mask a real one-rung gap behind a sibling's healthy index.
+    for (const [streamId, indices] of segmentIndicesByStream(await host.logsSince(uploader, startedAt))) {
+      assert.ok(
+        isContiguous(indices),
+        `segment indices of ${streamId} must be gapless through the outage; got: ${indices.join(',')}`,
+      );
+    }
   });
 });

@@ -74,7 +74,16 @@ describe('service — two concurrent streams upload independently', () => {
   });
 
   it('runs both live at once, each with its own catalog entry, then finalizes both as VOD', async () => {
-    await waitFor(async () => (await uploaderHealth(host, cfg)).activeStreams >= 2, {
+    // The poll swallows a failed read: two concurrent ladders are eight transcodes and eight rung
+    // uploads, and one health probe timing out under that load must cost a poll, not the scenario.
+    const activeStreams = async (): Promise<number> => {
+      try {
+        return (await uploaderHealth(host, cfg)).activeStreams;
+      } catch {
+        return -1;
+      }
+    };
+    await waitFor(async () => (await activeStreams()) >= 2, {
       timeoutMs: ACTIVE_WAIT_MS,
       intervalMs: 3_000,
       label: 'both streams register as active (activeStreams >= 2)',
@@ -105,7 +114,7 @@ describe('service — two concurrent streams upload independently', () => {
     await first.stop();
     await second.stop();
 
-    await waitFor(async () => (await uploaderHealth(host, cfg)).activeStreams === 0, {
+    await waitFor(async () => (await activeStreams()) === 0, {
       timeoutMs: IDLE_WAIT_MS,
       intervalMs: 3_000,
       label: 'both streams finalize and activeStreams returns to 0',

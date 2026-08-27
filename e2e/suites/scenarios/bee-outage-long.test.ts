@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { isContiguous, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
@@ -98,9 +98,17 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
         ev.discontinuitiesArmed
       } (upload-failure segments: ${ev.discontinuitySegments.join(',')})`,
     );
-    assert.ok(
-      !isContiguous(ev.uploadedSegments),
-      `the dropped segment must leave a gap in uploaded indices; got: ${ev.uploadedSegments.join(',')}`,
-    );
+    // Per stream, and every stream: bee was down past the retry window for the whole deployment, so
+    // each rung dropped its own segments and each rung's own sequence must show the hole. The merged
+    // view cannot be trusted in either direction: a sibling's healthy index fills a real gap, and
+    // window boundaries invent one.
+    const byStream = [...segmentIndicesByStream(await host.logsSince(uploader, startedAt))];
+    assert.ok(byStream.length > 0, 'no attributable segment uploads at all, so nothing here survived the outage');
+    for (const [streamId, indices] of byStream) {
+      assert.ok(
+        !isContiguous(indices),
+        `the dropped segments must leave a gap in ${streamId}'s indices; got: ${indices.join(',')}`,
+      );
+    }
   });
 });
