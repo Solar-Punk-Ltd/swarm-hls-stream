@@ -93,20 +93,36 @@ describe('E — media-engine restart: broadcaster resumes', () => {
     second = startPublisher(cfg);
 
     let resumedTopic: string | undefined;
-    await waitFor(
-      async () => {
-        const topics = (await freshLiveTopics()).filter((t) => t !== firstTopic);
-        if (topics.length >= 1) {
-          resumedTopic = topics[0];
-        }
-        return resumedTopic !== undefined;
-      },
-      {
-        timeoutMs: RESUME_WAIT_MS,
-        intervalMs: 3_000,
-        label: 'a fresh live stream appears after the broadcaster reconnects',
-      },
-    );
+    try {
+      await waitFor(
+        async () => {
+          const topics = (await freshLiveTopics()).filter((t) => t !== firstTopic);
+          if (topics.length >= 1) {
+            resumedTopic = topics[0];
+          }
+          return resumedTopic !== undefined;
+        },
+        {
+          timeoutMs: RESUME_WAIT_MS,
+          intervalMs: 3_000,
+          label: 'a fresh live stream appears after the broadcaster reconnects',
+        },
+      );
+    } catch (error) {
+      // A timeout here has three unrelated causes: the uploader never restarted the session, the
+      // catalog write never landed, or the gateway is lagging. The bare label cannot tell them
+      // apart, so the failure carries what the catalog actually held at the end of the wait.
+      const entries = (await safeFetch()).map((entry) => ({
+        topic: entry.topic.slice(0, 8),
+        state: entry.state,
+        fresh: !baselineTopics.has(entry.topic),
+      }));
+      const seen = ` Catalog at timeout (topic/state/fresh): ${JSON.stringify(entries)}; firstTopic=${firstTopic?.slice(
+        0,
+        8,
+      )}`;
+      throw error instanceof Error ? new Error(error.message + seen) : error;
+    }
 
     assert.ok(
       resumedTopic && resumedTopic !== firstTopic,
