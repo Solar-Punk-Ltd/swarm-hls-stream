@@ -15,6 +15,7 @@ import { assertUsablePublishKeySecret } from '@swarm-hls-stream/shared/publishKe
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { type AbrExpectation, readAbrExpectation } from './abrCoverage.js';
 import { type EnvBag, layerEnv, processEnv, readEnvFile } from './envFile.js';
 import { type OmePortVar, type PortVar, requireValidPortSlot, resolveOmePort, resolvePort } from './ports.js';
 
@@ -108,6 +109,15 @@ export interface E2EConfig {
    */
   abrEnabled: boolean;
   abrRungs: readonly string[];
+  /**
+   * What the operator declared this run is for, out of `E2E_EXPECT_ABR`.
+   *
+   * Separate from {@link abrEnabled} because they answer different questions. That one is what the
+   * deployment does, which the suite only reads. This is what the run is claiming to cover, which is
+   * the operator's to state, and `suites/preflight/abr-coverage.test.ts` refuses the run when the
+   * two disagree.
+   */
+  abrExpectation: AbrExpectation;
   /** Env files that were actually found and read, in precedence order. Printed by the smoke test. */
   envFiles: readonly string[];
 }
@@ -284,6 +294,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     publishKeySecret: requireUsableSecret(env(resolved, 'PUBLISH_KEY_SECRET', '')),
     abrEnabled: isEnabled(env(resolved, 'ABR_ENABLED', 'false')),
     abrRungs: ladderRungNames(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
+    abrExpectation: readAbrExpectation(env(resolved, 'E2E_EXPECT_ABR', '')),
     envFiles: [rootPath, enginePath],
   };
 }

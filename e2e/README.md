@@ -36,10 +36,31 @@ E2E_PROFILE=streamer1 E2E_PORT_SLOT=2 … pnpm e2e:smoke                        
 | `E2E_STREAM_PATH`   | per engine                         | `live/stream` for SRS, `video/stream` for OME.                                            |
 | `E2E_OME_SRT_PORT`  | `OME_SRT_PORT` from the engine env | only for a standalone OME that no profile deployed.                                       |
 | `E2E_OME_CONTAINER` | `<profile>-ome-1`                  | same.                                                                                     |
+| `E2E_EXPECT_ABR`    | undeclared                         | what this run covers: `true` a ladder, `false` single-rendition. See below.               |
 
 Ports come from `.env` / `.env.<profile>` and `engines/<engine>/.env[.<profile>]`, layered under the
 process environment exactly as `load_env` then `load_engine_envs` layer them. **OME's ports are not
 slot-shifted**. `apply_port_slot` leaves them alone and so does this.
+
+### Saying whether the run covers ABR
+
+The two ABR suites only apply to a deployment running a ladder, so they are gated on `ABR_ENABLED`,
+which is off by default. A skipped suite is invisible: `node --test` reports it as `# tests 0`,
+`# fail 0`, `# skipped 0` and exits 0, so the summary of a run that never transcoded a rung is
+identical to one that exercised all four.
+
+`preflight/abr-coverage` closes that. It refuses a run whose coverage is ambiguous, before anything
+is asked of the deployment:
+
+| `E2E_EXPECT_ABR` | `ABR_ENABLED` off                 | `ABR_ENABLED` on                           |
+| ---------------- | --------------------------------- | ------------------------------------------ |
+| unset            | **refused**, the silent gap       | runs, the ladder is covered either way     |
+| `true`           | **refused**, ABR was asked for    | runs                                       |
+| `false`          | runs, single-rendition on purpose | **refused**, a ladder under a single label |
+
+A single-rendition deployment sets `E2E_EXPECT_ABR=false` once in its profile env, next to
+`E2E_SSH_TARGET`, and is never asked again. `ABR_ENABLED` on with fewer than two rungs is refused
+whatever was declared, because a one-rung ladder cannot show a rung going missing.
 
 ## The deployment has to log at `debug`
 
@@ -79,6 +100,7 @@ Preflight:
 | file                           | proves                                                                                       |
 | ------------------------------ | -------------------------------------------------------------------------------------------- |
 | `preflight/chequebook-funding` | the uploader node holds ≥ 0.5 BZZ, topping up from its wallet if short, failing if it cannot |
+| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host            |
 
 Fault scenarios:
 
@@ -90,6 +112,7 @@ Fault scenarios:
 | `scenarios/gateway-outage-viewer` (G)   | viewer gateway down → uploads unaffected                                         |
 | `scenarios/engine-restart` (E)          | media engine restart → orchestrator re-announces, a fresh `live` topic resumes   |
 | `scenarios/uploader-crash-recovery` (F) | uploader SIGKILL → same stream recovers and is not VOD-ed by the 60s timer       |
+| `scenarios/abr-engine-restart`          | engine restart under a ladder → every rung returns, as **one** ladder not four   |
 
 Service coverage, no faults:
 
@@ -99,6 +122,7 @@ Service coverage, no faults:
 | `service/health-endpoint`         | `/health` across live → idle                                              |
 | `service/catalog-via-gateway`     | player-visible: a `live` entry through the bee-gateway, flipping to `vod` |
 | `service/multi-stream-concurrent` | two concurrent streams, distinct topics, each finalizing to its own VOD   |
+| `service/abr-ladder`              | every configured rung publishes, under one ladder, gapless                |
 
 ## The latency bench (LAT-1)
 
