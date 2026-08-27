@@ -3,10 +3,10 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveTopics, parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
+import { announcedSessionTopics, parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
-import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
+import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -86,8 +86,9 @@ describe('H — killed inside finalize: one recording, and the catalog points at
       intervalMs: 2_000,
       label: `warmup: ${WARMUP_SEGMENTS} segments before stopping the broadcaster`,
     });
-    const ourTopic = announcedLiveTopics(await log()).at(-1);
-    assert.ok(ourTopic, 'the uploader must have announced a live stream topic before the finalize');
+    // A set, because a ladder announces one topic per rung and the catalog entry carries one of them.
+    const ourTopics = new Set(announcedSessionTopics(await log()));
+    assert.ok(ourTopics.size > 0, 'the uploader must have announced a live topic before the finalize');
 
     await publisher.stop();
 
@@ -178,7 +179,7 @@ describe('H — killed inside finalize: one recording, and the catalog points at
     // reboot answers with an error rather than a stale list. A throwing poll would fail the scenario
     // for the transport rather than for the thing it is asserting.
     const safeFetch = async () => fetchCatalog(host, cfg, feed).catch(() => []);
-    await waitFor(async () => (await safeFetch()).find((e) => e.topic === ourTopic)?.state === 'vod', {
+    await waitFor(async () => (await safeFetch()).find((e) => entryCarriesTopic(e, ourTopics))?.state === 'vod', {
       timeoutMs: CATALOG_WAIT_MS,
       intervalMs: 3_000,
       label: 'the recording surfaces as a VOD in the gateway catalog',
