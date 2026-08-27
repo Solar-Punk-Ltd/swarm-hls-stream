@@ -263,7 +263,7 @@ export function announcedLiveStreams(text: string): AnnouncedStream[] {
 }
 
 /** One rung's publish, as the uploader reported it. */
-export interface PublishedRendition {
+interface PublishedRendition {
   rung: string;
   ladder: string;
 }
@@ -284,8 +284,12 @@ export function publishedRenditions(text: string): PublishedRendition[] {
   }));
 }
 
-/** One `Segment N of <stream> uploaded` line: which stream's counter moved, and to what. */
-export interface SegmentUpload {
+/**
+ * One `Segment N of <stream> uploaded` line: which stream's counter moved, and to what.
+ * Not exported: callers take it from {@link segmentUploads}'s inferred return, and exporting it
+ * would add a name to the surface that nothing imports.
+ */
+interface SegmentUpload {
   streamId: string;
   index: number;
 }
