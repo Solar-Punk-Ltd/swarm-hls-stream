@@ -124,6 +124,49 @@ Service coverage, no faults:
 | `service/multi-stream-concurrent` | two concurrent streams, distinct topics, each finalizing to its own VOD   |
 | `service/abr-ladder`              | every configured rung publishes, under one ladder, gapless                |
 
+## In-browser node first
+
+**The default subject of a viewer measurement is our client reading segment bytes from a Swarm node
+running in the tab, not a bee gateway.** A gateway arm is the control, not the baseline. Set it with
+`BROWSER_FETCH_BACKEND`, which every viewer driver reads:
+
+| value     | what the viewer is                                                          |
+| --------- | --------------------------------------------------------------------------- |
+| unset     | whatever the client build defaults to. No arm is recorded and no proof runs |
+| `gateway` | segment bytes from a bee gateway, the control                               |
+| `weeb3`   | segment bytes from the in-tab node, feed and manifest still via a gateway   |
+
+`weeb3` is a **hybrid**, not gateway-less: PR #183 moved segment bytes and nothing else. Fully
+gateway-less is weeb-3's own page, run by `pnpm browser:weeb3-native` and swept against the hybrid by
+`pnpm browser:viewer-order`. See `src/browser/viewerConditions.ts`.
+
+Which command supports which:
+
+| command                       | in-tab node  | notes                                              |
+| ----------------------------- | ------------ | -------------------------------------------------- |
+| `browser:watch`               | yes          | the long-run watcher, the workhorse                |
+| `browser:crash`               | yes          | all five fault scenarios                           |
+| `browser:buffer-sweep`        | yes          | one byte source for the whole sweep                |
+| `browser:fetch-backend-check` | yes          | the A/B itself                                     |
+| `browser:weeb3-native`        | gateway-less | weeb-3's own page                                  |
+| `browser:viewer-order`        | both         | native against hybrid, counterbalanced             |
+| `browser:vod`                 | **no**       | recorded playback, still gateway only              |
+| `browser:selfcheck`           | **no**       | proves the instrument, not a viewer condition      |
+| `browser:gateway-check`       | n/a          | gateway by definition                              |
+| `e2e:run`                     | n/a          | uploader-side, asserts on uploader logs, no viewer |
+
+The in-tab node needs time to boot: 4.5 MB of wasm and several seconds of dialling. Every driver
+holds it for `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (default 60) before opening its window, so the join
+is never inside a counted stretch. `watch.ts` reads that window from `BROWSER_SETTLE_SECONDS`
+instead, because that is the knob the existing corpus was run with.
+
+⛔⛔⛔ **An arm is proved, never believed.** A weeb-3 arm's headline is a _zero_ gateway read, and a
+client that never loaded the node produces the same zero. `openByteSourceArmSession` hands back the
+proof along with the arm so a driver cannot hold one without the other, and the proof requires the
+wasm in the request log as a witness. This is why `crash.ts` and `buffer-sweep.ts` could not simply
+have the variable added to them: before 2026-08-27 they read it nowhere, ran on the gateway, and
+looked exactly like runs configured for the gateway.
+
 ## The latency bench (LAT-1)
 
 ```bash
