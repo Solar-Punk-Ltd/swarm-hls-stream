@@ -28,6 +28,12 @@ import {
   setArm,
 } from '../src/browser/bufferSweep.js';
 import {
+  type ByteSourceArmSession,
+  DEFAULT_BYTE_SOURCE_SETTLE_SECONDS,
+  openByteSourceArmSession,
+} from '../src/browser/byteSourceArm.js';
+import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
+import {
   DEFAULT_GATEWAY_SAMPLE_INTERVAL_MS,
   gatewayReader,
   type GatewaySample,
@@ -133,6 +139,9 @@ async function main(): Promise<void> {
   const clientUrl = requireEnv('BROWSER_CLIENT_URL');
   const armSeconds = envNumber('BROWSER_ARM_SECONDS', DEFAULT_ARM_SECONDS);
   const intervalMs = envNumber('BROWSER_SAMPLE_INTERVAL_MS', DEFAULT_SAMPLE_INTERVAL_MS);
+  // Read before a browser is launched, so a misspelt byte source costs nothing rather than a run.
+  const armByteSource = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
+  const byteSourceSettleMs = envNumber('BROWSER_BYTE_SOURCE_SETTLE_SECONDS', DEFAULT_BYTE_SOURCE_SETTLE_SECONDS) * 1000;
   const counted = targetsFrom('BROWSER_SWEEP_TARGETS_S', DEFAULT_COUNTED_TARGETS_S);
   const warmup = targetsFrom('BROWSER_SWEEP_WARMUP_S', DEFAULT_WARMUP_TARGETS_S);
 
@@ -158,6 +167,7 @@ async function main(): Promise<void> {
   );
 
   const requests: RequestRecord[] = [];
+  let byteSourceArm: ByteSourceArmSession | undefined;
   const results: ArmResult[] = [];
   // Collected as session totals and differenced after the loop, because the counter behind them is
   // monotonic across the whole sweep. See `perArmFromSessionTotals`.
@@ -176,6 +186,16 @@ async function main(): Promise<void> {
     const page = await context.newPage();
     recordRequests(page, requests);
     watchUrl = await openViewer(page, clientUrl);
+
+    // ⛔ Before the first arm, and the whole sweep runs on one byte source. Booting the in-tab node
+    // costs 4.5 MB of wasm and several seconds of dialling, so a node joining inside an arm would put
+    // the join in that arm's numbers and in no other, which reads as a buffer effect.
+    byteSourceArm = await openByteSourceArmSession({
+      page,
+      source: armByteSource,
+      playbackStartedAtMs: Date.now(),
+      settleMs: byteSourceSettleMs,
+    });
 
     for (const [index, arm] of plan.entries()) {
       const setup = await setArm(page, arm.targetS);
@@ -256,6 +276,11 @@ async function main(): Promise<void> {
   }
   console.log(`\nbrowser: cost ${cost.bucketsUsed} postage buckets and ${cost.bzzSpent.toFixed(3)} BZZ`);
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
+
+  // ⛔⛔⛔ Last, after the artifact is written, as watch.ts and crash.ts do it: failing here keeps the
+  // request log that is the evidence. Without it a weeb-3 sweep's zero gateway reads is
+  // indistinguishable from a client that never loaded the node.
+  byteSourceArm?.proveBytesCameFromIt(requests);
 }
 
 main().catch((error) => {

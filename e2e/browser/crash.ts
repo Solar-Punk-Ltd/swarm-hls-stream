@@ -16,7 +16,13 @@
  *   deploy/scripts/browser-on-host.sh --script browser:crash -- BROWSER_SCENARIO=viewer-gateway-outage
  */
 
+import {
+  type ByteSourceArmSession,
+  DEFAULT_BYTE_SOURCE_SETTLE_SECONDS,
+  openByteSourceArmSession,
+} from '../src/browser/byteSourceArm.js';
 import { type FaultScenario, scenarioByName } from '../src/browser/faults.js';
+import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { judgeRecovery } from '../src/browser/recovery.js';
@@ -131,6 +137,9 @@ async function main(): Promise<void> {
   const recoverMs = envNumber('BROWSER_RECOVER_SECONDS', DEFAULT_RECOVER_SECONDS) * 1000;
   const intervalMs = envNumber('BROWSER_SAMPLE_INTERVAL_MS', DEFAULT_SAMPLE_INTERVAL_MS);
   const gopSeconds = envNumberOrNull('BROWSER_GOP_SECONDS');
+  // Read before a browser is launched, so a misspelt byte source costs nothing rather than a run.
+  const armByteSource = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
+  const byteSourceSettleMs = envNumber('BROWSER_BYTE_SOURCE_SETTLE_SECONDS', DEFAULT_BYTE_SOURCE_SETTLE_SECONDS) * 1000;
 
   const cfg = loadConfig();
   const host = makeHost(cfg);
@@ -150,6 +159,7 @@ async function main(): Promise<void> {
   console.log(`browser: ${scenario.action} for ${scenario.downMs / 1000}s, breaking ${scenario.breaks}`);
 
   const requests: RequestRecord[] = [];
+  let byteSourceArm: ByteSourceArmSession | undefined;
   const stretches: SampledStretch[] = [];
   let watchUrl = clientUrl;
   let injectedAtMs = 0;
@@ -166,6 +176,21 @@ async function main(): Promise<void> {
     const page = await context.newPage();
     recordRequests(page, requests);
     watchUrl = await openViewer(page, clientUrl);
+
+    // ⛔ Between playback and the settle stretch, not after it. The in-tab node is 4.5 MB of wasm and
+    // several seconds of dialling, and a fault injected while it was still joining would be measuring
+    // the join. Both conditions are held the same way, so the settle below is sampled on a player of
+    // the same age either way.
+    //
+    // ⚠️ Its own settle, BROWSER_BYTE_SOURCE_SETTLE_SECONDS, on top of the pre-fault one below. They
+    // are two different windows: this one hides the node's join, that one is the baseline the freeze
+    // is measured against. An unset BROWSER_FETCH_BACKEND short-circuits and costs nothing.
+    byteSourceArm = await openByteSourceArmSession({
+      page,
+      source: armByteSource,
+      playbackStartedAtMs: Date.now(),
+      settleMs: byteSourceSettleMs,
+    });
 
     const totalSamples = Math.ceil((settleMs + scenario.downMs + recoverMs) / intervalMs);
     const watch = (forMs: number): Promise<SampledStretch> =>
@@ -216,6 +241,11 @@ async function main(): Promise<void> {
     gopSeconds,
     scenario,
     container,
+    byteSource: byteSourceArm?.arm && {
+      requested: byteSourceArm.arm.requested,
+      reported: byteSourceArm.arm.reported,
+      settledForMs: byteSourceArm.arm.settledForMs,
+    },
     fault: { injectedAtMs, liftedAtMs, servingAtMs },
     summary: summarize(samples),
     recovery: judgeRecovery(samples, { injectedAtMs, liftedAtMs, servingAtMs }),
@@ -252,6 +282,12 @@ async function main(): Promise<void> {
     } while frozen`,
   );
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
+
+  // ⛔⛔⛔ Last, after the artifact is written, exactly as watch.ts does it and for the same reason:
+  // failing here keeps the request log that is the evidence. A weeb-3 arm's headline is a ZERO
+  // gateway read, and a client that never loaded the node produces the same zero, so a recovery
+  // reading without this is not a weaker result, it is an unfalsifiable one.
+  byteSourceArm?.proveBytesCameFromIt(requests);
 }
 
 main().catch((error) => {
