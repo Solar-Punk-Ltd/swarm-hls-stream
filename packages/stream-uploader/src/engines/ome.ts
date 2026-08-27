@@ -239,6 +239,18 @@ export function createOmeEngine(
       logger.info(`[OME] Resuming HLS pull for recovered stream ${streamId}`);
       startPuller(orchestrator, streamId, app, stream);
     },
+
+    // Every puller holds a `setTimeout` for its next poll, re-armed at the end of each pass, and the
+    // map they live in is closed over here. Nothing outside could reach them, so nothing could stop
+    // them: a process that built this engine and pulled anything stayed alive for one poll interval
+    // after its last pass, which for a stream that had gone quiet is the retry window rather than the
+    // interval. See {@link EnginePlugin.stopIngest} for why this is not on the shutdown path yet.
+    stopIngest(): void {
+      for (const puller of pullers.values()) {
+        puller.stop();
+      }
+      pullers.clear();
+    },
   };
 }
 
