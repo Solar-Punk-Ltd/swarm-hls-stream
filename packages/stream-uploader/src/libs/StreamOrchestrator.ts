@@ -1380,6 +1380,17 @@ export class StreamOrchestrator {
       }),
     );
 
+    // The same drain the recovery timers get, which the stall reapers were left out of: retiring a
+    // stream cancels its own reaper, so every reaper belonging to a live stream is gone by here, and a
+    // reaper can outlive its stream. It is armed per stream and cancelled only when that stream
+    // retires, so one armed for a stream that went without retiring stays pending until it fires and
+    // finds nothing to reap. After the stops rather than before them, because a segment arriving
+    // during a drain re-arms one, and the point of this is that `cleanup` leaves nothing armed.
+    for (const timer of this.stallReapers.values()) {
+      timer.cancel();
+    }
+    this.stallReapers.clear();
+
     this.logger.info('[StreamOrchestrator] Cleanup complete');
   }
 
