@@ -99,7 +99,7 @@ Preflight:
 
 | file                           | proves                                                                                       |
 | ------------------------------ | -------------------------------------------------------------------------------------------- |
-| `preflight/chequebook-funding` | the uploader node holds ≥ 0.5 BZZ, topping up from its wallet if short, failing if it cannot |
+| `preflight/chequebook-funding` | the uploader node holds ≥ 0.5 BZZ. Read-only: it reports a shortfall and fails, never spends |
 | `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host            |
 
 Fault scenarios:
@@ -194,7 +194,8 @@ that money on numbers nobody should trust.
 - `ssh <target>` works non-interactively.
 - `ffmpeg` on PATH, standing in for OBS.
 - A deployed stack with a usable stamp (the smoke test checks TTL first).
-- The uploader node's chequebook funded to ≥ 0.5 BZZ (the preflight gate tops up if it can).
+- The uploader node's chequebook funded to ≥ 0.5 BZZ. Fund it yourself. The preflight only reads,
+  and prints the exact `curl` to deposit the shortfall if it is short.
 
 ## Not covered
 
