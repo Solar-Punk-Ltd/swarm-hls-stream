@@ -58,5 +58,7 @@ docs/bench/browser-vod-*.md
 # that backpressure. Redirecting it to a file is what makes the dry run pass.
 .stryker-test-output.log
 
-# The night's spend authorisation. Host state, written when the owner gives it, never committed.
-.spend-ledger.env
+# The night's spend authorisation and its dated predecessors. Written when the owner gives it,
+# never committed. Lives in the LOCAL repo root: bench-on-host.sh syncs with --delete and no
+# exclusion for it, so a copy that exists only on the host is deleted by the next sync.
+.spend-ledger.env*
