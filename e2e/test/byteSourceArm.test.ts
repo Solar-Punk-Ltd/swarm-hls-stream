@@ -19,6 +19,14 @@ import { openByteSourceArmSession } from '../src/browser/byteSourceArm.js';
 
 /** The client-side switch the arm setup talks to, as the real client exposes it. */
 const HANDLE = '__swarmFetchBackendSwitch';
+/**
+ * Generous on purpose. The arm-open measures real wall time against this budget, and a unit test
+ * on a loaded machine can lose 100ms to the event loop before the fake even runs: at 40ms this
+ * suite flaked exactly that way (2026-08-27). The fairness guard itself is exercised where a test
+ * controls the clock it measures, not here.
+ */
+const TEST_SETTLE_MS = 10_000;
+
 const WASM = 'https://example.test/assets/weeb_3_bg-CGW4ecJL.wasm';
 const SEGMENT = 'http://gw.test:1633/bytes/abc';
 
@@ -39,7 +47,7 @@ afterEach(() => {
 });
 
 const openArm = (source: 'weeb3' | 'gateway' | null) =>
-  openByteSourceArmSession({ page: fakePage(), source, playbackStartedAtMs: Date.now(), settleMs: 40 });
+  openByteSourceArmSession({ page: fakePage(), source, playbackStartedAtMs: Date.now(), settleMs: TEST_SETTLE_MS });
 
 describe('a run that asked for no byte source', () => {
   it('reports no arm, so a report cannot claim a condition the run did not set', async () => {
