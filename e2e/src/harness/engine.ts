@@ -57,8 +57,10 @@ const SRS: EngineProfile = {
       cfg,
       streamPath,
     )},m=publish`,
-  publishedMarker: /\[SRS\] Stream published/,
-  unpublishedMarker: /\[SRS\] Stream unpublished/,
+  // Three shapes each, because a ladder deployment logs the source and its rungs distinctly and a
+  // single-rendition one keeps the original wording. Any of them is the engine reporting the event.
+  publishedMarker: /\[SRS\] (Stream published|Ladder source authenticated|Rung published)/,
+  unpublishedMarker: /\[SRS\] (Stream unpublished|Ladder source unpublished|Rung unpublished)/,
   reconnectGraceMs: 10_000,
 };
 
