@@ -163,6 +163,11 @@ Which command supports which:
 `browser:arm-order` and `browser:byte-source-order` open no viewer: they print the counterbalanced
 order a sitting's arms must run in, so the shell driver reads the rule instead of deriving its own.
 
+Paid crash and buffer-sweep sittings run through their gated wrappers on the deployment host,
+`deploy/scripts/crash-arms.sh` and `deploy/scripts/buffer-sweep-sitting.sh`: same afford, capacity
+and spend-ceiling gates as every other sitting, one broadcast per fault (or one sized to the whole
+sweep), and an arm that does not name its byte source is refused before anything is published.
+
 The in-tab node needs time to boot: 4.5 MB of wasm and several seconds of dialling. Every driver
 holds it for `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (default 60) before opening its window, so the join
 is never inside a counted stretch. `watch.ts` reads that window from `BROWSER_SETTLE_SECONDS`

@@ -18,6 +18,10 @@
  *
  * Usage, against a broadcast that is already running:
  *   deploy/scripts/browser-on-host.sh --script browser:buffer-sweep -- BROWSER_ARM_SECONDS=240
+ *
+ * A paid sweep goes through `deploy/scripts/buffer-sweep-sitting.sh` instead, which sizes and
+ * publishes the one broadcast the whole sweep rides, puts the spend gates in the path, and refuses
+ * to run without a named byte source.
  */
 
 import {
