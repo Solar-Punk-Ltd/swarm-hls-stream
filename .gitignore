@@ -17,6 +17,9 @@ deploy/config.json
 deploy/.env.deploy*
 *.tsbuildinfo
 
+# TAP written beside the dot reporter so scripts/assert-test-floor.mjs can count what actually ran
+.test-summary.tap
+
 /engines/srs/media
 
 # Compiled output emitted beside sources, which happens when tsc is invoked with

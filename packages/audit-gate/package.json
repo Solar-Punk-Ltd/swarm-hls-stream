@@ -6,7 +6,7 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
-    "test": "TSX_DISABLE_CACHE=1 tsx --test --test-force-exit test/*.test.ts"
+    "test": "TSX_DISABLE_CACHE=1 tsx --test test/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",
