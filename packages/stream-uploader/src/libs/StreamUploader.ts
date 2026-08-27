@@ -1,5 +1,5 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
-import { publishingRendition } from '@swarm-hls-stream/shared';
+import { publishingRendition, segmentUploaded } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import {
@@ -239,7 +239,7 @@ export class StreamUploader {
     this.pendingDiscontinuity = false;
     this.readiness = onFirstSegmentUploaded(this.readiness);
 
-    this.logger.log(`Segment ${segmentIndex} uploaded: ${ref}`);
+    this.logger.log(segmentUploaded(this.streamId, segmentIndex, ref));
 
     this.metrics?.recordSegmentUploaded(Date.now());
     this.uploadLiveManifest();

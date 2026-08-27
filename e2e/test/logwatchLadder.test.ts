@@ -1,8 +1,8 @@
-import { publishingRendition } from '@swarm-hls-stream/shared';
+import { publishingRendition, rungAnnounced, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { ladderRungs, publishedRenditions } from '../src/harness/logwatch.js';
+import { announcedRungs, ladderRungs, publishedRenditions, segmentUploads } from '../src/harness/logwatch.js';
 
 /**
  * The ladder half of the log parsers, which arrived with the ABR merge and had nothing reading it.
@@ -91,5 +91,78 @@ describe('ladderRungs', () => {
     const log = RUNGS.map((rung) => textLine(publishingRendition(rung, LADDER))).join('\n');
 
     assert.deepEqual(ladderRungs(log, 'group-never'), []);
+  });
+});
+
+describe('announcedRungs', () => {
+  const announce = (stream: string, rung: string, topic: string): string =>
+    `[StreamOrchestrator] ${rungAnnounced(stream, rung, LADDER, topic)}`;
+
+  it('reads stream, rung, ladder and topic out of the text format, prefix and all', () => {
+    const log = textLine(announce('live/stream_720p', '720p', 'topic-1'));
+
+    assert.deepEqual(announcedRungs(log), [
+      { streamId: 'live/stream_720p', rung: '720p', ladder: LADDER, topic: 'topic-1' },
+    ]);
+  });
+
+  it('reads the JSON format too', () => {
+    const log = jsonLine(announce('live/stream_360p', '360p', 'topic-2'));
+
+    assert.equal(announcedRungs(log)[0]?.topic, 'topic-2');
+  });
+
+  it('keeps every announce, so a recovered session is visible as the same rung on a fresh topic', () => {
+    const log = [announce('live/stream_720p', '720p', 'before'), announce('live/stream_720p', '720p', 'after')]
+      .map(textLine)
+      .join('\n');
+
+    assert.deepEqual(
+      announcedRungs(log).map((a) => a.topic),
+      ['before', 'after'],
+    );
+  });
+
+  it('is not fooled by an unpublish naming the same stream', () => {
+    assert.deepEqual(announcedRungs(textLine('[SRS] Rung unpublished: live/stream_720p')), []);
+  });
+});
+
+describe('segmentUploads', () => {
+  it('scopes indices to their stream across an interleaved ladder log', () => {
+    const log = [
+      segmentUploaded('live/stream_720p', 1, 'r1'),
+      segmentUploaded('live/stream_360p', 1, 'r2'),
+      segmentUploaded('live/stream_720p', 2, 'r3'),
+      segmentUploaded('live/stream_360p', 3, 'r4'),
+    ]
+      .map(textLine)
+      .join('\n');
+
+    const uploads = segmentUploads(log);
+
+    assert.deepEqual(
+      uploads.filter((u) => u.streamId === 'live/stream_720p').map((u) => u.index),
+      [1, 2],
+    );
+    assert.deepEqual(
+      uploads.filter((u) => u.streamId === 'live/stream_360p').map((u) => u.index),
+      [1, 3],
+    );
+  });
+
+  it('reads the JSON format', () => {
+    const log = jsonLine(segmentUploaded('live/stream', 7, 'ref'));
+
+    assert.deepEqual(segmentUploads(log), [{ streamId: 'live/stream', index: 7 }]);
+  });
+
+  /**
+   * The pre-ladder line named no stream, so it cannot be attributed and is deliberately not parsed:
+   * a harness pointed at a deployment older than the contract must read zero segments and fail
+   * loudly in warmup, not attribute every rung's segments to nobody.
+   */
+  it('reads nothing from the pre-ladder line shape', () => {
+    assert.deepEqual(segmentUploads(textLine('Segment 5 uploaded: bzz://a1b2c3')), []);
   });
 });

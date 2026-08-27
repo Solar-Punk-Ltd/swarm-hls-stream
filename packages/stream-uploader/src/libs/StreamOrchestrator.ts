@@ -1,3 +1,4 @@
+import { rungAnnounced } from '@swarm-hls-stream/shared';
 import crypto from 'crypto';
 
 import {
@@ -506,7 +507,7 @@ export class StreamOrchestrator {
       ladder = { group, rung: match.rung };
       this.streamBases.set(streamId, match.baseStreamId);
       this.logger.info(
-        `[StreamOrchestrator] ${streamId} is rung ${match.rung.name} of ladder ${group}, topic ${streamTopic}`,
+        `[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, group, streamTopic)}`,
       );
     }
 

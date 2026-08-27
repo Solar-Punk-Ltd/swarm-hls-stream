@@ -57,9 +57,9 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy: 'discoverCatalogFeed, so scenario F and service/catalog-via-gateway cannot start',
   },
   {
-    what: 'per-segment upload lines ("Segment N uploaded")',
+    what: 'per-segment upload lines ("Segment N of <stream> uploaded")',
     level: 'log',
-    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'uploaded: ${ref}' },
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'segmentUploaded(this.streamId, segmentIndex, ref)' },
     neededBy: 'every scenario that counts segments or checks they are gapless',
   },
   {

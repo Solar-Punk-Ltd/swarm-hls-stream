@@ -1,3 +1,4 @@
+import { segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -42,7 +43,7 @@ function announcement(topic: string, state: string): string {
   })}`;
 }
 
-const UPLOADED = (index: number) => `Segment ${index} uploaded: bzz://a1b2c3`;
+const UPLOADED = (index: number) => segmentUploaded('live/stream', index, 'bzz://a1b2c3');
 const MANIFEST = (index: number) => `Manifest uploaded at SOC index ${index}`;
 const DISCONTINUITY = (index: number) =>
   `Failed to upload segment ${index} for stream stream-7 within the retry window; marking a discontinuity`;

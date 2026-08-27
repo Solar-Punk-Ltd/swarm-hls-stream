@@ -41,3 +41,56 @@ export function publishingRenditionPattern(flags = ''): RegExp {
   const escaped = publishingRendition(RUNG_SLOT, LADDER_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(escaped.replace(RUNG_SLOT, '(\\S+)').replace(LADDER_SLOT, '(\\S+)'), flags);
 }
+
+const STREAM_SLOT = 'STREAMSLOT';
+const TOPIC_SLOT = 'TOPICSLOT';
+/** Numeric stand-in for the index parameter, distinctive enough to never occur in the literal half. */
+const INDEX_SLOT = 424242424242;
+
+/**
+ * Written once per uploaded segment. The stream id is part of the message because a ladder is four
+ * independent segment counters: without it the interleaved indices of four rungs are one
+ * unreadable sequence, in the harness and for an operator alike.
+ */
+export function segmentUploaded(streamId: string, index: number, reference: string): string {
+  return `Segment ${index} of ${streamId} uploaded: ${reference}`;
+}
+
+/**
+ * {@link segmentUploaded} as a matcher: index, stream and reference as capture groups 1, 2 and 3.
+ */
+export function segmentUploadedPattern(flags = ''): RegExp {
+  const escaped = segmentUploaded(STREAM_SLOT, INDEX_SLOT, TOPIC_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(
+    escaped.replace(String(INDEX_SLOT), '(\\d+)').replace(STREAM_SLOT, '(\\S+)').replace(TOPIC_SLOT, '(\\S+)'),
+    flags,
+  );
+}
+
+/**
+ * Written once when a rung is grouped into its ladder, at session start. Byte-identical to the line
+ * `StreamOrchestrator` wrote before this composer existed, so the derived pattern also reads logs
+ * from deployments that predate it.
+ *
+ * This is the only line that carries the session topic, and the topic is what tells a recovered
+ * session from a retired one: the ladder group deliberately survives an engine restart while any
+ * sibling is still draining, so recovery is visible as fresh topics, never as a fresh group.
+ */
+export function rungAnnounced(streamId: string, rung: string, ladder: string, topic: string): string {
+  return `${streamId} is rung ${rung} of ladder ${ladder}, topic ${topic}`;
+}
+
+/**
+ * {@link rungAnnounced} as a matcher: stream, rung, ladder and topic as capture groups 1 to 4.
+ */
+export function rungAnnouncedPattern(flags = ''): RegExp {
+  const escaped = rungAnnounced(STREAM_SLOT, RUNG_SLOT, LADDER_SLOT, TOPIC_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(
+    escaped
+      .replace(STREAM_SLOT, '(\\S+)')
+      .replace(RUNG_SLOT, '(\\S+)')
+      .replace(LADDER_SLOT, '(\\S+)')
+      .replace(TOPIC_SLOT, '(\\S+)'),
+    flags,
+  );
+}

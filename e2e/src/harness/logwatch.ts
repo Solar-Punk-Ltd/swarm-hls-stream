@@ -20,7 +20,7 @@
  * failure is another silent empty result rather than an error.
  */
 
-import { publishingRenditionPattern } from '@swarm-hls-stream/shared';
+import { publishingRenditionPattern, rungAnnouncedPattern, segmentUploadedPattern } from '@swarm-hls-stream/shared';
 
 export interface UploaderEvents {
   uploadedSegments: number[];
@@ -53,7 +53,6 @@ export interface UploaderEvents {
   videolessSegments: number[];
 }
 
-const RE_UPLOADED = /Segment (\d+) uploaded/g;
 /**
  * All three ways the uploader arms a discontinuity, not just the upload failure.
  *
@@ -188,7 +187,7 @@ function countMatches(source: string, re: RegExp): number {
 export function parseUploaderLog(text: string): UploaderEvents {
   const messages = messageText(text);
   return {
-    uploadedSegments: captureNumbers(messages, RE_UPLOADED),
+    uploadedSegments: captureNumbers(messages, segmentUploadedPattern('g')),
     discontinuitiesArmed: countMatches(messages, RE_DISCONTINUITY),
     discontinuitySegments: captureNumbers(messages, RE_DISCONTINUITY_SEGMENT),
     manifestSocIndices: captureNumbers(messages, RE_MANIFEST),
@@ -274,6 +273,47 @@ export function publishedRenditions(text: string): PublishedRendition[] {
   return [...messageText(text).matchAll(publishingRenditionPattern('g'))].map((match) => ({
     rung: match[1],
     ladder: match[2],
+  }));
+}
+
+/** One `Segment N of <stream> uploaded` line: which stream's counter moved, and to what. */
+export interface SegmentUpload {
+  streamId: string;
+  index: number;
+}
+
+/**
+ * Segment uploads with the stream they belong to, which is the only sound way to read them under a
+ * ladder: four rungs are four independent counters, and the merged deduplicated indices can mask a
+ * one-rung gap exactly as easily as they can invent one. `uploadedSegments` keeps the merged view
+ * for single-rendition scenarios; anything judging gaps on a ladder deployment scopes through this.
+ */
+export function segmentUploads(text: string): SegmentUpload[] {
+  return [...messageText(text).matchAll(segmentUploadedPattern('g'))].map((match) => ({
+    streamId: match[2],
+    index: Number(match[1]),
+  }));
+}
+
+/** One rung-announce line: the only place a session's topic is visible next to its ladder. */
+export interface AnnouncedRung {
+  streamId: string;
+  rung: string;
+  ladder: string;
+  topic: string;
+}
+
+/**
+ * Every rung announce, in order. A session announces once at start, so a recovered rung is visible
+ * here as the same rung on a fresh topic. The ladder group deliberately survives an engine restart
+ * while any sibling is still draining, so recovery must be read off topics, never off groups.
+ */
+export function announcedRungs(text: string): AnnouncedRung[] {
+  return [...messageText(text).matchAll(rungAnnouncedPattern('g'))].map((match) => ({
+    streamId: match[1],
+    rung: match[2],
+    ladder: match[3],
+    topic: match[4],
   }));
 }
 
