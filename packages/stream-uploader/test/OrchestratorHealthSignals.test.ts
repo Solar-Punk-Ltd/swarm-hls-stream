@@ -6,7 +6,7 @@ import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, PRESSURE_HIGH, PRESSURE_LOW, PRESSURE_MEDIUM, QueuePressure } from '../src/types.js';
 
 import { FakeClock } from './helpers/fakeClock.js';
-import { makeFakeCatalog, makeTestOrchestrator, neverSettles } from './helpers/fakes.js';
+import { makeFakeCatalog, makeFakeRecoveryStore, makeTestOrchestrator, neverSettles } from './helpers/fakes.js';
 
 /** Wide enough that a queue can land on either pressure threshold exactly rather than near it. */
 const QUEUE_CEILING = 10;
@@ -322,6 +322,32 @@ describe('StreamOrchestrator metrics gauges', () => {
     assert.ok(
       age !== null && age >= 0 && age < PLAUSIBLE_AGE_CEILING_MS,
       `a rejection just now has to read as an age of about zero, and an epoch reading satisfies "not negative" just as well: ${age}`,
+    );
+  });
+});
+
+describe('the unrecoverable-stream alarm follows the disk', () => {
+  /**
+   * `RecoveryStore.listQuarantined` reads the directory on every call precisely so a restart cannot
+   * clear what an operator has not repaired. The signal handed to /health must hold the same
+   * contract in the other direction: an operator who repairs or removes the file has made the alarm
+   * untrue, and health must say so at the next read, not at the next boot. Found live 2026-08-27,
+   * a leaked quarantine kept a whole deployment `degraded` after the file was already gone, and
+   * only a container restart cleared it.
+   */
+  it('clears at the next read once the quarantined file is gone, not at the next boot', async () => {
+    const onDisk: string[] = ['dead.json.corrupt'];
+    const store = makeFakeRecoveryStore({ listQuarantined: () => [...onDisk] });
+    const orch = makeTestOrchestrator({}, {}, store);
+
+    await orch.recoverStreams();
+    assert.equal(orch.getHealthSignals().quarantinedRecoveryEntries, 1, 'the boot scan must raise the alarm');
+
+    onDisk.length = 0;
+    assert.equal(
+      orch.getHealthSignals().quarantinedRecoveryEntries,
+      0,
+      'the repair must clear the alarm without a restart',
     );
   });
 });

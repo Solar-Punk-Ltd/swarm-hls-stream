@@ -168,14 +168,6 @@ export class StreamOrchestrator {
   /** Streams already reported as having unreadable segment durations, so the warning fires once each. */
   private unreadDurationReported = new Set<string>();
   /**
-   * Damaged recovery entries sitting in the state directory, counted at boot off what is on disk.
-   *
-   * Never cleared while the process runs, because no later event makes a stranded recording
-   * recoverable: only an operator repairing the quarantined file does. Reading it off disk rather
-   * than counting this boot's quarantines is what keeps a restart from clearing it. See task #38.
-   */
-  private quarantinedRecoveryEntries = 0;
-  /**
    * Video streams still waiting for their first frame, with how much media has been withheld so far.
    *
    * An entry means no segment carrying video has reached this stream yet, so nothing it is handed may
@@ -867,13 +859,14 @@ export class StreamOrchestrator {
     const activeIds = this.recoveryStore.listActive();
     const recovered = activeIds.length === 0 ? this.reportNothingToRecover() : this.recoverEach(activeIds);
 
-    // Counted off disk rather than from this pass, so a restart cannot clear the alarm. Nothing here
-    // restarts on a degraded status, so a signal that outlives the process costs nothing and a signal
-    // that does not would be gone by the time an operator looked. See task #38.
-    this.quarantinedRecoveryEntries = this.recoveryStore.listQuarantined().length;
-    if (this.quarantinedRecoveryEntries > 0) {
+    // Logged at boot; the health signal itself reads the directory at every snapshot, so the alarm
+    // survives a restart AND clears the moment an operator repairs or removes the file. Caching the
+    // count here is how a deployment once stayed degraded for hours after the file was gone, until a
+    // container restart re-ran this line (found live 2026-08-27). See task #38.
+    const quarantined = this.recoveryStore.listQuarantined().length;
+    if (quarantined > 0) {
       this.logger.error(
-        `[StreamOrchestrator] ${this.quarantinedRecoveryEntries} recovery entries are in quarantine: each one is ` +
+        `[StreamOrchestrator] ${quarantined} recovery entries are in quarantine: each one is ` +
           'a broadcast that cannot be finalized until the file is repaired by hand',
       );
     }
@@ -1365,7 +1358,7 @@ export class StreamOrchestrator {
       segmentsSkipped: counters.segmentsSkippedTotal,
       openingSegmentsWithheld: counters.openingSegmentsWithheldTotal,
       segmentsNeverNamed: counters.segmentsNeverNamedTotal,
-      quarantinedRecoveryEntries: this.quarantinedRecoveryEntries,
+      quarantinedRecoveryEntries: this.recoveryStore.listQuarantined().length,
     };
   }
 
