@@ -318,6 +318,17 @@ sed -i "s/SRT_PORT_PLACEHOLDER/${SRS_SRT_PORT:-10080}/g" "$CONF"
 # on purpose: this is a demo stack and the loop check the API exists for has to be reachable.
 sed -i "s/HTTP_API_PORT_PLACEHOLDER/${SRS_HTTP_API_PORT:-1985}/g" "$CONF"
 
+# The ladder's ffmpeg INPUT is built by SRS itself, and an SRT-bridged source carries no RTMP port,
+# so the input always dials 127.0.0.1:1935 whatever `listen` says: the input-side twin of the
+# `[port]` trap on the republish above (ossrs/srs#4496). A slotted deployment listens elsewhere, so
+# the loop's first hop gets `Connection refused` and every rung dies while SRS and the uploader
+# both look healthy. Listen on loopback 1935 as well: loopback so nothing new faces the network,
+# only under a ladder because only the ladder loops back, and only when the slot moved RTMP off
+# 1935 so an unslotted deployment does not bind it twice.
+if abr_enabled && [ "${SRS_RTMP_PORT:-1935}" != "1935" ]; then
+  sed -i "s/^\(listen[[:space:]][^;]*\);/\1 127.0.0.1:1935;/" "$CONF"
+fi
+
 # Ensure HLS output directories exist with open permissions
 # These are shared with the uploader container which needs read + delete access.
 # The ABR vhost reuses [app], so the rungs land in these same directories under their own

@@ -170,3 +170,31 @@ describe('the generated ABR vhost', () => {
     assert.doesNotMatch(conf, /transcode\s*\{/, 'a single-rendition deployment grew a transcode block');
   });
 });
+
+describe('the listen line the ladder input dials', () => {
+  /**
+   * SRS builds the transcode INPUT itself, and an SRT-bridged source carries no RTMP port, so the
+   * input always dials 127.0.0.1:1935 whatever `listen` says: the input-side twin of the `[port]`
+   * trap the republish already works around (ossrs/srs#4496). Found live 2026-08-27: a slot-7
+   * deployment listened on 10072, every rung's ffmpeg died on `Connection refused` to 1935, and
+   * not one segment reached the uploader while SRS and the uploader both reported healthy.
+   */
+  it('adds a loopback 1935 listener when the slot moves RTMP off 1935', () => {
+    const conf = renderLadderConf({ ...VALID, SRS_RTMP_PORT: '10072' });
+    assert.match(conf, /^listen\s+10072 127\.0\.0\.1:1935;$/m);
+  });
+
+  it('does not bind 1935 twice when the deployment is unslotted', () => {
+    const conf = renderLadderConf({ ...VALID });
+    assert.match(conf, /^listen\s+1935;$/m);
+  });
+
+  it('leaves a single-rendition deployment alone', () => {
+    const conf = renderLadderConf({
+      SRS_WEBHOOK_TOKEN: VALID.SRS_WEBHOOK_TOKEN,
+      ABR_ENABLED: 'false',
+      SRS_RTMP_PORT: '10072',
+    });
+    assert.match(conf, /^listen\s+10072;$/m);
+  });
+});
