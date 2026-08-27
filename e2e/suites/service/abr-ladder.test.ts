@@ -4,11 +4,12 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
 import {
+  announcedRungs,
   isContiguous,
   ladderRungs,
   parseUploaderLog,
-  type PublishedRendition,
   publishedRenditions,
+  segmentUploads,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { waitFor } from '../../src/harness/wait.js';
@@ -95,42 +96,49 @@ describe('service — ABR ladder: every rung publishes and stays gapless', { ski
     assert.equal(groups.size, 1, `rungs were split across ladders: ${[...groups].join(', ')}`);
   });
 
+  /**
+   * Counted in segments rather than in catalog announces, because the announce cadence is the
+   * catalog's refresh interval: waiting for four announces per rung is minutes of broadcast, while
+   * four segments per rung is seconds, and segments are the thing a stalled rung stops producing.
+   */
   it('keeps each rung publishing, rather than one rung carrying the broadcast', async () => {
     await waitFor(
       async () => {
-        const counts = countByRung(publishedRenditions(await log()));
-        return [...counts.values()].every((n) => n >= TARGET_SEGMENTS_PER_RUNG);
+        const counts = segmentCountsByRung(await log());
+        return cfg.abrRungs.every((rung) => (counts.get(rung) ?? 0) >= TARGET_SEGMENTS_PER_RUNG);
       },
       {
         timeoutMs: SEGMENT_WAIT_MS,
         intervalMs: 3_000,
-        label: `every rung reaches ${TARGET_SEGMENTS_PER_RUNG} publishes`,
+        label: `every rung uploads ${TARGET_SEGMENTS_PER_RUNG} segments`,
       },
     );
 
-    const counts = countByRung(publishedRenditions(await log()));
+    const counts = segmentCountsByRung(await log());
     for (const rung of cfg.abrRungs) {
       assert.ok(
         (counts.get(rung) ?? 0) >= TARGET_SEGMENTS_PER_RUNG,
-        `rung ${rung} published ${counts.get(rung) ?? 0} times, the others reached ${TARGET_SEGMENTS_PER_RUNG}`,
+        `rung ${rung} uploaded ${counts.get(rung) ?? 0} segments, the others reached ${TARGET_SEGMENTS_PER_RUNG}`,
       );
     }
   });
 
   /**
-   * The ladder must not cost the property the single-rendition path already has. Segment indices are
-   * reported per uploader session across all rungs, so this is the whole broadcast's run rather than
-   * one rung's, which is exactly the level a discontinuity would show up at.
+   * The ladder must not cost the property the single-rendition path already has. Four rungs are four
+   * independent segment counters, and the merged deduplicated view can mask a one-rung gap behind a
+   * sibling's healthy index just as easily as it can invent one, so contiguity is judged per rung
+   * stream and never on the merge. Found 2026-08-27: the merged view read a healthy ladder as chaos.
    */
   it('arms no discontinuity and loses no segment, as the single-rendition path does not', async () => {
-    const events = parseUploaderLog(await log());
+    const text = await log();
+    const uploads = segmentUploads(text);
 
-    assert.ok(events.uploadedSegments.length > 0, 'no segment uploaded at all, so nothing here is a ladder result');
-    assert.ok(
-      isContiguous(events.uploadedSegments),
-      `ladder segment indices must be gapless; got: ${events.uploadedSegments.join(',')}`,
-    );
-    assert.equal(events.discontinuitiesArmed, 0, 'transcoding a ladder should not arm a discontinuity');
+    assert.ok(uploads.length > 0, 'no segment uploaded at all, so nothing here is a ladder result');
+    for (const streamId of new Set(uploads.map((upload) => upload.streamId))) {
+      const indices = uploads.filter((upload) => upload.streamId === streamId).map((upload) => upload.index);
+      assert.ok(isContiguous(indices), `segment indices of ${streamId} must be gapless; got: ${indices.join(',')}`);
+    }
+    assert.equal(parseUploaderLog(text).discontinuitiesArmed, 0, 'transcoding a ladder should not arm a discontinuity');
   });
 });
 
@@ -139,10 +147,15 @@ function abrOff(enabled: boolean): string | false {
   return enabled ? false : 'ABR_ENABLED is off on this deployment, so there is no ladder to observe';
 }
 
-function countByRung(publishes: readonly PublishedRendition[]): Map<string, number> {
+/** Segment counts per rung, joined through the announces: only they know which stream is which rung. */
+function segmentCountsByRung(text: string): Map<string, number> {
+  const rungOf = new Map(announcedRungs(text).map((announce) => [announce.streamId, announce.rung]));
   const counts = new Map<string, number>();
-  for (const publish of publishes) {
-    counts.set(publish.rung, (counts.get(publish.rung) ?? 0) + 1);
+  for (const upload of segmentUploads(text)) {
+    const rung = rungOf.get(upload.streamId);
+    if (rung !== undefined) {
+      counts.set(rung, (counts.get(rung) ?? 0) + 1);
+    }
   }
   return counts;
 }
