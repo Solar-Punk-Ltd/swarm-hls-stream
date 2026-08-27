@@ -86,20 +86,20 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
  * The budget is bounded and generous: once the fetch stub has resolved there is no I/O left, so the
  * callbacks need a handful of ticks, and a defect that needed more than fifty is not the one here.
  * Verified the other way round, which is the part that matters: on 37d1cba these tests fail.
+ *
+ * ⛔ **One poll per call, never a loop of them.** Node floors `setTimeout(0)` at about a millisecond,
+ * so this budget costs tens of milliseconds of real time and a loop pays that per poll. Six loops here
+ * used to, the worst two measuring 2306ms and 677ms on a quiet machine, and the 677ms one took
+ * **5491ms** under a full `pnpm verify`, past vitest's 5000ms default, which failed the repo gate with
+ * nothing wrong. A budget is also the weaker wait: it can only be long enough or too short. Every loop here
+ * now awaits {@link ManifestFetcher.settled}, which is the walk's own completion signal. See the note
+ * above `poll` in the #84 block, which reached this conclusion first.
  */
 async function settle(ticks = 50): Promise<void> {
   for (let tick = 0; tick < ticks; tick++) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
-
-/**
- * A shorter budget for the polls that 404, which never reach the serialising queue. Used only in the
- * loops long enough that the full budget would outrun the test timeout, and safe there because both
- * of those tests end on an assertion that a report fired, which cannot happen unless every poll in
- * the loop was counted.
- */
-const UNSERVED_POLL_TICKS = 8;
 
 const manager = ManifestStateManager.getInstance();
 const realFetch = globalThis.fetch;
@@ -321,13 +321,20 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     );
   });
 
-  /** One poll of a feed that answers nothing for the slot the player is waiting on. */
+  /**
+   * One poll of a feed that answers nothing for the slot the player is waiting on.
+   *
+   * Awaits the walk rather than a tick budget, because both tests below run thirty of these and one
+   * ran 5491ms against vitest's 5000ms default under a loaded machine. The count is also what those
+   * tests assert on, and the walk is where a poll is counted, so this is the wait that cannot be too
+   * short: see {@link settle}.
+   */
   async function pollUnservedSlot(): Promise<void> {
     const gate = deferred<void>();
     stubFetch(gate.promise, () => new Response('not found', { status: 404 }));
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     gate.resolve();
-    await settle(UNSERVED_POLL_TICKS);
+    await fetcher.settled();
   }
 
   /** One poll that the publisher does answer, which is what a run of unserved polls has to forget. */
@@ -336,7 +343,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     stubFetch(gate.promise);
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     gate.resolve();
-    await settle();
+    await fetcher.settled();
   }
 
   // The previous test pins that one unserved slot is silent, which is the ordinary case for a viewer
@@ -688,7 +695,7 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
     stubFetch(() => new Response('not found', { status: 404 }));
     for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
       await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-      await settle(UNSERVED_POLL_TICKS);
+      await fetcher.settled();
     }
   }
 
@@ -1045,7 +1052,7 @@ describe('following the feed costs one head lookup (LAT-10)', () => {
   it('resolves the head on mount and never again', async () => {
     for (let poll = 0; poll < 6; poll++) {
       await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-      await settle();
+      await fetcher.settled();
     }
 
     const heads = requested.filter((url) => url.includes('/feeds/'));
@@ -1056,7 +1063,7 @@ describe('following the feed costs one head lookup (LAT-10)', () => {
   it('walks by explicit slot address from wherever the head landed', async () => {
     for (let poll = 0; poll < 4; poll++) {
       await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-      await settle();
+      await fetcher.settled();
     }
 
     const followUps = requested.slice(1);
@@ -1152,9 +1159,10 @@ describe('a refused slot that later slots are already behind (#71)', () => {
     console.error = realConsoleError;
   });
 
+  /** Awaits the walk, not a tick budget: the stalled-ladder test below polls thirty-five times. */
   const poll = async () => {
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-    await settle();
+    await fetcher.settled();
   };
 
   const at = () => manager.getIndex(hexTopic)!.toBigInt();
@@ -1398,7 +1406,7 @@ describe('the probe landing on the recording instead of the manifest that ended 
 
   const poll = async () => {
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-    await settle();
+    await fetcher.settled();
   };
 
   const firstSegment = () =>
