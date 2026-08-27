@@ -49,12 +49,13 @@ describe('SRS ingest', () => {
     assert.match('[SRS] Stream published: stream-7 (video)', engine.publishedMarker);
     assert.match('[SRS] Stream unpublished: stream-7', engine.unpublishedMarker);
     assert.doesNotMatch('[SRS] Stream unpublished: stream-7', engine.publishedMarker);
-    // The ladder shapes: the source and its rungs are logged distinctly, and each is the event.
+    // The ladder's SOURCE lines are the event; a rung's are not. Under a ladder the rungs unpublish
+    // BEFORE the source session finishes dying, and a reconnect triggered on a rung line lands in
+    // the tail of the old session, which SRS answers by dropping the new publisher.
     assert.match('[SRS] Ladder source authenticated: live/stream', engine.publishedMarker);
-    assert.match('[SRS] Rung published: live/stream_720p', engine.publishedMarker);
     assert.match('[SRS] Ladder source unpublished: live/stream', engine.unpublishedMarker);
-    assert.match('[SRS] Rung unpublished: live/stream_360p', engine.unpublishedMarker);
-    assert.doesNotMatch('[SRS] Rung unpublished: live/stream_360p', engine.publishedMarker);
+    assert.doesNotMatch('[SRS] Rung published: live/stream_720p', engine.publishedMarker);
+    assert.doesNotMatch('[SRS] Rung unpublished: live/stream_360p', engine.unpublishedMarker);
   });
 });
 

@@ -57,10 +57,12 @@ const SRS: EngineProfile = {
       cfg,
       streamPath,
     )},m=publish`,
-  // Three shapes each, because a ladder deployment logs the source and its rungs distinctly and a
-  // single-rendition one keeps the original wording. Any of them is the engine reporting the event.
-  publishedMarker: /\[SRS\] (Stream published|Ladder source authenticated|Rung published)/,
-  unpublishedMarker: /\[SRS\] (Stream unpublished|Ladder source unpublished|Rung unpublished)/,
+  // The SOURCE session's lines only, never a rung's. These markers mean "the broadcaster's session
+  // began or ended", and under a ladder the rung teardown starts BEFORE the source session has
+  // finished dying: scenario K once reconnected on the first rung-unpublish and SRS dropped the new
+  // publisher into the tail of the old session (found live 2026-08-27, ordering varies run to run).
+  publishedMarker: /\[SRS\] (Stream published|Ladder source authenticated)/,
+  unpublishedMarker: /\[SRS\] (Stream unpublished|Ladder source unpublished)/,
   reconnectGraceMs: 10_000,
 };
 
