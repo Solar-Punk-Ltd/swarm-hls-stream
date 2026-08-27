@@ -132,7 +132,7 @@ Service coverage, no faults:
 
 **The default subject of a viewer measurement is our client reading segment bytes from a Swarm node
 running in the tab, not a bee gateway.** A gateway arm is the control, not the baseline. Set it with
-`BROWSER_FETCH_BACKEND`, which every viewer driver reads:
+`BROWSER_FETCH_BACKEND`. The command matrix below says which drivers honour it:
 
 | value     | what the viewer is                                                          |
 | --------- | --------------------------------------------------------------------------- |
@@ -158,6 +158,9 @@ Which command supports which:
 | `browser:selfcheck`           | **no**       | proves the instrument, not a viewer condition      |
 | `browser:gateway-check`       | n/a          | gateway by definition                              |
 | `e2e:run`                     | n/a          | uploader-side, asserts on uploader logs, no viewer |
+
+`browser:arm-order` and `browser:byte-source-order` open no viewer: they print the counterbalanced
+order a sitting's arms must run in, so the shell driver reads the rule instead of deriving its own.
 
 The in-tab node needs time to boot: 4.5 MB of wasm and several seconds of dialling. Every driver
 holds it for `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (default 60) before opening its window, so the join
