@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'vitest';
 
 import {
+  FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FeedHealthTracker,
@@ -138,6 +139,28 @@ describe('the ladder entry points', () => {
       await fetcher.fetchSource(`${OWNER}/${SOURCE_TOPIC}`);
 
       assert.equal(manager.serialize(hexSource, `${BEE_URL}/bytes`), '');
+    });
+
+    /**
+     * The overlay subscribes to the SOURCE topic, so the ended signal has to land there, not on the
+     * rung topics finalization is actually read from. V5's first live run is why this is asserted at
+     * this level: the poller stopped its walks on ENDLIST while the viewer stayed on `live` over a
+     * frozen frame.
+     */
+    it('ends the source topic once every rung the master names is finalized', async () => {
+      stubFetch(buildMasterPlaylist(OWNER, LADDER), (path) => {
+        if (RUNG_TOPICS.some((hex) => path === `feeds/${OWNER}/${hex}`)) {
+          return feedResponse(`${mediaPlaylist('rung-seg.ts')}\n#EXT-X-ENDLIST`);
+        }
+        return null;
+      });
+
+      await fetcher.fetchSource(`${OWNER}/${SOURCE_TOPIC}`);
+
+      for (let tick = 0; tick < 200 && health.state(hexSource) !== FEED_STATE_ENDED; tick++) {
+        await settle(1);
+      }
+      assert.equal(health.state(hexSource), FEED_STATE_ENDED);
     });
   });
 

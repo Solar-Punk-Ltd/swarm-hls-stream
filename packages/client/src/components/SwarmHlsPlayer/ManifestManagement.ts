@@ -431,7 +431,7 @@ export class ManifestFetcher {
     // time already sees the *next* stream's ladder — which would stop the rungs just started and
     // leave the previous stream's walk loops running forever.
     this.trackLadder(sourceUrl, topics, resolve);
-    this.poller.start(ladder.owner, topics);
+    this.poller.start(ladder.owner, topics, groupHexOf(sourceUrl));
   }
 
   /**
@@ -864,7 +864,7 @@ export class ManifestFetcher {
 
     const topics = variants.map((variant) => Topic.fromString(variant.topic));
     this.trackLadder(sourceUrl, topics);
-    this.poller.start(variants[0].owner || sourceOwner, topics);
+    this.poller.start(variants[0].owner || sourceOwner, topics, groupHexOf(sourceUrl));
   }
 
   /**
@@ -979,6 +979,19 @@ export class ManifestFetcher {
 
 function ladderTopics(ladder: LadderSource): Topic[] {
   return ladder.renditions.map((rendition) => Topic.fromString(rendition.topic));
+}
+
+/**
+ * The topic the player's overlay subscribes to for this source, hex-encoded exactly as
+ * `SwarmHlsPlayer` derives it, so a signal recorded against it is one the overlay hears. Null when
+ * the URL does not parse, which is a source no overlay can be subscribed to under any key either.
+ */
+function groupHexOf(sourceUrl: string): string | null {
+  try {
+    return Topic.fromString(parseSwarmUri(sourceUrl).topic).toString();
+  } catch {
+    return null;
+  }
 }
 
 /**

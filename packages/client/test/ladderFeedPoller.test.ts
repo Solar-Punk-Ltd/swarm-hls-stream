@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'vitest';
 
 import {
+  FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
   FeedHealthTracker,
@@ -207,6 +208,81 @@ describe('LadderFeedPoller', () => {
     } finally {
       poller.stop([topic]);
     }
+  });
+
+  /**
+   * The ended overlay listens on the GROUP topic and finalization arrives one RUNG at a time. The
+   * single-rendition walk records both against the same topic, so only the ladder has to bridge
+   * them — and the first live V5 run proved it did not: the broadcast finalized as a VOD and the
+   * viewer sat on `live` over a frozen frame for the rest of the watch.
+   */
+  describe('telling the viewer the broadcast ended', () => {
+    const groupHex = Topic.fromString('group-1').toString();
+
+    it('records ended on the group once every rung is finalized', async () => {
+      const topics = ['group-1-360p', 'group-1-720p'].map((t) => Topic.fromString(t));
+      const gateway = new FakeGateway();
+      const tracker = new FeedHealthTracker();
+      for (const topic of topics) {
+        gateway.publishFeedHead(topic, 0, manifest(1));
+        gateway.publishSoc(topic, 1, manifest(2, true));
+      }
+
+      const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+      poller.start(OWNER, topics, groupHex);
+
+      try {
+        await waitFor(() => tracker.state(groupHex) === FEED_STATE_ENDED, 'the group to end');
+      } finally {
+        poller.stop(topics);
+      }
+    });
+
+    /**
+     * All rungs rather than any, mirroring the uploader's own rule (a ladder goes to VOD only once
+     * every announced rung has finalized): one finalized rung beside live ones is a rung retired,
+     * not a broadcast over.
+     */
+    it('does not record ended while any rung is still live', async () => {
+      const finalized = Topic.fromString('group-1-360p');
+      const live = Topic.fromString('group-1-720p');
+      const gateway = new FakeGateway();
+      const tracker = new FeedHealthTracker();
+      gateway.missingSlotStatus = 404;
+      gateway.publishFeedHead(finalized, 0, manifest(2, true));
+      gateway.publishFeedHead(live, 0, manifest(1));
+
+      const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+      poller.start(OWNER, [finalized, live], groupHex);
+
+      try {
+        await waitFor(() => segmentCount(state, finalized) === 2, 'the finalized rung read');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        assert.equal(tracker.state(groupHex), FEED_STATE_LIVE);
+      } finally {
+        poller.stop([finalized, live]);
+      }
+    });
+
+    it('records nothing when the walk was started without a group', async () => {
+      const topic = Topic.fromString('group-1-360p');
+      const gateway = new FakeGateway();
+      const tracker = new FeedHealthTracker();
+      gateway.publishFeedHead(topic, 0, manifest(2, true));
+
+      const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+      poller.start(OWNER, [topic]);
+
+      try {
+        await waitFor(() => segmentCount(state, topic) === 2, 'the finalized rung read');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        assert.equal(tracker.state(groupHex), FEED_STATE_LIVE);
+      } finally {
+        poller.stop([topic]);
+      }
+    });
   });
 
   it('keeps retrying an index that has not been published yet', async () => {

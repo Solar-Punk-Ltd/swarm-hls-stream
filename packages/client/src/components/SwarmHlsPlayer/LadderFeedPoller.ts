@@ -41,7 +41,11 @@ const MISSES_BEFORE_WARNING = 20;
 interface PolledTopic {
   topic: Topic;
   hexTopic: string;
+  /** The topic the overlay watches, carried so the last rung to finalize can end it. Null for a walk started without one. */
+  group: string | null;
   stopped: boolean;
+  /** Whether this rung's playlist carried ENDLIST, as opposed to being stopped by a teardown. */
+  finalized: boolean;
   ready: Promise<void>;
   markReady: () => void;
   misses: number;
@@ -70,7 +74,7 @@ export class LadderFeedPoller {
     private readonly backoffMs: (hexTopic: string) => number = () => 0,
   ) {}
 
-  public start(owner: string, topics: Topic[]): void {
+  public start(owner: string, topics: Topic[], groupHexTopic: string | null = null): void {
     for (const topic of topics) {
       const hexTopic = topic.toString();
       if (this.polled.has(hexTopic)) {
@@ -85,7 +89,9 @@ export class LadderFeedPoller {
       const entry: PolledTopic = {
         topic,
         hexTopic,
+        group: groupHexTopic,
         stopped: false,
+        finalized: false,
         ready,
         markReady,
         misses: 0,
@@ -271,11 +277,35 @@ export class LadderFeedPoller {
       entry.markReady();
     }
 
+    if (parsed.isFinalized) {
+      entry.finalized = true;
+      this.recordGroupEndedIfComplete(entry.group);
+    }
+
     if (!shouldContinue) {
       entry.stopped = true;
     }
 
     return shouldContinue;
+  }
+
+  /**
+   * The ended overlay listens on the group topic and finalization arrives one rung at a time, so the
+   * last rung to finalize is what ends the group. The single-rendition walk records both against the
+   * same topic and needs none of this.
+   *
+   * All rungs rather than any, mirroring the uploader's own rule (a ladder goes to VOD only once
+   * every announced rung has finalized): one finalized rung beside live ones is a rung retired, not
+   * a broadcast over.
+   */
+  private recordGroupEndedIfComplete(group: string | null): void {
+    if (group === null) {
+      return;
+    }
+    const rungs = [...this.polled.values()].filter((entry) => entry.group === group);
+    if (rungs.length > 0 && rungs.every((entry) => entry.finalized)) {
+      this.feedHealth.recordFeedEnded(group);
+    }
   }
 
   /**
