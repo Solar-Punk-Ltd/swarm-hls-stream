@@ -18,16 +18,25 @@
  * Spending is the first of those, so a run quoting `total` would report a neighbour cashing an old
  * cheque as this run's cost.
  *
- * ⛔ A node whose balance ROSE counts as having spent nothing, never as headroom. Summing signed
- * deltas would let a top-up on one node pay for an overrun on the other, which is not what an
- * authorisation of a total means. The clamp is reported rather than applied quietly: on 2026-08-14 a
- * 12 BZZ deposit into the gateway turned that node's 0.5406 BZZ of real spend into a clamped zero,
- * and the printed total was short by exactly that with nothing anywhere marking it.
+ * ⛔⛔⛔ A NODE WHOSE BALANCE ROSE ENDS THE LEDGER. IT IS NOT HEADROOM AND IT IS NOT A FOOTNOTE.
  *
- * ⚠️ Divergence from the shell gate, deliberate and worth knowing. That one REFUSES on a rise,
- * reasoning that spend measured from baselines a deposit predates is unknown rather than smaller.
- * This one clamps and says so, which is what the suite was asked for. A run that sees the note is
- * looking at a floor, not a measurement.
+ * `availableBalance` has no way up. Writing a cheque lowers it and a peer cashing one leaves it
+ * alone, so a rise is a deposit, and a deposit means these start balances were written before money
+ * arrived. Spend measured from baselines a deposit predates is not a smaller number, it is an
+ * unknown one, and unknown spend is refused here for the same reason an unreadable chequebook is.
+ *
+ * On 2026-08-14 a 12 BZZ deposit into the gateway turned that node's 0.5406 BZZ of real spend into a
+ * clamped zero. The uploader was topped up minutes later, which would have taken the printed total
+ * to 0.000 BZZ against a ceiling 1.98 of which was already gone. A note printed beside the number
+ * would not have stopped any of that, which is why this refuses instead of annotating.
+ *
+ * ✅ The two gates agree. `deploy/scripts/spend-ceiling.sh` refuses a bench sitting on a rise on this
+ * same reasoning, and neither path will now measure a night from starts that predate a deposit. Keep
+ * them in step: they read one file and answer one question.
+ *
+ * The per-node clamp survives underneath the refusal, and is deliberately kept rather than made
+ * redundant by it. Summing signed deltas would let a top-up on one node pay for an overrun on the
+ * other, so the arithmetic stays correct on its own terms even though a rise never reaches a total.
  *
  * Everything here is pure so `test/spendCeiling.test.ts` covers it under `pnpm verify`, which nothing
  * under `suites/` is. That leaves `suites/preflight/spend-ceiling.test.ts` as wiring.
@@ -221,42 +230,59 @@ function fell(startPlur: bigint, nowPlur: bigint): bigint {
   return delta > 0n ? delta : 0n;
 }
 
-/** The three figures a run reports about itself, passing or refused, plus any clamp behind them. */
-export function spendSummary(verdict: SpendVerdict): string {
-  const line =
-    `${plurToBzz(verdict.spentPlur)} BZZ spent of ${plurToBzz(verdict.ceilingPlur)} authorised, ` +
-    `${plurToBzz(verdict.remainingPlur)} BZZ remaining.`;
-
-  return verdict.rose.length === 0 ? line : `${line} ${depositNote(verdict.rose)}`;
-}
-
 /**
- * ⛔ Never silent. A clamped node is a node whose real spend this run cannot see, so the total it
- * sits inside is a floor rather than a measurement, and a reader has to be told which one they have.
+ * The three figures a run reports about itself.
+ *
+ * Only ever printed by a run that {@link spendRefusal} let through, so it carries no caveat about
+ * deposits: a run that saw one does not reach a line like this, it stops.
  */
-function depositNote(rose: readonly string[]): string {
-  const who =
-    rose.length === 1
-      ? `The ${rose[0]} now holds more than its ledger baseline`
-      : `The ${rose.join(' and the ')} now hold more than their ledger baselines`;
-  const those = rose.length === 1 ? 'that node' : 'those nodes';
-
+export function spendSummary(verdict: SpendVerdict): string {
   return (
-    `${who}, so a deposit landed after this authorisation was written. Spend on ${those} counts as ` +
-    'zero here, which makes the total above a floor rather than a measurement.'
+    `${plurToBzz(verdict.spentPlur)} BZZ spent of ${plurToBzz(verdict.ceilingPlur)} authorised, ` +
+    `${plurToBzz(verdict.remainingPlur)} BZZ remaining.`
   );
 }
 
 /**
- * Why a run past its authorisation stops, in the terms the operator has to act in.
+ * Why this run must not proceed, or null when it may, in the terms the operator has to act in.
  *
- * Names the ledger because raising a ceiling means editing that file, and only the owner does.
+ * One entry point rather than a refusal per cause, so a caller cannot check the ceiling and forget
+ * the deposit. The order inside is load-bearing and matches the shell gate's: a deposit outranks an
+ * overrun, because when both are true the ceiling message would tell an operator to raise a number
+ * measured against starts that no longer mean anything.
  */
-export function ceilingRefusal(verdict: SpendVerdict, path: string): string {
+export function spendRefusal(verdict: SpendVerdict, path: string): string | null {
+  if (verdict.rose.length > 0) {
+    return depositRefusal(verdict.rose, path);
+  }
+  if (!verdict.withinCeiling) {
+    return (
+      `This run would spend past what the owner authorised. ${spendSummary(verdict)}\n` +
+      'Nothing has been run and nothing on the deployment was touched. A run continues once the ' +
+      `owner rewrites ${path} with the total they have now authorised and fresh start balances.`
+    );
+  }
+  return null;
+}
+
+/**
+ * ⛔ Deliberately quotes no spend total. A clamped total reads exactly like a measured one, and this
+ * is the single case where the number is not knowable, so handing the reader one to act on is the
+ * mistake rather than the courtesy. The fix is a fresh authorisation, which is how 2026-08-28 went.
+ */
+function depositRefusal(rose: readonly string[], path: string): string {
+  const who =
+    rose.length === 1
+      ? `the ${rose[0]} now holds more than the ledger's start balance for it`
+      : `the ${rose.join(' and the ')} now hold more than the ledger's start balances for them`;
+
   return (
-    `This run would spend past what the owner authorised. ${spendSummary(verdict)}\n` +
-    'Nothing has been run and nothing on the deployment was touched. A run continues once the owner ' +
-    `rewrites ${path} with the total they have now authorised and fresh start balances.`
+    `A deposit landed after this authorisation was written: ${who}. An availableBalance has no other ` +
+    'way up, since writing a cheque lowers it and a peer cashing one leaves it alone, so this ' +
+    "run's spend can no longer be measured against the recorded starts. Unknown spend is not " +
+    'smaller spend, so it stops here rather than being reported as a total.\n' +
+    'Nothing has been run and nothing on the deployment was touched. The owner re-authorises by ' +
+    `writing a fresh ${path}, with start balances read now and the total they are authorising now.`
   );
 }
 

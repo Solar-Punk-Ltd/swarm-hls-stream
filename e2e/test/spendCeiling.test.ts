@@ -6,11 +6,11 @@ import { after, describe, it } from 'node:test';
 
 import {
   availablePlur,
-  ceilingRefusal,
   ledgerRefusal,
   parseSpendLedger,
   readSpendLedger,
   spendAgainstCeiling,
+  spendRefusal,
   spendSummary,
 } from '../src/harness/spendCeiling.js';
 
@@ -318,42 +318,131 @@ describe('what the run prints about its own spend', () => {
     assert.match(summary, /-0\.600 BZZ remaining/);
   });
 
-  it('notes the deposit when a node gained, so a clamped zero is never silent', () => {
+  /**
+   * The three figures and nothing else. A rise refuses rather than passing with a caveat attached,
+   * so this line is only ever printed by a run whose spend really was measurable, and a deposit
+   * note on it would describe a state the printing path cannot be in.
+   */
+  it('carries no deposit caveat, because a run that saw a deposit never reaches this line', () => {
     const summary = spendSummary(
       spendAgainstCeiling(LEDGER, { uploaderPlur: bzzMilli(2500n), gatewayPlur: bzzMilli(13000n) }),
-    );
-
-    assert.match(summary, /gateway/);
-    assert.match(summary, /deposit/i);
-  });
-
-  it('says nothing about deposits on an ordinary run', () => {
-    const summary = spendSummary(
-      spendAgainstCeiling(LEDGER, { uploaderPlur: bzzMilli(2900n), gatewayPlur: bzzMilli(900n) }),
     );
 
     assert.doesNotMatch(summary, /deposit/i);
   });
 });
 
-describe('the refusal a run past the ceiling gets', () => {
+describe('why a run is refused, or is not', () => {
   const PATH = '/repo/.spend-ledger.env';
-  const OVERRUN = spendAgainstCeiling(LEDGER, { uploaderPlur: 0n, gatewayPlur: bzzMilli(1000n) });
 
-  it('carries the same spent, ceiling and remaining the passing run prints', () => {
-    const refusal = ceilingRefusal(OVERRUN, PATH);
+  function refusalFor(uploaderPlur: bigint, gatewayPlur: bigint): string | null {
+    return spendRefusal(spendAgainstCeiling(LEDGER, { uploaderPlur, gatewayPlur }), PATH);
+  }
 
-    assert.match(refusal, /3\.000 BZZ spent/);
-    assert.match(refusal, /2\.400/);
-    assert.match(refusal, /-0\.600 BZZ remaining/);
+  it('lets an ordinary run through', () => {
+    assert.equal(refusalFor(bzzMilli(2900n), bzzMilli(900n)), null);
   });
 
-  it('names the ledger, because raising the ceiling means editing that file', () => {
-    assert.match(ceilingRefusal(OVERRUN, PATH), /\/repo\/\.spend-ledger\.env/);
+  it('lets a run that has not started through', () => {
+    assert.equal(refusalFor(bzzMilli(3000n), bzzMilli(1000n)), null);
   });
 
-  it('says nothing was spent by the refusal itself', () => {
-    assert.match(ceilingRefusal(OVERRUN, PATH), /[Nn]othing has been run/);
+  describe('past the ceiling', () => {
+    it('carries the same spent, ceiling and remaining the passing run prints', () => {
+      const refusal = String(refusalFor(0n, bzzMilli(1000n)));
+
+      assert.match(refusal, /3\.000 BZZ spent/);
+      assert.match(refusal, /2\.400/);
+      assert.match(refusal, /-0\.600 BZZ remaining/);
+    });
+
+    it('names the ledger, because raising the ceiling means editing that file', () => {
+      assert.match(String(refusalFor(0n, bzzMilli(1000n))), /\/repo\/\.spend-ledger\.env/);
+    });
+
+    it('says nothing was spent by the refusal itself', () => {
+      assert.match(String(refusalFor(0n, bzzMilli(1000n))), /[Nn]othing has been run/);
+    });
+  });
+
+  /**
+   * ⛔⛔⛔ A rise refuses, and this is the estate's own learned position rather than a preference.
+   * `availableBalance` has no way up other than a deposit, so a rise means the ledger's start
+   * balances predate money arriving, and spend measured from them is not smaller, it is unknown.
+   *
+   * On 2026-08-14 a 12 BZZ deposit into the gateway turned that node's 0.5406 BZZ of real spend into
+   * a clamped zero. The uploader was topped up minutes later, which would have taken the printed
+   * total to 0.000 BZZ against a ceiling 1.98 of which was already gone. A note beside the number
+   * would not have stopped that. `deploy/scripts/spend-ceiling.sh` refuses for the same reason, and
+   * the two gates now agree.
+   */
+  describe('after a deposit', () => {
+    it('refuses even though the ceiling arithmetic is nowhere near it', () => {
+      const verdict = spendAgainstCeiling(LEDGER, { uploaderPlur: bzzMilli(2500n), gatewayPlur: bzzMilli(13000n) });
+
+      assert.equal(verdict.withinCeiling, true, 'the ceiling is not what should stop this run');
+      assert.notEqual(spendRefusal(verdict, PATH), null);
+    });
+
+    it('names the node the deposit landed on', () => {
+      assert.match(String(refusalFor(bzzMilli(2500n), bzzMilli(13000n))), /gateway/);
+    });
+
+    it('names both nodes when both gained', () => {
+      const refusal = String(refusalFor(bzzMilli(9000n), bzzMilli(9000n)));
+
+      assert.match(refusal, /uploader/);
+      assert.match(refusal, /gateway/);
+    });
+
+    it('says a deposit landed, which is the fact the operator has to act on', () => {
+      assert.match(String(refusalFor(bzzMilli(2500n), bzzMilli(13000n))), /deposit/i);
+    });
+
+    /** The reason this is fatal rather than cosmetic: the recorded starts no longer measure anything. */
+    it('says spend can no longer be measured against the recorded starts', () => {
+      const refusal = String(refusalFor(bzzMilli(2500n), bzzMilli(13000n)));
+
+      assert.match(refusal, /no longer be measured/);
+      assert.match(refusal, /start/);
+    });
+
+    /**
+     * A fresh ledger with new starts, which is the established workflow and is exactly what happened
+     * on 2026-08-28. Telling the operator to raise a ceiling here would be wrong advice: the ceiling
+     * is not what refused.
+     */
+    it('tells the owner to re-authorise with a fresh ledger and new start balances', () => {
+      const refusal = String(refusalFor(bzzMilli(2500n), bzzMilli(13000n)));
+
+      assert.match(refusal, /\/repo\/\.spend-ledger\.env/);
+      assert.match(refusal, /fresh/i);
+      assert.match(refusal, /owner/i);
+    });
+
+    /**
+     * A deposit outranks an overrun. Both are true here, and the ceiling message would tell the
+     * operator to raise a number, when the actual state is that the figure it would be raised
+     * against cannot be trusted.
+     */
+    it('reports the deposit rather than the overrun when a run is both', () => {
+      const refusal = String(refusalFor(0n, bzzMilli(13000n)));
+
+      assert.match(refusal, /deposit/i);
+      assert.doesNotMatch(refusal, /would spend past/);
+    });
+
+    it('says nothing was spent by the refusal itself', () => {
+      assert.match(String(refusalFor(bzzMilli(2500n), bzzMilli(13000n))), /[Nn]othing has been run/);
+    });
+
+    /**
+     * ⛔ No spend figure at all. Printing one would hand a reader a number to act on in the one case
+     * where the number is not knowable, and a clamped total reads exactly like a measured one.
+     */
+    it('quotes no spend total, because the whole point is that the total is unknown', () => {
+      assert.doesNotMatch(String(refusalFor(bzzMilli(2500n), bzzMilli(13000n))), /BZZ spent/);
+    });
   });
 });
 

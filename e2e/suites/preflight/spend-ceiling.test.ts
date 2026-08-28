@@ -5,12 +5,12 @@ import { loadConfig } from '../../src/config.js';
 import { makeHost } from '../../src/harness/host.js';
 import {
   availablePlur,
-  ceilingRefusal,
   ledgerRefusal,
   parseSpendLedger,
   readSpendLedger,
   SPEND_LEDGER_PATH,
   spendAgainstCeiling,
+  spendRefusal,
   spendSummary,
 } from '../../src/harness/spendCeiling.js';
 
@@ -67,12 +67,15 @@ describe('preflight — the run stays inside what the owner authorised', () => {
     );
 
     const verdict = spendAgainstCeiling(ledger, { uploaderPlur, gatewayPlur });
-    console.log(`  authorised ${ledger.authorisedAt}: ${spendSummary(verdict)}`);
+    const refusal = spendRefusal(verdict, SPEND_LEDGER_PATH);
 
-    if (verdict.withinCeiling) {
-      return;
+    // The summary is printed only once the run is cleared, and that ordering is the point. A run
+    // refused for a deposit has no measurable spend to report, so printing a total first would put
+    // a number an operator can act on above the sentence saying the number means nothing.
+    if (refusal !== null) {
+      assert.fail(refusal);
     }
 
-    assert.fail(ceilingRefusal(verdict, SPEND_LEDGER_PATH));
+    console.log(`  authorised ${ledger.authorisedAt}: ${spendSummary(verdict)}`);
   });
 });
