@@ -99,6 +99,18 @@ export class BeePublisherPool {
     );
   }
 
+  /**
+   * Every node this pool publishes through, in ladder order.
+   *
+   * Exists so a startup check can enumerate the deployment rather than rebuild the single-node
+   * versus per-rung decision from the config a second time. `ChequebookGate` is the caller: reading
+   * the pool means a rung added to BEE_PUBLISHERS is funding-checked without anyone remembering to
+   * widen a parallel list.
+   */
+  public nodes(): readonly BeePublisher[] {
+    return this.ordered;
+  }
+
   /** The node a rung's segments and manifest feed go through. */
   public forRung(rung: string): BeePublisher {
     const publisher = this.byRung.get(rung) ?? this.byRung.get(SINGLE_PUBLISHER);

@@ -129,6 +129,13 @@ describe('BeePublisherPool.single', () => {
   it('refuses a url that is not http or https', () => {
     assert.throws(() => BeePublisherPool.single('ftp://localhost:1633', BATCH['360p']), /must be http or https/);
   });
+
+  it('lists the one node, so a startup check has something to enumerate', () => {
+    assert.deepEqual(
+      pool.nodes().map((publisher) => publisher.url),
+      ['http://localhost:1633'],
+    );
+  });
 });
 
 describe('BeePublisherPool.perRung', () => {
@@ -177,6 +184,25 @@ describe('BeePublisherPool.perRung', () => {
     ];
 
     assert.throws(() => BeePublisherPool.perRung(withStray, RUNG_ORDER), /names rung\(s\) 2160p/);
+  });
+
+  // What `ChequebookGate` enumerates at startup. Taken from the pool rather than rebuilt from the
+  // config, so a rung added to BEE_PUBLISHERS is checked for funding without anyone remembering to
+  // widen a second list.
+  it('lists every node in ladder order, so a startup check reaches all of them', () => {
+    const pool = BeePublisherPool.perRung(
+      [spec('1080p', 1663), spec('720p', 1653), spec('480p', 1643), spec('360p', 1633)],
+      RUNG_ORDER,
+    );
+
+    assert.deepEqual(
+      pool.nodes().map((publisher) => publisher.rung),
+      RUNG_ORDER,
+    );
+    assert.deepEqual(
+      pool.nodes().map((publisher) => publisher.url),
+      ['http://localhost:1633', 'http://localhost:1643', 'http://localhost:1653', 'http://localhost:1663'],
+    );
   });
 
   it('falls back to the coordinator for a rung the ladder lost, rather than stranding it', () => {
