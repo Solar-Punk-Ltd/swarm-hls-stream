@@ -4,7 +4,14 @@ import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { loadEngineEnv, MAX_TIMER_DELAY_MS, optionalBool, optionalInt, required } from '../src/utils/env.js';
+import {
+  loadEngineEnv,
+  MAX_TIMER_DELAY_MS,
+  optionalBool,
+  optionalInt,
+  optionalNumber,
+  required,
+} from '../src/utils/env.js';
 
 const VAR = 'TEST_REQUIRED_VAR';
 
@@ -136,6 +143,88 @@ describe('optionalInt (OBS-12)', () => {
     assert.throws(() => optionalInt(INT_VAR, 7), { message: new RegExp(INT_VAR) });
     process.env[INT_VAR] = '-5';
     assert.throws(() => optionalInt(INT_VAR, 7, { min: 0 }), { message: new RegExp(INT_VAR) });
+  });
+});
+
+describe('optionalNumber', () => {
+  const NUM_VAR = 'TEST_OPTIONAL_NUMBER_VAR';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[NUM_VAR];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) {
+      delete process.env[NUM_VAR];
+    } else {
+      process.env[NUM_VAR] = saved;
+    }
+  });
+
+  it('falls back when the variable is absent or empty', () => {
+    delete process.env[NUM_VAR];
+    assert.equal(optionalNumber(NUM_VAR, 0.5, { max: 10 }), 0.5);
+    process.env[NUM_VAR] = '';
+    assert.equal(optionalNumber(NUM_VAR, 0.5, { max: 10 }), 0.5);
+  });
+
+  // The whole reason this exists next to optionalInt: a chequebook floor is a fraction of a BZZ, and
+  // optionalInt refuses "0.5" as not a whole number.
+  it('reads a value written with a decimal point', () => {
+    process.env[NUM_VAR] = '0.5';
+    assert.equal(optionalNumber(NUM_VAR, 1, { max: 10 }), 0.5);
+    process.env[NUM_VAR] = '2';
+    assert.equal(optionalNumber(NUM_VAR, 1, { max: 10 }), 2);
+    process.env[NUM_VAR] = '.25';
+    assert.equal(optionalNumber(NUM_VAR, 1, { max: 10 }), 0.25);
+  });
+
+  // `Number('')` is 0 and `Number(' ')` is 0, so a coercion-only reader turns a blank setting into a
+  // floor of zero, which is the one value that disables the check the variable configures. Exponent
+  // and hex notation are refused rather than accepted because a floor is a number an operator reads
+  // back off a log line, and "1e-2 BZZ" is not a reading anyone acts on.
+  for (const written of ['', ' ', 'off', '1e-2', '0x10', '0.5.5', '1,5', 'NaN', 'Infinity', '5 BZZ']) {
+    it(`refuses ${JSON.stringify(written)} rather than coercing it to a number`, () => {
+      process.env[NUM_VAR] = written;
+      const read = () => optionalNumber(NUM_VAR, 0.5, { max: 10 });
+
+      if (written.trim() === '') {
+        assert.equal(read(), 0.5, 'a blank setting is an absent one, not a floor of zero');
+        return;
+      }
+      assert.throws(read, { message: /not a number/ });
+    });
+  }
+
+  it('accepts a number written with whitespace around it', () => {
+    process.env[NUM_VAR] = ' 0.75 ';
+    assert.equal(optionalNumber(NUM_VAR, 0.5, { max: 10 }), 0.75);
+  });
+
+  // Zero is the deliberate opt-out and has to survive both the falsy-string check and the comparison,
+  // while a negative floor is a typo that would pass every node including a drained one.
+  it('accepts zero and refuses anything below it', () => {
+    process.env[NUM_VAR] = '0';
+    assert.equal(optionalNumber(NUM_VAR, 0.5, { max: 10 }), 0);
+    process.env[NUM_VAR] = '-0.5';
+    assert.throws(() => optionalNumber(NUM_VAR, 0.5, { max: 10 }), { message: /at least 0/ });
+  });
+
+  it('refuses a value above the ceiling and accepts one sitting exactly on it', () => {
+    process.env[NUM_VAR] = '10.5';
+    assert.throws(() => optionalNumber(NUM_VAR, 0.5, { max: 10 }), { message: /at most 10/ });
+    process.env[NUM_VAR] = '10';
+    assert.equal(optionalNumber(NUM_VAR, 0.5, { max: 10 }), 10);
+  });
+
+  it('names the variable in every message, since the log line is all an operator gets', () => {
+    process.env[NUM_VAR] = 'nonsense';
+    assert.throws(() => optionalNumber(NUM_VAR, 0.5, { max: 10 }), { message: new RegExp(NUM_VAR) });
+    process.env[NUM_VAR] = '-5';
+    assert.throws(() => optionalNumber(NUM_VAR, 0.5, { max: 10 }), { message: new RegExp(NUM_VAR) });
+    process.env[NUM_VAR] = '500';
+    assert.throws(() => optionalNumber(NUM_VAR, 0.5, { max: 10 }), { message: new RegExp(NUM_VAR) });
   });
 });
 

@@ -56,7 +56,8 @@ export function optional(name: string, fallback: string): string {
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-export interface IntRange {
+/** Inclusive bounds, shared by `optionalInt` and `optionalNumber` because the pair is the same. */
+export interface NumericRange {
   min?: number;
   max?: number;
 }
@@ -76,7 +77,7 @@ export interface IntRange {
  * `OME_ADMISSION_FAIL_OPEN`, falls back to the safe direction, and a typo there costs rejected ingest
  * during an outage rather than a service that will not start.
  */
-export function optionalInt(name: string, fallback: number, range: IntRange = {}): number {
+export function optionalInt(name: string, fallback: number, range: NumericRange = {}): number {
   const value = process.env[name];
   if (!value) {
     return fallback;
@@ -91,6 +92,48 @@ export function optionalInt(name: string, fallback: number, range: IntRange = {}
   const parsed = Number(value.trim());
   const min = range.min ?? 0;
   const max = range.max ?? MAX_TIMER_DELAY_MS;
+
+  if (parsed < min) {
+    throw new Error(`Env var ${name} must be at least ${min}, got ${parsed}`);
+  }
+  if (parsed > max) {
+    throw new Error(`Env var ${name} must be at most ${max}, got ${parsed}`);
+  }
+
+  return parsed;
+}
+
+/**
+ * Value of an optional environment variable that may carry decimals, rejected at startup.
+ *
+ * `optionalInt` next door covers every size and duration this service reads. This one exists for a
+ * token amount, where the useful settings are fractions: the shipped chequebook floor is 0.5 BZZ and
+ * `optionalInt` refuses that as not a whole number.
+ *
+ * Strict about the whole string for the same reason `optionalInt` is, and then stricter in two
+ * places. `Number('')` and `Number(' ')` are both 0, so a coercion-only reader turns a blank setting
+ * into the one value that disables the check it configures. Exponent and hex notation are refused
+ * even though `Number` reads them, because the value is a quantity an operator reads back off a log
+ * line and compares against a wallet, and `1e-2 BZZ` is not a reading anyone acts on.
+ *
+ * A `max` is not decoration here. The caller converts this into an integer count of base units by
+ * multiplying, and a value large enough to overflow to `Infinity` crashes that conversion instead of
+ * refusing the setting.
+ */
+export function optionalNumber(name: string, fallback: number, range: NumericRange = {}): number {
+  const value = process.env[name];
+  if (!value || value.trim() === '') {
+    return fallback;
+  }
+
+  const written = value.trim();
+  if (!/^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(written)) {
+    throw new Error(`Env var ${name} is not a number: "${value}"`);
+  }
+
+  const parsed = Number(written);
+  const min = range.min ?? 0;
+  const max = range.max ?? Number.MAX_SAFE_INTEGER;
 
   if (parsed < min) {
     throw new Error(`Env var ${name} must be at least ${min}, got ${parsed}`);
