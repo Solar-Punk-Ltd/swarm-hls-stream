@@ -25,6 +25,8 @@ import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { byteSourceFromEnv } from './browser/fetchBackendSweep.js';
+import { readAbrExpectation } from './abrCoverage.js';
 import { type EnvBag, readEnvFile } from './envFile.js';
 
 /** `<root>/e2e`, two levels up from `<root>/e2e/src/profiles.ts`. */
@@ -98,8 +100,7 @@ export function resolveRunProfile({ env = process.env, dir = PROFILE_DIR }: RunP
 
   if (!available.includes(name)) {
     throw new Error(
-      `${RUN_PROFILE_VAR}='${name}' is not a run profile. Available in ${dir}: ` +
-        `${available.join(', ') || 'none'}.`,
+      `${RUN_PROFILE_VAR}='${name}' is not a run profile. Available in ${dir}: ` + `${available.join(', ') || 'none'}.`,
     );
   }
 
@@ -137,6 +138,54 @@ export function describeRunProfile(profile: RunProfile): string {
   const applied = Object.keys(profile.applied).sort().join(', ') || 'nothing';
   const stoodDown = profile.skipped.length === 0 ? '' : `, operator set ${[...profile.skipped].sort().join(', ')}`;
   return `run profile ${profile.name}: set ${applied}${stoodDown}`;
+}
+
+/** The declarations a run makes about itself, as they stand in the environment. */
+export interface RunDeclarations {
+  /** Raw `BROWSER_FETCH_BACKEND`. Unset is ordinary: most suites never open a browser. */
+  byteSource: string | undefined;
+  /** Raw `E2E_EXPECT_ABR`. Unset is a gap, because a profile is supposed to have declared it. */
+  abrExpectation: string | undefined;
+}
+
+/**
+ * Why this run cannot proceed as the profile it named, or `null` when nothing here contradicts it.
+ *
+ * Only what can be settled with no network and no deployment: a value no parser accepts, and a run
+ * that declared nothing. Whether the stack can deliver what the profile asks for is a live question
+ * and none of it is answered here.
+ *
+ * The two parsers are called rather than reimplemented, so the accepted spellings cannot drift from
+ * the ones the drivers and the ABR gate actually enforce. They throw, and the throws are turned into
+ * a returned reason so the preflight reports one legible failure instead of a stack trace.
+ */
+export function runProfileRefusal({ byteSource, abrExpectation }: RunDeclarations): string | null {
+  try {
+    byteSourceFromEnv(byteSource);
+  } catch (error) {
+    return (
+      `${(error as Error).message}. A run profile sets this, so a value nothing reads means the ` +
+      'run is not the condition its report will name.'
+    );
+  }
+
+  let expectation;
+  try {
+    expectation = readAbrExpectation(abrExpectation ?? '');
+  } catch (error) {
+    return (error as Error).message;
+  }
+
+  if (expectation === 'undeclared') {
+    return (
+      'This run declared nothing about the ABR ladder, and a skipped ABR suite reports as zero ' +
+      'tests rather than as skipped ones, so the summary would not say what was covered. Both ' +
+      'shipped profiles set E2E_EXPECT_ABR=true. Something has blanked it in this environment, ' +
+      'which beats the profile by design.'
+    );
+  }
+
+  return null;
 }
 
 function requireNoDeploymentKeys(bag: EnvBag, path: string): void {

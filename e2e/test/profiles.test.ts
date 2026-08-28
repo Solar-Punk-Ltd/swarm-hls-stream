@@ -13,6 +13,7 @@ import {
   PROFILE_DIR,
   resolveRunProfile,
   RUN_PROFILE_VAR,
+  runProfileRefusal,
 } from '../src/profiles.js';
 
 /**
@@ -76,12 +77,15 @@ describe('choosing which run profile a sitting is', () => {
   it('refuses a name it does not have, and says which names it does have', () => {
     const dir = fixtureDir(TWO_PROFILES);
 
-    assert.throws(() => resolveRunProfile({ env: { [RUN_PROFILE_VAR]: 'in-brwoser' }, dir }), (error: Error) => {
-      assert.match(error.message, /in-brwoser/);
-      assert.match(error.message, /in-browser/);
-      assert.match(error.message, /light-client/);
-      return true;
-    });
+    assert.throws(
+      () => resolveRunProfile({ env: { [RUN_PROFILE_VAR]: 'in-brwoser' }, dir }),
+      (error: Error) => {
+        assert.match(error.message, /in-brwoser/);
+        assert.match(error.message, /in-browser/);
+        assert.match(error.message, /light-client/);
+        return true;
+      },
+    );
   });
 
   /**
@@ -181,11 +185,14 @@ describe('keys a run profile is not allowed to hold', () => {
   it('refuses a profile that aims the run at a deployment', () => {
     const dir = fixtureDir({ infra: 'E2E_PROFILE=slot3\nE2E_PORT_SLOT=3\n' });
 
-    assert.throws(() => resolveRunProfile({ env: { [RUN_PROFILE_VAR]: 'infra' }, dir }), (error: Error) => {
-      assert.match(error.message, /E2E_PROFILE/);
-      assert.match(error.message, /E2E_PORT_SLOT/);
-      return true;
-    });
+    assert.throws(
+      () => resolveRunProfile({ env: { [RUN_PROFILE_VAR]: 'infra' }, dir }),
+      (error: Error) => {
+        assert.match(error.message, /E2E_PROFILE/);
+        assert.match(error.message, /E2E_PORT_SLOT/);
+        return true;
+      },
+    );
   });
 });
 
@@ -242,6 +249,76 @@ describe('the two profiles this repo ships', () => {
       for (const key of Object.keys(applied)) {
         assert.doesNotMatch(key, /HOST|PORT|SSH|_URL$/, `${name} must not carry ${key}`);
       }
+    }
+  });
+});
+
+/**
+ * What `suites/preflight/profile.test.ts` refuses on, decided here so `pnpm verify` covers it.
+ *
+ * Only what can be settled without reaching the network: a value no parser accepts, and a run that
+ * declared nothing. Whether the deployment can actually deliver what the profile asks for is a
+ * question for a live check, and none of that is here.
+ */
+describe('refusing a run that contradicts the profile it named', () => {
+  it('passes a run whose byte source is a real condition and whose ladder is declared', () => {
+    assert.equal(runProfileRefusal({ byteSource: 'weeb3', abrExpectation: 'true' }), null);
+  });
+
+  /**
+   * Most suites never open a browser, so a run with no byte source is an ordinary run rather than
+   * an ambiguous one. Only a value nothing can read is a refusal.
+   */
+  it('passes a run that names no byte source at all', () => {
+    assert.equal(runProfileRefusal({ byteSource: undefined, abrExpectation: 'true' }), null);
+    assert.equal(runProfileRefusal({ byteSource: '', abrExpectation: 'true' }), null);
+  });
+
+  it('passes a single-rendition run, which is a declaration and not a gap', () => {
+    assert.equal(runProfileRefusal({ byteSource: 'gateway', abrExpectation: 'false' }), null);
+  });
+
+  it('refuses a byte source no parser reads, and names the spellings that work', () => {
+    const refusal = String(runProfileRefusal({ byteSource: 'weeb-3', abrExpectation: 'true' }));
+
+    assert.match(refusal, /BROWSER_FETCH_BACKEND/);
+    assert.match(refusal, /gateway/);
+    assert.match(refusal, /weeb3/);
+  });
+
+  it('refuses a ladder declaration no parser reads', () => {
+    assert.match(String(runProfileRefusal({ byteSource: 'weeb3', abrExpectation: 'yes' })), /E2E_EXPECT_ABR/);
+  });
+
+  /**
+   * ⛔ The trap the profile files exist to keep shut. `ladder` is the word this repo uses for the
+   * expectation everywhere except in the variable itself, which takes `ABR_ENABLED`'s spellings.
+   * A profile written with the word rather than the spelling is refused here rather than at the
+   * first suite of a paid sitting.
+   */
+  it('refuses the word ladder, which reads as a declaration and is not one', () => {
+    assert.notEqual(runProfileRefusal({ byteSource: 'weeb3', abrExpectation: 'ladder' }), null);
+  });
+
+  it('refuses a run that declared nothing about the ladder', () => {
+    for (const abrExpectation of [undefined, '']) {
+      assert.match(String(runProfileRefusal({ byteSource: 'weeb3', abrExpectation })), /E2E_EXPECT_ABR/);
+    }
+  });
+
+  /** Every profile on disk has to pass its own gate, or the default run cannot start. */
+  it('passes both shipped profiles as they stand', () => {
+    for (const name of availableRunProfiles(PROFILE_DIR)) {
+      const applied = resolveRunProfile({ env: { [RUN_PROFILE_VAR]: name }, dir: PROFILE_DIR }).applied;
+
+      assert.equal(
+        runProfileRefusal({
+          byteSource: applied.BROWSER_FETCH_BACKEND,
+          abrExpectation: applied.E2E_EXPECT_ABR,
+        }),
+        null,
+        `${name} must pass its own preflight`,
+      );
     }
   });
 });
