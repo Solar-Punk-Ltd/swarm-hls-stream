@@ -18,6 +18,7 @@ import { containerName, type E2EConfig } from '../config.js';
 import type { FfmpegExit } from '../harness/ffmpegProcess.js';
 import { type Host, waitForIdle } from '../harness/host.js';
 import { announcedLiveStreams } from '../harness/logwatch.js';
+import { redactPublishKey } from '../harness/redactPublishKey.js';
 import { sleep, waitFor } from '../harness/wait.js';
 
 import { measureClockSkew } from './clockSkew.js';
@@ -237,7 +238,10 @@ function toSample(
  * reports a timeout when what it had was an encoder that never started.
  */
 async function waitForAnnouncement(host: Host, uploader: string, sinceIso: string, publisher: WallclockPublisher) {
-  const ffmpegSaid = () => publisher.stderr().trim().slice(0, 300) || '(nothing)';
+  // Redacted because ffmpeg names the URL it could not reach in its own stderr, publish key and all,
+  // and this string reaches both a thrown error and a `waitFor` label. That is the second way the
+  // credential gets printed, and the one nobody writes on purpose.
+  const ffmpegSaid = () => redactPublishKey(publisher.stderr().trim().slice(0, 300)) || '(nothing)';
   let announced: ReturnType<typeof announcedLiveStreams>[number] | undefined;
   await waitFor(
     async () => {

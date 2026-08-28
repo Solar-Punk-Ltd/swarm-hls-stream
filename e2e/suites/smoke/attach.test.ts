@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { srtIngestUrl } from '../../src/harness/engine.js';
 import { discoverStamp, makeHost, uploaderHealth } from '../../src/harness/host.js';
+import { redactPublishKey } from '../../src/harness/redactPublishKey.js';
 import { effectiveLogLevel, logLevelProblem } from '../../src/logLevel.js';
 
 const ONE_HOUR_S = 3600;
@@ -43,10 +44,15 @@ describe('attach smoke (read-only)', () => {
     );
   });
 
+  /**
+   * The URL is printed redacted and only printed redacted. On a deployment with SEC-28 on it carries
+   * the live publish credential, and this line put one into a transcript on 2026-08-28. What is
+   * published with is still the real URL, which the publisher builds for itself.
+   */
   it('resolves the uploader container + prints the ingest URL', async () => {
     const container = containerName(cfg, 'stream-uploader');
     assert.ok(await host.isRunning(container), `${container} should be running`);
-    console.log(`  ingest: ${srtIngestUrl(cfg)}`);
+    console.log(`  ingest: ${redactPublishKey(srtIngestUrl(cfg))}`);
     console.log(`  config: profile=${cfg.profile} slot=${cfg.portSlot} engine=${cfg.engine}`);
     console.log(`  env:    ${cfg.envFiles.join(', ')}`);
   });
