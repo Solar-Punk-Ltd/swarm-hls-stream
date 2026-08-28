@@ -141,6 +141,11 @@ running in the tab, not a bee gateway.** A gateway arm is the control, not the b
 | `gateway` | segment bytes from a bee gateway, the control                               |
 | `weeb3`   | segment bytes from the in-tab node, feed and manifest still via a gateway   |
 
+Since run profiles landed, **unset is no longer what a plain run gets**. Importing `src/config.ts`
+applies the run profile, and the default profile `in-browser` sets `BROWSER_FETCH_BACKEND=weeb3`.
+Reaching the unset row now takes blanking it on purpose with `BROWSER_FETCH_BACKEND=` in the
+environment, which beats the profile by design. See `docs/e2e-coverage.md`.
+
 `weeb3` is a **hybrid**, not gateway-less: PR #183 moved segment bytes and nothing else. Fully
 gateway-less is weeb-3's own page, run by `pnpm browser:weeb3-native` and swept against the hybrid by
 `pnpm browser:viewer-order`. See `src/browser/viewerConditions.ts`.
