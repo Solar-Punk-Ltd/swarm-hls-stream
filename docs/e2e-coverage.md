@@ -1,6 +1,6 @@
 # What the e2e suite covers, and what it does not
 
-**As of 2026-08-28.** A living map from product functionality to the live end-to-end scenarios that
+**As of 2026-08-29.** A living map from product functionality to the live end-to-end scenarios that
 exercise it, and to when each one was last green against a real deployment. It is here so that
 "is that tested" has one answer rather than a search, and so that a gap is written down as a gap
 instead of being inferred from a suite nobody wrote.
@@ -63,12 +63,12 @@ anything is asked of the deployment. It checks only what needs no network.
 | Gateway outage, upload side                                                                              | G, green 2026-08-03                                                              | rerun                                          |
 | Catalog live to VOD, /health lifecycle                                                                   | green 2026-08-03                                                                 | rerun                                          |
 | Two simultaneous broadcasts                                                                              | green 2026-08-03, single-rendition only                                          | ladder version planned after viewer scenarios  |
-| Viewer: live playback in a real browser                                                                  | driver only, no test                                                             | new V1, both profiles                          |
+| Viewer: live playback in a real browser                                                                  | V1, built 2026-08-28                                                             | run both profiles                              |
 | Viewer: quality switch works                                                                             | nothing                                                                          | new V2, both profiles                          |
 | Viewer: rung goes quiet, viewer steps down instead of freezing                                           | nothing                                                                          | new V3                                         |
 | Viewer: VOD playback                                                                                     | driver only                                                                      | new V4, both profiles                          |
-| Viewer: broadcast ends cleanly on screen                                                                 | proved once in a paid sitting                                                    | new V5                                         |
-| Viewer crash matrix (6 fault scenarios at a viewer)                                                      | paid sitting wrapper only                                                        | promoted into the suite, both profiles         |
+| Viewer: broadcast ends cleanly on screen                                                                 | V5, built 2026-08-28                                                             | rerun                                          |
+| Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, promoted 2026-08-29, first green pending                              | run both profiles                              |
 | weeb3 actually served the bytes (arm proof)                                                              | sitting-only assertion                                                           | built into every in-browser viewer test        |
 
 ### Reading the letters
@@ -85,6 +85,34 @@ The single letters are the scenario labels the suite files carry in their own do
 | I      | `e2e/suites/scenarios/whole-stack-restart.test.ts`     |
 | J      | `e2e/suites/scenarios/recovery-entry-corrupt.test.ts`  |
 | K      | `e2e/suites/scenarios/reconnect-during-drain.test.ts`  |
+
+### Reading the V numbers
+
+The V numbers are the viewer scenarios, the ones that open a real browser. V2, V3 and V4 are rows in
+the map above that nothing implements yet, and their numbers are held for them.
+
+| Number | File                                                | Built   |
+| ------ | --------------------------------------------------- | ------- |
+| V1     | `e2e/suites/viewer/live-playback.test.ts`           | yes     |
+| V2     | viewer: quality switch works                        | not yet |
+| V3     | viewer: a rung goes quiet and the viewer steps down | not yet |
+| V4     | viewer: VOD playback                                | not yet |
+| V5     | `e2e/suites/viewer/broadcast-ended.test.ts`         | yes     |
+| V6     | `e2e/suites/viewer/crash-gateway-outage.test.ts`    | yes     |
+| V7     | `e2e/suites/viewer/crash-uploader-killed.test.ts`   | yes     |
+| V8     | `e2e/suites/viewer/crash-writer-bee-pause.test.ts`  | yes     |
+| V9     | `e2e/suites/viewer/crash-writer-bee-outage.test.ts` | yes     |
+| V10    | `e2e/suites/viewer/crash-engine-restart.test.ts`    | yes     |
+
+V6 to V10 are the 2026-08-27 crash matrix promoted into pass/fail, one file per fault. The matrix ran
+six arms over five faults: the gateway outage was measured twice, once with segment bytes from a node
+in the tab and once through a gateway, and those are V6 under each of the two run profiles rather
+than two files.
+
+⚠️ **Two of them assert a defect, on purpose.** V7 and V9 assert that the overlay says nothing while
+the picture is frozen, which is issue #100 and is what the deployment does. They are written so that
+fixing #100 turns them red with a message saying exactly that. The alternative, asserting the
+behaviour we want, is a case that has never passed and tells nobody anything.
 
 ### What "driver only" means
 
