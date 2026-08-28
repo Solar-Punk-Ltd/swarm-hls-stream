@@ -18,9 +18,26 @@ import { fileURLToPath } from 'node:url';
 import { type AbrExpectation, readAbrExpectation } from './abrCoverage.js';
 import { type EnvBag, layerEnv, processEnv, readEnvFile } from './envFile.js';
 import { type OmePortVar, type PortVar, requireValidPortSlot, resolveOmePort, resolvePort } from './ports.js';
+import { applyRunProfile, type RunProfile } from './profiles.js';
 
 /** The repository root, three levels up from this file (`<root>/e2e/src/config.ts`). */
 export const ROOT_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
+/**
+ * The run profile, applied as this module is imported. Every suite and every driver imports it.
+ *
+ * ⛔⛔⛔ Applied HERE, at import, and deliberately not inside {@link loadConfig}. `browser/watch.ts`
+ * reads `BROWSER_FETCH_BACKEND` at the top of `main()` and calls `loadConfig()` eleven lines later,
+ * and `crash.ts` and `buffer-sweep.ts` do the same. A profile applied inside the call would be in
+ * place too late for the one key that separates the two profiles, so the drivers would run on the
+ * build's default while every report named the profile that was asked for. That is the shape this
+ * repo has already paid for once, when those two drivers ignored `BROWSER_FETCH_BACKEND` entirely:
+ * an unread variable looks exactly like a variable set to its default.
+ *
+ * Exported so a caller can print what the profile decided and what it stood down on. See
+ * `describeRunProfile`. `test/runProfileWiring.test.ts` runs a real process to prove the ordering.
+ */
+export const runProfile: RunProfile = applyRunProfile();
 
 export const MODES = ['attach', 'deploy'] as const;
 export type Mode = (typeof MODES)[number];
