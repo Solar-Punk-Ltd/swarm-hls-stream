@@ -61,7 +61,8 @@ export interface RunProfile {
   skipped: readonly string[];
 }
 
-export interface RunProfileOptions {
+/** Not exported: the shape is an argument, and exporting it would add a name nothing else needs. */
+interface RunProfileOptions {
   /** Stands in for the process environment, both as the source of precedence and as the target. */
   env?: NodeJS.ProcessEnv;
   /** Profile directory to read. Overridden by tests so fixtures replace the shipped files. */
@@ -140,8 +141,12 @@ export function describeRunProfile(profile: RunProfile): string {
   return `run profile ${profile.name}: set ${applied}${stoodDown}`;
 }
 
-/** The declarations a run makes about itself, as they stand in the environment. */
-export interface RunDeclarations {
+/**
+ * The declarations a run makes about itself, as they stand in the environment.
+ *
+ * Not exported: the shape is an argument, and exporting it would add a name nothing else needs.
+ */
+interface RunDeclarations {
   /** Raw `BROWSER_FETCH_BACKEND`. Unset is ordinary: most suites never open a browser. */
   byteSource: string | undefined;
   /** Raw `E2E_EXPECT_ABR`. Unset is a gap, because a profile is supposed to have declared it. */
