@@ -261,8 +261,13 @@ export function resumeRefusal(
       'fault the product is recorded as recovering from'
     );
   }
+  // ⛔ A viewer the fault never stopped records no resume, because there was nothing to come back
+  // from. That is the writer-bee pause's own written expectation and the better of its two possible
+  // outcomes, so reading the absence as a missing recovery would fail the product for improving.
   if (recovery.recoveredAfterLiftMs === null) {
-    return 'the picture is moving and nothing recorded when it started again, so there is no recovery to judge';
+    return recovery.freezeStartedAfterFaultMs === null
+      ? null
+      : 'the picture stopped, is moving again, and nothing recorded when it started, so there is no recovery to judge';
   }
   if (withinMs !== null && recovery.recoveredAfterLiftMs > withinMs) {
     return (

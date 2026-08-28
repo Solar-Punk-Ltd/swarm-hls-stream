@@ -245,6 +245,27 @@ describe('whether the picture came back the way this fault lets it', () => {
     assert.equal(resumeRefusal(wentThrough({ recoveredAfterLiftMs: -1_200 }), RESUMES), null);
   });
 
+  /**
+   * ⛔ The writer-bee pause, whose written expectation is that a viewer notices nothing at all. Such a
+   * viewer records no resume because there was no freeze to come back from, and reading that absence
+   * as a missing recovery would fail the product for behaving better than the matrix measured.
+   */
+  it('passes a viewer the fault never stopped, who had nothing to resume from', () => {
+    const sailedThrough = wentThrough({
+      longestFreezeMs: 0,
+      freezeStartedAfterFaultMs: null,
+      recoveredAfterLiftMs: null,
+    });
+
+    assert.equal(resumeRefusal(sailedThrough, RESUMES), null);
+  });
+
+  it('still refuses a picture that stopped and has no record of starting again', () => {
+    const unexplained = wentThrough({ recoveredAfterLiftMs: null });
+
+    assert.match(String(resumeRefusal(unexplained, RESUMES)), /no recovery to judge/);
+  });
+
   const ENDS = { expectRecovery: false, withinMs: null };
 
   it('passes the fault that ends the broadcast, whose viewer correctly never gets a picture back', () => {
