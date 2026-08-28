@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
+import { FEED_STATE_LIVE } from '../src/browser/feedState.js';
 import { latencySection } from '../src/browser/report.js';
 import { judgeLatency, judgeLatencyTarget, summarize, type ViewerSample } from '../src/browser/session.js';
 
@@ -22,6 +23,7 @@ const BASE: ViewerSample = {
   droppedFrames: 0,
   resolution: '1920×1080',
   feedStateMessage: null,
+  feedState: FEED_STATE_LIVE,
 };
 
 function run(...steps: readonly Partial<ViewerSample>[]): ViewerSample[] {

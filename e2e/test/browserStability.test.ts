@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
+import { FEED_STATE_LIVE } from '../src/browser/feedState.js';
 import { judgeCost, type ResourceReading } from '../src/browser/resources.js';
 import { thinRequestLog } from '../src/browser/runFiles.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
@@ -26,6 +27,7 @@ const BASE: ViewerSample = {
   droppedFrames: 0,
   resolution: '1280×720',
   feedStateMessage: null,
+  feedState: FEED_STATE_LIVE,
 };
 
 /**

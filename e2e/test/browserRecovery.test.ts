@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
 import { FAULT_SCENARIOS, scenarioByName } from '../src/browser/faults.js';
+import { FEED_STATE_LIVE } from '../src/browser/feedState.js';
 import { judgeRecovery } from '../src/browser/recovery.js';
 import { renderCrashReport } from '../src/browser/recoveryReport.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
@@ -26,6 +27,7 @@ const BASE: ViewerSample = {
   droppedFrames: 0,
   resolution: '1280×720',
   feedStateMessage: null,
+  feedState: FEED_STATE_LIVE,
 };
 
 /**

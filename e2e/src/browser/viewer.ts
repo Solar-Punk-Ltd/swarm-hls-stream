@@ -54,6 +54,7 @@
 
 import { type Browser, chromium, type Page, type Request } from 'playwright-core';
 
+import { readFeedState } from './feedState.js';
 import {
   type InstrumentProof,
   type InstrumentReading,
@@ -358,6 +359,10 @@ export async function readSample(page: Page): Promise<ViewerSample> {
     droppedFrames: metrics.droppedFrames,
     resolution: metrics.resolution,
     feedStateMessage: raw.feedStateMessage,
+    // ⛔ Throws on a message it does not recognise, here at the sample rather than later in the
+    // summary. Failing at the first sample costs a run its first second; failing in the summary would
+    // cost it the whole watch and the artifact with it.
+    feedState: readFeedState(raw.feedStateMessage),
   };
 }
 

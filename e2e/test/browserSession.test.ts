@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
+import { FEED_STATE_ENDED, FEED_STATE_LIVE, FEED_STATE_STALLED } from '../src/browser/feedState.js';
 import { judgeLatency, playbackAdvances, summarize, type ViewerSample } from '../src/browser/session.js';
 
 const BASE: ViewerSample = {
@@ -21,6 +22,7 @@ const BASE: ViewerSample = {
   droppedFrames: 0,
   resolution: '1280×720',
   feedStateMessage: null,
+  feedState: FEED_STATE_LIVE,
 };
 
 /** A run of samples one second apart, each advancing `advance` media seconds. */
@@ -396,5 +398,33 @@ describe('the frame rate that actually arrived', () => {
     const samples = [at(0, 0, 0), at(2, 2, 60)];
 
     assert.equal(summarize(samples).deliveredFps, null);
+  });
+});
+
+/**
+ * ⭐ Why the summary carries the states and not the sentences.
+ *
+ * A viewer scenario asserts on what the client TOLD the viewer, and until the states existed the only
+ * thing a run could compare was the overlay's prose. `saidWhileFrozen` on the crash path still keeps
+ * the words, because a report a person reads wants them. A pass/fail suite wants the state.
+ */
+describe('the feed states a session passed through', () => {
+  it('reports live for a session the overlay never interrupted', () => {
+    assert.deepEqual(summarize(playing(4, 1)).feedStatesSeen, [FEED_STATE_LIVE]);
+  });
+
+  it('reports nothing at all for a session with no samples', () => {
+    assert.deepEqual(summarize([]).feedStatesSeen, []);
+  });
+
+  it('keeps each state once, in the order the viewer first met it', () => {
+    const samples: ViewerSample[] = [
+      { ...BASE, atMs: 0, feedState: FEED_STATE_LIVE },
+      { ...BASE, atMs: 1000, feedState: FEED_STATE_STALLED },
+      { ...BASE, atMs: 2000, feedState: FEED_STATE_LIVE },
+      { ...BASE, atMs: 3000, feedState: FEED_STATE_ENDED },
+    ];
+
+    assert.deepEqual(summarize(samples).feedStatesSeen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_ENDED]);
   });
 });

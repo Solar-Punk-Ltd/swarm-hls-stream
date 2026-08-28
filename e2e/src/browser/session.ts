@@ -24,6 +24,8 @@ import {
   MAX_LIVE_SYNC_PLAYBACK_RATE,
 } from '../bench/clientTuning.js';
 
+import { feedStatesSeen, type ViewerFeedState } from './feedState.js';
+
 /**
  * How far below the configured target the latency may sit before it reads as clamped.
  *
@@ -82,6 +84,15 @@ export interface ViewerSample {
    * second one is a viewer who knows to wait rather than to reload.
    */
   feedStateMessage: string | null;
+  /**
+   * The same overlay as a state, which is what a pass/fail suite can assert on.
+   *
+   * Kept beside the message rather than replacing it: a report a person reads wants the sentence the
+   * viewer saw, and a scenario asserting "this broadcast reached its end" must not be asserting on
+   * prose that a copy edit can move. See {@link readFeedState}, which refuses a message it does not
+   * recognise rather than reading it as live.
+   */
+  feedState: ViewerFeedState;
 }
 
 /**
@@ -360,6 +371,14 @@ export interface SessionSummary {
    */
   deliveredFps: number | null;
   medianBufferAheadS: number;
+  /**
+   * Each feed state the viewer was shown, once, in the order they first met it.
+   *
+   * A live session that was never interrupted reads `['live']`. A broadcast that ended cleanly under
+   * a watching viewer ends with `'ended'`, which is the terminal state and the one a viewer scenario
+   * asserts on.
+   */
+  feedStatesSeen: readonly ViewerFeedState[];
   latency: LatencyVerdict;
   /**
    * Whether {@link latency} was measured against the target the client was configured with.
@@ -535,6 +554,7 @@ export function summarize(
     resolution: last?.resolution ?? null,
     deliveredFps: deliveredFps(samples),
     medianBufferAheadS: samples.length > 0 ? median(samples.map((sample) => sample.bufferAheadS)) : 0,
+    feedStatesSeen: feedStatesSeen(samples.map((sample) => sample.feedState)),
     latency: judgeLatency(samples),
     latencyTarget: judgeLatencyTarget(samples, configuredTargetS),
   };

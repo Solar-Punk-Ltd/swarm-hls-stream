@@ -9,6 +9,7 @@ import {
   perArmFromSessionTotals,
   thinSamples,
 } from '../src/browser/bufferSweep.js';
+import { FEED_STATE_LIVE } from '../src/browser/feedState.js';
 import { type InstrumentReading, REQUIRED_CODECS } from '../src/browser/instrument.js';
 import { type ViewerSample } from '../src/browser/session.js';
 import { type SampledStretch } from '../src/browser/watchLoop.js';
@@ -41,6 +42,7 @@ const BASE: ViewerSample = {
   droppedFrames: 0,
   resolution: '1280×720',
   feedStateMessage: null,
+  feedState: FEED_STATE_LIVE,
 };
 
 /**
