@@ -16,7 +16,7 @@ import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
 
 import { type BrowserArmResult } from './browser.js';
 
-export interface PlaybackExpectation {
+interface PlaybackExpectation {
   /**
    * The lowest share of wall clock the picture may keep up with and still count as watched.
    *
@@ -72,7 +72,7 @@ export function viewerPlaybackRefusal(
   return null;
 }
 
-export interface Weeb3ArmExpectation {
+interface Weeb3ArmExpectation {
   /**
    * The most `/bytes/` requests an in-tab arm may make over the whole run.
    *

@@ -72,7 +72,7 @@ const SCRIPT_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/;
 /** An environment variable name, spelled the way every driver spells them. */
 const ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 
-export interface BrowserArmLaunch {
+interface BrowserArmLaunch {
   image: string;
   containerName: string;
   /** Absolute path of the bench checkout on the HOST, bind-mounted at {@link CONTAINER_REPO}. */
@@ -173,14 +173,14 @@ export function hostPathOfArtifact(containerPath: string, repoDir: string): stri
 }
 
 /** The condition the arm asked for beside the one the client landed on, never one standing for both. */
-export interface BrowserArmProof {
+interface BrowserArmProof {
   requested: string | null;
   reported: string | null;
   settledForMs: number | null;
 }
 
 /** How far behind live the player sat. Null where the overlay never reported a latency. */
-export interface BehindLive {
+interface BehindLive {
   joinS: number | null;
   medianS: number | null;
   minS: number | null;
@@ -369,7 +369,7 @@ function distinctResolutions(samples: readonly unknown[]): string[] {
   return [...new Set(seen)];
 }
 
-export interface BrowserArmOptions {
+interface BrowserArmOptions {
   /** Where segment bytes come from. The one thing a viewer arm is a reading of. */
   backend: ByteSource;
   /**
@@ -389,7 +389,7 @@ export interface BrowserArmOptions {
 }
 
 /** Where the bench checkout lives on the host, and which image and container name to use. */
-export interface BrowserArmHostSetup {
+interface BrowserArmHostSetup {
   repoDir: string;
   image: string;
   containerName: string;

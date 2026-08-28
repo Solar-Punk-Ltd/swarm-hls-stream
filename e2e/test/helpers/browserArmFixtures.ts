@@ -14,7 +14,7 @@
  */
 
 /** What a caller wants different about this run. Anything omitted is a clean weeb-3 watch. */
-export interface ArmStateOverrides {
+interface ArmStateOverrides {
   overallAdvanceRatio?: unknown;
   latency?: Record<string, unknown>;
   resolutions?: readonly (string | null)[];
