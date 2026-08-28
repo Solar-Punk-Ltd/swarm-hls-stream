@@ -8,7 +8,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "TSX_DISABLE_CACHE=1 tsx --test test/*.test.ts",
-    "test:e2e": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' 'suites/scenarios/*.test.ts' 'suites/service/*.test.ts'",
+    "test:e2e": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' 'suites/scenarios/*.test.ts' 'suites/service/*.test.ts' 'suites/viewer/*.test.ts'",
     "test:e2e:smoke": "TSX_DISABLE_CACHE=1 tsx --test 'suites/smoke/*.test.ts'",
     "bench:latency": "tsx bench/latency.ts",
     "bench:longrun": "tsx bench/longrun.ts",

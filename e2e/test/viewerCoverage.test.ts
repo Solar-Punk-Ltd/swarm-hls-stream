@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
-import { readViewerExpectation, viewerCoverageRefusal, viewerSkipReason } from '../src/viewerCoverage.js';
+import {
+  readViewerExpectation,
+  requireByteSource,
+  viewerCoverageRefusal,
+  viewerGate,
+  viewerSkipReason,
+} from '../src/viewerCoverage.js';
 
 /**
  * That a run says whether a real browser watched anything, and cannot leave it ambiguous.
@@ -95,5 +101,38 @@ describe('why a suite skipped', () => {
    */
   it('does not skip an undeclared run, which the refusal has already stopped', () => {
     assert.equal(viewerSkipReason('undeclared'), false);
+  });
+});
+
+describe('the gate a viewer suite opens with', () => {
+  it('lets a declared browser run through with nothing to skip', () => {
+    assert.equal(viewerGate('browser', WEEB3_BYTES), false);
+  });
+
+  it('hands a declared browser-less run its reason, rather than throwing at it', () => {
+    assert.match(String(viewerGate('none', null)), /E2E_EXPECT_BROWSER/);
+  });
+
+  /**
+   * ⛔ Thrown rather than returned as a skip. A throw at module scope fails the file and the run,
+   * where a skip would reach no column at all, which is the defect this module exists for.
+   */
+  it('throws on an undeclared run, so the file fails during import', () => {
+    assert.throws(() => viewerGate('undeclared', null), /E2E_EXPECT_BROWSER/);
+  });
+
+  it('throws on a browser run with no byte source, before a broadcast is published', () => {
+    assert.throws(() => viewerGate('browser', null), /BROWSER_FETCH_BACKEND/);
+  });
+});
+
+describe('the byte source a running case reads', () => {
+  it('gives back the condition the run named', () => {
+    assert.equal(requireByteSource(GATEWAY_BYTES), GATEWAY_BYTES);
+  });
+
+  /** A case reaching this has got past the gate with no condition, which is the gate's own defect. */
+  it('refuses to file a verdict against a condition nobody named', () => {
+    assert.throws(() => requireByteSource(null), /gate/);
   });
 });

@@ -91,3 +91,36 @@ export function viewerSkipReason(expectation: ViewerExpectation): string | false
     ? 'E2E_EXPECT_BROWSER=false: this run declared itself browser-less, so no player watches the broadcast'
     : false;
 }
+
+/**
+ * The gate a viewer suite opens with: stop an ambiguous run, or say why this one skips.
+ *
+ * Called at module scope so an undeclared run fails the file during import. A throw inside a
+ * `describe` callback prints `not ok` and is still reported as `# fail 0` with exit 0, which is the
+ * defect this whole module exists for, one level down.
+ */
+export function viewerGate(expectation: ViewerExpectation, backend: ByteSource | null): string | false {
+  const refusal = viewerCoverageRefusal({ expectation, backend });
+  if (refusal !== null) {
+    throw new Error(refusal);
+  }
+  return viewerSkipReason(expectation);
+}
+
+/**
+ * The byte source a viewer suite is a reading of, once the gate has let the run through.
+ *
+ * Reached only from inside a case that is running, which by then means the expectation was `browser`
+ * and {@link viewerCoverageRefusal} has already established there is one. The throw is here so the
+ * type says so as well, and so a future change that let a null through fails loudly rather than
+ * filing a verdict against an unnamed condition.
+ */
+export function requireByteSource(backend: ByteSource | null): ByteSource {
+  if (backend === null) {
+    throw new Error(
+      'a viewer case ran with no byte source named, which the coverage gate should have refused. ' +
+        'Set BROWSER_FETCH_BACKEND, and treat this message as a defect in the gate rather than in the run.',
+    );
+  }
+  return backend;
+}
