@@ -1,7 +1,30 @@
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../libs/AbrLadder.js';
 import { parsePublisherSpecs, PublisherSpec } from '../libs/BeePublisherPool.js';
 
-import { optional, optionalBool, optionalInt, required } from './env.js';
+import { optional, optionalBool, optionalInt, optionalNumber, required } from './env.js';
+
+/**
+ * How much SWAP chequebook balance every Bee node must hold before the uploader will start.
+ *
+ * 0.5 BZZ is the same number `e2e/suites/preflight/chequebook-funding.test.ts` demands before a paid
+ * sitting, kept in step deliberately so the service and the suite refuse at the same point.
+ *
+ * **The measure is `availableBalance`, never `totalBalance`.** Total counts value the node has
+ * already promised away in cheques its peers have not cashed, so a node with nothing left to spend
+ * still reports a healthy total. Available is what remains uncommitted, which is the only one of the
+ * two that answers whether the next segment can be paid for.
+ *
+ * Zero is a legal setting and means "read every chequebook but accept any balance". It does not
+ * disable the check: a chequebook that cannot be read at all is still a refusal, because a node
+ * running with SWAP off has none to fill.
+ */
+const DEFAULT_CHEQUEBOOK_MIN_BZZ = 0.5;
+
+/**
+ * A floor this high is a typo rather than a policy. It also keeps the conversion into PLUR, which
+ * multiplies by 1e16, well inside the range where the arithmetic stays finite.
+ */
+const MAX_CHEQUEBOOK_MIN_BZZ = 1000;
 
 /**
  * The ABR ladder, or null when the engine is producing a single rendition.
@@ -38,6 +61,10 @@ export const config = {
   beeUrl: required('BEE_URL'),
   stamp: required('STAMP'),
   publishers: readPublisherSpecs(),
+  chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
+    min: 0,
+    max: MAX_CHEQUEBOOK_MIN_BZZ,
+  }),
   streamKey: required('STREAM_KEY'),
   streamListTopic: required('STREAM_LIST_TOPIC'),
   apiAuthToken: required('API_AUTH_TOKEN'),

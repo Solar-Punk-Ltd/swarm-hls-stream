@@ -36,8 +36,8 @@ import { readFileSync } from 'node:fs';
  * them only when tests are deliberately removed.
  */
 const FLOOR = {
-  tests: Number(process.env.UPLOADER_TEST_FLOOR_TESTS ?? 1048),
-  suites: Number(process.env.UPLOADER_TEST_FLOOR_SUITES ?? 204),
+  tests: Number(process.env.UPLOADER_TEST_FLOOR_TESTS ?? 1056),
+  suites: Number(process.env.UPLOADER_TEST_FLOOR_SUITES ?? 205),
 };
 
 const tapPath = process.argv[2];
