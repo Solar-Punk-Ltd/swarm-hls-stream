@@ -45,7 +45,7 @@ API_PORT="${UNFUNDED_API_PORT:-10087}"
 P2P_PORT="${UNFUNDED_P2P_PORT:-10088}"
 
 # Matches the stack's bee, so the two arms differ in funding and in nothing else.
-IMAGE="${UNFUNDED_IMAGE:-ethersphere/bee:2.8.1}"
+IMAGE="${UNFUNDED_IMAGE:-ethersphere/bee:2.8.2}"
 
 # ⛔⛔ THE STACK'S GATEWAY USES A LOCAL RPC, NOT A PUBLIC ONE. Read off the running container:
 # `--blockchain-rpc-endpoint=http://127.0.0.1:9000`. A first version of this script defaulted to
