@@ -436,7 +436,12 @@ export async function runBrowserArm(host: Host, cfg: E2EConfig, options: Browser
 
   // Before the arm, never after it. A container left behind by a crashed arm holds the image's single
   // Xvfb display, and every later arm then fails at startup looking like a broken browser.
-  await host.run(`docker rm -f ${setup.containerName} > /dev/null 2>&1 || true`).catch(() => undefined);
+  //
+  // ⛔ Validated here rather than relying on `browserArmCommand` above having already done it. That
+  // is true today and true only because of the order these two lines happen to be in, which is not a
+  // property anyone reading either line can see.
+  const name = quoted(matching(setup.containerName, CONTAINER_NAME_RE, 'container name'), 'container name');
+  await host.run(`docker rm -f ${name} > /dev/null 2>&1 || true`).catch(() => undefined);
 
   const timeoutMs = options.watchMinutes * 60_000 + BROWSER_ARM_OVERHEAD_MS;
   const { stdout } = await host.run(command, timeoutMs);

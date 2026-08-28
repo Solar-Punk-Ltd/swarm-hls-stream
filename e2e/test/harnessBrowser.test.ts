@@ -422,7 +422,7 @@ describe('running an arm end to end', () => {
 
     await runBrowserArm(host, cfg, arm);
 
-    assert.match(runs[0].command, new RegExp(`^docker rm -f ${DEFAULT_BROWSER_CONTAINER} `));
+    assert.match(runs[0].command, new RegExp(`^docker rm -f '${DEFAULT_BROWSER_CONTAINER}' `));
     assert.match(runs[1].command, /^docker run --rm --network host/);
   });
 
