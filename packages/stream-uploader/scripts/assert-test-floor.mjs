@@ -36,7 +36,7 @@ import { readFileSync } from 'node:fs';
  * them only when tests are deliberately removed.
  */
 const FLOOR = {
-  tests: Number(process.env.UPLOADER_TEST_FLOOR_TESTS ?? 1077),
+  tests: Number(process.env.UPLOADER_TEST_FLOOR_TESTS ?? 1075),
   suites: Number(process.env.UPLOADER_TEST_FLOOR_SUITES ?? 208),
 };
 

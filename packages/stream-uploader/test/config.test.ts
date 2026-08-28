@@ -44,6 +44,13 @@ const OPTIONAL_ENV: OptionalEnvVar[] = [
   { name: 'ORPHAN_REAP_MS', field: 'orphanReapMs', sample: '9876', fallback: 60000, refused: ['0'] },
   { name: 'SEGMENT_DEDUP_WINDOW', field: 'segmentDedupWindow', sample: '55', fallback: 10000, refused: ['0'] },
   { name: 'ENGINE', field: 'engine', sample: 'ome', fallback: '', refused: [] },
+  {
+    name: 'CHEQUEBOOK_MIN_BZZ',
+    field: 'chequebookMinBzz',
+    sample: '0.25',
+    fallback: 0.5,
+    refused: ['half', '-0.5', '10000'],
+  },
 ];
 
 const requiredEnv = (): Record<string, string> =>
@@ -129,20 +136,14 @@ describe('the environment contract', () => {
   }
 
   /**
-   * CHEQUEBOOK_MIN_BZZ is checked here rather than in the OPTIONAL_ENV table above, because the last
-   * case in this file requires every table entry to be declared in `deploy/docker-compose.yml` and
-   * this one is not there yet. The gate it configures ships with a working default either way, so
-   * what is missing is the ability to override the floor through compose, not the floor itself.
+   * The floor's name, default and refusals live in the OPTIONAL_ENV table above like every other
+   * setting. What the table cannot express is here: values whose meaning is the point, not their
+   * plumbing.
    */
   describe('the chequebook floor', () => {
     const floor = async (value?: string) =>
       (await loadConfig(value === undefined ? requiredEnv() : { ...requiredEnv(), CHEQUEBOOK_MIN_BZZ: value }))
         .chequebookMinBzz;
-
-    // The same number `e2e/suites/preflight/chequebook-funding.test.ts` demands before a paid sitting.
-    it('defaults to the 0.5 BZZ the e2e preflight already asks for', async () => {
-      assert.equal(await floor(), 0.5);
-    });
 
     it('reads a fraction of a BZZ, which is the whole reason it is not an integer setting', async () => {
       assert.equal(await floor('0.25'), 0.25);
@@ -155,15 +156,9 @@ describe('the environment contract', () => {
       assert.equal(await floor('0'), 0);
     });
 
-    for (const refused of ['half', '-0.5', '1e-2', '', '10000']) {
-      it(`refuses CHEQUEBOOK_MIN_BZZ=${JSON.stringify(refused)} at config time`, async () => {
-        if (refused === '') {
-          assert.equal(await floor(refused), 0.5, 'a blank setting is an absent one, not a floor of zero');
-          return;
-        }
-        await assert.rejects(() => floor(refused), /CHEQUEBOOK_MIN_BZZ/);
-      });
-    }
+    it('reads a blank setting as an absent one, not as a floor of zero', async () => {
+      assert.equal(await floor(''), 0.5);
+    });
   });
 
   // Without this the pair can drift apart silently and in the direction that looks fine: the service

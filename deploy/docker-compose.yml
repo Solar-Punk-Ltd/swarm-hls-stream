@@ -106,6 +106,7 @@ services:
       BEE_URL: ${BEE_URL:-http://bee-uploader:1633}
       STAMP: ${STAMP}
       BEE_PUBLISHERS: ${BEE_PUBLISHERS:-}
+      CHEQUEBOOK_MIN_BZZ: ${CHEQUEBOOK_MIN_BZZ:-0.5}
       STREAM_KEY: ${STREAM_KEY}
       STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN}
