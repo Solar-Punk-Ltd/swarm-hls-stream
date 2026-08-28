@@ -14,6 +14,7 @@ import { startApiServer } from './api/server.js';
 import { loadEngines } from './engines/load.js';
 import { BeePublisherPool } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
+import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
@@ -54,6 +55,13 @@ function buildPublishers(): BeePublisherPool {
 async function start() {
   try {
     const publishers = buildPublishers();
+
+    // First, ahead of recovery and the engines, because a dry chequebook is silent: the node answers
+    // /health normally and stalls every paid push behind an allowance that never arrives. Refusing
+    // here costs a restart. Reaching the engines first costs a broadcast that looks live and uploads
+    // nothing. See ChequebookGate for the full account.
+    await new ChequebookGate(publishers.nodes(), bzzToPlur(config.chequebookMinBzz), logger).assertFunded();
+
     const recoveryStore = new RecoveryStore(config.stateDir);
 
     // In a subdirectory so RecoveryStore's *.json scan of stateDir never picks it up as a stream.
