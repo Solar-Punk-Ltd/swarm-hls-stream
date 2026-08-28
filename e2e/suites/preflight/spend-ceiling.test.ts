@@ -27,11 +27,14 @@ import {
  * Read-only, and only reads: two chequebook balances and one local file. It costs nothing, so it can
  * refuse while the stack is still cold.
  *
- * ⚠️ What this does NOT do, and a maintainer has to know it. `node --test` runs every file it was
- * given even after one fails, so a refusal here does not by itself abort the scenarios that follow.
- * What it buys is a run that stops with the number in front of the operator at the top of the output
- * instead of after the money is gone. Making the refusal abort the rest needs a change to how a run
- * is driven, which is not this file's to make.
+ * ⛔⛔ THE REFUSAL ONLY STOPS THE SPEND BECAUSE OF THE `&&` IN `test:e2e`. KEEP THEM TOGETHER.
+ *
+ * `node --test` runs every file it was given even after one fails, and exits non-zero only at the
+ * end. So while `test:e2e` was one invocation, this file could refuse in full and the scenarios
+ * would still publish and still spend, which is a checker reporting after the money is gone rather
+ * than a gate. `test:e2e` now runs the preflight directory as its own invocation and chains the
+ * scenario, service and viewer globs behind an `&&`, so a refusal here exits before any broadcast
+ * starts. Fold those two halves back into one command and this file goes back to being a warning.
  *
  * The rules live in `src/harness/spendCeiling.ts` because nothing under `suites/` runs in CI. They
  * are covered by `test/spendCeiling.test.ts` and therefore by `pnpm verify`, leaving this file as

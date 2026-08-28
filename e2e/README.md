@@ -124,17 +124,26 @@ The full suite. Publishes real streams, stops real containers, spends real posta
 each one waits for `activeStreams=0` before starting so a previous stream draining cannot collide
 with it.
 
-Order is `preflight → scenarios → service`, so the chequebook gate fails before any stamp is burned.
+Order is `preflight → scenarios → service`, and the preflight half runs as its own `tsx --test`
+invocation chained with `&&`. That `&&` is what makes the preflights gates rather than warnings:
+`node --test` runs every file it was given even after one fails, so in a single invocation a
+preflight could refuse and the scenarios would spend anyway. Split, a refusal exits non-zero before
+any stamp is burned.
+
+One consequence for anyone reading the output: a run now prints **two** TAP documents, so there are
+two `# tests` / `# pass` / `# fail` blocks in one log. Sum them. Reading the totals off either block
+alone reports part of a run as the whole of it.
 
 ## What it covers
 
 Preflight:
 
-| file                           | proves                                                                                       |
-| ------------------------------ | -------------------------------------------------------------------------------------------- |
-| `preflight/chequebook-funding` | the uploader node holds ≥ 0.5 BZZ. Read-only: it reports a shortfall and fails, never spends |
-| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host            |
-| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host |
+| file                           | proves                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `preflight/chequebook-funding` | the uploader node holds ≥ 0.5 BZZ. Read-only: it reports a shortfall and fails, never spends           |
+| `preflight/spend-ceiling`      | the run is inside what the owner authorised in `.spend-ledger.env`. Reads two balances, spends nothing |
+| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host                      |
+| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host           |
 
 Fault scenarios:
 
