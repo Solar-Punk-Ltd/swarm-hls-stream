@@ -226,14 +226,14 @@ export interface BrowserArmResult {
 
 function asObject(value: unknown, at: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`the arm's state has no object at ${at}, got ${describe(value)}`);
+    throw new Error(`the arm's state has no object at ${at}, got ${shownValue(value)}`);
   }
   return value as Record<string, unknown>;
 }
 
 function asNumber(value: unknown, at: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`the arm's state has no finite number at ${at}, got ${describe(value)}`);
+    throw new Error(`the arm's state has no finite number at ${at}, got ${shownValue(value)}`);
   }
   return value;
 }
@@ -245,26 +245,26 @@ function asNumberOrNull(value: unknown, at: string): number | null {
 
 function asString(value: unknown, at: string): string {
   if (typeof value !== 'string') {
-    throw new Error(`the arm's state has no string at ${at}, got ${describe(value)}`);
+    throw new Error(`the arm's state has no string at ${at}, got ${shownValue(value)}`);
   }
   return value;
 }
 
 function asArray(value: unknown, at: string): unknown[] {
   if (!Array.isArray(value)) {
-    throw new Error(`the arm's state has no array at ${at}, got ${describe(value)}`);
+    throw new Error(`the arm's state has no array at ${at}, got ${shownValue(value)}`);
   }
   return value;
 }
 
 function asBoolean(value: unknown, at: string): boolean {
   if (typeof value !== 'boolean') {
-    throw new Error(`the arm's state has no boolean at ${at}, got ${describe(value)}`);
+    throw new Error(`the arm's state has no boolean at ${at}, got ${shownValue(value)}`);
   }
   return value;
 }
 
-function describe(value: unknown): string {
+function shownValue(value: unknown): string {
   return value === undefined ? 'nothing' : JSON.stringify(value)?.slice(0, 80) ?? String(value);
 }
 
