@@ -26,18 +26,19 @@ E2E_SSH_TARGET=streamhost E2E_PUBLIC_HOST=203.0.113.10 pnpm e2e:smoke        # a
 E2E_PROFILE=streamer1 E2E_PORT_SLOT=2 … pnpm e2e:smoke                        # a profile deploy
 ```
 
-| var                 | default                            | what it is                                                                                |
-| ------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------- |
-| `E2E_SSH_TARGET`    | `localhost`                        | ssh target for container control and curl. Must work non-interactively.                   |
-| `E2E_PUBLIC_HOST`   | `127.0.0.1`                        | address the SRT publisher and viewer reach the deployment on.                             |
-| `E2E_PROFILE`       | `default`                          | the deploy's `--profile`: the compose project, so containers are `<profile>-<service>-1`. |
-| `E2E_PORT_SLOT`     | `0`                                | the deploy's `--portSlot`. `0` means no slot, and the env files decide the ports.         |
-| `E2E_ENGINE`        | the deployment's `ENGINE`          | `srs` or `ome`. Overrides what the root env says.                                         |
-| `E2E_STREAM_PATH`   | per engine                         | `live/stream` for SRS, `video/stream` for OME.                                            |
-| `E2E_OME_SRT_PORT`  | `OME_SRT_PORT` from the engine env | only for a standalone OME that no profile deployed.                                       |
-| `E2E_OME_CONTAINER` | `<profile>-ome-1`                  | same.                                                                                     |
-| `E2E_EXPECT_ABR`    | undeclared                         | what this run covers: `true` a ladder, `false` single-rendition. See below.               |
-| `E2E_MODE`          | `attach`                           | only `attach` exists. `deploy` refuses and points at `deploy/scripts/deploy.sh`.          |
+| var                  | default                            | what it is                                                                                 |
+| -------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------ |
+| `E2E_SSH_TARGET`     | `localhost`                        | ssh target for container control and curl. Must work non-interactively.                    |
+| `E2E_PUBLIC_HOST`    | `127.0.0.1`                        | address the SRT publisher and viewer reach the deployment on.                              |
+| `E2E_PROFILE`        | `default`                          | the deploy's `--profile`: the compose project, so containers are `<profile>-<service>-1`.  |
+| `E2E_PORT_SLOT`      | `0`                                | the deploy's `--portSlot`. `0` means no slot, and the env files decide the ports.          |
+| `E2E_ENGINE`         | the deployment's `ENGINE`          | `srs` or `ome`. Overrides what the root env says.                                          |
+| `E2E_STREAM_PATH`    | per engine                         | `live/stream` for SRS, `video/stream` for OME.                                             |
+| `E2E_OME_SRT_PORT`   | `OME_SRT_PORT` from the engine env | only for a standalone OME that no profile deployed.                                        |
+| `E2E_OME_CONTAINER`  | `<profile>-ome-1`                  | same.                                                                                      |
+| `E2E_EXPECT_ABR`     | undeclared                         | what this run covers: `true` a ladder, `false` single-rendition. See below.                |
+| `E2E_EXPECT_BROWSER` | undeclared                         | whether a real viewer watches: `true` opens a player, `false` runs without one. See below. |
+| `E2E_MODE`           | `attach`                           | only `attach` exists. `deploy` refuses and points at `deploy/scripts/deploy.sh`.           |
 
 Ports come from `.env` / `.env.<profile>` and `engines/<engine>/.env[.<profile>]`, layered under the
 process environment exactly as `load_env` then `load_engine_envs` layer them. **OME's ports are not
@@ -62,6 +63,37 @@ is asked of the deployment:
 A single-rendition deployment sets `E2E_EXPECT_ABR=false` once in its profile env, next to
 `E2E_SSH_TARGET`, and is never asked again. `ABR_ENABLED` on with fewer than two rungs is refused
 whatever was declared, because a one-rung ladder cannot show a rung going missing.
+
+### Saying whether a real browser watches
+
+`suites/viewer/` opens a real Chrome on the deployed client. Every other viewer leg here is an HTTP
+poll, so this is the only part of the suite that can say what a viewer actually got rather than what
+one could have fetched. Those suites can skip, and a skipped suite is invisible for the same reason
+the ABR ones are, so `preflight/viewer-coverage` refuses a run that has not said which it is.
+
+| `E2E_EXPECT_BROWSER` | what happens                                                                  |
+| -------------------- | ----------------------------------------------------------------------------- |
+| unset                | **refused**, before anything is asked of the deployment                       |
+| `false`              | the viewer suites skip, and the preflight prints that they did                |
+| `true`               | a real browser watches, and `BROWSER_FETCH_BACKEND` must name which arm it is |
+
+`BROWSER_FETCH_BACKEND` is `weeb3` for a Swarm node in the viewer's own tab, or `gateway` for the
+control. It belongs in the environment of the run rather than in a profile, because it is what the
+run is a reading of and not what the deployment is. Unset means whatever the client build defaults
+to, which would file a verdict against a condition nobody chose, so a browser run is refused without
+it.
+
+Launching a browser also needs the host-side settings the config cannot know:
+
+| var                     | default                    | what it is                                                                                                                         |
+| ----------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `E2E_BROWSER_REPO_DIR`  | **required**               | absolute path of the bench checkout **on the host**, mounted into the arm as `/repo`. Same directory `bench-on-host.sh` rsyncs to. |
+| `E2E_BROWSER_IMAGE`     | `swarm-hls-browser:latest` | the image `browser-on-host.sh` builds from `e2e/Dockerfile.browser`.                                                               |
+| `E2E_BROWSER_CONTAINER` | `e2e-viewer-browser`       | the arm's container name. Reclaimed by exact name before each arm.                                                                 |
+
+`E2E_BROWSER_REPO_DIR` has no default on purpose: the suite runs from inside that bind mount and
+cannot work out the host path it came from, and a guessed one that did not exist would have docker
+create an empty directory, mount it, and fail minutes later looking like a broken image.
 
 ## The deployment has to log at `debug`
 
@@ -102,6 +134,7 @@ Preflight:
 | ------------------------------ | -------------------------------------------------------------------------------------------- |
 | `preflight/chequebook-funding` | the uploader node holds ≥ 0.5 BZZ. Read-only: it reports a shortfall and fails, never spends |
 | `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host            |
+| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host |
 
 Fault scenarios:
 
@@ -129,6 +162,18 @@ Service coverage, no faults:
 | `service/multi-stream-concurrent` | two concurrent streams, distinct topics, each finalizing to its own VOD   |
 | `service/abr-ladder`              | every configured rung publishes, under one ladder, gapless                |
 
+Viewer coverage, in a real browser. These are the only suites here that open a player, so they are
+the only ones that can say what a viewer got rather than what one could have fetched. They need the
+browser image on the host and the settings under **Saying whether a real browser watches**:
+
+| file                     | proves                                                                                                                             |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `viewer/live-playback`   | (V1) a real viewer keeps up with a live broadcast, decodes a picture, errors at nothing, and is the byte-source arm it is filed as |
+| `viewer/broadcast-ended` | (V5) the broadcaster stops under a watching viewer and the viewer is told, rather than left on a frozen last frame                 |
+
+⛔ Neither asserts how far behind live the player sat. That figure is printed and filed, and turning
+it into a threshold is a product decision about what latency this deployment promises.
+
 ## In-browser node first
 
 **The default subject of a viewer measurement is our client reading segment bytes from a Swarm node
@@ -152,18 +197,18 @@ gateway-less is weeb-3's own page, run by `pnpm browser:weeb3-native` and swept 
 
 Which command supports which:
 
-| command                       | in-tab node  | notes                                              |
-| ----------------------------- | ------------ | -------------------------------------------------- |
-| `browser:watch`               | yes          | the long-run watcher, the workhorse                |
-| `browser:crash`               | yes          | all five fault scenarios                           |
-| `browser:buffer-sweep`        | yes          | one byte source for the whole sweep                |
-| `browser:fetch-backend-check` | yes          | the A/B itself                                     |
-| `browser:weeb3-native`        | gateway-less | weeb-3's own page                                  |
-| `browser:viewer-order`        | both         | native against hybrid, counterbalanced             |
-| `browser:vod`                 | **no**       | recorded playback, still gateway only              |
-| `browser:selfcheck`           | **no**       | proves the instrument, not a viewer condition      |
-| `browser:gateway-check`       | n/a          | gateway by definition                              |
-| `e2e:run`                     | n/a          | uploader-side, asserts on uploader logs, no viewer |
+| command                       | in-tab node  | notes                                                                                  |
+| ----------------------------- | ------------ | -------------------------------------------------------------------------------------- |
+| `browser:watch`               | yes          | the long-run watcher, the workhorse                                                    |
+| `browser:crash`               | yes          | all five fault scenarios                                                               |
+| `browser:buffer-sweep`        | yes          | one byte source for the whole sweep                                                    |
+| `browser:fetch-backend-check` | yes          | the A/B itself                                                                         |
+| `browser:weeb3-native`        | gateway-less | weeb-3's own page                                                                      |
+| `browser:viewer-order`        | both         | native against hybrid, counterbalanced                                                 |
+| `browser:vod`                 | **no**       | recorded playback, still gateway only                                                  |
+| `browser:selfcheck`           | **no**       | proves the instrument, not a viewer condition                                          |
+| `browser:gateway-check`       | n/a          | gateway by definition                                                                  |
+| `e2e:run`                     | yes          | uploader-side throughout, plus `suites/viewer/`, which launches `browser:watch` itself |
 
 `browser:arm-order` and `browser:byte-source-order` open no viewer: they print the counterbalanced
 order a sitting's arms must run in, so the shell driver reads the rule instead of deriving its own.
