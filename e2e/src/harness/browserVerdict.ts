@@ -36,7 +36,10 @@ export interface PlaybackExpectation {
  * so. Those figures are properties of the harness, and a suite that failed a product on them, or
  * passed one, would be reporting on the harness either way.
  */
-export function viewerPlaybackRefusal(result: BrowserArmResult, { minAdvanceRatio }: PlaybackExpectation): string | null {
+export function viewerPlaybackRefusal(
+  result: BrowserArmResult,
+  { minAdvanceRatio }: PlaybackExpectation,
+): string | null {
   if (!result.instrumentSound) {
     return (
       'the browser was not a usable instrument for this run, so its figures are properties of the ' +
@@ -98,7 +101,7 @@ export function weeb3ArmRefusal(result: BrowserArmResult, { maxSegmentRequests }
   if (requested !== WEEB3_BYTES) {
     return (
       `this arm asked for ${requested ?? 'no byte source at all'} rather than ${WEEB3_BYTES}, so it is ` +
-      'the other condition and nothing about it is a reading of a node in the viewer\'s own tab'
+      "the other condition and nothing about it is a reading of a node in the viewer's own tab"
     );
   }
 

@@ -41,7 +41,11 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     latency = {},
     resolutions = ['1920x1080'],
     feedStatesSeen = ['live'],
-    byteSource = { requested: overrides.backend ?? 'weeb3', reported: overrides.backend ?? 'weeb3', settledForMs: 60_000 },
+    byteSource = {
+      requested: overrides.backend ?? 'weeb3',
+      reported: overrides.backend ?? 'weeb3',
+      settledForMs: 60_000,
+    },
     instrument = { sound: true, failures: [], firedChecks: [], soundSamples: SAMPLE_COUNT },
     segmentRequests = 6,
   } = overrides;

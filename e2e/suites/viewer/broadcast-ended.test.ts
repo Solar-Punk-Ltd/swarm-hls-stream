@@ -111,6 +111,11 @@ describe('V5 — the viewer is told when the broadcast ends', { skip }, () => {
     // Not awaited yet. The arm holds one call open for the whole watch, and the whole point of this
     // case is that the broadcast ends underneath a viewer who is already watching it.
     const arm = runBrowserArm(host, cfg, { backend: requireByteSource(backend), watchMinutes: WATCH_MINUTES });
+    // ⛔ Marks the arm handled without consuming it. If the VOD wait below times out, nothing would
+    // ever await this promise, and a browser arm that then failed would surface as an unhandled
+    // rejection: node ends the whole run on one, so a timeout here would take every later suite with
+    // it and report as a crash rather than as this case failing. `await arm` still throws.
+    arm.catch(() => undefined);
 
     await sleep(BEFORE_STOP_MS);
     console.log(`  stopping the broadcaster ${BEFORE_STOP_MS / 1000}s into the viewer's watch`);

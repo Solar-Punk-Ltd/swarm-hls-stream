@@ -40,7 +40,11 @@ describe('whether a viewer actually watched the broadcast', () => {
   });
 
   it('refuses a run before its playback figures, so a degraded browser is never the reported cause', () => {
-    const degradedAndStalled = watched({ instrumentSound: false, instrumentFailures: ['hidden page'], advanceRatio: 0 });
+    const degradedAndStalled = watched({
+      instrumentSound: false,
+      instrumentFailures: ['hidden page'],
+      advanceRatio: 0,
+    });
 
     assert.match(String(viewerPlaybackRefusal(degradedAndStalled, PLAYED)), /hidden page/);
   });
@@ -99,7 +103,9 @@ describe('whether the arm was the in-tab node it is filed as', () => {
    * attractive headline this line of work has, produced by nothing happening.
    */
   it('refuses an arm that asked for the node and landed on the gateway', () => {
-    const landedElsewhere = watched({ proof: { requested: WEEB3_BYTES, reported: GATEWAY_BYTES, settledForMs: 60_000 } });
+    const landedElsewhere = watched({
+      proof: { requested: WEEB3_BYTES, reported: GATEWAY_BYTES, settledForMs: 60_000 },
+    });
 
     assert.match(String(weeb3ArmRefusal(landedElsewhere, SINGLE_DIGIT)), new RegExp(GATEWAY_BYTES));
   });

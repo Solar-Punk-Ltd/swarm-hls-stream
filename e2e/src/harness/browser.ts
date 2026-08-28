@@ -119,7 +119,8 @@ export function browserArmCommand({ image, containerName, repoDir, script, env }
   }
 
   const pairs = Object.entries(env).map(
-    ([name, value]) => `-e ${matching(name, ENV_NAME_RE, 'environment variable name')}=${quoted(value, `${name} value`)}`,
+    ([name, value]) =>
+      `-e ${matching(name, ENV_NAME_RE, 'environment variable name')}=${quoted(value, `${name} value`)}`,
   );
 
   return [
@@ -440,7 +441,9 @@ export async function runBrowserArm(host: Host, cfg: E2EConfig, options: Browser
   const timeoutMs = options.watchMinutes * 60_000 + BROWSER_ARM_OVERHEAD_MS;
   const { stdout } = await host.run(command, timeoutMs);
 
+  // Quoted through the same refusal the launch uses. This path is read out of the container's own
+  // output, so it is data from the far side of the run rather than something the suite chose.
   const artifact = hostPathOfArtifact(artifactJsonFromArmLog(stdout), setup.repoDir);
-  const state = await host.run(`cat '${artifact}'`);
+  const state = await host.run(`cat ${quoted(artifact, 'artifact path the arm printed')}`);
   return parseBrowserArmState(JSON.parse(state.stdout));
 }
