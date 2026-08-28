@@ -49,6 +49,13 @@ export async function openViewer(page: Page, clientUrl: string): Promise<string>
   page.on('console', (message) => {
     if (message.type() === 'error') {
       console.log(`  page error: ${message.text()}`);
+      return;
+    }
+    // The ladder path narrates itself at log level: which master arrived, from where, and when the
+    // player restarts. Surfaced by keyword so a ladder failure is diagnosable from the arm log
+    // without a second paid run, and bounded to those words so the feed-poll noise stays out.
+    if (/master|ladder|rung|Restarting/i.test(message.text())) {
+      console.log(`  page ${message.type()}: ${message.text()}`);
     }
   });
 
