@@ -23,6 +23,13 @@ answers "which run is this" and never "where does the stack live". The files are
 The byte source is the **only** thing that differs between the two, so a reading taken across the
 pair carries one difference and not two. Both declare that the run covers the ABR ladder.
 
+That declaration is spelled `E2E_EXPECT_ABR=true`, and **never the word `ladder`**. The variable
+takes `ABR_ENABLED`'s own spellings, which are `true`, `1`, `false`, `0` or unset, so that an
+operator setting both does not have to remember two vocabularies. A run that is single-rendition on
+purpose says `E2E_EXPECT_ABR=false` and is never asked again. Anything else is refused rather than
+read as undeclared, because reading a typo as "said nothing" would waive the gate on the exact run
+somebody was being careful about.
+
 Pick one with `E2E_RUN_PROFILE=light-client`. An unknown name stops the run and lists the names that
 exist.
 
