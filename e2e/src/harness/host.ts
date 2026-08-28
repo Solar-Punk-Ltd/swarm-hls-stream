@@ -91,6 +91,15 @@ export class Host {
     private readonly connectTimeoutS: number = DEFAULT_CONNECT_TIMEOUT_S,
   ) {}
 
+  /**
+   * Whether commands run in this process's own namespace. Paths valid over ssh (the deploy host's
+   * filesystem) and paths valid here (this container's mounts) are different sets, and a caller
+   * composing one for `run` has to know which set it is writing for.
+   */
+  get isLocal(): boolean {
+    return this.sshTarget === LOCAL_TARGET;
+  }
+
   private sshArgs(remoteCommand: string): string[] {
     // Multiplex every call over one shared master connection: rapid poll loops would otherwise open
     // dozens of fresh handshakes, and a single refused handshake mid-test would fail a poll.

@@ -165,16 +165,24 @@ export function artifactJsonFromArmLog(stdout: string): string {
   return `${stem}.json`;
 }
 
-/** The same file as the host sees it, since the driver printed the path from inside the container. */
-export function hostPathOfArtifact(containerPath: string, repoDir: string): string {
+/**
+ * The artifact path as the READER of the file will see it, which is not one namespace.
+ *
+ * The driver prints the path from inside the browser container, under `/repo`. Over ssh the reader
+ * is the deploy host's shell, where that checkout lives at `repoDir`. In local mode the reader is
+ * the suite's own container, which mounts the same checkout at `/repo`, so the printed path is
+ * already the right one and the `repoDir` mapping points at a directory that does not exist here.
+ * Both viewer suites failed their first real run on exactly that.
+ */
+export function artifactReadPath(containerPath: string, repoDir: string, readerIsLocal: boolean): string {
   const prefix = `${CONTAINER_REPO}/`;
   if (!containerPath.startsWith(prefix)) {
     throw new Error(
-      `the arm wrote ${containerPath}, which is outside ${CONTAINER_REPO} and so is not readable on ` +
-        'the host at any path. The driver writes under the checkout it was mounted from.',
+      `the arm wrote ${containerPath}, which is outside ${CONTAINER_REPO} and so is not readable ` +
+        'from anywhere. The driver writes under the checkout it was mounted from.',
     );
   }
-  return `${repoDir}/${containerPath.slice(prefix.length)}`;
+  return readerIsLocal ? containerPath : `${repoDir}/${containerPath.slice(prefix.length)}`;
 }
 
 /** The condition the arm asked for beside the one the client landed on, never one standing for both. */
@@ -480,7 +488,7 @@ export async function runBrowserArm(host: Host, cfg: E2EConfig, options: Browser
 
   // Quoted like everything else. This path is read out of the container's own output, so it is data
   // from the far side of the run rather than something the suite chose.
-  const artifact = hostPathOfArtifact(artifactJsonFromArmLog(stdout), setup.repoDir);
+  const artifact = artifactReadPath(artifactJsonFromArmLog(stdout), setup.repoDir, host.isLocal);
   const state = await host.run(`cat ${shellQuoted(artifact)}`);
   return parseBrowserArmState(JSON.parse(state.stdout));
 }

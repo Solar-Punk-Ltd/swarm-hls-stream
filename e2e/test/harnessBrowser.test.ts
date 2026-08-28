@@ -5,6 +5,7 @@ import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js'
 import { loadConfig } from '../src/config.js';
 import {
   artifactJsonFromArmLog,
+  artifactReadPath,
   BROWSER_ARM_OVERHEAD_MS,
   browserArmCommand,
   browserArmEnv,
@@ -12,7 +13,6 @@ import {
   browserArmScript,
   DEFAULT_BROWSER_CONTAINER,
   DEFAULT_BROWSER_IMAGE,
-  hostPathOfArtifact,
   parseBrowserArmState,
   runBrowserArm,
 } from '../src/harness/browser.js';
@@ -178,18 +178,32 @@ describe('finding the artifact a run wrote', () => {
   });
 
   /**
-   * ⛔ The driver prints the path it saw, which is inside the container. Reading that path on the
-   * host finds nothing, or worse finds the harness's own checkout at the same relative place.
+   * ⛔ The driver prints the path it saw, which is inside the container. Over ssh the reader is the
+   * host's shell, where that path finds nothing, or worse finds the harness's own checkout at the
+   * same relative place.
    */
-  it('translates the container path onto the host checkout the run was mounted from', () => {
+  it('translates the container path onto the host checkout when the reader is the host', () => {
     assert.equal(
-      hostPathOfArtifact('/repo/docs/bench/browser-watch-1.json', '/home/solarpunk/swarm-hls-bench'),
+      artifactReadPath('/repo/docs/bench/browser-watch-1.json', '/home/solarpunk/swarm-hls-bench', false),
       '/home/solarpunk/swarm-hls-bench/docs/bench/browser-watch-1.json',
     );
   });
 
-  it('refuses a path outside the mount, which is not readable on the host at all', () => {
-    assert.throws(() => hostPathOfArtifact('/tmp/elsewhere.json', '/home/solarpunk/swarm-hls-bench'), /\/repo/);
+  /**
+   * ⛔ In local mode the reader is the suite's own container, which mounts the same checkout at
+   * /repo, and the host path does not exist there. Both viewer suites failed exactly this way on
+   * their first real run.
+   */
+  it('keeps the container path when the reader shares the container namespace', () => {
+    assert.equal(
+      artifactReadPath('/repo/docs/bench/browser-watch-1.json', '/home/solarpunk/swarm-hls-bench', true),
+      '/repo/docs/bench/browser-watch-1.json',
+    );
+  });
+
+  it('refuses a path outside the mount in either mode, since no reader can reach it', () => {
+    assert.throws(() => artifactReadPath('/tmp/elsewhere.json', '/home/solarpunk/swarm-hls-bench', false), /\/repo/);
+    assert.throws(() => artifactReadPath('/tmp/elsewhere.json', '/home/solarpunk/swarm-hls-bench', true), /\/repo/);
   });
 });
 
