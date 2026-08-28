@@ -321,6 +321,41 @@ export function frozenOverlayRefusal(recovery: CrashRecoveryResult, { told }: Fr
   );
 }
 
+/**
+ * What the fault did, in the one line an operator watching a scenario run gets to read.
+ *
+ * ⭐ One shape across all five arms rather than a sentence per suite. The matrix is read by putting
+ * arms beside each other, and arms whose summaries are worded differently cannot be. It states facts
+ * and judges nothing: a picture that never came back is the correct outcome of one of these faults
+ * and a failure in the other four, and which it is belongs to the suite.
+ */
+export function crashArmSummary(result: BrowserArmResult): string {
+  const { recovery } = result;
+  if (recovery === null) {
+    return 'this arm drove no fault, so there is nothing to report about one';
+  }
+
+  const buffered =
+    recovery.freezeStartedAfterFaultMs === null
+      ? 'and the picture never stopped'
+      : `starting ${seconds(recovery.freezeStartedAfterFaultMs)}s after the fault`;
+  const startup =
+    recovery.serviceStartupMs === null ? '' : ` (${seconds(recovery.serviceStartupMs)}s of that was the service)`;
+  const resumed = !recovery.recovered
+    ? 'and never moved again'
+    : recovery.recoveredAfterLiftMs === null
+    ? 'and was moving by the end, with nothing recording when it started'
+    : `moving again ${seconds(recovery.recoveredAfterLiftMs)}s after the service answered${startup}`;
+  const said = recovery.saidWhileFrozen.length > 0 ? `"${recovery.saidWhileFrozen.join('", "')}"` : 'NOTHING at all';
+
+  return (
+    `${recovery.scenario} on ${result.proof.requested ?? 'an unnamed byte source'}: froze ` +
+    `${seconds(recovery.longestFreezeMs)}s ${buffered}, ${resumed}. ${result.rebufferCount} rebuffers, ` +
+    `advance ${result.advanceRatio.toFixed(3)}, ${result.segmentRequests} segment requests, and the client ` +
+    `said ${said} while frozen`
+  );
+}
+
 /** One decimal, which is the precision the crash matrix's own figures are quoted at. */
 function seconds(ms: number): string {
   return (ms / 1_000).toFixed(1);

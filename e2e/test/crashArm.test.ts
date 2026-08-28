@@ -13,6 +13,7 @@ import {
   CRASH_SETTLE_SECONDS,
   crashArmMinutes,
   crashArmRefusal,
+  crashArmSummary,
   freezeRefusal,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
@@ -327,5 +328,43 @@ describe('the shapes the predicates take', () => {
 
     assert.equal(result.recovery?.scenario, GATEWAY_OUTAGE.name);
     assert.deepEqual(result.recovery?.saidWhileFrozen, GATEWAY_OUTAGE_RECOVERY.saidWhileFrozen);
+  });
+});
+
+/**
+ * ⭐ One shape across all five arms. A scenario run prints nothing else for minutes, and arms whose
+ * summaries are worded differently cannot be read side by side, which is how the matrix is read.
+ */
+describe('the line an operator reads while an arm runs', () => {
+  it('carries the freeze, the buffer, the resume and the arm proof, in one line', () => {
+    const line = crashArmSummary(parseBrowserArmState(crashArmState()));
+
+    assert.match(line, /viewer-gateway-outage on weeb3/);
+    assert.match(line, /froze 28\.6s/);
+    assert.match(line, /6\.0s after the fault/);
+    assert.match(line, /10\.7s after the service answered/);
+    assert.match(line, /7\.2s of that/);
+    assert.match(line, /6 segment requests/);
+    assert.match(line, /"Reconnecting to the stream"/);
+  });
+
+  it('says a viewer never got their picture back, rather than printing a null at them', () => {
+    const stranded = parseBrowserArmState(
+      crashArmState({ recovery: { ...GATEWAY_OUTAGE_RECOVERY, recovered: false, recoveredAfterLiftMs: null } }),
+    );
+
+    assert.match(crashArmSummary(stranded), /never moved again/);
+  });
+
+  it('says NOTHING in as many letters, since an empty list of messages reads as no list at all', () => {
+    const silent = parseBrowserArmState(
+      crashArmState({ recovery: { ...GATEWAY_OUTAGE_RECOVERY, saidWhileFrozen: [], explainedTheFreeze: false } }),
+    );
+
+    assert.match(crashArmSummary(silent), /said NOTHING/);
+  });
+
+  it('has something to say about a watch that drove no fault, rather than throwing at the printer', () => {
+    assert.match(crashArmSummary(parseBrowserArmState(armState())), /no fault/);
   });
 });
