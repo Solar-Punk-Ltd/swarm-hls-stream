@@ -19,7 +19,7 @@ import {
 import { type Host } from '../src/harness/host.js';
 import { shellQuoted } from '../src/harness/shellQuote.js';
 
-import { armState } from './helpers/browserArmFixtures.js';
+import { armState, crashArmState, GATEWAY_OUTAGE_RECOVERY } from './helpers/browserArmFixtures.js';
 
 /**
  * That the suite can launch a real viewer the way the bench scripts do, and read back a verdict it
@@ -333,6 +333,79 @@ describe('refusing a state file rather than guessing at it', () => {
 
   it('accepts a sample that has not decoded a frame yet, which reports no resolution', () => {
     assert.deepEqual(parseBrowserArmState(armState({ resolutions: [null, '1280x720'] })).resolutions, ['1280x720']);
+  });
+});
+
+/**
+ * The sections only `browser:crash` writes, which are what a fault scenario is a reading of.
+ *
+ * A watch and a crash arm come back through one reader because they are one artifact shape with the
+ * crash sections added. ⛔ Absent is therefore a legitimate answer here and NOT a refusal, unlike
+ * every other field: a plain watch writes no `recovery` at all, and treating that as malformed would
+ * make the two viewer suites that already pass start failing on a file that is exactly right.
+ */
+describe('what the fault did to the viewer, out of a crash arm', () => {
+  it("reports the freeze, the resume and what the client said, off the driver's own verdict", () => {
+    const recovery = parseBrowserArmState(crashArmState()).recovery;
+
+    assert.equal(recovery?.scenario, 'viewer-gateway-outage');
+    assert.equal(recovery?.longestFreezeMs, 28_600);
+    assert.equal(recovery?.freezeStartedAfterFaultMs, 6_000);
+    assert.equal(recovery?.recoveredAfterLiftMs, 10_700);
+    assert.equal(recovery?.serviceStartupMs, 7_200);
+    assert.equal(recovery?.recovered, true);
+    assert.deepEqual(recovery?.saidWhileFrozen, ['Reconnecting to the stream']);
+    assert.equal(recovery?.explainedTheFreeze, true);
+  });
+
+  it('reports no fault verdict for a plain watch, which drove none', () => {
+    assert.equal(parseBrowserArmState(armState()).recovery, null);
+  });
+
+  /**
+   * ⛔ The three figures a scenario turns into a pass or a fail are all legitimately absent-looking:
+   * a viewer who never froze records a null freeze start, one who never came back records a null
+   * resume, and `recovered: false` is the correct outcome of the engine-restart arm. A reader that
+   * defaulted any of them would file the terminal scenario's own correct answer as a missing one.
+   */
+  it('keeps a fault nobody recovered from as exactly that, rather than as an absent reading', () => {
+    const stranded = parseBrowserArmState(
+      crashArmState({
+        scenario: 'engine-restart',
+        recovery: {
+          longestFreezeMs: 83_200,
+          freezeStartedAfterFaultMs: 7_000,
+          recoveredAfterLiftMs: null,
+          serviceStartupMs: null,
+          recovered: false,
+          saidWhileFrozen: ['Waiting for the broadcast to continue', 'This broadcast has ended'],
+          explainedTheFreeze: true,
+        },
+      }),
+    );
+
+    assert.equal(stranded.recovery?.recovered, false);
+    assert.equal(stranded.recovery?.recoveredAfterLiftMs, null);
+    assert.equal(stranded.recovery?.serviceStartupMs, null);
+  });
+
+  it('refuses a fault verdict missing the freeze, which is the figure most scenarios are about', () => {
+    assert.throws(() => parseBrowserArmState(crashArmState({ recovery: { recovered: true } })), /longestFreezeMs/);
+  });
+
+  it('refuses a message the client is said to have shown that is not even text', () => {
+    const notText = { ...GATEWAY_OUTAGE_RECOVERY, saidWhileFrozen: [7] };
+
+    assert.throws(() => parseBrowserArmState(crashArmState({ recovery: notText })), /saidWhileFrozen\[0\]/);
+  });
+
+  /**
+   * ⛔ A verdict with no fault attached cannot be filed against one. The suites each drive a single
+   * named scenario and assert the matrix's figures for it, so an artifact that does not say which
+   * fault it is would let one scenario's thresholds be applied to another's run.
+   */
+  it('refuses a fault verdict that does not say which fault it is', () => {
+    assert.throws(() => parseBrowserArmState(crashArmState({ scenario: null })), /scenario/);
   });
 });
 

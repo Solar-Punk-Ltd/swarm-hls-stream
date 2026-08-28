@@ -192,6 +192,44 @@ interface BrowserArmProof {
   settledForMs: number | null;
 }
 
+/**
+ * What a fault did to the viewer, as `judgeRecovery` decided it from the samples either side.
+ *
+ * ⛔ Only `browser:crash` writes this, so a plain watch legitimately has none and the field is null
+ * rather than a refusal. Everything inside it is required once it exists, for the reason every other
+ * field is: a crash scenario's pass or fail IS these numbers.
+ */
+export interface CrashRecoveryResult {
+  /** The fault this verdict is about, so one scenario's thresholds cannot be applied to another's run. */
+  scenario: string;
+  /** The longest unbroken stretch the picture did not move, anywhere in the run rather than only after the fault. */
+  longestFreezeMs: number;
+  /**
+   * How long the picture kept moving after the fault landed, which is the viewer's buffer spending
+   * itself. Null where it never stopped at all.
+   */
+  freezeStartedAfterFaultMs: number | null;
+  /**
+   * Wall time from the service ANSWERING AGAIN to the picture moving again, which is the only figure
+   * here a client change can move. Null where it never moved again. Negative where the buffer
+   * outlasted the outage, which is a viewer who never depended on the service.
+   */
+  recoveredAfterLiftMs: number | null;
+  /** How long the service took to answer after docker returned, which no client change can shorten. */
+  serviceStartupMs: number | null;
+  /** Whether the picture was moving again by the last sample of the run. */
+  recovered: boolean;
+  /** Everything the client said while the picture was stopped, deduplicated, in first-seen order. */
+  saidWhileFrozen: readonly string[];
+  /**
+   * Whether the client explained the freeze while it was happening.
+   *
+   * ⭐ False beside a non-zero freeze is the shape issue #100 describes: a stopped picture under an
+   * overlay that says nothing.
+   */
+  explainedTheFreeze: boolean;
+}
+
 /** How far behind live the player sat. Null where the overlay never reported a latency. */
 interface BehindLive {
   joinS: number | null;
@@ -223,6 +261,8 @@ export interface BrowserArmResult {
   feedStatesSeen: readonly ViewerFeedState[];
   /** Whether the viewer was ever told the broadcast had ended, which is the terminal state. */
   reachedEndedOverlay: boolean;
+  /** What the fault did to them, on a scenario arm. Null on a plain watch, which drove no fault. */
+  recovery: CrashRecoveryResult | null;
   /**
    * Whether the browser was a usable instrument throughout.
    *
@@ -338,6 +378,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     proof: readProof(run.byteSource),
     feedStatesSeen,
     reachedEndedOverlay: feedStatesSeen.includes(FEED_STATE_ENDED),
+    recovery: readCrashRecovery(run),
     instrumentSound: asBoolean(instrument.sound, 'run.instrument.sound'),
     instrumentFailures: asArray(instrument.failures, 'run.instrument.failures').map((failure, i) =>
       asString(failure, `run.instrument.failures[${i}]`),
@@ -362,6 +403,39 @@ function readProof(value: unknown): BrowserArmProof {
     requested: asString(arm.requested, 'run.byteSource.requested'),
     reported: asString(arm.reported, 'run.byteSource.reported'),
     settledForMs: asNumber(arm.settledForMs, 'run.byteSource.settledForMs'),
+  };
+}
+
+/**
+ * The fault verdict, or the absence of one.
+ *
+ * ⛔ Absent is a legitimate answer here and a refusal everywhere else in this reader. `watch.ts`
+ * writes no `recovery` at all, so treating its absence as malformed would fail the two viewer suites
+ * that already pass on a file that is exactly right. A `recovery` that is present is read whole, and
+ * so is the scenario beside it: a fault verdict that does not say which fault it is could have one
+ * scenario's thresholds applied to another scenario's run.
+ */
+function readCrashRecovery(run: Record<string, unknown>): CrashRecoveryResult | null {
+  if (run.recovery === undefined || run.recovery === null) {
+    return null;
+  }
+  const recovery = asObject(run.recovery, 'run.recovery');
+  const scenario = asObject(run.scenario, 'run.scenario');
+
+  return {
+    scenario: asString(scenario.name, 'run.scenario.name'),
+    longestFreezeMs: asNumber(recovery.longestFreezeMs, 'run.recovery.longestFreezeMs'),
+    freezeStartedAfterFaultMs: asNumberOrNull(
+      recovery.freezeStartedAfterFaultMs,
+      'run.recovery.freezeStartedAfterFaultMs',
+    ),
+    recoveredAfterLiftMs: asNumberOrNull(recovery.recoveredAfterLiftMs, 'run.recovery.recoveredAfterLiftMs'),
+    serviceStartupMs: asNumberOrNull(recovery.serviceStartupMs, 'run.recovery.serviceStartupMs'),
+    recovered: asBoolean(recovery.recovered, 'run.recovery.recovered'),
+    saidWhileFrozen: asArray(recovery.saidWhileFrozen, 'run.recovery.saidWhileFrozen').map((said, i) =>
+      asString(said, `run.recovery.saidWhileFrozen[${i}]`),
+    ),
+    explainedTheFreeze: asBoolean(recovery.explainedTheFreeze, 'run.recovery.explainedTheFreeze'),
   };
 }
 

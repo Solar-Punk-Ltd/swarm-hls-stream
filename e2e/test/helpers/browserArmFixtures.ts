@@ -1,5 +1,6 @@
 /**
- * A browser arm's state file, in the shape `browser/watch.ts` actually writes.
+ * A browser arm's state file, in the shape `browser/watch.ts` actually writes, and the extra sections
+ * `browser/crash.ts` adds on top of it.
  *
  * ⛔ Every field below is one the driver emits, and none of them is invented. `watch.ts` builds `run`
  * out of `summarize` (`SessionSummary`), `judgeRun` (`InstrumentVerdict`), `summarizeNetwork`
@@ -23,6 +24,13 @@ interface ArmStateOverrides {
   instrument?: Record<string, unknown>;
   segmentRequests?: number | undefined;
   backend?: string;
+  /**
+   * The fault verdict `crash.ts` adds and `watch.ts` never writes. Null leaves it out, which is what
+   * a plain watch looks like, and is why {@link armState} defaults it that way.
+   */
+  recovery?: Record<string, unknown> | null;
+  /** The fault the run was, named the way `crash.ts` writes it. Null leaves the section out. */
+  scenario?: string | null;
 }
 
 const SAMPLE_COUNT = 240;
@@ -48,6 +56,8 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     },
     instrument = { sound: true, failures: [], firedChecks: [], soundSamples: SAMPLE_COUNT },
     segmentRequests = 6,
+    recovery = null,
+    scenario = null,
   } = overrides;
 
   const run: Record<string, unknown> = {
@@ -111,6 +121,13 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   if (byteSource !== null) {
     run.byteSource = byteSource;
   }
+  if (recovery !== null) {
+    run.recovery = recovery;
+  }
+  if (scenario !== null) {
+    run.scenario = { name: scenario, service: 'bee-gateway', action: 'stop', downMs: 20_000 };
+    run.fault = { injectedAtMs: 1_756_377_600_000, liftedAtMs: 1_756_377_620_500, servingAtMs: 1_756_377_627_700 };
+  }
   // ⛔ Keyed on the override being PRESENT, not on its value. A destructuring default replaces an
   // explicit `undefined` with the default, so `{ feedStatesSeen: undefined }` would otherwise produce
   // the ordinary fixture and the stale-driver test would pass against a field that was there.
@@ -123,4 +140,38 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   }
 
   return run;
+}
+
+/**
+ * The recovery verdict `judgeRecovery` writes, holding the doc's own arm 1.
+ *
+ * The numbers are the 2026-08-27 in-tab gateway-outage arm as
+ * `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md` records it, so a reader tested against this is
+ * tested against a run that happened. Trimmed the same way the watch fixture is: `judgeRecovery` also
+ * writes `before`, `during`, `after`, `latencyBeforeS`, `latencyAfterS` and `targetRaisedByS`, which
+ * the reader does not touch.
+ */
+export const GATEWAY_OUTAGE_RECOVERY: Record<string, unknown> = {
+  longestFreezeMs: 28_600,
+  freezeStartedAfterFaultMs: 6_000,
+  recoveredAfterLiftMs: 10_700,
+  serviceStartupMs: 7_200,
+  recovered: true,
+  saidWhileFrozen: ['Reconnecting to the stream'],
+  explainedTheFreeze: true,
+};
+
+/**
+ * A crash arm's state file, which is a watch's plus the sections only `browser/crash.ts` writes.
+ *
+ * Defaults to the doc's arm 1: the gateway stopped under an in-tab viewer, who froze, was told why,
+ * and came back. A caller overriding `recovery` states the whole verdict rather than a patch of one,
+ * because a half-stated verdict is what the reader is supposed to refuse.
+ */
+export function crashArmState(overrides: ArmStateOverrides = {}): unknown {
+  return armState({
+    scenario: 'viewer-gateway-outage',
+    recovery: GATEWAY_OUTAGE_RECOVERY,
+    ...overrides,
+  });
 }
