@@ -77,3 +77,22 @@ export function readFeedState(message: string | null): ViewerFeedState {
 export function feedStatesSeen(states: readonly ViewerFeedState[]): ViewerFeedState[] {
   return [...new Set(states)];
 }
+
+/**
+ * Every state a session can report, which is the live one plus the four the overlay renders.
+ *
+ * Derived from {@link FEED_STATE_MESSAGES} rather than listed again, so a state added there cannot be
+ * missed here.
+ */
+const FEED_STATES: readonly ViewerFeedState[] = [FEED_STATE_LIVE, ...Object.values(FEED_STATE_MESSAGES)];
+
+/**
+ * Whether a value read back from a state file is one of the states.
+ *
+ * ⛔ For a reader parsing an artifact rather than a page. A run's states are written by whichever
+ * driver produced the file, which may be a newer build than the reader, and a string accepted as a
+ * state on trust is how a sixth state would arrive unnoticed in a pass/fail verdict.
+ */
+export function isViewerFeedState(value: unknown): value is ViewerFeedState {
+  return typeof value === 'string' && (FEED_STATES as readonly string[]).includes(value);
+}

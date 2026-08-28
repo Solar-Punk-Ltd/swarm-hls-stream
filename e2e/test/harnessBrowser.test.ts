@@ -277,6 +277,23 @@ describe('refusing a state file rather than guessing at it', () => {
     assert.throws(() => parseBrowserArmState(armState({ feedStatesSeen: undefined })), /feedStatesSeen/);
   });
 
+  /**
+   * ⛔ The array whose contents decide a pass/fail. Validating it only as "strings" and casting to
+   * the state type would let an unknown state through as a state, and `reachedEndedOverlay` is what
+   * `broadcast-ended` asserts on. A newer client that gained a sixth state would reach a viewer, be
+   * accepted here, and report as a broadcast that never ended.
+   */
+  it('refuses a feed state it does not know rather than casting it to one', () => {
+    assert.throws(() => parseBrowserArmState(armState({ feedStatesSeen: ['live', 'buffering'] })), /buffering/);
+  });
+
+  it('refuses a feed state that is not even a string', () => {
+    assert.throws(
+      () => parseBrowserArmState(armState({ feedStatesSeen: [7] as unknown as readonly string[] })),
+      /feedStatesSeen\[0\]/,
+    );
+  });
+
   it('refuses a byte source that named no condition, which is a half-written arm', () => {
     assert.throws(() => parseBrowserArmState(armState({ byteSource: { requested: WEEB3_BYTES } })), /reported/);
   });
@@ -286,6 +303,22 @@ describe('refusing a state file rather than guessing at it', () => {
       () => parseBrowserArmState(armState({ backend: GATEWAY_BYTES, segmentRequests: undefined })),
       /segmentRequests/,
     );
+  });
+
+  /**
+   * ⛔ Every sibling field throws on the wrong type, and this one used to filter silently, so a
+   * corrupted samples array came back as a shorter resolution list rather than as an error. `null` is
+   * the one value that is legitimately not a resolution: the player has not decoded a frame yet.
+   */
+  it('refuses a resolution that is neither a string nor the absence of one', () => {
+    assert.throws(
+      () => parseBrowserArmState(armState({ resolutions: [1080 as unknown as string] })),
+      /samples\[0\]\.resolution/,
+    );
+  });
+
+  it('accepts a sample that has not decoded a frame yet, which reports no resolution', () => {
+    assert.deepEqual(parseBrowserArmState(armState({ resolutions: [null, '1280x720'] })).resolutions, ['1280x720']);
   });
 });
 

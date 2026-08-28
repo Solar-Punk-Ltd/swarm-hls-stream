@@ -30,7 +30,7 @@
  * through `env`, where a suite states them.
  */
 
-import { type ViewerFeedState } from '../browser/feedState.js';
+import { FEED_STATE_ENDED, isViewerFeedState, type ViewerFeedState } from '../browser/feedState.js';
 import { type ByteSource } from '../browser/fetchBackendSweep.js';
 import { type E2EConfig } from '../config.js';
 
@@ -247,6 +247,28 @@ function asString(value: unknown, at: string): string {
   return value;
 }
 
+/** A value the sample may genuinely not have, such as a resolution before the first frame decoded. */
+function asStringOrNull(value: unknown, at: string): string | null {
+  return value === null || value === undefined ? null : asString(value, at);
+}
+
+/**
+ * ⛔ Checked against the known states rather than cast to them.
+ *
+ * These decide a pass or a fail: `reachedEndedOverlay` is what the ended-broadcast scenario asserts
+ * on. The file is written by whichever driver produced it, which may be a build newer than this
+ * reader, and a string taken as a state on trust is how a sixth state would arrive unnoticed inside
+ * a verdict.
+ */
+function asFeedState(value: unknown, at: string): ViewerFeedState {
+  if (!isViewerFeedState(value)) {
+    throw new Error(
+      `the arm's state has no feed state this harness knows at ${at}, got ${shownValue(value)}. The ` +
+        'client gained a state, or the file was written by a driver this reader does not match.',
+    );
+  }
+  return value;
+}
 
 function asArray(value: unknown, at: string): unknown[] {
   if (!Array.isArray(value)) {
@@ -284,8 +306,8 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
   const instrument = asObject(run.instrument, 'run.instrument');
 
   const feedStatesSeen = asArray(summary.feedStatesSeen, 'run.summary.feedStatesSeen').map((state, i) =>
-    asString(state, `run.summary.feedStatesSeen[${i}]`),
-  ) as ViewerFeedState[];
+    asFeedState(state, `run.summary.feedStatesSeen[${i}]`),
+  );
 
   return {
     watchUrl: asString(run.watchUrl, 'run.watchUrl'),
@@ -302,7 +324,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     segmentRequests: asNumber(network.segmentRequests, 'run.network.segmentRequests'),
     proof: readProof(run.byteSource),
     feedStatesSeen,
-    reachedEndedOverlay: feedStatesSeen.includes('ended'),
+    reachedEndedOverlay: feedStatesSeen.includes(FEED_STATE_ENDED),
     instrumentSound: asBoolean(instrument.sound, 'run.instrument.sound'),
     instrumentFailures: asArray(instrument.failures, 'run.instrument.failures').map((failure, i) =>
       asString(failure, `run.instrument.failures[${i}]`),
@@ -330,11 +352,20 @@ function readProof(value: unknown): BrowserArmProof {
   };
 }
 
-/** Each resolution the decoder produced, once, in the order it first appeared. */
+/**
+ * Each resolution the decoder produced, once, in the order it first appeared.
+ *
+ * ⛔ A value that is neither a resolution nor the absence of one is refused, not filtered out. Null
+ * is the absence: the player had not decoded a frame yet. Anything else silently dropped would come
+ * back as a shorter list rather than as an error, and a shorter list of resolutions is a viewer
+ * verdict.
+ */
 function distinctResolutions(samples: readonly unknown[]): string[] {
   const seen = samples
-    .map((sample, i) => asObject(sample, `run.samples[${i}]`).resolution)
-    .filter((resolution): resolution is string => typeof resolution === 'string' && resolution !== '');
+    .map((sample, i) =>
+      asStringOrNull(asObject(sample, `run.samples[${i}]`).resolution, `run.samples[${i}].resolution`),
+    )
+    .filter((resolution): resolution is string => resolution !== null && resolution !== '');
   return [...new Set(seen)];
 }
 
