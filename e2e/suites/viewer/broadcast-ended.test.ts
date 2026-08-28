@@ -6,7 +6,7 @@ import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
+import { announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
@@ -121,7 +121,9 @@ describe('V5 — the viewer is told when the broadcast ends', { skip }, () => {
     console.log(`  stopping the broadcaster ${BEFORE_STOP_MS / 1000}s into the viewer's watch`);
     await publisher.stop();
 
-    await waitFor(async () => vodFinalizeCount(await log()) >= 1, {
+    // Scoped to our own broadcast: a neighbour's flip trailing into the window must not stand in
+    // for the finalize this viewer is waiting to be told about.
+    await waitFor(async () => announcedVodFinalizeCount(await log()) >= 1, {
       timeoutMs: VOD_WAIT_MS,
       intervalMs: 2_000,
       label: 'the stream finalizes as a VOD, which is what the viewer has to be told about',

@@ -345,6 +345,50 @@ export function vodFinalizeCount(text: string): number {
 }
 
 /**
+ * How many times THIS broadcast finalized to VOD, identified by its session topics.
+ *
+ * ⛔ The unscoped {@link vodFinalizeCount} reads every broadcast's flip in the window, and a
+ * neighbouring scenario's flip trailing into this one's window then reads as a double publish.
+ * Scenario H went red on exactly that on 2026-08-28: the two-streams scenario's second flip landed
+ * inside H's window and H reported one recording published and paid for twice, which the uploader's
+ * own log disproved — two ladders, one flip each.
+ *
+ * A ladder flip names only its group, so it is attributed through the rung announces that carry
+ * both the group and its topics. A single-rendition flip carries the published entry's JSON on the
+ * line itself, so the topic is matched inside it.
+ */
+export function vodFinalizeCountFor(text: string, sessionTopics: readonly string[]): number {
+  const topics = new Set(sessionTopics);
+  const messages = messageText(text);
+
+  const ladders = new Set(
+    announcedRungs(text)
+      .filter((announce) => topics.has(announce.topic))
+      .map((announce) => announce.ladder),
+  );
+  const ladderFlips = [...messages.matchAll(ladderFinalizedPattern('g'))].filter((match) =>
+    ladders.has(match[1]),
+  ).length;
+
+  const singleFlips = [...messages.matchAll(updatingStreamToVodPattern('g'))].filter((match) =>
+    [...topics].some((topic) => match[1].includes(topic)),
+  ).length;
+
+  return ladderFlips + singleFlips;
+}
+
+/**
+ * {@link vodFinalizeCountFor} scoped to the broadcasts announced inside this same log window.
+ *
+ * Every scenario reads its log since its own `startedAt`, taken after `waitForIdle`, so an announce
+ * inside the window is its own broadcast (a recovery's re-announce included), while a neighbour can
+ * contribute at most a trailing flip, which this excludes.
+ */
+export function announcedVodFinalizeCount(text: string): number {
+  return vodFinalizeCountFor(text, announcedSessionTopics(text));
+}
+
+/**
  * Each stream's uploaded indices, in upload order: the only sound unit for gap analysis. Under a
  * ladder the merged view interleaves four counters that start at different SRS sequence numbers,
  * so it holes at every log-window boundary while no rung has lost anything, and it can equally

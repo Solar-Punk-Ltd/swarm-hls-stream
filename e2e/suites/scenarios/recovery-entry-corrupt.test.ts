@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
+import { announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import {
   quarantinedEntryNames,
@@ -149,7 +149,9 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
 
     // The repair's whole purpose: a stream restored from this entry still announces, so it is
     // discoverable rather than live-forever-and-invisible. Finalization is what proves it got there.
-    await waitFor(async () => vodFinalizeCount(await log()) >= 1, {
+    // Scoped to broadcasts announced in our own window, so a neighbour's trailing flip cannot vouch
+    // for the repaired entry's finalize.
+    await waitFor(async () => announcedVodFinalizeCount(await log()) >= 1, {
       timeoutMs: RECOVERY_WAIT_MS,
       intervalMs: 3_000,
       label: 'the repaired stream is finalized rather than left invisible',

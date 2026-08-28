@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedSessionTopics, parseUploaderLog, vodFinalizeCount } from '../../src/harness/logwatch.js';
+import { announcedSessionTopics, announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
@@ -79,7 +79,10 @@ describe('H — killed inside finalize: one recording, and the catalog points at
 
   it('does not publish a second recording after a crash mid-finalize', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const vodCommits = (text: string): number => vodFinalizeCount(text);
+    // Scoped to broadcasts announced in our own window: scenario E's resumed stream drains past its
+    // own suite, and its trailing flip inside this window once armed the kill early and then read
+    // as this broadcast publishing twice, which the uploader's log disproved.
+    const vodCommits = (text: string): number => announcedVodFinalizeCount(text);
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,

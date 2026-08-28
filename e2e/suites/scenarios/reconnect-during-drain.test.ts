@@ -4,7 +4,12 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedSessionTopics, parseUploaderLog, sessionEnds, vodFinalizeCount } from '../../src/harness/logwatch.js';
+import {
+  announcedSessionTopics,
+  announcedVodFinalizeCount,
+  parseUploaderLog,
+  sessionEnds,
+} from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { waitFor } from '../../src/harness/wait.js';
@@ -72,7 +77,9 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
 
   it('gives the reconnecting session its own recording and leaves its recovery entry alone', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const vodCommits = async (): Promise<number> => vodFinalizeCount(await log());
+    // Scoped to broadcasts announced in our own window, so a neighbour's trailing flip is not read
+    // as one of this scenario's two recordings.
+    const vodCommits = async (): Promise<number> => announcedVodFinalizeCount(await log());
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,

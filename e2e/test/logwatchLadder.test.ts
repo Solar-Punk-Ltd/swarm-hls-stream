@@ -11,12 +11,14 @@ import { describe, it } from 'node:test';
 import {
   announcedRungs,
   announcedSessionTopics,
+  announcedVodFinalizeCount,
   ladderRungs,
   publishedRenditions,
   segmentIndicesByStream,
   segmentUploads,
   sessionEnds,
   vodFinalizeCount,
+  vodFinalizeCountFor,
 } from '../src/harness/logwatch.js';
 
 /**
@@ -200,6 +202,65 @@ describe('vodFinalizeCount', () => {
     ].join('\n');
 
     assert.equal(vodFinalizeCount(log), 1);
+  });
+});
+
+/**
+ * ⛔ The unscoped count above reads EVERY broadcast's flip in the window. Scenario H went red on
+ * exactly that on 2026-08-28: the two-streams scenario's flips trailed into H's window, H counted
+ * a neighbour and reported one recording published twice, which the uploader's log disproved.
+ */
+describe('vodFinalizeCountFor', () => {
+  it('does not count a neighbouring broadcast whose flip trails into the window', () => {
+    const log = [
+      textLine(`[StreamOrchestrator] ${rungAnnounced('live/stream_720p', '720p', 'g-ours', 't-ours')}`),
+      jsonLine(ladderFinalized('g-neighbour')),
+      textLine(ladderFinalized('g-ours')),
+    ].join('\n');
+
+    assert.equal(vodFinalizeCountFor(log, ['t-ours']), 1);
+  });
+
+  it('still counts the same ladder flipping twice, the double publish it exists to catch', () => {
+    const log = [
+      textLine(`[StreamOrchestrator] ${rungAnnounced('live/stream_720p', '720p', 'g-ours', 't-ours')}`),
+      textLine(ladderFinalized('g-ours')),
+      textLine(ladderFinalized('g-ours')),
+    ].join('\n');
+
+    assert.equal(vodFinalizeCountFor(log, ['t-ours']), 2);
+  });
+
+  it('counts a recovery that republished under a fresh group, when its topics are given', () => {
+    const log = [
+      textLine(`[StreamOrchestrator] ${rungAnnounced('live/stream_720p', '720p', 'g1', 't-before')}`),
+      textLine(ladderFinalized('g1')),
+      textLine(`[StreamOrchestrator] ${rungAnnounced('live/stream_720p', '720p', 'g2', 't-recovered')}`),
+      textLine(ladderFinalized('g2')),
+    ].join('\n');
+
+    assert.equal(vodFinalizeCountFor(log, ['t-before', 't-recovered']), 2);
+  });
+
+  it('scopes the single-rendition flip by the topic inside its entry JSON', () => {
+    const log = [
+      textLine(updatingStreamToVod('{"topic":"t-ours","state":"vod"}')),
+      textLine(updatingStreamToVod('{"topic":"t-other","state":"vod"}')),
+    ].join('\n');
+
+    assert.equal(vodFinalizeCountFor(log, ['t-ours']), 1);
+  });
+});
+
+describe('announcedVodFinalizeCount', () => {
+  it('counts the flips of broadcasts announced in the window and nothing else', () => {
+    const log = [
+      textLine(`[StreamOrchestrator] ${rungAnnounced('live/stream_720p', '720p', 'g-ours', 't-ours')}`),
+      textLine(ladderFinalized('g-neighbour')),
+      textLine(ladderFinalized('g-ours')),
+    ].join('\n');
+
+    assert.equal(announcedVodFinalizeCount(log), 1);
   });
 });
 
