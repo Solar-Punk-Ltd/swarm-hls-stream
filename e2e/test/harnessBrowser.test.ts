@@ -72,7 +72,7 @@ describe('the command that launches a viewer', () => {
     const command = browserArmCommand(LAUNCH);
 
     assert.match(command, /-u \$\(id -u\):\$\(id -g\)/);
-    assert.match(command, /--group-add \$\(getent group docker \| cut -d: -f3\)/);
+    assert.match(command, /--group-add \$\(stat -c %g \/var\/run\/docker\.sock\)/);
   });
 
   it('names the container, so a leftover can be reclaimed by name rather than by pattern', () => {

@@ -107,6 +107,11 @@ function quotedContainerName(name: string): string {
  * ⛔ `-u` and `--group-add` are the only unquoted values here, and deliberately so: they are command
  * substitutions the host's own shell must evaluate. Without `--group-add` the mounted docker socket
  * is present and unreadable, because dropping to the invoking user also drops the group that owns it.
+ *
+ * ⛔ The gid is read off the socket file, not out of `getent group docker`: this command is often
+ * composed inside the suite's own container, whose /etc/group has no docker entry, and the empty
+ * substitution made `--group-add` swallow the next flag as its value. The mounted socket carries the
+ * host's gid wherever the command runs.
  */
 export function browserArmCommand({ image, containerName, repoDir, script, env }: BrowserArmLaunch): string {
   if (!repoDir.startsWith('/')) {
@@ -125,7 +130,7 @@ export function browserArmCommand({ image, containerName, repoDir, script, env }
     'docker run --rm --network host',
     `--name ${quotedContainerName(containerName)}`,
     '-u $(id -u):$(id -g)',
-    '--group-add $(getent group docker | cut -d: -f3)',
+    '--group-add $(stat -c %g /var/run/docker.sock)',
     '--shm-size=2g',
     '-v /var/run/docker.sock:/var/run/docker.sock',
     `-v ${shellQuoted(repoDir)}:${CONTAINER_REPO}`,
