@@ -19,6 +19,7 @@ import { type AbrExpectation, readAbrExpectation } from './abrCoverage.js';
 import { type EnvBag, layerEnv, processEnv, readEnvFile } from './envFile.js';
 import { type OmePortVar, type PortVar, requireValidPortSlot, resolveOmePort, resolvePort } from './ports.js';
 import { applyRunProfile, type RunProfile } from './profiles.js';
+import { readViewerExpectation, type ViewerExpectation } from './viewerCoverage.js';
 
 /** The repository root, three levels up from this file (`<root>/e2e/src/config.ts`). */
 export const ROOT_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -135,6 +136,15 @@ export interface E2EConfig {
    * two disagree.
    */
   abrExpectation: AbrExpectation;
+  /**
+   * What the operator declared about a real viewer, out of `E2E_EXPECT_BROWSER`.
+   *
+   * The same shape as {@link abrExpectation} and for the same reason. A viewer suite that skips
+   * reaches no column in the run summary, so a run where nobody watched the broadcast is
+   * indistinguishable from one where a real player did. `suites/preflight/viewer-coverage.test.ts`
+   * refuses a run that never said which of the two it is.
+   */
+  viewerExpectation: ViewerExpectation;
   /** Env files that were actually found and read, in precedence order. Printed by the smoke test. */
   envFiles: readonly string[];
 }
@@ -312,6 +322,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     abrEnabled: isEnabled(env(resolved, 'ABR_ENABLED', 'false')),
     abrRungs: ladderRungNames(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
     abrExpectation: readAbrExpectation(env(resolved, 'E2E_EXPECT_ABR', '')),
+    viewerExpectation: readViewerExpectation(env(resolved, 'E2E_EXPECT_BROWSER', '')),
     envFiles: [rootPath, enginePath],
   };
 }

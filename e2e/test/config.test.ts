@@ -380,3 +380,35 @@ describe('reported env files', () => {
     ]);
   });
 });
+
+/**
+ * What the run says about whether a real browser watched, read the same way the ABR declaration is.
+ *
+ * Kept beside `abrExpectation` rather than in the viewer suites, so a deployment declares itself once
+ * in its own env file and the smoke test's env dump shows it. See `src/viewerCoverage.ts` for why an
+ * undeclared run has to stop rather than skip.
+ */
+describe('whether the run expects a real viewer', () => {
+  it('is undeclared when nothing says, which is what makes the gate refuse', () => {
+    assert.equal(loadConfig({ env: {}, rootDir: fixtureRoot() }).viewerExpectation, 'undeclared');
+  });
+
+  it('reads a declared browser run out of the profile env, where a deployment states it once', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_EXPECT_BROWSER=true\n' });
+
+    assert.equal(loadConfig({ env: {}, rootDir }).viewerExpectation, 'browser');
+  });
+
+  it('reads a declared browser-less run', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_EXPECT_BROWSER=false\n' });
+
+    assert.equal(loadConfig({ env: {}, rootDir }).viewerExpectation, 'none');
+  });
+
+  /** A typo must not demote an operator who was declaring into one who never did. */
+  it('refuses a spelling neither vocabulary knows', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_EXPECT_BROWSER=yes\n' });
+
+    assert.throws(() => loadConfig({ env: {}, rootDir }), /E2E_EXPECT_BROWSER/);
+  });
+});
