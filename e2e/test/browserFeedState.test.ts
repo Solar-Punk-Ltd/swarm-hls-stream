@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
   FEED_STATE_DEGRADED,
   FEED_STATE_ENDED,
   FEED_STATE_LIVE,
+  FEED_STATE_MESSAGES,
   FEED_STATE_RECONNECTING,
   FEED_STATE_STALLED,
   feedStatesSeen,
   readFeedState,
 } from '../src/browser/feedState.js';
+import { ROOT_DIR } from '../src/config.js';
 
 /**
  * That a sample carries what the overlay MEANT and not only what it said.
@@ -57,6 +61,56 @@ describe('what the feed-state overlay was telling the viewer', () => {
 
   it('names the module to update when it refuses, so the fix is not a search', () => {
     assert.throws(() => readFeedState('Something new'), /FEED_STATE_MESSAGES/);
+  });
+});
+
+/**
+ * ⛔⛔ The mirror, checked against the client's own source rather than against a memory of it.
+ *
+ * `FEED_STATE_MESSAGES` restates strings that live in another package, which `e2e` deliberately does
+ * not depend on. A restatement rots: a copy edit in the overlay would leave every viewer run
+ * throwing at its first sample, on a paid broadcast, with a message about an overlay nobody had
+ * touched that week. This turns that into a red unit test at the moment of the edit.
+ *
+ * Reading another package's source as data is the pattern `test/logLevel.test.ts` already uses for
+ * the uploader's log levels, and for the same reason.
+ */
+describe('the messages still match the ones the client renders', () => {
+  const overlay = readFileSync(
+    join(
+      ROOT_DIR,
+      'packages',
+      'client',
+      'src',
+      'components',
+      'SwarmHlsPlayer',
+      'overlays',
+      'feed',
+      'FeedStateOverlay.tsx',
+    ),
+    'utf8',
+  );
+
+  it('finds every message this harness knows in the component that renders them', () => {
+    for (const message of Object.keys(FEED_STATE_MESSAGES)) {
+      assert.ok(
+        overlay.includes(`'${message}'`),
+        `the overlay no longer renders '${message}'. It was reworded, and a viewer run would now throw ` +
+          'at its first sample. Update FEED_STATE_MESSAGES to match.',
+      );
+    }
+  });
+
+  /**
+   * The other direction, which is the one that fails quietly. A state gained in the client and not
+   * here would reach a viewer, throw, and read as the harness being broken rather than as the mirror
+   * being short.
+   */
+  it('knows every message the component can render, so a new state cannot arrive unannounced', () => {
+    const rendered = [...overlay.matchAll(/\[FEED_STATE_[A-Z]+\]:\s*'([^']+)'/g)].map((match) => match[1]);
+
+    assert.ok(rendered.length > 0, 'no messages were found in the overlay at all, so this check is reading nothing');
+    assert.deepEqual([...rendered].sort(), Object.keys(FEED_STATE_MESSAGES).sort());
   });
 });
 
