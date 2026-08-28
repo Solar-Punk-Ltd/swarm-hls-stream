@@ -76,7 +76,17 @@ export async function discoverCatalogFeed(host: Host, cfg: E2EConfig, tail: numb
   return { owner: match[1], topicHex: match[2] };
 }
 
-/** Fetch + parse the catalog the viewer sees, resolved through the bee-gateway feed endpoint. */
+/**
+ * Fetch + parse the catalog the viewer sees, resolved through the bee-gateway feed endpoint.
+ *
+ * ⛔ Validated at this boundary: mid-restart the gateway answers its own JSON error envelope, which
+ * parses fine and is not a catalog. Cast through, `.find` on it took scenario I down as a TypeError
+ * instead of a retry. Thrown instead, the callers' existing catch-to-empty reads it as "not yet".
+ */
 export async function fetchCatalog(host: Host, cfg: E2EConfig, feed: CatalogFeed): Promise<CatalogEntry[]> {
-  return host.localJson<CatalogEntry[]>(cfg.ports.beeGatewayApi, `/feeds/${feed.owner}/${feed.topicHex}`, 8);
+  const body = await host.localJson<unknown>(cfg.ports.beeGatewayApi, `/feeds/${feed.owner}/${feed.topicHex}`, 8);
+  if (!Array.isArray(body)) {
+    throw new Error(`the catalog feed answered with a non-array: ${JSON.stringify(body)?.slice(0, 200)}`);
+  }
+  return body as CatalogEntry[];
 }

@@ -151,6 +151,16 @@ describe('fetchCatalog', () => {
     assert.deepEqual(await fetchCatalog(host, cfg, { owner: OWNER, topicHex: TOPIC_HEX }), entries);
     assert.deepEqual(calls, [{ port: 10027, path: `/feeds/${OWNER}/${TOPIC_HEX}` }]);
   });
+
+  /**
+   * Mid-restart a gateway answers its own JSON error envelope, which parses fine and is not a
+   * catalog. `.find` on it took scenario I down as a TypeError instead of a retry. A throw is what
+   * the callers already handle: their catch-to-empty reads it as "not yet".
+   */
+  it('refuses a body that is not an array, which is what a restarting gateway answers', async () => {
+    const { host } = stubHost('', { code: 503, message: 'Node is syncing' });
+    await assert.rejects(fetchCatalog(host, config(), { owner: OWNER, topicHex: TOPIC_HEX }), /non-array/);
+  });
 });
 
 describe('entryCarriesTopic', () => {
