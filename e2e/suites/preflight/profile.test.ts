@@ -5,7 +5,7 @@ import { runProfile } from '../../src/config.js';
 import { describeRunProfile, runProfileRefusal } from '../../src/profiles.js';
 
 /**
- * Preflight — the run is the run the profile says it is.
+ * Preflight: the run is the run the profile says it is.
  *
  * A run profile is a saved, named set of the env values that decide what a sitting IS: where the
  * segment bytes come from, and what the run claims to cover. `in-browser` is the default and reads
@@ -35,7 +35,7 @@ const refusal = runProfileRefusal({
   abrExpectation: process.env.E2E_EXPECT_ABR,
 });
 
-describe('preflight — the run is the profile it says it is', () => {
+describe('preflight: the run is the profile it says it is', () => {
   it('agrees with what it declared, before anything is asked of the deployment', () => {
     console.log(`  ${describeRunProfile(runProfile)}`);
 
