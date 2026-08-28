@@ -35,6 +35,7 @@ import { type ByteSource } from '../browser/fetchBackendSweep.js';
 import { type E2EConfig } from '../config.js';
 
 import { type Host } from './host.js';
+import { shellQuoted } from './shellQuote.js';
 
 /** Where the bench image mounts the checkout, and the working directory the driver runs in. */
 const CONTAINER_REPO = '/repo';
@@ -81,25 +82,23 @@ export interface BrowserArmLaunch {
   env: Readonly<Record<string, string>>;
 }
 
-/**
- * Quote a value the caller supplied, refusing one that could break out.
- *
- * Refused rather than escaped. This string is parsed by a shell on the far side of ssh, nothing
- * legitimate in a launch carries a quote, and an escaping routine is a thing that can be subtly
- * wrong where a refusal cannot be.
- */
-function quoted(value: string, what: string): string {
-  if (value.includes("'")) {
-    throw new Error(`the ${what} carries a single quote, which this cannot pass safely to a shell: ${value}`);
-  }
-  return `'${value}'`;
-}
-
 function matching(value: string, pattern: RegExp, what: string): string {
   if (!pattern.test(value)) {
     throw new Error(`'${value}' is not a usable ${what} (expected ${pattern.source})`);
   }
   return value;
+}
+
+/**
+ * The arm's container name, checked and quoted.
+ *
+ * ⛔ Its own function because two commands need it: the launch, and the reclaim that removes a
+ * leftover before the launch. Checking it in one of them and letting the other inherit that by
+ * standing later in the same function is a guarantee nobody reading either line can see, and it was
+ * written that way once already.
+ */
+function quotedContainerName(name: string): string {
+  return shellQuoted(matching(name, CONTAINER_NAME_RE, 'container name'));
 }
 
 /**
@@ -119,24 +118,22 @@ export function browserArmCommand({ image, containerName, repoDir, script, env }
   }
 
   const pairs = Object.entries(env).map(
-    ([name, value]) =>
-      `-e ${matching(name, ENV_NAME_RE, 'environment variable name')}=${quoted(value, `${name} value`)}`,
+    ([name, value]) => `-e ${matching(name, ENV_NAME_RE, 'environment variable name')}=${shellQuoted(value)}`,
   );
 
   return [
     'docker run --rm --network host',
-    `--name ${quoted(matching(containerName, CONTAINER_NAME_RE, 'container name'), 'container name')}`,
+    `--name ${quotedContainerName(containerName)}`,
     '-u $(id -u):$(id -g)',
     '--group-add $(getent group docker | cut -d: -f3)',
     '--shm-size=2g',
     '-v /var/run/docker.sock:/var/run/docker.sock',
-    `-v ${quoted(repoDir, 'bench checkout')}:${CONTAINER_REPO}`,
+    `-v ${shellQuoted(repoDir)}:${CONTAINER_REPO}`,
     '-e HOME=/tmp',
     `-w ${CONTAINER_REPO}`,
     ...pairs,
-    `${quoted(matching(image, IMAGE_RE, 'image reference'), 'image reference')} pnpm ${quoted(
+    `${shellQuoted(matching(image, IMAGE_RE, 'image reference'))} pnpm ${shellQuoted(
       matching(script, SCRIPT_RE, 'pnpm script name'),
-      'pnpm script name',
     )}`,
   ].join(' ');
 }
@@ -249,6 +246,7 @@ function asString(value: unknown, at: string): string {
   }
   return value;
 }
+
 
 function asArray(value: unknown, at: string): unknown[] {
   if (!Array.isArray(value)) {
@@ -437,18 +435,16 @@ export async function runBrowserArm(host: Host, cfg: E2EConfig, options: Browser
   // Before the arm, never after it. A container left behind by a crashed arm holds the image's single
   // Xvfb display, and every later arm then fails at startup looking like a broken browser.
   //
-  // ⛔ Validated here rather than relying on `browserArmCommand` above having already done it. That
-  // is true today and true only because of the order these two lines happen to be in, which is not a
-  // property anyone reading either line can see.
-  const name = quoted(matching(setup.containerName, CONTAINER_NAME_RE, 'container name'), 'container name');
-  await host.run(`docker rm -f ${name} > /dev/null 2>&1 || true`).catch(() => undefined);
+  await host
+    .run(`docker rm -f ${quotedContainerName(setup.containerName)} > /dev/null 2>&1 || true`)
+    .catch(() => undefined);
 
   const timeoutMs = options.watchMinutes * 60_000 + BROWSER_ARM_OVERHEAD_MS;
   const { stdout } = await host.run(command, timeoutMs);
 
-  // Quoted through the same refusal the launch uses. This path is read out of the container's own
-  // output, so it is data from the far side of the run rather than something the suite chose.
+  // Quoted like everything else. This path is read out of the container's own output, so it is data
+  // from the far side of the run rather than something the suite chose.
   const artifact = hostPathOfArtifact(artifactJsonFromArmLog(stdout), setup.repoDir);
-  const state = await host.run(`cat ${quoted(artifact, 'artifact path the arm printed')}`);
+  const state = await host.run(`cat ${shellQuoted(artifact)}`);
   return parseBrowserArmState(JSON.parse(state.stdout));
 }

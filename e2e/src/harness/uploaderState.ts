@@ -1,6 +1,7 @@
 import { containerName, type E2EConfig } from '../config.js';
 
 import type { Host } from './host.js';
+import { shellQuoted } from './shellQuote.js';
 
 /**
  * Reach the uploader's persisted recovery state while the uploader itself is not running.
@@ -18,17 +19,6 @@ import type { Host } from './host.js';
 
 /** Where the throwaway container sees the state volume. Its own private mount point, not the uploader's. */
 const HELPER_MOUNT = '/state';
-
-/**
- * Wrap a value so one shell parse yields it back unchanged.
- *
- * The command reaches the deployment host as a single ssh argument and is parsed once there, so one
- * level of quoting is the whole requirement. A single quote inside is closed, escaped and reopened,
- * which is the only sequence a single-quoted shell string has no escape for.
- */
-function singleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 interface StateVolume {
   /** The docker volume backing the uploader's `STATE_DIR`. */
@@ -90,7 +80,7 @@ export async function runInStateDir(host: Host, cfg: E2EConfig, script: string):
 
   const workdir = prefix ? `${HELPER_MOUNT}/${prefix}` : HELPER_MOUNT;
   const result = await host.run(
-    `docker run --rm -v ${name}:${HELPER_MOUNT} -w ${workdir} ${image} sh -c ${singleQuote(script)}`,
+    `docker run --rm -v ${name}:${HELPER_MOUNT} -w ${workdir} ${image} sh -c ${shellQuoted(script)}`,
   );
   return result.stdout;
 }
@@ -124,17 +114,17 @@ export async function quarantinedEntryNames(host: Host, cfg: E2EConfig): Promise
 
 /** The raw bytes of any file in the state directory, named exactly as it sits there. */
 export function readStateFile(host: Host, cfg: E2EConfig, fileName: string): Promise<string> {
-  return runInStateDir(host, cfg, `cat ${singleQuote(fileName)}`);
+  return runInStateDir(host, cfg, `cat ${shellQuoted(fileName)}`);
 }
 
 /** Delete any file in the state directory, for a scenario putting back what it planted. */
 export async function removeStateFile(host: Host, cfg: E2EConfig, fileName: string): Promise<void> {
-  await runInStateDir(host, cfg, `rm -f ${singleQuote(fileName)}`);
+  await runInStateDir(host, cfg, `rm -f ${shellQuoted(fileName)}`);
 }
 
 /** The raw bytes of one recovery entry, exactly as the uploader will read them back. */
 export function readRecoveryEntry(host: Host, cfg: E2EConfig, id: string): Promise<string> {
-  return runInStateDir(host, cfg, `cat ${singleQuote(`${id}.json`)}`);
+  return runInStateDir(host, cfg, `cat ${shellQuoted(`${id}.json`)}`);
 }
 
 /**
@@ -144,7 +134,7 @@ export function readRecoveryEntry(host: Host, cfg: E2EConfig, id: string): Promi
  * is read by every boot after this suite finishes.
  */
 export async function removeRecoveryEntry(host: Host, cfg: E2EConfig, id: string): Promise<void> {
-  await runInStateDir(host, cfg, `rm -f ${singleQuote(`${id}.json`)}`);
+  await runInStateDir(host, cfg, `rm -f ${shellQuoted(`${id}.json`)}`);
 }
 
 /**
@@ -159,8 +149,8 @@ export async function writeRecoveryEntry(host: Host, cfg: E2EConfig, id: string,
   await runInStateDir(
     host,
     cfg,
-    `printf %s ${singleQuote(contents)} > ${singleQuote(`${file}.tmp`)} && mv ${singleQuote(
+    `printf %s ${shellQuoted(contents)} > ${shellQuoted(`${file}.tmp`)} && mv ${shellQuoted(
       `${file}.tmp`,
-    )} ${singleQuote(file)}`,
+    )} ${shellQuoted(file)}`,
   );
 }

@@ -17,6 +17,7 @@ import {
   runBrowserArm,
 } from '../src/harness/browser.js';
 import { type Host } from '../src/harness/host.js';
+import { shellQuoted } from '../src/harness/shellQuote.js';
 
 import { armState } from './helpers/browserArmFixtures.js';
 
@@ -94,15 +95,22 @@ describe('the command that launches a viewer', () => {
   });
 
   /**
-   * ⛔ This command line is interpolated into a string that a shell parses, on the far side of ssh.
-   * A value carrying a quote could close the quoting and run anything, so it is refused rather than
-   * escaped: nothing legitimate here contains one.
+   * ⛔ This command line is interpolated into a string a shell parses, on the far side of ssh, on a
+   * host this suite also injects faults on. A value that closed its own quoting could run anything.
+   *
+   * What this asserts is that every caller-supplied value goes through the shared quoter. That the
+   * quoter is actually safe is `test/shellQuote.test.ts`'s job, and it proves it by round-tripping
+   * through a real `bash` rather than against the escaping the code would have written.
    */
-  it('refuses a value that could break out of its quoting rather than escaping it', () => {
-    assert.throws(
-      () => browserArmCommand({ ...LAUNCH, env: { BROWSER_CLIENT_URL: "http://x'; rm -rf /; #" } }),
-      /quote/,
+  it('puts a value carrying a quote through the shared quoter rather than inline', () => {
+    const hostile = "http://x'; touch /tmp/e2e-should-never-exist; #";
+    const command = browserArmCommand({ ...LAUNCH, env: { BROWSER_CLIENT_URL: hostile } });
+
+    assert.ok(
+      command.includes(`-e BROWSER_CLIENT_URL=${shellQuoted(hostile)}`),
+      `the value reached the command line unquoted: ${command}`,
     );
+    assert.ok(!command.includes(`=${hostile}`), 'the raw value is in the command line as well as the quoted one');
   });
 
   it('refuses an environment name that is not one', () => {
@@ -150,6 +158,23 @@ describe('finding the artifact a run wrote', () => {
 
   it('refuses a log with no artifact line rather than guessing at a filename', () => {
     assert.throws(() => artifactJsonFromArmLog('browser: playback started\n'), /wrote no artifact/);
+  });
+
+  /**
+   * ⛔ The pattern is a module-level `/g` regex, which is stateful under `exec` and `test`: those
+   * advance `lastIndex` and the SECOND call over the same text finds nothing. `matchAll` clones the
+   * regex instead and leaves `lastIndex` at zero, which is why it is used. Two arms run per suite
+   * file, so a refactor to either of the other two would leave the second arm reporting that it wrote
+   * no artifact, on a paid broadcast, having written one.
+   */
+  it('finds the artifact every time it is asked, not only the first', () => {
+    for (let call = 0; call < 3; call += 1) {
+      assert.equal(
+        artifactJsonFromArmLog(log),
+        '/repo/docs/bench/browser-watch-2026-08-28T10-00-00-000Z.json',
+        `call ${call}`,
+      );
+    }
   });
 
   /**
