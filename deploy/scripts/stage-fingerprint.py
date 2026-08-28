@@ -222,16 +222,19 @@ def main() -> int:
         print("  unchecked. Pass --rungs for the ladder the driver configured.")
         return EXIT_REFUSED
 
-    # Fewer playlists than the driver asked for is a way of learning nothing about the rungs that were
-    # not found. A live rung is written every fragment and outranks any stale leftover in `ls -t`, so a
-    # rung missing from the newest --rungs is one that never went live, which is the fault to refuse on.
+    # Fewer playlists than the driver asked for is not yet a verdict: rungs come up seconds apart,
+    # and the 2026-08-28 paired sitting was refused 8s after publish start with 3 of 4 live, minutes
+    # after the same gate passed the same stage with all four. Whether a missing rung is "not yet" or
+    # "never" is the caller's retry deadline's call, the same contract as too-few segments below, and
+    # the deadline expiring is what turns this into the final refusal.
     if len(args.playlist) < args.rungs:
         print(
-            f"stage-fingerprint: REFUSING, asked to judge {args.rungs} rungs but found "
+            f"stage-fingerprint: NOT READY, asked to judge {args.rungs} rungs but found "
             f"{len(args.playlist)} playlist(s) on {args.source}."
         )
-        print("  A rung that never published is not a passing rung.")
-        return EXIT_REFUSED
+        print("  A rung that has not published its first playlist yet cannot be judged, and one that")
+        print("  never publishes is refused by the caller's deadline expiring on this answer.")
+        return EXIT_NOT_READY
 
     stage_forces = math.ceil(fragment / args.gop) * args.gop
     print(

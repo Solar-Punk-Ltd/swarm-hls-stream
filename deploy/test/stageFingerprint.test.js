@@ -206,7 +206,14 @@ describe('stage-fingerprint and the ABR ladder', () => {
     assert.match(output, /--rungs/);
   });
 
-  it('refuses when it was told more rungs than playlists it was handed', async () => {
+  /**
+   * NOT_READY rather than a verdict, because rungs come up seconds apart: the 2026-08-28 paired
+   * sitting was refused 8s after publish start with 3 of 4 playlists live, while the same gate had
+   * passed the same stage minutes earlier once all four existed. Whether a missing rung is "not yet"
+   * or "never" is decided by the caller's retry deadline, exactly as too-few segments already is,
+   * and the deadline expiring is what turns this into the final refusal.
+   */
+  it('says NOT READY when handed fewer playlists than rungs, so the caller retries to its deadline', async () => {
     const dir = workspace();
     const confPath = join(dir, 'srs.conf');
     writeFileSync(confPath, srsConf(0.25, 10));
@@ -215,8 +222,6 @@ describe('stage-fingerprint and the ABR ladder', () => {
     writeFileSync(a, playlist(0.501, 12));
     writeFileSync(b, playlist(0.501, 12));
 
-    // Two live playlists but four rungs asked for: the two that never went live are exactly what has
-    // to be refused on, not read as an all-clear over the rungs that were found.
     const { code, output } = await run(GATE, [
       '--gop',
       '0.5',
@@ -233,8 +238,8 @@ describe('stage-fingerprint and the ABR ladder', () => {
       (error) => ({ code: error.code, output: `${error.stdout ?? ''}${error.stderr ?? ''}` }),
     );
 
-    assert.equal(code, 1, 'fewer live rungs than asked for is a way of learning nothing about the rest');
-    assert.match(output, /asked to judge 4 rungs but found 2/);
+    assert.equal(code, 3, 'a rung that has not published its first playlist yet is not-ready, not a verdict');
+    assert.match(output, /4 rungs but found 2/);
   });
 
   it('refuses when the two vhosts disagree, rather than fingerprinting off whichever came first', async () => {
@@ -442,10 +447,10 @@ process.exit(0);
     assert.match(output, /--rungs/);
   });
 
-  it('refuses when fewer rungs are live than the driver asked for', async () => {
+  it('says NOT READY when fewer rungs are live than the driver asked for', async () => {
     const { code, output } = await containerGate(fakeDocker(['r360', 'r720']), ['--rungs', '4']);
 
-    assert.equal(code, 1, 'two live rungs against a four-rung request is a rung that never came up');
+    assert.equal(code, 3, 'a rung that has not come up yet is not-ready, and the caller deadline decides never');
     assert.match(output, /asked to judge 4 rungs but found 2/);
   });
 
