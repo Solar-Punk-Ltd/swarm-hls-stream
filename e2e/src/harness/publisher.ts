@@ -5,6 +5,16 @@ import { type FfmpegProcess, startFfmpeg } from './ffmpegProcess.js';
 
 const DEFAULT_FPS = 30;
 
+/**
+ * Seconds between the keyframes this publisher emits.
+ *
+ * Named because it is read outside the ffmpeg line: against a single-rendition stage SRS has no
+ * cadence of its own, so this is the number that decides the segment length and
+ * `suites/preflight/segment-length.test.ts` has to know it. With the ABR ladder on the stage
+ * transcodes and this is not in the path at all.
+ */
+export const PUBLISHER_GOP_SECONDS = 2;
+
 export interface Publisher extends FfmpegProcess {
   readonly url: string;
 }
@@ -33,7 +43,7 @@ export function startPublisher(cfg: E2EConfig, opts: { fps?: number; streamPath?
     '-tune',
     'zerolatency',
     '-g',
-    String(fps * 2),
+    String(fps * PUBLISHER_GOP_SECONDS),
     '-pix_fmt',
     'yuv420p',
     '-c:a',

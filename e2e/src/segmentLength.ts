@@ -32,11 +32,8 @@
  * the preflight is left with the container read and a failure message.
  */
 
-/**
- * The word that waives the check. Not exported: nothing outside needs the name, and spelling it once
- * here is what stops the parser and the messages that teach it from drifting apart.
- */
-const SEGMENT_ANY = 'any';
+/** The word that waives the check, spelled once so the parser and the messages cannot drift apart. */
+export const SEGMENT_ANY = 'any';
 
 /**
  * What the operator said this run needs, out of `E2E_EXPECT_SEGMENT_S`.
@@ -89,4 +86,218 @@ export function readSegmentExpectation(raw: string): SegmentExpectation {
   }
 
   return Number.parseFloat(value);
+}
+
+/**
+ * What a running SRS stage cuts a segment at, read out of the config it was actually started with.
+ *
+ * Never out of an env file. `entrypoint.sh` generates this config at container start and SRS is
+ * exec'd on it, so it is what the process is running; an env file edited after the last deploy
+ * describes an intention. `Host.containerEnv` already carries that rule for `LOG_LEVEL`, and this is
+ * the same rule applied to the segmenter. It matters here because the bench host is shared: on
+ * 2026-08-17 a co-tenant session changed `hls_fragment` to 2.0 on its own SRS stack and the only
+ * reason anyone knew is that somebody ran `docker exec` by hand.
+ */
+export interface StageSegmenting {
+  /** `hls_fragment`: the floor SRS looks for a keyframe at or after. */
+  fragment: number;
+  /** `hls_aof_ratio`: SRS force-closes at `fragment * aofRatio`, keyframe or not. */
+  aofRatio: number;
+  /** The keyframe cadence in seconds reaching the segmenter. */
+  gopSeconds: number;
+  /** Whether the cadence above is the stage's own, or whatever happens to publish into it. */
+  transcodes: boolean;
+}
+
+/** Not exported: the shape is an argument, and exporting it would add a name nothing else needs. */
+interface SegmentCheck {
+  /** The run profile's name, so a refusal says which run it is refusing. */
+  profile: string;
+  /** Seconds per segment this run needs. Already past {@link readSegmentExpectation}. */
+  needed: number;
+  stage: StageSegmenting;
+}
+
+/** A whole or fractional number, and nothing an SRS config would not hold. */
+const CONF_NUMBER = '([0-9]+(?:\\.[0-9]+)?)';
+
+/**
+ * Comparison slack. Near zero on purpose: this is arithmetic over two configured numbers, not a
+ * measurement, so there is nothing to tolerate beyond the decimal parse itself.
+ */
+const EPSILON = 1e-9;
+
+/**
+ * What the stage publishes: `ceil(hls_fragment / GOP) * GOP`, which is SRS preferring to cut on the
+ * first keyframe at or after the fragment.
+ *
+ * ⛔ Only inside the force-close range. Past `fragment * aofRatio` SRS cuts mid-GOP instead and this
+ * number stops describing the stage, which is why {@link segmentLengthRefusal} checks the range
+ * first rather than comparing lengths and reporting a difference that is not the fault.
+ */
+export function stageSegmentSeconds({ fragment, gopSeconds }: StageSegmenting): number {
+  return Math.ceil(fragment / gopSeconds) * gopSeconds;
+}
+
+/**
+ * Read a running SRS config into what it will cut at, refusing every way of learning nothing.
+ *
+ * `publisherGopSeconds` is used only where the stage transcodes nothing, because then the keyframe
+ * cadence belongs to whatever publishes rather than to the deployment. Injected rather than imported
+ * so the arithmetic here stays free of the harness.
+ *
+ * ⭐ The cadence comes off `force_key_frames` rather than off `g` and `vfps`. All three are written
+ * by the same generator, and `entrypoint.sh` records which one decides: force_key_frames does the
+ * real work, and g/keyint_min only stop x264 inserting extra keyframes in between. It is also
+ * already in seconds, so nothing here divides by a frame rate it would then have to validate.
+ */
+export function parseStageSegmenting(conf: string, publisherGopSeconds: number): StageSegmenting {
+  if (conf.trim() === '') {
+    throw new Error('the running SRS config read back empty, and an unreadable stage is not a matching stage');
+  }
+
+  const fragment = onlyValue(
+    conf,
+    'hls_fragment',
+    new RegExp(`^[ \\t]*hls_fragment[ \\t]+${CONF_NUMBER}[ \\t]*;`, 'gm'),
+  );
+  const aofRatio = onlyValue(
+    conf,
+    'hls_aof_ratio',
+    new RegExp(`^[ \\t]*hls_aof_ratio[ \\t]+${CONF_NUMBER}[ \\t]*;`, 'gm'),
+  );
+
+  if (fragment === null || aofRatio === null) {
+    const absent = [fragment === null ? 'hls_fragment' : '', aofRatio === null ? 'hls_aof_ratio' : ''].filter(Boolean);
+    throw new Error(
+      `${absent.join(' and ')} is not in the running SRS config, so what this stage cuts at cannot ` +
+        'be worked out and nothing here can say it matches',
+    );
+  }
+  if (fragment <= 0) {
+    throw new Error(`the running SRS config has hls_fragment ${fragment}, which no segment arithmetic survives`);
+  }
+
+  const cadence = onlyValue(
+    conf,
+    'force_key_frames',
+    new RegExp(`force_key_frames[ \\t]+expr:gte\\(t,n_forced\\*${CONF_NUMBER}\\)[ \\t]*;`, 'g'),
+  );
+
+  return {
+    fragment,
+    aofRatio,
+    gopSeconds: cadence ?? publisherGopSeconds,
+    transcodes: cadence !== null,
+  };
+}
+
+/**
+ * Why this stack cannot carry a run that needs `needed` seconds per segment, or `null`.
+ *
+ * ⛔⛔⛔ The run's declaration is the reference and the stage is the suspect, never the other way
+ * round. Comparing the stage against its own prediction agrees with itself by construction, which is
+ * how a neighbour's `hls_fragment 2.0` would pass the exact check written to catch it.
+ */
+export function segmentLengthRefusal({ profile, needed, stage }: SegmentCheck): string | null {
+  const { fragment, aofRatio, gopSeconds } = stage;
+  const produces = stageSegmentSeconds(stage);
+  const ceiling = fragment * aofRatio;
+
+  if (produces > ceiling + EPSILON) {
+    return (
+      `The stage this run points at cannot publish a whole GOP. hls_fragment ${fragment} against a ` +
+      `${gopSeconds}s keyframe cadence wants ${produces.toFixed(3)}s segments, which is outside the ` +
+      `[${fragment}, ${ceiling}] SRS can serve: it force-closes at hls_fragment * hls_aof_ratio ` +
+      'whether a keyframe has arrived or not, so what actually lands is a mid-GOP cut and some of ' +
+      'those segments carry no keyframe at all. Measured 2026-08-05, 281 of them could not be read. ' +
+      `Raise HLS_AOF_RATIO until ${produces.toFixed(3)}s fits, or bring the cadence inside the range.`
+    );
+  }
+
+  if (Math.abs(produces - needed) <= EPSILON) {
+    return null;
+  }
+
+  return (
+    `Run profile '${profile}' needs ${needed}s segments and this stack publishes ` +
+    `${produces.toFixed(3)}s. ${stageStory(stage, produces)} ${remedy(stage, needed)} ` +
+    'This is a wrong number rather than a missing one: the run would produce a complete, plausible ' +
+    'reading of a viewer that was never going to behave as the report will say it did. Measured ' +
+    '2026-08-16, an in-tab weeb-3 node holds 1.000x of realtime on 2s segments and 0.426x on 0.5s, ' +
+    'while the gateway measures the opposite optimum, so the two profiles need opposite stages.'
+  );
+}
+
+/**
+ * Why a run that named a length cannot be checked on this engine.
+ *
+ * The reader knows the config `engines/srs/entrypoint.sh` generates and nothing else. Passing an OME
+ * run would be the gate reporting a check it never made, which is the shape of defect the whole
+ * preflight tier exists to remove.
+ */
+export function unreadableEngineRefusal(engine: string, needed: number): string {
+  return (
+    `This run needs ${needed}s segments and this deployment runs ${engine}, whose segmenter config ` +
+    'this gate cannot read. Passing it would file a check that never happened. Point the run at an ' +
+    `SRS deployment, or set E2E_EXPECT_SEGMENT_S=${SEGMENT_ANY} to declare that this run does not ` +
+    'pin a segment length, which is a declaration and is never asked again.'
+  );
+}
+
+/** The arithmetic in one sentence, so the operator can check the gate rather than trust it. */
+function stageStory({ fragment, aofRatio, gopSeconds, transcodes }: StageSegmenting, produces: number): string {
+  const cadence = transcodes
+    ? `the ladder's own force_key_frames puts a keyframe every ${gopSeconds}s`
+    : `nothing on the stage transcodes, so the cadence is the suite publisher's ${gopSeconds}s GOP`;
+
+  return (
+    `The running SRS config has hls_fragment ${fragment} and hls_aof_ratio ${aofRatio}, and ` +
+    `${cadence}, so SRS cuts at ceil(${fragment}/${gopSeconds})*${gopSeconds} = ${produces.toFixed(3)}s.`
+  );
+}
+
+/** The one knob that moves the number, which is a different knob depending on what the stage does. */
+function remedy({ transcodes }: StageSegmenting, needed: number): string {
+  if (transcodes) {
+    return (
+      `Set HLS_FRAGMENT=${needed} and redeploy: with the ladder on, engines/srs/entrypoint.sh ` +
+      'derives every rung GOP from it, so the round-up is by exactly one and the fragment IS the ' +
+      'segment.'
+    );
+  }
+
+  return (
+    'A single-rendition stage takes its cadence from whatever publishes rather than from a ' +
+    'deployment knob, so it can only ever cut at a multiple of the publisher GOP and HLS_FRAGMENT ' +
+    'is a floor here. Turn ABR_ENABLED on, where the fragment sets the segment directly.'
+  );
+}
+
+/**
+ * The one value a directive holds, `null` when it holds none, and a throw when it holds two.
+ *
+ * ⛔⛔ Never the first match. A ladder makes `entrypoint.sh` generate a second vhost with its own
+ * `hls` block, so "the first `hls_fragment` in the file" stopped meaning the stage's fragment and
+ * started meaning whichever vhost happened to be written first. Both interpolate the same
+ * `${HLS_FRAGMENT}` today, so identical values are the ordinary case and a disagreement means the
+ * config did not come from our entrypoint. Which vhost a run publishes through is not visible from
+ * here, so a rule for picking a winner would be a guess, and a gate that guesses is the failure.
+ */
+function onlyValue(conf: string, name: string, pattern: RegExp): number | null {
+  const values = [...conf.matchAll(pattern)].map((match) => Number.parseFloat(match[1]));
+  if (values.length === 0) {
+    return null;
+  }
+
+  const distinct = [...new Set(values)];
+  if (distinct.length > 1) {
+    throw new Error(
+      `${name} has ${distinct.length} different values in the running SRS config ` +
+        `(${distinct.join(', ')}). One fingerprint cannot describe two profiles, and picking ` +
+        'whichever came first is how a run measures a stage nobody looked at.',
+    );
+  }
+
+  return distinct[0];
 }

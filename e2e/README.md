@@ -26,19 +26,20 @@ E2E_SSH_TARGET=streamhost E2E_PUBLIC_HOST=203.0.113.10 pnpm e2e:smoke        # a
 E2E_PROFILE=streamer1 E2E_PORT_SLOT=2 … pnpm e2e:smoke                        # a profile deploy
 ```
 
-| var                  | default                            | what it is                                                                                 |
-| -------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------ |
-| `E2E_SSH_TARGET`     | `localhost`                        | ssh target for container control and curl. Must work non-interactively.                    |
-| `E2E_PUBLIC_HOST`    | `127.0.0.1`                        | address the SRT publisher and viewer reach the deployment on.                              |
-| `E2E_PROFILE`        | `default`                          | the deploy's `--profile`: the compose project, so containers are `<profile>-<service>-1`.  |
-| `E2E_PORT_SLOT`      | `0`                                | the deploy's `--portSlot`. `0` means no slot, and the env files decide the ports.          |
-| `E2E_ENGINE`         | the deployment's `ENGINE`          | `srs` or `ome`. Overrides what the root env says.                                          |
-| `E2E_STREAM_PATH`    | per engine                         | `live/stream` for SRS, `video/stream` for OME.                                             |
-| `E2E_OME_SRT_PORT`   | `OME_SRT_PORT` from the engine env | only for a standalone OME that no profile deployed.                                        |
-| `E2E_OME_CONTAINER`  | `<profile>-ome-1`                  | same.                                                                                      |
-| `E2E_EXPECT_ABR`     | undeclared                         | what this run covers: `true` a ladder, `false` single-rendition. See below.                |
-| `E2E_EXPECT_BROWSER` | undeclared                         | whether a real viewer watches: `true` opens a player, `false` runs without one. See below. |
-| `E2E_MODE`           | `attach`                           | only `attach` exists. `deploy` refuses and points at `deploy/scripts/deploy.sh`.           |
+| var                    | default                            | what it is                                                                                 |
+| ---------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------ |
+| `E2E_SSH_TARGET`       | `localhost`                        | ssh target for container control and curl. Must work non-interactively.                    |
+| `E2E_PUBLIC_HOST`      | `127.0.0.1`                        | address the SRT publisher and viewer reach the deployment on.                              |
+| `E2E_PROFILE`          | `default`                          | the deploy's `--profile`: the compose project, so containers are `<profile>-<service>-1`.  |
+| `E2E_PORT_SLOT`        | `0`                                | the deploy's `--portSlot`. `0` means no slot, and the env files decide the ports.          |
+| `E2E_ENGINE`           | the deployment's `ENGINE`          | `srs` or `ome`. Overrides what the root env says.                                          |
+| `E2E_STREAM_PATH`      | per engine                         | `live/stream` for SRS, `video/stream` for OME.                                             |
+| `E2E_OME_SRT_PORT`     | `OME_SRT_PORT` from the engine env | only for a standalone OME that no profile deployed.                                        |
+| `E2E_OME_CONTAINER`    | `<profile>-ome-1`                  | same.                                                                                      |
+| `E2E_EXPECT_ABR`       | undeclared                         | what this run covers: `true` a ladder, `false` single-rendition. See below.                |
+| `E2E_EXPECT_BROWSER`   | undeclared                         | whether a real viewer watches: `true` opens a player, `false` runs without one. See below. |
+| `E2E_EXPECT_SEGMENT_S` | undeclared                         | seconds per segment this run needs, or `any` to pin none. See below.                       |
+| `E2E_MODE`             | `attach`                           | only `attach` exists. `deploy` refuses and points at `deploy/scripts/deploy.sh`.           |
 
 Ports come from `.env` / `.env.<profile>` and `engines/<engine>/.env[.<profile>]`, layered under the
 process environment exactly as `load_env` then `load_engine_envs` layer them. **OME's ports are not
@@ -82,6 +83,50 @@ control. It belongs in the environment of the run rather than in a profile, beca
 run is a reading of and not what the deployment is. Unset means whatever the client build defaults
 to, which would file a verdict against a condition nobody chose, so a browser run is refused without
 it.
+
+### Saying how long a segment the run needs
+
+**The two viewer types want opposite segment lengths, so there is no setting that is simply right.**
+Measured 2026-08-16 by the sibling repo `swarm-stream-loadlab`, in
+`docs/measurements/2026-08-16-a-stock-tab-holds-realtime-on-two-second-segments.md`, and carried
+unresolved as Q23 of its `docs/spec/product-spec.md`:
+
+| segment length                | 0.5s     | 2s     |
+| ----------------------------- | -------- | ------ |
+| in-tab weeb-3 node            | 0.426x   | 1.000x |
+| buffer it holds ahead         | 0.5-3.5s | ~90s   |
+| gateway, capture to fetchable | 1.55s    | 3.88s  |
+
+An in-tab node admits about one segment per second whatever its peer count, so a 0.5s profile needs
+two admissions a second and can never catch up. The gateway's number is publisher-side by
+construction, because a segment cannot be uploaded until it is complete, so a shorter one is quicker.
+`profiles/in-browser.env` therefore declares `2` and `profiles/light-client.env` declares `0.5`, and
+**that difference is deliberate**. Do not reconcile them.
+
+`preflight/segment-length` refuses a run pointed at the other one:
+
+| `E2E_EXPECT_SEGMENT_S` | what happens                                                                     |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| unset                  | **refused**, before anything is asked of the deployment                          |
+| a number               | the running SRS config is read, and a stage cutting at another length is refused |
+| `any`                  | the check stands down, and the preflight prints that it did                      |
+
+It reads the config the running SRS container was started on, through one `docker exec cat`: **no
+broadcast, no stamp, nothing published and nothing changed**. That is a prediction from the config
+rather than an observation of published media, so it cannot see an encoder missing the cadence its
+own config asks for. `deploy/scripts/stage-fingerprint.sh` reads raw `#EXTINF` off a live playlist
+and does catch that, during a sitting where the broadcast is paid for either way.
+
+A refused run names the one knob. With the ladder on, `engines/srs/entrypoint.sh` derives every rung
+GOP from `HLS_FRAGMENT`, so the fragment IS the segment:
+
+```bash
+echo 'HLS_FRAGMENT=2.0' >> engines/srs/.env.<profile>
+deploy/scripts/deploy.sh --profile=<profile> [--portSlot=<N>] srs
+```
+
+`any` is for a run that genuinely pins no length, and for OME, whose segmenter config this gate
+cannot read. It is a declaration and is never asked again.
 
 Launching a browser also needs the host-side settings the config cannot know:
 
