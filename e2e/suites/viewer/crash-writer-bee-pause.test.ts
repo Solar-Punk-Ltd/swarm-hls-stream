@@ -28,8 +28,15 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * Arm 4 of the crash matrix, `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md`. An eight second
  * pause, which is shorter than the uploader's fifteen second retry window, so segments buffer and
  * flush rather than being lost. `suites/scenarios/bee-outage-short.test.ts` already proves the
- * indices stay gapless and no discontinuity is armed. What had never been asked is whether it reaches
- * a viewer at all.
+ * indices stay gapless and no discontinuity is armed, with nobody watching. What had never been asked
+ * is whether it reaches a viewer at all.
+ *
+ * ## What this asserts
+ *
+ * That the viewer was watching, that they are watching again once the node is unpaused, that nothing
+ * untrue was put in front of them while their picture was stopped, and that the timeline they came
+ * back to is unbroken. That last one is the discontinuity, asked here of the run this viewer actually
+ * sat through rather than of a separate broadcast nobody watched.
  *
  * ⚠️ **The scenario's written expectation and the readings disagree, and this asserts neither.**
  * `browser/faults.ts` declares `expectFreeze: false` and expects a viewer with six seconds of buffer
@@ -120,7 +127,7 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     await host.unpause(broken).catch(() => undefined);
   });
 
-  it('is watching again once the node is unpaused, and is told nothing untrue meanwhile', async () => {
+  it('is watching an unbroken timeline again once the node is unpaused', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
@@ -163,6 +170,19 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
       `  observed, not asserted: the client ${
         recovery.explainedTheFreeze ? 'explained the pause' : 'said NOTHING while the picture was stopped'
       }`,
+    );
+
+    // ⭐ The other half of what this viewer is owed, and the only correctness question here that a
+    // duration used to stand in for. The pause is shorter than the uploader's retry window, so the
+    // segment in flight is buffered and flushed rather than dropped, and a discontinuity armed anyway
+    // would put a break in the timeline of the viewer who just sat through it.
+    // `suites/scenarios/bee-outage-short.test.ts` asks the same of the uploader with nobody watching.
+    const armed = parseUploaderLog(await log()).discontinuitiesArmed;
+    assert.equal(
+      armed,
+      0,
+      `${armed} discontinuit(y/ies) were armed across a pause shorter than the uploader's retry window, ` +
+        'so this viewer was handed a broken timeline by an outage that should have cost them nothing',
     );
   });
 });
