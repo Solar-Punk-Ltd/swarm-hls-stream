@@ -3,7 +3,12 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { parseUploaderLog } from '../../src/harness/logwatch.js';
+import {
+  isContiguous,
+  parseUploaderLog,
+  publishedRenditions,
+  segmentIndicesByStream,
+} from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
@@ -146,4 +151,63 @@ describe('service — two concurrent streams upload independently', () => {
       );
     }
   });
+
+  /**
+   * ⭐ The ladder half, which nothing asked until 2026-08-30.
+   *
+   * Every ABR suite in this repo runs ONE broadcast. Two concurrent ladders are eight ffmpeg
+   * transcodes and eight rung uploads through one bee node, which is a materially different load
+   * from the one the ladder was ever tested under, and a rung silently missing from the SECOND
+   * stream passes every assertion above: it has its own catalog entry, it goes live, it finalises.
+   *
+   * ⛔ Reads the same log the case above already produced, so it costs no extra broadcast.
+   *
+   * ⛔ Compared against what the deployment declares rather than against a count. "Four rungs
+   * appeared" is satisfied by one stream publishing four and the other publishing none.
+   */
+  it('gives BOTH concurrent streams the whole ladder, gaplessly', { skip: abrOff(cfg.abrEnabled) }, async () => {
+    const text = await host.logsSince(uploader, startedAt);
+
+    const rungsByLadder = new Map<string, Set<string>>();
+    for (const publish of publishedRenditions(text)) {
+      const seen = rungsByLadder.get(publish.ladder) ?? new Set<string>();
+      seen.add(publish.rung);
+      rungsByLadder.set(publish.ladder, seen);
+    }
+
+    assert.equal(
+      rungsByLadder.size,
+      2,
+      `two concurrent broadcasts should publish two ladders and this log carries ${rungsByLadder.size}: ` +
+        `${[...rungsByLadder.keys()].join(', ') || 'none'}. A ladder missing entirely is a stream that ` +
+        'transcoded nothing while still taking a catalog entry',
+    );
+
+    for (const [ladder, rungs] of rungsByLadder) {
+      const missing = cfg.abrRungs.filter((rung) => !rungs.has(rung));
+      assert.deepEqual(
+        missing,
+        [],
+        `ladder ${ladder} published ${[...rungs].join(', ')} and the deployment declares ` +
+          `${cfg.abrRungs.join(', ')}. Under concurrency one stream can carry the whole ladder while the ` +
+          'other quietly drops a rung, and every other assertion in this file still passes',
+      );
+    }
+
+    // Per rung-stream, for the reason `bee-outage-short` gives: the merged view of a ladder's
+    // counters holes at window boundaries while no rung has lost anything, and can mask a real
+    // one-rung gap behind a sibling's healthy index.
+    for (const [streamId, indices] of segmentIndicesByStream(text)) {
+      assert.ok(
+        isContiguous(indices),
+        `segment indices of ${streamId} must be gapless while a second ladder publishes beside it; ` +
+          `got: ${indices.join(',')}`,
+      );
+    }
+  });
 });
+
+/** The reason a single-rendition deployment skips, or `false` to run. */
+function abrOff(enabled: boolean): string | false {
+  return enabled ? false : 'ABR_ENABLED is off on this deployment, so there is no ladder to publish twice';
+}
