@@ -193,7 +193,7 @@ describe('the shipped defaults, which nothing else in this file exercises', () =
   });
 
   /**
-   * The half that does ship live. A quarter of a 2 to 30 second backoff is 0.5 to 7.5 seconds of
+   * The half that does ship live. A quarter of a 2 to 8 second backoff is 0.5 to 2 seconds of
    * separation, which is the order that was measured to work where 60ms is the order that was not.
    */
   it('spreads a backoff by a real fraction', () => {

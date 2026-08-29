@@ -44,8 +44,8 @@ describe('FeedHealthTracker backoff schedule', () => {
    * stayed green, and so did a base slow enough to make the player useless. A schedule is only
    * pinned by numbers that are not the implementation's own.
    */
-  it('doubles the wait per consecutive failure and stops at half a minute', () => {
-    assert.deepEqual([1, 2, 3, 4, 5, 6, 20].map(backoffDelayMs), [2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+  it('doubles the wait per consecutive failure and stops at eight seconds', () => {
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 20].map(backoffDelayMs), [2_000, 4_000, 8_000, 8_000, 8_000, 8_000, 8_000]);
   });
 
   /**

@@ -844,14 +844,14 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
    * The failure this shape produced before. A run of failures left a backoff behind that only a
    * successful follow-up cleared, and after a remount there are no follow-ups until the initial
    * fetch has set an index, so the first thing the player did on a recovered gateway was sit out
-   * the remains of a thirty second hold with nothing said.
+   * the remains of a hold it had earned during the outage, with nothing said.
    */
   it('does not hold a remounted player off a gateway that has already answered it', async () => {
     stubFetch(gatewayDown);
     for (let attempt = 0; attempt < 5; attempt++) {
       await assert.rejects(fetcher.fetch(`${OWNER}/${TOPIC_NAME}`));
     }
-    assert.equal(health.backoffRemainingMs(hexTopic), 30_000, 'the run never reached the cap, so this proves less');
+    assert.equal(health.backoffRemainingMs(hexTopic), 8_000, 'the run never reached the cap, so this proves less');
 
     manager.clear(hexTopic);
     stubFetch(() => feedHead(START_INDEX));

@@ -40,11 +40,47 @@ export type FeedStateListener = (state: FeedState) => void;
 export const MANIFEST_RETRY_BASE_MS = 2_000;
 
 /**
- * The longest gap between attempts on a failing gateway. A viewer whose gateway comes back has to
- * find out within a length of time they would sit through, and thirty seconds is that. It also
- * bounds the load a page full of stalled players puts on a gateway that is already struggling.
+ * The longest gap between attempts on a failing gateway, which is also the longest a viewer whose
+ * gateway has come back can sit in front of a frozen picture without anything finding out.
+ *
+ * ⛔ **This was thirty seconds, and thirty seconds was measured to be most of the freeze.** Three
+ * unrelated faults injected under a watching viewer on the four rung ABR ladder, 2026-08-29, live,
+ * in a real browser: killing the uploader process froze the picture **59.0s**, pausing the writer
+ * bee node for **eight seconds** froze it **58.9s**, and a writer bee outage froze it **58.5s**.
+ * Three faults of three very different lengths landing within half a second of each other is one
+ * timer rather than three coincidences, and 2 + 4 + 8 + 16 and then a first cap period is exactly
+ * the sixty seconds all three sat on. An eight second pause costing 58.9 seconds is the sharpest
+ * reading of it: fifty of those seconds were the client's own.
+ *
+ * ## Why eight
+ *
+ * ⭐ **It is the largest ceiling that keeps a ladder viewer no worse off than a single rendition
+ * one.** The same client on one rendition was measured on 2026-08-27 taking **10.7s and 9.9s to
+ * recover after the gateway had started answering again**, across both byte sources, on a 20.5
+ * second gateway stop. See `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md`. A ladder walks five
+ * feeds where a single rendition walks one, and walking more of them must not cost more to recover
+ * than the one-rung case a ladder is built out of.
+ *
+ * It is also where this client already draws the line for itself. {@link UNSERVED_SLOT_POLL_LIMIT}
+ * is thirty polls, which its own corrected note puts at about eight seconds of healthy polling, so
+ * eight seconds is the interval at which the player decides a quiet feed is worth telling a viewer
+ * about. A retry ceiling longer than that is a client complaining about a fault it has stopped
+ * looking for.
+ *
+ * ## Why the load argument that set thirty still holds
+ *
+ * The flood this bounds is flat polling: four rungs at the 750ms poll interval is 5.3 requests a
+ * second, or the **160 requests per 30s** recorded in `LadderFeedPoller`. At a thirty second ceiling
+ * a fully dark gateway sees 4 of those per 30s from a viewer, and at eight it sees 15. That is still
+ * a **10.7x** reduction against the flood, and half a request a second from a viewer is not what
+ * tips a gateway that is already struggling.
+ *
+ * The ceiling is also no longer the only thing shortening a recovery. A rung is released the moment
+ * a rung beside it is served (see {@link FeedHealthTracker.recordGatewayReachable}), so this bounds
+ * the case where *nothing* is getting through, which is the only case where holding off is the
+ * right answer.
  */
-export const MANIFEST_RETRY_CAP_MS = 30_000;
+export const MANIFEST_RETRY_CAP_MS = 8_000;
 
 /**
  * How many consecutive polls may sit on an unserved slot before the feed is called stalled.

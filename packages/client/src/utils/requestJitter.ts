@@ -50,12 +50,12 @@ export const GATEWAY_REQUEST_JITTER_MS = 0;
  * this exists to break, and unlike the stagger it costs nothing: the viewer is already waiting.
  *
  * Proportional rather than absolute because the point of doubling a backoff is that later attempts
- * spread wider, and a fixed 60ms on top of a 30 second wait would not.
+ * spread wider, and a fixed 60ms on top of a multi-second wait would not.
  *
  * ⚠️ **This stays on where the stagger above was turned off, and the difference is scale.** A quarter
- * of a 2 to 30 second backoff is 0.5 to 7.5 seconds of separation, which is the order that was
- * measured to work, where 60ms is the order that was measured not to. ⬅ **Not itself measured**, and
- * kept as standard practice for a retry storm rather than as a result of this project's.
+ * of a 2 to 8 second backoff is 0.5 to 2 seconds of separation, which is the order that was measured
+ * to work, where 60ms is the order that was measured not to. ⬅ **Not itself measured**, and kept as
+ * standard practice for a retry storm rather than as a result of this project's.
  */
 export const MANIFEST_BACKOFF_JITTER_FRACTION = 0.25;
 
