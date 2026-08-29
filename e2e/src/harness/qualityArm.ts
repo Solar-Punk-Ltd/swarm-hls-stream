@@ -1,0 +1,254 @@
+/**
+ * The questions a squeezed viewer's run is asked, and the order they have to be asked in.
+ *
+ * ## What a squeeze arm is
+ *
+ * One broadcast, one viewer, and their connection made worse partway through. `browser:quality` opens
+ * a real player, watches it settle on a rung, caps the tab's download at a bandwidth the upper rungs
+ * cannot fit inside, keeps sampling, lifts the cap and keeps sampling. `suites/viewer/quality-switch`
+ * drives it and this is what it judges on.
+ *
+ * ## ⛔ Why the order matters more here than anywhere else in this harness
+ *
+ * Three things have to be true before "the player stepped down" means anything: there was a viewer,
+ * the player was choosing its own rung, and the cap actually reached it. Chromium applies network
+ * emulation itself and whether it reaches a given transport is the browser's business, not something
+ * this can assert from outside. An in-tab node carries segment bytes over its own peer connections.
+ * ⭐ So a run whose player never noticed the cap is refused as an instrument failure, and never
+ * reported as a ladder that does not adapt.
+ *
+ * ## ⛔ No timing is judged
+ *
+ * Owner ruling of 2026-08-29. Whether the player came down, kept playing and went back up is
+ * correctness. How many seconds each took is measured, carried in the artifact and printed. None of
+ * it refuses a run.
+ *
+ * ## Why the rules live here rather than in the suite
+ *
+ * Nothing under `suites/` runs in CI and the file costs a broadcast, so a rule written inline is a
+ * rule nothing checks until a paid broadcast is already burning. Reached from
+ * `test/qualityArm.test.ts`, these are covered by the unit run.
+ */
+
+import { DEFAULT_BYTE_SOURCE_SETTLE_SECONDS } from '../browser/byteSourceArm.js';
+import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
+import { type QualitySwitchVerdict } from '../browser/qualitySwitch.js';
+
+import { type BrowserArmResult } from './browser.js';
+import { weeb3ArmRefusal } from './browserVerdict.js';
+
+/**
+ * The driver's own windows, restated here because a suite cannot import the driver.
+ *
+ * ⛔ `browser/quality.ts` runs its own `main()` on import, so a suite that pulled it in would launch a
+ * browser. `test/qualityArm.test.ts` greps the driver and fails if these drift, which is the only
+ * thing that makes a mirror safe.
+ */
+export const SQUEEZE_SETTLE_SECONDS = 45;
+export const SQUEEZE_SECONDS = 60;
+export const SQUEEZE_RECOVER_SECONDS = 60;
+
+/**
+ * The most broadcast a squeeze arm may buy.
+ *
+ * One broadcast paid by the minute, the same ceiling a crash arm is held to and for the same reason:
+ * this is the knob that decides what the promoted suites cost every time they run.
+ */
+const MAX_ARM_MINUTES = 6;
+
+/**
+ * How much wall clock one squeeze arm gets, derived from the driver's windows rather than picked.
+ *
+ * ⛔ It must outlast the whole timeline: the in-tab node's settle before the measurement opens, the
+ * baseline the step down is measured against, the squeeze itself and the watch for the climb back.
+ * Everything outside that is budgeted separately by `BROWSER_ARM_OVERHEAD_MS`.
+ *
+ * ⭐ A budget rather than a watch. `browser:quality` never reads `BROWSER_WATCH_SECONDS` and its
+ * windows are its own, so this decides when the harness gives up and nothing about how long the
+ * viewer watches.
+ */
+export function squeezeArmMinutes(): number {
+  const timelineS =
+    DEFAULT_BYTE_SOURCE_SETTLE_SECONDS + SQUEEZE_SETTLE_SECONDS + SQUEEZE_SECONDS + SQUEEZE_RECOVER_SECONDS;
+  const minutes = Math.ceil(timelineS / 60);
+
+  if (minutes > MAX_ARM_MINUTES) {
+    throw new Error(
+      `a squeeze arm would need ${minutes} minutes of broadcast against a ceiling of ${MAX_ARM_MINUTES}. ` +
+        'An arm is one paid broadcast, so windows this long are a sitting to be authorised rather than a ' +
+        'suite to be run.',
+    );
+  }
+  return minutes;
+}
+
+/** What an arm was asked to be, checked against what the artifact says it was. */
+interface QualityArmExpectation {
+  maxSegmentRequests: number;
+}
+
+/**
+ * Why this run is not a viewer whose connection was squeezed, or null.
+ *
+ * ⛔ Everything here is about the RUN rather than the product. Each of these makes every reading
+ * below it a property of the harness, so a suite that asserted past one of them would be certifying
+ * its own instrument.
+ */
+export function qualityArmRefusal(result: BrowserArmResult, expectation: QualityArmExpectation): string | null {
+  if (!result.instrumentSound) {
+    return (
+      'the browser was not a usable instrument for this run, so a rung that did or did not move is as ' +
+      `likely to be the harness as the connection: ${result.instrumentFailures.join('; ') || 'no reason recorded'}`
+    );
+  }
+
+  const { quality } = result;
+  if (quality === null) {
+    return (
+      'this artifact carries no quality verdict, so it is a plain watch rather than a squeeze arm. This ' +
+      "viewer's connection was never made worse, and a player that stayed on one rung did the only " +
+      'correct thing available to it'
+    );
+  }
+
+  if (result.resolutions.length === 0) {
+    return 'the player never reported a resolution, so nothing was decoded and there was no quality to switch';
+  }
+
+  if (result.advanceRatio <= 0) {
+    return (
+      'the picture never moved forward at any point in this arm, so there was no playback for the cap to ' +
+      'degrade and every verdict below would be about a frozen frame'
+    );
+  }
+
+  const { requested, reported } = result.proof;
+  if (requested === null) {
+    return 'this arm named no byte source, so its verdict would be filed against a condition nobody chose';
+  }
+  if (reported !== requested) {
+    return (
+      `this arm asked for ${requested} and the client reports ${reported}, so the switch did not take and ` +
+      'both conditions of the matrix would be one'
+    );
+  }
+
+  return requested === WEEB3_BYTES
+    ? weeb3ArmRefusal(result, { maxSegmentRequests: expectation.maxSegmentRequests })
+    : null;
+}
+
+/**
+ * Why this run is not evidence about adaptive bitrate, or null.
+ *
+ * ⛔ Both halves are about whether the experiment happened, not whether the product works. A pinned
+ * player rides one rung by instruction, and a cap the player never measured is a cap that did not
+ * reach whatever carried the bytes.
+ *
+ * ⭐ The bandwidth bar is the CAP ITSELF rather than a number chosen here. hls.js estimates from its
+ * own fragment load timings, so a player loading fragments over a link capped at N kbps cannot
+ * honestly measure more than N by the end of the squeeze. Anything above it means the emulation did
+ * not reach the transport the segments came over.
+ */
+export function throttleRefusal(quality: QualitySwitchVerdict): string | null {
+  if (!quality.abrEnabledThroughout) {
+    return (
+      'the level was pinned at some point in this run, so the player was not choosing its own rung. A ' +
+      'pinned player that does not step down has obeyed an instruction rather than failed to adapt'
+    );
+  }
+
+  const { bandwidthEstimateKbps: squeezed } = quality.during;
+  if (squeezed === null) {
+    return (
+      'the player reported no bandwidth estimate while the cap was on, so there is no reading that says ' +
+      'the squeeze reached it'
+    );
+  }
+  if (squeezed > quality.throttledToKbps) {
+    return (
+      `the tab's download was capped at ${quality.throttledToKbps} kbps and the player still measured ` +
+      `${squeezed} kbps at the end of the squeeze, up from ${quality.before.bandwidthEstimateKbps ?? 'nothing'} ` +
+      'before it. The emulation did not reach whatever carried the segment bytes, so this run cannot say ' +
+      'what the ladder would do on a genuinely worse connection'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Why this viewer did not step down when their connection could no longer carry their rung, or null.
+ *
+ * Measured against the rung the player was on WHEN THE CAP LANDED, which `judgeQualitySwitch` records
+ * as the baseline. Not against the tallest rung of the whole settle: the client starts at the top
+ * deliberately and may come down on its own, and crediting the cap with that descent would let a
+ * player that ignores bandwidth pass.
+ */
+export function steppedDownRefusal(quality: QualitySwitchVerdict): string | null {
+  const baseline = quality.before.endedOnRungHeight;
+  if (baseline === null) {
+    return 'the player had selected no rung when the cap landed, so there is nothing for it to have stepped down from';
+  }
+  if (quality.steppedDownAfterMs === null) {
+    return (
+      `this viewer rode ${baseline}p through a connection capped at ${quality.throttledToKbps} kbps and never ` +
+      `came below it. The lowest rung they selected while capped was ${quality.during.lowestRungHeight ?? 'none'}p. ` +
+      'A ladder nobody descends is four times the publishing cost for one quality'
+    );
+  }
+  return null;
+}
+
+/**
+ * Why stepping down bought this viewer nothing, or null.
+ *
+ * ⭐ The half that makes the step down worth having. Coming down to a rung the link can carry is only
+ * correct if the picture keeps moving, and a player that stepped down into a stall has adapted its way
+ * into the same place it started.
+ */
+export function keptPlayingRefusal(quality: QualitySwitchVerdict): string | null {
+  if (quality.during.advance.ratio > 0) {
+    return null;
+  }
+  return (
+    `the picture did not move at all across the ${Math.round(quality.during.advance.wallMs / 1000)}s the ` +
+    `connection was capped at ${quality.throttledToKbps} kbps, over ${quality.during.advance.samples} samples. ` +
+    'Whatever the player selected, this viewer was looking at a frozen frame, which is what an adaptive ' +
+    'ladder exists to prevent'
+  );
+}
+
+/**
+ * Why this viewer was left on a worse quality than their connection can now carry, or null.
+ *
+ * Measured against the rung the squeeze LEFT them on rather than the original baseline, so a player
+ * that climbed part of the way back has climbed. How far it got is measured and printed.
+ */
+export function climbedBackRefusal(quality: QualitySwitchVerdict): string | null {
+  if (quality.climbedBackAfterMs !== null) {
+    return null;
+  }
+  return (
+    `the cap came off and this viewer stayed on ${quality.during.endedOnRungHeight ?? 'the same'}p for the rest ` +
+    'of the run. A ladder that only ever goes down leaves every viewer who had one bad minute watching the ' +
+    'bottom rung for the rest of the broadcast'
+  );
+}
+
+/** The line an operator reads while a squeeze arm runs, so a long arm shows what it is producing. */
+export function qualityArmSummary(result: BrowserArmResult): string {
+  const { quality } = result;
+  if (quality === null) {
+    return 'this arm drove no squeeze, so there is no rung timeline to report';
+  }
+  const rung = (height: number | null): string => (height === null ? 'no rung' : `${height}p`);
+
+  return (
+    `capped at ${quality.throttledToKbps} kbps: ${rung(quality.before.endedOnRungHeight)} before, down to ` +
+    `${rung(quality.during.lowestRungHeight)} under it, up to ${rung(quality.after.tallestRungHeight)} after. ` +
+    `${quality.switchesCounted} level changes, the picture advanced ${quality.during.advance.ratio.toFixed(3)} ` +
+    `while capped, and the player's own estimate went ${quality.before.bandwidthEstimateKbps ?? '—'} → ` +
+    `${quality.during.bandwidthEstimateKbps ?? '—'} → ${quality.after.bandwidthEstimateKbps ?? '—'} kbps`
+  );
+}

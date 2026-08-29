@@ -31,6 +31,11 @@ interface ArmStateOverrides {
   recovery?: Record<string, unknown> | null;
   /** The fault the run was, named the way `crash.ts` writes it. Null leaves the section out. */
   scenario?: string | null;
+  /**
+   * The quality verdict `browser/quality.ts` adds and no other driver writes. Null leaves it out,
+   * which is what a plain watch and a crash arm both look like.
+   */
+  quality?: Record<string, unknown> | null;
 }
 
 const SAMPLE_COUNT = 240;
@@ -58,6 +63,7 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     segmentRequests = 6,
     recovery = null,
     scenario = null,
+    quality = null,
   } = overrides;
 
   const run: Record<string, unknown> = {
@@ -124,6 +130,9 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   if (recovery !== null) {
     run.recovery = recovery;
   }
+  if (quality !== null) {
+    run.quality = quality;
+  }
   if (scenario !== null) {
     run.scenario = { name: scenario, service: 'bee-gateway', action: 'stop', downMs: 20_000 };
     run.fault = { injectedAtMs: 1_756_377_600_000, liftedAtMs: 1_756_377_620_500, servingAtMs: 1_756_377_627_700 };
@@ -174,4 +183,43 @@ export function crashArmState(overrides: ArmStateOverrides = {}): unknown {
     recovery: GATEWAY_OUTAGE_RECOVERY,
     ...overrides,
   });
+}
+
+/** One stretch of a squeeze arm, in the shape `judgeQualitySwitch` writes it. */
+function qualityPhase(rung: number | null, ratio: number, kbps: number | null): Record<string, unknown> {
+  return {
+    advance: { ratio, wallMs: 60_000, samples: 60 },
+    lowestRungHeight: rung,
+    tallestRungHeight: rung,
+    endedOnRungHeight: rung,
+    resolutions: rung === null ? [] : [`x${rung}`],
+    bandwidthEstimateKbps: kbps,
+  };
+}
+
+/**
+ * The quality verdict of a viewer who came down when their link was capped and went back up after.
+ *
+ * The shape V2 asserts, against the ladder `DEFAULT_LADDER_SPEC` declares: 1080p before the cap,
+ * 360p under a 1200 kbps cap, 1080p again once it lifted.
+ */
+export const STEPPED_DOWN_AND_BACK: Record<string, unknown> = {
+  throttledToKbps: 1200,
+  before: qualityPhase(1080, 1.0, 6_400),
+  during: qualityPhase(360, 0.98, 1_050),
+  after: qualityPhase(1080, 1.0, 6_100),
+  switchesCounted: 2,
+  abrEnabledThroughout: true,
+  steppedDownAfterMs: 7_000,
+  climbedBackAfterMs: 12_000,
+};
+
+/**
+ * A squeeze arm's state file, which is a watch's plus the section only `browser/quality.ts` writes.
+ *
+ * A caller overriding `quality` states the whole verdict rather than a patch of one, for the same
+ * reason `crashArmState` does: a half-stated verdict is what the reader is supposed to refuse.
+ */
+export function qualityArmState(overrides: ArmStateOverrides = {}): unknown {
+  return armState({ quality: STEPPED_DOWN_AND_BACK, ...overrides });
 }

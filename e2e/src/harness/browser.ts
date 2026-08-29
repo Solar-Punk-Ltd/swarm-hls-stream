@@ -32,6 +32,7 @@
 
 import { FEED_STATE_ENDED, isViewerFeedState, type ViewerFeedState } from '../browser/feedState.js';
 import { type ByteSource } from '../browser/fetchBackendSweep.js';
+import { type QualityPhase, type QualitySwitchVerdict } from '../browser/qualitySwitch.js';
 import { type E2EConfig } from '../config.js';
 
 import { type Host } from './host.js';
@@ -286,6 +287,14 @@ export interface BrowserArmResult {
   /** What the fault did to them, on a scenario arm. Null on a plain watch, which drove no fault. */
   recovery: CrashRecoveryResult | null;
   /**
+   * What their player chose across a squeezed connection, on a squeeze arm. Null on every other arm.
+   *
+   * ⛔ Null is the answer a suite asserting on ABR must refuse. A plain watch produces a full report
+   * with every playback figure in it, and reading one as a quality-switch run would certify the
+   * ladder off a viewer whose connection was never touched.
+   */
+  quality: QualitySwitchVerdict | null;
+  /**
    * Whether the browser was a usable instrument throughout.
    *
    * ⛔ Read before asserting on any figure above. A hidden or throttled page produces numbers that
@@ -401,6 +410,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     feedStatesSeen,
     reachedEndedOverlay: feedStatesSeen.includes(FEED_STATE_ENDED),
     recovery: readCrashRecovery(run),
+    quality: readQualityVerdict(run),
     instrumentSound: asBoolean(instrument.sound, 'run.instrument.sound'),
     instrumentFailures: asArray(instrument.failures, 'run.instrument.failures').map((failure, i) =>
       asString(failure, `run.instrument.failures[${i}]`),
@@ -470,6 +480,51 @@ function readCrashRecovery(run: Record<string, unknown>): CrashRecoveryResult | 
 }
 
 /**
+ * What the player chose across a squeezed connection, or the absence of it.
+ *
+ * ⛔ Absent is legitimate, exactly as it is for the fault verdict: `watch.ts` and `crash.ts` write no
+ * `quality` and a reader that refused its absence would fail the arms that are exactly right. A
+ * `quality` that is present is read whole.
+ */
+function readQualityVerdict(run: Record<string, unknown>): QualitySwitchVerdict | null {
+  if (run.quality === undefined || run.quality === null) {
+    return null;
+  }
+  const quality = asObject(run.quality, 'run.quality');
+
+  return {
+    throttledToKbps: asNumber(quality.throttledToKbps, 'run.quality.throttledToKbps'),
+    before: readQualityPhase(quality.before, 'run.quality.before'),
+    during: readQualityPhase(quality.during, 'run.quality.during'),
+    after: readQualityPhase(quality.after, 'run.quality.after'),
+    switchesCounted: asNumber(quality.switchesCounted, 'run.quality.switchesCounted'),
+    abrEnabledThroughout: asBoolean(quality.abrEnabledThroughout, 'run.quality.abrEnabledThroughout'),
+    steppedDownAfterMs: asNumberOrNull(quality.steppedDownAfterMs, 'run.quality.steppedDownAfterMs'),
+    climbedBackAfterMs: asNumberOrNull(quality.climbedBackAfterMs, 'run.quality.climbedBackAfterMs'),
+  };
+}
+
+function readQualityPhase(value: unknown, at: string): QualityPhase {
+  const phase = asObject(value, at);
+  const advance = asObject(phase.advance, `${at}.advance`);
+
+  return {
+    advance: {
+      ratio: asNumber(advance.ratio, `${at}.advance.ratio`),
+      wallMs: asNumber(advance.wallMs, `${at}.advance.wallMs`),
+      samples: asNumber(advance.samples, `${at}.advance.samples`),
+    },
+    lowestRungHeight: asNumberOrNull(phase.lowestRungHeight, `${at}.lowestRungHeight`),
+    tallestRungHeight: asNumberOrNull(phase.tallestRungHeight, `${at}.tallestRungHeight`),
+    endedOnRungHeight: asNumberOrNull(phase.endedOnRungHeight, `${at}.endedOnRungHeight`),
+    resolutions: asArray(phase.resolutions, `${at}.resolutions`).map((entry, i) =>
+      asString(entry, `${at}.resolutions[${i}]`),
+    ),
+    bandwidthEstimateKbps: asNumberOrNull(phase.bandwidthEstimateKbps, `${at}.bandwidthEstimateKbps`),
+  };
+}
+
+/**
  * Each resolution the decoder produced, once, in the order it first appeared.
  *
  * ⛔ A value that is neither a resolution nor the absence of one is refused, not filtered out. Null
@@ -501,6 +556,13 @@ interface BrowserArmOptions {
   watchMinutes: number;
   /** A fault to drive the viewer through, which switches the driver to `browser:crash`. */
   scenario?: string;
+  /**
+   * Squeeze the tab's bandwidth mid-watch, which switches the driver to `browser:quality`.
+   *
+   * ⛔ Exclusive with {@link scenario}. One treatment per arm, or a rung that moved could have moved
+   * because of either and the run answers neither question.
+   */
+  squeeze?: boolean;
   /** Anything else the driver reads. A suite states its own treatments here, never the harness. */
   env?: Readonly<Record<string, string>>;
 }
@@ -545,7 +607,9 @@ export function browserArmHostSetup(env: NodeJS.ProcessEnv = process.env): Brows
  * host-networked container.
  */
 export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Record<string, string> {
-  const watching = options.scenario === undefined;
+  // ⛔ A squeeze arm is not watching either. `browser:quality` owns its own windows and never reads
+  // BROWSER_WATCH_SECONDS, and a passed-but-unread variable looks exactly like one set to its default.
+  const watching = options.scenario === undefined && options.squeeze !== true;
   return {
     E2E_SSH_TARGET: 'local',
     E2E_PUBLIC_HOST: '127.0.0.1',
@@ -559,8 +623,23 @@ export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Recor
   };
 }
 
-/** `browser:crash` drives a fault under a watching viewer. Everything else is a plain watch. */
+/**
+ * Which driver an arm runs: a fault, a squeezed connection, or a plain watch.
+ *
+ * ⛔ The two treatments are refused together rather than one silently winning. A viewer whose gateway
+ * was stopped AND whose bandwidth was capped tells you nothing about either, and the arm would still
+ * produce a full report.
+ */
 export function browserArmScript(options: BrowserArmOptions): string {
+  if (options.scenario !== undefined && options.squeeze === true) {
+    throw new Error(
+      `this arm asks for both the ${options.scenario} fault and a bandwidth squeeze. One treatment per ` +
+        'arm: with two, a rung that moved could have moved because of either and the run answers neither.',
+    );
+  }
+  if (options.squeeze === true) {
+    return 'browser:quality';
+  }
   return options.scenario === undefined ? 'browser:watch' : 'browser:crash';
 }
 
