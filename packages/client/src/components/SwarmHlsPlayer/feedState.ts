@@ -67,6 +67,11 @@ export const MANIFEST_RETRY_BASE_MS = 2_000;
  * about. A retry ceiling longer than that is a client complaining about a fault it has stopped
  * looking for.
  *
+ * The same number was reached from a third direction, three weeks before any of this was measured:
+ * `docs/reviews/roadmap.md` item 0.8b named 8s as the secondary lever if clearing the hold on a
+ * segment arrival turned out not to be enough. On the ladder it was not enough, because a ladder
+ * holds five feeds and the segment path only ever cleared one of them at a time.
+ *
  * ## Why the load argument that set thirty still holds
  *
  * The flood this bounds is flat polling: four rungs at the 750ms poll interval is 5.3 requests a

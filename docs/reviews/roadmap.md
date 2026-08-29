@@ -515,6 +515,10 @@ a page of stalled players does to a gateway that is already struggling (LAT-3, w
 holds), but once a live gateway clears the hold instantly the cap only governs a genuinely dead one,
 where 8s against 30s is a small absolute difference.
 
+✅ **The secondary was taken on 2026-08-29, at the 8s this line named.** It was not enough on the ABR
+ladder: three unrelated faults each froze a ladder viewer's picture for 58.5 to 59.0 seconds, because
+a ladder holds five feeds rather than one and each backed off alone. See `MANIFEST_RETRY_CAP_MS`.
+
 **Expected: 16.2s becomes 1-3 seconds**, the time for hls.js's own fragment retry plus one poll.
 
 ### 0.8c The dial that is already free
