@@ -199,6 +199,20 @@ interface BrowserArmProof {
  * rather than a refusal. Everything inside it is required once it exists, for the reason every other
  * field is: a crash scenario's pass or fail IS these numbers.
  */
+/**
+ * When the driver broke the service and when it put it back, in epoch milliseconds.
+ *
+ * ⛔ Epoch rather than a formatted time, so the instants are frame independent. The driver stamps
+ * them inside its own container and they are read here to scope a log on the host, and only an
+ * absolute instant survives that crossing without a skew correction nobody would remember to apply.
+ */
+export interface FaultWindow {
+  injectedAtMs: number;
+  liftedAtMs: number;
+  /** When the service answered again. Null where it never did before the arm ended. */
+  servingAtMs: number | null;
+}
+
 export interface CrashRecoveryResult {
   /** The fault this verdict is about, so one scenario's thresholds cannot be applied to another's run. */
   scenario: string;
@@ -228,6 +242,14 @@ export interface CrashRecoveryResult {
    * overlay that says nothing.
    */
   explainedTheFreeze: boolean;
+  /**
+   * The instants the fault was live between, taken from the driver's own stamps.
+   *
+   * ⭐ What it is for is scoping a host side log read to the fault. A crash arm watches for minutes
+   * and the fault lasts seconds, so a count taken across the whole arm charges the fault with
+   * everything else the deployment did meanwhile. `harness/crashArm.ts` turns this into the window.
+   */
+  fault: FaultWindow;
 }
 
 /** How far behind live the player sat. Null where the overlay never reported a latency. */
@@ -421,6 +443,9 @@ function readCrashRecovery(run: Record<string, unknown>): CrashRecoveryResult | 
   }
   const recovery = asObject(run.recovery, 'run.recovery');
   const scenario = asObject(run.scenario, 'run.scenario');
+  // Read strictly. Every artifact carrying a recovery was written by `browser/crash.ts`, which
+  // stamps the fault unconditionally, so an absent one is a malformed file rather than a plain watch.
+  const fault = asObject(run.fault, 'run.fault');
 
   return {
     scenario: asString(scenario.name, 'run.scenario.name'),
@@ -436,6 +461,11 @@ function readCrashRecovery(run: Record<string, unknown>): CrashRecoveryResult | 
       asString(said, `run.recovery.saidWhileFrozen[${i}]`),
     ),
     explainedTheFreeze: asBoolean(recovery.explainedTheFreeze, 'run.recovery.explainedTheFreeze'),
+    fault: {
+      injectedAtMs: asNumber(fault.injectedAtMs, 'run.fault.injectedAtMs'),
+      liftedAtMs: asNumber(fault.liftedAtMs, 'run.fault.liftedAtMs'),
+      servingAtMs: asNumberOrNull(fault.servingAtMs, 'run.fault.servingAtMs'),
+    },
   };
 }
 

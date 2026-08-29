@@ -11,6 +11,7 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
+  faultLogWindow,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
@@ -38,6 +39,13 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * untrue was put in front of them while their picture was stopped, and that the timeline they came
  * back to is unbroken. That last one is the discontinuity, asked here of the run this viewer actually
  * sat through rather than of a separate broadcast nobody watched.
+ *
+ * ⭐ **The timeline is asked twice, because it is two questions.** Once bounded by the fault, which
+ * is what this scenario is named after and is the only count the pause may be blamed for. Once across
+ * the whole broadcast, which is what the viewer actually sat through. Both must be zero and each
+ * fails in its own words, so a red says whether the outage broke the timeline or whether the
+ * deployment was breaking it anyway. Read as one number they were indistinguishable, and this case
+ * spent a run reporting the second as though it were the first.
  *
  * ⚠️ **The scenario's written expectation and the readings disagree, and this asserts neither.**
  * `browser/faults.ts` declares `expectFreeze: false` and expects a viewer with six seconds of buffer
@@ -187,12 +195,39 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     // segment in flight is buffered and flushed rather than dropped, and a discontinuity armed anyway
     // would put a break in the timeline of the viewer who just sat through it.
     // `suites/scenarios/bee-outage-short.test.ts` asks the same of the uploader with nobody watching.
-    const armed = parseUploaderLog(await log()).discontinuitiesArmed;
+    //
+    // ⛔ Bounded by the fault rather than by the arm. This read the whole run once, which charged an
+    // eight second pause with every discontinuity the deployment armed across six minutes. See
+    // `faultLogWindow`.
+    const window = faultLogWindow(recovery.fault);
+    const wholeRun = parseUploaderLog(await log()).discontinuitiesArmed;
+    const byThePause = parseUploaderLog(
+      await host.logsBetween(uploader, window.sinceIso, window.untilIso),
+    ).discontinuitiesArmed;
+
     assert.equal(
-      armed,
+      byThePause,
       0,
-      `${armed} discontinuit(y/ies) were armed across a pause shorter than the uploader's retry window, ` +
-        'so this viewer was handed a broken timeline by an outage that should have cost them nothing',
+      `${byThePause} discontinuit(y/ies) were armed inside a pause shorter than the uploader's retry ` +
+        'window, so this viewer was handed a broken timeline by an outage that should have cost them ' +
+        'nothing',
+    );
+
+    // ⭐ The same counter over the whole broadcast, which is a DIFFERENT question and is asserted as
+    // its own. A viewer sits through the entire arm, so a timeline broken outside the fault is still a
+    // timeline broken under them, and nothing else in the suite would see it: every other place this
+    // counter is read holds a window of a minute or two.
+    //
+    // ⚠️ This is the reading that made the case red on the light-client stage while
+    // `bee-outage-short.test.ts` read zero on the same fault. Half second segments across four rungs
+    // ask the writer for eight uploads a second, and whether that is what arms them is open. The two
+    // figures are separated here so the answer names the right cause either way.
+    assert.equal(
+      wholeRun,
+      0,
+      `the pause itself armed ${byThePause}, and yet ${wholeRun} discontinuit(y/ies) were armed across ` +
+        'the whole broadcast this viewer sat through. The fault is exonerated and the timeline is still ' +
+        'broken, so this is the deployment losing segments over minutes rather than over the outage',
     );
   });
 });

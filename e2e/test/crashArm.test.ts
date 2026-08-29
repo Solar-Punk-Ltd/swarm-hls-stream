@@ -19,9 +19,11 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
+  faultLogWindow,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
+  UPLOAD_RETRY_WINDOW_MS,
 } from '../src/harness/crashArm.js';
 
 import { armState, crashArmState, GATEWAY_OUTAGE_RECOVERY } from './helpers/browserArmFixtures.js';
@@ -98,6 +100,72 @@ describe('how much wall clock one crash arm gets', () => {
 
     assert.equal(CRASH_SETTLE_SECONDS, declared('DEFAULT_SETTLE_SECONDS'));
     assert.equal(CRASH_RECOVER_SECONDS, declared('DEFAULT_RECOVER_SECONDS'));
+  });
+});
+
+/**
+ * ⛔ The window a discontinuity may be charged to a fault.
+ *
+ * V8 read the uploader's counter across a six minute arm and reported the answer as a property of an
+ * eight second pause. `suites/scenarios/bee-outage-short.test.ts` drives the same pause against the
+ * same stage and reads zero, because its own window is about ninety seconds. The bounds are what
+ * separated the two answers, so they are checked here rather than left inline in a suite that only
+ * runs when a broadcast is already burning.
+ */
+describe('the stretch of uploader log a discontinuity belongs to a fault in', () => {
+  const FAULT = { injectedAtMs: 1_756_377_600_000, liftedAtMs: 1_756_377_608_000, servingAtMs: 1_756_377_612_000 };
+
+  it('opens where the fault landed, not where the arm started', () => {
+    assert.equal(faultLogWindow(FAULT).sinceIso, new Date(FAULT.injectedAtMs).toISOString());
+  });
+
+  /**
+   * ⭐ The bound that is not obvious. An upload begun a moment before the service came back keeps
+   * retrying for the uploader's whole window, so a discontinuity this fault caused is written to the
+   * log seconds after the fault is over. Closing at the lift would miss exactly what is being counted.
+   */
+  it("closes a retry window after the lift, because that is when the fault's last upload gives up", () => {
+    const { untilIso } = faultLogWindow(FAULT);
+
+    assert.equal(untilIso, new Date(FAULT.liftedAtMs + UPLOAD_RETRY_WINDOW_MS).toISOString());
+    assert.ok(Date.parse(untilIso) - FAULT.liftedAtMs >= UPLOAD_RETRY_WINDOW_MS);
+  });
+
+  /** RFC3339, because both ends are handed to `docker logs` rather than compared in this process. */
+  it('states both bounds as instants docker can take', () => {
+    const { sinceIso, untilIso } = faultLogWindow(FAULT);
+
+    for (const bound of [sinceIso, untilIso]) {
+      assert.match(bound, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    }
+  });
+
+  /**
+   * ⛔ An arm that threw before injecting leaves both stamps at 0, which would otherwise produce a
+   * window in 1970 that every log read comes back empty from. An empty log counts zero discontinuities
+   * and the case passes, so a run that never drove its fault would report the best possible outcome.
+   */
+  it('refuses stamps that say the fault was lifted before it was injected', () => {
+    assert.throws(
+      () => faultLogWindow({ injectedAtMs: 1_756_377_600_000, liftedAtMs: 0, servingAtMs: null }),
+      /cannot bound anything/,
+    );
+  });
+
+  /**
+   * ⛔ Mirrored constant, so this is a grep rather than a promise, like the driver windows above. The
+   * uploader owns how long it retries, and a change there that did not reach here would silently
+   * shorten the window on the side that decides whether a paid arm passes.
+   */
+  it('mirrors the retry window the uploader actually gives a segment', () => {
+    const uploader = readFileSync(
+      join(dirname(E2E_DIR), 'packages', 'stream-uploader', 'src', 'libs', 'StreamUploader.ts'),
+      'utf8',
+    );
+    const match = /const SEGMENT_UPLOAD_RETRY_WINDOW_MS = ([\d_]+);/.exec(uploader);
+
+    assert.ok(match, 'StreamUploader.ts no longer declares SEGMENT_UPLOAD_RETRY_WINDOW_MS');
+    assert.equal(UPLOAD_RETRY_WINDOW_MS, Number(match[1].split('_').join('')));
   });
 });
 

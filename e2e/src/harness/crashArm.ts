@@ -44,7 +44,7 @@ import { type FaultScenario } from '../browser/faults.js';
 import { FEED_STATE_LIVE, readFeedState, type ViewerFeedState } from '../browser/feedState.js';
 import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
 
-import { type BrowserArmResult, type CrashRecoveryResult } from './browser.js';
+import { type BrowserArmResult, type CrashRecoveryResult, type FaultWindow } from './browser.js';
 import { weeb3ArmRefusal } from './browserVerdict.js';
 
 /**
@@ -116,6 +116,46 @@ export function crashArmMinutes(scenario: FaultScenario): number {
     );
   }
   return minutes;
+}
+
+/**
+ * How long after the service comes back the uploader can still arm a discontinuity for the outage.
+ *
+ * ⛔ Mirrors `SEGMENT_UPLOAD_RETRY_WINDOW_MS` in `packages/stream-uploader/src/libs/StreamUploader.ts`,
+ * and `test/crashArm.test.ts` greps that file and fails if the two drift. An upload that began just
+ * before the service was restored keeps retrying for this long, so a discontinuity the fault caused
+ * is logged well after the fault is over. A window closing at the lift would miss exactly the arming
+ * these scenarios exist to catch.
+ */
+export const UPLOAD_RETRY_WINDOW_MS = 15_000;
+
+/**
+ * The stretch of uploader log a discontinuity may be charged to this fault, as docker log bounds.
+ *
+ * ## ⛔ What this repairs
+ *
+ * V8 read the uploader's discontinuity counter across the whole arm and called the answer a property
+ * of an eight second pause. An arm watches for minutes, so every discontinuity the deployment armed
+ * for its own reasons was charged to the fault. `suites/scenarios/bee-outage-short.test.ts` drives
+ * the SAME pause against the SAME stage and reads zero, because its own log window is about ninety
+ * seconds rather than six minutes. Two tests, one fault, opposite answers, and the difference was
+ * entirely the window.
+ *
+ * ⭐ The opening bound is the injection rather than the arm's start, so the settle and the baseline
+ * are outside it. The closing bound is the lift plus the uploader's own retry window, because that is
+ * how long an upload begun under the fault keeps trying before it gives up and arms one.
+ */
+export function faultLogWindow(fault: FaultWindow): { sinceIso: string; untilIso: string } {
+  if (fault.liftedAtMs < fault.injectedAtMs) {
+    throw new Error(
+      `this artifact says the fault was lifted ${fault.injectedAtMs - fault.liftedAtMs}ms before it was ` +
+        'injected, so its stamps cannot bound anything. An arm that threw before injecting leaves both at 0.',
+    );
+  }
+  return {
+    sinceIso: new Date(fault.injectedAtMs).toISOString(),
+    untilIso: new Date(fault.liftedAtMs + UPLOAD_RETRY_WINDOW_MS).toISOString(),
+  };
 }
 
 /** The fault a scenario drove, and the ceiling its in-tab arm is held to. */

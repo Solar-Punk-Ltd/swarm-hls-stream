@@ -213,6 +213,19 @@ export class Host {
     return stdout;
   }
 
+  /**
+   * docker logs bounded at both ends, which scopes an assertion to one fault rather than one run.
+   *
+   * ⛔ What {@link logsSince} cannot do. An arm that watches a viewer for six minutes reads six
+   * minutes of uploader log, so anything the deployment does for its own reasons is counted against
+   * the eight second fault the arm injected. Both bounds are RFC3339, so pass instants rather than
+   * durations and derive them from the fault.
+   */
+  async logsBetween(container: string, sinceIso: string, untilIso: string): Promise<string> {
+    const { stdout } = await this.run(`docker logs --since ${sinceIso} --until ${untilIso} ${container} 2>&1`);
+    return stdout;
+  }
+
   /** UTC instant from the host's own clock (avoids mac↔host skew when paired with logsSince). */
   async nowIso(): Promise<string> {
     const { stdout } = await this.run('date -u +%Y-%m-%dT%H:%M:%SZ');
