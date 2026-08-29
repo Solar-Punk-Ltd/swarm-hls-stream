@@ -20,6 +20,10 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * window (zero loss, nothing to assert), so the sleep is 25s to keep the fail-fast outage
  * comfortably past the window.
  *
+ * ⛔ **Everything here is counted per rung, never merged.** See {@link WARMUP_SEGMENTS}: the merged
+ * view answers a different question and gets this suite wrong at any segment length where the rungs
+ * do not warm up together.
+ *
  * Also guards the manifest-freeze regression: feed writes are deferred (bee 2.8.1 honors
  * swarm-deferred-upload on /soc), so manifest publishes must resume within seconds of the node
  * returning — a direct-write regression shows up here as a ~80s publish hold.
@@ -27,6 +31,16 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
 
 const STOP_SLEEP_MS = 25_000;
 const MANIFEST_RESUME_WAIT_MS = 45_000;
+/**
+ * Segments each rung must have uploaded before bee is killed.
+ *
+ * ⛔ **Per rung, and that is the whole point of the number.** Counted across the merged view this
+ * gate trips as soon as any three segments exist anywhere on the ladder, which at two second
+ * segments is before the 1080p rung has uploaded even one. That rung then has no pre-outage index
+ * at all, its first surviving index is whatever came after the outage, and the hole the outage tore
+ * has nothing on its left to make it visible. Live, 2026-08-29: the discontinuity was armed and the
+ * product was correct, and this suite failed on `got: 5,6,7,8`.
+ */
 const WARMUP_SEGMENTS = 3;
 const POST_OUTAGE_SEGMENTS = 3;
 const SEGMENT_WAIT_MS = 120_000;
@@ -56,15 +70,23 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
 
   it('arms a discontinuity for the dropped segment and resumes cleanly', async () => {
     const events = async () => parseUploaderLog(await host.logsSince(uploader, startedAt));
+    const byStream = async () => segmentIndicesByStream(await host.logsSince(uploader, startedAt));
+    const expectedStreams = cfg.abrEnabled ? cfg.abrRungs.length : 1;
 
-    await waitFor(async () => (await events()).uploadedSegments.length >= WARMUP_SEGMENTS, {
-      timeoutMs: SEGMENT_WAIT_MS,
-      intervalMs: 2_000,
-      label: `warmup: ${WARMUP_SEGMENTS} segments before crash`,
-    });
+    await waitFor(
+      async () => {
+        const streams = await byStream();
+        return streams.size >= expectedStreams && [...streams.values()].every((idx) => idx.length >= WARMUP_SEGMENTS);
+      },
+      {
+        timeoutMs: SEGMENT_WAIT_MS,
+        intervalMs: 2_000,
+        label: `warmup: ${WARMUP_SEGMENTS} segments on each of ${expectedStreams} stream(s) before crash`,
+      },
+    );
 
     const preOutage = await events();
-    const preMax = Math.max(...preOutage.uploadedSegments);
+    const preOutageMaxOf = new Map([...(await byStream())].map(([id, idx]) => [id, Math.max(...idx)]));
     const preOutageManifestMax = preOutage.manifestSocIndices.length ? Math.max(...preOutage.manifestSocIndices) : -1;
 
     await host.stop(bee);
@@ -83,12 +105,18 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
       },
     );
 
+    // Per stream, for the same reason the warmup is. The gap assertion below reads every rung, so
+    // waiting on the fastest one would check a rung that has not resumed yet and read its unbroken
+    // pre-outage run as an outage that tore no hole.
     await waitFor(
       async () => {
-        const ups = (await events()).uploadedSegments;
-        return ups.length > 0 && Math.max(...ups) >= preMax + POST_OUTAGE_SEGMENTS;
+        const streams = await byStream();
+        return [...preOutageMaxOf].every(([id, preMax]) => {
+          const resumed = streams.get(id) ?? [];
+          return resumed.length > 0 && Math.max(...resumed) >= preMax + POST_OUTAGE_SEGMENTS;
+        });
       },
-      { timeoutMs: SEGMENT_WAIT_MS, intervalMs: 2_000, label: 'segments resume after the crash outage' },
+      { timeoutMs: SEGMENT_WAIT_MS, intervalMs: 2_000, label: 'every stream resumes after the crash outage' },
     );
 
     const ev = await events();
@@ -102,9 +130,9 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
     // each rung dropped its own segments and each rung's own sequence must show the hole. The merged
     // view cannot be trusted in either direction: a sibling's healthy index fills a real gap, and
     // window boundaries invent one.
-    const byStream = [...segmentIndicesByStream(await host.logsSince(uploader, startedAt))];
-    assert.ok(byStream.length > 0, 'no attributable segment uploads at all, so nothing here survived the outage');
-    for (const [streamId, indices] of byStream) {
+    const perStream = [...(await byStream())];
+    assert.ok(perStream.length > 0, 'no attributable segment uploads at all, so nothing here survived the outage');
+    for (const [streamId, indices] of perStream) {
       assert.ok(
         !isContiguous(indices),
         `the dropped segments must leave a gap in ${streamId}'s indices; got: ${indices.join(',')}`,
