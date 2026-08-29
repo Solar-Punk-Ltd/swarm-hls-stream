@@ -61,7 +61,7 @@ export const MANIFEST_RETRY_BASE_MS = 2_000;
  * feeds where a single rendition walks one, and walking more of them must not cost more to recover
  * than the one-rung case a ladder is built out of.
  *
- * It is also where this client already draws the line for itself. {@link UNSERVED_SLOT_POLL_LIMIT}
+ * It is also where this client already draws the line for itself. {@link UNSERVED_SLOT_STALL_MS}
  * is thirty polls, which its own corrected note puts at about eight seconds of healthy polling, so
  * eight seconds is the interval at which the player decides a quiet feed is worth telling a viewer
  * about. A retry ceiling longer than that is a client complaining about a fault it has stopped
@@ -88,38 +88,39 @@ export const MANIFEST_RETRY_BASE_MS = 2_000;
 export const MANIFEST_RETRY_CAP_MS = 8_000;
 
 /**
- * How many consecutive polls may sit on an unserved slot before the feed is called stalled.
+ * How long a feed may sit on a slot the gateway answered for, but had nothing in, before the feed
+ * is called stalled.
  *
- * Counted in polls rather than in seconds, because the poll is what observes the slot. Low enough to
- * reach a viewer while they are still watching, high enough that a viewer who has merely caught up
- * with the publisher stays quiet, since that viewer is refused on nearly every poll.
+ * ⛔⛔⛔ **This was a POLL COUNT, and the poll rate is not a constant.** It collapses during exactly
+ * the stall it counts. Measured on two recorded uploader crashes (task #100 and
+ * `docs/bench/overlay-silence-during-a-crash-2026-08-07.md`), feed reads went from a 264ms gap
+ * before the crash to 1064ms during the freeze, because each read takes about three times as long
+ * and the client also spaces unserved reads about four times wider. So thirty polls was about eight
+ * seconds while healthy and about thirty-two during a stall, and when a viewer heard anything was a
+ * by-product rather than a decision. A 12.4 second freeze accumulated 13 polls, never reached the
+ * threshold, and that viewer watched a dead picture for twelve seconds and was told nothing.
  *
- * ⚠️ **What this is worth in seconds is not what this comment used to claim.** It said hls.js
- * reloads "about once per target duration, which is 2 seconds here, so this is roughly a minute".
- * The uploader declares `ceil(segment duration)`, so the target is **1 second** at every segment
- * length below a second, which `playerConfig.ts` states correctly and this did not. At the shipping
- * profile thirty polls is therefore on the order of thirty seconds rather than sixty, and the
- * measured live slot-read rate suggests faster still.
+ * ⭐ **Eight is what the old count meant while healthy**, so a viewer at the live edge is no more
+ * likely to see the overlay than they were. Only the stall case moves, which is the case that was
+ * wrong. It is also {@link MANIFEST_RETRY_CAP_MS}, already this client's answer to how long a quiet
+ * feed may go unmentioned, reached there from three independent directions.
  *
- * ⚠️ **The run happened, and it says the unit is the problem rather than the number.** Two recorded
- * uploader crashes, task #100 and `docs/bench/overlay-silence-during-a-crash-2026-08-07.md`. The
- * poll rate is not a constant and does not vary randomly: it collapses during exactly the stall this
- * counts. Feed reads went from a 264ms gap before the crash to **1064ms during the freeze**, because
- * each read takes about three times as long and the client also spaces unserved reads about four
- * times wider. So thirty polls is about **8 seconds while healthy and about 32 during a stall**, and
- * the delay before a viewer is told anything is a by-product rather than a decision.
- *
- * What that costs, measured: a 12.4 second freeze accumulated 13 polls and never reached this
- * threshold, so the viewer watched a dead picture for twelve seconds and was told nothing, while a
- * 54.9 second freeze in the same scenario was announced 14.4 seconds in.
- *
- * The number is still left where it is, and now for a different reason. It was chosen against how
- * long a viewer will sit through a frozen picture, which is a fact about viewers, and the fix
- * indicated is to denominate this in elapsed milliseconds on the unserved slot rather than to move
- * the count. That changes when the overlay appears on every deployment, so it is a product decision
- * and not a correction.
+ * A viewer who has merely caught up with the publisher cannot reach this. A segment lands every 0.5
+ * to 2 seconds and every one of them ends the run. Eight seconds of an unbroken unserved run means
+ * the publisher really has stopped.
  */
-export const UNSERVED_SLOT_POLL_LIMIT = 30;
+export const UNSERVED_SLOT_STALL_MS = 8_000;
+
+/**
+ * How many consecutive unserved polls the walk keeps probing past a refusal for.
+ *
+ * ⚠️ **Not what decides the overlay any more.** That is {@link UNSERVED_SLOT_STALL_MS}. This bounds
+ * only the extra request the ladder walk makes to ask what is behind a refused slot: below
+ * `UNSERVED_POLLS_BEFORE_PROBE` a refusal is too likely to be the publisher's own head to be worth
+ * asking about, and above this the walk has asked on every poll and found nothing every time, so
+ * what is missing is not within its reach.
+ */
+export const UNSERVED_POLLS_PROBE_CEILING = 30;
 
 /**
  * How many times the picture may stop inside {@link PLAYBACK_STALL_WINDOW_MS} before the stream is
@@ -162,6 +163,13 @@ interface TopicHealth {
   retryAtMs: number;
   /** Consecutive polls spent on a slot the gateway answered for, but had nothing in. */
   unservedSlotPolls: number;
+  /**
+   * When the current unserved run began, or null when a slot was last served.
+   *
+   * Kept beside the poll count rather than replacing it: the count bounds the probe, the clock
+   * decides the overlay, and the two answer different questions. See {@link UNSERVED_SLOT_STALL_MS}.
+   */
+  unservedSinceMs: number | null;
   /** Whether the broadcaster published a manifest that ends the playlist. Never goes back to false. */
   hasEnded: boolean;
   /** When the picture last stopped, most recent last, trimmed by {@link recentStalls}. */
@@ -172,6 +180,7 @@ const HEALTHY: TopicHealth = {
   gatewayFailures: 0,
   retryAtMs: 0,
   unservedSlotPolls: 0,
+  unservedSinceMs: null,
   hasEnded: false,
   stallsAtMs: [],
 };
@@ -201,7 +210,13 @@ function recentStalls(stallsAtMs: readonly number[], nowMs: number): readonly nu
  * before then is dropping the count that decides when that is.
  */
 function isWorthTracking(health: TopicHealth): boolean {
-  return health.gatewayFailures > 0 || health.unservedSlotPolls > 0 || health.hasEnded || health.stallsAtMs.length > 0;
+  return (
+    health.gatewayFailures > 0 ||
+    health.unservedSlotPolls > 0 ||
+    health.unservedSinceMs !== null ||
+    health.hasEnded ||
+    health.stallsAtMs.length > 0
+  );
 }
 
 function stateOfHealth(health: TopicHealth | undefined, nowMs: number): FeedState {
@@ -216,7 +231,7 @@ function stateOfHealth(health: TopicHealth | undefined, nowMs: number): FeedStat
   if (health.gatewayFailures > 0) {
     return FEED_STATE_RECONNECTING;
   }
-  if (health.unservedSlotPolls >= UNSERVED_SLOT_POLL_LIMIT) {
+  if (health.unservedSinceMs !== null && nowMs - health.unservedSinceMs >= UNSERVED_SLOT_STALL_MS) {
     return FEED_STATE_STALLED;
   }
   // Last of the four, because it is the least specific. Each of the others names why the picture
@@ -254,10 +269,18 @@ function foldLadderHealth(own: TopicHealth | undefined, rungs: readonly (TopicHe
   const agreedOn = (read: (health: TopicHealth) => number): number =>
     rungs.reduce((least, rung) => Math.min(least, read(rung ?? HEALTHY)), Number.POSITIVE_INFINITY);
 
+  const rungHealths = rungs.map((rung) => rung ?? HEALTHY);
+  // The latest of them, because the group has only been unserved since the last rung stopped being
+  // served. One rung still getting slots leaves the group not unserved at all.
+  const unservedSinceMs = rungHealths.every((health) => health.unservedSinceMs !== null)
+    ? Math.max(...rungHealths.map((health) => health.unservedSinceMs as number))
+    : null;
+
   return {
     gatewayFailures: agreedOn((health) => health.gatewayFailures),
     retryAtMs: entry.retryAtMs,
     unservedSlotPolls: agreedOn((health) => health.unservedSlotPolls),
+    unservedSinceMs,
     hasEnded: entry.hasEnded,
     stallsAtMs: entry.stallsAtMs,
   };
@@ -373,6 +396,17 @@ export class FeedHealthTracker {
    */
   stallsRecorded(topicId: string): number {
     return this.topics.get(topicId)?.stallsAtMs.length ?? 0;
+  }
+
+  /**
+   * How long a run of unserved polls a topic is currently riding.
+   *
+   * Read by tests only, and there because a walk that never records one is indistinguishable from a
+   * walk whose feed is advancing. That was the whole of the ladder fault: `recordUnservedSlot` was
+   * never called from `LadderFeedPoller`, so the state it feeds could not fire and nothing failed.
+   */
+  unservedPollsRecorded(topicId: string): number {
+    return this.topics.get(topicId)?.unservedSlotPolls ?? 0;
   }
 
   /**
@@ -530,9 +564,18 @@ export class FeedHealthTracker {
    */
   recordUnservedSlot(topicId: string): number {
     let polls = 0;
+    const at = this.now();
     this.update(topicId, (health) => {
       polls = health.unservedSlotPolls + 1;
-      return { ...health, gatewayFailures: 0, retryAtMs: 0, unservedSlotPolls: polls };
+      return {
+        ...health,
+        gatewayFailures: 0,
+        retryAtMs: 0,
+        unservedSlotPolls: polls,
+        // Stamped once per run, not per poll. The run's age is the whole point, and rewriting it on
+        // every poll would hold a permanently stalled feed at zero seconds old for ever.
+        unservedSinceMs: health.unservedSinceMs ?? at,
+      };
     });
     return polls;
   }

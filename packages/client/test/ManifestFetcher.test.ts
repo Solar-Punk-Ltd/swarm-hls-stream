@@ -9,7 +9,8 @@ import {
   FEED_STATE_STALLED,
   FeedHealthTracker,
   type FeedState,
-  UNSERVED_SLOT_POLL_LIMIT,
+  UNSERVED_POLLS_PROBE_CEILING,
+  UNSERVED_SLOT_STALL_MS,
 } from '../src/components/SwarmHlsPlayer/feedState';
 import {
   ManifestFetcher,
@@ -109,6 +110,13 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
   let fetcher: ManifestFetcher;
   let requested: bigint[];
   let publishedThrough: bigint;
+  /**
+   * Held explicitly rather than left to the fetcher's own, so the unserved run this block drives can
+   * be read and, more importantly, aged. The default tracker runs on `performance.now`, which a test
+   * cannot move.
+   */
+  let health: FeedHealthTracker;
+  let clockMs: number;
 
   beforeEach(() => {
     manager.clear(hexTopic);
@@ -120,7 +128,9 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     );
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
 
-    fetcher = new ManifestFetcher(manager, undefined, undefined, NO_JITTER);
+    clockMs = 0;
+    health = new FeedHealthTracker(() => clockMs);
+    fetcher = new ManifestFetcher(manager, health, undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
     publishedThrough = START_INDEX + 1n;
@@ -354,7 +364,7 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     const reported: string[] = [];
     console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT - 1; poll++) {
+    for (let poll = 0; poll < UNSERVED_POLLS_PROBE_CEILING - 1; poll++) {
       await pollUnservedSlot();
     }
     assert.deepEqual(reported, [], 'a viewer who has merely caught up with the publisher was told something is wrong');
@@ -364,12 +374,55 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     assert.equal(reported.length, 1, `expected exactly one report, got ${reported.length}: ${reported.join(' | ')}`);
     assert.match(
       reported[0],
-      new RegExp(`has not advanced past slot ${START_INDEX + 1n} in ${UNSERVED_SLOT_POLL_LIMIT} polls`),
+      new RegExp(`has not advanced past slot ${START_INDEX + 1n} in ${UNSERVED_POLLS_PROBE_CEILING} polls`),
       `the report does not name the stuck slot: ${reported[0]}`,
     );
 
     await pollUnservedSlot();
     assert.equal(reported.length, 1, 'the report repeats on every poll after the threshold');
+  });
+
+  /**
+   * ⛔ **The risk the timed threshold introduces, and the only test that can catch it.**
+   *
+   * Every poll of a healthy feed ends on the 404 that says the publisher has been caught, so a
+   * viewer at the live edge is riding an open unserved run at every instant. Counting polls, that
+   * was harmless. Timing the run, a feed polled slowly enough would age into `stalled` while
+   * advancing perfectly, and the only thing standing between a caught-up viewer and a permanent
+   * overlay is the served slot ending the run before the next one starts.
+   *
+   * ⚠️ **The window is per run, not per session, and that distinction is the test.** Twenty rounds
+   * at a quarter window each is eighty seconds, ten windows of elapsed time, and the feed must still
+   * read live throughout because no single run ever reaches eight seconds.
+   *
+   * A slower cadence than this would be right to call stalled rather than wrong: on a two second
+   * stream, eight seconds with no new segment is a draining buffer whatever the reason, which is
+   * exactly what the state is for.
+   *
+   * Mutation-checked on 2026-08-29: making `recordGatewayResponse` carry the run through turns this
+   * red, which is what the sibling guard in the #84 block could not do.
+   */
+  it('does not age a feed that keeps being served into a stall', async () => {
+    console.error = () => {};
+    const BETWEEN_POLLS_MS = UNSERVED_SLOT_STALL_MS / 4;
+    const ROUNDS = 20;
+
+    for (let round = 0; round < ROUNDS; round++) {
+      await pollUnservedSlot();
+      clockMs += BETWEEN_POLLS_MS;
+      // The publisher writes one more slot between polls, as it does live. Without this the walk
+      // catches up on the first round and every later "served" poll is really an unserved one.
+      publishedThrough += 1n;
+      await pollServedSlot();
+      clockMs += BETWEEN_POLLS_MS;
+
+      assert.equal(
+        health.state(hexTopic),
+        FEED_STATE_LIVE,
+        `round ${round}: a feed served every ${BETWEEN_POLLS_MS}ms was called stalled after ` +
+          `${clockMs}ms, which is ${(clockMs / UNSERVED_SLOT_STALL_MS).toFixed(1)} windows of session`,
+      );
+    }
   });
 
   // The run has to be a run. A feed that answers slowly but does answer must never reach the report,
@@ -383,11 +436,11 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
     const reported: string[] = [];
     console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT - 1; poll++) {
+    for (let poll = 0; poll < UNSERVED_POLLS_PROBE_CEILING - 1; poll++) {
       await pollUnservedSlot();
     }
     await pollServedSlot();
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT - 1; poll++) {
+    for (let poll = 0; poll < UNSERVED_POLLS_PROBE_CEILING - 1; poll++) {
       await pollUnservedSlot();
     }
 
@@ -414,6 +467,9 @@ describe('ManifestFetcher follow-up fetches (CON-29)', () => {
  * The fix is not to poll faster. It is to stop treating one poll as worth one slot.
  */
 describe('keeping up with a publisher that writes faster than hls.js reloads (#84)', () => {
+  /** Advanced by `poll`, so a healthy feed's unserved run genuinely gets a chance to age. */
+  let keepUpClockMs = 0;
+
   let fetcher: ManifestFetcher;
   let health: FeedHealthTracker;
   let requested: bigint[];
@@ -425,7 +481,8 @@ describe('keeping up with a publisher that writes faster than hls.js reloads (#8
     manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
 
-    health = new FeedHealthTracker(() => 0);
+    keepUpClockMs = 0;
+    health = new FeedHealthTracker(() => keepUpClockMs);
     fetcher = new ManifestFetcher(manager, health, undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
@@ -469,9 +526,25 @@ describe('keeping up with a publisher that writes faster than hls.js reloads (#8
    * so a budget too short to let the walk report would make it pass for the wrong reason. Waiting on
    * the walk itself is both faster and the stronger assertion.
    */
+  /**
+   * How far the clock moves per poll here.
+   *
+   * ⚠️ **Measured, not assumed: this fixture never records an unserved slot at all.** Its walk ends
+   * each poll having consumed everything published, with `unservedPollsRecorded` sitting at zero
+   * throughout, so the test below cannot fail whatever this clock does. Verified by mutation on
+   * 2026-08-29: making `recordGatewayResponse` keep the run left all 52 tests here green.
+   *
+   * The clock still moves, because a frozen one would hide the day the walk does start recording
+   * one. The claim that a healthy feed never ages into a stall is carried by
+   * `does not age a feed that keeps being served into a stall` in the CON-29 block, which drives
+   * the unserved path deliberately and was mutation-checked.
+   */
+  const GENEROUS_POLL_INTERVAL_MS = UNSERVED_SLOT_STALL_MS * 2;
+
   const poll = async () => {
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     await fetcher.settled();
+    keepUpClockMs += GENEROUS_POLL_INTERVAL_MS;
   };
 
   // The defect itself. One poll used to be worth one segment however many the publisher had written,
@@ -563,7 +636,7 @@ describe('keeping up with a publisher that writes faster than hls.js reloads (#8
     const reported: string[] = [];
     console.error = (...args: unknown[]) => reported.push(args.map(String).join(' '));
 
-    for (let round = 0; round < UNSERVED_SLOT_POLL_LIMIT + 5; round++) {
+    for (let round = 0; round < UNSERVED_POLLS_PROBE_CEILING + 5; round++) {
       publishedThrough += 1n; // the publisher writes one more slot between polls, as it does live
       await poll();
     }
@@ -645,10 +718,16 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
   let health: FeedHealthTracker;
   let waited: number[];
   let requested: string[];
+  /**
+   * Hoisted so a test can move it. The fetcher advances this whenever it waits, and an unserved
+   * slot is deliberately never backed off, so a run of them moves no clock on its own. Since the
+   * stall is timed rather than counted, a test that only polls never reaches one.
+   */
+  let clockMs = 0;
 
   beforeEach(() => {
     manager.clear(hexTopic);
-    let clockMs = 0;
+    clockMs = 0;
     health = new FeedHealthTracker(() => clockMs);
     waited = [];
     requested = [];
@@ -693,10 +772,11 @@ describe('ManifestFetcher against a gateway that stops answering (LAT-3)', () =>
   async function pollUntilStalled(): Promise<void> {
     console.error = () => {};
     stubFetch(() => new Response('not found', { status: 404 }));
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-      await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
-      await fetcher.settled();
-    }
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await fetcher.settled();
+    clockMs += UNSERVED_SLOT_STALL_MS;
+    await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
+    await fetcher.settled();
   }
 
   /**
@@ -1121,13 +1201,16 @@ describe('a refused slot that later slots are already behind (#71)', () => {
   let unretrievable: Set<bigint>;
   /** Slots holding the finished recording, which names every segment and renumbers from zero. */
   let recordingAt: Set<bigint>;
+  /** Advanced by `poll`, so a run of unserved slots ages the way it would in a browser. */
+  let probeClockMs = 0;
 
   beforeEach(() => {
     manager.clear(hexTopic);
     manager.updateManifest(hexTopic, ['#EXTM3U'], [{ extinf: '#EXTINF:2,', uri: 'seg-5.ts' }], false);
     manager.setIndex(hexTopic, FeedIndex.fromBigInt(START_INDEX));
 
-    health = new FeedHealthTracker(() => 0);
+    probeClockMs = 0;
+    health = new FeedHealthTracker(() => probeClockMs);
     fetcher = new ManifestFetcher(manager, health, undefined, NO_JITTER);
     fetcher.beeUrl = BEE_URL;
     requested = [];
@@ -1160,9 +1243,19 @@ describe('a refused slot that later slots are already behind (#71)', () => {
   });
 
   /** Awaits the walk, not a tick budget: the stalled-ladder test below polls thirty-five times. */
+  /**
+   * One feed poll, and the clock moving the way a real one does.
+   *
+   * The interval is what an unchanged live playlist is reloaded at, and it has to be here because
+   * an unserved slot is deliberately never backed off: nothing else in this fixture would move a
+   * clock, and the stall this block relies on is timed rather than counted.
+   */
+  const FEED_POLL_INTERVAL_MS = 1_000;
+
   const poll = async () => {
     await fetcher.fetch(`${OWNER}/${TOPIC_NAME}`);
     await fetcher.settled();
+    probeClockMs += FEED_POLL_INTERVAL_MS;
   };
 
   const at = () => manager.getIndex(hexTopic)!.toBigInt();
@@ -1269,10 +1362,10 @@ describe('a refused slot that later slots are already behind (#71)', () => {
    * Stopping it does not stop recovery. The walk still asks for the next slot every poll at full
    * cadence, so a slot that becomes retrievable later is picked up by the ordinary path.
    */
-  it('gives up on the ladder once the feed has been called stalled', async () => {
+  it('stops probing once it has asked on every poll and found nothing', async () => {
     publishedThrough = START_INDEX;
 
-    for (let attempt = 0; attempt < UNSERVED_SLOT_POLL_LIMIT + 5; attempt++) {
+    for (let attempt = 0; attempt < UNSERVED_POLLS_PROBE_CEILING + 5; attempt++) {
       await poll();
     }
     const beyond = requested.filter((index) => index > START_INDEX + 1n).length;
@@ -1280,10 +1373,10 @@ describe('a refused slot that later slots are already behind (#71)', () => {
 
     assert.equal(health.state(hexTopic), FEED_STATE_STALLED, 'the run never reached the stalled threshold');
     assert.ok(
-      beyond <= (UNSERVED_SLOT_POLL_LIMIT - UNSERVED_POLLS_BEFORE_PROBE + 1) * PROBE_DISTANCES.length,
-      `probed ${beyond} times past the refusal, which is more than the polls before stalling allow`,
+      beyond <= (UNSERVED_POLLS_PROBE_CEILING - UNSERVED_POLLS_BEFORE_PROBE + 1) * PROBE_DISTANCES.length,
+      `probed ${beyond} times past the refusal, which is more than the probe ceiling allows`,
     );
-    assert.equal(needed, UNSERVED_SLOT_POLL_LIMIT + 5, 'the reader stopped asking for the slot it actually needs');
+    assert.equal(needed, UNSERVED_POLLS_PROBE_CEILING + 5, 'the reader stopped asking for the slot it actually needs');
   });
 });
 

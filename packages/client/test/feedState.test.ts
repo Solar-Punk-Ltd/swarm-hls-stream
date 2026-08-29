@@ -13,7 +13,8 @@ import {
   PLAYBACK_STALL_BURST,
   PLAYBACK_STALL_WINDOW_MS,
   TRACKED_TOPIC_LIMIT,
-  UNSERVED_SLOT_POLL_LIMIT,
+  UNSERVED_POLLS_PROBE_CEILING,
+  UNSERVED_SLOT_STALL_MS,
 } from '../src/components/SwarmHlsPlayer/feedState';
 
 const TOPIC = 'topic-under-test';
@@ -26,6 +27,19 @@ function makeClock() {
       ms += by;
     },
   };
+}
+
+/**
+ * Drives an unserved run past the stall window.
+ *
+ * Two polls and a clock, never a loop over the constant. Looping `UNSERVED_SLOT_STALL_MS` times
+ * against an implementation that compares to `UNSERVED_SLOT_STALL_MS` compares the constant only to
+ * itself, which is how the old poll-count version stayed green at any value including ten minutes.
+ */
+function unservedPastWindow(tracker: FeedHealthTracker, clock: { advance: (by: number) => void }): void {
+  tracker.recordUnservedSlot(TOPIC);
+  clock.advance(UNSERVED_SLOT_STALL_MS);
+  tracker.recordUnservedSlot(TOPIC);
 }
 
 function makeTracker() {
@@ -49,17 +63,23 @@ describe('FeedHealthTracker backoff schedule', () => {
   });
 
   /**
-   * The sibling constant, pinned the same way and for the same reason. Every test that exercises the
-   * unserved run loops `UNSERVED_SLOT_POLL_LIMIT` times against an implementation that compares
-   * against `UNSERVED_SLOT_POLL_LIMIT`, so the constant was only ever compared to itself: raising it
-   * to 600 left all 18 tests here green, and 600 polls is ten minutes of a dead feed before a viewer
-   * is told anything.
+   * The sibling constant, pinned the same way and for the same reason. Every test that exercised the
+   * unserved run used to loop the threshold's own value against an implementation comparing to that
+   * same value, so the constant was only ever compared to itself: raising it to 600 left all 18 tests
+   * green, and 600 polls is ten minutes of a dead feed before a viewer is told anything.
    *
-   * hls.js reloads an unchanged live playlist at about half its target duration, so at the two second
-   * segments this system produces, 30 polls is roughly half a minute of a feed that is not advancing.
+   * ⛔ **Polls were the wrong unit, which is why this is now milliseconds.** The poll rate collapses
+   * during exactly the stall it counted, so thirty polls meant about eight seconds while healthy and
+   * about thirty-two during a stall. See {@link UNSERVED_SLOT_STALL_MS}. Eight seconds is what the
+   * count meant in the healthy case, so only the broken case moves.
    */
-  it('waits about half a minute of unserved polls before calling a feed stalled', () => {
-    assert.equal(UNSERVED_SLOT_POLL_LIMIT, 30);
+  it('waits eight seconds of an unserved feed before telling a viewer', () => {
+    assert.equal(UNSERVED_SLOT_STALL_MS, 8_000);
+  });
+
+  /** Bounds the probe and nothing else since 2026-08-29. The overlay is timed, not counted. */
+  it('keeps probing past a refusal for a bounded number of polls', () => {
+    assert.equal(UNSERVED_POLLS_PROBE_CEILING, 30);
   });
 
   it('counts the wait down against its own clock', () => {
@@ -221,14 +241,15 @@ describe('FeedHealthTracker states', () => {
    * exactly like a viewer who has caught up with the publisher, until the run gets long.
    */
   it('stays quiet through a run of unserved slots and then calls the feed stalled', () => {
-    const { tracker, seen, watch } = makeTracker();
+    const { tracker, clock, seen, watch } = makeTracker();
     watch();
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT - 1; poll++) {
-      tracker.recordUnservedSlot(TOPIC);
-    }
+    tracker.recordUnservedSlot(TOPIC);
+    clock.advance(UNSERVED_SLOT_STALL_MS - 1);
+    tracker.recordUnservedSlot(TOPIC);
     assert.deepEqual(seen, [FEED_STATE_LIVE], 'a viewer who had merely caught up was told something was wrong');
 
+    clock.advance(1);
     tracker.recordUnservedSlot(TOPIC);
 
     assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED]);
@@ -238,23 +259,21 @@ describe('FeedHealthTracker states', () => {
   // slot on nearly every poll and has to keep asking at full cadence to get the next segment when it
   // lands. Backing that off would add latency to the healthy case to describe the unhealthy one.
   it('never holds off a poll over an unserved slot, however long the run', () => {
-    const { tracker } = makeTracker();
+    const { tracker, clock } = makeTracker();
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT * 2; poll++) {
-      tracker.recordUnservedSlot(TOPIC);
-    }
+    unservedPastWindow(tracker, clock);
+    clock.advance(UNSERVED_SLOT_STALL_MS * 10);
+    tracker.recordUnservedSlot(TOPIC);
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
     assert.equal(tracker.backoffRemainingMs(TOPIC), 0);
   });
 
   it('ends a stalled run on the first slot that is served', () => {
-    const { tracker, seen, watch } = makeTracker();
+    const { tracker, clock, seen, watch } = makeTracker();
     watch();
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-      tracker.recordUnservedSlot(TOPIC);
-    }
+    unservedPastWindow(tracker, clock);
     tracker.recordGatewayResponse(TOPIC);
 
     assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_LIVE]);
@@ -274,9 +293,7 @@ describe('FeedHealthTracker states', () => {
 
     tracker.recordGatewayFailure(TOPIC);
     clock.advance(2_000);
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-      tracker.recordUnservedSlot(TOPIC);
-    }
+    unservedPastWindow(tracker, clock);
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
     assert.equal(tracker.backoffRemainingMs(TOPIC), 0, 'a gateway answering every poll was still being held off');
@@ -296,11 +313,9 @@ describe('FeedHealthTracker states', () => {
   });
 
   it('reports a gateway that stopped answering mid-stall as the reconnection it is', () => {
-    const { tracker } = makeTracker();
+    const { tracker, clock } = makeTracker();
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-      tracker.recordUnservedSlot(TOPIC);
-    }
+    unservedPastWindow(tracker, clock);
     tracker.recordGatewayFailure(TOPIC);
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_RECONNECTING);
@@ -342,12 +357,10 @@ describe('FeedHealthTracker proof that did not come from a feed read', () => {
    * the feed advancing would erase a stall the viewer has already been told about.
    */
   it('leaves a stalled feed stalled, because a segment says nothing about a publisher', () => {
-    const { tracker, seen, watch } = makeTracker();
+    const { tracker, clock, seen, watch } = makeTracker();
     watch();
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-      tracker.recordUnservedSlot(TOPIC);
-    }
+    unservedPastWindow(tracker, clock);
     assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
 
     tracker.recordGatewayReachable();
@@ -586,12 +599,12 @@ describe('FeedHealthTracker on a broadcast that has ended', () => {
   });
 
   it('outranks a feed that then sits on an unserved slot', () => {
-    const { tracker } = makeTracker();
+    const { tracker, clock } = makeTracker();
     tracker.recordFeedEnded(TOPIC);
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT + 5; poll++) {
-      tracker.recordUnservedSlot(TOPIC);
-    }
+    unservedPastWindow(tracker, clock);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(TOPIC);
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_ENDED);
   });
@@ -767,22 +780,18 @@ describe('FeedHealthTracker on a gateway that is slow rather than absent', () =>
    * away entirely has been told the smaller half of the truth.
    */
   for (const [name, escalate] of [
-    ['a gateway that stopped answering', (tracker: FeedHealthTracker) => tracker.recordGatewayFailure(TOPIC)],
-    [
-      'a feed that stopped advancing',
-      (tracker: FeedHealthTracker) => {
-        for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-          tracker.recordUnservedSlot(TOPIC);
-        }
-      },
+    ['a gateway that stopped answering', (tracker: FeedHealthTracker) => tracker.recordGatewayFailure(TOPIC)] as [
+      string,
+      (tracker: FeedHealthTracker, clock: { advance: (by: number) => void }) => void,
     ],
+    ['a feed that stopped advancing', unservedPastWindow],
     ['a broadcast that ended', (tracker: FeedHealthTracker) => tracker.recordFeedEnded(TOPIC)],
   ] as const) {
     it(`is outranked by ${name}`, () => {
-      const { tracker } = makeTracker();
+      const { tracker, clock } = makeTracker();
       stall(tracker, 4);
 
-      escalate(tracker);
+      escalate(tracker, clock);
 
       assert.notEqual(tracker.state(TOPIC), FEED_STATE_DEGRADED);
     });
@@ -890,16 +899,14 @@ describe('FeedHealthTracker on a ladder, where the faults land on rungs and the 
 
   /** The publisher stopping is the group's business; one rung caught up with it is not. */
   it('calls the group stalled only once every rung has sat on an unserved slot', () => {
-    const { tracker } = makeLadder();
+    const { tracker, clock } = makeLadder();
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-      tracker.recordUnservedSlot(RUNG_1080);
-    }
-    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS * 2);
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE, 'rung 360 is still being served');
 
-    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
-      tracker.recordUnservedSlot(RUNG_360);
-    }
+    tracker.recordUnservedSlot(RUNG_360);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
     assert.equal(tracker.state(GROUP), FEED_STATE_STALLED);
   });
 
@@ -924,6 +931,93 @@ describe('FeedHealthTracker on a ladder, where the faults land on rungs and the 
     const clock = makeClock();
     const tracker = new FeedHealthTracker(clock.now);
 
+    tracker.recordGatewayFailure(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_RECONNECTING);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **`stalled` was unreachable on a ladder, and the threshold was the smaller half of why.**
+ *
+ * Two faults, found together on 2026-08-29 after V6 fixed the sibling one:
+ *
+ * 1. `LadderFeedPoller` never called {@link FeedHealthTracker.recordUnservedSlot} at all, so on a
+ *    ladder the counter behind this state was permanently zero and the state was dead code.
+ * 2. The threshold was a POLL COUNT, and the poll rate is not a constant: it collapses during
+ *    exactly the stall it counts. Measured on two recorded uploader crashes, feed reads went from a
+ *    264ms gap before the crash to 1064ms during the freeze, so thirty polls is about 8 seconds
+ *    while healthy and about 32 during a stall. A 12.4 second freeze accumulated 13 polls, never
+ *    reached the threshold, and the viewer was told nothing for twelve seconds.
+ *
+ * ⭐ **Eight seconds is the same number the poll count meant while healthy**, so a viewer at the
+ * live edge is no more likely to see the overlay than before. What changes is the stall case, where
+ * the count silently stretched to four times its intended duration. It is also
+ * {@link MANIFEST_RETRY_CAP_MS}, which is already this client's answer to how long a quiet feed may
+ * go unmentioned.
+ *
+ * A viewer who has merely caught up with the publisher cannot reach it: a segment lands every 0.5 to
+ * 2 seconds and each one ends the run. Eight seconds of an unbroken unserved run means the publisher
+ * really has stopped.
+ */
+describe('FeedHealthTracker calling a feed stalled by elapsed time rather than by poll count', () => {
+  it('says nothing on a burst of polls inside the window, however many', () => {
+    const { tracker, clock } = makeTracker();
+
+    for (let poll = 0; poll < 500; poll++) {
+      tracker.recordUnservedSlot(TOPIC);
+    }
+    clock.advance(UNSERVED_SLOT_STALL_MS - 1);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  it('calls it stalled once the run outlives the window, on as few as two polls', () => {
+    const { tracker, clock } = makeTracker();
+
+    tracker.recordUnservedSlot(TOPIC);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED);
+  });
+
+  /** The run is what is timed, so a slot arriving restarts the clock rather than pausing it. */
+  it('starts the clock over when a slot is served', () => {
+    const { tracker, clock } = makeTracker();
+
+    tracker.recordUnservedSlot(TOPIC);
+    clock.advance(UNSERVED_SLOT_STALL_MS - 500);
+    tracker.recordGatewayResponse(TOPIC);
+
+    tracker.recordUnservedSlot(TOPIC);
+    clock.advance(UNSERVED_SLOT_STALL_MS - 500);
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+  });
+
+  it('tells a group watcher only once every rung has been unserved for the window', () => {
+    const clock = makeClock();
+    const tracker = new FeedHealthTracker(clock.now);
+    const GROUP = 'entry-topic';
+    tracker.trackGroup(GROUP, ['rung-a', 'rung-b']);
+
+    tracker.recordUnservedSlot('rung-a');
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot('rung-b');
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE, 'rung-b has only just stopped being served');
+
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot('rung-a');
+    assert.equal(tracker.state(GROUP), FEED_STATE_STALLED);
+  });
+
+  /** A gateway that is not answering at all is a different, more specific thing to say. */
+  it('still prefers reconnecting over stalled when the gateway is also failing', () => {
+    const { tracker, clock } = makeTracker();
+
+    tracker.recordUnservedSlot(TOPIC);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(TOPIC);
     tracker.recordGatewayFailure(TOPIC);
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_RECONNECTING);

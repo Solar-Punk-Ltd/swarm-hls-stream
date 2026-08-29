@@ -290,6 +290,10 @@ export class LadderFeedPoller {
       }
 
       this.stateManager.setIndex(entry.hexTopic, next);
+      // A slot actually arrived, which is the only thing that ends an unserved run. Narrower than
+      // the reachable record above and deliberately so: reaching the gateway says nothing about
+      // whether any publisher is still writing.
+      this.feedHealth.recordGatewayResponse(entry.hexTopic);
       steps++;
     }
 
@@ -385,9 +389,14 @@ export class LadderFeedPoller {
    */
   private recordFailure(entry: PolledTopic, error: unknown): void {
     this.recordMiss(entry, error);
-    if (!isSlotNotWrittenYet(error)) {
-      this.feedHealth.recordGatewayFailure(entry.hexTopic);
+    if (isSlotNotWrittenYet(error)) {
+      // ⛔ Without this the `stalled` state is dead code on a ladder. The single-rendition walk has
+      // always recorded it; this one never did, so a publisher that stopped left the viewer's own
+      // gateway healthy, nothing counted, and the overlay stayed down over a frozen picture.
+      this.feedHealth.recordUnservedSlot(entry.hexTopic);
+      return;
     }
+    this.feedHealth.recordGatewayFailure(entry.hexTopic);
   }
 
   private recordMiss(entry: PolledTopic, error: unknown): void {

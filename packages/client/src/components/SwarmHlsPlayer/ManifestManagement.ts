@@ -17,7 +17,7 @@ import { config } from '@/utils/config';
 import { fetchWithTimeout, TimedResponse } from '@/utils/fetchWithTimeout';
 import { RequestJitter } from '@/utils/requestJitter';
 
-import { FeedHealthTracker, UNSERVED_SLOT_POLL_LIMIT } from './feedState';
+import { FeedHealthTracker, UNSERVED_POLLS_PROBE_CEILING } from './feedState';
 import { LadderFeedPoller } from './LadderFeedPoller';
 import { absoluteBytesBase, buildMasterPlaylist, isMasterPlaylist, masterVariants, parseSwarmUri } from './playlist';
 
@@ -777,7 +777,7 @@ export class ManifestFetcher {
             // missing is not within its reach and asking again just costs four requests a poll for
             // as long as the page is open. The walk keeps asking for the slot it needs either way,
             // so a slot that becomes retrievable later is still picked up.
-            if (polls >= UNSERVED_POLLS_BEFORE_PROBE && polls < UNSERVED_SLOT_POLL_LIMIT) {
+            if (polls >= UNSERVED_POLLS_BEFORE_PROBE && polls < UNSERVED_POLLS_PROBE_CEILING) {
               await this.probePastRefusal(owner, topic, readIndex, targetIndex);
             }
           }
@@ -954,7 +954,7 @@ export class ManifestFetcher {
   private reportStalledFeed(hexTopic: string, slot: FeedIndex): number {
     const polls = this.feedHealth.recordUnservedSlot(hexTopic);
 
-    if (polls === UNSERVED_SLOT_POLL_LIMIT) {
+    if (polls === UNSERVED_POLLS_PROBE_CEILING) {
       console.error(
         `Feed ${hexTopic} has not advanced past slot ${slot.toBigInt()} in ${polls} polls. ` +
           'The publisher may have stopped, or this gateway may not hold that slot.',

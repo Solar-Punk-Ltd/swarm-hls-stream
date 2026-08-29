@@ -744,3 +744,87 @@ describe('LadderFeedPoller telling the viewer the gateway is gone', () => {
     }
   });
 });
+
+/**
+ * ⛔⛔⛔ **`stalled` was dead code on every ladder broadcast.** `recordUnservedSlot` appeared zero
+ * times in this file until 2026-08-29, so the counter the state reads was permanently zero and no
+ * threshold could have made it fire. Sibling of the `reconnecting` fault in `feedState.test.ts`:
+ * that one recorded the right thing under a name nobody read, this one never recorded it at all.
+ *
+ * The two are the whole difference between the faults measured live on 2026-08-29. When the
+ * VIEWER's gateway dies the reads fail and the client says `reconnecting`. When the WRITER stops,
+ * the viewer's gateway is healthy and simply has nothing new, which is this, and the client said
+ * nothing at all for 52.9s, 53.9s and 53.8s across three separate faults.
+ */
+describe('LadderFeedPoller telling the viewer the publisher has gone quiet', () => {
+  const groupHex = Topic.fromString('group-1').toString();
+  let state: ManifestStateManager;
+
+  beforeEach(() => {
+    state = new ManifestStateManager();
+  });
+
+  it('counts a rung whose next slot is not written yet, so the state can be reached at all', async () => {
+    const topic = Topic.fromString('group-1-360p');
+    const gateway = new FakeGateway();
+    gateway.missingSlotStatus = 404;
+    gateway.publishFeedHead(topic, 0, manifest(1));
+
+    const tracker = new FeedHealthTracker();
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+    poller.start(OWNER, [topic], groupHex);
+
+    try {
+      await waitFor(() => tracker.unservedPollsRecorded(topic.toString()) > 0, 'the rung to record its unserved slot');
+    } finally {
+      poller.stop([topic]);
+    }
+  });
+
+  /** A 404 is the publisher being behind. It must never be counted as the gateway failing. */
+  it('does not turn an unwritten slot into a gateway fault', async () => {
+    const topic = Topic.fromString('group-1-360p');
+    const gateway = new FakeGateway();
+    gateway.missingSlotStatus = 404;
+    gateway.publishFeedHead(topic, 0, manifest(1));
+
+    const tracker = new FeedHealthTracker();
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+    poller.start(OWNER, [topic], groupHex);
+
+    try {
+      await waitFor(() => tracker.unservedPollsRecorded(topic.toString()) > 2, 'a run of unserved polls to build up');
+      assert.equal(tracker.state(groupHex), FEED_STATE_LIVE, 'a caught-up viewer was told something was wrong');
+      assert.equal(tracker.backoffRemainingMs(topic.toString()), 0, 'a caught-up rung was backed off');
+    } finally {
+      poller.stop([topic]);
+    }
+  });
+
+  it('ends the run when the rung is served again', async () => {
+    const topic = Topic.fromString('group-1-360p');
+    const gateway = new FakeGateway();
+    gateway.missingSlotStatus = 404;
+    gateway.publishFeedHead(topic, 0, manifest(1));
+
+    const tracker = new FeedHealthTracker();
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+    poller.start(OWNER, [topic], groupHex);
+
+    // A long run before the slot lands, and a generous drop after it. At this poll interval the
+    // walk is back on the NEXT unwritten slot within milliseconds, so watching for the count to
+    // reach exactly zero is watching for a window that closes before it can be observed.
+    const LONG_RUN = 20;
+
+    try {
+      await waitFor(() => tracker.unservedPollsRecorded(topic.toString()) > LONG_RUN, 'a long run to build up');
+      gateway.publishSoc(topic, 1, manifest(2));
+      await waitFor(
+        () => tracker.unservedPollsRecorded(topic.toString()) < LONG_RUN / 2,
+        'the served slot to end the unserved run',
+      );
+    } finally {
+      poller.stop([topic]);
+    }
+  });
+});
