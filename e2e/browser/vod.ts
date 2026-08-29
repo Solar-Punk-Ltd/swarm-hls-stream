@@ -27,17 +27,30 @@ import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { installPlayerProbe, type PlayerProbe, readPlayerProbe } from '../src/browser/playerProbe.js';
 import { envNumber, requireEnv, runIdFrom, thinRequestLog, writeRunArtifacts } from '../src/browser/runFiles.js';
+import { summarize, type ViewerSample } from '../src/browser/session.js';
 import {
   installTimerProbe,
   launchViewer,
   proveInstrumentCanFail,
   readInstrument,
+  readSample,
   recordRequests,
   VIEWPORT,
 } from '../src/browser/viewer.js';
 
 /** How long to watch from the start before seeking, so ordinary playback is established first. */
 const SETTLE_SECONDS = 8;
+
+/**
+ * How often the settle is sampled, and why it is sampled at all.
+ *
+ * ⭐ This run used to read the media element directly and nothing else, so it could say a recording
+ * played and could not say WHAT played. A ladder recording whose master resolved and whose upper rung
+ * playlists did not plays perfectly at its bottom rung, and every reading this driver took would have
+ * called that a pass. Sampling the shipped overlay is what makes a recording's rungs visible, and it
+ * is the same `readSample` every live run uses, so a VOD reading now means what a live one means.
+ */
+const SAMPLE_INTERVAL_MS = 1_000;
 /** How long to allow a seek to land and playback to resume before calling it stalled. */
 const SEEK_TIMEOUT_MS = 20_000;
 /** How far `currentTime` may sit from the seek target and still count as landed. */
@@ -193,6 +206,7 @@ async function main(): Promise<void> {
   let startedPlaying: PlaybackReading | undefined;
   let afterSettle: PlaybackReading | undefined;
   const seeks: SeekResult[] = [];
+  const samples: (ViewerSample | null)[] = [];
   let openError: string | null = null;
 
   try {
@@ -240,7 +254,13 @@ async function main(): Promise<void> {
     }
 
     if (!openError) {
-      await page.waitForTimeout(settleSeconds * 1000);
+      // ⛔ Sampled rather than slept through. The settle is the only stretch of this run that is
+      // ordinary playback, so it is the only one whose rung list and advance describe the recording
+      // rather than a seek.
+      for (let taken = 0; taken < Math.round((settleSeconds * 1000) / SAMPLE_INTERVAL_MS); taken++) {
+        await page.waitForTimeout(SAMPLE_INTERVAL_MS);
+        samples.push(await readSample(page).catch(() => null));
+      }
       afterSettle = await readPlayback(page);
 
       const duration = afterSettle.duration;
@@ -263,6 +283,10 @@ async function main(): Promise<void> {
       }
     }
 
+    // A sample that threw is dropped rather than faked: the overlay can be mid-render, and a zeroed
+    // sample would be read as a frozen picture.
+    const watched = samples.filter((sample): sample is ViewerSample => sample !== null);
+
     const run = {
       measuredAt,
       watchUrl,
@@ -271,6 +295,20 @@ async function main(): Promise<void> {
       startedPlaying,
       afterSettle,
       seeks,
+      // ⛔ The vod verdict, under its own key so a reader can tell a recording run from every other
+      // kind. A recording that never started still writes one, because "it never started" is the
+      // headline result of this run rather than an exception.
+      vod: {
+        openError,
+        durationS: afterSettle?.duration ?? null,
+        seekableToS: afterSettle?.seekable ?? null,
+        ladderHeights: ladderOfRecording(watched),
+      },
+      // ⛔ Written under the same names every other driver uses, so `parseBrowserArmState` reads a
+      // recording the way it reads a live watch. A second shape here would mean a VOD suite could
+      // never assert on the same fields as a live one, which is the whole reason to have both.
+      summary: summarize(watched),
+      samples: watched,
       player: await readPlayerProbe(page),
       messages,
       instrumentProofs,
@@ -300,6 +338,7 @@ function renderVodReport(run: {
   startedPlaying?: PlaybackReading;
   afterSettle?: PlaybackReading;
   seeks: SeekResult[];
+  samples: readonly ViewerSample[];
   player: PlayerProbe;
   messages: PageMessage[];
   instrument: { sound: boolean; failures: string[] };
@@ -335,6 +374,28 @@ function renderVodReport(run: {
   lines.push('is what says the player received a finished playlist rather than a live window. The two');
   lines.push('duration rows are separate because they have been seen to disagree, and the seek targets');
   lines.push('below come off `seekable`, which is what a seek can actually reach.');
+  lines.push('');
+  lines.push('## The ladder this recording offered');
+  lines.push('');
+  const rungs = ladderOfRecording(run.samples);
+  const rode = distinct(run.samples.map((sample) => sample.selectedRungHeight));
+  lines.push(
+    rungs.length === 0
+      ? '⛔ **The player held no ladder at all.** Either no master playlist resolved for this recording ' +
+          'or it is single rendition, and those are not the same thing.'
+      : `The player parsed **${rungs.length} rungs**: ${rungs.map((height) => `${height}p`).join(', ')}.`,
+  );
+  lines.push('');
+  lines.push(
+    rode.length === 0
+      ? '⛔ **It selected none of them**, so nothing above was ever played.'
+      : `It rode ${rode.map((height) => `${height}p`).join(', ')} across the settle.`,
+  );
+  lines.push('');
+  lines.push('⛔ A recording whose master resolved and whose upper rung playlists did not plays');
+  lines.push('perfectly at its bottom rung. Every other reading in this report would call that a pass,');
+  lines.push('which is why the rung list is here and is read from the shipped overlay rather than from');
+  lines.push('the media element.');
   lines.push('');
   lines.push('## Seeking');
   lines.push('');
@@ -423,3 +484,18 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+
+/** Every rung any sample saw, so a ladder that arrived late is still counted. */
+function ladderOfRecording(samples: readonly ViewerSample[]): readonly number[] {
+  return distinct(samples.flatMap((sample) => [...sample.ladderHeights]));
+}
+
+function distinct(values: readonly (number | null)[]): readonly number[] {
+  const seen: number[] = [];
+  for (const value of values) {
+    if (value !== null && !seen.includes(value)) {
+      seen.push(value);
+    }
+  }
+  return seen;
+}

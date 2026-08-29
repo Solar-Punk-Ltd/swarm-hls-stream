@@ -42,6 +42,8 @@ interface ArmStateOverrides {
    */
   rungs?: Record<string, unknown> | null;
   silenced?: Record<string, unknown> | null;
+  /** The playback verdict `browser/vod.ts` adds and no other driver writes. Null leaves it out. */
+  vod?: Record<string, unknown> | null;
 }
 
 const SAMPLE_COUNT = 240;
@@ -72,6 +74,7 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     quality = null,
     rungs = null,
     silenced = null,
+    vod = null,
   } = overrides;
 
   const run: Record<string, unknown> = {
@@ -146,6 +149,9 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   }
   if (silenced !== null) {
     run.silenced = silenced;
+  }
+  if (vod !== null) {
+    run.vod = vod;
   }
   if (scenario !== null) {
     run.scenario = { name: scenario, service: 'bee-gateway', action: 'stop', downMs: 20_000 };
@@ -269,4 +275,17 @@ export function rungArmState(overrides: ArmStateOverrides = {}): unknown {
     silenced: { rung: '720p', height: 720, processes: [{ pid: 418, args: 'ffmpeg ... demo_720p?vhost=abr' }] },
     ...overrides,
   });
+}
+
+/** A recording that played whole: finite timeline, the full ladder, seekable to the end. */
+export const PLAYED_THE_WHOLE_LADDER: Record<string, unknown> = {
+  openError: null,
+  durationS: 62.4,
+  seekableToS: 62.4,
+  ladderHeights: [1080, 720, 480, 360],
+};
+
+/** A playback arm's state file, which is a watch's plus the section only `browser/vod.ts` writes. */
+export function vodArmState(overrides: ArmStateOverrides = {}): unknown {
+  return armState({ vod: PLAYED_THE_WHOLE_LADDER, ...overrides });
 }

@@ -483,9 +483,21 @@ describe('the other two treatments an arm can drive', () => {
   const squeeze = { backend: WEEB3_BYTES, watchMinutes: 4, squeeze: true } as const;
   const silence = { backend: WEEB3_BYTES, watchMinutes: 4, silenceSelectedRung: true } as const;
 
+  const playback = { backend: WEEB3_BYTES, watchMinutes: 3, vod: { owner: '0xabc', topic: 'demo' } } as const;
+
   it('runs the driver each treatment belongs to', () => {
     assert.equal(browserArmScript(squeeze), 'browser:quality');
     assert.equal(browserArmScript(silence), 'browser:rung-outage');
+    assert.equal(browserArmScript(playback), 'browser:vod');
+  });
+
+  /** The recording is addressed by owner and topic, and the driver reads both out of its environment. */
+  it('names the recording a playback arm opens', () => {
+    const env = browserArmEnv(cfg, playback);
+
+    assert.equal(env.BROWSER_VOD_OWNER, '0xabc');
+    assert.equal(env.BROWSER_VOD_TOPIC, 'demo');
+    assert.equal(browserArmEnv(cfg, squeeze).BROWSER_VOD_OWNER, undefined);
   });
 
   /**
@@ -495,6 +507,7 @@ describe('the other two treatments an arm can drive', () => {
   it('hands neither of them a watch length it never reads', () => {
     assert.equal(browserArmEnv(cfg, squeeze).BROWSER_WATCH_SECONDS, undefined);
     assert.equal(browserArmEnv(cfg, silence).BROWSER_WATCH_SECONDS, undefined);
+    assert.equal(browserArmEnv(cfg, playback).BROWSER_WATCH_SECONDS, undefined);
   });
 
   /**
@@ -506,6 +519,7 @@ describe('the other two treatments an arm can drive', () => {
     assert.throws(() => browserArmScript({ ...fault, squeeze: true }), /One treatment per arm/);
     assert.throws(() => browserArmScript({ ...fault, silenceSelectedRung: true }), /One treatment per arm/);
     assert.throws(() => browserArmScript({ ...squeeze, silenceSelectedRung: true }), /One treatment per arm/);
+    assert.throws(() => browserArmScript({ ...fault, vod: playback.vod }), /One treatment per arm/);
   });
 
   /** The message names what was asked for, so an operator can see which two collided. */

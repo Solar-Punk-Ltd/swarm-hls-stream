@@ -304,6 +304,8 @@ export interface BrowserArmResult {
   rungs: RungTimeline | null;
   /** Which rung was silenced under this viewer, by name. Null on every arm that silenced none. */
   silencedRung: string | null;
+  /** What a finished recording did, on a playback arm. Null on every arm that opened a live stream. */
+  vod: VodResult | null;
   /**
    * Whether the browser was a usable instrument throughout.
    *
@@ -423,6 +425,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     quality: readQualityVerdict(run),
     rungs: readRungTimeline(run),
     silencedRung: readSilencedRung(run),
+    vod: readVodResult(run),
     instrumentSound: asBoolean(instrument.sound, 'run.instrument.sound'),
     instrumentFailures: asArray(instrument.failures, 'run.instrument.failures').map((failure, i) =>
       asString(failure, `run.instrument.failures[${i}]`),
@@ -545,6 +548,57 @@ function readSilencedRung(run: Record<string, unknown>): string | null {
   return asString(silenced.rung, 'run.silenced.rung');
 }
 
+/** What a finished recording gave a player, as `browser/vod.ts` judges it. */
+export interface VodResult {
+  /**
+   * Why the recording did not play, or null where it did.
+   *
+   * ⛔ A result rather than an exception, because "it never started" is the headline finding of a
+   * playback run and a run that threw would leave no artifact to read it from.
+   */
+  openError: string | null;
+  /** The finite duration the player was handed. A live playlist reports Infinity here instead. */
+  durationS: number | null;
+  seekableToS: number | null;
+  /** Every rung the player parsed out of the recording's master, by height. */
+  ladderHeights: readonly number[];
+}
+
+/**
+ * What a recording gave the player, or the absence of a recording run.
+ *
+ * ⛔ A duration of `Infinity` is read through rather than refused here. It means the player was
+ * handed a LIVE playlist where a finished one was expected, which is a finding for the suite to
+ * refuse in its own words rather than a malformed artifact.
+ */
+function readVodResult(run: Record<string, unknown>): VodResult | null {
+  if (run.vod === undefined || run.vod === null) {
+    return null;
+  }
+  const vod = asObject(run.vod, 'run.vod');
+
+  return {
+    openError:
+      vod.openError === null || vod.openError === undefined ? null : asString(vod.openError, 'run.vod.openError'),
+    durationS: readMaybeInfinite(vod.durationS, 'run.vod.durationS'),
+    seekableToS: readMaybeInfinite(vod.seekableToS, 'run.vod.seekableToS'),
+    ladderHeights: asArray(vod.ladderHeights, 'run.vod.ladderHeights').map((height, i) =>
+      asNumber(height, `run.vod.ladderHeights[${i}]`),
+    ),
+  };
+}
+
+/**
+ * A duration, which may legitimately be infinite.
+ *
+ * ⛔ `JSON.stringify` writes `Infinity` as `null`, so a live playlist's duration reaches this reader
+ * indistinguishable from an absent one. Both mean the same thing here, which is that the player was
+ * not handed a finite timeline, and the suite says so.
+ */
+function readMaybeInfinite(value: unknown, at: string): number | null {
+  return value === null || value === undefined ? null : asNumber(value, at);
+}
+
 function readTimeline(timeline: Record<string, unknown>, at: string): RungTimeline {
   return {
     before: readQualityPhase(timeline.before, `${at}.before`),
@@ -624,6 +678,13 @@ interface BrowserArmOptions {
    * settle, so a suite states the treatment and never the rung.
    */
   silenceSelectedRung?: boolean;
+  /**
+   * Play a finished recording back, which switches the driver to `browser:vod`.
+   *
+   * ⛔ Not a treatment on a live broadcast, and exclusive with all three of them: this arm opens a
+   * recording rather than joining a stream, so there is nothing live for a fault to break.
+   */
+  vod?: { owner: string; topic: string };
   /** Anything else the driver reads. A suite states its own treatments here, never the harness. */
   env?: Readonly<Record<string, string>>;
 }
@@ -670,7 +731,11 @@ export function browserArmHostSetup(env: NodeJS.ProcessEnv = process.env): Brows
 export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Record<string, string> {
   // ⛔ A squeeze arm is not watching either. `browser:quality` owns its own windows and never reads
   // BROWSER_WATCH_SECONDS, and a passed-but-unread variable looks exactly like one set to its default.
-  const watching = options.scenario === undefined && options.squeeze !== true && options.silenceSelectedRung !== true;
+  const watching =
+    options.scenario === undefined &&
+    options.squeeze !== true &&
+    options.silenceSelectedRung !== true &&
+    options.vod === undefined;
   return {
     E2E_SSH_TARGET: 'local',
     E2E_PUBLIC_HOST: '127.0.0.1',
@@ -680,6 +745,9 @@ export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Recor
     BROWSER_FETCH_BACKEND: options.backend,
     ...(watching ? { BROWSER_WATCH_SECONDS: String(Math.round(options.watchMinutes * 60)) } : {}),
     ...(options.scenario === undefined ? {} : { BROWSER_SCENARIO: options.scenario }),
+    ...(options.vod === undefined
+      ? {}
+      : { BROWSER_VOD_OWNER: options.vod.owner, BROWSER_VOD_TOPIC: options.vod.topic }),
     ...options.env,
   };
 }
@@ -696,6 +764,7 @@ export function browserArmScript(options: BrowserArmOptions): string {
     options.scenario === undefined ? null : `the ${options.scenario} fault`,
     options.squeeze === true ? 'a bandwidth squeeze' : null,
     options.silenceSelectedRung === true ? 'a silenced rung' : null,
+    options.vod === undefined ? null : 'a recording to play back',
   ].filter((treatment): treatment is string => treatment !== null);
 
   if (asked.length > 1) {
@@ -709,6 +778,9 @@ export function browserArmScript(options: BrowserArmOptions): string {
   }
   if (options.silenceSelectedRung === true) {
     return 'browser:rung-outage';
+  }
+  if (options.vod !== undefined) {
+    return 'browser:vod';
   }
   return options.scenario === undefined ? 'browser:watch' : 'browser:crash';
 }
