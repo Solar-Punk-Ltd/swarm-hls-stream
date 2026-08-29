@@ -44,7 +44,7 @@ product rather than about timing:
 Run time and harness work. No new infrastructure. Numbers reserved in `docs/e2e-coverage.md`.
 
 > ✅ **ALL FOUR BUILT 2026-08-30. NONE HAS RUN LIVE.** V2, V3, V4 and the concurrent-ladder case, with
-> 116 new unit tests behind them. The proving run is the next thing, and it was blocked on the night
+> 120 new unit tests behind them. The proving run is the next thing, and it was blocked on the night
 > it was written: the 1Password SSH agent stopped signing, so `manager-host` became unreachable
 > partway through. Nothing about the code is waiting.
 >
