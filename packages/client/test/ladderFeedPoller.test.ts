@@ -609,19 +609,25 @@ describe('LadderFeedPoller feed health', () => {
 
       try {
         await waitFor(() => segmentCount(state, served) === 1, 'the sibling rung to be served');
-        // Counted from a common start rather than from zero, so what is compared is two rates over
-        // one window and not two lifetimes with different beginnings.
-        const from = gateway.requests.length;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        const asked = gateway.requests.slice(from);
+        const brokenAsks = () => gateway.requests.filter((path) => path === feedHeadPath(broken)).length;
+        const healthyAsks = () => gateway.requests.filter((path) => path.startsWith('soc/')).length;
 
-        const brokenAsks = asked.filter((path) => path === feedHeadPath(broken)).length;
-        const healthyAsks = asked.filter((path) => path.startsWith('soc/')).length;
+        // ⛔ Counted over the whole run rather than over a window opened after the first success,
+        // and the reason is a property of the release rather than of the clock. Sibling evidence is
+        // recorded on a served READ, and the only served read here is the head: everything after it
+        // is a 404 for a slot the publisher has not written, which records nothing either way. So
+        // the broken rung is released once, at that first success, and a window opened afterwards
+        // can only catch it by luck. It was flaky three runs in eight measured that way.
+        const WINDOW_HEALTHY_ASKS = 10;
+        await waitFor(
+          () => healthyAsks() >= WINDOW_HEALTHY_ASKS,
+          `the healthy rung asked ${WINDOW_HEALTHY_ASKS} times`,
+        );
 
-        assert.ok(brokenAsks > 0, 'a rung whose gateway is answering for its siblings was never re-asked');
+        assert.ok(brokenAsks() > 0, 'a rung whose gateway is answering for its siblings was never re-asked');
         assert.ok(
-          brokenAsks <= healthyAsks + 2,
-          `the broken rung was asked ${brokenAsks} times against ${healthyAsks} for a healthy one`,
+          brokenAsks() <= healthyAsks() + 2,
+          `the broken rung was asked ${brokenAsks()} times against ${healthyAsks()} for a healthy one`,
         );
       } finally {
         poller.stop([served, broken]);
