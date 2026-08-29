@@ -22,10 +22,19 @@
 
 import { advanceOf, type PhaseAdvance, phaseOf, type ViewerSample } from './session.js';
 
+/**
+ * When a treatment was applied and when it was lifted, on the clock that applied it.
+ *
+ * Not exported: every caller passes an object literal, and the repo's unused-export gate is the
+ * reason to notice that rather than leave a name nothing can be reached by.
+ */
+interface TreatmentWindow {
+  appliedAtMs: number;
+  liftedAtMs: number;
+}
+
 /** When the download cap went on and when it came off, on the clock that applied it. */
-export interface ThrottleWindow {
-  throttledAtMs: number;
-  releasedAtMs: number;
+export interface ThrottleWindow extends TreatmentWindow {
   /** What the link was capped to, carried so a verdict can be read without the driver's log. */
   kbps: number;
 }
@@ -45,8 +54,15 @@ export interface QualityPhase {
   bandwidthEstimateKbps: number | null;
 }
 
-export interface QualitySwitchVerdict {
-  throttledToKbps: number;
+/**
+ * What the player chose either side of a treatment, whatever the treatment was.
+ *
+ * ⭐ Shared by V2 and V3 on purpose. "The player was on this rung, something happened, it moved to
+ * that one and kept playing" is one question, and a squeezed link and a rung going quiet are two
+ * reasons to ask it. Two copies of this arithmetic would drift, and the whole value of a rung
+ * timeline is that one suite's reading means the same as another's.
+ */
+export interface RungTimeline {
   before: QualityPhase;
   during: QualityPhase;
   after: QualityPhase;
@@ -59,10 +75,14 @@ export interface QualitySwitchVerdict {
    * stepping down proves nothing about the ladder and its stepping down was not ABR.
    */
   abrEnabledThroughout: boolean;
-  /** Wall time from the cap going on to the first sample selecting a lower rung. Null where none did. */
+  /** Wall time from the treatment landing to the first sample selecting a lower rung. Null where none did. */
   steppedDownAfterMs: number | null;
   /** Wall time from the cap coming off to the first sample selecting a taller rung. Null where none did. */
   climbedBackAfterMs: number | null;
+}
+
+export interface QualitySwitchVerdict extends RungTimeline {
+  throttledToKbps: number;
 }
 
 const heights = (samples: readonly ViewerSample[]): number[] =>
@@ -120,22 +140,21 @@ function firstCrossingAfter(
 }
 
 /**
- * ⛔ The baseline is where the player was when the cap landed, not the tallest it ever reached.
+ * ⛔ The baseline is where the player was when the treatment landed, not the tallest it ever reached.
  *
  * The client starts at the top rung deliberately and may settle downwards on its own before anything
- * is squeezed. Measuring the step down against the tallest rung of the whole baseline would credit
- * the throttle with a descent the player had already made.
+ * happens to it. Measuring the step down against the tallest rung of the whole baseline would credit
+ * the treatment with a descent the player had already made.
  */
-export function judgeQualitySwitch(samples: readonly ViewerSample[], window: ThrottleWindow): QualitySwitchVerdict {
-  const end = samples.length === 0 ? window.releasedAtMs : samples[samples.length - 1].atMs + 1;
-  const before = qualityPhase(samples, Number.NEGATIVE_INFINITY, window.throttledAtMs);
-  const during = qualityPhase(samples, window.throttledAtMs, window.releasedAtMs);
-  const after = qualityPhase(samples, window.releasedAtMs, end);
+export function judgeRungTimeline(samples: readonly ViewerSample[], window: TreatmentWindow): RungTimeline {
+  const end = samples.length === 0 ? window.liftedAtMs : samples[samples.length - 1].atMs + 1;
+  const before = qualityPhase(samples, Number.NEGATIVE_INFINITY, window.appliedAtMs);
+  const during = qualityPhase(samples, window.appliedAtMs, window.liftedAtMs);
+  const after = qualityPhase(samples, window.liftedAtMs, end);
 
   const counted = samples.map((sample) => sample.qualitySwitches);
 
   return {
-    throttledToKbps: window.kbps,
     before,
     during,
     after,
@@ -143,15 +162,19 @@ export function judgeQualitySwitch(samples: readonly ViewerSample[], window: Thr
     abrEnabledThroughout: samples.length > 0 && samples.every((sample) => sample.abrEnabled),
     steppedDownAfterMs: firstCrossingAfter(
       samples,
-      window.throttledAtMs,
+      window.appliedAtMs,
       before.endedOnRungHeight,
       (height, baseline) => height < baseline,
     ),
     climbedBackAfterMs: firstCrossingAfter(
       samples,
-      window.releasedAtMs,
+      window.liftedAtMs,
       during.endedOnRungHeight,
-      (height, squeezed) => height > squeezed,
+      (height, underTreatment) => height > underTreatment,
     ),
   };
+}
+
+export function judgeQualitySwitch(samples: readonly ViewerSample[], window: ThrottleWindow): QualitySwitchVerdict {
+  return { ...judgeRungTimeline(samples, window), throttledToKbps: window.kbps };
 }

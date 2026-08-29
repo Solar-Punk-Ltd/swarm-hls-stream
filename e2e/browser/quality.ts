@@ -155,7 +155,7 @@ async function main(): Promise<void> {
 
   const network = summarizeNetwork(requests);
   const cost = judgeCost(resourcesBefore, await readResources(host, cfg), network.segmentBytesDelivered);
-  const throttleWindow = { throttledAtMs, releasedAtMs, kbps: throttleKbps };
+  const throttleWindow = { appliedAtMs: throttledAtMs, liftedAtMs: releasedAtMs, kbps: throttleKbps };
 
   const run = {
     measuredAt,

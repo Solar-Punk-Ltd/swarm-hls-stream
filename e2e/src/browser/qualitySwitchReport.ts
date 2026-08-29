@@ -9,7 +9,7 @@
 
 import { type LadderRung } from '../config.js';
 
-import { type QualitySwitchVerdict } from './qualitySwitch.js';
+import { type QualitySwitchVerdict, type ThrottleWindow } from './qualitySwitch.js';
 import {
   type BrowserRun,
   describeGop,
@@ -22,7 +22,7 @@ import {
 
 export interface QualityRun extends BrowserRun {
   ladder: readonly LadderRung[];
-  throttle: { throttledAtMs: number; releasedAtMs: number; kbps: number };
+  throttle: ThrottleWindow;
   quality: QualitySwitchVerdict;
 }
 
@@ -39,7 +39,7 @@ function ladderSection(run: QualityRun): string[] {
     ),
     '',
     `The tab's download was capped at **${run.quality.throttledToKbps} kbps** for ${seconds(
-      run.throttle.releasedAtMs - run.throttle.throttledAtMs,
+      run.throttle.liftedAtMs - run.throttle.appliedAtMs,
     )}s, which is the second lowest rung's own bitrate. Everything above it asks for more than the ` +
       'link can carry.',
     '',
@@ -168,8 +168,8 @@ export function renderQualityReport(run: QualityRun): string {
     '',
     `**${run.measuredAt}.** ${run.chromeVersion}, headed against an X display on the deployment host, ` +
       `watching ${describeGop(run.gopSeconds)} through the shipped client while the tab's download was ` +
-      `capped at ${run.quality.throttledToKbps} kbps from ${at(run.throttle.throttledAtMs)}s to ${at(
-        run.throttle.releasedAtMs,
+      `capped at ${run.quality.throttledToKbps} kbps from ${at(run.throttle.appliedAtMs)}s to ${at(
+        run.throttle.liftedAtMs,
       )}s.`,
     '',
     `Watching \`${run.watchUrl}\`.`,

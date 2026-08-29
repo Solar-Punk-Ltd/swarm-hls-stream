@@ -9,7 +9,7 @@ const INTERVAL_MS = 1_000;
 
 const THROTTLED_AT = START_MS + 10 * INTERVAL_MS;
 const RELEASED_AT = START_MS + 20 * INTERVAL_MS;
-const WINDOW: ThrottleWindow = { throttledAtMs: THROTTLED_AT, releasedAtMs: RELEASED_AT, kbps: 1200 };
+const WINDOW: ThrottleWindow = { appliedAtMs: THROTTLED_AT, liftedAtMs: RELEASED_AT, kbps: 1200 };
 
 interface SamplePlan {
   /** The rung the player selected, by height. */

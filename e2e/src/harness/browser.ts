@@ -32,7 +32,7 @@
 
 import { FEED_STATE_ENDED, isViewerFeedState, type ViewerFeedState } from '../browser/feedState.js';
 import { type ByteSource } from '../browser/fetchBackendSweep.js';
-import { type QualityPhase, type QualitySwitchVerdict } from '../browser/qualitySwitch.js';
+import { type QualityPhase, type QualitySwitchVerdict, type RungTimeline } from '../browser/qualitySwitch.js';
 import { type E2EConfig } from '../config.js';
 
 import { type Host } from './host.js';
@@ -295,6 +295,16 @@ export interface BrowserArmResult {
    */
   quality: QualitySwitchVerdict | null;
   /**
+   * What their player chose across a silenced rung, on a rung-outage arm. Null on every other arm.
+   *
+   * ⛔ Paired with {@link recovery}, which a rung-outage arm also carries. Either alone reads as a
+   * success on its own: a player that switched away instantly and then stalled, or a picture that
+   * never stopped because the buffer outlasted the outage.
+   */
+  rungs: RungTimeline | null;
+  /** Which rung was silenced under this viewer, by name. Null on every arm that silenced none. */
+  silencedRung: string | null;
+  /**
    * Whether the browser was a usable instrument throughout.
    *
    * ⛔ Read before asserting on any figure above. A hidden or throttled page produces numbers that
@@ -411,6 +421,8 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     reachedEndedOverlay: feedStatesSeen.includes(FEED_STATE_ENDED),
     recovery: readCrashRecovery(run),
     quality: readQualityVerdict(run),
+    rungs: readRungTimeline(run),
+    silencedRung: readSilencedRung(run),
     instrumentSound: asBoolean(instrument.sound, 'run.instrument.sound'),
     instrumentFailures: asArray(instrument.failures, 'run.instrument.failures').map((failure, i) =>
       asString(failure, `run.instrument.failures[${i}]`),
@@ -493,14 +505,55 @@ function readQualityVerdict(run: Record<string, unknown>): QualitySwitchVerdict 
   const quality = asObject(run.quality, 'run.quality');
 
   return {
+    ...readTimeline(quality, 'run.quality'),
     throttledToKbps: asNumber(quality.throttledToKbps, 'run.quality.throttledToKbps'),
-    before: readQualityPhase(quality.before, 'run.quality.before'),
-    during: readQualityPhase(quality.during, 'run.quality.during'),
-    after: readQualityPhase(quality.after, 'run.quality.after'),
-    switchesCounted: asNumber(quality.switchesCounted, 'run.quality.switchesCounted'),
-    abrEnabledThroughout: asBoolean(quality.abrEnabledThroughout, 'run.quality.abrEnabledThroughout'),
-    steppedDownAfterMs: asNumberOrNull(quality.steppedDownAfterMs, 'run.quality.steppedDownAfterMs'),
-    climbedBackAfterMs: asNumberOrNull(quality.climbedBackAfterMs, 'run.quality.climbedBackAfterMs'),
+  };
+}
+
+/**
+ * What the player chose across a silenced rung, or the absence of it.
+ *
+ * ⛔ Absent is legitimate. Only `browser/rung-outage.ts` writes `rungs`, and a reader that refused its
+ * absence would fail every other arm.
+ */
+function readRungTimeline(run: Record<string, unknown>): RungTimeline | null {
+  if (run.rungs === undefined || run.rungs === null) {
+    return null;
+  }
+  return readTimeline(asObject(run.rungs, 'run.rungs'), 'run.rungs');
+}
+
+/**
+ * Which rung this arm silenced.
+ *
+ * ⛔ Read strictly where the section exists, and a null NAME inside a present section is refused. The
+ * driver writes null there only when it never got as far as choosing a rung, which is an arm that
+ * silenced nothing while carrying a full rung timeline, and it would read as a ladder that survived.
+ */
+function readSilencedRung(run: Record<string, unknown>): string | null {
+  if (run.silenced === undefined || run.silenced === null) {
+    return null;
+  }
+  const silenced = asObject(run.silenced, 'run.silenced');
+  if (silenced.rung === null || silenced.rung === undefined) {
+    throw new Error(
+      'this artifact carries a silenced section naming no rung, so the run reached its outage window ' +
+        'without choosing anything to silence. Its rung timeline is a healthy ladder being read as one ' +
+        'that survived a fault.',
+    );
+  }
+  return asString(silenced.rung, 'run.silenced.rung');
+}
+
+function readTimeline(timeline: Record<string, unknown>, at: string): RungTimeline {
+  return {
+    before: readQualityPhase(timeline.before, `${at}.before`),
+    during: readQualityPhase(timeline.during, `${at}.during`),
+    after: readQualityPhase(timeline.after, `${at}.after`),
+    switchesCounted: asNumber(timeline.switchesCounted, `${at}.switchesCounted`),
+    abrEnabledThroughout: asBoolean(timeline.abrEnabledThroughout, `${at}.abrEnabledThroughout`),
+    steppedDownAfterMs: asNumberOrNull(timeline.steppedDownAfterMs, `${at}.steppedDownAfterMs`),
+    climbedBackAfterMs: asNumberOrNull(timeline.climbedBackAfterMs, `${at}.climbedBackAfterMs`),
   };
 }
 
@@ -563,6 +616,14 @@ interface BrowserArmOptions {
    * because of either and the run answers neither question.
    */
   squeeze?: boolean;
+  /**
+   * Silence the rung the viewer settles on, which switches the driver to `browser:rung-outage`.
+   *
+   * ⛔ Exclusive with the other two treatments, for the same reason they are exclusive with each
+   * other. Which rung the driver silences is its own decision, taken from the overlay after the
+   * settle, so a suite states the treatment and never the rung.
+   */
+  silenceSelectedRung?: boolean;
   /** Anything else the driver reads. A suite states its own treatments here, never the harness. */
   env?: Readonly<Record<string, string>>;
 }
@@ -609,7 +670,7 @@ export function browserArmHostSetup(env: NodeJS.ProcessEnv = process.env): Brows
 export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Record<string, string> {
   // ⛔ A squeeze arm is not watching either. `browser:quality` owns its own windows and never reads
   // BROWSER_WATCH_SECONDS, and a passed-but-unread variable looks exactly like one set to its default.
-  const watching = options.scenario === undefined && options.squeeze !== true;
+  const watching = options.scenario === undefined && options.squeeze !== true && options.silenceSelectedRung !== true;
   return {
     E2E_SSH_TARGET: 'local',
     E2E_PUBLIC_HOST: '127.0.0.1',
@@ -631,14 +692,23 @@ export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Recor
  * produce a full report.
  */
 export function browserArmScript(options: BrowserArmOptions): string {
-  if (options.scenario !== undefined && options.squeeze === true) {
+  const asked = [
+    options.scenario === undefined ? null : `the ${options.scenario} fault`,
+    options.squeeze === true ? 'a bandwidth squeeze' : null,
+    options.silenceSelectedRung === true ? 'a silenced rung' : null,
+  ].filter((treatment): treatment is string => treatment !== null);
+
+  if (asked.length > 1) {
     throw new Error(
-      `this arm asks for both the ${options.scenario} fault and a bandwidth squeeze. One treatment per ` +
-        'arm: with two, a rung that moved could have moved because of either and the run answers neither.',
+      `this arm asks for ${asked.join(' and ')}. One treatment per arm: with two, a rung that moved or a ` +
+        'picture that stopped could have done so because of either, and the run answers neither.',
     );
   }
   if (options.squeeze === true) {
     return 'browser:quality';
+  }
+  if (options.silenceSelectedRung === true) {
+    return 'browser:rung-outage';
   }
   return options.scenario === undefined ? 'browser:watch' : 'browser:crash';
 }
