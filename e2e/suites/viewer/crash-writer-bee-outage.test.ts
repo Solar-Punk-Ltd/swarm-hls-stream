@@ -9,7 +9,6 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
-  freezeRefusal,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
@@ -34,10 +33,18 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * different question, and the matrix is the first time anything watched it: 29.5s frozen, playback
  * moving again 12.5s after the node answered, two rebuffers.
  *
- * ⚠️ **No control ran for this fault inside that sitting**, and the only other reading of it is from
- * 2026-08-06, before the loop fix and the probe ladder: 54.9s frozen and 37.9s to resume. The gap
- * between the two is the client having improved across eras rather than anything about the byte
- * source, so the ceilings below are set to pass today's client and fail a regression to the old one.
+ * ⚠️ **No control ran for this fault inside that sitting**, and the readings of it disagree by era
+ * and by configuration: 54.9s frozen on 2026-08-06 before the loop fix, 29.5s in the matrix, and
+ * 57.0s on the four rung ladder on 2026-08-29. Three numbers, three different stacks.
+ *
+ * ## ⛔ No timing is asserted
+ *
+ * Owner ruling of 2026-08-29: an e2e suite checks feature correctness and stability, and performance
+ * is a separate kind of test. This once held the freeze between 10 and 45 seconds and the resume
+ * inside 25, chosen to sit between the matrix and the pre-loop-fix era. The ladder read 57.0s and the
+ * case went red for a configuration difference rather than a broken feature: an in-browser node
+ * admits roughly one segment a second, so half second segments cap it near half of real time. Both
+ * figures are still measured, printed per arm and filed in the artifact.
  *
  * ## ⛔ The known gap this asserts: issue #100, the overlay says nothing
  *
@@ -60,35 +67,6 @@ const SCENARIO = scenarioByName('writer-bee-outage');
  * fault, this scenario's own 20s outage, the node's restart and the 60s recovery watch.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
-
-/**
- * The shortest freeze that still means the node went away.
- *
- * A 20s outage past the retry window, against roughly six seconds of buffer, cannot honestly cost a
- * viewer much under fourteen, and the discontinuity is on top of that. Ten is under everything the
- * arithmetic allows and refuses a run where the fault never landed, which would otherwise pass every
- * other check here as a product surviving an outage it never had.
- */
-const MIN_FREEZE_MS = 10_000;
-
-/**
- * The longest it may cost them.
- *
- * 29.5s on the current client. The same fault froze a viewer 54.9s on 2026-08-06, before the loop fix
- * and the probe ladder, so that figure is a previous era rather than a target. Forty-five sits
- * between the two: fifteen seconds of room over today's reading, and a refusal if the client regresses
- * to what it used to be.
- */
-const MAX_FREEZE_MS = 45_000;
-
-/**
- * How long after the node answers again the picture must be moving.
- *
- * 12.5s recorded, against 37.9s in the era before the loop fix. Twenty-five separates them at twice
- * the current reading, and the node's own startup is inside the window rather than charged here: the
- * figure is timed from the readiness endpoint answering, not from `docker start` returning.
- */
-const MAX_RESUME_MS = 25_000;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -155,18 +133,10 @@ describe("V9 — a viewer plays through the discontinuity a writer's outage arms
     const recovery = result.recovery;
     assert.ok(recovery, 'the refusal above should already have caught an artifact with no fault verdict');
 
-    const wrongFreeze = freezeRefusal(recovery, {
-      minFreezeMs: MIN_FREEZE_MS,
-      maxFreezeMs: MAX_FREEZE_MS,
-      // The matrix records how long the buffer lasted for the first three arms only, and inventing a
-      // figure for this one would be asserting something nobody measured.
-      minBufferMs: null,
-    });
-    assert.equal(wrongFreeze, null, `the picture did not stop the way a writer outage stops it: ${wrongFreeze}`);
-
     // ⭐ The whole question `bee-outage-long` could not answer: hls.js was told the timeline broke,
-    // and this is whether it carried on across the break or stalled on being told.
-    const notBack = resumeRefusal(recovery, { expectRecovery: true, withinMs: MAX_RESUME_MS });
+    // and this is whether it carried on across the break or stalled on being told. A pass or a fail
+    // here is that, and nothing about how long the crossing took.
+    const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the viewer did not play through the discontinuity: ${notBack}`);
 
     // ⛔ Issue #100 again, and its worst instance: half a minute of frozen frame explained by nothing.

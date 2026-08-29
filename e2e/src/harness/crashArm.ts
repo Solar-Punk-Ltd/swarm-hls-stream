@@ -1,5 +1,5 @@
 /**
- * How long a crash arm needs, and the four questions a crash scenario asks of the one it got.
+ * How long a crash arm needs, and the questions a crash scenario asks of the one it got.
  *
  * ## What a crash arm is
  *
@@ -7,16 +7,33 @@
  * breaks a container of the deployment from inside the same process, and keeps sampling while the
  * service comes back. Five faults are declared in `browser/faults.ts` and all five were measured
  * against a real viewer on 2026-08-27, recorded in `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md`.
- * The suites under `suites/viewer/` promote that sitting into pass/fail, and this is what they judge on.
+ * The suites under `suites/viewer/` drive those faults, and this is what they judge on.
+ *
+ * ## ⛔ What these judge, and what they only measure
+ *
+ * **Owner ruling, 2026-08-29: an e2e suite checks feature correctness and stability. It never gates
+ * on a timing.** So what is asserted is that the viewer watched, that the picture came back where
+ * recovery is the contract and correctly did not where the broadcast ended, and that the client told
+ * them something true meanwhile. How long the freeze lasted, how much buffer ran out in front of it
+ * and how quickly the picture returned are measured on every arm, printed by
+ * {@link crashArmSummary}, and filed in the artifact. None of them refuses a run.
+ *
+ * ⚠️ **What that repaired.** These once held the 2026-08-27 matrix's figures as ceilings and floors.
+ * That sitting was a SINGLE-RENDITION 720p broadcast at a 0.5s GOP, and the suites now run against a
+ * four rung ABR ladder. Live on 2026-08-29 they read 57.1s, 58.0s and 57.0s of freeze against
+ * ceilings of 45s, 8s and 45s, and V10 read 16.3s against a FLOOR of 20s, so it was refused for
+ * costing its viewer less than the matrix recorded. None of those five reds was a broken feature.
+ * The gap itself is explained and is not this code's: an in-browser node admits roughly one segment
+ * per second, so half second segments cap it near half of real time.
  *
  * ## Why the rules live here rather than in the suites
  *
- * Nothing under `suites/` runs in CI and each of those files costs a broadcast, so a threshold
- * written inline in a scenario is a threshold nothing checks until a paid broadcast is already
- * burning. Reached from `test/crashArm.test.ts`, these are covered by the unit run and the suites
- * are left with the numbers the matrix recorded and the wiring.
+ * Nothing under `suites/` runs in CI and each of those files costs a broadcast, so a rule written
+ * inline in a scenario is a rule nothing checks until a paid broadcast is already burning. Reached
+ * from `test/crashArm.test.ts`, these are covered by the unit run and the suites are left with the
+ * per-fault contract and the wiring.
  *
- * ⭐ Every predicate returns the reason a run is not what the matrix records, or null. That is the
+ * ⭐ Every predicate returns the reason a run is not what the product promises, or null. That is the
  * idiom `viewerPlaybackRefusal` and `weeb3ArmRefusal` already use, for the same reason: a boolean
  * would let a suite print "assertion failed" where the harness could have said which of six things
  * went wrong, on a run that cost minutes of broadcast to produce.
@@ -154,6 +171,17 @@ export function crashArmRefusal(result: BrowserArmResult, expectation: CrashArmE
     );
   }
 
+  // ⭐ The correctness question the freeze floors used to stand in for. A viewer who decoded a first
+  // frame and then sat on it for the whole arm passes every other check here, and the fault would be
+  // credited with stopping a picture that was never moving. How MUCH it moved is not asked: see the
+  // module docblock.
+  if (result.advanceRatio <= 0) {
+    return (
+      'the picture never moved forward at any point in this arm, so there was no playback for the ' +
+      'fault to interrupt and every verdict below would be about a frozen frame the fault did not cause'
+    );
+  }
+
   const { requested, reported } = result.proof;
   if (requested === null) {
     return 'this arm named no byte source, so its verdict would be filed against a condition nobody chose';
@@ -170,84 +198,23 @@ export function crashArmRefusal(result: BrowserArmResult, expectation: CrashArmE
     : null;
 }
 
-/** The freeze the matrix records for one fault, as a window rather than as the point it measured. */
-interface FreezeExpectation {
-  /**
-   * The shortest freeze that still counts as the fault having reached the viewer.
-   *
-   * Zero for a fault whose recorded outcome is that a viewer barely notices, where sailing through it
-   * is the better result of the two rather than a failure.
-   */
-  minFreezeMs: number;
-  /** The longest freeze the fault may cost. Null for a fault that ends the broadcast, where the picture correctly never returns. */
-  maxFreezeMs: number | null;
-  /**
-   * How long the picture must keep moving after the fault lands, which is the viewer's buffer
-   * spending itself. Null where the matrix recorded no such figure for this fault.
-   */
-  minBufferMs: number | null;
-}
-
-/**
- * Why the picture did not stop the way this fault stops it, or null.
- *
- * ⚠️ `longestFreezeMs` is the longest stretch anywhere in the run rather than only after the fault,
- * so a run that stalled before the fault is judged on that stall too. That is the pessimistic
- * reading and the right one: a viewer does not care which of two freezes stopped their picture.
- */
-export function freezeRefusal(
-  recovery: CrashRecoveryResult,
-  { minFreezeMs, maxFreezeMs, minBufferMs }: FreezeExpectation,
-): string | null {
-  const froze = recovery.longestFreezeMs;
-
-  if (froze < minFreezeMs) {
-    return (
-      `the picture stopped for ${seconds(froze)}s against the ${seconds(minFreezeMs)}s this fault is ` +
-      'recorded as costing at least, so either the fault never reached this viewer or it was never applied'
-    );
-  }
-  if (maxFreezeMs !== null && froze > maxFreezeMs) {
-    return (
-      `the picture stopped for ${seconds(froze)}s against a ceiling of ${seconds(maxFreezeMs)}s, so this ` +
-      'viewer lost materially more of the broadcast than the crash matrix records for this fault'
-    );
-  }
-
-  // Null is a picture that never stopped, which the floor above has already judged: either none was
-  // required, or it refused. Reading it as a missing buffer here would fail the better outcome twice.
-  const buffered = recovery.freezeStartedAfterFaultMs;
-  if (minBufferMs === null || buffered === null) {
-    return null;
-  }
-  return buffered < minBufferMs
-    ? `the picture stopped ${seconds(buffered)}s after the fault landed against the ${seconds(minBufferMs)}s of ` +
-        'buffer a viewer is supposed to have in front of them, so the runway the client holds was not there'
-    : null;
-}
-
-/** Whether this fault lets the viewer back in, and how quickly the matrix records them coming. */
+/** Whether this fault lets the viewer back in at all. */
 interface ResumeExpectation {
   /** False for a fault that genuinely ends the broadcast, where a picture that never moves again is correct. */
   expectRecovery: boolean;
-  /**
-   * How long after the service ANSWERS AGAIN the picture must be moving. Null where no resume is
-   * expected, since there is nothing left to time.
-   */
-  withinMs: number | null;
 }
 
 /**
  * Why the picture did not come back the way this fault lets it, or null.
  *
- * ⭐ Timed from the service answering rather than from `docker start` returning, which is up to seven
- * seconds earlier and belongs to the service. Charging those seconds to the client once set a
- * recovery target no client change could reach.
+ * ⭐ **Whether, never how fast.** This once held `recoveredAfterLiftMs` against a per-fault ceiling,
+ * and that figure is still the sharpest one these arms produce: the uploader-crash recovery fix moved
+ * it from 46.7s to 2.3s. It is measured on every arm, printed by {@link crashArmSummary} and filed,
+ * so a regression is noticed. It is not refused. Owner ruling of 2026-08-29, and the reading behind
+ * it: on a four rung ladder the same faults froze a viewer for 57 to 59 seconds where the
+ * single-rendition matrix recorded 13 to 30, which is the configuration and not a broken recovery.
  */
-export function resumeRefusal(
-  recovery: CrashRecoveryResult,
-  { expectRecovery, withinMs }: ResumeExpectation,
-): string | null {
+export function resumeRefusal(recovery: CrashRecoveryResult, { expectRecovery }: ResumeExpectation): string | null {
   if (!expectRecovery) {
     return recovery.recovered
       ? 'the picture started moving again after a fault that ended the broadcast this viewer was watching. ' +
@@ -255,27 +222,10 @@ export function resumeRefusal(
       : null;
   }
 
-  if (!recovery.recovered) {
-    return (
-      'the picture never moved again before the run ended, so this viewer was left on a frozen frame by a ' +
-      'fault the product is recorded as recovering from'
-    );
-  }
-  // ⛔ A viewer the fault never stopped records no resume, because there was nothing to come back
-  // from. That is the writer-bee pause's own written expectation and the better of its two possible
-  // outcomes, so reading the absence as a missing recovery would fail the product for improving.
-  if (recovery.recoveredAfterLiftMs === null) {
-    return recovery.freezeStartedAfterFaultMs === null
-      ? null
-      : 'the picture stopped, is moving again, and nothing recorded when it started, so there is no recovery to judge';
-  }
-  if (withinMs !== null && recovery.recoveredAfterLiftMs > withinMs) {
-    return (
-      `the picture moved again ${seconds(recovery.recoveredAfterLiftMs)}s after the service answered, against ` +
-      `the ${seconds(withinMs)}s ceiling the crash matrix records for this fault`
-    );
-  }
-  return null;
+  return recovery.recovered
+    ? null
+    : 'the picture never moved again before the run ended, so this viewer was left on a frozen frame by a ' +
+        'fault the product is supposed to recover from';
 }
 
 /** What the client is recorded as telling the viewer while their picture was stopped. */

@@ -14,7 +14,6 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
-  freezeRefusal,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
@@ -23,14 +22,17 @@ import {
 import { armState, crashArmState, GATEWAY_OUTAGE_RECOVERY } from './helpers/browserArmFixtures.js';
 
 /**
- * How long a crash arm needs, and the four questions a crash scenario asks of the one it got.
+ * How long a crash arm needs, and the questions a crash scenario asks of the one it got.
  *
  * The five suites under `suites/viewer/` that drive a fault cost a broadcast each and nothing under
- * `suites/` runs in CI, so every rule they judge on is covered here instead: a threshold written
- * inline in a scenario is a threshold nothing checks until a paid broadcast is already burning.
+ * `suites/` runs in CI, so every rule they judge on is covered here instead: a rule written inline in
+ * a scenario is a rule nothing checks until a paid broadcast is already burning.
  *
  * The figures throughout are the ones `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md` recorded,
- * so a predicate is exercised against runs that happened rather than against invented ones.
+ * so a predicate is exercised against runs that happened rather than against invented ones. ⭐ They
+ * are the INPUTS here and never the contract: owner ruling of 2026-08-29, an e2e suite checks that
+ * the feature works properly and stably, and every duration one of these arms produces is measured,
+ * printed and filed rather than held against a ceiling.
  */
 
 const GATEWAY_OUTAGE = scenarioByName('viewer-gateway-outage');
@@ -155,71 +157,51 @@ describe('whether a crash arm is a viewer who was watching when the fault landed
 
     assert.equal(crashArmRefusal(control, CLEAN_ARM), null);
   });
-});
 
-describe('whether the picture stopped the way this fault stops it', () => {
-  const GATEWAY_FREEZE = { minFreezeMs: 10_000, maxFreezeMs: 60_000, minBufferMs: 3_000 };
+  /**
+   * ⛔ The correctness question the freeze ceilings used to stand in for. A viewer who decoded a
+   * first frame and then sat on it for the whole arm reports a resolution and no error, so every
+   * other check here passes, and the fault would be credited with a picture that never existed.
+   */
+  it('refuses an arm whose picture never moved forward at all', () => {
+    const frozenThroughout = parseBrowserArmState(crashArmState({ overallAdvanceRatio: 0 }));
 
-  it('passes a freeze inside the window the matrix records', () => {
-    assert.equal(freezeRefusal(RECOVERED, GATEWAY_FREEZE), null);
+    assert.match(String(crashArmRefusal(frozenThroughout, CLEAN_ARM)), /never moved/);
   });
 
   /**
-   * ⛔ The floor is not pedantry. A scenario whose fault never reached the viewer passes every other
-   * check here, and the run then reports that the product survives an outage it never had.
+   * ⭐ Owner ruling of 2026-08-29: an e2e suite checks feature correctness and stability, and how
+   * long a fault cost a viewer is a performance reading. Live on the four rung ladder that day, three
+   * faults froze the picture for 57 to 59 seconds against ceilings of 8 and 45 taken from a
+   * single-rendition 720p sitting, and all three suites went red for a configuration difference.
    */
-  it('refuses a fault that never reached the viewer at all', () => {
-    const untouched = wentThrough({ longestFreezeMs: 0, freezeStartedAfterFaultMs: null });
+  it('passes an arm that froze for a minute, since a duration is measured here and never judged', () => {
+    const slow = parseBrowserArmState(
+      crashArmState({ recovery: { ...GATEWAY_OUTAGE_RECOVERY, longestFreezeMs: 59_000 } }),
+    );
 
-    assert.match(String(freezeRefusal(untouched, GATEWAY_FREEZE)), /10/);
-  });
-
-  it('refuses a freeze past the ceiling the matrix records', () => {
-    assert.match(String(freezeRefusal(wentThrough({ longestFreezeMs: 71_000 }), GATEWAY_FREEZE)), /71/);
+    assert.equal(crashArmRefusal(slow, CLEAN_ARM), null);
   });
 
   /**
-   * The fault that ends the broadcast has no ceiling to hold: the picture stops and stays stopped,
-   * so the freeze is as long as whatever is left of the run rather than a property of the product.
+   * ⭐ The other half of the same ruling, and the sharper half. V10 was refused live for freezing
+   * 16.3s against a FLOOR of 20s: it failed for costing the viewer less than the matrix recorded.
    */
-  it('holds no ceiling against a fault whose viewer is never getting a picture back', () => {
-    const terminal = { minFreezeMs: 20_000, maxFreezeMs: null, minBufferMs: null };
+  it('passes an arm the fault barely touched, which no longer reads as a fault that never landed', () => {
+    const barelyTouched = parseBrowserArmState(
+      crashArmState({
+        recovery: { ...GATEWAY_OUTAGE_RECOVERY, longestFreezeMs: 0, freezeStartedAfterFaultMs: null },
+      }),
+    );
 
-    assert.equal(freezeRefusal(wentThrough({ longestFreezeMs: 83_200 }), terminal), null);
-  });
-
-  /**
-   * ⭐ The viewer's runway. Three arms of the matrix kept the picture moving 6.0, 6.1 and 7.1s after
-   * the fault landed, which is `LIVE_SYNC_DURATION_S` of buffer spending itself. A viewer who froze
-   * the instant the service died had none in front of them.
-   */
-  it('refuses a viewer who froze with no buffer in front of the fault', () => {
-    assert.match(String(freezeRefusal(wentThrough({ freezeStartedAfterFaultMs: 400 }), GATEWAY_FREEZE)), /0\.4/);
-  });
-
-  it('says nothing about the buffer where the matrix recorded no such figure', () => {
-    const noBufferRecorded = { minFreezeMs: 10_000, maxFreezeMs: 60_000, minBufferMs: null };
-
-    assert.equal(freezeRefusal(wentThrough({ freezeStartedAfterFaultMs: 400 }), noBufferRecorded), null);
-  });
-
-  /**
-   * The writer-bee pause, whose recorded outcome is a freeze so short it barely happened and whose
-   * written expectation is no freeze at all. A viewer who sailed through it is the better outcome of
-   * the two and must not be refused for having no buffer figure to show.
-   */
-  it('passes a viewer the fault never stopped, where none was required to stop', () => {
-    const barely = { minFreezeMs: 0, maxFreezeMs: 8_000, minBufferMs: 3_000 };
-    const sailedThrough = wentThrough({ longestFreezeMs: 0, freezeStartedAfterFaultMs: null });
-
-    assert.equal(freezeRefusal(sailedThrough, barely), null);
+    assert.equal(crashArmRefusal(barelyTouched, CLEAN_ARM), null);
   });
 });
 
 describe('whether the picture came back the way this fault lets it', () => {
-  const RESUMES = { expectRecovery: true, withinMs: 30_000 };
+  const RESUMES = { expectRecovery: true };
 
-  it('passes a viewer who came back inside the window the matrix records', () => {
+  it('passes a viewer whose picture was moving again by the end of the run', () => {
     assert.equal(resumeRefusal(RECOVERED, RESUMES), null);
   });
 
@@ -230,11 +212,13 @@ describe('whether the picture came back the way this fault lets it', () => {
   });
 
   /**
-   * ⭐ The figure a client change can move, and the one the uploader-crash recovery fix is judged on:
-   * 2.3s here against 46.7s before that fix. A ceiling is how a regression back to it is caught.
+   * ⭐ Owner ruling of 2026-08-29. The uploader-crash fix is still worth watching, at 2.3s against
+   * 46.7s before it landed, and this is where a regression is NOTICED rather than refused: the figure
+   * is printed by {@link crashArmSummary} on every arm and filed in the artifact. The contract is
+   * that the picture came back, and a slower return is still a viewer who got their broadcast.
    */
-  it('refuses a viewer who came back later than the matrix records', () => {
-    assert.match(String(resumeRefusal(wentThrough({ recoveredAfterLiftMs: 46_700 }), RESUMES)), /46\.7/);
+  it('passes a viewer who came back slowly, since a recovery time is measured here and never judged', () => {
+    assert.equal(resumeRefusal(wentThrough({ recoveredAfterLiftMs: 46_700 }), RESUMES), null);
   });
 
   /**
@@ -260,13 +244,15 @@ describe('whether the picture came back the way this fault lets it', () => {
     assert.equal(resumeRefusal(sailedThrough, RESUMES), null);
   });
 
-  it('still refuses a picture that stopped and has no record of starting again', () => {
-    const unexplained = wentThrough({ recoveredAfterLiftMs: null });
-
-    assert.match(String(resumeRefusal(unexplained, RESUMES)), /no recovery to judge/);
+  /**
+   * ⭐ The picture is moving again, and only the stopwatch is missing. Nothing is timed here any
+   * more, so an unrecorded moment is a gap in the report rather than a viewer who was let down.
+   */
+  it('passes a picture that stopped and is moving again with no record of when it started', () => {
+    assert.equal(resumeRefusal(wentThrough({ recoveredAfterLiftMs: null }), RESUMES), null);
   });
 
-  const ENDS = { expectRecovery: false, withinMs: null };
+  const ENDS = { expectRecovery: false };
 
   it('passes the fault that ends the broadcast, whose viewer correctly never gets a picture back', () => {
     const terminal = wentThrough({ recovered: false, recoveredAfterLiftMs: null, serviceStartupMs: null });

@@ -9,7 +9,6 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
-  freezeRefusal,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
@@ -31,13 +30,20 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * indices stay gapless and no discontinuity is armed. What had never been asked is whether it reaches
  * a viewer at all.
  *
- * ⚠️ **The scenario's written expectation and the matrix's reading disagree, and this asserts the
- * reading.** `browser/faults.ts` declares `expectFreeze: false` and expects a viewer with six seconds
- * of buffer to see nothing at all. The matrix measured a 3.1s freeze, twice: in-tab on 2026-08-27 and
- * through a gateway on 2026-08-06, the same 3.1s and the same 2.0s to move again in both worlds. So
- * the fault does reach the viewer, briefly, and the case is written as a ceiling with no floor: a
- * viewer who sails through is the outcome the scenario was written expecting and must not fail here,
- * and one who loses more than the pause itself must.
+ * ⚠️ **The scenario's written expectation and the readings disagree, and this asserts neither.**
+ * `browser/faults.ts` declares `expectFreeze: false` and expects a viewer with six seconds of buffer
+ * to see nothing at all. The matrix measured a 3.1s freeze, twice: in-tab on 2026-08-27 and through a
+ * gateway on 2026-08-06. Then the four rung ladder measured **58.9s** on 2026-08-29, which is what
+ * sent the client's manifest retry ceiling from thirty seconds down to eight. Three readings, three
+ * different answers, one configuration each. What survives all three, and is what this case now
+ * holds, is that the viewer is watching again afterwards. The duration is printed and filed.
+ *
+ * ## ⛔ No timing is asserted
+ *
+ * Owner ruling of 2026-08-29. This once capped the freeze at the pause's own eight seconds and the
+ * resume at ten. The ladder run read 58.9s and the case went red for a configuration difference: an
+ * in-browser node admits roughly one segment per second, so half second segments cap it near half of
+ * real time, which is not a defect in this code.
  *
  * ## Why the overlay saying nothing is correct here, and not issue #100
  *
@@ -59,35 +65,6 @@ const SCENARIO = scenarioByName('writer-bee-pause');
  * fault, this scenario's own 8s pause, the unpause and the 60s recovery watch.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
-
-/**
- * No floor, deliberately.
- *
- * Every other case in the matrix requires its fault to reach the viewer, because a fault that never
- * landed otherwise passes as a product surviving an outage it never had. Not this one: the written
- * expectation is that nothing happens, so a viewer who never froze is the better of the two recorded
- * outcomes rather than a run that failed to break anything. The proof the pause landed is the
- * uploader's, in `bee-outage-short`, and it is already covered there.
- */
-const MIN_FREEZE_MS = 0;
-
-/**
- * The longest the pause may cost a viewer, which is the pause itself.
- *
- * Both readings of this fault froze the picture for 3.1s against an eight second outage, because the
- * buffer in front of it absorbed the rest. A viewer who loses more than the outage lasted has had no
- * benefit from the buffer at all, which is the line worth failing on rather than a multiple of 3.1
- * chosen here.
- */
-const MAX_FREEZE_MS = 8_000;
-
-/**
- * How long after the node is unpaused the picture must be moving.
- *
- * 2.0s recorded, in both worlds. Ten is five times that and well inside the recovery watch, and an
- * unpause is instant so there is no service startup eating into it.
- */
-const MAX_RESUME_MS = 10_000;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -123,7 +100,7 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     await host.unpause(broken).catch(() => undefined);
   });
 
-  it('loses no more than the pause itself, and needs telling nothing', async () => {
+  it('is watching again once the node is unpaused, and is told nothing untrue meanwhile', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
@@ -153,15 +130,10 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     const recovery = result.recovery;
     assert.ok(recovery, 'the refusal above should already have caught an artifact with no fault verdict');
 
-    const costTooMuch = freezeRefusal(recovery, {
-      minFreezeMs: MIN_FREEZE_MS,
-      maxFreezeMs: MAX_FREEZE_MS,
-      // The matrix records no buffer figure for this arm, and a freeze this short may produce none.
-      minBufferMs: null,
-    });
-    assert.equal(costTooMuch, null, `the pause cost this viewer more than the pause lasted: ${costTooMuch}`);
-
-    const notBack = resumeRefusal(recovery, { expectRecovery: true, withinMs: MAX_RESUME_MS });
+    // ⭐ The contract: whatever the pause cost, the viewer is watching again by the end of it. Two
+    // outcomes satisfy that and both are correct here, a viewer who never stopped and one who stopped
+    // and came back, which is why the scenario's own `expectFreeze: false` is not asserted either way.
+    const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the picture did not come back once the node was unpaused: ${notBack}`);
 
     // ⭐ Silence, and correctly so: three seconds is under the overlay's horizon, and a message that

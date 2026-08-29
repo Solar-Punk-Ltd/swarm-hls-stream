@@ -10,7 +10,6 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
-  freezeRefusal,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
@@ -35,14 +34,21 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * the scenario, so `in-browser` runs the in-tab arm and `light-client` runs its control, and the
  * thresholds below hold for both because the matrix recorded them within a second of each other.
  *
+ * ## What this asserts
+ *
+ * That the viewer was watching, that the gateway coming back brought the picture back, and that they
+ * were told something true while it was stopped.
+ *
  * ## ⛔ What it does not assert
  *
- * Not where the player ended up behind live. Both arms stalled five times, hls.js raises its latency
- * target on a stall and never lowers it, and the matrix leaves the 1s difference between the two arms
- * explicitly uninterpreted. It is printed and filed.
+ * **No timing.** Owner ruling of 2026-08-29: an e2e suite checks feature correctness and stability,
+ * and performance is a separate kind of test. This once held the freeze between 10 and 60 seconds,
+ * required 3s of buffer in front of it and required the resume inside 30s, all from the 2026-08-27
+ * matrix, which was a single-rendition 720p broadcast. Every one of those figures is still measured,
+ * printed per arm and filed in the artifact, and none of them refuses a run.
  *
- * Not the rebuffer count or the advance ratio either. Those are properties of how long the outage was
- * rather than of the product, and a threshold on them would be a number invented here.
+ * Nor where the player ended up behind live, nor the rebuffer count, nor the advance ratio. Those
+ * were never asserted and still are not.
  *
  * ⛔ Requires a deployed profile, a funded stamp and the browser image on the host, like every suite
  * under `suites/`. Nothing in CI runs these. See `src/harness/browser.ts` for the launch contract.
@@ -57,43 +63,6 @@ const SCENARIO = scenarioByName('viewer-gateway-outage');
  * fault, this scenario's own 20s outage, the restart and the 60s recovery watch.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
-
-/**
- * The shortest freeze that still means the gateway went away.
- *
- * A 20s outage against roughly six seconds of buffer cannot honestly cost a viewer much under
- * fourteen. Ten is under everything the arithmetic allows and still refuses a run where the fault
- * never landed, which otherwise passes every other check here and reports the product surviving an
- * outage it never had.
- */
-const MIN_FREEZE_MS = 10_000;
-
-/**
- * The longest it may cost them.
- *
- * Three readings of this fault sit between 27.6 and 30.6s: the two arms of 2026-08-27 and the gateway
- * corpus run of 2026-08-05. Sixty is double the worst of the three and still inside the eighty seconds
- * of watching that follow the fault, so a viewer who never came back inside the window fails here
- * rather than passing on the run having ended first.
- */
-const MAX_FREEZE_MS = 60_000;
-
-/**
- * How long the picture must keep moving after the gateway dies, which is the buffer doing its job.
- *
- * The matrix recorded 6.0s in-tab and 6.1s through the gateway, which is `LIVE_SYNC_DURATION_S` of
- * runway spending itself. Three seconds is half of that: a viewer who froze faster than that had no
- * buffer in front of them at all.
- */
-const MIN_BUFFER_MS = 3_000;
-
-/**
- * How long after the gateway answers again the picture must be moving.
- *
- * 10.7s and 9.9s recorded. Thirty is three times the worse of them and comfortably inside the recovery
- * watch, which the gateway's own seven seconds of startup eats into before the client gets a chance.
- */
-const MAX_RESUME_MS = 30_000;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -162,14 +131,9 @@ describe('V6 — a viewer whose gateway is taken away, and given back', { skip }
     const recovery = result.recovery;
     assert.ok(recovery, 'the refusal above should already have caught an artifact with no fault verdict');
 
-    const wrongFreeze = freezeRefusal(recovery, {
-      minFreezeMs: MIN_FREEZE_MS,
-      maxFreezeMs: MAX_FREEZE_MS,
-      minBufferMs: MIN_BUFFER_MS,
-    });
-    assert.equal(wrongFreeze, null, `the picture did not stop the way a gateway outage stops it: ${wrongFreeze}`);
-
-    const notBack = resumeRefusal(recovery, { expectRecovery: true, withinMs: MAX_RESUME_MS });
+    // ⭐ The contract: the gateway comes back and so does the picture, on its own and without a
+    // reload. How long that took is in the summary above and is not judged here.
+    const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the viewer did not get their picture back: ${notBack}`);
 
     // ⭐ The one fault in the matrix whose overlay speaks. A frozen frame that says why is a viewer

@@ -10,7 +10,6 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
-  freezeRefusal,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
@@ -43,11 +42,15 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * under them, so the ending is discovered rather than announced, by a reap that exists to clean up
  * sessions nobody closed. Both must reach the same screen, and only one of them was ever a plan.
  *
- * ## ⛔ Why there is no freeze ceiling here
+ * ## ⛔ No timing is asserted
  *
- * The picture stops and stays stopped, so how long it stayed stopped is a property of how long the
- * run kept sampling rather than of the product. The matrix's 83.2s is the rest of that arm. A ceiling
- * would fail this case for watching longer, which is the opposite of what it should reward.
+ * Owner ruling of 2026-08-29: an e2e suite checks feature correctness and stability, and performance
+ * is a separate kind of test. There was never a freeze ceiling here, because the picture stops and
+ * stays stopped and the 83.2s the matrix records is just the rest of that arm. There WAS a floor of
+ * 20s, and it is the sharpest example of why a timing gate does not belong in a correctness suite:
+ * live on the ladder this case froze for 16.3s, reached the ended state exactly as it should, and was
+ * refused for costing its viewer four seconds less than the matrix recorded. It failed for being
+ * better. The freeze is measured, printed per arm and filed, and it refuses nothing.
  *
  * ⚠️ The terminal message has to arrive inside the ninety seconds of watching that follow the fault,
  * against a reap that fires sixty seconds after the session goes quiet. The recorded arm reached it
@@ -68,15 +71,6 @@ const SCENARIO = scenarioByName('engine-restart');
  * fault, this scenario's own 30s, and the 60s of watching after it in which the reap has to speak.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
-
-/**
- * The shortest freeze that still means the engine went down under this viewer.
- *
- * Both readings of this fault froze for over eighty seconds, because the picture stops shortly after
- * the fault and never moves again. Twenty is a quarter of that, and what it refuses is a run where
- * the restart never reached the viewer at all.
- */
-const MIN_FREEZE_MS = 20_000;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -137,21 +131,12 @@ describe('V10 — a viewer whose broadcast ends because the engine restarted', {
     const recovery = result.recovery;
     assert.ok(recovery, 'the refusal above should already have caught an artifact with no fault verdict');
 
-    const wrongFreeze = freezeRefusal(recovery, {
-      minFreezeMs: MIN_FREEZE_MS,
-      // No ceiling and no buffer floor: see the docblock. The freeze runs to the end of the run
-      // because the broadcast is over, and the matrix records no buffer figure for this arm.
-      maxFreezeMs: null,
-      minBufferMs: null,
-    });
-    assert.equal(wrongFreeze, null, `the engine restart did not reach this viewer: ${wrongFreeze}`);
-
     // ⛔ A resume is the failure here, not the pass. The publisher went with the engine, so a picture
     // that starts moving again is a viewer who was handed a different broadcast, or a fault that
     // never landed. `faults.ts` carries the same expectation, and the two say it for one reason: the
     // report once called a correct run of this fault a failure, in the words it uses for a viewer
     // stranded on a stream that is still being published.
-    const wrongEnding = resumeRefusal(recovery, { expectRecovery: false, withinMs: null });
+    const wrongEnding = resumeRefusal(recovery, { expectRecovery: false });
     assert.equal(wrongEnding, null, `this broadcast was over and the picture moved anyway: ${wrongEnding}`);
 
     // ⭐ The whole case. A viewer told the broadcast ended stops waiting; one left on a frozen frame

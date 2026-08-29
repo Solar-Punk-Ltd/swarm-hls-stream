@@ -9,7 +9,6 @@ import {
   crashArmMinutes,
   crashArmRefusal,
   crashArmSummary,
-  freezeRefusal,
   frozenOverlayRefusal,
   MAX_WEEB3_SEGMENT_REQUESTS,
   resumeRefusal,
@@ -32,6 +31,15 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * `suites/scenarios/uploader-crash-recovery.test.ts` already proves the uploader resumes without a
  * spurious VOD. It reads the uploader's log, so what it can see is that the service did the right
  * thing. This is the same fault from the only other side that matters.
+ *
+ * ## ⛔ No timing is asserted
+ *
+ * Owner ruling of 2026-08-29: an e2e suite checks feature correctness and stability, and performance
+ * is a separate kind of test. This once held the freeze between 3 and 45 seconds, required 3s of
+ * buffer and required the resume inside 20s. Live on the four rung ladder the freeze read 57.1s and
+ * the case went red for a configuration difference, not a broken feature. The resume figure is the
+ * one worth watching, since the 0.8a fix moved it from 46.7s to 2.3s, so it is measured on every arm,
+ * printed in the summary line and filed in the artifact. It no longer refuses a run.
  *
  * ## ⛔ The known gap this asserts: issue #100, the overlay says nothing
  *
@@ -59,42 +67,6 @@ const SCENARIO = scenarioByName('uploader-crash');
  * fault, this scenario's own 15s outage, the restart and the 60s recovery watch.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
-
-/**
- * The shortest freeze that still means the uploader was killed.
- *
- * Fifteen seconds of nothing reaching the feed against seven of buffer leaves about eight, before the
- * client's own recovery is added. Three is well under that and refuses a run where the process was
- * never killed, which would otherwise pass every other check here.
- */
-const MIN_FREEZE_MS = 3_000;
-
-/**
- * The longest it may cost them.
- *
- * 13.5s recorded. The era before the 0.8a recovery fix took 46.7s just to resume after the service
- * came back, which put the freeze somewhere past fifty. Forty-five fails that era and leaves this one
- * more than three times the room it used.
- */
-const MAX_FREEZE_MS = 45_000;
-
-/**
- * How long the picture must keep moving after the process dies, which is the buffer doing its job.
- *
- * 7.1s recorded, which is `LIVE_SYNC_DURATION_S` of runway spending itself. Three seconds is under
- * half of that: a viewer who froze faster than that had no buffer in front of them.
- */
-const MIN_BUFFER_MS = 3_000;
-
-/**
- * How long after the uploader answers again the picture must be moving.
- *
- * ⭐ The figure the 0.8a recovery fix is judged on, and the reason this ceiling is tight: 2.3s here,
- * 4.1s on the gateway corpus the probe ladder was verified at, and 46.7s before the fix landed.
- * Twenty separates the fixed product from the regression it replaced, at five times the worse of the
- * two fixed readings.
- */
-const MAX_RESUME_MS = 20_000;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -157,15 +129,11 @@ describe('V7 — a viewer watching when the uploader is killed', { skip }, () =>
     const recovery = result.recovery;
     assert.ok(recovery, 'the refusal above should already have caught an artifact with no fault verdict');
 
-    const wrongFreeze = freezeRefusal(recovery, {
-      minFreezeMs: MIN_FREEZE_MS,
-      maxFreezeMs: MAX_FREEZE_MS,
-      minBufferMs: MIN_BUFFER_MS,
-    });
-    assert.equal(wrongFreeze, null, `the picture did not stop the way a dead uploader stops it: ${wrongFreeze}`);
-
-    const notBack = resumeRefusal(recovery, { expectRecovery: true, withinMs: MAX_RESUME_MS });
-    assert.equal(notBack, null, `the uploader-crash recovery fix no longer holds under a real viewer: ${notBack}`);
+    // ⭐ The contract: the process comes back and so does the picture, without a reload. How long
+    // that took is the 0.8a recovery fix's own figure, and it is in the summary above rather than
+    // held against a ceiling here. See the docblock.
+    const notBack = resumeRefusal(recovery, { expectRecovery: true });
+    assert.equal(notBack, null, `the viewer never got their picture back after the uploader returned: ${notBack}`);
 
     // ⛔ Issue #100, asserted as the behaviour the deployment HAS rather than the one it should have.
     // Read the docblock before changing this: a red here is the overlay having started speaking, which
