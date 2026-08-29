@@ -4,7 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import { byteSourceFromEnv, WEEB3_BYTES } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
-import { viewerPlaybackRefusal, weeb3ArmRefusal } from '../../src/harness/browserVerdict.js';
+import { ladderResolutionRefusal, viewerPlaybackRefusal, weeb3ArmRefusal } from '../../src/harness/browserVerdict.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
 import { ladderRungs, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
@@ -114,6 +114,15 @@ describe('V1 — a viewer watches a live broadcast in a real browser', { skip },
 
     const notWatched = viewerPlaybackRefusal(result);
     assert.equal(notWatched, null, `this run is not a viewer who watched the broadcast: ${notWatched}`);
+    // ⭐ Phase 1 of docs/e2e-viewer-coverage-plan.md. The resolutions were already being captured and
+    // printed, so a viewer riding a rung nobody configured passed every suite on a reading that was
+    // sitting right there. Asks whether the rung is one the ladder declares, never which one.
+    const wrongQuality = ladderResolutionRefusal(result, cfg.abrLadderResolutions);
+    assert.equal(
+      wrongQuality,
+      null,
+      `this viewer was served a quality the deployment never configured: ${wrongQuality}`,
+    );
 
     // ⛔ The switch must have taken in either condition. A switch that silently did nothing puts both
     // arms on one, every metric agrees, and the run reports that an in-tab node performs exactly like

@@ -129,6 +129,15 @@ export interface E2EConfig {
   abrEnabled: boolean;
   abrRungs: readonly string[];
   /**
+   * Every resolution `ABR_LADDER` declares, as the client renders them: `1920×1080`, U+00D7.
+   *
+   * Separate from {@link abrRungs} because a rung NAME is what the uploader logs and a RESOLUTION is
+   * what a browser reports, and no suite can join the two without this. Empty on a single-rendition
+   * deployment, which is the signal to `ladderResolutionRefusal` that there is no ladder to be
+   * outside of.
+   */
+  abrLadderResolutions: readonly string[];
+  /**
    * What the operator declared this run is for, out of `E2E_EXPECT_ABR`.
    *
    * Separate from {@link abrEnabled} because they answer different questions. That one is what the
@@ -332,6 +341,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     publishKeySecret: requireUsableSecret(env(resolved, 'PUBLISH_KEY_SECRET', '')),
     abrEnabled: isEnabled(env(resolved, 'ABR_ENABLED', 'false')),
     abrRungs: ladderRungNames(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
+    abrLadderResolutions: ladderResolutions(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
     abrExpectation: readAbrExpectation(env(resolved, 'E2E_EXPECT_ABR', '')),
     viewerExpectation: readViewerExpectation(env(resolved, 'E2E_EXPECT_BROWSER', '')),
     segmentExpectation: readSegmentExpectation(env(resolved, 'E2E_EXPECT_SEGMENT_S', '')),
@@ -361,6 +371,25 @@ function ladderRungNames(spec: string): readonly string[] {
     .filter((entry) => entry.length > 0)
     .map((entry) => entry.split(':')[0])
     .filter((name) => name.length > 0);
+}
+
+/**
+ * Resolutions out of `ABR_LADDER`, spelled the way a browser reports them.
+ *
+ * ⛔ The separator is U+00D7 and not the letter x, because `useHlsQoeMetrics` builds the string the
+ * suites compare against as `${videoWidth}×${videoHeight}`. An expectation assembled with an ASCII x
+ * matches nothing and passes every run.
+ *
+ * An entry missing either dimension is dropped rather than yielding a half-formed string, so a
+ * malformed `ABR_LADDER` shrinks the expectation instead of inventing a resolution to demand.
+ */
+function ladderResolutions(spec: string): readonly string[] {
+  return spec
+    .split(/\s+/)
+    .filter((entry) => entry.length > 0)
+    .map((entry) => entry.split(':'))
+    .filter(([, width, height]) => Boolean(width) && Boolean(height))
+    .map(([, width, height]) => `${width}\u00d7${height}`);
 }
 
 /**

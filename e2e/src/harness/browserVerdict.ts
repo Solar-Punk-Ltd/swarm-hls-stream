@@ -119,3 +119,53 @@ export function weeb3ArmRefusal(result: BrowserArmResult, { maxSegmentRequests }
 
   return null;
 }
+
+/**
+ * The multiplication sign the client renders between the two numbers.
+ *
+ * ⛔ U+00D7, not the letter x. `useHlsQoeMetrics` builds the string as `${videoWidth}×${videoHeight}`,
+ * so a ladder expectation assembled with an ASCII x matches nothing and passes every run, which is
+ * the same silence this check exists to remove.
+ */
+const RESOLUTION_SEPARATOR = /[x×]/;
+
+/** `1280×720` and `1280x720` are the same resolution, whichever separator produced them. */
+function normaliseResolution(resolution: string): string {
+  return resolution.trim().split(RESOLUTION_SEPARATOR).join('×');
+}
+
+/**
+ * Why the quality this viewer received is not one the deployment configured, or null.
+ *
+ * ⛔⛔ **Phase 1 of `docs/e2e-viewer-coverage-plan.md`.** Every watching suite already captured the
+ * resolutions a viewer passed through and printed them under "observed, not asserted". A viewer
+ * silently riding a rung nobody configured therefore passed every test, on a reading that was
+ * already being taken.
+ *
+ * ⭐ **It asks whether the rung is one the ladder declares, never which one.** Which rung a player
+ * settles on is its own adaptive decision, and pinning it here would be a performance threshold
+ * wearing a correctness coat. Owner rule of 2026-08-29: these suites check that the feature works,
+ * not how well.
+ *
+ * ⚠️ **It cannot catch a failure to switch.** A viewer pinned to one legitimate rung for an entire
+ * watch passes this, and that is exactly what V2 is for.
+ *
+ * @param ladder Every resolution `ABR_LADDER` declares, as `cfg.abrLadderResolutions`. Empty on a
+ *   single-rendition deployment, where there is no ladder to be outside of and this says nothing.
+ */
+export function ladderResolutionRefusal(result: BrowserArmResult, ladder: readonly string[]): string | null {
+  if (ladder.length === 0 || result.resolutions.length === 0) {
+    return null;
+  }
+
+  const declared = new Set(ladder.map(normaliseResolution));
+  const strangers = result.resolutions.filter((seen) => !declared.has(normaliseResolution(seen)));
+  if (strangers.length === 0) {
+    return null;
+  }
+
+  return (
+    `this viewer was served ${strangers.join(', ')}, which the deployment's ladder does not declare ` +
+    `(it declares ${ladder.join(', ')}), so they watched a quality nobody configured`
+  );
+}

@@ -5,6 +5,7 @@ import { FEED_STATE_ENDED } from '../../src/browser/feedState.js';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
+import { ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
 import { announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
@@ -137,6 +138,15 @@ describe('V5 — the viewer is told when the broadcast ends', { skip }, () => {
     assert.ok(
       result.resolutions.length > 0,
       'the player never decoded anything, so this viewer never watched the broadcast that ended',
+    );
+    // ⭐ Phase 1 of docs/e2e-viewer-coverage-plan.md. The resolutions were already being captured and
+    // printed, so a viewer riding a rung nobody configured passed every suite on a reading that was
+    // sitting right there. Asks whether the rung is one the ladder declares, never which one.
+    const wrongQuality = ladderResolutionRefusal(result, cfg.abrLadderResolutions);
+    assert.equal(
+      wrongQuality,
+      null,
+      `this viewer was served a quality the deployment never configured: ${wrongQuality}`,
     );
     assert.ok(
       result.reachedEndedOverlay,

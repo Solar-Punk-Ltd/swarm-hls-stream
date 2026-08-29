@@ -6,6 +6,7 @@ import { FEED_STATE_DEGRADED, FEED_STATE_RECONNECTING, FEED_STATE_STALLED } from
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
+import { ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
 import {
   crashArmMinutes,
   crashArmRefusal,
@@ -148,6 +149,15 @@ describe('V6 — a viewer whose gateway is taken away, and given back', { skip }
       notWatching,
       null,
       `this run is not a viewer who was watching when the gateway went away: ${notWatching}`,
+    );
+    // ⭐ Phase 1 of docs/e2e-viewer-coverage-plan.md. The resolutions were already being captured and
+    // printed, so a viewer riding a rung nobody configured passed every suite on a reading that was
+    // sitting right there. Asks whether the rung is one the ladder declares, never which one.
+    const wrongQuality = ladderResolutionRefusal(result, cfg.abrLadderResolutions);
+    assert.equal(
+      wrongQuality,
+      null,
+      `this viewer was served a quality the deployment never configured: ${wrongQuality}`,
     );
 
     const recovery = result.recovery;

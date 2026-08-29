@@ -37,7 +37,7 @@ product rather than about timing:
 
 **Done when:** a viewer silently stuck on a rung outside the configured ladder fails a test.
 
-**What it does not buy:** it cannot catch a failure to *switch*. That is phase 2.
+**What it does not buy:** it cannot catch a failure to _switch_. That is phase 2.
 
 ## Phase 2 — the three watching tests that were planned and never built
 

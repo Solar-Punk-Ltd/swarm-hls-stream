@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
 import { type BrowserArmResult, parseBrowserArmState } from '../src/harness/browser.js';
-import { viewerPlaybackRefusal, weeb3ArmRefusal } from '../src/harness/browserVerdict.js';
+import { ladderResolutionRefusal, viewerPlaybackRefusal, weeb3ArmRefusal } from '../src/harness/browserVerdict.js';
 
 import { armState } from './helpers/browserArmFixtures.js';
 
@@ -127,5 +127,59 @@ describe('whether the arm was the in-tab node it is filed as', () => {
 
   it('accepts an arm sitting exactly on the ceiling', () => {
     assert.equal(weeb3ArmRefusal(watched({ segmentRequests: 9 }), SINGLE_DIGIT), null);
+  });
+});
+
+/**
+ * Whether the viewer received a quality the deployment actually configured.
+ *
+ * ⛔⛔ **Phase 1 of `docs/e2e-viewer-coverage-plan.md`.** Every watching suite already captured the
+ * resolutions a viewer passed through and printed them under "observed, not asserted", so a viewer
+ * silently riding a rung outside the ladder passed every test. The reading was there the whole time
+ * and nothing could fail on it.
+ *
+ * ⭐ **It asks whether the rung is one the ladder declares, never which one.** Which rung a player
+ * picks is its own adaptive decision, and pinning it would be a performance assertion wearing a
+ * correctness coat. Owner rule of 2026-08-29.
+ *
+ * ⚠️ It cannot catch a failure to SWITCH. A viewer pinned to one legitimate rung for the whole watch
+ * passes here and is exactly what V2 exists to catch.
+ */
+describe('whether the viewer got a quality the ladder declares', () => {
+  const LADDER = ['1920×1080', '1280×720', '854×480', '640×360'] as const;
+
+  it('passes a viewer who stayed on one rung of the ladder', () => {
+    assert.equal(ladderResolutionRefusal(watched({ resolutions: ['1280×720'] }), LADDER), null);
+  });
+
+  it('passes a viewer who moved between rungs of the ladder', () => {
+    assert.equal(ladderResolutionRefusal(watched({ resolutions: ['640×360', '1280×720', '1920×1080'] }), LADDER), null);
+  });
+
+  it('refuses a resolution the ladder never declared', () => {
+    const refusal = ladderResolutionRefusal(watched({ resolutions: ['1280×720', '426×240'] }), LADDER);
+
+    assert.match(refusal ?? '', /426×240/, `the refusal must name the rung nobody configured: ${refusal}`);
+  });
+
+  /**
+   * ⛔ The client renders U+00D7, not the letter x. A check built with `${w}x${h}` matches nothing
+   * and passes every run, which is the same shape of silence this whole phase exists to remove.
+   */
+  it('matches the multiplication sign the client actually renders', () => {
+    assert.equal(ladderResolutionRefusal(watched({ resolutions: ['1280x720'] }), LADDER), null);
+  });
+
+  /** A single-rendition deployment has no ladder to be outside of, so there is nothing to refuse. */
+  it('says nothing when the deployment declares no ladder', () => {
+    assert.equal(ladderResolutionRefusal(watched({ resolutions: ['1280×720'] }), []), null);
+  });
+
+  /**
+   * Deliberately silent, because `viewerPlaybackRefusal` already refuses it with the far better
+   * account: no resolution at all is a viewer who saw no picture, not one who saw a wrong quality.
+   */
+  it('leaves a viewer who decoded nothing to the refusal that explains it', () => {
+    assert.equal(ladderResolutionRefusal(watched({ resolutions: [] }), LADDER), null);
   });
 });

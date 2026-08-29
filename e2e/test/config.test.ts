@@ -442,3 +442,26 @@ describe('what segment length the run needs', () => {
     assert.throws(() => loadConfig({ env: {}, rootDir }), /E2E_EXPECT_SEGMENT_S/);
   });
 });
+
+/**
+ * The ladder as a browser reports it, which no suite could ask for before 2026-08-29.
+ *
+ * ⛔ The uploader logs rung NAMES and a browser reports RESOLUTIONS, so `abrRungs` cannot answer
+ * "did this viewer get a quality we configured". That is the whole reason this field exists.
+ */
+describe('the ladder resolutions a viewer can be checked against', () => {
+  it('spells them with the multiplication sign the client renders, not the letter x', () => {
+    const rootDir = fixtureRoot({
+      root: 'ABR_ENABLED=true\nABR_LADDER=1080p:1920:1080:5000 360p:640:360:700\n',
+    });
+
+    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrLadderResolutions, ['1920×1080', '640×360']);
+  });
+
+  /** A malformed entry shrinks the expectation rather than inventing a resolution to demand. */
+  it('drops an entry that is missing a dimension', () => {
+    const rootDir = fixtureRoot({ root: 'ABR_ENABLED=true\nABR_LADDER=1080p:1920:1080:5000 broken:640\n' });
+
+    assert.deepEqual(loadConfig({ env: {}, rootDir }).abrLadderResolutions, ['1920×1080']);
+  });
+});
