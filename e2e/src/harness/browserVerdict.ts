@@ -16,17 +16,6 @@ import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
 
 import { type BrowserArmResult } from './browser.js';
 
-interface PlaybackExpectation {
-  /**
-   * The lowest share of wall clock the picture may keep up with and still count as watched.
-   *
-   * Judged against `overallAdvanceRatio`, which is media seconds delivered per wall second across the
-   * whole watch with stalls included, so the shortfall below one is time the viewer spent looking at
-   * a frozen frame.
-   */
-  minAdvanceRatio: number;
-}
-
 /**
  * Why this run is not a viewer who watched the broadcast, or null.
  *
@@ -35,11 +24,17 @@ interface PlaybackExpectation {
  * attempt at watching in a browser ended 578 seconds behind live with nothing in the number saying
  * so. Those figures are properties of the harness, and a suite that failed a product on them, or
  * passed one, would be reporting on the harness either way.
+ *
+ * ⭐ **It asks whether the picture moved, never how fast.** Owner ruling of 2026-08-29: these suites
+ * check that the feature works, properly and stably, and how much of the wall clock a viewer kept up
+ * with is a performance reading. This once held an advance ratio against a floor of 0.95 taken from a
+ * single-rendition 720p broadcast. The same client on a four rung ABR ladder delivers 0.80 of the
+ * wall clock, because an in-browser node admits about one segment a second and half second segments
+ * therefore cap it near half of real time. That is a known property of the configuration and not a
+ * defect in this code, and a suite that failed it would be calling a slower deployment a broken one.
+ * `advanceRatio` is printed by every caller and filed in the artifact instead.
  */
-export function viewerPlaybackRefusal(
-  result: BrowserArmResult,
-  { minAdvanceRatio }: PlaybackExpectation,
-): string | null {
+export function viewerPlaybackRefusal(result: BrowserArmResult): string | null {
   if (!result.instrumentSound) {
     return (
       'the browser was not a usable instrument for this run, so its figures are properties of the ' +
@@ -51,21 +46,22 @@ export function viewerPlaybackRefusal(
     return `the player raised ${result.fatalErrors} fatal error(s), so the picture stopped for good rather than stuttering`;
   }
 
-  if (result.advanceRatio < minAdvanceRatio) {
-    return (
-      `playback kept up with ${result.advanceRatio.toFixed(3)} of the wall clock against a floor of ` +
-      `${minAdvanceRatio}, so the viewer spent the rest of the watch on a frozen frame ` +
-      `(${result.rebufferCount} rebuffers over ${result.samples} samples)`
-    );
-  }
-
-  // ⛔ Last, and it is the check that separates a flawless run from one that decoded nothing. A run
-  // that never played reports zero rebuffers, zero fatal errors and no resolution at all, which is
-  // the same shape as a perfect one on every field but this one.
+  // ⛔ Before the progress check below, because it is the more specific account of the same silence.
+  // A run that never played reports zero rebuffers, zero fatal errors and no resolution at all, which
+  // is the same shape as a perfect one on every field but this one.
   if (result.resolutions.length === 0) {
     return (
       'the player never reported a resolution, so nothing was decoded and its zero rebuffers and zero ' +
       'errors are the silence of a viewer who saw no picture rather than the record of a good one'
+    );
+  }
+
+  // The floor is zero rather than a share of the wall clock: a picture that decoded a first frame and
+  // then sat on it for the whole watch is the one outcome here that means the feature did not work.
+  if (result.advanceRatio <= 0) {
+    return (
+      'playback never moved forward across the whole watch, so the viewer decoded a frame and then sat ' +
+      `on it (${result.rebufferCount} rebuffers over ${result.samples} samples)`
     );
   }
 

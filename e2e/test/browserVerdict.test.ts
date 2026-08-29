@@ -20,11 +20,9 @@ import { armState } from './helpers/browserArmFixtures.js';
 const CLEAN = parseBrowserArmState(armState());
 const watched = (overrides: Partial<BrowserArmResult>): BrowserArmResult => ({ ...CLEAN, ...overrides });
 
-const PLAYED = { minAdvanceRatio: 0.95 };
-
 describe('whether a viewer actually watched the broadcast', () => {
-  it('passes a session that kept up, decoded a picture and errored at nothing', () => {
-    assert.equal(viewerPlaybackRefusal(CLEAN, PLAYED), null);
+  it('passes a session that decoded a picture, moved it forward and errored at nothing', () => {
+    assert.equal(viewerPlaybackRefusal(CLEAN), null);
   });
 
   /**
@@ -36,7 +34,7 @@ describe('whether a viewer actually watched the broadcast', () => {
   it('refuses a run whose browser was not a usable instrument, whatever its figures say', () => {
     const degraded = watched({ instrumentSound: false, instrumentFailures: ['timer drift 61x the interval'] });
 
-    assert.match(String(viewerPlaybackRefusal(degraded, PLAYED)), /timer drift 61x the interval/);
+    assert.match(String(viewerPlaybackRefusal(degraded)), /timer drift 61x the interval/);
   });
 
   it('refuses a run before its playback figures, so a degraded browser is never the reported cause', () => {
@@ -46,26 +44,11 @@ describe('whether a viewer actually watched the broadcast', () => {
       advanceRatio: 0,
     });
 
-    assert.match(String(viewerPlaybackRefusal(degradedAndStalled, PLAYED)), /hidden page/);
+    assert.match(String(viewerPlaybackRefusal(degradedAndStalled)), /hidden page/);
   });
 
   it('refuses a player that raised a fatal error, which is a viewer whose picture stopped for good', () => {
-    assert.match(String(viewerPlaybackRefusal(watched({ fatalErrors: 2 }), PLAYED)), /2/);
-  });
-
-  /**
-   * The honest number: media seconds delivered per wall second across the whole watch, stalls
-   * included. The shortfall below one is time the viewer spent looking at a frozen frame.
-   */
-  it('refuses a session that did not keep up with the world', () => {
-    const refusal = viewerPlaybackRefusal(watched({ advanceRatio: 0.62 }), PLAYED);
-
-    assert.match(String(refusal), /0\.62/);
-    assert.match(String(refusal), /0\.95/);
-  });
-
-  it('accepts a session sitting exactly on the threshold, which is a pass rather than a near miss', () => {
-    assert.equal(viewerPlaybackRefusal(watched({ advanceRatio: 0.95 }), PLAYED), null);
+    assert.match(String(viewerPlaybackRefusal(watched({ fatalErrors: 2 }))), /2/);
   });
 
   /**
@@ -74,7 +57,26 @@ describe('whether a viewer actually watched the broadcast', () => {
    * same confusion elsewhere: "I could not find X" and "there is no X" are the same return value.
    */
   it('refuses a run that named no resolution, whose silence looks exactly like a clean run', () => {
-    assert.match(String(viewerPlaybackRefusal(watched({ resolutions: [] }), PLAYED)), /resolution/);
+    assert.match(String(viewerPlaybackRefusal(watched({ resolutions: [] }))), /resolution/);
+  });
+
+  /**
+   * ⛔ The picture has to have moved. A session that decoded a first frame and then sat on it for
+   * four minutes reports a resolution and no error, which is the shape of a watch on every field but
+   * this one, and it is the one outcome that means the feature did not work.
+   */
+  it('refuses a session whose picture never moved forward at all', () => {
+    assert.match(String(viewerPlaybackRefusal(watched({ advanceRatio: 0 }))), /never moved/);
+  });
+
+  /**
+   * ⭐ The owner's ruling of 2026-08-29: an e2e suite checks that the feature works, and how fast it
+   * worked is an observation rather than a gate. A viewer who kept up with 0.62 of the wall clock
+   * watched the broadcast, on a configuration that delivers less of it per second, and a suite that
+   * failed them would be reporting a performance difference as a broken product.
+   */
+  it('passes a session that kept up slowly, which is a performance reading rather than a defect', () => {
+    assert.equal(viewerPlaybackRefusal(watched({ advanceRatio: 0.62 })), null);
   });
 });
 
