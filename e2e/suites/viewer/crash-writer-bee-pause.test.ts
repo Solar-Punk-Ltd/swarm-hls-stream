@@ -225,9 +225,11 @@ describe("V8 — a viewer barely notices an eight second pause of the writer's n
     assert.equal(
       wholeRun,
       0,
-      `the pause itself armed ${byThePause}, and yet ${wholeRun} discontinuit(y/ies) were armed across ` +
-        'the whole broadcast this viewer sat through. The fault is exonerated and the timeline is still ' +
-        'broken, so this is the deployment losing segments over minutes rather than over the outage',
+      `the pause itself armed ${byThePause}, and yet the whole broadcast this viewer sat through carries ` +
+        `${wholeRun} arming log lines. The fault is exonerated and the timeline is still broken, so this ` +
+        'is the deployment losing segments over minutes rather than over the outage. ⚠️ The figure is an ' +
+        'UPPER BOUND rather than a count: the parser matches three different messages and one of them ' +
+        'repeats a segment up to four times. Zero is exact, anything else needs the log read',
     );
   });
 });
