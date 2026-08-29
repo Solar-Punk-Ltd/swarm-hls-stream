@@ -1986,4 +1986,31 @@ describe('StreamOrchestrator ladder group lifecycle', () => {
     await orch.stopStream('live/stream_720p');
     assert.equal(maps.ladderGroups.has('live/stream'), false, 'the group outlived its last rung');
   });
+
+  /**
+   * A rung re-announcing under an id its own predecessor still holds is the same ladder by
+   * construction: the outgoing session is finalizing into it while the replacement registers. The
+   * re-announce path retires the incumbent and then spawns, and retiring used to free the ladder, so
+   * a rung with no sibling left was handed a fresh group and its own replacement was published as a
+   * second recording of one broadcast. The catalog keys a ladder entry on `(owner, group)`, so that
+   * is a second row in the viewer's recordings list, bought with its own postage.
+   */
+  it('keeps the ladder when a rung is re-announced over a session that is still finalizing', async () => {
+    const orch = makeTestOrchestrator({ ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC) });
+    const maps = orch as unknown as LadderMaps;
+
+    orch.startStream('live/stream_720p', MEDIA_TYPE_VIDEO);
+    await waitFor(() => maps.ladderGroups.get('live/stream') !== undefined, SETTLE_CEILING_MS);
+    const group = maps.ladderGroups.get('live/stream');
+
+    orch.startStream('live/stream_720p', MEDIA_TYPE_VIDEO);
+
+    assert.equal(
+      maps.ladderGroups.get('live/stream'),
+      group,
+      'a re-announce restarted the ladder its predecessor was still writing into',
+    );
+
+    await orch.stopStream('live/stream_720p');
+  });
 });

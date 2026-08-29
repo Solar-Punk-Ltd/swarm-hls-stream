@@ -412,6 +412,12 @@ export class StreamOrchestrator {
   /**
    * Detach a stream from the live maps so nothing can reach it by id any more, without waiting for
    * it to finish. The caller keeps the uploader and is responsible for finalizing it.
+   *
+   * The rung's place in its ladder is deliberately not given up here, because retiring a session and
+   * ending a broadcast are different things. A re-announce retires the incumbent and registers its
+   * successor into the same ladder in the same turn, so releasing from here handed a rung with no
+   * sibling left a brand new group and published its own replacement as a second recording. Every
+   * caller that really is the end of a rung calls {@link releaseLadder} itself.
    */
   private retireSession(streamId: string): void {
     this.activeStreams.delete(streamId);
@@ -435,9 +441,6 @@ export class StreamOrchestrator {
     // reading and do nothing, or find its replacement's and finalize a live broadcast.
     this.stallReapers.get(streamId)?.cancel();
     this.stallReapers.delete(streamId);
-    // The ladder maps are per session too, and `performDrain` only releases them on its no-uploader
-    // early return, so every normally-stopped rung would leak its group and base without this.
-    this.releaseLadder(streamId);
   }
 
   /**
@@ -1405,6 +1408,14 @@ export class StreamOrchestrator {
     return group;
   }
 
+  /**
+   * Give up this rung's place in its ladder, and the ladder itself once no rung is left.
+   *
+   * Called only where a session is gone for good. A rung being replaced under its own id is not
+   * that: its successor registers into the same ladder in the same turn, and releasing first handed
+   * a rung with no sibling left a brand new group, which its own replacement then published as a
+   * second recording of one broadcast.
+   */
   private releaseLadder(streamId: string): void {
     const base = this.streamBases.get(streamId);
     this.streamBases.delete(streamId);
@@ -1451,6 +1462,10 @@ export class StreamOrchestrator {
 
     this.recordStopOutcome(outcome);
     this.retireSession(streamId);
+    // The one exit where this rung is over and nothing takes its id, so the ladder it belonged to is
+    // over too once no sibling is left. The early return above is the other case and must not: the
+    // id there belongs to a live successor publishing into the same ladder.
+    this.releaseLadder(streamId);
 
     this.logger.info(`[StreamOrchestrator] ${streamStopped(streamId)}`);
   }
