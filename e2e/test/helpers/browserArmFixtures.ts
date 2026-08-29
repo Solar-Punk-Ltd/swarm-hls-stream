@@ -36,6 +36,12 @@ interface ArmStateOverrides {
    * which is what a plain watch and a crash arm both look like.
    */
   quality?: Record<string, unknown> | null;
+  /**
+   * The rung timeline `browser/rung-outage.ts` adds and no other driver writes, and the section
+   * naming what it silenced. Null leaves both out.
+   */
+  rungs?: Record<string, unknown> | null;
+  silenced?: Record<string, unknown> | null;
 }
 
 const SAMPLE_COUNT = 240;
@@ -64,6 +70,8 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     recovery = null,
     scenario = null,
     quality = null,
+    rungs = null,
+    silenced = null,
   } = overrides;
 
   const run: Record<string, unknown> = {
@@ -132,6 +140,12 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   }
   if (quality !== null) {
     run.quality = quality;
+  }
+  if (rungs !== null) {
+    run.rungs = rungs;
+  }
+  if (silenced !== null) {
+    run.silenced = silenced;
   }
   if (scenario !== null) {
     run.scenario = { name: scenario, service: 'bee-gateway', action: 'stop', downMs: 20_000 };
@@ -222,4 +236,37 @@ export const STEPPED_DOWN_AND_BACK: Record<string, unknown> = {
  */
 export function qualityArmState(overrides: ArmStateOverrides = {}): unknown {
   return armState({ quality: STEPPED_DOWN_AND_BACK, ...overrides });
+}
+
+/**
+ * The rung timeline of a viewer who moved off a rung that stopped being produced, and kept watching.
+ *
+ * The shape V3 asserts: 720p before the outage, 480p while the 720p transcode was stopped, 720p again
+ * once it resumed.
+ */
+export const MOVED_OFF_A_DEAD_RUNG: Record<string, unknown> = {
+  before: qualityPhase(720, 1.0, 6_400),
+  during: qualityPhase(480, 0.97, 6_200),
+  after: qualityPhase(720, 1.0, 6_300),
+  switchesCounted: 2,
+  abrEnabledThroughout: true,
+  steppedDownAfterMs: 9_000,
+  climbedBackAfterMs: 14_000,
+};
+
+/**
+ * A rung-outage arm's state file: a crash arm's freeze verdict plus the rung timeline only
+ * `browser/rung-outage.ts` writes.
+ *
+ * ⛔ Carries BOTH `recovery` and `rungs`, because the suite asserts on both and either alone reads as
+ * a success on its own.
+ */
+export function rungArmState(overrides: ArmStateOverrides = {}): unknown {
+  return armState({
+    scenario: 'rung-outage',
+    recovery: GATEWAY_OUTAGE_RECOVERY,
+    rungs: MOVED_OFF_A_DEAD_RUNG,
+    silenced: { rung: '720p', height: 720, processes: [{ pid: 418, args: 'ffmpeg ... demo_720p?vhost=abr' }] },
+    ...overrides,
+  });
 }

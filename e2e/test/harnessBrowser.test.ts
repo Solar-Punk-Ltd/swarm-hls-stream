@@ -478,6 +478,42 @@ describe('an arm that drives a fault under the viewer', () => {
   });
 });
 
+describe('the other two treatments an arm can drive', () => {
+  const fault = { backend: WEEB3_BYTES, watchMinutes: 4, scenario: 'viewer-gateway-outage' } as const;
+  const squeeze = { backend: WEEB3_BYTES, watchMinutes: 4, squeeze: true } as const;
+  const silence = { backend: WEEB3_BYTES, watchMinutes: 4, silenceSelectedRung: true } as const;
+
+  it('runs the driver each treatment belongs to', () => {
+    assert.equal(browserArmScript(squeeze), 'browser:quality');
+    assert.equal(browserArmScript(silence), 'browser:rung-outage');
+  });
+
+  /**
+   * ⛔ Neither reads BROWSER_WATCH_SECONDS, and both own their own windows. The same trap as the crash
+   * driver's: a passed-but-unread variable looks exactly like one set to its default.
+   */
+  it('hands neither of them a watch length it never reads', () => {
+    assert.equal(browserArmEnv(cfg, squeeze).BROWSER_WATCH_SECONDS, undefined);
+    assert.equal(browserArmEnv(cfg, silence).BROWSER_WATCH_SECONDS, undefined);
+  });
+
+  /**
+   * ⛔ Refused together rather than one silently winning. With two treatments a rung that moved or a
+   * picture that stopped could have done so because of either, and the arm would still produce a full
+   * report that reads as an answer.
+   */
+  it('refuses an arm asking for more than one treatment', () => {
+    assert.throws(() => browserArmScript({ ...fault, squeeze: true }), /One treatment per arm/);
+    assert.throws(() => browserArmScript({ ...fault, silenceSelectedRung: true }), /One treatment per arm/);
+    assert.throws(() => browserArmScript({ ...squeeze, silenceSelectedRung: true }), /One treatment per arm/);
+  });
+
+  /** The message names what was asked for, so an operator can see which two collided. */
+  it('names both treatments it was asked for', () => {
+    assert.throws(() => browserArmScript({ ...squeeze, silenceSelectedRung: true }), /squeeze and a silenced rung/);
+  });
+});
+
 describe('where the arm runs on the host', () => {
   /**
    * ⛔ No default is possible. The suite runs inside the bench image at /repo, which is a bind mount,
