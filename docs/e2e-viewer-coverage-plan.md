@@ -43,6 +43,14 @@ product rather than about timing:
 
 Run time and harness work. No new infrastructure. Numbers reserved in `docs/e2e-coverage.md`.
 
+> ✅ **ALL FOUR BUILT 2026-08-30. NONE HAS RUN LIVE.** V2, V3, V4 and the concurrent-ladder case, with
+> 116 new unit tests behind them. The proving run is the next thing, and it was blocked on the night
+> it was written: the 1Password SSH agent stopped signing, so `manager-host` became unreachable
+> partway through. Nothing about the code is waiting.
+>
+> ⛔ **Read this before believing a green.** Not one of these four has ever seen a real broadcast.
+> Each names, in its own docblock, the one thing in it most likely to be wrong.
+
 ### V2, quality switch works — ✅ BUILT 2026-08-30, not yet run live
 
 `pnpm browser:quality` and `suites/viewer/quality-switch.test.ts`. 42 unit tests.
@@ -66,23 +74,53 @@ an order of magnitude in request count. Run both, expect both to switch, compare
 
 **Done when:** a client that ignores bandwidth and rides one rung into a stall fails.
 
-### V3, a rung goes quiet and the viewer steps down
+### V3, a rung goes quiet and the viewer steps down — ✅ BUILT 2026-08-30, not yet run live
+
+`pnpm browser:rung-outage` and `suites/viewer/rung-outage.test.ts`. SRS runs one ffmpeg per rung, so
+the fault is a SIGSTOP on the transcode producing the rung the viewer settled on, read off the
+overlay after the settle rather than hardcoded.
+
+⛔ **This one is expected to go red, and a red is the finding.** hls.js changes level on a fragment
+load ERROR. A Swarm feed that stops advancing does not error, it stops offering fragments, so a
+player waiting for one it was never offered has nothing to react to. If that is what happens, a
+viewer freezes on a dead rung with three live ones beside them, and `movedOffDeadRungRefusal` says
+exactly that in its own message.
 
 Stop one rung at the engine while a viewer watches it. Assert the viewer moves to a surviving rung
 rather than freezing, and that the overlay does not claim the broadcast ended.
 
 **Done when:** a viewer frozen on a dead rung while three healthy ones sit beside it fails.
 
-### V4, VOD playback in a browser
+### V4, VOD playback in a browser — ✅ BUILT 2026-08-30, not yet run live
+
+`suites/viewer/vod-playback.test.ts`, on an extended `pnpm browser:vod`.
+
+⛔ **The gap it closes.** A ladder recording whose master resolved and whose upper rung playlists did
+not plays perfectly at its bottom rung: it starts, the duration is finite, the seeks land, the
+picture moves. Every reading the old driver took called that a pass. It now samples the shipped
+overlay and reports which rungs the recording offered.
+
+The suite publishes its own broadcast rather than reusing one, because whether a recording is the
+WHOLE broadcast cannot be asked of a recording whose length nobody knows.
 
 Play a finished ladder recording end to end. Assert the master and every rung resolve, the picture
 advances, and the timeline is the whole broadcast.
 
 **Done when:** a recording that only plays its lowest rung fails.
 
-### Also here, cheaply
+### Also here, cheaply — ✅ BUILT 2026-08-30
 
-The ladder version of `multi-stream-concurrent`, watched. Today that suite is single-rendition only.
+`suites/service/multi-stream-concurrent.test.ts` now asserts that BOTH concurrent streams carry the
+whole ladder, per ladder rather than across both, and that every rung-stream stays gapless while
+another ladder publishes beside it. Two concurrent ladders are eight transcodes and eight rung
+uploads through one bee node, which is a materially different load from the one the ladder has ever
+been tested under, and a rung missing from the second stream passed every assertion that file made.
+
+It reads the log the existing case already produces, so it costs no extra broadcast.
+
+⚠️ Not watched by a browser, and deliberately. Concurrent tabs starve each other on the in-tab path:
+three tabs measured zero peers, never re-dialling and never erroring. Two watched ladders would be a
+measurement of that rather than of concurrency.
 
 ## Phase 3 — per-rung bee nodes, the shape we meant to ship
 
