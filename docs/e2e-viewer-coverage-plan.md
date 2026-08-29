@@ -43,7 +43,16 @@ product rather than about timing:
 
 Run time and harness work. No new infrastructure. Numbers reserved in `docs/e2e-coverage.md`.
 
-### V2, quality switch works
+### V2, quality switch works — ✅ BUILT 2026-08-30, not yet run live
+
+`pnpm browser:quality` and `suites/viewer/quality-switch.test.ts`. 42 unit tests.
+
+⛔ **One thing in it is unverified and could make it red for a reason that is not the product's.**
+Chromium applies the network cap itself, and whether it reaches an in-tab node's own peer connections
+is the browser's business. So `throttleRefusal` demands the player's own bandwidth estimate be at or
+below the cap before any product assertion runs, and refuses the arm otherwise. A run that skipped
+that gate and reported "the ladder does not adapt" would be filing a finding about Chromium against
+this client.
 
 Throttle the tab's network mid-playback through the debug protocol, assert the player steps **down**
 a rung and keeps playing, release the throttle, assert it climbs back.
