@@ -23,6 +23,7 @@
     "browser:byte-source-order": "tsx browser/byte-source-order.ts",
     "browser:crash": "tsx browser/crash.ts",
     "browser:quality": "tsx browser/quality.ts",
+    "browser:rung-outage": "tsx browser/rung-outage.ts",
     "probe:ahead": "node src/probes/feed-ahead-probe.mjs",
     "browser:vod": "tsx browser/vod.ts",
     "browser:buffer-sweep": "tsx browser/buffer-sweep.ts",
