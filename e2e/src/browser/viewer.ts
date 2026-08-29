@@ -359,6 +359,7 @@ export async function readSample(page: Page): Promise<ViewerSample> {
     qualitySwitches: metrics.qualitySwitches,
     abrEnabled: metrics.abrEnabled,
     bandwidthEstimateKbps: metrics.bandwidthEstimateKbps,
+    ladderHeights: metrics.ladderHeights,
     fatalErrors: metrics.fatalErrors,
     droppedFrames: metrics.droppedFrames,
     resolution: metrics.resolution,

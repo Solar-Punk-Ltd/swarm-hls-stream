@@ -90,6 +90,14 @@ export interface ViewerSample {
   /** What hls.js believed the connection could carry, in kbps, which is the input to its choice. */
   bandwidthEstimateKbps: number | null;
   /**
+   * Every rung the player parsed out of the master, by height, empty where it holds no ladder.
+   *
+   * ⭐ The player's view of the ladder rather than the deployment's. A recording whose master resolved
+   * but whose rung playlists did not is a player holding fewer levels than `ABR_LADDER` declares, and
+   * nothing else in a sample would show it.
+   */
+  ladderHeights: readonly number[];
+  /**
    * What the shipped `FeedStateOverlay` was telling the viewer, or null when it was telling them
    * nothing, which is what it renders while the feed is live.
    *

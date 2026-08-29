@@ -30,6 +30,7 @@ const BASE: ViewerSample = {
   qualitySwitches: 0,
   abrEnabled: true,
   bandwidthEstimateKbps: 4200,
+  ladderHeights: [1080, 720, 480, 360],
   feedStateMessage: null,
   feedState: FEED_STATE_LIVE,
 };

@@ -62,6 +62,8 @@ export interface OverlayMetrics {
   abrEnabled: boolean;
   /** What hls.js believes the connection can carry, which is the input its choice is made from. */
   bandwidthEstimateKbps: number | null;
+  /** Every rung the player parsed out of the master, by height. Empty where it has no ladder at all. */
+  ladderHeights: readonly number[];
   fatalErrors: number;
   liveLatencyS: number | null;
   /**
@@ -109,6 +111,32 @@ export function parseOverlayNumber(value: string): number | null {
 /** What the overlay writes in `Level Selection` while the player is choosing its own rung. */
 export const LEVEL_SELECTION_AUTO = 'auto';
 
+/**
+ * A ladder row, as `QoeOverlay.tsx` labels one: the height, behind a marker for the current rung.
+ *
+ * ⛔ The marker is `▸` on the current rung and a NON-BREAKING SPACE on every other one, so a class
+ * written with a literal space would match only the rung being played and report a four rung ladder
+ * as ONE. That is exactly the failure this reading exists to catch, so it must not be the failure
+ * this reading has. `\s` is what makes it safe: in JavaScript it matches U+00A0 as well as an
+ * ordinary space, which is why the non-breaking space is not spelled out beside it.
+ */
+const LADDER_ROW_RE = /^[\u25b8\s]*(\d+)p$/;
+
+/**
+ * Every rung the player parsed out of the master playlist, by height, in the overlay's own order.
+ *
+ * ⭐ Empty on a single-rendition stream and on a player that has no master, which are the two states
+ * a ladder assertion has to be able to tell apart from a ladder. The overlay renders one row per
+ * level hls.js holds, so this is the player's view of the ladder rather than the deployment's.
+ */
+export function ladderHeights(rows: readonly OverlayRow[]): readonly number[] {
+  return rows
+    .filter((row) => row.section === OVERLAY_FIELDS.selectedRung.section)
+    .map((row) => LADDER_ROW_RE.exec(row.label))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => Number(match[1]));
+}
+
 export function readOverlayMetrics(rows: readonly OverlayRow[]): OverlayMetrics {
   const number = (field: { section: string; label: string }) => parseOverlayNumber(requireField(rows, field));
   const resolution = requireField(rows, OVERLAY_FIELDS.resolution);
@@ -125,6 +153,7 @@ export function readOverlayMetrics(rows: readonly OverlayRow[]): OverlayMetrics 
     selectedRungHeight: number(OVERLAY_FIELDS.selectedRung),
     abrEnabled: requireField(rows, OVERLAY_FIELDS.levelSelection).trim() === LEVEL_SELECTION_AUTO,
     bandwidthEstimateKbps: number(OVERLAY_FIELDS.bandwidthEstimate),
+    ladderHeights: ladderHeights(rows),
     fatalErrors: number(OVERLAY_FIELDS.fatalErrors) ?? 0,
     liveLatencyS: number(OVERLAY_FIELDS.liveLatency),
     liveTargetLatencyS: number(OVERLAY_FIELDS.liveTargetLatency),

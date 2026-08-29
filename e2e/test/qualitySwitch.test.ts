@@ -47,7 +47,9 @@ function watched(plans: readonly SamplePlan[]): ViewerSample[] {
       qualitySwitches: plan.switches ?? 0,
       abrEnabled: plan.abrEnabled ?? true,
       bandwidthEstimateKbps: plan.bandwidthKbps ?? 4000,
+      ladderHeights: [1080, 720, 480, 360],
       feedState: 'live',
+      feedStateMessage: null,
     } as ViewerSample;
   });
 }

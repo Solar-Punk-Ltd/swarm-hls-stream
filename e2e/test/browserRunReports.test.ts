@@ -66,6 +66,7 @@ function watched(plans: readonly SamplePlan[]): ViewerSample[] {
       qualitySwitches: 0,
       abrEnabled: true,
       bandwidthEstimateKbps: plan.bandwidthKbps ?? 6_000,
+      ladderHeights: [1080, 720, 480, 360],
       feedState: plan.feedState ?? 'live',
       feedStateMessage: plan.feedStateMessage ?? null,
     } as unknown as ViewerSample;

@@ -14,6 +14,11 @@ const PLAYING: OverlayRow[] = [
   { section: 'ABR', label: 'Level Selection', value: 'auto' },
   { section: 'ABR', label: 'Selected Rung', value: '720p' },
   { section: 'ABR', label: 'Bandwidth Estimate', value: '4210 kbps' },
+  { section: 'ABR', label: '\u00a0 1080p', value: '5000 kbps' },
+  { section: 'ABR', label: '\u25b8 720p', value: '2800 kbps' },
+  { section: 'ABR', label: '\u00a0 480p', value: '1200 kbps' },
+  { section: 'ABR', label: '\u00a0 360p', value: '700 kbps' },
+  { section: 'ABR', label: 'ABR would pick', value: '720p' },
   { section: 'Reliability', label: 'Fatal Errors', value: '0' },
   { section: 'Live', label: 'E2E Live Latency', value: '5.87 s' },
   { section: 'Live', label: 'Latency Target', value: '6.00 s' },
@@ -32,6 +37,7 @@ describe('reading the numbers off the shipped QoE overlay', () => {
       selectedRungHeight: 720,
       abrEnabled: true,
       bandwidthEstimateKbps: 4210,
+      ladderHeights: [1080, 720, 480, 360],
       fatalErrors: 0,
       liveLatencyS: 5.87,
       liveTargetLatencyS: 6,
@@ -163,5 +169,63 @@ describe('reading which rung the player chose off the overlay', () => {
 
     // The field named is whichever the reader reaches first, so the section is what this pins.
     assert.throws(() => readOverlayMetrics(gone), /under 'ABR'/);
+  });
+});
+
+/**
+ * ⭐ The rung list, which is what a VOD run needs and no live run had asked for. A recording whose
+ * master resolved but whose rung playlists did not is a player holding fewer levels than the
+ * deployment declares, and nothing else in a sample would show it.
+ */
+describe('reading the whole ladder the player parsed', () => {
+  it('reads every rung the overlay lists, in its own order', () => {
+    assert.deepEqual(readOverlayMetrics(PLAYING).ladderHeights, [1080, 720, 480, 360]);
+  });
+
+  /**
+   * ⛔⛔ The marker is `▸` on the current rung and a NON-BREAKING SPACE on every other one. A pattern
+   * built with an ordinary space matches only the rung being played, so a four rung ladder reads as
+   * ONE, which is exactly the failure this reading exists to catch.
+   */
+  it('reads the rungs that are not being played, not only the marked one', () => {
+    const heights = readOverlayMetrics(PLAYING).ladderHeights;
+
+    assert.ok(heights.includes(1080), 'the 1080p row is prefixed with a non-breaking space, not a marker');
+    assert.equal(heights.length, 4);
+  });
+
+  /** A single-rendition stream has no ladder rows at all, which is not the same as a missing reading. */
+  it('reads no ladder where the player holds none', () => {
+    const single = PLAYING.filter((row) => !/\d+p$/.test(row.label));
+
+    assert.deepEqual(readOverlayMetrics(single).ladderHeights, []);
+  });
+
+  /**
+   * ⛔ The narrowing, which is not free. Every other reading here is pinned to one section AND one
+   * label, and this one is pinned only by shape, so without the section it would take a rung from
+   * anywhere the overlay ever prints a height.
+   */
+  it('takes rungs from the ABR section and nowhere else', () => {
+    const elsewhere: OverlayRow[] = [...PLAYING, { section: 'Quality', label: '\u00a0 240p', value: '300 kbps' }];
+
+    assert.deepEqual(readOverlayMetrics(elsewhere).ladderHeights, [1080, 720, 480, 360]);
+  });
+
+  /**
+   * ⛔ Anchored at both ends. A label is prose, and a settings row naming a rung inside a sentence
+   * carries the same characters a rung row does without being one.
+   */
+  it('does not take a rung out of a label that merely contains one', () => {
+    const prose: OverlayRow[] = [...PLAYING, { section: 'ABR', label: 'floor is 240p', value: 'on' }];
+
+    assert.deepEqual(readOverlayMetrics(prose).ladderHeights, [1080, 720, 480, 360]);
+  });
+
+  /** The named ABR rows are not rungs, however much they look like one. */
+  it('does not mistake the selected rung or the prediction for a ladder entry', () => {
+    const onlyNamed = PLAYING.filter((row) => row.section !== 'ABR' || !/^[\u25b8\u00a0]/.test(row.label));
+
+    assert.deepEqual(readOverlayMetrics(onlyNamed).ladderHeights, []);
   });
 });
