@@ -41,6 +41,10 @@ const BASE: ViewerSample = {
   decodedFrames: 0,
   droppedFrames: 0,
   resolution: '1280×720',
+  selectedRungHeight: 720,
+  qualitySwitches: 0,
+  abrEnabled: true,
+  bandwidthEstimateKbps: 4200,
   feedStateMessage: null,
   feedState: FEED_STATE_LIVE,
 };

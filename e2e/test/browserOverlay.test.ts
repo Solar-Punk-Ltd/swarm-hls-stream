@@ -9,7 +9,11 @@ const PLAYING: OverlayRow[] = [
   { section: 'Rebuffering', label: 'Count', value: '0' },
   { section: 'Rebuffering', label: 'Duration', value: '0 ms' },
   { section: 'Quality', label: 'Delivered Resolution', value: '1280×720' },
+  { section: 'Quality', label: 'Quality Switches', value: '2' },
   { section: 'Quality', label: 'Dropped Frames', value: '4' },
+  { section: 'ABR', label: 'Level Selection', value: 'auto' },
+  { section: 'ABR', label: 'Selected Rung', value: '720p' },
+  { section: 'ABR', label: 'Bandwidth Estimate', value: '4210 kbps' },
   { section: 'Reliability', label: 'Fatal Errors', value: '0' },
   { section: 'Live', label: 'E2E Live Latency', value: '5.87 s' },
   { section: 'Live', label: 'Latency Target', value: '6.00 s' },
@@ -23,7 +27,11 @@ describe('reading the numbers off the shipped QoE overlay', () => {
       rebufferCount: 0,
       rebufferMs: 0,
       resolution: '1280×720',
+      qualitySwitches: 2,
       droppedFrames: 4,
+      selectedRungHeight: 720,
+      abrEnabled: true,
+      bandwidthEstimateKbps: 4210,
       fatalErrors: 0,
       liveLatencyS: 5.87,
       liveTargetLatencyS: 6,
@@ -99,5 +107,61 @@ describe('parsing one overlay value', () => {
 
   it('reads a value that is not a number at all as absent', () => {
     assert.equal(parseOverlayNumber('in progress'), null);
+  });
+});
+
+/**
+ * ⭐ The readings V2 is built on. A quality switch is a claim about what the PLAYER chose, and the
+ * only thing the harness had before this was the resolution the decoder produced. Those are different
+ * questions: two rungs can share a height, and a rung chosen but not yet decoded shows in neither.
+ */
+describe('reading which rung the player chose off the overlay', () => {
+  const withRow = (label: string, value: string): OverlayRow[] =>
+    PLAYING.map((row) => (row.label === label ? { ...row, value } : row));
+
+  it('reads the selected rung as a height, off a row written for a person', () => {
+    assert.equal(readOverlayMetrics(withRow('Selected Rung', '360p')).selectedRungHeight, 360);
+  });
+
+  /** Before hls.js has parsed a master there is no rung, and the overlay says so with its placeholder. */
+  it('reads a rung not yet picked as absent rather than as zero', () => {
+    assert.equal(readOverlayMetrics(withRow('Selected Rung', '\u2014')).selectedRungHeight, null);
+  });
+
+  /**
+   * \u26d4 The reading that decides whether a run is evidence about ABR at all. A pinned player rides
+   * one rung by instruction, so it cannot step down and its not doing so proves nothing.
+   */
+  it('says ABR is off when something pinned the level', () => {
+    assert.equal(readOverlayMetrics(withRow('Level Selection', 'pinned')).abrEnabled, false);
+    assert.equal(readOverlayMetrics(PLAYING).abrEnabled, true);
+  });
+
+  /**
+   * \u2b50 The counter moves on the DECISION. A player that decided to step down and could not get
+   * the frames out still counts the switch, and the delivered resolution still reads the old rung.
+   */
+  it('counts switches the player made, apart from the resolution it managed to deliver', () => {
+    const metrics = readOverlayMetrics(withRow('Quality Switches', '5'));
+
+    assert.equal(metrics.qualitySwitches, 5);
+    assert.equal(metrics.resolution, '1280\u00d7720', 'the delivered resolution is untouched by the counter');
+  });
+
+  it('reads the bandwidth the player believes it has, which is the input to the choice', () => {
+    assert.equal(readOverlayMetrics(withRow('Bandwidth Estimate', '820 kbps')).bandwidthEstimateKbps, 820);
+    assert.equal(readOverlayMetrics(withRow('Bandwidth Estimate', '\u2014')).bandwidthEstimateKbps, null);
+  });
+
+  /**
+   * \u26d4 Same rule as every other field here. An ABR section that was renamed or removed must stop
+   * the run, because a null selected rung and a player that never switched are indistinguishable in a
+   * summary, and V2 would pass by reading nothing.
+   */
+  it('refuses an overlay that no longer carries the ABR section it reads', () => {
+    const gone = PLAYING.filter((row) => row.section !== 'ABR');
+
+    // The field named is whichever the reader reaches first, so the section is what this pins.
+    assert.throws(() => readOverlayMetrics(gone), /under 'ABR'/);
   });
 });

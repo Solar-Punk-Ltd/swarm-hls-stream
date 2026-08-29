@@ -26,7 +26,11 @@ export const OVERLAY_FIELDS = {
   rebufferCount: { section: 'Rebuffering', label: 'Count' },
   rebufferDuration: { section: 'Rebuffering', label: 'Duration' },
   resolution: { section: 'Quality', label: 'Delivered Resolution' },
+  qualitySwitches: { section: 'Quality', label: 'Quality Switches' },
   droppedFrames: { section: 'Quality', label: 'Dropped Frames' },
+  levelSelection: { section: 'ABR', label: 'Level Selection' },
+  selectedRung: { section: 'ABR', label: 'Selected Rung' },
+  bandwidthEstimate: { section: 'ABR', label: 'Bandwidth Estimate' },
   fatalErrors: { section: 'Reliability', label: 'Fatal Errors' },
   liveLatency: { section: 'Live', label: 'E2E Live Latency' },
   liveTargetLatency: { section: 'Live', label: 'Latency Target' },
@@ -38,7 +42,26 @@ export interface OverlayMetrics {
   rebufferCount: number;
   rebufferMs: number;
   resolution: string | null;
+  /**
+   * How many times hls.js changed level this session, which is the switch counted rather than seen.
+   *
+   * ⭐ Distinct from {@link resolution} changing. The decoder reports what it is producing, so two
+   * rungs of the same height read as one, and a switch that has been chosen but not yet decoded is
+   * invisible. This counter moves on the decision.
+   */
+  qualitySwitches: number;
   droppedFrames: number;
+  /**
+   * The rung hls.js has selected, by height in pixels, or null before it has picked one.
+   *
+   * ⛔ The rung CHOSEN, which is not necessarily the one on screen. Read beside {@link resolution} to
+   * tell a player that decided to step down from one that managed to.
+   */
+  selectedRungHeight: number | null;
+  /** Whether the player is choosing its own rung. False means something pinned it and ABR is not under test. */
+  abrEnabled: boolean;
+  /** What hls.js believes the connection can carry, which is the input its choice is made from. */
+  bandwidthEstimateKbps: number | null;
   fatalErrors: number;
   liveLatencyS: number | null;
   /**
@@ -83,6 +106,9 @@ export function parseOverlayNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** What the overlay writes in `Level Selection` while the player is choosing its own rung. */
+export const LEVEL_SELECTION_AUTO = 'auto';
+
 export function readOverlayMetrics(rows: readonly OverlayRow[]): OverlayMetrics {
   const number = (field: { section: string; label: string }) => parseOverlayNumber(requireField(rows, field));
   const resolution = requireField(rows, OVERLAY_FIELDS.resolution);
@@ -93,7 +119,12 @@ export function readOverlayMetrics(rows: readonly OverlayRow[]): OverlayMetrics 
     rebufferCount: number(OVERLAY_FIELDS.rebufferCount) ?? 0,
     rebufferMs: number(OVERLAY_FIELDS.rebufferDuration) ?? 0,
     resolution: resolution.trim() === OVERLAY_EMPTY ? null : resolution.trim(),
+    qualitySwitches: number(OVERLAY_FIELDS.qualitySwitches) ?? 0,
     droppedFrames: number(OVERLAY_FIELDS.droppedFrames) ?? 0,
+    // `720p`, so the leading number is the height. The placeholder is a rung not yet picked.
+    selectedRungHeight: number(OVERLAY_FIELDS.selectedRung),
+    abrEnabled: requireField(rows, OVERLAY_FIELDS.levelSelection).trim() === LEVEL_SELECTION_AUTO,
+    bandwidthEstimateKbps: number(OVERLAY_FIELDS.bandwidthEstimate),
     fatalErrors: number(OVERLAY_FIELDS.fatalErrors) ?? 0,
     liveLatencyS: number(OVERLAY_FIELDS.liveLatency),
     liveTargetLatencyS: number(OVERLAY_FIELDS.liveTargetLatency),
