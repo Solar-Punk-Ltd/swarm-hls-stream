@@ -22,6 +22,7 @@
     "browser:fetch-backend-check": "tsx browser/fetch-backend-check.ts",
     "browser:byte-source-order": "tsx browser/byte-source-order.ts",
     "browser:crash": "tsx browser/crash.ts",
+    "browser:quality": "tsx browser/quality.ts",
     "probe:ahead": "node src/probes/feed-ahead-probe.mjs",
     "browser:vod": "tsx browser/vod.ts",
     "browser:buffer-sweep": "tsx browser/buffer-sweep.ts",

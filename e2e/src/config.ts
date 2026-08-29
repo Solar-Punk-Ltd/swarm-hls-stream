@@ -138,6 +138,19 @@ export interface E2EConfig {
    */
   abrLadderResolutions: readonly string[];
   /**
+   * Every rung `ABR_LADDER` declares, parsed whole: name, geometry and the bitrate it was cut at.
+   *
+   * ⛔ Its own parse rather than a shared one, because each of these three fields needs a DIFFERENT
+   * part of an entry to be present and a shared strictness would change what the other two accept.
+   * {@link abrRungs} needs only a name, {@link abrLadderResolutions} needs the two dimensions, and
+   * this needs the bitrate as well, so an entry missing it is dropped here and kept there.
+   *
+   * ⭐ What the bitrate is for is deriving a bandwidth that makes the upper rungs unaffordable, so
+   * `suites/viewer/quality-switch.test.ts` throttles against the ladder the deployment actually
+   * declares rather than against a number somebody picked.
+   */
+  abrLadder: readonly LadderRung[];
+  /**
    * What the operator declared this run is for, out of `E2E_EXPECT_ABR`.
    *
    * Separate from {@link abrEnabled} because they answer different questions. That one is what the
@@ -342,6 +355,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     abrEnabled: isEnabled(env(resolved, 'ABR_ENABLED', 'false')),
     abrRungs: ladderRungNames(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
     abrLadderResolutions: ladderResolutions(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
+    abrLadder: ladderRungs(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
     abrExpectation: readAbrExpectation(env(resolved, 'E2E_EXPECT_ABR', '')),
     viewerExpectation: readViewerExpectation(env(resolved, 'E2E_EXPECT_BROWSER', '')),
     segmentExpectation: readSegmentExpectation(env(resolved, 'E2E_EXPECT_SEGMENT_S', '')),
@@ -371,6 +385,37 @@ function ladderRungNames(spec: string): readonly string[] {
     .filter((entry) => entry.length > 0)
     .map((entry) => entry.split(':')[0])
     .filter((name) => name.length > 0);
+}
+
+/** One rung of `ABR_LADDER`, as the deployment declares it: `name:width:height:kbps`. */
+export interface LadderRung {
+  name: string;
+  width: number;
+  height: number;
+  /** What the engine was told to cut this rung at, which is the bandwidth it needs to be deliverable. */
+  kbps: number;
+}
+
+/**
+ * Every rung of `ABR_LADDER` parsed whole, in the order the deployment declares them.
+ *
+ * An entry missing any of the four parts, or carrying a number that is not one, is dropped rather
+ * than yielding a rung with a NaN bitrate. A NaN would propagate silently into any bandwidth derived
+ * from it and produce a throttle nobody chose.
+ */
+function ladderRungs(spec: string): readonly LadderRung[] {
+  return spec
+    .split(/\s+/)
+    .filter((entry) => entry.length > 0)
+    .map((entry) => entry.split(':'))
+    .filter((parts) => parts.length === 4 && parts.every((part) => part.length > 0))
+    .map(([name, width, height, kbps]) => ({
+      name,
+      width: Number(width),
+      height: Number(height),
+      kbps: Number(kbps),
+    }))
+    .filter((rung) => [rung.width, rung.height, rung.kbps].every((value) => Number.isFinite(value) && value > 0));
 }
 
 /**
