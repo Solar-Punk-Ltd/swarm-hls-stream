@@ -15,6 +15,7 @@ import { LadderFeedPoller } from '../src/components/SwarmHlsPlayer/LadderFeedPol
 import { ManifestFetchError, ManifestStateManager } from '../src/components/SwarmHlsPlayer/ManifestManagement.js';
 import { parseManifest } from '../src/components/SwarmHlsPlayer/playlist.js';
 import { TimedResponse } from '../src/utils/fetchWithTimeout.js';
+import { RequestJitter } from '../src/utils/requestJitter.js';
 
 const OWNER = 'aabbcc';
 const POLL_MS = 2;
@@ -529,6 +530,57 @@ describe('LadderFeedPoller feed health', () => {
         );
       } finally {
         poller.stop([served, held]);
+      }
+    });
+
+    /**
+     * ⛔ The trap in slicing a wait. What the poller is handed is not a deadline, it is a *fresh
+     * draw*: `ManifestFetcher` wires it to `RequestJitter.spread`, which randomises a quarter off
+     * the top on every call. A loop that re-reads it once per slice therefore re-rolls the dice
+     * once per slice, and the separation between two viewers who lost the same gateway in the same
+     * instant collapses from a quarter of the whole backoff to a quarter of one slice. That is the
+     * decorrelation quietly going away while every test still passes.
+     *
+     * So the wait is drawn once and counted down locally, and the tracker is asked a different and
+     * unjittered question each slice: not how long, but whether the hold still stands.
+     */
+    it('draws the spread once per backoff, not once per slice of one', async () => {
+      const topic = Topic.fromString('group-1-720p');
+      const gateway = new FakeGateway();
+      gateway.missingSlotStatus = 404;
+      gateway.publishFeedHead(topic, 0, manifest(1));
+
+      // Frozen, so the hold stands for the whole of the wait below and nothing returns early. What
+      // the poller is owed counts down separately, in real time, so both shapes terminate and what
+      // separates them is how often the spread was drawn rather than whether the loop ends.
+      const health = new FeedHealthTracker(() => 0);
+      health.recordGatewayFailure(topic.toString());
+
+      let draws = 0;
+      const jitter = new RequestJitter(0, () => {
+        draws++;
+        return 1;
+      });
+      const OWED_MS = 60;
+      const SLICE_MS = 5;
+      const startedAt = performance.now();
+      // Gated on the tracker exactly as production is, so that a hold which has been lifted owes
+      // nothing and no second backoff starts. The countdown itself is independent of the tracker's
+      // frozen clock, which is what lets the shape this guards against terminate and be counted
+      // rather than hang.
+      const owedMs = () =>
+        health.backoffRemainingMs(topic.toString()) === 0 ? 0 : Math.max(0, OWED_MS - (performance.now() - startedAt));
+
+      const poller = new LadderFeedPoller(state, gateway.fetchResource, SLICE_MS, health, () =>
+        jitter.spread(owedMs()),
+      );
+      poller.start(OWNER, [topic]);
+
+      try {
+        await waitFor(() => segmentCount(state, topic) === 1, 'the rung to finish waiting and read');
+        assert.equal(draws, 1, `the spread was drawn ${draws} times across one backoff`);
+      } finally {
+        poller.stop([topic]);
       }
     });
 

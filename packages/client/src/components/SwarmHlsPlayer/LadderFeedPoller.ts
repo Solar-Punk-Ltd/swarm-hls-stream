@@ -165,12 +165,12 @@ export class LadderFeedPoller {
   /**
    * The backoff the shared tracker has set for this rung's gateway, waited out interruptibly.
    *
-   * ⛔ **Re-read every slice rather than committed once, and that is the fix rather than a detail.**
-   * A rung that has reached the cap has scheduled one timer for the whole of it, and nothing but a
-   * teardown cancels a scheduled timer. So the rung cannot find out the fault is over: not from its
-   * own reads, because it is not making any, and not from the tracker either, however loudly the
-   * rungs beside it are being served. Every release path in {@link FeedHealthTracker} was already
-   * writing an answer this loop had stopped reading.
+   * ⛔ **Waited out in slices rather than in one committed timer, and that is the fix rather than a
+   * detail.** A rung that has reached the cap used to schedule a single timer for the whole of it,
+   * and nothing but a teardown cancels a scheduled timer. So the rung could not find out the fault
+   * was over: not from its own reads, because it was making none, and not from the tracker either,
+   * however loudly the rungs beside it were being served. Every release path in
+   * {@link FeedHealthTracker} was already writing an answer this loop had stopped reading.
    *
    * Measured 2026-08-29, live, on the four rung ladder: three unrelated faults each froze the
    * picture for 58.5 to 59.0 seconds, an **eight second** writer-bee pause included, which is fifty
@@ -180,12 +180,27 @@ export class LadderFeedPoller {
    * already runs at that cadence when it is healthy, and re-reading a local map that often costs a
    * timer and no request at all. It is also the tightest useful slice, since a hold released between
    * two of a healthy rung's own polls is released sooner than anything could act on it.
+   *
+   * ⛔ **The wait is drawn once and counted down here, and the tracker is asked something else.**
+   * What `backoffMs` returns is not a deadline but a fresh draw: it is wired to `RequestJitter`,
+   * which randomises a quarter off the top on every call so that viewers who lost one gateway in the
+   * same instant do not all return in the next one. Re-reading it per slice re-rolls that, taking
+   * the separation between two viewers from a quarter of the whole backoff down to a quarter of one
+   * slice. So each slice asks the unjittered question instead, which is the one that matters here:
+   * not how long, but whether the hold still stands.
    */
   private async honourBackoff(entry: PolledTopic): Promise<void> {
-    let owedMs = this.backoffMs(entry.hexTopic);
-    while (owedMs > 0 && !entry.stopped) {
-      await this.pauseFor(entry, Math.min(owedMs, this.pollIntervalMs));
-      owedMs = this.backoffMs(entry.hexTopic);
+    let remainingMs = this.backoffMs(entry.hexTopic);
+    while (remainingMs > 0 && !entry.stopped) {
+      // Never zero, or a poll interval of zero would stop the countdown converging and hold the
+      // rung here for good, where before it merely span.
+      const sliceMs = Math.max(1, Math.min(remainingMs, this.pollIntervalMs));
+      await this.pauseFor(entry, sliceMs);
+      remainingMs -= sliceMs;
+
+      if (this.feedHealth.backoffRemainingMs(entry.hexTopic) === 0) {
+        return;
+      }
     }
   }
 
