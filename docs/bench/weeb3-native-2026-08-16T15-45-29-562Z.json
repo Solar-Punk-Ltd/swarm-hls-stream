@@ -1,0 +1,2438 @@
+{
+  "measuredAt": "2026-08-16T15:45:29.562Z",
+  "watchUrl": "https://lat-murmeldjur.github.io/weeb-3/#/live/stream/8d8a30ff4cbcf8ad0e0773547686295f8157feb0/be608ecf-6a84-4301-bfb3-3f4e0f268f67",
+  "owner": "8d8a30ff4cbcf8ad0e0773547686295f8157feb0",
+  "topic": "be608ecf-6a84-4301-bfb3-3f4e0f268f67",
+  "countedSeconds": 239.1,
+  "realtimeRatio": 0.9996,
+  "steadyRealtimeRatio": 0.9996,
+  "startupSeconds": 1,
+  "mediaGainedS": 238.98,
+  "stalls": 2,
+  "segments": {
+    "done": 24,
+    "failed": 0,
+    "running": 1,
+    "meanMB": 0.172,
+    "meanDurationS": 0.5,
+    "resolutions": [
+      "1280x720"
+    ]
+  },
+  "peersAtEnd": 200,
+  "meanBufferAheadS": 5859.69,
+  "gatewayLess": true,
+  "offShellContacted": {
+    "docs.libp2p.io": 2
+  },
+  "offShellServedBytes": {},
+  "live": false,
+  "exhausted": false,
+  "edgeGrowthS": 0,
+  "appendedEdgeLagMedianS": 5860,
+  "appendedEdgeLagMaxS": 5979.53,
+  "behindProductionStartS": null,
+  "behindProductionEndS": null,
+  "behindProductionDriftS": null,
+  "endedAt": {
+    "ended": false,
+    "currentTime": 240.868773,
+    "duration": 5980.4
+  },
+  "totalRequests": 680,
+  "instrumentSound": true,
+  "instrumentFailures": [],
+  "samples": [
+    {
+      "atMs": 1786895141836,
+      "currentTime": 0.871888,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895142846,
+      "currentTime": 1.881806,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895143852,
+      "currentTime": 2.888036,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895144856,
+      "currentTime": 3.891798,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895145859,
+      "currentTime": 4.895233,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895146862,
+      "currentTime": 5.898116,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895147866,
+      "currentTime": 6.901638,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895148870,
+      "currentTime": 7.905404,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895149872,
+      "currentTime": 8.907501,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895150890,
+      "currentTime": 9.925274,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895151899,
+      "currentTime": 10.934546,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895152903,
+      "currentTime": 11.938929,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895153907,
+      "currentTime": 12.943107,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895154912,
+      "currentTime": 13.948053,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895155926,
+      "currentTime": 14.961631,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895156930,
+      "currentTime": 15.965448,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895157943,
+      "currentTime": 16.978505,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895158948,
+      "currentTime": 17.983503,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895159951,
+      "currentTime": 18.986246,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895160953,
+      "currentTime": 19.989022,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895161965,
+      "currentTime": 21.000299,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895162967,
+      "currentTime": 22.002873,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895163969,
+      "currentTime": 23.004356,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895164971,
+      "currentTime": 23.90708,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895165974,
+      "currentTime": 24.909863,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895166978,
+      "currentTime": 25.913294,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895167980,
+      "currentTime": 26.915658,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895169001,
+      "currentTime": 27.936385,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895170007,
+      "currentTime": 28.942624,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895171019,
+      "currentTime": 29.955051,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895172027,
+      "currentTime": 30.963163,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895173032,
+      "currentTime": 31.967677,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895174035,
+      "currentTime": 32.971229,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895175050,
+      "currentTime": 33.98626,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895176059,
+      "currentTime": 34.995024,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895177062,
+      "currentTime": 35.996898,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895178066,
+      "currentTime": 37.002223,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895179071,
+      "currentTime": 38.00667,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895180082,
+      "currentTime": 39.017458,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895181092,
+      "currentTime": 40.027665,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895182095,
+      "currentTime": 41.030996,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895183098,
+      "currentTime": 42.033955,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895184116,
+      "currentTime": 43.043755,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895185123,
+      "currentTime": 44.058683,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895186127,
+      "currentTime": 45.062537,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895187135,
+      "currentTime": 46.070922,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895188138,
+      "currentTime": 47.073681,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895189148,
+      "currentTime": 48.083811,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895190157,
+      "currentTime": 49.090899,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895191163,
+      "currentTime": 50.098432,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895192177,
+      "currentTime": 51.106278,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895193184,
+      "currentTime": 52.119978,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895194192,
+      "currentTime": 53.127531,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895195201,
+      "currentTime": 54.13712,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895196208,
+      "currentTime": 55.143393,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895197210,
+      "currentTime": 56.145961,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895198219,
+      "currentTime": 57.155217,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895199222,
+      "currentTime": 58.157498,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895200224,
+      "currentTime": 59.159347,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895201227,
+      "currentTime": 60.162721,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895202231,
+      "currentTime": 61.167028,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895203235,
+      "currentTime": 62.170938,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895204239,
+      "currentTime": 63.175132,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895205242,
+      "currentTime": 64.177781,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895206257,
+      "currentTime": 65.193002,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895207261,
+      "currentTime": 66.196295,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895208265,
+      "currentTime": 67.200719,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895209269,
+      "currentTime": 68.204381,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895210272,
+      "currentTime": 69.208013,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895211280,
+      "currentTime": 70.215474,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895212286,
+      "currentTime": 71.222127,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895213290,
+      "currentTime": 72.226019,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895214294,
+      "currentTime": 73.229661,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895215297,
+      "currentTime": 74.232773,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895216301,
+      "currentTime": 75.236481,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895217303,
+      "currentTime": 76.239023,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895218305,
+      "currentTime": 77.241043,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895219309,
+      "currentTime": 78.244488,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895220312,
+      "currentTime": 79.248159,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895221319,
+      "currentTime": 80.254483,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895222324,
+      "currentTime": 81.259249,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895223327,
+      "currentTime": 82.263175,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895224331,
+      "currentTime": 83.266911,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895225336,
+      "currentTime": 84.271473,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895226338,
+      "currentTime": 85.273894,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895227342,
+      "currentTime": 86.277715,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895228346,
+      "currentTime": 87.282135,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895229349,
+      "currentTime": 88.285084,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895230353,
+      "currentTime": 89.288938,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895231356,
+      "currentTime": 90.291977,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895232360,
+      "currentTime": 91.295328,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895233364,
+      "currentTime": 92.299336,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895234368,
+      "currentTime": 93.303554,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895235371,
+      "currentTime": 94.307197,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895236375,
+      "currentTime": 95.310951,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895237379,
+      "currentTime": 96.315241,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895238383,
+      "currentTime": 97.319231,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895239387,
+      "currentTime": 98.322749,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895240390,
+      "currentTime": 99.326197,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895241394,
+      "currentTime": 100.329393,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895242396,
+      "currentTime": 101.332234,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895243401,
+      "currentTime": 102.336506,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895244405,
+      "currentTime": 103.341085,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895245409,
+      "currentTime": 104.344458,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895246411,
+      "currentTime": 105.346948,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895247415,
+      "currentTime": 106.350416,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895248419,
+      "currentTime": 107.354677,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895249423,
+      "currentTime": 108.358734,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895250428,
+      "currentTime": 109.363342,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895251432,
+      "currentTime": 110.367378,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895252435,
+      "currentTime": 111.370615,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895253439,
+      "currentTime": 112.374576,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895254444,
+      "currentTime": 113.379275,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895255446,
+      "currentTime": 114.381632,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895256449,
+      "currentTime": 115.384732,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895257451,
+      "currentTime": 116.386563,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895258455,
+      "currentTime": 117.390633,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895259459,
+      "currentTime": 118.394513,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895260462,
+      "currentTime": 119.397999,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895261466,
+      "currentTime": 120.401871,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895262470,
+      "currentTime": 121.405559,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895263473,
+      "currentTime": 122.408926,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895264477,
+      "currentTime": 123.412387,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895265480,
+      "currentTime": 124.41557,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895266483,
+      "currentTime": 125.418674,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895267485,
+      "currentTime": 126.420692,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895268488,
+      "currentTime": 127.423574,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895269490,
+      "currentTime": 128.426116,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895270493,
+      "currentTime": 129.428555,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895271495,
+      "currentTime": 130.430814,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895272500,
+      "currentTime": 131.435587,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895273502,
+      "currentTime": 132.43821,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895274505,
+      "currentTime": 133.441151,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895275509,
+      "currentTime": 134.444557,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895276511,
+      "currentTime": 135.446933,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895277514,
+      "currentTime": 136.449322,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895278517,
+      "currentTime": 137.452391,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895279520,
+      "currentTime": 138.455364,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895280523,
+      "currentTime": 139.459204,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895281530,
+      "currentTime": 140.465721,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895282534,
+      "currentTime": 141.469778,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895283537,
+      "currentTime": 142.472304,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895284540,
+      "currentTime": 143.475366,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895285543,
+      "currentTime": 144.478977,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895286550,
+      "currentTime": 145.485948,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895287553,
+      "currentTime": 146.488913,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895288556,
+      "currentTime": 147.491974,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895289559,
+      "currentTime": 148.494649,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895290563,
+      "currentTime": 149.498235,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895291566,
+      "currentTime": 150.501742,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895292569,
+      "currentTime": 151.504423,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895293572,
+      "currentTime": 152.507988,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895294576,
+      "currentTime": 153.511775,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895295579,
+      "currentTime": 154.514644,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895296582,
+      "currentTime": 155.517635,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895297585,
+      "currentTime": 156.520536,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895298588,
+      "currentTime": 157.523982,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895299591,
+      "currentTime": 158.527119,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895300595,
+      "currentTime": 159.531035,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895301598,
+      "currentTime": 160.534181,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895302603,
+      "currentTime": 161.538239,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895303606,
+      "currentTime": 162.54157,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895304614,
+      "currentTime": 163.549772,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895305618,
+      "currentTime": 164.553869,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895306626,
+      "currentTime": 165.56189,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895307630,
+      "currentTime": 166.56528,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895308634,
+      "currentTime": 167.570141,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895309640,
+      "currentTime": 168.575693,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895310644,
+      "currentTime": 169.579513,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895311648,
+      "currentTime": 170.583555,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895312652,
+      "currentTime": 171.588027,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895313655,
+      "currentTime": 172.591247,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895314659,
+      "currentTime": 173.594369,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895315661,
+      "currentTime": 174.597256,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895316664,
+      "currentTime": 175.599934,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895317667,
+      "currentTime": 176.603141,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895318672,
+      "currentTime": 177.607655,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895319676,
+      "currentTime": 178.611495,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895320680,
+      "currentTime": 179.615831,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895321683,
+      "currentTime": 180.618833,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895322686,
+      "currentTime": 181.622177,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895323691,
+      "currentTime": 182.62631,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895324694,
+      "currentTime": 183.629583,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895325698,
+      "currentTime": 184.633936,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895326710,
+      "currentTime": 185.645745,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895327714,
+      "currentTime": 186.649949,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895328718,
+      "currentTime": 187.65365,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895329723,
+      "currentTime": 188.658384,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895330726,
+      "currentTime": 189.662103,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895331729,
+      "currentTime": 190.665198,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895332732,
+      "currentTime": 191.667643,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895333736,
+      "currentTime": 192.671546,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895334739,
+      "currentTime": 193.674641,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895335742,
+      "currentTime": 194.677511,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895336744,
+      "currentTime": 195.679686,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895337747,
+      "currentTime": 196.682884,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895338750,
+      "currentTime": 197.686153,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895339754,
+      "currentTime": 198.689664,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895340757,
+      "currentTime": 199.69284,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895341760,
+      "currentTime": 200.695986,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895342763,
+      "currentTime": 201.698431,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895343767,
+      "currentTime": 202.702346,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895344771,
+      "currentTime": 203.706463,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895345774,
+      "currentTime": 204.71021,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895346778,
+      "currentTime": 205.713282,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895347781,
+      "currentTime": 206.716266,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895348784,
+      "currentTime": 207.719274,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895349787,
+      "currentTime": 208.722835,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895350791,
+      "currentTime": 209.726705,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895351795,
+      "currentTime": 210.730713,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895352799,
+      "currentTime": 211.734908,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895353802,
+      "currentTime": 212.737972,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895354806,
+      "currentTime": 213.741993,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895355809,
+      "currentTime": 214.744705,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895356812,
+      "currentTime": 215.747636,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895357815,
+      "currentTime": 216.750629,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895358818,
+      "currentTime": 217.753464,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895359824,
+      "currentTime": 218.759675,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895360828,
+      "currentTime": 219.763824,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895361831,
+      "currentTime": 220.767137,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895362835,
+      "currentTime": 221.770403,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895363837,
+      "currentTime": 222.772939,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895364840,
+      "currentTime": 223.776235,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895365843,
+      "currentTime": 224.778825,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895366846,
+      "currentTime": 225.782146,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895367850,
+      "currentTime": 226.785527,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895368851,
+      "currentTime": 227.787158,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895369854,
+      "currentTime": 228.790165,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895370857,
+      "currentTime": 229.792862,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895371859,
+      "currentTime": 230.795096,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895372864,
+      "currentTime": 231.800047,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895373867,
+      "currentTime": 232.802717,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895374871,
+      "currentTime": 233.806338,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895375873,
+      "currentTime": 234.809119,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895376877,
+      "currentTime": 235.812259,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895377880,
+      "currentTime": 236.81621,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895378885,
+      "currentTime": 237.820431,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895379900,
+      "currentTime": 238.835287,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    },
+    {
+      "atMs": 1786895380916,
+      "currentTime": 239.852134,
+      "bufferedEnd": 5980.074,
+      "seekableEnd": 5980.4,
+      "duration": 5980.4,
+      "readyState": 4,
+      "paused": false,
+      "peers": 200
+    }
+  ],
+  "nodeMetricsDiff": "not collected, ALLOW_NO_NODE_METRICS=1"
+}
