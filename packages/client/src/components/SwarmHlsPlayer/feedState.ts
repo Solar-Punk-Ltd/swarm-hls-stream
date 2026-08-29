@@ -229,6 +229,41 @@ function stateOfHealth(health: TopicHealth | undefined, nowMs: number): FeedStat
 }
 
 /**
+ * One ladder's health as its viewer experiences it: what every rung agrees on, plus what was
+ * recorded against the entry topic directly.
+ *
+ * ⭐ **Agreement across the rungs, not the worst of them.** One gateway serves all five feeds, so a
+ * rung being served is proof the gateway answers, and a rung failing beside it is behind for a
+ * reason of its own rather than cut off. Taking the worst would raise the overlay on any single
+ * rung's flake. This is the same all-rungs rule the ended signal already uses.
+ *
+ * The end of the broadcast and the record of stopped pictures come from the entry topic alone,
+ * because that is where they are recorded and neither belongs to a rung: the broadcast ends across
+ * the whole group, and a stall is counted off the video element, which plays one rung at a time
+ * without saying which.
+ *
+ * The entry topic's own failures are deliberately left out. It is read once per load by the source
+ * fetch and never again, so a failure recorded there has nothing that would ever clear it, and the
+ * rungs report the same outage within a poll anyway.
+ */
+function foldLadderHealth(own: TopicHealth | undefined, rungs: readonly (TopicHealth | undefined)[]): TopicHealth {
+  const entry = own ?? HEALTHY;
+  if (rungs.length === 0) {
+    return entry;
+  }
+  const agreedOn = (read: (health: TopicHealth) => number): number =>
+    rungs.reduce((least, rung) => Math.min(least, read(rung ?? HEALTHY)), Number.POSITIVE_INFINITY);
+
+  return {
+    gatewayFailures: agreedOn((health) => health.gatewayFailures),
+    retryAtMs: entry.retryAtMs,
+    unservedSlotPolls: agreedOn((health) => health.unservedSlotPolls),
+    hasEnded: entry.hasEnded,
+    stallsAtMs: entry.stallsAtMs,
+  };
+}
+
+/**
  * Whether each topic's gateway is answering, and how long to leave a failing one alone.
  *
  * Separate from the fetcher and from the manifest state because it has to outlive both. The player
@@ -259,6 +294,21 @@ export class FeedHealthTracker {
   private readonly lastPublished = new Map<string, FeedState>();
 
   /**
+   * The rungs each ladder walks, keyed by the topic the viewer's own link names.
+   *
+   * ⛔ **Without this the overlay is blind on a ladder.** A viewer subscribes to the entry topic,
+   * the only one their link carries and the only one that survives a restart, while the rung topics
+   * are per session and are discovered from the master playlist. Every gateway fault is recorded
+   * against a rung, so `reconnecting` and `stalled` had no way to reach a watching viewer. Caught
+   * live by V6 on 2026-08-29: a gateway taken away froze the picture for 26.6 seconds and the client
+   * said nothing at all, which is how it says the feed is live.
+   */
+  private readonly rungsOfGroup = new Map<string, readonly string[]>();
+
+  /** Reverse of {@link rungsOfGroup}, so a rung's change can find the group that has to republish. */
+  private readonly groupOfRung = new Map<string, string>();
+
+  /**
    * @param now A monotonic clock. `Date.now` is not one: a system clock correction during an outage
    *   moves every deadline already scheduled against it, either releasing the backoff at once or
    *   holding it for as long as the correction was large.
@@ -266,7 +316,52 @@ export class FeedHealthTracker {
   constructor(private readonly now: () => number = () => performance.now()) {}
 
   state(topicId: string): FeedState {
-    return stateOfHealth(this.topics.get(topicId), this.now());
+    return stateOfHealth(this.healthFor(topicId), this.now());
+  }
+
+  /**
+   * Declare that `groupId` is watched on behalf of these rungs, replacing any previous membership.
+   *
+   * Idempotent, and safe to call with rungs already being walked: membership decides only how the
+   * group's state is read, never what any topic has recorded against it.
+   */
+  trackGroup(groupId: string, rungTopicIds: readonly string[]): void {
+    this.untrackGroup(groupId);
+    const rungs = [...new Set(rungTopicIds)].filter((rung) => rung !== groupId);
+    if (rungs.length === 0) {
+      return;
+    }
+
+    this.rungsOfGroup.set(groupId, rungs);
+    for (const rung of rungs) {
+      this.groupOfRung.set(rung, groupId);
+    }
+    this.publish(groupId, this.state(groupId));
+  }
+
+  /** Forget a ladder's membership. Each topic keeps whatever it had recorded against it. */
+  untrackGroup(groupId: string): void {
+    const rungs = this.rungsOfGroup.get(groupId);
+    if (rungs === undefined) {
+      return;
+    }
+
+    for (const rung of rungs) {
+      this.groupOfRung.delete(rung);
+    }
+    this.rungsOfGroup.delete(groupId);
+    this.publish(groupId, this.state(groupId));
+  }
+
+  private healthFor(topicId: string): TopicHealth | undefined {
+    const rungs = this.rungsOfGroup.get(topicId);
+    if (rungs === undefined) {
+      return this.topics.get(topicId);
+    }
+    return foldLadderHealth(
+      this.topics.get(topicId),
+      rungs.map((rung) => this.topics.get(rung)),
+    );
   }
 
   /**
@@ -470,6 +565,15 @@ export class FeedHealthTracker {
     }
 
     this.publish(topicId, this.state(topicId));
+    this.publishGroupOf(topicId);
+  }
+
+  /** A rung's change is its group's change too, because the overlay watches only the group. */
+  private publishGroupOf(topicId: string): void {
+    const group = this.groupOfRung.get(topicId);
+    if (group !== undefined) {
+      this.publish(group, this.state(group));
+    }
   }
 
   private evictOverflow(): void {
@@ -494,6 +598,7 @@ export class FeedHealthTracker {
   private publishAll(topicIds: string[]): void {
     for (const topicId of topicIds) {
       this.publish(topicId, FEED_STATE_LIVE);
+      this.publishGroupOf(topicId);
     }
   }
 

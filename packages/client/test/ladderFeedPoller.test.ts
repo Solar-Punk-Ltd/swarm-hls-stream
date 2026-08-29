@@ -666,3 +666,81 @@ describe('LadderFeedPoller feed health', () => {
     }
   });
 });
+
+/**
+ * ⛔ **The half of the overlay a ladder could not reach.** V6, live, 2026-08-29: a viewer's gateway
+ * was taken away, the picture froze for 26.6 seconds, and the client rendered nothing at all, which
+ * is how it says the feed is live. The viewer was told everything was fine over a frozen frame.
+ *
+ * The tracker fold is tested in `feedState.test.ts`. This is the wiring, and it is the half that
+ * actually failed: the fold is worth nothing unless the poller declares which rungs belong to the
+ * group the overlay subscribes to.
+ */
+describe('LadderFeedPoller telling the viewer the gateway is gone', () => {
+  const groupHex = Topic.fromString('group-1').toString();
+  let state: ManifestStateManager;
+
+  beforeEach(() => {
+    state = new ManifestStateManager();
+  });
+
+  it('reports a dark gateway against the group, which is the topic the overlay watches', async () => {
+    const topics = ['group-1-360p', 'group-1-720p'].map((t) => Topic.fromString(t));
+    const gateway = new FakeGateway();
+    const tracker = new FeedHealthTracker();
+    const seen: FeedState[] = [];
+    tracker.subscribe(groupHex, (feedState) => seen.push(feedState));
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+    poller.start(OWNER, topics, groupHex);
+
+    try {
+      await waitFor(() => tracker.state(groupHex) === FEED_STATE_RECONNECTING, 'the group to go reconnecting');
+      assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_RECONNECTING]);
+    } finally {
+      poller.stop(topics);
+    }
+  });
+
+  /** A rung still being served is proof the gateway answers, so the overlay must stay down. */
+  it('stays quiet while one rung is still being served', async () => {
+    const served = Topic.fromString('group-1-360p');
+    const dark = Topic.fromString('group-1-720p');
+    const gateway = new FakeGateway();
+    // An unwritten next slot is a 404 rather than a transport error, which is what "being served"
+    // means for a viewer who has caught up with the publisher. Left as the default it would make
+    // this rung a second dark one and the test would pass for the wrong reason.
+    gateway.missingSlotStatus = 404;
+    gateway.publishFeedHead(served, 0, manifest(1));
+    gateway.unreachableHeads.add(feedHeadPath(dark));
+
+    const tracker = new FeedHealthTracker();
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+    poller.start(OWNER, [served, dark], groupHex);
+
+    try {
+      await waitFor(() => tracker.state(dark.toString()) === FEED_STATE_RECONNECTING, 'the dark rung to notice');
+      assert.equal(tracker.state(groupHex), FEED_STATE_LIVE);
+    } finally {
+      poller.stop([served, dark]);
+    }
+  });
+
+  /** A source torn down and rebuilt starts the new rungs before it stops the old ones. */
+  it('keeps the membership while any rung of the group is still walking', async () => {
+    const kept = Topic.fromString('group-1-360p');
+    const dropped = Topic.fromString('group-1-720p');
+    const gateway = new FakeGateway();
+    const tracker = new FeedHealthTracker();
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, tracker);
+    poller.start(OWNER, [kept, dropped], groupHex);
+    poller.stop([dropped]);
+
+    try {
+      await waitFor(() => tracker.state(groupHex) === FEED_STATE_RECONNECTING, 'the group to still be reporting');
+    } finally {
+      poller.stop([kept]);
+    }
+  });
+});

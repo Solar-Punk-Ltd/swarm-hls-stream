@@ -75,6 +75,15 @@ export class LadderFeedPoller {
   ) {}
 
   public start(owner: string, topics: Topic[], groupHexTopic: string | null = null): void {
+    // Before the walks, so a rung that fails on its very first pass already has a group to report
+    // it against. The overlay subscribes to the group and to nothing else.
+    if (groupHexTopic !== null) {
+      this.feedHealth.trackGroup(
+        groupHexTopic,
+        topics.map((topic) => topic.toString()),
+      );
+    }
+
     for (const topic of topics) {
       const hexTopic = topic.toString();
       if (this.polled.has(hexTopic)) {
@@ -103,16 +112,37 @@ export class LadderFeedPoller {
   }
 
   public stop(topics: Topic[]): void {
+    const groups = new Set<string>();
+
     for (const topic of topics) {
       const hexTopic = topic.toString();
       const entry = this.polled.get(hexTopic);
       if (entry) {
+        if (entry.group !== null) {
+          groups.add(entry.group);
+        }
         entry.stopped = true;
         // Cut the wait short rather than letting a torn-down player hold a timer, and unblock
         // anything still awaiting a rung that will now never bootstrap.
         entry.wake?.();
         entry.markReady();
         this.polled.delete(hexTopic);
+      }
+    }
+
+    // Recomputed from what is still walking rather than untracked wholesale. A rung that has
+    // stopped records nothing, so leaving it in the membership would read as a healthy rung and
+    // hold the overlay down over an outage the remaining rungs are reporting. Untracking the whole
+    // group instead is just as wrong: a source torn down and rebuilt starts its new rungs before it
+    // stops the old ones, and the group has to keep reporting across that.
+    for (const group of groups) {
+      const stillWalking = [...this.polled.values()]
+        .filter((entry) => entry.group === group)
+        .map((entry) => entry.hexTopic);
+      if (stillWalking.length === 0) {
+        this.feedHealth.untrackGroup(group);
+      } else {
+        this.feedHealth.trackGroup(group, stillWalking);
       }
     }
   }

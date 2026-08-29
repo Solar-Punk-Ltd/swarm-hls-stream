@@ -822,3 +822,110 @@ describe('FeedHealthTracker on a gateway that is slow rather than absent', () =>
     );
   });
 });
+
+/**
+ * The ladder splits one broadcast across five feeds, and the overlay watches none of them.
+ *
+ * ⛔ **This is the fault V6 caught live on 2026-08-29.** A viewer's gateway was taken away for
+ * twenty-odd seconds. Every rung recorded its failures, the picture froze for 26.6s, and the client
+ * rendered nothing at all, which is how it says the feed is live. The viewer was told everything was
+ * fine while looking at a frozen frame.
+ *
+ * The overlay subscribes to the entry topic, the one in the `swarm://` source URL, because that is
+ * the only topic a viewer's link names and it is the one that survives a restart. The rung topics
+ * are per session and are discovered from the master playlist. So on the ladder every fault was
+ * being recorded against a topic nobody was watching, and the two states that describe a gateway
+ * problem, `reconnecting` and `stalled`, could not reach a viewer at all. `ended` reached them
+ * because {@link LadderFeedPoller} was already taught to record it against the group, and `degraded`
+ * reached them because playback stalls are counted off the video element against the entry topic.
+ *
+ * ⭐ **Every rung has to agree before the group says anything.** One gateway serves all five feeds,
+ * so a single rung being served is proof the gateway is answering, and the others are then behind
+ * for their own reasons. This is the same all-rungs rule the ended signal already uses.
+ */
+describe('FeedHealthTracker on a ladder, where the faults land on rungs and the overlay watches the group', () => {
+  const GROUP = 'entry-topic-the-viewer-linked';
+  const RUNG_1080 = 'rung-1080p';
+  const RUNG_360 = 'rung-360p';
+
+  function makeLadder() {
+    const clock = makeClock();
+    const seen: FeedState[] = [];
+    const tracker = new FeedHealthTracker(clock.now);
+    tracker.trackGroup(GROUP, [RUNG_1080, RUNG_360]);
+    tracker.subscribe(GROUP, (state) => seen.push(state));
+
+    return { clock, tracker, seen };
+  }
+
+  it('tells a viewer the gateway is gone when every rung has stopped reaching it', () => {
+    const { tracker, seen } = makeLadder();
+
+    tracker.recordGatewayFailure(RUNG_1080);
+    tracker.recordGatewayFailure(RUNG_360);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_RECONNECTING);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_RECONNECTING]);
+  });
+
+  /** A served rung is proof the gateway answers, so the rung beside it is behind, not unreachable. */
+  it('stays quiet while one rung is still being served', () => {
+    const { tracker } = makeLadder();
+
+    tracker.recordGatewayFailure(RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+  });
+
+  it('takes the overlay down again when a rung reads cleanly', () => {
+    const { tracker, seen } = makeLadder();
+
+    tracker.recordGatewayFailure(RUNG_1080);
+    tracker.recordGatewayFailure(RUNG_360);
+    tracker.recordGatewayReachable(RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_RECONNECTING, FEED_STATE_LIVE]);
+  });
+
+  /** The publisher stopping is the group's business; one rung caught up with it is not. */
+  it('calls the group stalled only once every rung has sat on an unserved slot', () => {
+    const { tracker } = makeLadder();
+
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
+      tracker.recordUnservedSlot(RUNG_1080);
+    }
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+
+    for (let poll = 0; poll < UNSERVED_SLOT_POLL_LIMIT; poll++) {
+      tracker.recordUnservedSlot(RUNG_360);
+    }
+    assert.equal(tracker.state(GROUP), FEED_STATE_STALLED);
+  });
+
+  /**
+   * The group's own entry still counts. Playback stalls are recorded against it directly, off the
+   * video element, and so is the end of the broadcast.
+   */
+  it('keeps the states that were already reaching the group', () => {
+    const { tracker } = makeLadder();
+
+    for (let stall = 0; stall < PLAYBACK_STALL_BURST; stall++) {
+      tracker.recordPlaybackStall(GROUP);
+    }
+    assert.equal(tracker.state(GROUP), FEED_STATE_DEGRADED);
+
+    tracker.recordFeedEnded(GROUP);
+    assert.equal(tracker.state(GROUP), FEED_STATE_ENDED);
+  });
+
+  /** A stream with no ladder has no members, and folding nothing must leave it exactly as it was. */
+  it('leaves a single-rendition stream reading off its own topic', () => {
+    const clock = makeClock();
+    const tracker = new FeedHealthTracker(clock.now);
+
+    tracker.recordGatewayFailure(TOPIC);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_RECONNECTING);
+  });
+});
