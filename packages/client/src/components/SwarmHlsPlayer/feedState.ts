@@ -295,24 +295,61 @@ export class FeedHealthTracker {
    * of reaching the gateway erases a stall the player has already reported, and the path that would
    * do it is the one every restart takes.
    *
-   * @param topicId The feed whose own read proved it, or every topic being held off when the proof
-   *   was not a feed read at all. A segment is fetched by chunk address through the one gateway all
-   *   these feeds are read from, so its arrival is a fact about that gateway rather than about any
-   *   one feed, and a viewer of another topic on the same page has learned it too.
+   * ⭐ **Every topic held off stops waiting, whichever one was proven.** One gateway serves every
+   * feed this tracker holds, so a read getting through is the same evidence a segment arriving is.
+   * A viewer on the four rung ladder holds five entries, each backing off on its own count, and
+   * leaving four of them asleep while the fifth is demonstrably being served is four rungs of
+   * nothing to switch to. Measured 2026-08-29: three unrelated faults under a watching ladder viewer
+   * each froze the picture for 58.5 to 59.0 seconds, an eight second writer-bee pause included.
+   *
+   * What the other topics do **not** get is their failure counts back, because a named read proves
+   * two different things about two different sets. That the gateway answers is proven for everyone.
+   * That *this* feed reads cleanly is proven only where it was read. So the count stands: the
+   * overlay keeps saying reconnecting rather than flickering once per sibling poll, a rung that
+   * fails again returns to the wait it had earned rather than to the base, and the walk loop's own
+   * poll interval is left as the floor on how often a rung with a fault of its own can ask.
+   *
+   * @param topicId The feed whose own read proved it, or omitted when the proof was not a feed read
+   *   at all. A segment is fetched by chunk address rather than against any feed, so there is no
+   *   topic to credit and every held one is forgiven outright.
    */
   recordGatewayReachable(topicId?: string): void {
-    const release = (id: string): void =>
-      this.update(id, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
+    // Snapshotted because writing to a topic rewrites the entry being walked: `update` deletes
+    // before it writes, so that eviction takes the least recently updated rather than the oldest.
+    for (const held of [...this.topics.keys()]) {
+      if (held === topicId) {
+        continue;
+      }
+      if (topicId === undefined) {
+        this.forgetFailures(held);
+      } else {
+        this.endHold(held);
+      }
+    }
 
     if (topicId !== undefined) {
-      release(topicId);
+      this.forgetFailures(topicId);
+    }
+  }
+
+  /** Back to healthy as far as reaching the gateway goes: nothing counted against it, nothing owed. */
+  private forgetFailures(topicId: string): void {
+    this.update(topicId, (health) => ({ ...health, gatewayFailures: 0, retryAtMs: 0 }));
+  }
+
+  /**
+   * Free to attempt now, with everything it has already failed still counted against it.
+   *
+   * Guarded rather than written unconditionally, because this runs for every held topic on every
+   * successful read. An unguarded write would rewrite an entry that did not change, which moves it
+   * to the end of the eviction order and makes the least recently *updated* topic no longer the one
+   * furthest from being watched.
+   */
+  private endHold(topicId: string): void {
+    if ((this.topics.get(topicId)?.retryAtMs ?? 0) === 0) {
       return;
     }
-    // Snapshotted because releasing a topic rewrites the entry being walked: `update` deletes before
-    // it writes, so that eviction takes the least recently updated rather than the oldest.
-    for (const held of [...this.topics.keys()]) {
-      release(held);
-    }
+    this.update(topicId, (health) => ({ ...health, retryAtMs: 0 }));
   }
 
   /**

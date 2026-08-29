@@ -121,6 +121,71 @@ describe('FeedHealthTracker backoff schedule', () => {
   });
 });
 
+/**
+ * What the schedule costs a viewer whose gateway has come back, which is a different question from
+ * what the schedule is.
+ *
+ * ⭐ **Measured 2026-08-29, live, in a real browser, on the four rung ABR ladder.** Three unrelated
+ * faults were injected under a watching viewer and the frozen picture was timed: killing the
+ * uploader process cost **59.0s**, pausing the writer bee node for **eight seconds** cost **58.9s**,
+ * and a writer bee outage cost **58.5s**. Three faults of three very different lengths landing
+ * within half a second of each other is one timer rather than three coincidences, and the timer is
+ * the schedule above. Waiting out 2 + 4 + 8 + 16 and then a first cap period is exactly sixty
+ * seconds in which nothing asks the gateway anything, and all three sat on it.
+ *
+ * ⛔ **The fault length barely enters into it.** An eight second pause cost 58.9 seconds of frozen
+ * picture, so fifty of those seconds were the client's own, spent holding off a gateway that had
+ * been answering again for the better part of a minute.
+ *
+ * The bound is the same client's cost on a single rendition, measured 2026-08-27 across both byte
+ * sources: a 20.5 second gateway stop froze the picture 28.6s and 27.6s, of which **10.7s and 9.9s
+ * were spent after the gateway had started answering again**. See
+ * `docs/bench/crash-at-an-in-tab-viewer-2026-08-27.md`. A ladder viewer walks five feeds where a
+ * single rendition walks one, and walking more of them must not make recovery worse than the
+ * one-rung case a ladder is built out of.
+ */
+describe('FeedHealthTracker recovery time', () => {
+  /** The slower of the two client-owned recoveries measured on a single rendition, 2026-08-27. */
+  const SINGLE_RENDITION_RECOVERY_MS = 10_700;
+
+  /** Attempts to run before calling the schedule flat, well past where any doubling can matter. */
+  const SCHEDULE_DEPTH = 64;
+
+  /** When the gateway is asked again, counting from the failure that started the fault. */
+  function attemptTimesMs(depth: number): number[] {
+    const times: number[] = [];
+    let at = 0;
+    for (let failures = 1; failures <= depth; failures++) {
+      const wait = backoffDelayMs(failures);
+      assert.ok(wait > 0, `failure ${failures} scheduled a wait of ${wait}ms, which is not a backoff`);
+      at += wait;
+      times.push(at);
+    }
+    return times;
+  }
+
+  it('re-asks a gateway that came back inside the time one rendition took to recover in full', () => {
+    const gaps = Array.from({ length: SCHEDULE_DEPTH }, (_, i) => backoffDelayMs(i + 1));
+    const longestGapMs = Math.max(...gaps);
+
+    assert.ok(
+      longestGapMs < SINGLE_RENDITION_RECOVERY_MS,
+      `a ladder viewer can go ${longestGapMs / 1_000}s without the gateway being asked, where a ` +
+        `single rendition recovered in full in ${SINGLE_RENDITION_RECOVERY_MS / 1_000}s`,
+    );
+  });
+
+  it('gets more than one more chance inside the minute all three 2026-08-29 faults froze for', () => {
+    const FROZEN_MS = 59_000;
+    const chances = attemptTimesMs(SCHEDULE_DEPTH).filter((at) => at < FROZEN_MS).length;
+
+    assert.ok(
+      chances >= 6,
+      `the gateway was asked ${chances} times in the ${FROZEN_MS / 1_000}s the picture was frozen`,
+    );
+  });
+});
+
 describe('FeedHealthTracker states', () => {
   it('starts a topic it has never seen as live', () => {
     const { tracker } = makeTracker();
@@ -307,17 +372,45 @@ describe('FeedHealthTracker proof that did not come from a feed read', () => {
     assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
   });
 
-  // Named, it stays one topic's business. A feed read only ever proves the gateway served that feed.
-  it('releases only the topic named, when one is', () => {
+  /**
+   * ⭐ The ladder half of the same defect, and why "a feed read only proves the gateway served that
+   * feed" was the wrong reading of it. One gateway serves every feed this tracker holds, so a feed
+   * read getting through is the same evidence a segment arriving is: the gateway is up. A viewer on
+   * the four rung ladder holds five entries, each backing off on its own count, and leaving four of
+   * them asleep while the fifth is demonstrably being served is four rungs of nothing to switch to.
+   *
+   * The two halves are split because they are proven by different things. Reaching the gateway is
+   * proven for everybody. That *this* feed reads cleanly is proven only where it was read, so the
+   * count stays where it stands: the overlay keeps saying reconnecting rather than flickering once
+   * per sibling poll, and a rung that fails again goes back to the wait it had earned rather than
+   * to the base.
+   */
+  it('lets every other held topic try again at once, and forgives only the one proven', () => {
     const clock = makeClock();
     const tracker = new FeedHealthTracker(clock.now);
 
     tracker.recordGatewayFailure(TOPIC);
     tracker.recordGatewayFailure(OTHER_TOPIC);
+    tracker.recordGatewayFailure(OTHER_TOPIC);
+    const earnedWaitMs = tracker.backoffRemainingMs(OTHER_TOPIC);
+    assert.ok(earnedWaitMs > 0, 'the rung under test was never held off in the first place');
+
     tracker.recordGatewayReachable(TOPIC);
 
     assert.equal(tracker.backoffRemainingMs(TOPIC), 0);
-    assert.equal(tracker.backoffRemainingMs(OTHER_TOPIC), 2_000);
+    assert.equal(tracker.backoffRemainingMs(OTHER_TOPIC), 0, 'a rung was left asleep beside a rung being served');
+    assert.equal(tracker.state(TOPIC), FEED_STATE_LIVE);
+    assert.equal(
+      tracker.state(OTHER_TOPIC),
+      FEED_STATE_RECONNECTING,
+      'a sibling poll must not read as this feed recovering',
+    );
+
+    tracker.recordGatewayFailure(OTHER_TOPIC);
+    assert.ok(
+      tracker.backoffRemainingMs(OTHER_TOPIC) > earnedWaitMs,
+      'failing again restarted the schedule instead of continuing it',
+    );
   });
 
   /**
