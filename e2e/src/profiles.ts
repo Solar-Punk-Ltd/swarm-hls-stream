@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { byteSourceFromEnv } from './browser/fetchBackendSweep.js';
 import { readAbrExpectation } from './abrCoverage.js';
 import { type EnvBag, readEnvFile } from './envFile.js';
+import { readSegmentExpectation, SEGMENT_UNDECLARED_REFUSAL } from './segmentLength.js';
 
 /** `<root>/e2e`, two levels up from `<root>/e2e/src/profiles.ts`. */
 const E2E_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -151,6 +152,8 @@ interface RunDeclarations {
   byteSource: string | undefined;
   /** Raw `E2E_EXPECT_ABR`. Unset is a gap, because a profile is supposed to have declared it. */
   abrExpectation: string | undefined;
+  /** Raw `E2E_EXPECT_SEGMENT_S`. Unset is a gap for the same reason, and a worse one. */
+  segmentSeconds: string | undefined;
 }
 
 /**
@@ -164,7 +167,7 @@ interface RunDeclarations {
  * the ones the drivers and the ABR gate actually enforce. They throw, and the throws are turned into
  * a returned reason so the preflight reports one legible failure instead of a stack trace.
  */
-export function runProfileRefusal({ byteSource, abrExpectation }: RunDeclarations): string | null {
+export function runProfileRefusal({ byteSource, abrExpectation, segmentSeconds }: RunDeclarations): string | null {
   try {
     byteSourceFromEnv(byteSource);
   } catch (error) {
@@ -175,8 +178,10 @@ export function runProfileRefusal({ byteSource, abrExpectation }: RunDeclaration
   }
 
   let expectation;
+  let segment;
   try {
     expectation = readAbrExpectation(abrExpectation ?? '');
+    segment = readSegmentExpectation(segmentSeconds ?? '');
   } catch (error) {
     return (error as Error).message;
   }
@@ -187,6 +192,13 @@ export function runProfileRefusal({ byteSource, abrExpectation }: RunDeclaration
       'tests rather than as skipped ones, so the summary would not say what was covered. Both ' +
       'shipped profiles set E2E_EXPECT_ABR=true. Something has blanked it in this environment, ' +
       'which beats the profile by design.'
+    );
+  }
+
+  if (segment === 'undeclared') {
+    return (
+      `${SEGMENT_UNDECLARED_REFUSAL} The shipped profiles declare different numbers on purpose, so ` +
+      'a blank here is something in this environment beating the profile rather than a profile gap.'
     );
   }
 

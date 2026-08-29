@@ -224,10 +224,19 @@ describe('the two profiles this repo ships', () => {
   });
 
   /**
-   * The byte source is the only thing that separates them. Anything else drifting between the two
-   * would put a second difference into every comparison a reader makes across the pair.
+   * The byte source separates them, and the segment length separates them BECAUSE the byte source
+   * does. Nothing else may, or a reader comparing the pair carries a difference nobody chose.
+   *
+   * ⛔⛔⛔ This assertion used to read `['BROWSER_FETCH_BACKEND']` alone, and widening it is the whole
+   * point rather than a concession. Measured 2026-08-16 by the sibling repo swarm-stream-loadlab: an
+   * in-tab weeb-3 node holds 1.000x of realtime on 2s segments and 0.426x on 0.5s, because it admits
+   * about one segment per second whatever its peer count, while the gateway measures the opposite
+   * optimum over 21 funded arms at 1.55s against 3.88s. One number therefore cannot serve both
+   * profiles, and a session that "fixed the inconsistency" by equalising them would hand one of the
+   * two viewer types a stage it cannot run on, silently. That is the failure this list guards
+   * against, in both directions.
    */
-  it('differs in the byte source and in nothing else', () => {
+  it('differs in the byte source and in the segment length that byte source needs', () => {
     const inBrowser = resolveRunProfile({ env: {}, dir: PROFILE_DIR }).applied;
     const lightClient = resolveRunProfile({ env: { [RUN_PROFILE_VAR]: 'light-client' }, dir: PROFILE_DIR }).applied;
 
@@ -235,7 +244,9 @@ describe('the two profiles this repo ships', () => {
       (key) => inBrowser[key] !== lightClient[key],
     );
 
-    assert.deepEqual(differing, ['BROWSER_FETCH_BACKEND']);
+    assert.deepEqual(differing.sort(), ['BROWSER_FETCH_BACKEND', 'E2E_EXPECT_SEGMENT_S']);
+    assert.equal(inBrowser.E2E_EXPECT_SEGMENT_S, '2');
+    assert.equal(lightClient.E2E_EXPECT_SEGMENT_S, '0.5');
   });
 
   /**
@@ -261,8 +272,11 @@ describe('the two profiles this repo ships', () => {
  * question for a live check, and none of that is here.
  */
 describe('refusing a run that contradicts the profile it named', () => {
+  /** A run with every declaration in place, so each case below changes exactly the one it is about. */
+  const DECLARED = { byteSource: 'weeb3', abrExpectation: 'true', segmentSeconds: '2' };
+
   it('passes a run whose byte source is a real condition and whose ladder is declared', () => {
-    assert.equal(runProfileRefusal({ byteSource: 'weeb3', abrExpectation: 'true' }), null);
+    assert.equal(runProfileRefusal(DECLARED), null);
   });
 
   /**
@@ -270,16 +284,16 @@ describe('refusing a run that contradicts the profile it named', () => {
    * an ambiguous one. Only a value nothing can read is a refusal.
    */
   it('passes a run that names no byte source at all', () => {
-    assert.equal(runProfileRefusal({ byteSource: undefined, abrExpectation: 'true' }), null);
-    assert.equal(runProfileRefusal({ byteSource: '', abrExpectation: 'true' }), null);
+    assert.equal(runProfileRefusal({ ...DECLARED, byteSource: undefined }), null);
+    assert.equal(runProfileRefusal({ ...DECLARED, byteSource: '' }), null);
   });
 
   it('passes a single-rendition run, which is a declaration and not a gap', () => {
-    assert.equal(runProfileRefusal({ byteSource: 'gateway', abrExpectation: 'false' }), null);
+    assert.equal(runProfileRefusal({ ...DECLARED, byteSource: 'gateway', abrExpectation: 'false' }), null);
   });
 
   it('refuses a byte source no parser reads, and names the spellings that work', () => {
-    const refusal = String(runProfileRefusal({ byteSource: 'weeb-3', abrExpectation: 'true' }));
+    const refusal = String(runProfileRefusal({ ...DECLARED, byteSource: 'weeb-3' }));
 
     assert.match(refusal, /BROWSER_FETCH_BACKEND/);
     assert.match(refusal, /gateway/);
@@ -287,7 +301,7 @@ describe('refusing a run that contradicts the profile it named', () => {
   });
 
   it('refuses a ladder declaration no parser reads', () => {
-    assert.match(String(runProfileRefusal({ byteSource: 'weeb3', abrExpectation: 'yes' })), /E2E_EXPECT_ABR/);
+    assert.match(String(runProfileRefusal({ ...DECLARED, abrExpectation: 'yes' })), /E2E_EXPECT_ABR/);
   });
 
   /**
@@ -297,13 +311,33 @@ describe('refusing a run that contradicts the profile it named', () => {
    * first suite of a paid sitting.
    */
   it('refuses the word ladder, which reads as a declaration and is not one', () => {
-    assert.notEqual(runProfileRefusal({ byteSource: 'weeb3', abrExpectation: 'ladder' }), null);
+    assert.notEqual(runProfileRefusal({ ...DECLARED, abrExpectation: 'ladder' }), null);
   });
 
   it('refuses a run that declared nothing about the ladder', () => {
     for (const abrExpectation of [undefined, '']) {
-      assert.match(String(runProfileRefusal({ byteSource: 'weeb3', abrExpectation })), /E2E_EXPECT_ABR/);
+      assert.match(String(runProfileRefusal({ ...DECLARED, abrExpectation })), /E2E_EXPECT_ABR/);
     }
+  });
+
+  it('refuses a segment length no arithmetic can use', () => {
+    assert.match(String(runProfileRefusal({ ...DECLARED, segmentSeconds: '2s' })), /E2E_EXPECT_SEGMENT_S/);
+  });
+
+  /**
+   * ⭐⭐⭐ The gap the 2026-08-16 loadlab measurement opened. An in-tab weeb-3 node sustains 1.000x of
+   * realtime on 2s segments and 0.426x on 0.5s, and the gateway measures the opposite optimum, so a
+   * run that did not say which it needs produces a number nobody can attribute to a viewer type.
+   * Refused here, with no network touched, rather than by the live gate after the stack is dialed.
+   */
+  it('refuses a run that declared nothing about the segment length it needs', () => {
+    for (const segmentSeconds of [undefined, '']) {
+      assert.match(String(runProfileRefusal({ ...DECLARED, segmentSeconds })), /E2E_EXPECT_SEGMENT_S/);
+    }
+  });
+
+  it('passes a run that declared it does not pin a segment length', () => {
+    assert.equal(runProfileRefusal({ ...DECLARED, segmentSeconds: 'any' }), null);
   });
 
   /** Every profile on disk has to pass its own gate, or the default run cannot start. */
@@ -315,6 +349,7 @@ describe('refusing a run that contradicts the profile it named', () => {
         runProfileRefusal({
           byteSource: applied.BROWSER_FETCH_BACKEND,
           abrExpectation: applied.E2E_EXPECT_ABR,
+          segmentSeconds: applied.E2E_EXPECT_SEGMENT_S,
         }),
         null,
         `${name} must pass its own preflight`,

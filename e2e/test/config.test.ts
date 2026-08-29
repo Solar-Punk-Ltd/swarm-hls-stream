@@ -412,3 +412,33 @@ describe('whether the run expects a real viewer', () => {
     assert.throws(() => loadConfig({ env: {}, rootDir }), /E2E_EXPECT_BROWSER/);
   });
 });
+
+/**
+ * How long a segment the run needs, read the same way the other two declarations are.
+ *
+ * The number differs between the two shipped profiles on purpose, because the two viewer types
+ * measured opposite optima on 2026-08-16. See `src/segmentLength.ts` for the figures.
+ */
+describe('what segment length the run needs', () => {
+  it('is undeclared when nothing says, which is what makes the gate refuse', () => {
+    assert.equal(loadConfig({ env: {}, rootDir: fixtureRoot() }).segmentExpectation, 'undeclared');
+  });
+
+  it('reads the number out of the env, so a deployment can state it once', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_EXPECT_SEGMENT_S=2\n' });
+
+    assert.equal(loadConfig({ env: {}, rootDir }).segmentExpectation, 2);
+  });
+
+  it('reads the word that waives the check, which is a declaration and not a gap', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_EXPECT_SEGMENT_S=any\n' });
+
+    assert.equal(loadConfig({ env: {}, rootDir }).segmentExpectation, 'any');
+  });
+
+  it('refuses a value no arithmetic can use', () => {
+    const rootDir = fixtureRoot({ root: 'E2E_EXPECT_SEGMENT_S=two\n' });
+
+    assert.throws(() => loadConfig({ env: {}, rootDir }), /E2E_EXPECT_SEGMENT_S/);
+  });
+});

@@ -33,6 +33,7 @@ import { describeRunProfile, runProfileRefusal } from '../../src/profiles.js';
 const refusal = runProfileRefusal({
   byteSource: process.env.BROWSER_FETCH_BACKEND,
   abrExpectation: process.env.E2E_EXPECT_ABR,
+  segmentSeconds: process.env.E2E_EXPECT_SEGMENT_S,
 });
 
 describe('preflight: the run is the profile it says it is', () => {

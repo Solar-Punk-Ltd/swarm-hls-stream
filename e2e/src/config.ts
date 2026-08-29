@@ -19,6 +19,7 @@ import { type AbrExpectation, readAbrExpectation } from './abrCoverage.js';
 import { type EnvBag, layerEnv, processEnv, readEnvFile } from './envFile.js';
 import { type OmePortVar, type PortVar, requireValidPortSlot, resolveOmePort, resolvePort } from './ports.js';
 import { applyRunProfile, type RunProfile } from './profiles.js';
+import { readSegmentExpectation, type SegmentExpectation } from './segmentLength.js';
 import { readViewerExpectation, type ViewerExpectation } from './viewerCoverage.js';
 
 /** The repository root, three levels up from this file (`<root>/e2e/src/config.ts`). */
@@ -145,6 +146,16 @@ export interface E2EConfig {
    * refuses a run that never said which of the two it is.
    */
   viewerExpectation: ViewerExpectation;
+  /**
+   * How long a segment this run needs, out of `E2E_EXPECT_SEGMENT_S`.
+   *
+   * The same shape as {@link abrExpectation} and for the same reason, except that the two shipped
+   * profiles declare DIFFERENT numbers on purpose: an in-tab weeb-3 node sustains realtime on 2s
+   * segments and 0.426x on 0.5s, while the gateway measures the opposite optimum. See
+   * `src/segmentLength.ts` for the measurement, and `suites/preflight/segment-length.test.ts` for
+   * the gate that refuses a stack producing the other one.
+   */
+  segmentExpectation: SegmentExpectation;
   /** Env files that were actually found and read, in precedence order. Printed by the smoke test. */
   envFiles: readonly string[];
 }
@@ -323,6 +334,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     abrRungs: ladderRungNames(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
     abrExpectation: readAbrExpectation(env(resolved, 'E2E_EXPECT_ABR', '')),
     viewerExpectation: readViewerExpectation(env(resolved, 'E2E_EXPECT_BROWSER', '')),
+    segmentExpectation: readSegmentExpectation(env(resolved, 'E2E_EXPECT_SEGMENT_S', '')),
     envFiles: [rootPath, enginePath],
   };
 }
