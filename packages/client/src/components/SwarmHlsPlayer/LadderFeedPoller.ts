@@ -131,6 +131,7 @@ export class LadderFeedPoller {
       // Before the pass, not after it. A gateway recorded as failing has earned a backoff, so a dead
       // gateway is polled at 2s then 4s then 8s up to the cap rather than flat at the poll interval
       // times every rung, which was around 160 requests per 30s against a gateway already down.
+      // Nothing here relaxes that: a rung whose siblings are also failing has nothing to release it.
       await this.honourBackoff(entry);
       if (entry.stopped) {
         return;
@@ -161,11 +162,30 @@ export class LadderFeedPoller {
     }
   }
 
-  /** The backoff the shared tracker has set for this rung's gateway, waited out interruptibly. */
+  /**
+   * The backoff the shared tracker has set for this rung's gateway, waited out interruptibly.
+   *
+   * ⛔ **Re-read every slice rather than committed once, and that is the fix rather than a detail.**
+   * A rung that has reached the cap has scheduled one timer for the whole of it, and nothing but a
+   * teardown cancels a scheduled timer. So the rung cannot find out the fault is over: not from its
+   * own reads, because it is not making any, and not from the tracker either, however loudly the
+   * rungs beside it are being served. Every release path in {@link FeedHealthTracker} was already
+   * writing an answer this loop had stopped reading.
+   *
+   * Measured 2026-08-29, live, on the four rung ladder: three unrelated faults each froze the
+   * picture for 58.5 to 59.0 seconds, an **eight second** writer-bee pause included, which is fifty
+   * seconds of a client holding off a gateway that had come back.
+   *
+   * A slice is the poll interval, so no new number is introduced and none is needed: the rung
+   * already runs at that cadence when it is healthy, and re-reading a local map that often costs a
+   * timer and no request at all. It is also the tightest useful slice, since a hold released between
+   * two of a healthy rung's own polls is released sooner than anything could act on it.
+   */
   private async honourBackoff(entry: PolledTopic): Promise<void> {
-    const waitMs = this.backoffMs(entry.hexTopic);
-    if (waitMs > 0) {
-      await this.pauseFor(entry, waitMs);
+    let owedMs = this.backoffMs(entry.hexTopic);
+    while (owedMs > 0 && !entry.stopped) {
+      await this.pauseFor(entry, Math.min(owedMs, this.pollIntervalMs));
+      owedMs = this.backoffMs(entry.hexTopic);
     }
   }
 

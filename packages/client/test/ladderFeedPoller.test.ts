@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'vitest';
 
 import {
+  backoffDelayMs,
   FEED_STATE_ENDED,
   FEED_STATE_LIVE,
   FEED_STATE_RECONNECTING,
@@ -17,6 +18,9 @@ import { TimedResponse } from '../src/utils/fetchWithTimeout.js';
 
 const OWNER = 'aabbcc';
 const POLL_MS = 2;
+
+/** Far enough down the schedule that the doubling has flattened, whatever the cap is set to. */
+const SETTLED_SCHEDULE_ATTEMPT = 32;
 
 /** A cumulative live manifest, the shape the uploader publishes at each feed index. */
 function manifest(segments: number, finalized = false): string {
@@ -34,6 +38,10 @@ function socPath(topic: Topic, index: number): string {
   return `soc/${OWNER}/${makeFeedIdentifier(topic, FeedIndex.fromBigInt(BigInt(index))).toString()}`;
 }
 
+function feedHeadPath(topic: Topic): string {
+  return `feeds/${OWNER}/${topic.toString()}`;
+}
+
 /**
  * Serves whatever has been published so far and 404s the rest, which is exactly how a feed behaves
  * while a stream is running: the next index does not exist yet, and then it does.
@@ -49,11 +57,20 @@ class FakeGateway {
    * gateway that is not answering at all.
    */
   public missingSlotStatus?: number;
+  /**
+   * Feed head paths the gateway will not answer at all, whatever is published against them.
+   *
+   * Models the case the sibling release exists for, one rung failing while another is being served,
+   * which `missingSlotStatus` cannot express because it is a property of the gateway rather than of
+   * a feed. Only the head path is refusable, and only the head path is needed: a rung refused here
+   * never bootstraps, so it never asks for anything else.
+   */
+  public readonly unreachableHeads = new Set<string>();
 
   private readonly held = new Map<string, Promise<void>>();
 
   publishFeedHead(topic: Topic, index: number, body: string): void {
-    this.responses.set(`feeds/${OWNER}/${topic.toString()}`, body);
+    this.responses.set(feedHeadPath(topic), body);
     this.responses.set(`__index__${topic.toString()}`, index.toString(16));
   }
 
@@ -87,6 +104,10 @@ class FakeGateway {
     const blocked = this.held.get(path);
     if (blocked) {
       await blocked;
+    }
+
+    if (this.unreachableHeads.has(path)) {
+      throw new Error(`Failed to fetch: ${path}`);
     }
 
     const body = this.responses.get(path);
@@ -463,6 +484,97 @@ describe('LadderFeedPoller feed health', () => {
 
     assert.equal(seen[0], FEED_STATE_LIVE, 'a fresh subscriber starts from live');
     assert.ok(seen.includes(FEED_STATE_RECONNECTING), 'a ladder outage must reach the overlay, not stay silent');
+  });
+
+  /**
+   * ⭐ The measured defect. Three unrelated faults under a watching ladder viewer on 2026-08-29 each
+   * froze the picture for 58.5 to 59.0 seconds, an eight second writer-bee pause included, because
+   * every rung that had reached the cap was asleep on a committed timer and could not find out the
+   * fault was over. The clock is frozen in both tests below, so nothing any rung is owed can elapse
+   * on its own: every millisecond of recovery has to come from a sibling being served.
+   */
+  describe('coming back from a backoff a fault is already over', () => {
+    /** Drives a rung to where the schedule flattens, the way an outage drives it. */
+    function holdAtTheCap(health: FeedHealthTracker, hexTopic: string): number {
+      const capMs = backoffDelayMs(SETTLED_SCHEDULE_ATTEMPT);
+      while (health.backoffRemainingMs(hexTopic) < capMs) {
+        health.recordGatewayFailure(hexTopic);
+      }
+      return capMs;
+    }
+
+    it('wakes a rung held at the cap as soon as a sibling rung is served', async () => {
+      const served = Topic.fromString('group-1-360p');
+      const held = Topic.fromString('group-1-1080p');
+      const gateway = new FakeGateway();
+      // Both rungs are serveable: the fault is over, which is the whole point. The follow-up 404 is
+      // the ordinary case for a viewer who has caught up, and never a fault.
+      gateway.missingSlotStatus = 404;
+      gateway.publishFeedHead(served, 0, manifest(1));
+      gateway.publishFeedHead(held, 0, manifest(1));
+
+      const health = new FeedHealthTracker(() => 0);
+      holdAtTheCap(health, held.toString());
+
+      const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, health, (hexTopic) =>
+        health.backoffRemainingMs(hexTopic),
+      );
+      poller.start(OWNER, [served, held]);
+
+      try {
+        await waitFor(() => segmentCount(state, served) === 1, 'the sibling rung to be served');
+        await waitFor(
+          () => segmentCount(state, held) === 1,
+          'the held rung to come back on the sibling evidence rather than on its own timer',
+        );
+      } finally {
+        poller.stop([served, held]);
+      }
+    });
+
+    /**
+     * The brake on the wake. Sibling evidence clears the wait but not the failure count, so a rung
+     * with a fault of its own is asked again promptly and then no faster than the walk loop asks
+     * anything: a rung that keeps failing beside one that keeps succeeding must cost the gateway
+     * what one healthy rung costs it, not more.
+     */
+    it('does not ask a rung with a fault of its own more often than a healthy rung', async () => {
+      const served = Topic.fromString('group-1-360p');
+      const broken = Topic.fromString('group-1-1080p');
+      const gateway = new FakeGateway();
+      gateway.missingSlotStatus = 404;
+      gateway.publishFeedHead(served, 0, manifest(1));
+      gateway.publishFeedHead(broken, 0, manifest(1));
+      gateway.unreachableHeads.add(feedHeadPath(broken));
+
+      const health = new FeedHealthTracker(() => 0);
+      holdAtTheCap(health, broken.toString());
+
+      const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, health, (hexTopic) =>
+        health.backoffRemainingMs(hexTopic),
+      );
+      poller.start(OWNER, [served, broken]);
+
+      try {
+        await waitFor(() => segmentCount(state, served) === 1, 'the sibling rung to be served');
+        // Counted from a common start rather than from zero, so what is compared is two rates over
+        // one window and not two lifetimes with different beginnings.
+        const from = gateway.requests.length;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const asked = gateway.requests.slice(from);
+
+        const brokenAsks = asked.filter((path) => path === feedHeadPath(broken)).length;
+        const healthyAsks = asked.filter((path) => path.startsWith('soc/')).length;
+
+        assert.ok(brokenAsks > 0, 'a rung whose gateway is answering for its siblings was never re-asked');
+        assert.ok(
+          brokenAsks <= healthyAsks + 2,
+          `the broken rung was asked ${brokenAsks} times against ${healthyAsks} for a healthy one`,
+        );
+      } finally {
+        poller.stop([served, broken]);
+      }
+    });
   });
 
   it('does not back off a rung that has merely caught up with the publisher', async () => {
