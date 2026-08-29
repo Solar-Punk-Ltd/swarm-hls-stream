@@ -76,6 +76,20 @@ export interface ViewerSample {
   /** As the player decoded it, so `1280x720` here is what arrived rather than what was requested. */
   resolution: string | null;
   /**
+   * The rung hls.js has SELECTED, by height, or null before it has picked one.
+   *
+   * ⭐ The pair with {@link resolution} is what makes a quality switch legible. This one moves when
+   * the player decides, that one moves when the decoder catches up, and a viewer who chose to step
+   * down and could not is the gap between them.
+   */
+  selectedRungHeight: number | null;
+  /** Level changes hls.js has counted this session, which moves on the decision rather than the frame. */
+  qualitySwitches: number;
+  /** Whether the player was choosing its own rung. False means ABR was not what produced this sample. */
+  abrEnabled: boolean;
+  /** What hls.js believed the connection could carry, in kbps, which is the input to its choice. */
+  bandwidthEstimateKbps: number | null;
+  /**
    * What the shipped `FeedStateOverlay` was telling the viewer, or null when it was telling them
    * nothing, which is what it renders while the feed is live.
    *
@@ -564,4 +578,50 @@ function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+}
+
+/** Media seconds per wall second over one stretch of a run, with the wall time it covers. */
+export interface PhaseAdvance {
+  ratio: number;
+  wallMs: number;
+  samples: number;
+}
+
+/** The samples of one stretch and the intervals between them. */
+export interface Phase {
+  samples: readonly ViewerSample[];
+  advances: readonly PlaybackAdvance[];
+}
+
+/**
+ * Split on the interval rather than on the sample.
+ *
+ * An advance describes the gap between two samples, so the interval that straddles the boundary
+ * belongs to neither side cleanly. It is assigned to the phase it **ends** in, which is the
+ * pessimistic reading: an interval half of which was already under the treatment counts as under it.
+ * The alternative would report the first frozen interval of every outage as part of the healthy
+ * baseline.
+ */
+export function phaseOf(samples: readonly ViewerSample[], from: number, to: number): Phase {
+  const advances = playbackAdvances(samples);
+  const kept: PlaybackAdvance[] = [];
+  const keptSamples: ViewerSample[] = [];
+
+  samples.forEach((sample, i) => {
+    if (sample.atMs < from || sample.atMs >= to) {
+      return;
+    }
+    keptSamples.push(sample);
+    if (i > 0) {
+      kept.push(advances[i - 1]);
+    }
+  });
+
+  return { samples: keptSamples, advances: kept };
+}
+
+export function advanceOf(phase: Phase): PhaseAdvance {
+  const wallMs = phase.advances.reduce((total, advance) => total + advance.wallMs, 0);
+  const mediaMs = phase.advances.reduce((total, advance) => total + advance.ratio * advance.wallMs, 0);
+  return { ratio: wallMs > 0 ? mediaMs / wallMs : 0, wallMs, samples: phase.samples.length };
 }

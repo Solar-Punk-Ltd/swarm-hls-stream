@@ -22,7 +22,14 @@
  * command, so the fault's time and the sample's time need no reconciling.
  */
 
-import { type PlaybackAdvance, playbackAdvances, STALLED_ADVANCE_RATIO, type ViewerSample } from './session.js';
+import {
+  advanceOf,
+  type PhaseAdvance,
+  phaseOf,
+  playbackAdvances,
+  STALLED_ADVANCE_RATIO,
+  type ViewerSample,
+} from './session.js';
 
 /** When the fault was applied and when it was lifted, on the clock that applied it. */
 export interface FaultWindow {
@@ -48,13 +55,6 @@ export interface FaultWindow {
    * {@link liftedAtMs} is used and the report says the figure includes startup.
    */
   servingAtMs: number | null;
-}
-
-/** Media seconds per wall second over one stretch of a run, with the wall time it covers. */
-export interface PhaseAdvance {
-  ratio: number;
-  wallMs: number;
-  samples: number;
 }
 
 export interface RecoveryVerdict {
@@ -102,43 +102,6 @@ export interface RecoveryVerdict {
    * exactly where hls.js now wants it.
    */
   targetRaisedByS: number;
-}
-
-interface Phase {
-  samples: ViewerSample[];
-  advances: PlaybackAdvance[];
-}
-
-/**
- * Split on the interval rather than on the sample.
- *
- * An advance describes the gap between two samples, so the interval that straddles the fault belongs
- * to neither side cleanly. It is assigned to the phase it **ends** in, which is the pessimistic
- * reading: an interval half of which was already faulted counts as faulted. The alternative would
- * report the first frozen interval of every outage as part of the healthy baseline.
- */
-function phaseOf(samples: readonly ViewerSample[], from: number, to: number): Phase {
-  const advances = playbackAdvances(samples);
-  const kept: PlaybackAdvance[] = [];
-  const keptSamples: ViewerSample[] = [];
-
-  samples.forEach((sample, i) => {
-    if (sample.atMs < from || sample.atMs >= to) {
-      return;
-    }
-    keptSamples.push(sample);
-    if (i > 0) {
-      kept.push(advances[i - 1]);
-    }
-  });
-
-  return { samples: keptSamples, advances: kept };
-}
-
-function advanceOf(phase: Phase): PhaseAdvance {
-  const wallMs = phase.advances.reduce((total, advance) => total + advance.wallMs, 0);
-  const mediaMs = phase.advances.reduce((total, advance) => total + advance.ratio * advance.wallMs, 0);
-  return { ratio: wallMs > 0 ? mediaMs / wallMs : 0, wallMs, samples: phase.samples.length };
 }
 
 /** Was the picture moving between this sample and the one before it? */
