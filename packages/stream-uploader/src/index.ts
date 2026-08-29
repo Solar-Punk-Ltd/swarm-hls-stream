@@ -15,6 +15,7 @@ import { loadEngines } from './engines/load.js';
 import { BeePublisherPool } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
+import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
 import { registerCrashHandlers, registerShutdownSignals } from './libs/processSignals.js';
@@ -71,6 +72,12 @@ async function start() {
     // publishing a one-entry master for it would buy a second feed and no choice.
     const masterWriter = config.abr ? new MasterFeedWriter(publishers, new PrivateKey(config.streamKey)) : undefined;
 
+    // Also ladder-only, and in a subdirectory for the same reason the catalog index is: RecoveryStore
+    // scans stateDir for `*.json` and would otherwise offer this file up as a stream to recover.
+    const ladderGroupStore = config.abr
+      ? new LadderGroupStore(path.join(config.stateDir, 'ladder', 'groups.json'))
+      : undefined;
+
     const streamCatalog = new StreamCatalog(
       publishers,
       config.streamKey,
@@ -89,6 +96,7 @@ async function start() {
       segmentDedupWindow: config.segmentDedupWindow,
       segmentRedundancy: config.segmentRedundancy,
       ladder: config.abr?.ladder,
+      ladderGroupStore,
     });
 
     lifecycle.trackOrchestrator(streamOrchestrator);

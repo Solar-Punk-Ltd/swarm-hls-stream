@@ -37,6 +37,7 @@ import { BeePublisherPool } from './BeePublisherPool.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
+import { LadderGroupStore } from './LadderGroupStore.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -83,6 +84,11 @@ export interface StreamOrchestratorConfig {
   segmentRedundancy: number;
   /** The ABR ladder, when one is configured. Absent means single-rendition. */
   ladder?: AbrLadder;
+  /**
+   * Where each source's ladder group is kept so a restart can find it again. Absent, the group lives
+   * in memory only and a crash costs the broadcast its identity. See {@link LadderGroupStore}.
+   */
+  ladderGroupStore?: LadderGroupStore;
 }
 
 /**
@@ -953,7 +959,11 @@ export class StreamOrchestrator {
     // has been reconfigured since.
     if (state.ladder) {
       const base = baseStreamId(streamId, state.ladder.rung.name);
-      this.ladderGroups.set(base, state.ladder.group);
+      // Written back to disk rather than only read into memory. The recovery entry and the group
+      // store are two records of one fact and either can be the survivor: a rung that finalized
+      // cleared its entry and left the group behind, and an entry an operator restores by hand
+      // arrives with no group on disk at all.
+      this.rememberLadder(base, state.ladder.group);
       this.streamBases.set(streamId, base);
     }
 
@@ -1397,15 +1407,30 @@ export class StreamOrchestrator {
     this.logger.info('[StreamOrchestrator] Cleanup complete');
   }
 
+  /**
+   * The ladder this source's rungs belong to, minted only for a source that has none.
+   *
+   * Consults the disk before minting, and that is the whole of the crash fix. In memory alone the
+   * mapping died with the process, leaving one route back: a rung whose recovery entry happened to
+   * survive. A crash around finalize is exactly the case with none, because `StreamUploader.finalize`
+   * deletes each rung's entry as that rung completes, so the broadcast came back under a second
+   * group and was listed for viewers a second time.
+   */
   private groupFor(base: string): string {
-    const existing = this.ladderGroups.get(base);
+    const existing = this.ladderGroups.get(base) ?? this.config.ladderGroupStore?.load(base);
     if (existing) {
+      this.ladderGroups.set(base, existing);
       return existing;
     }
 
     const group = crypto.randomUUID();
-    this.ladderGroups.set(base, group);
+    this.rememberLadder(base, group);
     return group;
+  }
+
+  private rememberLadder(base: string, group: string): void {
+    this.ladderGroups.set(base, group);
+    this.config.ladderGroupStore?.remember(base, group);
   }
 
   /**
@@ -1415,6 +1440,10 @@ export class StreamOrchestrator {
    * that: its successor registers into the same ladder in the same turn, and releasing first handed
    * a rung with no sibling left a brand new group, which its own replacement then published as a
    * second recording of one broadcast.
+   *
+   * The persisted record goes with the in-memory one rather than outliving it. A ladder whose last
+   * rung has stopped is a finished recording, and keeping its identity would fold the next broadcast
+   * on that source into it, which is the same duplicate pointing the other way.
    */
   private releaseLadder(streamId: string): void {
     const base = this.streamBases.get(streamId);
@@ -1429,6 +1458,7 @@ export class StreamOrchestrator {
     const stillRunning = [...this.streamBases.values()].some((other) => other === base);
     if (!stillRunning) {
       this.ladderGroups.delete(base);
+      this.config.ladderGroupStore?.forget(base);
     }
   }
 
