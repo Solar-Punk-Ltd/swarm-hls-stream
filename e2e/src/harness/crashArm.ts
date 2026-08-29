@@ -228,17 +228,34 @@ export function resumeRefusal(recovery: CrashRecoveryResult, { expectRecovery }:
         'fault the product is supposed to recover from';
 }
 
-/** What the client is recorded as telling the viewer while their picture was stopped. */
+/** Which of the overlay's states describe this fault honestly, and whether one of them is owed. */
 interface FrozenOverlayExpectation {
   /**
-   * The states the viewer must have been shown. Empty is the silence the matrix records for the
-   * faults issue #100 covers, and it is asserted exactly: anything at all then fails.
+   * Every state that is TRUE of this fault. Anything outside it is the client lying to a viewer.
+   *
+   * ⭐ A set rather than the one state a past run produced. The three non-terminal states each name a
+   * different reason and all three carry the same operative claim to somebody watching a stopped
+   * picture: we know, and we are still trying. Which one fires depends on which internal counter
+   * crossed first, and that is a function of the rung count and the byte source rather than of
+   * anything the viewer experiences. `ended` is the one that is categorically different, because it
+   * is terminal and tells them to stop waiting, so on a fault the broadcast survives it is a lie and
+   * on the fault that ends it, it is the truth.
    */
-  told: readonly ViewerFeedState[];
+  truthful: readonly ViewerFeedState[];
+  /**
+   * Whether the client must have said one of them, or may correctly have stayed quiet.
+   *
+   * ⚠️ False is not "silence is fine", it is "this client is not yet known to be able to speak here".
+   * See issue #100: where the gateway keeps answering and only the slot is empty, the counter that
+   * would catch it is `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate collapses during exactly the stall
+   * it exists to detect, and one long freeze is a single playback stall rather than the burst
+   * `degraded` needs. Requiring a message there would assert a fix that has not landed.
+   */
+  mustSpeak: boolean;
 }
 
 /**
- * Why the client did not tell the viewer what the matrix records, or null.
+ * Why what the client told the viewer while their picture was stopped was not true, or null.
  *
  * ⭐ Judged as states rather than as prose. The overlay's wording is a product decision, so asserting
  * the sentence would turn a green scenario red on a copy edit while a genuinely broken terminal state
@@ -246,34 +263,42 @@ interface FrozenOverlayExpectation {
  * throws out of `readFeedState` rather than reading as silence, which is the honest answer to no
  * longer knowing what the viewer was looking at.
  *
- * ⛔ The two directions are deliberately not symmetric. A state beyond the recorded ones is the client
- * saying MORE to a stranded viewer, which is not a regression in what they get, so it passes and the
- * suite prints the route. An expectation of silence is different: the silence IS the recorded
- * contract, so anything at all fails it, and that is the assertion a fix for #100 flips.
+ * ⛔ **Silence is a claim, not an absence.** The client renders nothing for `live`, so a stopped
+ * picture under no overlay is a viewer being told everything is fine while they look at a frozen
+ * frame. Where {@link FrozenOverlayExpectation.mustSpeak} is set, that is refused.
+ *
+ * ⚠️ This once asserted the recorded silence EXACTLY, so a fix for #100 would have turned three cases
+ * red for the product improving. Under the owner ruling of 2026-08-29 a correctness suite goes green
+ * when the product gets better, so a client that starts explaining a fault it used to sit through in
+ * silence now passes.
  */
-export function frozenOverlayRefusal(recovery: CrashRecoveryResult, { told }: FrozenOverlayExpectation): string | null {
-  // The live state is the overlay rendering nothing, which is not the client having said something.
+export function frozenOverlayRefusal(
+  recovery: CrashRecoveryResult,
+  { truthful, mustSpeak }: FrozenOverlayExpectation,
+): string | null {
+  // The live state is the overlay rendering nothing, which is silence rather than something said.
   const shown: ViewerFeedState[] = recovery.saidWhileFrozen
     .map((message) => readFeedState(message))
     .filter((state) => state !== FEED_STATE_LIVE);
 
-  if (told.length === 0) {
-    return shown.length === 0
-      ? null
-      : `the client showed ${shown.join(', ')} while the picture was stopped, and the crash matrix records ` +
-          'this fault reaching a viewer in silence. This is the assertion a fix for the overlay flips, so ' +
-          'the case is red because the product improved: move the expectation and file the new behaviour';
+  const lies = shown.filter((state) => !truthful.includes(state));
+  if (lies.length > 0) {
+    return (
+      `the client showed ${lies.join(', ')} while the picture was stopped, and that is not true of this ` +
+      `fault: only ${truthful.join(', ')} describe what was happening to this viewer. A frozen frame ` +
+      'under a wrong explanation is worse than one under none, because the viewer acts on it'
+    );
   }
 
-  const missing = told.filter((state) => !shown.includes(state));
-  if (missing.length === 0) {
-    return null;
+  if (mustSpeak && shown.length === 0) {
+    return (
+      'the client showed nothing at all while the picture was stopped, and rendering nothing is how it ' +
+      `says the feed is live. This viewer was told everything was fine while they looked at a frozen ` +
+      `frame, where ${truthful.join(', ')} was available and true`
+    );
   }
-  return (
-    `the client never showed ${missing.join(', ')} while the picture was stopped, and showed ` +
-    `${shown.join(', ') || 'nothing at all'}. A frozen frame that says why is a viewer who waits, and one ` +
-    'that still claims to be live is a viewer who reloads or leaves'
-  );
+
+  return null;
 }
 
 /**

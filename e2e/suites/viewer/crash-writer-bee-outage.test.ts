@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { scenarioByName } from '../../src/browser/faults.js';
+import { FEED_STATE_DEGRADED, FEED_STATE_RECONNECTING, FEED_STATE_STALLED } from '../../src/browser/feedState.js';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
@@ -46,13 +47,17 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * admits roughly one segment a second, so half second segments cap it near half of real time. Both
  * figures are still measured, printed per arm and filed in the artifact.
  *
- * ## ⛔ The known gap this asserts: issue #100, the overlay says nothing
+ * ## ⚠️ The known gap this REPORTS rather than asserts: issue #100, the overlay says nothing
  *
  * The picture stopped for 29.5 seconds and `FeedStateOverlay` rendered nothing, the same silence V7
- * asserts and the same mechanism: `UNSERVED_SLOT_POLL_LIMIT` counts polls whose rate collapses during
- * the stall it exists to detect. Half a minute of frozen frame with no explanation is the worst
- * instance of it in the matrix. The silence is asserted exactly, so this case turns red the day the
- * overlay starts speaking, which is the fix landing.
+ * reports and the same mechanism: `UNSERVED_SLOT_POLL_LIMIT` counts polls whose rate collapses during
+ * the stall it exists to detect, and one long freeze is a single playback stall rather than the burst
+ * `degraded` needs. Half a minute of frozen frame with no explanation is the worst instance of it in
+ * the matrix.
+ *
+ * ⭐ **So the silence is printed, and only a FALSE message fails.** This used to assert the silence
+ * exactly, which turned the case red the day the product improved. Under the owner ruling of
+ * 2026-08-29 a correctness suite goes green when that happens.
  *
  * ⛔ Requires a deployed profile, a funded stamp and the browser image on the host, like every suite
  * under `suites/`. Nothing in CI runs these.
@@ -67,6 +72,20 @@ const SCENARIO = scenarioByName('writer-bee-outage');
  * fault, this scenario's own 20s outage, the node's restart and the 60s recovery watch.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
+
+/**
+ * The states that are TRUE of a viewer whose writer node is gone, and it is all three non-terminal ones.
+ *
+ * The gateway answers throughout, so `stalled` is the literal reading: nothing is being written into
+ * the slot the player waits on. `degraded` describes the same viewer by the other route, and
+ * `reconnecting` says nothing false to them either. All three tell somebody looking at a stopped
+ * picture that the client knows and is still trying, which is what is happening.
+ *
+ * ⛔ `ended` is the lie. The broadcaster never stopped, the node comes back, and the viewer plays on
+ * across the discontinuity, so being told the broadcast is over would make them leave one that is
+ * still running and about to resume.
+ */
+const TRUTHFUL_WHILE_FROZEN = [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_DEGRADED] as const;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -139,10 +158,14 @@ describe("V9 — a viewer plays through the discontinuity a writer's outage arms
     const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the viewer did not play through the discontinuity: ${notBack}`);
 
-    // ⛔ Issue #100 again, and its worst instance: half a minute of frozen frame explained by nothing.
-    // Asserted as the behaviour the deployment HAS. A red here is the overlay having started to speak,
-    // and the right response is to move the expectation and file the new reading.
-    const spoke = frozenOverlayRefusal(recovery, { told: [] });
-    assert.equal(spoke, null, `the overlay's silence during a writer outage has changed: ${spoke}`);
+    // ⭐ Nothing untrue, and silence tolerated. See the docblock: #100 means this client may genuinely
+    // not know, so the day it starts explaining this fault the case stays green.
+    const untrue = frozenOverlayRefusal(recovery, { truthful: TRUTHFUL_WHILE_FROZEN, mustSpeak: false });
+    assert.equal(untrue, null, `the client told this viewer something untrue about their picture: ${untrue}`);
+    console.log(
+      `  observed, not asserted: the client ${
+        recovery.explainedTheFreeze ? 'explained the freeze' : 'said NOTHING while the picture was stopped (#100)'
+      }`,
+    );
   });
 });

@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { scenarioByName } from '../../src/browser/faults.js';
-import { FEED_STATE_ENDED, FEED_STATE_STALLED } from '../../src/browser/feedState.js';
+import {
+  FEED_STATE_DEGRADED,
+  FEED_STATE_ENDED,
+  FEED_STATE_RECONNECTING,
+  FEED_STATE_STALLED,
+} from '../../src/browser/feedState.js';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
@@ -72,6 +77,27 @@ const SCENARIO = scenarioByName('engine-restart');
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
 
+/**
+ * The states that are TRUE of this viewer, and the one fault where that includes the terminal one.
+ *
+ * ⭐ The broadcast is genuinely over: the engine took the publisher's SRT connection with it, no more
+ * media is coming, and the orphan reap of issue #86 finalizes the stream sixty seconds after the
+ * session goes quiet. So `ended` is the truth here rather than the lie it is in every other crash
+ * case, and it is what this suite exists to see reached.
+ *
+ * The three non-terminal states are true on the way to it. Before the reap fires the client knows
+ * only that its picture stopped and the slot is not being served, which is exactly `stalled`, and
+ * `degraded` and `reconnecting` are the same situation read through the other two counters. Which of
+ * them a stranded viewer passes through is the client's business: the recorded arm escalated
+ * `stalled → ended`, and a client that went another way has not treated the viewer any worse.
+ */
+const TRUTHFUL_WHILE_FROZEN = [
+  FEED_STATE_RECONNECTING,
+  FEED_STATE_STALLED,
+  FEED_STATE_DEGRADED,
+  FEED_STATE_ENDED,
+] as const;
+
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
 const SEGMENT_WAIT_MS = 180_000;
@@ -139,11 +165,18 @@ describe('V10 — a viewer whose broadcast ends because the engine restarted', {
     const wrongEnding = resumeRefusal(recovery, { expectRecovery: false });
     assert.equal(wrongEnding, null, `this broadcast was over and the picture moved anyway: ${wrongEnding}`);
 
-    // ⭐ The whole case. A viewer told the broadcast ended stops waiting; one left on a frozen frame
-    // that still claims to be live reloads, or leaves. Both states are required and their order is
-    // not: the escalation is printed above, and an extra state on the way is the client saying more
-    // to a stranded viewer rather than less.
-    const notTold = frozenOverlayRefusal(recovery, { told: [FEED_STATE_STALLED, FEED_STATE_ENDED] });
-    assert.equal(notTold, null, `the viewer was never told their broadcast had ended: ${notTold}`);
+    const notTold = frozenOverlayRefusal(recovery, { truthful: TRUTHFUL_WHILE_FROZEN, mustSpeak: true });
+    assert.equal(notTold, null, `the client did not tell this viewer the truth about their picture: ${notTold}`);
+
+    // ⭐ The whole case, and asserted exactly as V5 asserts its own: a viewer told the broadcast ended
+    // stops waiting, and one left on a frozen frame that still claims to be live reloads or leaves.
+    // The ROUTE there is printed above and not asserted, because which state a stranded viewer passes
+    // through on the way is the client's business rather than the viewer's.
+    assert.ok(
+      result.reachedEndedOverlay,
+      `the engine took this broadcast with it and the viewer was never told: they passed through ` +
+        `${result.feedStatesSeen.join(' → ')} and never reached '${FEED_STATE_ENDED}', so a real viewer ` +
+        'is sitting on a frozen last frame deciding whether to reload',
+    );
   });
 });

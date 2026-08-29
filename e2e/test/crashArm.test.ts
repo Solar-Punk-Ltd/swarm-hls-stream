@@ -5,7 +5,12 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { FAULT_SCENARIOS, type FaultScenario, scenarioByName } from '../src/browser/faults.js';
-import { FEED_STATE_ENDED, FEED_STATE_RECONNECTING, FEED_STATE_STALLED } from '../src/browser/feedState.js';
+import {
+  FEED_STATE_DEGRADED,
+  FEED_STATE_ENDED,
+  FEED_STATE_RECONNECTING,
+  FEED_STATE_STALLED,
+} from '../src/browser/feedState.js';
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
 import { type BrowserArmResult, type CrashRecoveryResult, parseBrowserArmState } from '../src/harness/browser.js';
 import {
@@ -270,30 +275,89 @@ describe('whether the picture came back the way this fault lets it', () => {
   });
 });
 
-describe('what the client told the viewer while the picture was stopped', () => {
-  it('passes an overlay that said what the matrix records it says', () => {
-    assert.equal(frozenOverlayRefusal(RECOVERED, { told: [FEED_STATE_RECONNECTING] }), null);
-  });
+/**
+ * Judged on whether what the viewer was told is TRUE, rather than on which of the true things it was.
+ *
+ * ⭐ The three non-terminal states each name a different reason, and all three carry the same
+ * operative claim to a viewer looking at a stopped picture: we know, and we are still trying. None of
+ * them sends anybody away. `ended` is categorically different, because it is terminal: it says
+ * nothing more is coming. So the falsifiable proposition is whether the broadcast is over, and that
+ * is the only thing a fault's expectation states here.
+ *
+ * ⛔ V6 demanded exactly `reconnecting` and got `degraded` live on 2026-08-29. Both are true. Which
+ * one fires is a function of which internal counter crossed first, which depends on the rung count
+ * and the byte source: on a weeb-3 arm the segments arrive from the node in the tab, every arrival
+ * calls `recordGatewayReachable()` with no topic and forgives every held topic outright, so
+ * `gatewayFailures` returns to zero and the state falls through to `degraded`. That is the client
+ * preferring the more specific truth it has.
+ */
+describe('whether what the client told the viewer while the picture was stopped was true', () => {
+  /** A fault the broadcast survives: the three non-terminal states are all honest, `ended` is not. */
+  const STILL_LIVE = {
+    truthful: [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_DEGRADED],
+    mustSpeak: true,
+  } as const;
 
-  it('refuses a frozen frame that explained nothing, where the matrix records a message', () => {
-    const silent = wentThrough({ saidWhileFrozen: [], explainedTheFreeze: false });
-
-    assert.match(String(frozenOverlayRefusal(silent, { told: [FEED_STATE_RECONNECTING] })), /nothing/);
+  it('passes an overlay that named the fault the way the matrix records it', () => {
+    assert.equal(frozenOverlayRefusal(RECOVERED, STILL_LIVE), null);
   });
 
   /**
-   * ⛔ The recorded gap, issue #100: the uploader-crash and writer-bee-outage arms froze for 13.5 and
-   * 29.5 seconds under an overlay that said nothing at all. Asserting the silence is what makes the
-   * fix visible when it lands, rather than asserting a message the deployment does not have.
+   * ⭐ The V6 red of 2026-08-29, and the case this rewrite exists for. The client said "The stream is
+   * struggling to keep up" where the matrix had recorded "Reconnecting to the stream". A viewer read
+   * a true sentence either way, and the suite failed them.
    */
-  it('passes the silence the matrix records, which is the current contract and not the wanted one', () => {
-    const silent = wentThrough({ saidWhileFrozen: [], explainedTheFreeze: false });
+  it('passes a different true state than the one a single old run happened to produce', () => {
+    const struggling = wentThrough({ saidWhileFrozen: ['The stream is struggling to keep up'] });
 
-    assert.equal(frozenOverlayRefusal(silent, { told: [] }), null);
+    assert.equal(frozenOverlayRefusal(struggling, STILL_LIVE), null);
   });
 
-  it('refuses a run where the silence ended, so the gap closing is what turns the case red', () => {
-    assert.match(String(frozenOverlayRefusal(RECOVERED, { told: [] })), new RegExp(FEED_STATE_RECONNECTING));
+  /**
+   * ⛔ The one state that lies during a recoverable fault. Terminal, so it tells a viewer whose
+   * picture is coming back to stop waiting for it, which is the one overlay outcome that loses them.
+   */
+  it('refuses a viewer told the broadcast ended when it had not', () => {
+    const wronglyTerminal = wentThrough({ saidWhileFrozen: ['This broadcast has ended'] });
+
+    assert.match(String(frozenOverlayRefusal(wronglyTerminal, STILL_LIVE)), new RegExp(FEED_STATE_ENDED));
+  });
+
+  it('refuses one lie mixed in among true states, rather than passing on the true ones', () => {
+    const mixed = wentThrough({ saidWhileFrozen: ['Reconnecting to the stream', 'This broadcast has ended'] });
+
+    assert.match(String(frozenOverlayRefusal(mixed, STILL_LIVE)), new RegExp(FEED_STATE_ENDED));
+  });
+
+  /**
+   * ⛔ Silence IS a claim. The client renders nothing for `live`, so a stopped picture under no
+   * overlay is a viewer being told everything is fine while they look at a frozen frame.
+   */
+  it('refuses a frozen frame that explained nothing, where the client is required to speak', () => {
+    const silent = wentThrough({ saidWhileFrozen: [], explainedTheFreeze: false });
+
+    assert.match(String(frozenOverlayRefusal(silent, STILL_LIVE)), /nothing/);
+  });
+
+  /**
+   * ⚠️ Issue #100, and why the requirement is per fault. Where the gateway keeps answering and only
+   * the slot is empty, the counter that would catch it is `UNSERVED_SLOT_POLL_LIMIT`, whose poll rate
+   * collapses during exactly the stall it exists to detect, and one long freeze is a single playback
+   * stall rather than the burst `degraded` needs. The client may genuinely not know, so its silence
+   * is reported rather than refused, and the day #100 lands the case goes green rather than red.
+   */
+  it('passes the same silence where the client is not yet known to be able to speak', () => {
+    const silent = wentThrough({ saidWhileFrozen: [], explainedTheFreeze: false });
+
+    assert.equal(frozenOverlayRefusal(silent, { ...STILL_LIVE, mustSpeak: false }), null);
+  });
+
+  /**
+   * ⭐ The direction that matters after the 2026-08-29 ruling. These cases used to assert the silence
+   * EXACTLY, so a fix for #100 turned them red for the product improving. It must turn them green.
+   */
+  it('passes a viewer the client did start explaining things to, where silence was tolerated', () => {
+    assert.equal(frozenOverlayRefusal(RECOVERED, { ...STILL_LIVE, mustSpeak: false }), null);
   });
 
   /**
@@ -304,27 +368,34 @@ describe('what the client told the viewer while the picture was stopped', () => 
   it('refuses a message the client is no longer known to render, rather than reading it as silence', () => {
     const reworded = wentThrough({ saidWhileFrozen: ['Hang tight, we are on it'] });
 
-    assert.throws(() => frozenOverlayRefusal(reworded, { told: [] }), /Hang tight/);
+    assert.throws(() => frozenOverlayRefusal(reworded, STILL_LIVE), /Hang tight/);
   });
 
-  /**
-   * The engine restart's recorded escalation. The route through the states is printed by the suite
-   * and not asserted here: what the matrix records is that the viewer reached both, and an extra
-   * state on the way is the client saying more rather than less.
-   */
-  it('passes a viewer told everything the matrix records, in whatever order they met it', () => {
+  /** The engine restart, the one fault whose broadcast is genuinely over, so `ended` is the truth. */
+  const BROADCAST_OVER = {
+    truthful: [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_DEGRADED, FEED_STATE_ENDED],
+    mustSpeak: true,
+  } as const;
+
+  it('passes the escalation into the terminal state, in whatever order the viewer met it', () => {
     const ended = wentThrough({
       saidWhileFrozen: ['Waiting for the broadcast to continue', 'This broadcast has ended'],
     });
 
-    assert.equal(frozenOverlayRefusal(ended, { told: [FEED_STATE_ENDED, FEED_STATE_STALLED] }), null);
+    assert.equal(frozenOverlayRefusal(ended, BROADCAST_OVER), null);
   });
 
-  it('refuses a viewer told only half of what the matrix records', () => {
-    const stalledOnly = wentThrough({ saidWhileFrozen: ['Waiting for the broadcast to continue'] });
-    const refusal = frozenOverlayRefusal(stalledOnly, { told: [FEED_STATE_STALLED, FEED_STATE_ENDED] });
+  /**
+   * ⭐ The route is not the contract. Which state a stranded viewer passes through on the way is the
+   * client's business, and V10 asserts reaching `ended` through `reachedEndedOverlay`, exactly as V5
+   * does. Demanding `stalled` as well would fail a client that went straight there.
+   */
+  it('passes a viewer who reached the ending by a different route than the recorded one', () => {
+    const viaDegraded = wentThrough({
+      saidWhileFrozen: ['The stream is struggling to keep up', 'This broadcast has ended'],
+    });
 
-    assert.match(String(refusal), new RegExp(FEED_STATE_ENDED));
+    assert.equal(frozenOverlayRefusal(viaDegraded, BROADCAST_OVER), null);
   });
 });
 

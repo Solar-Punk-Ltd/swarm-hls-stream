@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { scenarioByName } from '../../src/browser/faults.js';
+import { FEED_STATE_DEGRADED, FEED_STATE_RECONNECTING, FEED_STATE_STALLED } from '../../src/browser/feedState.js';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
@@ -41,18 +42,20 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * one worth watching, since the 0.8a fix moved it from 46.7s to 2.3s, so it is measured on every arm,
  * printed in the summary line and filed in the artifact. It no longer refuses a run.
  *
- * ## ⛔ The known gap this asserts: issue #100, the overlay says nothing
+ * ## ⚠️ The known gap this REPORTS rather than asserts: issue #100, the overlay says nothing
  *
  * The picture stopped for 13.5 seconds and `FeedStateOverlay` rendered nothing at all, so the viewer
  * sat in front of a frozen frame that still claimed to be live. That is not what the product should
  * do and it IS what the product does. #100 traced it to `UNSERVED_SLOT_POLL_LIMIT` counting polls
  * whose rate collapses during the stall the limit exists to detect, so the threshold is never reached
- * while it matters. It is a threshold-unit defect rather than a byte-source one, and the in-tab
- * reading removed the last excuse to think otherwise.
+ * while it matters. The other route into a message, the `degraded` burst, does not save it either:
+ * one long continuous freeze is a single playback stall rather than the four in twenty seconds that
+ * state needs.
  *
- * ⭐ So the silence is asserted, exactly, and this is where a fix for #100 shows up: the case turns
- * red the day the overlay starts speaking, and the message it fails with says so. Asserting the
- * behaviour we want instead would leave a case that has never passed and tells nobody anything.
+ * ⭐ **So the silence is printed, and only a FALSE message fails.** This used to assert the silence
+ * exactly, which meant a fix for #100 turned the case red for the product improving. Under the owner
+ * ruling of 2026-08-29 a correctness suite goes green when the product gets better, so the client
+ * finding its voice here passes and the run's own line says which of the two happened.
  *
  * ⛔ Requires a deployed profile, a funded stamp and the browser image on the host, like every suite
  * under `suites/`. Nothing in CI runs these.
@@ -67,6 +70,20 @@ const SCENARIO = scenarioByName('uploader-crash');
  * fault, this scenario's own 15s outage, the restart and the 60s recovery watch.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
+
+/**
+ * The states that are TRUE of a viewer whose uploader has died, and it is all three non-terminal ones.
+ *
+ * The gateway is up and answering the whole time, so `stalled` is the literal reading: the slot the
+ * player waits on is empty because nothing is writing into it. `degraded` is true of the same viewer
+ * by a different route, if the picture keeps stopping. `reconnecting` is included because a read that
+ * fails for its own reasons during the outage is not this suite's business to police, and it says
+ * nothing false to a viewer either: their picture stopped and the client is retrying.
+ *
+ * ⛔ `ended` is the lie. The broadcaster never stopped, the uploader comes back and so does the
+ * picture, so a viewer told the broadcast is over leaves one that is still running.
+ */
+const TRUTHFUL_WHILE_FROZEN = [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_DEGRADED] as const;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -101,7 +118,7 @@ describe('V7 — a viewer watching when the uploader is killed', { skip }, () =>
     await host.start(broken).catch(() => undefined);
   });
 
-  it('spends its buffer, waits in silence, and resumes when the uploader is back', async () => {
+  it('waits without being told anything untrue, and resumes when the uploader is back', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
@@ -135,10 +152,14 @@ describe('V7 — a viewer watching when the uploader is killed', { skip }, () =>
     const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the viewer never got their picture back after the uploader returned: ${notBack}`);
 
-    // ⛔ Issue #100, asserted as the behaviour the deployment HAS rather than the one it should have.
-    // Read the docblock before changing this: a red here is the overlay having started speaking, which
-    // is the fix landing, and the right response is to move the expectation and file the new reading.
-    const spoke = frozenOverlayRefusal(recovery, { told: [] });
-    assert.equal(spoke, null, `the overlay's silence during an uploader crash has changed: ${spoke}`);
+    // ⭐ Nothing untrue, and silence tolerated. See the docblock: #100 means this client may genuinely
+    // not know, so the day it starts explaining this fault the case stays green.
+    const untrue = frozenOverlayRefusal(recovery, { truthful: TRUTHFUL_WHILE_FROZEN, mustSpeak: false });
+    assert.equal(untrue, null, `the client told this viewer something untrue about their picture: ${untrue}`);
+    console.log(
+      `  observed, not asserted: the client ${
+        recovery.explainedTheFreeze ? 'explained the freeze' : 'said NOTHING while the picture was stopped (#100)'
+      }`,
+    );
   });
 });

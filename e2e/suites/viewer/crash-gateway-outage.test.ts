@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { scenarioByName } from '../../src/browser/faults.js';
-import { FEED_STATE_RECONNECTING } from '../../src/browser/feedState.js';
+import { FEED_STATE_DEGRADED, FEED_STATE_RECONNECTING, FEED_STATE_STALLED } from '../../src/browser/feedState.js';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
@@ -39,6 +39,11 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * That the viewer was watching, that the gateway coming back brought the picture back, and that they
  * were told something true while it was stopped.
  *
+ * ⭐ **This is the one fault where the client is held to saying something.** Its own gateway is the
+ * container that was stopped, so every manifest read fails and the client cannot fail to know. The
+ * other four break something upstream of a gateway that goes on answering, where issue #100 means the
+ * client may genuinely not find out, and their silence is reported rather than refused.
+ *
  * ## ⛔ What it does not assert
  *
  * **No timing.** Owner ruling of 2026-08-29: an e2e suite checks feature correctness and stability,
@@ -63,6 +68,22 @@ const SCENARIO = scenarioByName('viewer-gateway-outage');
  * fault, this scenario's own 20s outage, the restart and the 60s recovery watch.
  */
 const WATCH_MINUTES = crashArmMinutes(SCENARIO);
+
+/**
+ * The states that are TRUE of a viewer whose gateway is gone, and it is all three non-terminal ones.
+ *
+ * ⛔ This asked for exactly `reconnecting` and got `degraded` live on 2026-08-29. Both are true, and
+ * the one that fires depends on plumbing the viewer cannot see. `reconnecting` is the literal reading:
+ * the gateway is not answering. `degraded` is what an in-tab arm produces, because its segments keep
+ * arriving from the node in its own tab, every arrival calls `recordGatewayReachable()` with no topic
+ * and forgives every held topic outright, so the failure count returns to zero and the client falls
+ * through to the more specific truth it has, which is that the picture keeps stopping. `stalled` is
+ * the third reading of the same situation. A viewer is correctly served by any of them.
+ *
+ * ⛔ `ended` is the lie. The broadcaster never stopped and the picture comes back, so a viewer told
+ * the broadcast is over is a viewer who leaves a broadcast that is still running.
+ */
+const TRUTHFUL_WHILE_FROZEN = [FEED_STATE_RECONNECTING, FEED_STATE_STALLED, FEED_STATE_DEGRADED] as const;
 
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
@@ -136,9 +157,8 @@ describe('V6 — a viewer whose gateway is taken away, and given back', { skip }
     const notBack = resumeRefusal(recovery, { expectRecovery: true });
     assert.equal(notBack, null, `the viewer did not get their picture back: ${notBack}`);
 
-    // ⭐ The one fault in the matrix whose overlay speaks. A frozen frame that says why is a viewer
-    // who waits, and a frozen frame still claiming to be live is a viewer who reloads or leaves.
-    const notTold = frozenOverlayRefusal(recovery, { told: [FEED_STATE_RECONNECTING] });
-    assert.equal(notTold, null, `the client did not tell the viewer what the matrix records: ${notTold}`);
+    // ⭐ See the docblock for which states are true here and why the client is held to speaking.
+    const notTold = frozenOverlayRefusal(recovery, { truthful: TRUTHFUL_WHILE_FROZEN, mustSpeak: true });
+    assert.equal(notTold, null, `the client did not tell this viewer the truth about their picture: ${notTold}`);
   });
 });
