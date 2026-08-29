@@ -3,6 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { FEED_STATE_ENDED } from '../../src/browser/feedState.js';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
+import { resumeAllTranscodesCommand } from '../../src/browser/rungTranscode.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
@@ -90,12 +91,12 @@ describe('V3 — a viewer whose rung goes quiet moves to one that has not', { sk
 
   after(async () => {
     await publisher?.stop();
-    // ⛔ Nothing to restore here, and that is deliberate rather than an omission. The driver resumes
-    // the transcode from its own `finally` INSIDE the container, and a stopped transcode is invisible
-    // to the deployment: SRS never spawned a replacement because the process never exited. If an arm
-    // is killed by the harness timeout, the engine restart in the next suite's `waitForIdle` is what
-    // clears it, and a rung still silent under a later run fails that run's own ladder assertions
-    // rather than passing quietly.
+    // ⛔⛔ The driver already resumes the transcode from its own `finally` inside the container, and
+    // this is here for the path where the driver never reached it: an arm killed by the harness
+    // timeout between the stop and the resume. A stopped transcode has NOT exited, so SRS never
+    // spawns a replacement and nothing in the deployment reports it, and that rung would then be
+    // silent for every later broadcast on this host with the next suite blaming its own fault.
+    await host.run(resumeAllTranscodesCommand(containerName(cfg, cfg.engine))).catch(() => undefined);
   });
 
   it('ends the outage on a living rung, still watching, and never told the broadcast ended', async () => {

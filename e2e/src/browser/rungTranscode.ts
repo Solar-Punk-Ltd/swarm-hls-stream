@@ -115,3 +115,20 @@ function requirePid(pid: number): number {
   }
   return pid;
 }
+
+/**
+ * Resume every transcode in a container, whatever state it is in.
+ *
+ * ⛔⛔ The teardown a rung outage needs, and it exists because the failure mode is SILENT. A stopped
+ * transcode has not exited, so SRS never spawns a replacement and nothing in the deployment reports
+ * it. An arm killed by the harness timeout between the stop and the resume would leave that rung
+ * quiet for every later broadcast on the host, and the next suite would blame its own fault for it.
+ *
+ * ⭐ Every process rather than the one that was stopped, and `|| true` so a container with no
+ * transcodes running is not an error. SIGCONT to a process that was never stopped does nothing, so
+ * the broad sweep costs nothing and cannot miss a pid the caller failed to record.
+ */
+export function resumeAllTranscodesCommand(container: string): string {
+  const quoted = shellQuoted(container);
+  return `docker exec ${quoted} sh -c 'pgrep ffmpeg > /dev/null && kill -${SIGNAL_RESUME} $(pgrep ffmpeg) || true'`;
+}

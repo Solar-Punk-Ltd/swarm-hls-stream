@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   listProcessesCommand,
   requireRungName,
+  resumeAllTranscodesCommand,
   rungOutputMarker,
   rungProcesses,
   SIGNAL_QUIET,
@@ -119,5 +120,28 @@ describe('the commands sent to the host', () => {
   /** The container name reaches a shell, so it is quoted like every other value that does. */
   it('quotes the container name', () => {
     assert.equal(listProcessesCommand("srs'; rm -rf /"), `docker exec 'srs'\\''; rm -rf /' ps -eo pid,args`);
+  });
+});
+
+/**
+ * ⛔⛔ The teardown, and it exists because the failure mode is SILENT. A stopped transcode has not
+ * exited, so SRS never spawns a replacement and nothing in the deployment reports it. An arm killed
+ * between the stop and the resume would leave that rung quiet for every later broadcast on the host.
+ */
+describe('putting every transcode back, whatever state it is in', () => {
+  it('sends CONT to every ffmpeg rather than to the pids the caller happened to record', () => {
+    const command = resumeAllTranscodesCommand('latbench-srs-1');
+
+    assert.match(command, /kill -CONT \$\(pgrep ffmpeg\)/);
+    assert.match(command, /^docker exec 'latbench-srs-1'/);
+  });
+
+  /** A container with no transcodes running is the ordinary case between broadcasts, not an error. */
+  it('succeeds where nothing is running', () => {
+    assert.match(resumeAllTranscodesCommand('latbench-srs-1'), /\|\| true/);
+  });
+
+  it('quotes the container name', () => {
+    assert.match(resumeAllTranscodesCommand("srs'; rm -rf /"), /^docker exec 'srs'\\''; rm -rf \/'/);
   });
 });
