@@ -308,6 +308,12 @@ export function frozenOverlayRefusal(
  * arms beside each other, and arms whose summaries are worded differently cannot be. It states facts
  * and judges nothing: a picture that never came back is the correct outcome of one of these faults
  * and a failure in the other four, and which it is belongs to the suite.
+ *
+ * ⛔ **It opens by saying that nothing in it is asserted, and that word is load-bearing.** Every
+ * figure here was a threshold until 2026-08-29, so an operator reading a duration beside a green case
+ * would otherwise take it for a ceiling that held. This IS the drift record now: the numbers are
+ * still taken on every arm and still written to the artifact, and noticing them is the whole job they
+ * have left.
  */
 export function crashArmSummary(result: BrowserArmResult): string {
   const { recovery } = result;
@@ -329,10 +335,10 @@ export function crashArmSummary(result: BrowserArmResult): string {
   const said = recovery.saidWhileFrozen.length > 0 ? `"${recovery.saidWhileFrozen.join('", "')}"` : 'NOTHING at all';
 
   return (
-    `${recovery.scenario} on ${result.proof.requested ?? 'an unnamed byte source'}: froze ` +
-    `${seconds(recovery.longestFreezeMs)}s ${buffered}, ${resumed}. ${result.rebufferCount} rebuffers, ` +
-    `advance ${result.advanceRatio.toFixed(3)}, ${result.segmentRequests} segment requests, and the client ` +
-    `said ${said} while frozen`
+    `observations, none of them asserted. ${recovery.scenario} on ` +
+    `${result.proof.requested ?? 'an unnamed byte source'}: froze ${seconds(recovery.longestFreezeMs)}s ` +
+    `${buffered}, ${resumed}. ${result.rebufferCount} rebuffers, advance ${result.advanceRatio.toFixed(3)}, ` +
+    `${result.segmentRequests} segment requests, and the client said ${said} while frozen`
   );
 }
 

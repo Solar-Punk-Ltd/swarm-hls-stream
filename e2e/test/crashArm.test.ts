@@ -414,6 +414,15 @@ describe('the shapes the predicates take', () => {
  * summaries are worded differently cannot be read side by side, which is how the matrix is read.
  */
 describe('the line an operator reads while an arm runs', () => {
+  /**
+   * ⭐ Every figure in it used to be a gate and none of them is one now, so the line has to say so.
+   * An operator who reads a printed duration beside a passing case and takes it for a threshold that
+   * held is the failure mode this word exists to prevent.
+   */
+  it('says outright that nothing in it is asserted', () => {
+    assert.match(crashArmSummary(parseBrowserArmState(crashArmState())), /observations, none of them asserted/);
+  });
+
   it('carries the freeze, the buffer, the resume and the arm proof, in one line', () => {
     const line = crashArmSummary(parseBrowserArmState(crashArmState()));
 
