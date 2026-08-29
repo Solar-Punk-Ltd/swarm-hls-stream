@@ -20,8 +20,19 @@ answers "which run is this" and never "where does the stack live". The files are
 | `in-browser`   | a Swarm node running in the viewer's own tab | **The default.** The in-tab node is the subject this project measures. |
 | `light-client` | a gateway                                    | The control. A viewer with no node of their own.                       |
 
-The byte source is the **only** thing that differs between the two, so a reading taken across the
-pair carries one difference and not two. Both declare that the run covers the ABR ladder.
+The byte source is the only condition that differs between the two, and the segment length differs
+**because** of it. Both declare that the run covers the ABR ladder.
+
+⛔⛔⛔ **Do not reconcile the two segment lengths.** `in-browser` declares `E2E_EXPECT_SEGMENT_S=2`
+and `light-client` declares `0.5`, and that is a product trade rather than a drift. Measured
+2026-08-16 by the sibling repo `swarm-stream-loadlab`, in
+`docs/measurements/2026-08-16-a-stock-tab-holds-realtime-on-two-second-segments.md`, and carried
+unresolved as Q23 of its `docs/spec/product-spec.md`: a stock in-tab weeb-3 node holds **1.000x of
+realtime on 2s segments** with about 90s of buffer and **0.426x on 0.5s** with 0.5 to 3.5s, because
+it admits about one segment per second whatever its peer count. The gateway measures the other way
+over 21 funded arms, 0.5s beating 2s at **1.55s against 3.88s** of capture-to-fetchable latency.
+So a run of the pair is two sittings against two stages, and equalising the pair would hand one
+viewer type a stage it cannot run on while the report went on naming the profile.
 
 That declaration is spelled `E2E_EXPECT_ABR=true`, and **never the word `ladder`**. The variable
 takes `ABR_ENABLED`'s own spellings, which are `true`, `1`, `false`, `0` or unset, so that an
@@ -47,7 +58,17 @@ the number moves into the profile and the next run inherits it. That is the poin
 the numbers are meant to move, and a run asked for by name picks up the current ones.
 
 `e2e/suites/preflight/profile.test.ts` refuses a run whose declarations contradict themselves, before
-anything is asked of the deployment. It checks only what needs no network.
+anything is asked of the deployment. It checks only what needs no network, which includes a run that
+declared no segment length at all.
+
+`e2e/suites/preflight/segment-length.test.ts` refuses a run whose **deployed stage** cuts at the other
+viewer type's length. It reads the config the running SRS container was started on, through one
+`docker exec cat`, so it costs no broadcast, no stamp and no BZZ, and changes nothing. That makes it
+a prediction from the running config rather than an observation of published media: an encoder
+missing the cadence its own config asks for is invisible here, and is what
+`deploy/scripts/stage-fingerprint.sh` catches from raw `#EXTINF` during a sitting. A run that pins no
+length says `E2E_EXPECT_SEGMENT_S=any` once, which is also the answer for OME, whose segmenter config
+this cannot read.
 
 ## The map
 
