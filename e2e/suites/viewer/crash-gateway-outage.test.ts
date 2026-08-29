@@ -32,7 +32,8 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  *
  * ⭐ Those two arms are this one file. The byte source is a property of the run profile rather than of
  * the scenario, so `in-browser` runs the in-tab arm and `light-client` runs its control, and the
- * thresholds below hold for both because the matrix recorded them within a second of each other.
+ * contract below is the same for both because what a viewer is owed does not depend on where their
+ * bytes came from.
  *
  * ## What this asserts
  *
