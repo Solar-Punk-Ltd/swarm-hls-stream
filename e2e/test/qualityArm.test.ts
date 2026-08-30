@@ -86,6 +86,20 @@ describe('whether a run is a viewer whose connection was squeezed', () => {
     assert.match(String(qualityArmRefusal(degraded, CLEAN_ARM)), /timer drift 61x the interval/);
   });
 
+  /**
+   * ⛔⛔ The refusal that cost a paid arm on 2026-08-30 by not existing. The gateway profile settled
+   * its viewer on 360p, the bottom rung, so no cap could give them anywhere to go. Failing them
+   * reported a property of the BYTE SOURCE as a defect in the ladder, and the message said "a ladder
+   * nobody descends" about a player that had behaved perfectly.
+   */
+  it('refuses a viewer who had nowhere to step down to, before asking anything of the ladder', () => {
+    const bottomRung = parseBrowserArmState(
+      qualityArmState({ squeeze: { ridingHeight: 360, cannotAsk: 'this viewer settled on 360p, the bottom' } }),
+    );
+
+    assert.match(String(qualityArmRefusal(bottomRung, CLEAN_ARM)), /cannot be asked whether the ladder adapts/);
+  });
+
   it('refuses a run that decoded nothing, since there was no quality to switch', () => {
     const blank = parseBrowserArmState(qualityArmState({ resolutions: [] }));
 

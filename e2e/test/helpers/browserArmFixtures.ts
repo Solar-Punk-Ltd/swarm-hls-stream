@@ -44,6 +44,8 @@ interface ArmStateOverrides {
   silenced?: Record<string, unknown> | null;
   /** The playback verdict `browser/vod.ts` adds and no other driver writes. Null leaves it out. */
   vod?: Record<string, unknown> | null;
+  /** The squeeze section `browser/quality.ts` writes, naming the rung and why it could not be asked. */
+  squeeze?: Record<string, unknown> | null;
 }
 
 const SAMPLE_COUNT = 240;
@@ -75,6 +77,7 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     rungs = null,
     silenced = null,
     vod = null,
+    squeeze = null,
   } = overrides;
 
   const run: Record<string, unknown> = {
@@ -152,6 +155,9 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   }
   if (vod !== null) {
     run.vod = vod;
+  }
+  if (squeeze !== null) {
+    run.squeeze = squeeze;
   }
   if (scenario !== null) {
     run.scenario = { name: scenario, service: 'bee-gateway', action: 'stop', downMs: 20_000 };

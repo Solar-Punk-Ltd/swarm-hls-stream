@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
-import { throttleKbpsFor } from '../../src/browser/throttle.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
@@ -45,12 +44,21 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * down off the rung the link could no longer carry, that the picture kept moving while it was down,
  * and that it climbed back once the link was released.
  *
- * ## ⛔ How the bandwidth is chosen
+ * ## ⛔⛔ How the bandwidth is chosen, and why it is not chosen from the ladder alone
  *
- * Not here. `throttleKbpsFor` reads `ABR_LADDER` and returns the second lowest rung's own bitrate, so
- * every rung above it asks for more than the link can carry and the bottom stays comfortably
- * deliverable. Both halves matter: a cap that starved the bottom rung too would fail the "kept
- * playing" assertion for the harness's reasons rather than the product's.
+ * From THE RUNG THE VIEWER IS ACTUALLY ON. The driver reads it off the overlay after the settle and
+ * caps the link at the bitrate of the next rung down, so that rung stays exactly affordable and the
+ * one being played no longer fits.
+ *
+ * ⛔ The first version took the second lowest rung's bitrate regardless of what was playing, which is
+ * right only when the viewer starts at the top. Live on 2026-08-30 the gateway profile settled its
+ * viewer on **360p, the bottom rung**, before anything was capped. 360p stayed affordable, the player
+ * correctly did not move, and this case reported "a ladder nobody descends". That is a property of
+ * the byte source, and this project already knew it: an in-tab viewer rides 1080p and a gateway
+ * viewer rides 360p on the same broadcast.
+ *
+ * ⭐ A viewer already on the bottom rung is REFUSED rather than failed. There is no bandwidth that
+ * would give them somewhere to go, so the question cannot be put to them.
  *
  * ## ⛔ No timing is asserted
  *
@@ -160,7 +168,7 @@ describe('V2 — a viewer whose connection gets worse keeps watching, at a quali
     assert.equal(stuckLow, null, `this viewer never got their quality back: ${stuckLow}`);
 
     console.log(
-      `  observations, none of them asserted. capped at ${throttleKbpsFor(cfg.abrLadder)} kbps: came down after ` +
+      `  observations, none of them asserted. capped at ${quality.throttledToKbps} kbps: came down after ` +
         `${describeMs(quality.steppedDownAfterMs)}, climbed back after ${describeMs(quality.climbedBackAfterMs)}, ` +
         `${quality.switchesCounted} level changes, advance ${quality.during.advance.ratio.toFixed(3)} while capped`,
     );

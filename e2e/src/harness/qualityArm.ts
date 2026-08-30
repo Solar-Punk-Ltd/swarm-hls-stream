@@ -102,6 +102,13 @@ export function qualityArmRefusal(result: BrowserArmResult, expectation: Quality
     );
   }
 
+  // ⛔⛔ Before the verdict itself. A viewer already on the bottom rung has nowhere to step down to,
+  // so the question cannot be put to them at all, and failing them would report a property of the
+  // byte source as a defect in the ladder. Live on 2026-08-30 the gateway profile did exactly this.
+  if (result.cannotSqueeze !== null) {
+    return `this viewer cannot be asked whether the ladder adapts: ${result.cannotSqueeze}`;
+  }
+
   const { quality } = result;
   if (quality === null) {
     return (

@@ -42,8 +42,13 @@ import {
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
-import { squeezeDownload, type ThrottleHandle, throttleKbpsFor } from '../src/browser/throttle.js';
-import { launchViewer, proveInstrumentCanFail, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import {
+  nowhereToStepRefusal,
+  squeezeDownload,
+  type ThrottleHandle,
+  throttleKbpsBelow,
+} from '../src/browser/throttle.js';
+import { launchViewer, proveInstrumentCanFail, readSample, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, type SampledStretch, sampleFor } from '../src/browser/watchLoop.js';
 import { loadConfig } from '../src/config.js';
 import { makeHost } from '../src/harness/host.js';
@@ -79,9 +84,6 @@ async function main(): Promise<void> {
 
   const cfg = loadConfig();
   const host = makeHost(cfg);
-  // ⛔ Before a browser is launched. A ladder with nowhere to step makes this run meaningless, and
-  // finding that out after the settle would have cost a minute of broadcast to learn nothing.
-  const throttleKbps = throttleKbpsFor(cfg.abrLadder);
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
@@ -91,8 +93,7 @@ async function main(): Promise<void> {
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
   const instrumentProofs = await proveInstrumentCanFail(browser);
-  console.log(`browser: ${chromeVersion}, squeezing the tab to ${throttleKbps} kbps`);
-  console.log(`browser: ladder ${cfg.abrLadder.map((rung) => `${rung.name}@${rung.kbps}`).join(' ')}`);
+  console.log(`browser: ${chromeVersion}, ladder ${cfg.abrLadder.map((r) => `${r.name}@${r.kbps}`).join(' ')}`);
 
   const requests: RequestRecord[] = [];
   let byteSourceArm: ByteSourceArmSession | undefined;
@@ -101,6 +102,9 @@ async function main(): Promise<void> {
   let watchUrl = clientUrl;
   let throttledAtMs = 0;
   let releasedAtMs = 0;
+  let throttleKbps = 0;
+  let ridingHeight: number | null = null;
+  let cannotAsk: string | null = null;
 
   const collect = (stretch: SampledStretch): void => {
     stretches.push(stretch);
@@ -127,14 +131,30 @@ async function main(): Promise<void> {
     console.log(`browser: settling for ${settleMs / 1000}s before the squeeze`);
     collect(await watch(settleMs));
 
-    console.log(`browser: capping the tab's download at ${throttleKbps} kbps`);
-    throttle = await squeezeDownload(page, throttleKbps);
+    // ⛔⛔ Read AFTER the settle, and the cap is derived from it. Which rung a player rides is its own
+    // decision and it differs by BYTE SOURCE: live on 2026-08-30 the gateway profile settled on 360p,
+    // the bottom of the ladder, while an in-tab viewer rides the top of the same broadcast. A cap
+    // taken from the ladder in the abstract left that viewer's own rung affordable, so they correctly
+    // did not move and the run reported a ladder nobody descends.
+    ridingHeight = (await readSample(page)).selectedRungHeight;
+    cannotAsk =
+      ridingHeight === null
+        ? 'the player had selected no rung after the whole settle, so there is nothing to squeeze it off'
+        : nowhereToStepRefusal(cfg.abrLadder, ridingHeight);
+
+    if (cannotAsk === null && ridingHeight !== null) {
+      throttleKbps = throttleKbpsBelow(cfg.abrLadder, ridingHeight) as number;
+      console.log(`browser: this viewer is riding ${ridingHeight}p, capping the tab at ${throttleKbps} kbps`);
+      throttle = await squeezeDownload(page, throttleKbps);
+    } else {
+      console.log(`browser: NOT squeezing, ${cannotAsk}`);
+    }
     throttledAtMs = Date.now();
 
     try {
       collect(await watch(squeezeMs));
     } finally {
-      await throttle.release().catch((error) => console.error('could not lift the cap:', error));
+      await throttle?.release().catch((error) => console.error('could not lift the cap:', error));
       throttle = undefined;
       releasedAtMs = Date.now();
       console.log(`browser: cap lifted, watching ${recoverMs / 1000}s for the climb back`);
@@ -164,6 +184,10 @@ async function main(): Promise<void> {
     gopSeconds,
     ladder: cfg.abrLadder,
     throttle: throttleWindow,
+    // ⛔ Carried so a suite can tell "the ladder does not adapt" from "this viewer had nowhere to go".
+    // The second is a property of the byte source, and reporting it as the first is a finding about
+    // the gateway filed against the client.
+    squeeze: { ridingHeight, cannotAsk },
     byteSource: byteSourceArm?.arm && {
       requested: byteSourceArm.arm.requested,
       reported: byteSourceArm.arm.reported,

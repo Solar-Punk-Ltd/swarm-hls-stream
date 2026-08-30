@@ -53,29 +53,61 @@ const UNTHROTTLED = -1;
 export const MIN_RUNGS_FOR_A_STEP_DOWN = 2;
 
 /**
- * The bandwidth to squeeze a viewer down to, in kbps, derived from the ladder they are being served.
+ * The bandwidth to squeeze a viewer down to, in kbps, derived from THE RUNG THEY ARE ACTUALLY ON.
  *
  * ## The rule
  *
- * The second lowest rung's own bitrate. Every rung above it then asks for more than the link can
- * carry, so a player choosing its own quality has to come down, and the bottom of the ladder stays
- * comfortably deliverable so the picture keeps moving rather than stopping. Both halves matter: V2
- * asserts a step down AND continued playback, and a throttle that starved the lowest rung too would
- * make the second half fail for the harness's reasons.
+ * The bitrate of the next rung below the one being played. That rung stays exactly affordable, so
+ * the picture keeps moving, and the rung they are on no longer fits, so a player choosing its own
+ * quality has to come down. Both halves matter: V2 asserts a step down AND continued playback, and a
+ * cap that starved everything would fail the second half for the harness's reasons.
  *
- * ⚠️ On a two rung ladder this is the top rung's bitrate, which leaves only the bottom one
- * affordable. That is still exactly one step down and still the intended shape.
+ * ⛔⛔ **Null where they are already on the bottom rung, and that is not a failure of the product.**
+ * Live on 2026-08-30 the gateway profile put its viewer on 360p before anything was capped, which
+ * matches what this project already knew: an in-tab viewer rides 1080p and a gateway viewer rides
+ * 360p on the SAME broadcast. A cap derived from the ladder in the abstract left 360p affordable, the
+ * player correctly stayed, and V2 reported "a ladder nobody descends". The question cannot be put to
+ * a viewer with nowhere to go, and the honest answer is to say so rather than to fail them.
+ *
+ * ⚠️ The first version of this took the second lowest rung's bitrate regardless of what was playing.
+ * That is right only when the viewer starts at the top, which is the in-tab profile and not the other.
  */
-export function throttleKbpsFor(ladder: readonly LadderRung[]): number {
-  if (ladder.length < MIN_RUNGS_FOR_A_STEP_DOWN) {
+export function throttleKbpsBelow(ladder: readonly LadderRung[], ridingHeight: number): number | null {
+  const riding = ladder.find((rung) => rung.height === ridingHeight);
+  if (riding === undefined) {
     throw new Error(
-      `a quality switch needs at least ${MIN_RUNGS_FOR_A_STEP_DOWN} rungs to step between and this ` +
-        `deployment declares ${ladder.length}. A player with nowhere to go that stays where it is has ` +
-        'behaved correctly, so there is no question here to answer.',
+      `the player is riding a ${ridingHeight}p rung and this ladder declares ` +
+        `${ladder.map((rung) => `${rung.name}@${rung.height}`).join(' ')}. A cap derived by guessing which ` +
+        'rung that is would be a cap nobody chose.',
     );
   }
-  const ascending = [...ladder].sort((a, b) => a.kbps - b.kbps);
-  return ascending[1].kbps;
+  const below = ladder.filter((rung) => rung.kbps < riding.kbps);
+  return below.length === 0 ? null : Math.max(...below.map((rung) => rung.kbps));
+}
+
+/**
+ * Why this viewer cannot be asked the quality-switch question, or null.
+ *
+ * ⛔ Its own predicate so the driver can refuse before it spends the squeeze window, and so the
+ * reason reaching a suite is a sentence rather than a null bandwidth.
+ */
+export function nowhereToStepRefusal(ladder: readonly LadderRung[], ridingHeight: number): string | null {
+  if (ladder.length < MIN_RUNGS_FOR_A_STEP_DOWN) {
+    return (
+      `a quality switch needs at least ${MIN_RUNGS_FOR_A_STEP_DOWN} rungs to step between and this ` +
+      `deployment declares ${ladder.length}. A player with nowhere to go that stays where it is has ` +
+      'behaved correctly, so there is no question here to answer'
+    );
+  }
+  if (throttleKbpsBelow(ladder, ridingHeight) === null) {
+    return (
+      `this viewer settled on ${ridingHeight}p, which is the bottom of the ladder, so there is no rung ` +
+      'for them to step down to and no bandwidth that would make one appear. A gateway viewer rides the ' +
+      'bottom rung on the same broadcast an in-tab viewer rides the top of, so this is a property of the ' +
+      'byte source rather than of the client'
+    );
+  }
+  return null;
 }
 
 /** The rung a player should be able to hold at a given bandwidth, which is the tallest it can afford. */

@@ -295,6 +295,14 @@ export interface BrowserArmResult {
    */
   quality: QualitySwitchVerdict | null;
   /**
+   * Why the squeeze question could not be put to this viewer, on a squeeze arm. Null where it could.
+   *
+   * ⛔ The difference between "the ladder does not adapt" and "this viewer had nowhere to go". The
+   * second is a property of the byte source, and reporting it as the first is a finding about the
+   * gateway filed against the client.
+   */
+  cannotSqueeze: string | null;
+  /**
    * What their player chose across a silenced rung, on a rung-outage arm. Null on every other arm.
    *
    * ⛔ Paired with {@link recovery}, which a rung-outage arm also carries. Either alone reads as a
@@ -423,6 +431,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     reachedEndedOverlay: feedStatesSeen.includes(FEED_STATE_ENDED),
     recovery: readCrashRecovery(run),
     quality: readQualityVerdict(run),
+    cannotSqueeze: readCannotSqueeze(run),
     rungs: readRungTimeline(run),
     silencedRung: readSilencedRung(run),
     vod: readVodResult(run),
@@ -609,6 +618,17 @@ function readTimeline(timeline: Record<string, unknown>, at: string): RungTimeli
     steppedDownAfterMs: asNumberOrNull(timeline.steppedDownAfterMs, `${at}.steppedDownAfterMs`),
     climbedBackAfterMs: asNumberOrNull(timeline.climbedBackAfterMs, `${at}.climbedBackAfterMs`),
   };
+}
+
+/** Why this viewer could not be asked the quality-switch question, as the driver recorded it. */
+function readCannotSqueeze(run: Record<string, unknown>): string | null {
+  if (run.squeeze === undefined || run.squeeze === null) {
+    return null;
+  }
+  const squeeze = asObject(run.squeeze, 'run.squeeze');
+  return squeeze.cannotAsk === null || squeeze.cannotAsk === undefined
+    ? null
+    : asString(squeeze.cannotAsk, 'run.squeeze.cannotAsk');
 }
 
 function readQualityPhase(value: unknown, at: string): QualityPhase {
