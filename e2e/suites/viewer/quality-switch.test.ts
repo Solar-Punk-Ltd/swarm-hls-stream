@@ -143,10 +143,12 @@ describe('V2 — a viewer whose connection gets worse keeps watching, at a quali
       `this viewer was served a quality the deployment never configured: ${wrongQuality}`,
     );
 
-    // ⛔ The instrument question, and it comes before the product one on purpose. Chromium applies the
-    // cap itself and an in-tab node carries segment bytes over its own peer connections, so a player
-    // that never measured the squeeze must be refused as a harness failure rather than reported as a
-    // ladder that does not adapt.
+    // ⛔ The instrument question, and it comes before the product one on purpose. It asks whether the
+    // cap landed on the VIEWER, which is either the player moving rung or the picture getting worse.
+    // ⛔⛔ It deliberately does NOT ask whether the player's own bandwidth estimate fell. In-tab on
+    // 2026-08-30 that estimate read 74221 kbps under a 2800 kbps cap while playback fell from 1.000
+    // to 0.604: fragments leave a local node at memory speed, so hls.js times the handover and never
+    // the node's retrieval from Swarm. Gating on it refused a real defect as a harness failure.
     const capNeverLanded = throttleRefusal(quality);
     assert.equal(
       capNeverLanded,

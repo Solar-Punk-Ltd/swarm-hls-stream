@@ -123,28 +123,61 @@ describe('whether a run is a viewer whose connection was squeezed', () => {
 });
 
 describe('whether a squeezed run is evidence about the ladder', () => {
-  it('accepts a run whose player measured the cap', () => {
+  const advancing = (before: number, during: number): QualitySwitchVerdict =>
+    wentThrough({
+      before: { ...SQUEEZED.before, advance: { ratio: before, wallMs: 60_000, samples: 60 } },
+      during: { ...SQUEEZED.during, advance: { ratio: during, wallMs: 60_000, samples: 60 } },
+    });
+
+  it('accepts a run whose player adapted', () => {
     assert.equal(throttleRefusal(SQUEEZED), null);
   });
 
   /**
-   * ⛔ The instrument question this whole file exists around. Chromium applies network emulation
-   * itself and an in-tab node carries segment bytes over its own peer connections, so a cap that did
-   * not reach them must be refused as a harness failure rather than reported as a ladder that does
-   * not adapt.
+   * ⛔⛔⛔ THE READING THAT PROVED THE FIRST VERSION OF THIS GATE WRONG, and these are the measured
+   * numbers. In-tab, 2026-08-30: capped at 2800 kbps, the player's own estimate read 74221 kbps, and
+   * playback fell from 1.000 to 0.604 over the same window. The cap unmistakably reached the VIEWER.
+   * What it did not reach was the MEASUREMENT, because fragments leave a local node at memory speed
+   * and hls.js times the handover rather than the node's retrieval from Swarm.
+   *
+   * Gating on the estimate refused this run as a harness failure. It is a product failure: the viewer
+   * got worse and the ladder did not move.
    */
-  it('refuses a run whose player still measured more than the cap it was under', () => {
-    const unreached = wentThrough({
-      during: { ...SQUEEZED.during, bandwidthEstimateKbps: 5_900 },
+  it('accepts a run the player never measured, when the picture got worse anyway', () => {
+    const inTab = wentThrough({
+      throttledToKbps: 2800,
+      steppedDownAfterMs: null,
+      before: {
+        ...SQUEEZED.before,
+        endedOnRungHeight: 1080,
+        bandwidthEstimateKbps: 97_751,
+        advance: { ratio: 1.0, wallMs: 60_000, samples: 60 },
+      },
+      during: {
+        ...SQUEEZED.during,
+        endedOnRungHeight: 1080,
+        lowestRungHeight: 1080,
+        bandwidthEstimateKbps: 74_221,
+        advance: { ratio: 0.604, wallMs: 60_000, samples: 60 },
+      },
     });
 
-    assert.match(String(throttleRefusal(unreached)), /did not reach whatever carried the segment bytes/);
+    assert.equal(throttleRefusal(inTab), null, 'the cap landed, whatever the estimate said');
+    assert.match(String(steppedDownRefusal(inTab)), /never came below it/, 'and the ladder failing is the finding');
   });
 
-  it('refuses a run whose player reported no estimate while capped', () => {
-    const silent = wentThrough({ during: { ...SQUEEZED.during, bandwidthEstimateKbps: null } });
+  /** ⛔ Neither outcome. A player that held its rung on an unchanged picture felt no cap at all. */
+  it('refuses a run where nothing a viewer could feel changed', () => {
+    // ⛔ The override goes AFTER the spread. Written the other way it is silently undone by the
+    // helper's own steppedDownAfterMs, and the case passes by testing a player that adapted.
+    const untouched: QualitySwitchVerdict = { ...advancing(1.0, 1.0), steppedDownAfterMs: null };
 
-    assert.match(String(throttleRefusal(silent)), /no bandwidth estimate/);
+    assert.match(String(throttleRefusal(untouched)), /The cap did not land/);
+  });
+
+  /** A player that adapted so well the picture never suffered is the ideal outcome, not a dead cap. */
+  it('accepts a player that adapted well enough that the picture never suffered', () => {
+    assert.equal(throttleRefusal(advancing(1.0, 1.0)), null);
   });
 
   /** A pinned player rides one rung by instruction, so neither answer it gives is about ABR. */

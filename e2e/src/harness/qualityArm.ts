@@ -148,14 +148,23 @@ export function qualityArmRefusal(result: BrowserArmResult, expectation: Quality
 /**
  * Why this run is not evidence about adaptive bitrate, or null.
  *
- * ⛔ Both halves are about whether the experiment happened, not whether the product works. A pinned
- * player rides one rung by instruction, and a cap the player never measured is a cap that did not
- * reach whatever carried the bytes.
+ * ⛔ About whether the experiment HAPPENED, never about whether the product works. A pinned player
+ * rides one rung by instruction, and a cap that changed nothing a viewer could feel is a cap that did
+ * not land.
  *
- * ⭐ The bandwidth bar is the CAP ITSELF rather than a number chosen here. hls.js estimates from its
- * own fragment load timings, so a player loading fragments over a link capped at N kbps cannot
- * honestly measure more than N by the end of the squeeze. Anything above it means the emulation did
- * not reach the transport the segments came over.
+ * ## ⛔⛔⛔ Why the player's own bandwidth estimate is NOT the gate, though it was
+ *
+ * The first version refused any run whose estimate stayed above the cap, reasoning that hls.js
+ * measures its own fragment load timings and so cannot honestly read more than the link carries.
+ * **That is false on the in-tab path and it hid a real defect.** Measured 2026-08-30 with a weeb-3
+ * node in the tab: capped at 2800 kbps, the estimate read **74221 kbps**, and the viewer's playback
+ * fell from **1.000 to 0.604** over the same window. The cap unmistakably reached the viewer. What it
+ * did not reach was the MEASUREMENT: fragments come out of a local node at memory speed once the node
+ * holds them, so hls.js times the handover and never the node's retrieval from Swarm.
+ *
+ * ⭐ So the estimate is carried and printed and decides nothing. The gate is what a viewer could
+ * actually feel: either the player moved rung, or the picture got worse. Neither, and the cap changed
+ * nothing observable.
  */
 export function throttleRefusal(quality: QualitySwitchVerdict): string | null {
   if (!quality.abrEnabledThroughout) {
@@ -165,23 +174,21 @@ export function throttleRefusal(quality: QualitySwitchVerdict): string | null {
     );
   }
 
-  const { bandwidthEstimateKbps: squeezed } = quality.during;
-  if (squeezed === null) {
-    return (
-      'the player reported no bandwidth estimate while the cap was on, so there is no reading that says ' +
-      'the squeeze reached it'
-    );
-  }
-  if (squeezed > quality.throttledToKbps) {
-    return (
-      `the tab's download was capped at ${quality.throttledToKbps} kbps and the player still measured ` +
-      `${squeezed} kbps at the end of the squeeze, up from ${quality.before.bandwidthEstimateKbps ?? 'nothing'} ` +
-      'before it. The emulation did not reach whatever carried the segment bytes, so this run cannot say ' +
-      'what the ladder would do on a genuinely worse connection'
-    );
+  // Either outcome proves the cap landed: a player that adapted well enough to keep playing, or a
+  // player that did not and whose picture suffered for it. Only both being absent is a dead treatment.
+  const adapted = quality.steppedDownAfterMs !== null;
+  const degraded = quality.during.advance.ratio < quality.before.advance.ratio;
+  if (adapted || degraded) {
+    return null;
   }
 
-  return null;
+  return (
+    `the tab's download was capped at ${quality.throttledToKbps} kbps and nothing a viewer could feel ` +
+    `changed: the player held ${quality.before.endedOnRungHeight ?? 'its'}p throughout and the picture ` +
+    `advanced ${quality.during.advance.ratio.toFixed(3)} while capped against ` +
+    `${quality.before.advance.ratio.toFixed(3)} before it. The cap did not land, so this run cannot say ` +
+    'what the ladder would do on a genuinely worse connection'
+  );
 }
 
 /**
