@@ -5,8 +5,19 @@ import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveStreams, announcedVodFinalizeCount, segmentIndicesByStream } from '../../src/harness/logwatch.js';
+import {
+  announcedSessionTopics,
+  announcedVodFinalizeCount,
+  segmentIndicesByStream,
+} from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import {
+  type CatalogEntry,
+  type CatalogFeed,
+  discoverCatalogFeed,
+  entryCarriesTopic,
+  fetchCatalog,
+} from '../../src/harness/viewer.js';
 import {
   finishedTimelineRefusal,
   pictureMovedRefusal,
@@ -39,6 +50,19 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  * that the recording offers every rung the deployment published, that the timeline covers the whole
  * broadcast, and that a picture actually moved.
  *
+ * ## ⛔⛔ Why the recording is found through the CATALOG
+ *
+ * Because on a ladder there is nothing else to find it by. **A ladder deployment emits no
+ * `Adding stream to list` live announce at all**, which is why `announcedSessionTopics` falls back to
+ * rung announces, and a rung announce carries the rung's own session topic and no owner. The first
+ * version of this suite read `announcedLiveStreams` the way `browser/make-recording.ts` does and
+ * found nothing, on 2026-08-30, live.
+ *
+ * ⭐ The catalog is also the honest path. A viewer clicks a card, and a card carries the owner, the
+ * MASTER topic (the ladder group, which is the entry topic a `swarm://` link holds), and one
+ * rendition per rung. Reading it gives a second, independent check of the ladder alongside the
+ * player's own.
+ *
  * ## ⛔ Why this publishes its own broadcast rather than reusing one
  *
  * The suite has to know how long the broadcast ran to say whether the recording is the whole of it.
@@ -66,6 +90,14 @@ import { viewerGate } from '../../src/viewerCoverage.js';
 const RECORD_MEDIA_SECONDS = 30;
 const SEGMENT_WAIT_MS = 300_000;
 const VOD_WAIT_MS = 120_000;
+/**
+ * How long the finished entry may take to reach the catalog through the gateway.
+ *
+ * The catalog is a feed write through the same bee node the segments went through, so it trails the
+ * uploader's own log line by however long the pusher takes to drain. `multi-stream-concurrent`
+ * budgets the same and calls it an accepted propagation-latency budget rather than a defect.
+ */
+const CATALOG_WAIT_MS = 300_000;
 const MIN_STAMP_TTL_S = 600;
 
 /** The playback arm's own budget. The driver settles for seconds and seeks three times. */
@@ -81,11 +113,35 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;
   let startedAt: string;
+  let feed: CatalogFeed;
+
+  /**
+   * This broadcast's finished entry, once the catalog carries it.
+   *
+   * ⛔ Polled rather than read once. The catalog is a feed write through the same bee node the
+   * segments went through, so it trails the uploader's own finalize log line by however long the
+   * pusher takes to drain, which `multi-stream-concurrent` budgets minutes for.
+   */
+  const waitForRecording = async (location: CatalogFeed, ours: ReadonlySet<string>): Promise<CatalogEntry> => {
+    let found: CatalogEntry | undefined;
+    await waitFor(
+      async () => {
+        const entries = await fetchCatalog(host, cfg, location).catch(() => []);
+        found = entries.find((candidate) => entryCarriesTopic(candidate, ours) && candidate.state === 'vod');
+        return found !== undefined;
+      },
+      { timeoutMs: CATALOG_WAIT_MS, intervalMs: 5_000, label: 'the recording reaches the catalog as a VOD' },
+    );
+    return found as CatalogEntry;
+  };
 
   before(async () => {
     const stamp = await discoverStamp(host, cfg);
     assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
     await waitForIdle(host, cfg);
+    // ⛔ Before the broadcast, so a discovery that needs an old catalog line does not depend on this
+    // run having already produced one.
+    feed = await discoverCatalogFeed(host, cfg);
     startedAt = await host.nowIso();
     publisher = startPublisher(cfg);
   });
@@ -116,8 +172,29 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
     });
 
     const finalLog = await log();
-    const announced = announcedLiveStreams(finalLog).at(-1);
-    assert.ok(announced, 'the uploader announced no stream, so there is no recording to address');
+    const ours = new Set(announcedSessionTopics(finalLog));
+    assert.ok(
+      ours.size > 0,
+      'the uploader announced no session topics, so this broadcast cannot be told from a neighbour and ' +
+        'there is nothing to address a recording by',
+    );
+
+    // ⛔ Matched on the session topics this broadcast announced, never on "the newest entry". This
+    // host carries other people's sittings, and a neighbour's recording finalising inside the window
+    // would otherwise be the one played back.
+    const entry = await waitForRecording(feed, ours);
+
+    // ⭐ The catalog's own view of the ladder, which is independent of the player's. An entry naming
+    // fewer renditions than the deployment published is a recording finalised incomplete, and it
+    // reaches a viewer as a master with rungs missing rather than as a broken card.
+    const named = entry.renditions ?? [];
+    assert.equal(
+      named.length,
+      cfg.abrRungs.length,
+      `the catalog entry names ${named.length} renditions (${named.map((r) => r.name).join(', ') || 'none'}) ` +
+        `and the deployment publishes ${cfg.abrRungs.length}. A viewer opening this card gets the ladder ` +
+        'the catalog describes, whatever was actually written',
+    );
 
     // ⭐ The broadcast's own length, from the segments the uploader says it published, rather than
     // from wall clock. Wall clock includes the settle before the first segment and the drain after
@@ -127,7 +204,7 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
     const result = await runBrowserArm(host, cfg, {
       backend: requireByteSourceForVod(backend),
       watchMinutes: WATCH_MINUTES,
-      vod: { owner: announced.owner, topic: announced.topic },
+      vod: { owner: entry.owner, topic: entry.topic },
     });
     console.log(`  ${vodArmSummary(result)}`);
 
