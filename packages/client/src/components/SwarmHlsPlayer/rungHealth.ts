@@ -104,6 +104,12 @@ export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () 
       return;
     }
 
+    // ⛔ Read BEFORE the removal, because the removal is what sets `loadLevel` to -1 and the two
+    // reasons it can be -1 must not be confused. A player that has not chosen a level yet is also at
+    // -1, and steering that one forces a level while hls.js is still settling the ladder. Only a
+    // viewer whose own rung was just taken away needs somewhere to go.
+    const tookThePlayingLevel = hls.loadLevel === index;
+
     console.warn(`Rung ${level.height}p has stopped being produced, dropping it from the ladder`);
     hls.removeLevel(index);
 
@@ -111,7 +117,7 @@ export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () 
     // replacement. Left at -1 the player buffers out and stops, which is the freeze this exists to
     // end. `nextAutoLevel` is ABR's own choice among what is left, so the viewer lands on the best
     // rung they can carry rather than on the bottom of the ladder.
-    if (hls.loadLevel === -1) {
+    if (tookThePlayingLevel) {
       hls.nextLoadLevel = hls.nextAutoLevel;
     }
   });

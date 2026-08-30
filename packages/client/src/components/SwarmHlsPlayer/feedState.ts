@@ -607,6 +607,20 @@ export class FeedHealthTracker {
         ...health,
         gatewayFailures,
         retryAtMs: this.now() + backoffDelayMs(gatewayFailures),
+        // ⛔⛔⛔ **The unserved run ends here, and leaving it running cost a viewer their picture.**
+        // An unserved slot means the gateway ANSWERED and had nothing in it. A gateway that did not
+        // answer is no evidence at all about the slot, so a run carried through an outage measures
+        // the outage. Caught live by V6 on 2026-08-30: a 20.5 second gateway outage under a watching
+        // viewer, and 480p was dropped from the ladder on the other side of it while the uploader
+        // was publishing it normally, 24 segments across the window it was removed in. That rung had
+        // simply been between segments when the gateway went away, so it came back looking silent
+        // for the whole outage while a sibling served first read healthy, which is precisely the
+        // shape {@link rungStoppedWhileOthersAdvance} fires on. The viewer's playhead then sat at
+        // zero for the rest of the run.
+        //
+        // The poll count goes with it, for the same reason and so the two describe one run.
+        unservedSinceMs: null,
+        unservedSlotPolls: 0,
       };
     });
   }

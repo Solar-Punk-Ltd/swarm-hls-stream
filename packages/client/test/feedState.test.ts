@@ -1332,6 +1332,45 @@ describe('FeedHealthTracker telling a rung that stopped being produced from a br
     assert.deepEqual(stopped, []);
   });
 
+  /**
+   * ⛔⛔⛔ **The regression V6 caught live on 2026-08-30, and it cost a viewer their picture.**
+   *
+   * A gateway was taken away for 20.5 seconds under a watching viewer and given back. The client then
+   * dropped 480p from the ladder, and the uploader log shows 480p publishing 24 segments across the
+   * window it was removed in. It was never dead. The viewer's playhead sat at zero for the rest of
+   * the run.
+   *
+   * The mechanism is an asymmetry between the two counters. `recordGatewayFailure` does not clear the
+   * unserved run, so a rung that happened to be waiting on its next slot when the gateway went away
+   * carries that run right through the outage and comes out the other side looking silent for the
+   * whole of it. A sibling served first clears its own run and reads healthy. That is exactly the
+   * shape this rule fires on, and none of it is evidence about whether anything was being produced.
+   *
+   * ⭐ An unserved slot means the gateway ANSWERED and had nothing. A gateway that did not answer says
+   * nothing at all about the slot, so the run has to end there.
+   */
+  it('forgets an unserved run when the gateway stops answering, so an outage is not read as silence', () => {
+    const { tracker, clock, stopped } = makeLadder();
+    const OUTAGE_MS = 20_500;
+
+    // 1080p is between segments when the gateway goes away, which is the ordinary case.
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(1_000);
+
+    // The outage: neither rung can be reached, so both record failures rather than unserved slots.
+    for (let poll = 0; poll < 4; poll++) {
+      tracker.recordGatewayFailure(RUNG_1080);
+      tracker.recordGatewayFailure(RUNG_360);
+      clock.advance(OUTAGE_MS / 4);
+    }
+
+    // The gateway comes back. 360p is served first, 1080p asks once more and its slot is not up yet.
+    tracker.recordGatewayResponse(RUNG_360);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, [], 'a rung that was merely waiting when the gateway died was called dead');
+  });
+
   it('stops announcing once the listener has gone', () => {
     const { tracker, clock, stopped, unsubscribe } = makeLadder();
 

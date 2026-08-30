@@ -87,6 +87,7 @@ function makeLadderPlayer({
     removed,
     heightsLeft: () => hls.levels.map((level) => level.height),
     loadLevel: () => hls.loadLevel,
+    setLoadLevel: (level: number) => void (hls.loadLevel = level),
     nextLoadLevel: () => hls.nextLoadLevel,
     switchTo: (level: number) => {
       for (const listener of switchedListeners) {
@@ -189,6 +190,23 @@ describe('dropping a rung that has stopped being produced', () => {
     player.silence('rung-480p');
 
     assert.equal(player.nextLoadLevel(), -1, 'a viewer watching a healthy rung was steered off it');
+  });
+
+  /**
+   * ⛔ The other reason `loadLevel` is -1. A player that has not chosen a level yet reads exactly like
+   * one whose level was just removed, and steering the first forces a level while hls.js is still
+   * settling the ladder. V6 removed a rung from a freshly restarted player on 2026-08-30 and that
+   * viewer's playhead never left zero.
+   */
+  it('does not steer a player that had not chosen a level in the first place', () => {
+    const player = makeLadderPlayer();
+    player.setLoadLevel(-1);
+    attachRungFailover(player.hls, player.feedHealth);
+
+    player.silence('rung-480p');
+
+    assert.deepEqual(player.heightsLeft(), [1080, 720, 360], 'the dead rung should still be dropped');
+    assert.equal(player.nextLoadLevel(), -1, 'a player still settling its ladder was forced onto a level');
   });
 
   it('stops dropping rungs once the player is torn down', () => {
