@@ -5,7 +5,7 @@ import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
-import { announcedLiveStreams, announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { announcedLiveStreams, announcedVodFinalizeCount, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import {
   finishedTimelineRefusal,
@@ -54,12 +54,16 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  */
 
 /**
- * How much broadcast to record before stopping.
+ * How much MEDIA to record before stopping, in seconds.
  *
  * ⭐ Enough that a truncated recording is visible. A recording missing its last segment out of three
- * is within any honest tolerance, and out of twenty it is not.
+ * is within any honest tolerance, and out of sixty it is not.
+ *
+ * ⛔ Media seconds rather than a segment count, because the two stages cut at different lengths: 30s
+ * is 60 segments on the light-client stage and 15 on the in-browser one. A count would record four
+ * times as much on one as the other and mean something different on each.
  */
-const RECORD_SEGMENTS = 20;
+const RECORD_MEDIA_SECONDS = 30;
 const SEGMENT_WAIT_MS = 300_000;
 const VOD_WAIT_MS = 120_000;
 const MIN_STAMP_TTL_S = 600;
@@ -92,12 +96,11 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
 
   it('plays back whole, from a finished timeline, offering every rung it was published as', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const segments = async (): Promise<number> => parseUploaderLog(await log()).uploadedSegments.length;
 
-    await waitFor(async () => (await segments()) >= RECORD_SEGMENTS, {
+    await waitFor(async () => mediaSecondsPublished(await log()) >= RECORD_MEDIA_SECONDS, {
       timeoutMs: SEGMENT_WAIT_MS,
       intervalMs: 3_000,
-      label: `recording: ${RECORD_SEGMENTS} segments before the broadcast is stopped`,
+      label: `recording: ${RECORD_MEDIA_SECONDS}s of media before the broadcast is stopped`,
     });
 
     // ⛔ Measured either side of the stop rather than from the publisher's own start. What the
@@ -119,7 +122,7 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
     // ⭐ The broadcast's own length, from the segments the uploader says it published, rather than
     // from wall clock. Wall clock includes the settle before the first segment and the drain after
     // the last, and neither is media a viewer can reach.
-    const publishedS = parseUploaderLog(finalLog).uploadedSegments.length * declaredSegmentSeconds();
+    const publishedS = mediaSecondsPublished(finalLog);
 
     const result = await runBrowserArm(host, cfg, {
       backend: requireByteSourceForVod(backend),
@@ -159,12 +162,30 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
     assert.equal(nothingShown, null, `nothing was actually shown: ${nothingShown}`);
 
     console.log(
-      `  observations, none of them asserted. ${RECORD_SEGMENTS}+ segments published over ` +
-        `${((broadcastEndedAtMs - Date.parse(startedAt)) / 1000).toFixed(1)}s of wall clock, ` +
-        `${publishedS.toFixed(1)}s of media, and the recording reports ${vod.durationS?.toFixed(1)}s`,
+      `  observations, none of them asserted. ${publishedS.toFixed(1)}s of media published over ` +
+        `${((broadcastEndedAtMs - Date.parse(startedAt)) / 1000).toFixed(1)}s of wall clock, and the ` +
+        `recording reports ${vod.durationS?.toFixed(1)}s`,
     );
   });
 });
+
+/**
+ * How many seconds of MEDIA the broadcast published, off the uploader's own log.
+ *
+ * ⛔⛔ Per rung-stream, and taking the widest. `uploadedSegments` counts every rung, so on a four rung
+ * ladder it is four times the media that exists and a recording would be judged against a broadcast
+ * four times longer than the one that happened. Every ladder recording would fail as truncated, and
+ * the failure would name the recording rather than this arithmetic.
+ *
+ * ⭐ The widest rather than the sum or the mean: each rung carries the WHOLE broadcast, so the
+ * longest one is the broadcast, and a rung that lagged behind at the moment of the stop does not
+ * shorten it.
+ */
+function mediaSecondsPublished(text: string): number {
+  const perStream = [...segmentIndicesByStream(text).values()].map((indices) => indices.length);
+  const longest = perStream.length === 0 ? 0 : Math.max(...perStream);
+  return longest * declaredSegmentSeconds();
+}
 
 /**
  * How long one segment is, as the run declared it.
