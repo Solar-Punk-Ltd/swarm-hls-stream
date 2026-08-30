@@ -10,7 +10,7 @@ labelled with the profile it came from and no figure from one may be read agains
 
 | | gateway | in-tab |
 | --- | :---: | :---: |
-| V2 the ladder adapts | ✅ | ⛔ **it cannot see the constraint** |
+| V2 the ladder adapts | ✅ | ⛔ **not inside the window a viewer suffers in** (n=3) |
 | V3 a dead rung | ⛔ stranded | ⛔ stranded |
 | V4 a recording plays whole | ✅ | ✅ |
 
@@ -54,39 +54,78 @@ rung is now refused rather than failed: no bandwidth gives them somewhere to go.
 next on 720p, same stage, same ladder, minutes apart. Nothing here explains that and no reading in
 this document depends on it.
 
-## ⛔⛔⛔ V2 in-tab: ABR CANNOT SEE THE CONSTRAINT IT EXISTS TO REACT TO
+## ⛔⛔⛔ V2 in-tab: ABR DOES NOT REACT INSIDE THE WINDOW A VIEWER SUFFERS IN
 
-The sharpest result of the night, and it was very nearly filed as a harness failure.
+The sharpest result of the night. **n=3**, because the first arm alone would have supported a claim
+the other two refute.
 
-Capped at 2800 kbps, the rung below the 1080p this viewer had settled on.
+Capped at 2800 kbps each time, the rung below the 1080p every arm settled on.
 
-| | before the cap | while capped | after |
-| --- | ---: | ---: | ---: |
-| rung | 1080p | **1080p** | 1080p |
-| media seconds per wall second | **1.000** | **0.604** | 1.347 |
-| the player's own bandwidth estimate | 97751 kbps | **74221 kbps** | 51118 kbps |
+| arm | load at start | advance before | **advance while capped** | estimate before → capped → after (kbps) | level changes | stepped down | climbed back |
+| ---: | ---: | ---: | ---: | --- | ---: | --- | --- |
+| 1 | 15.8 | 1.000 | **0.604** | 97751 → 74221 → 51118 | 0 | never | never |
+| 2 | 10.4 | 1.000 | **0.553** | 82900 → **700** → 33774 | 4 | **62.0s** | never |
+| 3 | 16.6 | 1.000 | **0.571** | 107981 → 108794 → 66556 | 0 | never | never |
 
-Level changes: **0**.
+### What replicates
 
-**The cap unmistakably reached the viewer.** Their playback fell from keeping up exactly to 0.604 of
-realtime. What the cap did not reach is hls.js's **measurement**: it read 74 Mbps on a link capped at
-2.8 Mbps and never moved off the top rung.
+**The viewer suffers, every time.** Playback fell from exactly 1.000 to 0.55–0.60 in all three arms,
+across loads from 10.4 to 16.6. ⭐ That spread of load with that tight a result is what rules out
+co-tenancy on a box carrying 40 other bee nodes: a bracket inside one arm could not have done it.
 
-⛔⛔ **The mechanism.** hls.js derives its bandwidth estimate from its own fragment load timings. On
-the in-tab path a fragment leaves the local node at memory speed once the node holds it, so what
-hls.js times is the handover from the node, never the node's retrieval from Swarm. The retrieval is
-the thing that got slower. **ABR's input signal does not measure the constraint, so ABR cannot
-protect an in-tab viewer, and the ladder is inert on the path this project exists to build.**
+**The viewer rides 1080p through all of it, every time.** In all three arms the lowest rung selected
+during the whole 60 second squeeze was 1080p. Not once did a viewer get the lower quality the ladder
+exists to give them, while their picture ran at little over half speed.
 
-⭐ This explains a reading already on file. An in-tab viewer was measured riding 1080p on a 44ms
-buffer with the documented starvation fallback never firing. The fallback never fired because the
-signal it waits on never moves.
+### ⛔ What does NOT replicate, and it corrects this document's first version
 
-⛔ **The gate that hid it, and it was mine.** V2 first refused any run whose estimate stayed above the
-cap, on the reasoning that a player timing its own loads cannot read more than the link carries. True
-through a gateway, false in a tab. The refusal said "this run proves nothing" about the most
-important thing measured all night. The gate now asks what a viewer could FEEL: either the player
-moved rung, or the picture got worse. The estimate is printed and decides nothing.
+The first version of this section said ABR **cannot see** the constraint, on the strength of arm 1
+alone. **Arm 2 refutes that.** Its estimate collapsed to 700 kbps, well under the 2800 cap, and the
+player did eventually step down.
+
+It stepped down at **62.0 seconds**, which is after the 60 second squeeze had ended. It reacted to a
+condition that no longer existed, dropped as far as 360p in the recovery phase, and never climbed
+back inside the run.
+
+⭐ **So the honest finding is lag and inconsistency, not blindness.** Two arms in three saw
+essentially nothing under the cap, reading 74 and 109 Mbps on a 2.8 Mbps link. The third saw it and
+answered too late to help, then failed to recover. In none of the three did ABR protect the viewer
+during the window the viewer was actually suffering in.
+
+### The mechanism, and what remains unproven
+
+hls.js derives its estimate from its own fragment load timings. On the in-tab path a fragment leaves
+the local node at memory speed once the node holds it, so what hls.js times is the handover from the
+node rather than the node's retrieval from Swarm, which is the thing the cap slowed. That accounts
+for a reading of 74 or 109 Mbps on a 2.8 Mbps link.
+
+⚠️ **It does not by itself account for arm 2**, where the estimate did collapse. Something makes the
+signal arrive sometimes and late, and nothing here says what. **Unproven and worth its own sitting.**
+
+⭐ Either way this explains a reading already on file: an in-tab viewer riding 1080p on a 44ms buffer
+with the documented starvation fallback never firing. On these numbers the fallback's signal arrives
+too late to fire in time, or not at all.
+
+### ⛔ The gate that hid it, and it was mine
+
+V2 first refused any run whose estimate stayed above the cap, on the reasoning that a player timing
+its own loads cannot read more than the link carries. True through a gateway, false in a tab. It
+said "this run proves nothing" about the most important thing measured all night.
+
+The gate now asks what a viewer could FEEL: either the player moved rung, or the picture got worse.
+The estimate is printed and decides nothing.
+
+⚠️ **Arms 2 and 3 ran the OLD gate**, because the bench checkout was not re-synced after the fix.
+That changes none of their readings, and arm 2 failed on the climb-back rather than on the estimate.
+
+### The two profiles, side by side on the one number that matters
+
+| | cap | estimate under the cap | did it track? |
+| --- | ---: | ---: | :---: |
+| gateway | 1200 kbps | 893 kbps | yes |
+| in-tab, arm 1 | 2800 kbps | 74221 kbps | no |
+| in-tab, arm 2 | 2800 kbps | 700 kbps | yes, 62s late |
+| in-tab, arm 3 | 2800 kbps | 108794 kbps | no |
 
 ## ⛔ V3: a viewer whose rung goes quiet is stranded on it
 
@@ -179,14 +218,16 @@ rather than in the product, and both are recorded because the shape of the mista
 
 4. **V2's own gate refused the night's most important finding**, described above.
 
-Total spend across four sittings: **about 1.53 BZZ** of the 8.1 authorised.
+Total spend across six sittings: **about 2.0 BZZ** of the 8.1 authorised.
 
 ## Artifacts
 
 Gateway: `browser-quality-2026-08-30T02-23-53-797Z.md`,
 `browser-rung-outage-2026-08-30T02-28-52-286Z.md`, `browser-vod-2026-08-30T02-35-18-280Z.md`.
 
-In-tab: `browser-quality-2026-08-30T02-42-44-415Z.md`,
+In-tab: `browser-quality-2026-08-30T02-42-44-415Z.md` (arm 1),
+`browser-quality-2026-08-30T03-06-32-234Z.md` (arm 2),
+`browser-quality-2026-08-30T03-10-51-677Z.md` (arm 3),
 `browser-rung-outage-2026-08-30T02-47-03-957Z.md`, `browser-vod-2026-08-30T02-52-28-756Z.md`.
 
 ## Open
@@ -197,5 +238,7 @@ In-tab: `browser-quality-2026-08-30T02-42-44-415Z.md`,
   gateway arms above were taken at 0.5.
 - **The starting rung varies run to run on the gateway profile**, 360p then 720p, minutes apart,
   unexplained. It did not vary in-tab, which sat on 1080p in both arms.
-- **V2 has never been seen to pass in-tab**, because it cannot until ABR can see the constraint. The
-  red is correct and will stay red until that is a product decision.
+- **V2 has never been seen to pass in-tab**, across three arms. The red is correct and stays red
+  until ABR reacting in time on that path is a product decision.
+- **Why arm 2's estimate collapsed and the other two's did not is unexplained**, and it is the one
+  thread here that would change the shape of the fix. Worth its own sitting.
