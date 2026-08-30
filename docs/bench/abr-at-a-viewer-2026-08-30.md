@@ -1,12 +1,18 @@
 # ABR at a viewer, watched for the first time
 
-**2026-08-30, light-client profile (gateway byte source), latbench slot 7, 0.5s stage, four rung
-ladder.** Three tests that had never existed before this day, run against a real browser watching a
-real broadcast. Two pass, one fails, and the failure is the finding.
+**2026-08-30, latbench slot 7, four rung ladder. BOTH profiles run:** light-client (gateway byte
+source) on the 0.5s stage, then in-browser (weeb-3 node in the tab) on a 2s stage. Three tests that
+had never existed before this day, against a real browser watching a real broadcast.
 
-⛔ **This is the CONTROL profile only.** An in-tab viewer rides a different rung of the same broadcast
-and reads the bytes over a different transport. Nothing here describes the in-browser path, and the
-two are not comparable.
+⛔⛔ **The two profiles are two STAGES, not an arm and its control.** They cut at different segment
+lengths on purpose, because the two byte sources measured opposite optima. Every figure below is
+labelled with the profile it came from and no figure from one may be read against the other.
+
+| | gateway | in-tab |
+| --- | :---: | :---: |
+| V2 the ladder adapts | ✅ | ⛔ **it cannot see the constraint** |
+| V3 a dead rung | ⛔ stranded | ⛔ stranded |
+| V4 a recording plays whole | ✅ | ✅ |
 
 ## What this settles
 
@@ -48,6 +54,40 @@ rung is now refused rather than failed: no bandwidth gives them somewhere to go.
 next on 720p, same stage, same ladder, minutes apart. Nothing here explains that and no reading in
 this document depends on it.
 
+## ⛔⛔⛔ V2 in-tab: ABR CANNOT SEE THE CONSTRAINT IT EXISTS TO REACT TO
+
+The sharpest result of the night, and it was very nearly filed as a harness failure.
+
+Capped at 2800 kbps, the rung below the 1080p this viewer had settled on.
+
+| | before the cap | while capped | after |
+| --- | ---: | ---: | ---: |
+| rung | 1080p | **1080p** | 1080p |
+| media seconds per wall second | **1.000** | **0.604** | 1.347 |
+| the player's own bandwidth estimate | 97751 kbps | **74221 kbps** | 51118 kbps |
+
+Level changes: **0**.
+
+**The cap unmistakably reached the viewer.** Their playback fell from keeping up exactly to 0.604 of
+realtime. What the cap did not reach is hls.js's **measurement**: it read 74 Mbps on a link capped at
+2.8 Mbps and never moved off the top rung.
+
+⛔⛔ **The mechanism.** hls.js derives its bandwidth estimate from its own fragment load timings. On
+the in-tab path a fragment leaves the local node at memory speed once the node holds it, so what
+hls.js times is the handover from the node, never the node's retrieval from Swarm. The retrieval is
+the thing that got slower. **ABR's input signal does not measure the constraint, so ABR cannot
+protect an in-tab viewer, and the ladder is inert on the path this project exists to build.**
+
+⭐ This explains a reading already on file. An in-tab viewer was measured riding 1080p on a 44ms
+buffer with the documented starvation fallback never firing. The fallback never fired because the
+signal it waits on never moves.
+
+⛔ **The gate that hid it, and it was mine.** V2 first refused any run whose estimate stayed above the
+cap, on the reasoning that a player timing its own loads cannot read more than the link carries. True
+through a gateway, false in a tab. The refusal said "this run proves nothing" about the most
+important thing measured all night. The gate now asks what a viewer could FEEL: either the player
+moved rung, or the picture got worse. The estimate is printed and decides nothing.
+
 ## ⛔ V3: a viewer whose rung goes quiet is stranded on it
 
 The transcode producing the rung the viewer had settled on was stopped for 90 seconds. Three healthy
@@ -82,19 +122,35 @@ one gateway serves all five feeds, so a single rung being served proves the gate
 frozen while the broadcast is genuinely healthy.** The same rule that closed one blindness opened
 another, and neither is visible from the uploader's side.
 
+### The in-tab arm agrees, and is worse
+
+Same fault on the in-browser profile, with the viewer on 1080p instead of 360p:
+
+| | gateway | in-tab |
+| --- | ---: | ---: |
+| rung before / during / after | 360p / 360p / 360p | 1080p / 1080p / 1080p |
+| level changes | 0 | 0 |
+| media seconds per wall second while quiet | 0.481 | **0.088** |
+| longest freeze | 103.2s | 87.2s |
+
+⭐ Both byte sources, both starting rungs, top of the ladder and bottom of it: **no failover, on
+either path.** The in-tab picture was essentially stopped, at 0.088 of realtime.
+
 ### What this is not
 
-Not a timing failure. Nothing in V3 asserts a duration, and the 103.2s is recorded rather than
-compared. The case is red because the viewer never moved off a rung that had stopped existing.
+Not a timing failure. Nothing in V3 asserts a duration, and the freeze figures are recorded rather
+than compared. The case is red because the viewer never moved off a rung that had stopped existing.
 
 ## ✅ V4: a finished recording plays back whole, with its whole ladder
 
-| | run 1 | run 2 |
-| --- | ---: | ---: |
-| media published | 50.0s | 43.0s |
-| duration the recording reports | 49.0s | 42.0s |
-| shortfall, against a 2s tolerance | 1.0s | 1.0s |
-| rungs the recording offered | all four | all four |
+| | gateway run 1 | gateway run 2 | in-tab |
+| --- | ---: | ---: | ---: |
+| media published | 50.0s | 43.0s | 32.0s |
+| duration the recording reports | 49.0s | 42.0s | 30.4s |
+| shortfall, against a 2s tolerance | 1.0s | 1.0s | 1.6s |
+| rungs the recording offered | all four | all four | all four |
+
+⭐ **Three for three, on both byte sources and both stages.** The one thing tonight that simply works.
 
 The 1.0s shortfall in both runs is the partial segment a clean stop always leaves behind, which is
 why the tolerance is arithmetic rather than a threshold.
@@ -121,18 +177,25 @@ rather than in the product, and both are recorded because the shape of the mista
    driver wrote a recovery verdict without the scenario and fault blocks the reader requires. Every
    unit test passed, because the fixture was more complete than the driver.
 
-Total spend across the three sittings: **about 1.06 BZZ** of the 8.1 authorised.
+4. **V2's own gate refused the night's most important finding**, described above.
+
+Total spend across four sittings: **about 1.53 BZZ** of the 8.1 authorised.
 
 ## Artifacts
 
-- `browser-quality-2026-08-30T02-23-53-797Z.md`
-- `browser-rung-outage-2026-08-30T02-28-52-286Z.md`
-- `browser-vod-2026-08-30T02-35-18-280Z.md`
+Gateway: `browser-quality-2026-08-30T02-23-53-797Z.md`,
+`browser-rung-outage-2026-08-30T02-28-52-286Z.md`, `browser-vod-2026-08-30T02-35-18-280Z.md`.
+
+In-tab: `browser-quality-2026-08-30T02-42-44-415Z.md`,
+`browser-rung-outage-2026-08-30T02-47-03-957Z.md`, `browser-vod-2026-08-30T02-52-28-756Z.md`.
 
 ## Open
 
-- **The in-browser profile has not run.** It needs a 2 second stage and the deployment is cutting
-  0.5, so it needs a redeploy. That profile is the default subject of this project and the gateway is
-  its control, so the ladder question is half answered.
-- **V3's two defects are unfiled as product work.** Neither has an owner decision yet.
-- **The starting rung varies run to run on the gateway profile**, 360p then 720p, unexplained.
+- **Three product defects are unfiled and none has an owner decision.** ABR blind on the in-tab path,
+  no failover for a dead rung on either path, and the overlay silent through both.
+- **The stage was left cutting 2 seconds**, because in-browser is the declared default profile. The
+  gateway arms above were taken at 0.5.
+- **The starting rung varies run to run on the gateway profile**, 360p then 720p, minutes apart,
+  unexplained. It did not vary in-tab, which sat on 1080p in both arms.
+- **V2 has never been seen to pass in-tab**, because it cannot until ABR can see the constraint. The
+  red is correct and will stay red until that is a product decision.
