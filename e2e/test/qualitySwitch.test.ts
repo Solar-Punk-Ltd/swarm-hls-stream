@@ -186,3 +186,61 @@ describe("hls.js's own switch counter", () => {
     assert.equal(judgeQualitySwitch(alreadySwitching, WINDOW).switchesCounted, 2);
   });
 });
+
+/**
+ * ⛔⛔⛔ **Adapting after the event is not adapting**, and unbounded this read it as though it were.
+ *
+ * Measured live on 2026-08-30: the viewer stepped down 61.975s into a 60.870s squeeze, about a second
+ * after their link had already recovered, and the suite scored that as a viewer who adapted. They had
+ * ridden the top rung through the entire cap with their picture at 0.539 of real time. A gate that
+ * counts the reaction arriving after the cause has gone cannot fail the thing it exists for.
+ */
+describe('when a step down counts', () => {
+  /** Ten samples before the cap, ten under it, ten after. The cap spans indexes 10 to 19. */
+  const RUNG_BEFORE = 1080;
+
+  it('counts a step down that lands while the cap is on', () => {
+    const timeline = judgeQualitySwitch(
+      watched([
+        ...Array<SamplePlan>(10).fill({ rung: RUNG_BEFORE }),
+        ...Array<SamplePlan>(5).fill({ rung: RUNG_BEFORE }),
+        ...Array<SamplePlan>(5).fill({ rung: 360 }),
+        ...Array<SamplePlan>(10).fill({ rung: 360 }),
+      ]),
+      WINDOW,
+    );
+
+    assert.equal(timeline.steppedDownAfterMs, 5 * INTERVAL_MS);
+  });
+
+  it('does not count a step down that lands after the cap has been lifted', () => {
+    const timeline = judgeQualitySwitch(
+      watched([
+        ...Array<SamplePlan>(10).fill({ rung: RUNG_BEFORE }),
+        // Rode the top rung through the whole cap, which is the failure being asked about.
+        ...Array<SamplePlan>(10).fill({ rung: RUNG_BEFORE }),
+        // And came down one sample after the link recovered, which helps nobody.
+        ...Array<SamplePlan>(10).fill({ rung: 360 }),
+      ]),
+      WINDOW,
+    );
+
+    assert.equal(timeline.steppedDownAfterMs, null, 'a step down after the cap came off was scored as adapting');
+    assert.equal(timeline.during.lowestRungHeight, RUNG_BEFORE, 'and the viewer never left the top rung under it');
+  });
+
+  /** The control. Recovery has the whole rest of the run, and no later event to be confused with. */
+  it('still counts a climb back at any point after the cap comes off', () => {
+    const timeline = judgeQualitySwitch(
+      watched([
+        ...Array<SamplePlan>(10).fill({ rung: RUNG_BEFORE }),
+        ...Array<SamplePlan>(10).fill({ rung: 360 }),
+        ...Array<SamplePlan>(8).fill({ rung: 360 }),
+        ...Array<SamplePlan>(2).fill({ rung: RUNG_BEFORE }),
+      ]),
+      WINDOW,
+    );
+
+    assert.equal(timeline.climbedBackAfterMs, 8 * INTERVAL_MS);
+  });
+});

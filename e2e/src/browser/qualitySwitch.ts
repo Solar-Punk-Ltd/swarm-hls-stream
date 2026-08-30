@@ -118,14 +118,23 @@ function qualityPhase(samples: readonly ViewerSample[], from: number, to: number
 }
 
 /**
- * The first moment after `from` that the player selected a rung on the far side of `reference`.
+ * The first moment between `from` and `until` that the player selected a rung on the far side of
+ * `reference`.
  *
  * Wall time from `from`, so a caller reads "it came down N seconds in" without knowing when the run
  * started. Null where it never did, which is the case a suite refuses on.
+ *
+ * ⛔⛔⛔ **`until` exists because adapting after the event is not adapting.** Unbounded, this counted a
+ * step down that landed once the cap had already been lifted, which is a gate that cannot fail the
+ * thing it was written for. Measured live 2026-08-30: the viewer stepped down 61.975s into a 60.870s
+ * squeeze, about a second after their link recovered, and the suite read that as a viewer who
+ * adapted. They had ridden the top rung through the entire cap with their picture at 0.539 of real
+ * time.
  */
-function firstCrossingAfter(
+function firstCrossingBetween(
   samples: readonly ViewerSample[],
   from: number,
+  until: number,
   reference: number | null,
   crossed: (height: number, reference: number) => boolean,
 ): number | null {
@@ -134,7 +143,10 @@ function firstCrossingAfter(
   }
   const crossing = samples.find(
     (sample) =>
-      sample.atMs >= from && sample.selectedRungHeight !== null && crossed(sample.selectedRungHeight, reference),
+      sample.atMs >= from &&
+      sample.atMs < until &&
+      sample.selectedRungHeight !== null &&
+      crossed(sample.selectedRungHeight, reference),
   );
   return crossing === undefined ? null : crossing.atMs - from;
 }
@@ -160,15 +172,21 @@ export function judgeRungTimeline(samples: readonly ViewerSample[], window: Trea
     after,
     switchesCounted: counted.length === 0 ? 0 : Math.max(...counted) - Math.min(...counted),
     abrEnabledThroughout: samples.length > 0 && samples.every((sample) => sample.abrEnabled),
-    steppedDownAfterMs: firstCrossingAfter(
+    // Bounded by the treatment. A step down that lands after the cap comes off is the player
+    // reacting to a link that has already recovered, which is the opposite of what is being asked.
+    steppedDownAfterMs: firstCrossingBetween(
       samples,
       window.appliedAtMs,
+      window.liftedAtMs,
       before.endedOnRungHeight,
       (height, baseline) => height < baseline,
     ),
-    climbedBackAfterMs: firstCrossingAfter(
+    // Unbounded on purpose: the recovery has the whole rest of the run to happen in, and there is no
+    // later event for it to be confused with.
+    climbedBackAfterMs: firstCrossingBetween(
       samples,
       window.liftedAtMs,
+      Number.POSITIVE_INFINITY,
       during.endedOnRungHeight,
       (height, underTreatment) => height > underTreatment,
     ),
