@@ -112,6 +112,23 @@ export const MANIFEST_RETRY_CAP_MS = 8_000;
 export const UNSERVED_SLOT_STALL_MS = 8_000;
 
 /**
+ * How recently a sibling rung must have been served for this rung's silence to be its own fault.
+ *
+ * ⛔⛔⛔ **Without a margin, a broadcast that stops entirely strips its own ladder.** The rungs of one
+ * broadcast do not go quiet in the same instant. Each stops after its own last segment, so on a
+ * whole-broadcast stop their unserved runs are staggered. The first rung past
+ * {@link UNSERVED_SLOT_STALL_MS} would then find three siblings still reading live, be judged dead
+ * on its own, and be dropped from the ladder, and so would the next, until a viewer was left holding
+ * one rung of a ladder that was never broken.
+ *
+ * ⭐ Half the stall window is the widest stagger a whole-broadcast stop can produce and the narrowest
+ * that still reads a genuinely dead rung as dead. Segments land every 0.5 to 2 seconds and rungs are
+ * polled every 750ms, so rungs stopping together stagger by at most about 2.75s, while a rung
+ * publishing beside a dead one is never more than a segment behind.
+ */
+export const RUNG_ALIVE_WITHIN_MS = UNSERVED_SLOT_STALL_MS / 2;
+
+/**
  * How many consecutive unserved polls the walk keeps probing past a refusal for.
  *
  * ⚠️ **Not what decides the overlay any more.** That is {@link UNSERVED_SLOT_STALL_MS}. This bounds
@@ -219,6 +236,14 @@ function isWorthTracking(health: TopicHealth): boolean {
   );
 }
 
+/** How long this feed has been going unserved, or null when its last poll was served. */
+function unservedForMs(health: TopicHealth | undefined, nowMs: number): number | null {
+  if (!health || health.unservedSinceMs === null) {
+    return null;
+  }
+  return nowMs - health.unservedSinceMs;
+}
+
 function stateOfHealth(health: TopicHealth | undefined, nowMs: number): FeedState {
   if (!health) {
     return FEED_STATE_LIVE;
@@ -260,8 +285,24 @@ function stateOfHealth(health: TopicHealth | undefined, nowMs: number): FeedStat
  * The entry topic's own failures are deliberately left out. It is read once per load by the source
  * fetch and never again, so a failure recorded there has nothing that would ever clear it, and the
  * rungs report the same outage within a poll anyway.
+ *
+ * ⭐⭐⭐ **One rung going quiet is a fault the whole group has to report, and only when it is the rung
+ * the viewer is on.** Agreement is right for reaching the gateway, which is what it was built for: a
+ * rung that cannot reach the host its siblings are reaching has a flake of its own, and the viewer is
+ * still watching. It is wrong for a feed that stops advancing. Measured 2026-08-30, live, on both
+ * byte paths: one rung of four was silenced under a watching viewer, the picture stopped for 87 and
+ * 103 seconds, three rungs published throughout, and the overlay said `live` the whole time because
+ * three rungs out of four disagreed that anything was wrong. So `watched` overrides the unserved run
+ * when the player has said which rung it is on, and nothing else about the fold changes.
+ *
+ * @param watched The rung this viewer is playing, or null when none has been named, which is every
+ *   single-rendition stream and every ladder before its first level switch.
  */
-function foldLadderHealth(own: TopicHealth | undefined, rungs: readonly (TopicHealth | undefined)[]): TopicHealth {
+function foldLadderHealth(
+  own: TopicHealth | undefined,
+  rungs: readonly (TopicHealth | undefined)[],
+  watched: TopicHealth | null,
+): TopicHealth {
   const entry = own ?? HEALTHY;
   if (rungs.length === 0) {
     return entry;
@@ -272,15 +313,22 @@ function foldLadderHealth(own: TopicHealth | undefined, rungs: readonly (TopicHe
   const rungHealths = rungs.map((rung) => rung ?? HEALTHY);
   // The latest of them, because the group has only been unserved since the last rung stopped being
   // served. One rung still getting slots leaves the group not unserved at all.
-  const unservedSinceMs = rungHealths.every((health) => health.unservedSinceMs !== null)
+  const agreedUnservedSinceMs = rungHealths.every((health) => health.unservedSinceMs !== null)
     ? Math.max(...rungHealths.map((health) => health.unservedSinceMs as number))
     : null;
+
+  // Both taken from the same place, so the run's age and the run's length describe one rung rather
+  // than two different readings of the ladder.
+  const unserved = watched ?? {
+    unservedSinceMs: agreedUnservedSinceMs,
+    unservedSlotPolls: agreedOn((health) => health.unservedSlotPolls),
+  };
 
   return {
     gatewayFailures: agreedOn((health) => health.gatewayFailures),
     retryAtMs: entry.retryAtMs,
-    unservedSlotPolls: agreedOn((health) => health.unservedSlotPolls),
-    unservedSinceMs,
+    unservedSlotPolls: unserved.unservedSlotPolls,
+    unservedSinceMs: unserved.unservedSinceMs,
     hasEnded: entry.hasEnded,
     stallsAtMs: entry.stallsAtMs,
   };
@@ -332,6 +380,20 @@ export class FeedHealthTracker {
   private readonly groupOfRung = new Map<string, string>();
 
   /**
+   * The rung each ladder's viewer is actually playing, where the player has said.
+   *
+   * ⛔ Absent for every single-rendition stream, and for a ladder until its first level switch. The
+   * fold falls back to the agreement rule then, which is what it did for every stream before this
+   * existed. See {@link foldLadderHealth}.
+   */
+  private readonly watchedRungOfGroup = new Map<string, string>();
+
+  /** Rungs already announced as stopped, so one death is one announcement. */
+  private readonly stoppedRungsAnnounced = new Set<string>();
+
+  private readonly rungStoppedListeners = new Set<(rungTopicId: string) => void>();
+
+  /**
    * @param now A monotonic clock. `Date.now` is not one: a system clock correction during an outage
    *   moves every deadline already scheduled against it, either releasing the backoff at once or
    *   holding it for as long as the correction was large.
@@ -349,6 +411,10 @@ export class FeedHealthTracker {
    * group's state is read, never what any topic has recorded against it.
    */
   trackGroup(groupId: string, rungTopicIds: readonly string[]): void {
+    // Read before the untrack that clears it. A poller stopping one rung re-tracks the group with
+    // the rest, and losing the watched rung there would put the overlay back on the agreement rule
+    // for a viewer who is still on a rung this walk still owns.
+    const watched = this.watchedRungOfGroup.get(groupId);
     this.untrackGroup(groupId);
     const rungs = [...new Set(rungTopicIds)].filter((rung) => rung !== groupId);
     if (rungs.length === 0) {
@@ -358,6 +424,9 @@ export class FeedHealthTracker {
     this.rungsOfGroup.set(groupId, rungs);
     for (const rung of rungs) {
       this.groupOfRung.set(rung, groupId);
+    }
+    if (watched !== undefined && rungs.includes(watched)) {
+      this.watchedRungOfGroup.set(groupId, watched);
     }
     this.publish(groupId, this.state(groupId));
   }
@@ -371,9 +440,92 @@ export class FeedHealthTracker {
 
     for (const rung of rungs) {
       this.groupOfRung.delete(rung);
+      this.stoppedRungsAnnounced.delete(rung);
     }
     this.rungsOfGroup.delete(groupId);
+    this.watchedRungOfGroup.delete(groupId);
     this.publish(groupId, this.state(groupId));
+  }
+
+  /**
+   * Say which rung of a ladder this viewer is playing, or null once nothing is selected.
+   *
+   * ⭐ The overlay watches the group and only the group, so without this a fault on the one rung a
+   * viewer can actually see is outvoted by three rungs they cannot. See {@link foldLadderHealth}.
+   *
+   * Ignored for a topic that is not a tracked ladder, and for a rung that ladder does not walk. Both
+   * are a player and a poller disagreeing about the shape of the stream, and believing the player
+   * would point the overlay at a feed nothing is reading.
+   */
+  watchRung(groupId: string, rungTopicId: string | null): void {
+    const rungs = this.rungsOfGroup.get(groupId);
+    if (rungs === undefined) {
+      return;
+    }
+    if (rungTopicId !== null && !rungs.includes(rungTopicId)) {
+      console.warn(`Rung ${rungTopicId} is not walked for ${groupId}, so it is not what this viewer is watching`);
+      return;
+    }
+
+    if (rungTopicId === null) {
+      this.watchedRungOfGroup.delete(groupId);
+    } else {
+      this.watchedRungOfGroup.set(groupId, rungTopicId);
+    }
+    this.publish(groupId, this.state(groupId));
+  }
+
+  /**
+   * Whether this rung has stopped being produced while the ladder around it carries on.
+   *
+   * ⛔⛔⛔ **Not the same question as whether the rung is stalled**, and the difference is what keeps a
+   * whole-broadcast stop from being read as four separate rung deaths. A rung is only its own fault
+   * when a sibling was served recently enough to prove the publisher and the gateway are both still
+   * working. See {@link RUNG_ALIVE_WITHIN_MS}.
+   *
+   * False for anything that is not a rung of a tracked ladder: a viewer of a single-rendition stream
+   * has nowhere to move to, so there is nothing this could tell them.
+   */
+  rungStoppedWhileOthersAdvance(rungTopicId: string): boolean {
+    const group = this.groupOfRung.get(rungTopicId);
+    if (group === undefined) {
+      return false;
+    }
+
+    const nowMs = this.now();
+    const health = this.topics.get(rungTopicId);
+    if (health?.hasEnded) {
+      return false;
+    }
+    if ((unservedForMs(health, nowMs) ?? 0) < UNSERVED_SLOT_STALL_MS) {
+      return false;
+    }
+
+    return (this.rungsOfGroup.get(group) ?? [])
+      .filter((sibling) => sibling !== rungTopicId)
+      .some((sibling) => {
+        const siblingHealth = this.topics.get(sibling);
+        return (
+          stateOfHealth(siblingHealth, nowMs) === FEED_STATE_LIVE &&
+          (unservedForMs(siblingHealth, nowMs) ?? 0) < RUNG_ALIVE_WITHIN_MS
+        );
+      });
+  }
+
+  /**
+   * Watch for a rung that has stopped being produced while the rest of its ladder carries on.
+   *
+   * ⛔ Announced from here rather than read off {@link subscribe}, because the four states are
+   * published once per change and this judgement is not a function of one rung alone. The margin in
+   * {@link RUNG_ALIVE_WITHIN_MS} can fail on the poll where the rung first reads stalled and hold on
+   * the next, and a listener watching for a `stalled` edge would have heard its one notification and
+   * missed the answer. This is re-judged on every poll the dead rung records, and announced once.
+   */
+  onRungStopped(listener: (rungTopicId: string) => void): () => void {
+    this.rungStoppedListeners.add(listener);
+    return () => {
+      this.rungStoppedListeners.delete(listener);
+    };
   }
 
   private healthFor(topicId: string): TopicHealth | undefined {
@@ -381,9 +533,13 @@ export class FeedHealthTracker {
     if (rungs === undefined) {
       return this.topics.get(topicId);
     }
+    // `HEALTHY` rather than undefined for a named rung, so "watching a rung with nothing recorded
+    // against it" stays distinct from "no rung named", which is what falls back to agreement.
+    const watched = this.watchedRungOfGroup.get(topicId);
     return foldLadderHealth(
       this.topics.get(topicId),
       rungs.map((rung) => this.topics.get(rung)),
+      watched === undefined ? null : this.topics.get(watched) ?? HEALTHY,
     );
   }
 
@@ -585,6 +741,7 @@ export class FeedHealthTracker {
     if (topicId === undefined) {
       const forgotten = [...this.topics.keys()];
       this.topics.clear();
+      this.stoppedRungsAnnounced.clear();
       this.publishAll(forgotten);
       return;
     }
@@ -609,6 +766,36 @@ export class FeedHealthTracker {
 
     this.publish(topicId, this.state(topicId));
     this.publishGroupOf(topicId);
+    this.announceIfRungStopped(topicId);
+  }
+
+  /**
+   * Say once that a rung has stopped being produced, and say it again if it dies a second time.
+   *
+   * Re-armed on the rung being served rather than on the judgement going false, because the
+   * judgement also goes false when the siblings stop too. A ladder whose broadcast ends after one
+   * rung had already died would otherwise re-announce that rung the moment the others caught up
+   * with it.
+   */
+  private announceIfRungStopped(topicId: string): void {
+    if ((this.topics.get(topicId)?.unservedSinceMs ?? null) === null) {
+      this.stoppedRungsAnnounced.delete(topicId);
+      return;
+    }
+    if (this.stoppedRungsAnnounced.has(topicId) || !this.rungStoppedWhileOthersAdvance(topicId)) {
+      return;
+    }
+
+    this.stoppedRungsAnnounced.add(topicId);
+    // Copied, because a listener that drops a level makes the poller re-track the group, and
+    // re-tracking is allowed to unsubscribe.
+    for (const listener of [...this.rungStoppedListeners]) {
+      try {
+        listener(topicId);
+      } catch (error) {
+        console.error('Rung stopped listener threw:', error);
+      }
+    }
   }
 
   /** A rung's change is its group's change too, because the overlay watches only the group. */

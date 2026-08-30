@@ -16,6 +16,7 @@ import { attachPlaybackStallReporter } from './playbackHealth';
 import { buildPlayerConfig, HLS_TUNING } from './playerConfig';
 import { exposePlayerForInstrumentation } from './playerTestHandle';
 import { buildSwarmUri } from './playlist';
+import { attachRungFailover, attachWatchedRungReporter } from './rungHealth';
 
 import './SwarmHlsPlayer.scss';
 
@@ -442,6 +443,15 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     const detachRateGuard = hls ? attachLivePlaybackRateGuard(video, hls) : null;
     const detachTestHandle = hls ? exposePlayerForInstrumentation(hls) : null;
 
+    // ⛔ Both halves of what a ladder viewer needs when one rung stops being produced, and neither
+    // works alone: the failover moves the picture, the reporter is what lets the overlay say so
+    // during the seconds before it does. A single-rendition stream gets neither, because there is
+    // no second rung to move to and nothing for a group's health to be folded from.
+    const ladderTopic = isLadder ? toHexTopic(topicString) : null;
+    const detachRungFailover = hls ? attachRungFailover(hls, manifestFetcher.feedHealth) : null;
+    const detachWatchedRung =
+      hls && ladderTopic ? attachWatchedRungReporter(hls, ladderTopic, manifestFetcher.feedHealth) : null;
+
     // Attached with the player rather than with the subscription above, because it is the player
     // that stalls: a restart builds a fresh media pipeline and the stalls of the one before it are
     // not the new one's. The burst they feed lives in the tracker, which does outlive the restart.
@@ -457,6 +467,8 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       detachRateGuard?.();
       detachStallReporter?.();
       detachTestHandle?.();
+      detachRungFailover?.();
+      detachWatchedRung?.();
 
       // Stops every rung's walk and discards its accumulated playlist, including rungs discovered
       // from a published master that this component never saw.

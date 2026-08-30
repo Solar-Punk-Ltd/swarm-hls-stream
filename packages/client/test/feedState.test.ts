@@ -12,6 +12,7 @@ import {
   type FeedState,
   PLAYBACK_STALL_BURST,
   PLAYBACK_STALL_WINDOW_MS,
+  RUNG_ALIVE_WITHIN_MS,
   TRACKED_TOPIC_LIMIT,
   UNSERVED_POLLS_PROBE_CEILING,
   UNSERVED_SLOT_STALL_MS,
@@ -1021,5 +1022,324 @@ describe('FeedHealthTracker calling a feed stalled by elapsed time rather than b
     tracker.recordGatewayFailure(TOPIC);
 
     assert.equal(tracker.state(TOPIC), FEED_STATE_RECONNECTING);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **Three rungs outvoted the one the viewer could actually see.**
+ *
+ * Measured live on 2026-08-30, on both byte paths. One rung of a four rung ladder was silenced under
+ * a watching viewer, the picture stopped for 87.2 seconds in the tab and 103.2 through a gateway,
+ * three rungs published throughout, and the overlay said `live` for the whole of it. The group's
+ * health is what its rungs agree on, and three of four agreed nothing was wrong.
+ *
+ * ⭐ Agreement is still right for reaching the gateway, which is what it was built for: one gateway
+ * serves every feed, so a rung that cannot reach the host its siblings are reaching has a flake of
+ * its own and the viewer is still watching. It is wrong for a feed that has stopped advancing, which
+ * is a fault the viewer sees the instant it is the rung they are on. So only that half follows the
+ * watched rung, and only once a player has said which one it is on.
+ */
+describe('FeedHealthTracker judging the rung a viewer is actually watching', () => {
+  const GROUP = 'entry-topic-the-viewer-linked';
+  const RUNG_1080 = 'rung-1080p';
+  const RUNG_360 = 'rung-360p';
+
+  function makeLadder() {
+    const clock = makeClock();
+    const seen: FeedState[] = [];
+    const tracker = new FeedHealthTracker(clock.now);
+    tracker.trackGroup(GROUP, [RUNG_1080, RUNG_360]);
+    tracker.subscribe(GROUP, (state) => seen.push(state));
+
+    return { clock, tracker, seen };
+  }
+
+  /** Two polls and a clock, never a loop over the constant. See {@link unservedPastWindow}. */
+  function goesQuiet(tracker: FeedHealthTracker, clock: { advance: (by: number) => void }, rung: string): void {
+    tracker.recordUnservedSlot(rung);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(rung);
+  }
+
+  it('tells the viewer their own rung has stopped, while the others carry on publishing', () => {
+    const { tracker, clock, seen } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+
+    goesQuiet(tracker, clock, RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_STALLED);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED]);
+  });
+
+  it('stays quiet when the rung that stopped is not the one being watched', () => {
+    const { tracker, clock } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_360);
+
+    goesQuiet(tracker, clock, RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+  });
+
+  /**
+   * ⛔ The constraint the owner attached to this fix. A rung failing to reach a gateway its siblings
+   * are reaching is that rung's own flake, and raising the overlay on it is what the agreement rule
+   * exists to prevent. Watching the rung must not change that.
+   */
+  it('keeps the agreement rule for a gateway that one rung alone cannot reach', () => {
+    const { tracker } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+
+    tracker.recordGatewayFailure(RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+  });
+
+  it('moving to a living rung takes the overlay back down', () => {
+    const { tracker, clock, seen } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+    goesQuiet(tracker, clock, RUNG_1080);
+
+    tracker.watchRung(GROUP, RUNG_360);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE);
+    assert.deepEqual(seen, [FEED_STATE_LIVE, FEED_STATE_STALLED, FEED_STATE_LIVE]);
+  });
+
+  /** The control. Without a named rung nothing about a ladder's health reads any differently. */
+  it('falls back to what every rung agrees on once no rung is named', () => {
+    const { tracker, clock } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+    goesQuiet(tracker, clock, RUNG_1080);
+
+    tracker.watchRung(GROUP, null);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE, 'rung 360 is still being served');
+  });
+
+  /**
+   * A player and a poller disagreeing about the shape of the stream. Believing the player would point
+   * the overlay at a feed nothing is reading, which never advances and so always reads as stalled.
+   */
+  it('refuses a rung the ladder does not walk, and keeps the one it had', () => {
+    const { tracker, clock } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+
+    tracker.watchRung(GROUP, 'a-rung-from-some-other-broadcast');
+    goesQuiet(tracker, clock, RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_STALLED, 'the bogus rung replaced the one being watched');
+  });
+
+  it('keeps the watched rung when a poller re-tracks the group it still walks', () => {
+    const { tracker, clock } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+
+    tracker.trackGroup(GROUP, [RUNG_1080, RUNG_360]);
+    goesQuiet(tracker, clock, RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_STALLED);
+  });
+
+  it('forgets the watched rung when the ladder it belonged to is torn down', () => {
+    const { tracker, clock } = makeLadder();
+    tracker.watchRung(GROUP, RUNG_1080);
+
+    tracker.untrackGroup(GROUP);
+    tracker.trackGroup(GROUP, [RUNG_1080, RUNG_360]);
+    goesQuiet(tracker, clock, RUNG_1080);
+
+    assert.equal(tracker.state(GROUP), FEED_STATE_LIVE, 'a torn down ladder kept a viewer on one of its rungs');
+  });
+});
+
+/**
+ * ⛔⛔⛔ **A Swarm feed that stops advancing does not error, so hls.js has nothing to react to.**
+ *
+ * hls.js changes level on a fragment load error. A rung whose transcode has stopped still serves its
+ * playlist perfectly, it just never grows, so a player waiting for a segment it was never offered
+ * waits for ever. Measured live 2026-08-30 on both byte paths: the viewer stayed on the dead rung for
+ * the whole outage and the picture stopped for 87.2 and 103.2 seconds with three healthy rungs beside
+ * it. The client already counted the unserved run per rung. Nothing read it.
+ *
+ * ⛔⛔ **The margin is the whole of the difficulty.** A rung being stalled is not the same question as
+ * a rung being dead. When a broadcast stops entirely, its rungs go quiet one after another as each
+ * runs out its own last segment, so the first one past the window finds its siblings still reading
+ * live and would be judged dead on its own, and so would the next. A ladder that was never broken
+ * would strip itself down to one rung. See `RUNG_ALIVE_WITHIN_MS`.
+ */
+describe('FeedHealthTracker telling a rung that stopped being produced from a broadcast that stopped', () => {
+  const GROUP = 'entry-topic-the-viewer-linked';
+  const RUNG_1080 = 'rung-1080p';
+  const RUNG_360 = 'rung-360p';
+
+  function makeLadder() {
+    const clock = makeClock();
+    const stopped: string[] = [];
+    const tracker = new FeedHealthTracker(clock.now);
+    tracker.trackGroup(GROUP, [RUNG_1080, RUNG_360]);
+    const unsubscribe = tracker.onRungStopped((rung) => stopped.push(rung));
+
+    return { clock, tracker, stopped, unsubscribe };
+  }
+
+  it('announces a rung that has been quiet past the window while a sibling is being served', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, [RUNG_1080]);
+  });
+
+  it('says nothing while the run is still inside the window', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS - 1);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, []);
+  });
+
+  /**
+   * ⭐⭐⭐ The case the margin exists for, and the one that would have cost a viewer their whole ladder.
+   *
+   * ⛔ **The first version of this passed against an implementation with no margin at all.** It
+   * advanced the clock a full window past the LATER rung, by which point both rungs read as stalled
+   * and no sibling was live to judge against, so it agreed with anything. The instant that decides
+   * this is the one where the first rung crosses the window while the second is still short of it,
+   * and a test of this rule has to stand on that instant. Walking poll by poll is what visits it.
+   */
+  it('announces nothing when the whole broadcast stops, however staggered the rungs are', () => {
+    const { tracker, clock, stopped } = makeLadder();
+    const ONE_SEGMENT_MS = 2_000;
+    const POLL_MS = 750;
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(ONE_SEGMENT_MS);
+    tracker.recordUnservedSlot(RUNG_360);
+
+    for (let sinceStop = ONE_SEGMENT_MS; sinceStop < UNSERVED_SLOT_STALL_MS * 2; sinceStop += POLL_MS) {
+      clock.advance(POLL_MS);
+      tracker.recordUnservedSlot(RUNG_1080);
+      tracker.recordUnservedSlot(RUNG_360);
+    }
+
+    assert.deepEqual(stopped, [], 'a broadcast that stopped was read as its rungs dying one by one');
+    assert.equal(tracker.state(GROUP), FEED_STATE_STALLED, 'and the group should still say so');
+  });
+
+  /**
+   * The same instant, stood on directly rather than walked to, with the sibling's own state asserted.
+   *
+   * ⛔ That assertion is what makes this falsifiable. Without it the case passes whenever the sibling
+   * happens to have stalled too, which is a run in which nothing was judged at all.
+   */
+  it('leaves the first rung past the window alone while its sibling still reads live', () => {
+    const { tracker, clock, stopped } = makeLadder();
+    const ONE_SEGMENT_MS = 2_000;
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(ONE_SEGMENT_MS);
+    tracker.recordUnservedSlot(RUNG_360);
+    clock.advance(UNSERVED_SLOT_STALL_MS - ONE_SEGMENT_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.equal(tracker.state(RUNG_1080), FEED_STATE_STALLED, 'the rung under judgement should have stalled');
+    assert.equal(tracker.state(RUNG_360), FEED_STATE_LIVE, 'the sibling should still read live, or nothing is judged');
+    assert.deepEqual(stopped, []);
+  });
+
+  /**
+   * The margin pinned from both sides, by a clock rather than by a loop over the constant. A test
+   * that only advanced by `RUNG_ALIVE_WITHIN_MS` would stay green at any value of it, including one
+   * that makes the whole rule unreachable.
+   */
+  it('refuses a sibling whose own silence has reached the margin', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS - RUNG_ALIVE_WITHIN_MS);
+    tracker.recordUnservedSlot(RUNG_360);
+    clock.advance(RUNG_ALIVE_WITHIN_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, []);
+  });
+
+  it('accepts a sibling that fell one millisecond short of the margin', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS - RUNG_ALIVE_WITHIN_MS + 1);
+    tracker.recordUnservedSlot(RUNG_360);
+    clock.advance(RUNG_ALIVE_WITHIN_MS - 1);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, [RUNG_1080]);
+  });
+
+  it('announces one death once, however many polls it takes', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    for (let poll = 0; poll < 20; poll++) {
+      tracker.recordUnservedSlot(RUNG_1080);
+    }
+
+    assert.deepEqual(stopped, [RUNG_1080]);
+  });
+
+  it('announces a rung that came back and stopped again', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+    tracker.recordGatewayResponse(RUNG_1080);
+
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, [RUNG_1080, RUNG_1080]);
+  });
+
+  /** A finished broadcast is not a broken rung, and dropping rungs off one helps nobody. */
+  it('says nothing about a rung whose broadcast ended', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordFeedEnded(RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, []);
+  });
+
+  /** A viewer of a single-rendition stream has nowhere to move to, so there is nothing to say. */
+  it('says nothing about a topic that is not a rung of any ladder', () => {
+    const clock = makeClock();
+    const stopped: string[] = [];
+    const tracker = new FeedHealthTracker(clock.now);
+    tracker.onRungStopped((rung) => stopped.push(rung));
+
+    unservedPastWindow(tracker, clock);
+
+    assert.equal(tracker.state(TOPIC), FEED_STATE_STALLED, 'the topic should still read as stalled');
+    assert.deepEqual(stopped, []);
+  });
+
+  it('stops announcing once the listener has gone', () => {
+    const { tracker, clock, stopped, unsubscribe } = makeLadder();
+
+    unsubscribe();
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, []);
   });
 });
