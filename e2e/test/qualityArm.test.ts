@@ -229,6 +229,28 @@ describe('whether the viewer got their quality back', () => {
   it('refuses a player left on the rung the squeeze pushed it to', () => {
     assert.match(String(climbedBackRefusal(wentThrough({ climbedBackAfterMs: null }))), /only ever goes down/);
   });
+
+  it('names the rung the viewer is stuck on and the one they came from, rather than calling it the bottom', () => {
+    const message = String(climbedBackRefusal(wentThrough({ climbedBackAfterMs: null })));
+
+    assert.match(message, /360p/, 'the message should name the rung they are stuck on');
+    assert.match(message, /from 1080p/, 'and the rung they came from');
+    assert.doesNotMatch(message, /bottom rung/, 'a rung is only the bottom one if it actually is');
+  });
+
+  /**
+   * ⛔⛔ Read live on 2026-08-30 against a viewer who rode 1080p through the entire cap. This refused
+   * them for failing to climb back to a rung they had never left, and called 1080p the bottom rung
+   * while doing it. Whether they should have stepped down is `steppedDownRefusal`'s question.
+   */
+  it('says nothing about a viewer the squeeze never moved, who has nothing to climb back from', () => {
+    const neverMoved = wentThrough({
+      climbedBackAfterMs: null,
+      during: { ...SQUEEZED.during, lowestRungHeight: 1080 },
+    });
+
+    assert.equal(climbedBackRefusal(neverMoved), null);
+  });
 });
 
 describe('the line an operator reads while a squeeze arm runs', () => {

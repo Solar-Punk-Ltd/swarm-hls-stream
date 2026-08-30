@@ -238,15 +238,28 @@ export function keptPlayingRefusal(quality: QualitySwitchVerdict): string | null
  *
  * Measured against the rung the squeeze LEFT them on rather than the original baseline, so a player
  * that climbed part of the way back has climbed. How far it got is measured and printed.
+ *
+ * ⛔ **Not applicable to a viewer the squeeze never moved.** Read live on 2026-08-30 against a viewer
+ * who rode 1080p through the whole cap: this refused them for failing to climb back to a rung they
+ * had never left, and called 1080p "the bottom rung" while doing it. Whether that viewer should have
+ * stepped down is {@link steppedDownRefusal}'s question and it is the one worth answering, so saying
+ * nothing here leaves the run's verdict to the check that can actually explain it.
  */
 export function climbedBackRefusal(quality: QualitySwitchVerdict): string | null {
   if (quality.climbedBackAfterMs !== null) {
     return null;
   }
+
+  const startedOn = quality.before.endedOnRungHeight;
+  const lowest = quality.during.lowestRungHeight;
+  if (startedOn === null || lowest === null || lowest >= startedOn) {
+    return null;
+  }
+
   return (
-    `the cap came off and this viewer stayed on ${quality.during.endedOnRungHeight ?? 'the same'}p for the rest ` +
-    'of the run. A ladder that only ever goes down leaves every viewer who had one bad minute watching the ' +
-    'bottom rung for the rest of the broadcast'
+    `the cap came off and this viewer stayed on ${lowest}p, the rung the squeeze pushed them down to ` +
+    `from ${startedOn}p, for the rest of the run. A ladder that only ever goes down leaves every viewer ` +
+    'who had one bad minute watching a worse picture for the rest of the broadcast'
   );
 }
 

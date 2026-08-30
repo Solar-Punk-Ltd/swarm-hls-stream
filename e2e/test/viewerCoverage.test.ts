@@ -68,7 +68,10 @@ describe('whether a run may proceed', () => {
   });
 
   it('stops an undeclared run even when a byte source was named, because the run still did not say', () => {
-    assert.notEqual(viewerCoverageRefusal({ expectation: 'undeclared', backend: WEEB3_BYTES, repoDir: BENCH_DIR }), null);
+    assert.notEqual(
+      viewerCoverageRefusal({ expectation: 'undeclared', backend: WEEB3_BYTES, repoDir: BENCH_DIR }),
+      null,
+    );
   });
 
   /**
