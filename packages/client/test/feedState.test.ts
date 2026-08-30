@@ -1419,6 +1419,39 @@ describe('FeedHealthTracker telling a rung that stopped being produced from a br
     assert.deepEqual(stopped, [RUNG_1080]);
   });
 
+  /**
+   * ⛔⛔⛔ **The THIRD regression, V3 live on 2026-08-31, and it disabled the feature outright.**
+   *
+   * The recovery re-arm added for V7 fires during ORDINARY operation. All four rungs of a ladder are
+   * written at about the same moment, so between segments every rung is unserved at once, which is
+   * exactly the "the whole ladder went quiet" condition. The dead rung's clock was therefore re-armed
+   * every couple of seconds and never reached the window. V3 went straight back to its pre-fix
+   * numbers: 0 level changes, advance 0.099, froze 87.5s, overlay said `live`.
+   */
+  // ⛔⛔⛔ `it.fails` ON PURPOSE, and it is the SPECIFICATION for the next attempt rather than a
+  // passing test. The rule is broken at HEAD and this case is what broken means. When someone fixes
+  // it this line turns RED, because the body will stop throwing, and that red is the instruction to
+  // change `it.fails` back to `it`. A skipped test would have said nothing and rotted quietly.
+  it.fails('does not re-arm a dead rung just because its siblings are between segments', () => {
+    const { tracker, clock, stopped } = makeLadder();
+    const SEGMENT_MS = 2_000;
+    const POLL_MS = 750;
+
+    // 1080p has stopped. 360p keeps publishing, which means it is unserved between segments and
+    // served when one lands, over and over, exactly as the walker sees it.
+    tracker.recordUnservedSlot(RUNG_1080);
+    for (let elapsed = 0; elapsed < UNSERVED_SLOT_STALL_MS * 2; elapsed += SEGMENT_MS) {
+      tracker.recordUnservedSlot(RUNG_360);
+      clock.advance(POLL_MS);
+      tracker.recordUnservedSlot(RUNG_1080);
+      clock.advance(SEGMENT_MS - POLL_MS);
+      tracker.recordGatewayResponse(RUNG_360);
+      tracker.recordUnservedSlot(RUNG_1080);
+    }
+
+    assert.deepEqual(stopped, [RUNG_1080], 'the dead rung was never judged, because its clock kept being re-armed');
+  });
+
   it('stops announcing once the listener has gone', () => {
     const { tracker, clock, stopped, unsubscribe } = makeLadder();
 
