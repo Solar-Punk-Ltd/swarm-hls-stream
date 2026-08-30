@@ -65,4 +65,34 @@ describe('a driver can run every browser script it names', () => {
       assert.ok(script in e2e.scripts, `the root delegates ${script} to e2e, which has no such script`);
     }
   });
+
+  /**
+   * ⛔⛔⛔ The direction the two cases above cannot cover, and it cost a paid run on 2026-08-30.
+   *
+   * They scan `deploy/scripts/*.sh` for invocations, so they only ever see a script some SHELL
+   * driver names. `runBrowserArm` in `e2e/src/harness/browser.ts` launches a driver too, out of
+   * TypeScript, and `browser:quality` and `browser:rung-outage` were added to `e2e/package.json`
+   * with no root passthrough. Every unit test passed, the suites went out to the host, and both
+   * arms died with exit 254 in six seconds.
+   *
+   * ⭐ Stated as a property of the two manifests rather than as a sweep of call sites, so it cannot
+   * be defeated by a NEW way of invoking one. Every browser script the e2e package has must be
+   * runnable from the root, because the root is where every driver is launched from.
+   */
+  it('has a root passthrough for every browser script the e2e package declares', () => {
+    const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+    const e2e = JSON.parse(readFileSync(join(ROOT, 'e2e/package.json'), 'utf8'));
+
+    const declared = Object.keys(e2e.scripts).filter((name) => name.startsWith('browser:'));
+    assert.ok(declared.length >= 5, `only found ${declared.length} browser scripts in e2e/package.json`);
+
+    const missing = declared.filter((name) => !(name in root.scripts));
+    assert.deepEqual(
+      missing,
+      [],
+      `e2e declares ${missing.join(', ')} and the root cannot run ${missing.length === 1 ? 'it' : 'them'}. ` +
+        'Every driver is launched as `pnpm <script>` from /repo, so a missing passthrough exits 254 with ' +
+        'no output on the host after the broadcast has already started.',
+    );
+  });
 });

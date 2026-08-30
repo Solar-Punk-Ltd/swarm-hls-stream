@@ -36,6 +36,8 @@
     "browser:selfcheck": "pnpm --filter @swarm-hls-stream/e2e browser:selfcheck",
     "browser:watch": "pnpm --filter @swarm-hls-stream/e2e browser:watch",
     "browser:crash": "pnpm --filter @swarm-hls-stream/e2e browser:crash",
+    "browser:quality": "pnpm --filter @swarm-hls-stream/e2e browser:quality",
+    "browser:rung-outage": "pnpm --filter @swarm-hls-stream/e2e browser:rung-outage",
     "browser:buffer-sweep": "pnpm --filter @swarm-hls-stream/e2e browser:buffer-sweep",
     "browser:arm-order": "pnpm --filter @swarm-hls-stream/e2e browser:arm-order",
     "browser:gateway-check": "pnpm --filter @swarm-hls-stream/e2e browser:gateway-check",
