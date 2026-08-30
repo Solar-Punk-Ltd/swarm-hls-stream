@@ -37,7 +37,11 @@ describe('preflight — the run says whether a real viewer watched', () => {
   it('opens a player, or declares that it does not', () => {
     console.log(`  declared: ${cfg.viewerExpectation}, byte source: ${backend ?? 'the build default'}`);
 
-    const refusal = viewerCoverageRefusal({ expectation: cfg.viewerExpectation, backend });
+    const refusal = viewerCoverageRefusal({
+      expectation: cfg.viewerExpectation,
+      backend,
+      repoDir: process.env.E2E_BROWSER_REPO_DIR ?? '',
+    });
 
     if (refusal === null) {
       return;

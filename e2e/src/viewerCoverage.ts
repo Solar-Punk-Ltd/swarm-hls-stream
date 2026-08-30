@@ -30,6 +30,8 @@ interface ViewerCoverage {
   expectation: ViewerExpectation;
   /** The byte source the run named, or null where it named none. */
   backend: ByteSource | null;
+  /** `E2E_BROWSER_REPO_DIR`, the host path the browser container bind-mounts as `/repo`. */
+  repoDir: string;
 }
 
 /**
@@ -56,7 +58,7 @@ export function readViewerExpectation(raw: string): ViewerExpectation {
 }
 
 /** Why this run must not proceed, or `null` when what it will cover matches what it claims. */
-export function viewerCoverageRefusal({ expectation, backend }: ViewerCoverage): string | null {
+export function viewerCoverageRefusal({ expectation, backend, repoDir }: ViewerCoverage): string | null {
   if (expectation === 'undeclared') {
     return (
       'This run has not said whether a real browser should watch the broadcast, so the viewer suites ' +
@@ -73,6 +75,22 @@ export function viewerCoverageRefusal({ expectation, backend }: ViewerCoverage):
       `whatever the client build defaults to and the verdict would be filed against a condition nobody ` +
       `chose. Set BROWSER_FETCH_BACKEND to ${WEEB3_BYTES} for a Swarm node in the viewer's own tab, or ` +
       `to ${GATEWAY_BYTES} for the gateway, which is the control.`
+    );
+  }
+
+  // ⛔⛔⛔ Measured 2026-08-30: this preflight went green, sixteen suites then published for twelve
+  // minutes and passed, and every viewer suite failed on `browserArmHostSetup` because this one
+  // variable was unset. 0.61 BZZ of broadcast to discover an empty string. The gate above asks
+  // whether the run DECLARED a viewer and never asked whether it could launch one, which is the
+  // same defect one layer up that this whole module exists to catch.
+  if (expectation === 'browser' && repoDir.trim() === '') {
+    return (
+      'This run asked for a real viewer and set no E2E_BROWSER_REPO_DIR, so no viewer suite can ' +
+      'launch a browser at all: every one of them would reach `browserArmHostSetup` and throw, ' +
+      'after the paid suites ahead of them had already published. It is the absolute path of the ' +
+      'bench checkout ON THE HOST, the directory deploy/scripts/bench-on-host.sh rsyncs to, because ' +
+      'the browser container bind-mounts it as /repo and nothing inside a mount can work out where ' +
+      'it came from.'
     );
   }
 
@@ -99,8 +117,12 @@ export function viewerSkipReason(expectation: ViewerExpectation): string | false
  * `describe` callback prints `not ok` and is still reported as `# fail 0` with exit 0, which is the
  * defect this whole module exists for, one level down.
  */
-export function viewerGate(expectation: ViewerExpectation, backend: ByteSource | null): string | false {
-  const refusal = viewerCoverageRefusal({ expectation, backend });
+export function viewerGate(
+  expectation: ViewerExpectation,
+  backend: ByteSource | null,
+  repoDir: string = process.env.E2E_BROWSER_REPO_DIR ?? '',
+): string | false {
+  const refusal = viewerCoverageRefusal({ expectation, backend, repoDir });
   if (refusal !== null) {
     throw new Error(refusal);
   }

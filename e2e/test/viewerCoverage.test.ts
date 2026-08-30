@@ -44,14 +44,17 @@ describe('reading what a run says it covers', () => {
   });
 });
 
+/** A plausible host path, so a case about one missing thing is not also missing this. */
+const BENCH_DIR = '/home/solarpunk/swarm-hls-bench';
+
 describe('whether a run may proceed', () => {
   it('lets a declared browser run with a named byte source through', () => {
-    assert.equal(viewerCoverageRefusal({ expectation: 'browser', backend: WEEB3_BYTES }), null);
-    assert.equal(viewerCoverageRefusal({ expectation: 'browser', backend: GATEWAY_BYTES }), null);
+    assert.equal(viewerCoverageRefusal({ expectation: 'browser', backend: WEEB3_BYTES, repoDir: BENCH_DIR }), null);
+    assert.equal(viewerCoverageRefusal({ expectation: 'browser', backend: GATEWAY_BYTES, repoDir: BENCH_DIR }), null);
   });
 
   it('lets a run that declared itself browser-less through, because it said so', () => {
-    assert.equal(viewerCoverageRefusal({ expectation: 'none', backend: null }), null);
+    assert.equal(viewerCoverageRefusal({ expectation: 'none', backend: null, repoDir: '' }), null);
   });
 
   /**
@@ -59,13 +62,13 @@ describe('whether a run may proceed', () => {
    * here rather than print a summary that says nothing about whether anyone watched.
    */
   it('stops an undeclared run rather than skipping the viewer suites silently', () => {
-    const refusal = viewerCoverageRefusal({ expectation: 'undeclared', backend: null });
+    const refusal = viewerCoverageRefusal({ expectation: 'undeclared', backend: null, repoDir: BENCH_DIR });
 
     assert.match(String(refusal), /E2E_EXPECT_BROWSER/);
   });
 
   it('stops an undeclared run even when a byte source was named, because the run still did not say', () => {
-    assert.notEqual(viewerCoverageRefusal({ expectation: 'undeclared', backend: WEEB3_BYTES }), null);
+    assert.notEqual(viewerCoverageRefusal({ expectation: 'undeclared', backend: WEEB3_BYTES, repoDir: BENCH_DIR }), null);
   });
 
   /**
@@ -73,13 +76,36 @@ describe('whether a run may proceed', () => {
    * viewer verdict against whatever the build happens to default to.
    */
   it('stops a browser run that never named the byte source it is a reading of', () => {
-    const refusal = viewerCoverageRefusal({ expectation: 'browser', backend: null });
+    const refusal = viewerCoverageRefusal({ expectation: 'browser', backend: null, repoDir: BENCH_DIR });
 
     assert.match(String(refusal), /BROWSER_FETCH_BACKEND/);
   });
 
+  /**
+   * ⛔⛔⛔ Measured 2026-08-30, and it cost 0.61 BZZ. This preflight passed, sixteen suites published
+   * for twelve minutes and all passed, and then every viewer suite died on `browserArmHostSetup`
+   * because this one variable was empty. The gate asked whether the run DECLARED a viewer and never
+   * whether it could launch one.
+   */
+  it('stops a browser run that cannot launch a browser, before anything publishes', () => {
+    const refusal = viewerCoverageRefusal({ expectation: 'browser', backend: WEEB3_BYTES, repoDir: '' });
+
+    assert.match(String(refusal), /E2E_BROWSER_REPO_DIR/);
+  });
+
+  it('treats a whitespace-only path as absent, since docker would mount an empty directory', () => {
+    const refusal = viewerCoverageRefusal({ expectation: 'browser', backend: WEEB3_BYTES, repoDir: '   ' });
+
+    assert.match(String(refusal), /E2E_BROWSER_REPO_DIR/);
+  });
+
+  /** The control. A browser-less run needs no bench checkout, so this must not become a new blocker. */
+  it('does not ask a browser-less run for a bench checkout it will never mount', () => {
+    assert.equal(viewerCoverageRefusal({ expectation: 'none', backend: null, repoDir: '' }), null);
+  });
+
   it('names both conditions when it refuses, so the fix does not need the source', () => {
-    const refusal = String(viewerCoverageRefusal({ expectation: 'browser', backend: null }));
+    const refusal = String(viewerCoverageRefusal({ expectation: 'browser', backend: null, repoDir: BENCH_DIR }));
 
     assert.match(refusal, new RegExp(WEEB3_BYTES));
     assert.match(refusal, new RegExp(GATEWAY_BYTES));
@@ -106,7 +132,7 @@ describe('why a suite skipped', () => {
 
 describe('the gate a viewer suite opens with', () => {
   it('lets a declared browser run through with nothing to skip', () => {
-    assert.equal(viewerGate('browser', WEEB3_BYTES), false);
+    assert.equal(viewerGate('browser', WEEB3_BYTES, BENCH_DIR), false);
   });
 
   it('hands a declared browser-less run its reason, rather than throwing at it', () => {
@@ -122,7 +148,16 @@ describe('the gate a viewer suite opens with', () => {
   });
 
   it('throws on a browser run with no byte source, before a broadcast is published', () => {
-    assert.throws(() => viewerGate('browser', null), /BROWSER_FETCH_BACKEND/);
+    assert.throws(() => viewerGate('browser', null, BENCH_DIR), /BROWSER_FETCH_BACKEND/);
+  });
+
+  /**
+   * ⛔ The path every viewer suite actually takes, since each calls this at module scope. Passing the
+   * bench directory explicitly rather than leaning on the `process.env` default, so the case says
+   * what it is testing instead of depending on what the runner's environment happens to hold.
+   */
+  it('throws on a browser run that has no bench checkout to mount', () => {
+    assert.throws(() => viewerGate('browser', WEEB3_BYTES, ''), /E2E_BROWSER_REPO_DIR/);
   });
 });
 
