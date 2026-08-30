@@ -704,7 +704,61 @@ export class FeedHealthTracker {
    * stalls here would make the state that run exists to add unreachable on the run itself.
    */
   recordGatewayResponse(topicId: string): void {
+    this.rearmSiblingsOnRecovery(topicId);
     this.update(topicId, (health) => ({ ...HEALTHY, hasEnded: health.hasEnded, stallsAtMs: health.stallsAtMs }));
+  }
+
+  /**
+   * The first rung served after the whole ladder went quiet gives every other rung a fresh clock.
+   *
+   * ⛔⛔⛔ **Without this a broadcast that pauses and resumes amputates its own ladder**, and
+   * {@link RUNG_ALIVE_WITHIN_MS} does not help because that margin is about rungs STOPPING together.
+   * This is rungs RESTARTING together but staggered. Caught live by V7 on 2026-08-30: the uploader
+   * was killed for 15.3s, and on the other side of it the client dropped two of four rungs and the
+   * viewer's playhead never left zero.
+   *
+   * The gateway keeps answering through an uploader crash, so the rungs record unserved slots rather
+   * than failures and the clearing in {@link recordGatewayFailure} never fires. Each rung then
+   * resumes at its own pace, and the first one served reads healthy on a fresh clock while the others
+   * still carry the whole outage, which is precisely the shape
+   * {@link rungStoppedWhileOthersAdvance} fires on.
+   *
+   * ⭐ No new constant. A rung that has genuinely stopped fails to be served in the next
+   * {@link UNSERVED_SLOT_STALL_MS} and is judged then, so the cost of being wrong here is one window
+   * of delay rather than a ladder.
+   *
+   * Both conditions are needed. Without the first, a healthy rung being served routinely beside three
+   * dead ones would re-arm all three for ever and nothing would ever be judged. Without the second,
+   * a rung recovering alone while its siblings are still being served would re-arm them for no reason.
+   */
+  private rearmSiblingsOnRecovery(topicId: string): void {
+    const group = this.groupOfRung.get(topicId);
+    if (group === undefined) {
+      return;
+    }
+
+    const own = this.topics.get(topicId);
+    const cameBackFromQuiet = own !== undefined && (own.unservedSinceMs !== null || own.gatewayFailures > 0);
+    if (!cameBackFromQuiet) {
+      return;
+    }
+
+    const siblings = (this.rungsOfGroup.get(group) ?? []).filter((rung) => rung !== topicId);
+    const oneWasStillBeingServed = siblings.some((rung) => {
+      const health = this.topics.get(rung);
+      return health === undefined || (health.unservedSinceMs === null && health.gatewayFailures === 0);
+    });
+    if (oneWasStillBeingServed) {
+      return;
+    }
+
+    const at = this.now();
+    for (const sibling of siblings) {
+      if ((this.topics.get(sibling)?.unservedSinceMs ?? null) === null) {
+        continue;
+      }
+      this.update(sibling, (health) => ({ ...health, unservedSinceMs: at, unservedSlotPolls: 0 }));
+    }
   }
 
   /** The picture stopped, after having started. See {@link PLAYBACK_STALL_BURST}. */

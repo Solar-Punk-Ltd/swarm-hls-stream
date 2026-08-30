@@ -1371,6 +1371,54 @@ describe('FeedHealthTracker telling a rung that stopped being produced from a br
     assert.deepEqual(stopped, [], 'a rung that was merely waiting when the gateway died was called dead');
   });
 
+  /**
+   * ⛔⛔⛔ **The SECOND regression from this rule, V7 live on 2026-08-30, and the gateway fix did not
+   * cover it.**
+   *
+   * An uploader crash stops every rung at once. Unlike a gateway outage the gateway keeps ANSWERING
+   * throughout, so the rungs record unserved slots rather than failures and
+   * {@link FeedHealthTracker.recordGatewayFailure}'s clearing never fires. When the uploader comes
+   * back the rungs resume at their own pace, and the first one served reads healthy on a fresh clock
+   * while the others still carry the whole outage. Two rungs were amputated, the player restarted,
+   * and the viewer's playhead never left zero.
+   *
+   * ⭐ The margin in {@link RUNG_ALIVE_WITHIN_MS} guards against rungs STOPPING together. This is
+   * rungs RESTARTING together but staggered, which it says nothing about.
+   *
+   * ⭐ The rule needs no new number: the first rung served after the whole ladder went quiet re-arms
+   * every other rung's clock, so a genuinely dead one is removed eight seconds later and a merely
+   * slow one is not removed at all.
+   */
+  it('re-arms every rung when the first one comes back after the whole ladder went quiet', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    // The uploader stops. Both rungs go unserved, and the gateway answers throughout.
+    tracker.recordUnservedSlot(RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_360);
+    clock.advance(UNSERVED_SLOT_STALL_MS * 2);
+    tracker.recordUnservedSlot(RUNG_1080);
+    tracker.recordUnservedSlot(RUNG_360);
+
+    // It comes back, and 360p is served one poll before 1080p is.
+    tracker.recordGatewayResponse(RUNG_360);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, [], 'a rung a second behind on recovery was called dead');
+  });
+
+  /** The control. One rung dying while the others are served is still judged, which is the whole rule. */
+  it('still judges one dead rung when the ladder around it never went quiet', () => {
+    const { tracker, clock, stopped } = makeLadder();
+
+    tracker.recordGatewayResponse(RUNG_360);
+    tracker.recordUnservedSlot(RUNG_1080);
+    clock.advance(UNSERVED_SLOT_STALL_MS);
+    tracker.recordGatewayResponse(RUNG_360);
+    tracker.recordUnservedSlot(RUNG_1080);
+
+    assert.deepEqual(stopped, [RUNG_1080]);
+  });
+
   it('stops announcing once the listener has gone', () => {
     const { tracker, clock, stopped, unsubscribe } = makeLadder();
 
