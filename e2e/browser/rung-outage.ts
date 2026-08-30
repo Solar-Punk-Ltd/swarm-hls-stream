@@ -243,6 +243,13 @@ async function main(): Promise<void> {
     gopSeconds,
     engine,
     ladder: cfg.abrLadder,
+    // ⛔ `scenario` and `fault` beside `recovery`, because `readCrashRecovery` reads all three and a
+    // recovery without them is a malformed artifact to it. This driver's fault is not one of
+    // `faults.ts`'s, and the reader only wants the name, so it names itself. Missing, this arm ran
+    // its whole 276 seconds on 2026-08-30 and then died in the reader with the broadcast already paid
+    // for.
+    scenario: { name: 'rung-outage', service: cfg.engine, action: 'quiet-one-rung', downMs: quietMs },
+    fault: { injectedAtMs: quietedAtMs, liftedAtMs: resumedAtMs, servingAtMs: null },
     silenced: {
       rung: silenced?.name ?? null,
       height: silenced?.height ?? null,

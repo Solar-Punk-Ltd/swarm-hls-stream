@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
 import { loadConfig } from '../src/config.js';
@@ -650,4 +653,47 @@ describe('running an arm end to end', () => {
 
     await assert.rejects(runBrowserArm(host, cfg, arm), /wrote no artifact/);
   });
+});
+
+/**
+ * ⛔⛔⛔ What every driver writing a fault verdict owes the reader.
+ *
+ * `readCrashRecovery` reads `run.recovery`, `run.scenario` and `run.fault`, all three strictly, and
+ * refuses an artifact carrying one without the others. That strictness is right: a fault verdict that
+ * cannot say which fault it is would have one scenario's thresholds applied to another's viewer.
+ *
+ * ⛔ **It cost a paid arm on 2026-08-30.** `browser/rung-outage.ts` wrote `recovery` and neither of
+ * the other two. Every unit test passed, because the FIXTURE was more complete than the driver. The
+ * arm ran its full 276 seconds against a real broadcast, injected its fault, recovered, and then died
+ * in the reader with the broadcast already spent.
+ *
+ * ⭐ Stated over the drivers rather than over a fixture, for exactly that reason. A fixture is
+ * written by the same person who wrote the reader and agrees with it by construction.
+ */
+describe('what a driver writing a fault verdict owes the reader', () => {
+  const DRIVERS_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))), 'browser');
+
+  it('finds the drivers at all, so an empty sweep cannot pass by accident', () => {
+    const writing = driversWritingRecovery();
+
+    assert.ok(writing.length >= 2, `only ${writing.length} drivers write a recovery verdict`);
+    assert.ok(writing.includes('crash.ts'), 'browser/crash.ts must be one of them');
+  });
+
+  it('makes every driver writing a recovery write the scenario and the fault beside it', () => {
+    for (const driver of driversWritingRecovery()) {
+      const body = readFileSync(join(DRIVERS_DIR, driver), 'utf8');
+
+      // Either spelling: `crash.ts` holds the scenario in a variable and writes it shorthand.
+      assert.match(body, /^\s+scenario[,:]/m, `browser/${driver} writes a recovery and never names the scenario`);
+      assert.match(body, /^\s+fault[,:]/m, `browser/${driver} writes a recovery and never stamps the fault window`);
+    }
+  });
+
+  /** A driver writes it into its own run object, which is the `recovery:` key rather than an import. */
+  function driversWritingRecovery(): string[] {
+    return readdirSync(DRIVERS_DIR)
+      .filter((file) => file.endsWith('.ts'))
+      .filter((file) => /^\s+recovery: judgeRecovery\(/m.test(readFileSync(join(DRIVERS_DIR, file), 'utf8')));
+  }
 });
