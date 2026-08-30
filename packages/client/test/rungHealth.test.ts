@@ -9,8 +9,12 @@ import {
   FEED_STATE_LIVE,
   FEED_STATE_STALLED,
   FeedHealthTracker,
+  RUNG_DEATH_LAG_SEGMENTS,
   UNSERVED_SLOT_STALL_MS,
 } from '../src/components/SwarmHlsPlayer/feedState';
+
+/** One segment at the longest stage this project runs, so the clock in these cases is a real one. */
+const SEGMENT_MS = 2_000;
 import { attachRungFailover, attachWatchedRungReporter } from '../src/components/SwarmHlsPlayer/rungHealth';
 
 const OWNER = '0x1234567890123456789012345678901234567890';
@@ -25,6 +29,32 @@ const hexOf = (rung: string): string => Topic.fromString(rung).toString();
 function makeClock() {
   let ms = 0;
   return { now: () => ms, advance: (by: number) => void (ms += by) };
+}
+
+/**
+ * One rung stops being produced while the rest of its ladder carries on delivering segments.
+ *
+ * ⛔⛔⛔ **The siblings have to actually be SERVED.** What judges a rung is how many segments the
+ * ladder delivered that it did not, so a helper that only advanced a clock sets nothing up at all,
+ * and every case built on it would agree with an implementation containing no rule whatsoever. That
+ * is not hypothetical: this WAS a clock and two polls, and it is what these cases were standing on
+ * while the rule underneath them was got wrong three times running.
+ */
+function stopPublishing(
+  feedHealth: FeedHealthTracker,
+  clock: { advance: (by: number) => void },
+  deadRung: string,
+  stillPublishing: readonly string[],
+): void {
+  const deadHex = hexOf(deadRung);
+  feedHealth.recordUnservedSlot(deadHex);
+  for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+    clock.advance(SEGMENT_MS);
+    for (const sibling of stillPublishing) {
+      feedHealth.recordGatewayResponse(hexOf(sibling));
+    }
+    feedHealth.recordUnservedSlot(deadHex);
+  }
 }
 
 /**
@@ -94,12 +124,14 @@ function makeLadderPlayer({
         listener(Events.LEVEL_SWITCHED, { level });
       }
     },
-    /** Two polls and a clock: the run has to outlive the window, never be looped up to it. */
-    silence: (rung: string) => {
-      feedHealth.recordUnservedSlot(hexOf(rung));
-      clock.advance(UNSERVED_SLOT_STALL_MS);
-      feedHealth.recordUnservedSlot(hexOf(rung));
-    },
+    /** This player's own ladder losing one rung while every other rung it walks carries on. */
+    silence: (rung: string) =>
+      stopPublishing(
+        feedHealth,
+        clock,
+        rung,
+        walked.filter((other) => other !== rung),
+      ),
   };
 }
 
@@ -136,15 +168,25 @@ describe('dropping a rung that has stopped being produced', () => {
     assert.deepEqual(player.heightsLeft(), [720, 360]);
   });
 
-  /** Every player on the page hears every announcement, and most of them are about other ladders. */
+  /**
+   * Every player on the page hears every announcement, and most of them are about other ladders.
+   *
+   * ⛔ The other broadcast needs two rungs of its own and one of them has to really be announced. A
+   * ladder of one can never announce anything, so a single-rung stand-in would leave this case
+   * passing on there being no announcement at all rather than on one being correctly ignored.
+   */
   it('ignores a rung this player is not holding', () => {
     const player = makeLadderPlayer();
-    const otherLadder = 'a-rung-of-someone-elses-broadcast';
-    player.feedHealth.trackGroup('another-broadcast', [hexOf(otherLadder)]);
+    const otherDead = 'a-rung-of-someone-elses-broadcast';
+    const otherLive = 'the-rung-someone-else-is-watching';
+    player.feedHealth.trackGroup('another-broadcast', [otherDead, otherLive].map(hexOf));
+    const heard: string[] = [];
+    player.feedHealth.onRungStopped((rung) => heard.push(rung));
     attachRungFailover(player.hls, player.feedHealth);
 
-    player.silence(otherLadder);
+    stopPublishing(player.feedHealth, player.clock, otherDead, [otherLive]);
 
+    assert.deepEqual(heard, [hexOf(otherDead)], 'the other ladder should have announced its own dead rung');
     assert.deepEqual(player.removed, []);
     assert.deepEqual(player.heightsLeft(), [...HEIGHTS]);
   });
