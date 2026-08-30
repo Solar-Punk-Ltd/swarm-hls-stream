@@ -63,6 +63,7 @@ function watched(plans: readonly SamplePlan[]): ViewerSample[] {
       droppedFrames: 0,
       resolution: `x${plan.rung}`,
       selectedRungHeight: plan.rung,
+      abrWouldPickHeight: plan.rung,
       qualitySwitches: 0,
       abrEnabled: true,
       bandwidthEstimateKbps: plan.bandwidthKbps ?? 6_000,

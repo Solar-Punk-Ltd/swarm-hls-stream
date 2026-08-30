@@ -30,6 +30,7 @@ export const OVERLAY_FIELDS = {
   droppedFrames: { section: 'Quality', label: 'Dropped Frames' },
   levelSelection: { section: 'ABR', label: 'Level Selection' },
   selectedRung: { section: 'ABR', label: 'Selected Rung' },
+  abrWouldPick: { section: 'ABR', label: 'ABR would pick' },
   bandwidthEstimate: { section: 'ABR', label: 'Bandwidth Estimate' },
   fatalErrors: { section: 'Reliability', label: 'Fatal Errors' },
   liveLatency: { section: 'Live', label: 'E2E Live Latency' },
@@ -58,6 +59,20 @@ export interface OverlayMetrics {
    * tell a player that decided to step down from one that managed to.
    */
   selectedRungHeight: number | null;
+  /**
+   * The rung hls.js's ABR would choose next, by height, or null where the overlay does not offer it.
+   *
+   * ⛔⛔⛔ **This is the only field that separates a player which refused to adapt from one that
+   * adapted and starved anyway.** {@link selectedRungHeight} is read off `hls.currentLevel`, which is
+   * the level of what is DECODING, so a viewer whose buffer has run dry keeps reporting the last rung
+   * they managed to play no matter what ABR has decided since. Measured live 2026-08-30: a squeezed
+   * in-tab viewer read 1080p for a whole 60s cap while their buffer sat at zero and then went
+   * negative, and nothing in the artifact could say whether ABR had tried to move them.
+   *
+   * Null on a single-rendition stream, where the overlay renders no such row because there is no
+   * ladder to pick from.
+   */
+  abrWouldPickHeight: number | null;
   /** Whether the player is choosing its own rung. False means something pinned it and ABR is not under test. */
   abrEnabled: boolean;
   /** What hls.js believes the connection can carry, which is the input its choice is made from. */
@@ -90,6 +105,12 @@ function requireField(rows: readonly OverlayRow[], field: { section: string; lab
     );
   }
   return row.value;
+}
+
+/** A field the overlay renders only in some configurations. Absent and placeholder both read null. */
+function optionalNumber(rows: readonly OverlayRow[], field: { section: string; label: string }): number | null {
+  const row = rows.find((candidate) => candidate.section === field.section && candidate.label === field.label);
+  return row === undefined ? null : parseOverlayNumber(row.value);
 }
 
 /**
@@ -151,6 +172,9 @@ export function readOverlayMetrics(rows: readonly OverlayRow[]): OverlayMetrics 
     droppedFrames: number(OVERLAY_FIELDS.droppedFrames) ?? 0,
     // `720p`, so the leading number is the height. The placeholder is a rung not yet picked.
     selectedRungHeight: number(OVERLAY_FIELDS.selectedRung),
+    // Optional rather than required: the overlay renders this row only where there is a ladder, so
+    // demanding it would fail every single-rendition run on a field that cannot apply to them.
+    abrWouldPickHeight: optionalNumber(rows, OVERLAY_FIELDS.abrWouldPick),
     abrEnabled: requireField(rows, OVERLAY_FIELDS.levelSelection).trim() === LEVEL_SELECTION_AUTO,
     bandwidthEstimateKbps: number(OVERLAY_FIELDS.bandwidthEstimate),
     ladderHeights: ladderHeights(rows),

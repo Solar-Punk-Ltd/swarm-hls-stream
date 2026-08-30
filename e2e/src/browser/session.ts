@@ -76,13 +76,24 @@ export interface ViewerSample {
   /** As the player decoded it, so `1280x720` here is what arrived rather than what was requested. */
   resolution: string | null;
   /**
-   * The rung hls.js has SELECTED, by height, or null before it has picked one.
+   * The rung the player is DECODING, by height, or null before it has played one.
    *
-   * ⭐ The pair with {@link resolution} is what makes a quality switch legible. This one moves when
-   * the player decides, that one moves when the decoder catches up, and a viewer who chose to step
-   * down and could not is the gap between them.
+   * ⛔ **Read off `hls.currentLevel`, so it is what reached the screen and not what ABR decided.** The
+   * comment here used to say the opposite, and that cost a reading on 2026-08-30: a squeezed in-tab
+   * viewer reported 1080p for a whole 60s cap while their buffer sat at zero and then went negative,
+   * and it was taken to mean ABR had refused to step down. A player with a dry buffer keeps reporting
+   * the last rung it managed to decode whatever ABR has chosen since. {@link abrWouldPickHeight} is
+   * the field that says what ABR chose.
    */
   selectedRungHeight: number | null;
+  /**
+   * The rung ABR would pick next, by height, or null on a stream with no ladder to pick from.
+   *
+   * ⭐ The pair with {@link selectedRungHeight} is what makes a quality switch legible: this one moves
+   * when the player decides, that one moves when the decoder catches up, and a viewer who chose to
+   * step down and could not is the gap between them.
+   */
+  abrWouldPickHeight: number | null;
   /** Level changes hls.js has counted this session, which moves on the decision rather than the frame. */
   qualitySwitches: number;
   /** Whether the player was choosing its own rung. False means ABR was not what produced this sample. */

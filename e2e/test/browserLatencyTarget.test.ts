@@ -23,6 +23,7 @@ const BASE: ViewerSample = {
   droppedFrames: 0,
   resolution: '1920×1080',
   selectedRungHeight: 1080,
+  abrWouldPickHeight: 1080,
   qualitySwitches: 0,
   abrEnabled: true,
   bandwidthEstimateKbps: 4200,

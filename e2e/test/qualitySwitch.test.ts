@@ -44,6 +44,7 @@ function watched(plans: readonly SamplePlan[]): ViewerSample[] {
       droppedFrames: 0,
       resolution: plan.resolution === undefined ? (plan.rung === null ? null : `x${plan.rung}`) : plan.resolution,
       selectedRungHeight: plan.rung,
+      abrWouldPickHeight: plan.rung,
       qualitySwitches: plan.switches ?? 0,
       abrEnabled: plan.abrEnabled ?? true,
       bandwidthEstimateKbps: plan.bandwidthKbps ?? 4000,

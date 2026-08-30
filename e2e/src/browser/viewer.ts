@@ -356,6 +356,7 @@ export async function readSample(page: Page): Promise<ViewerSample> {
     rebufferCount: metrics.rebufferCount,
     rebufferMs: metrics.rebufferMs,
     selectedRungHeight: metrics.selectedRungHeight,
+    abrWouldPickHeight: metrics.abrWouldPickHeight,
     qualitySwitches: metrics.qualitySwitches,
     abrEnabled: metrics.abrEnabled,
     bandwidthEstimateKbps: metrics.bandwidthEstimateKbps,

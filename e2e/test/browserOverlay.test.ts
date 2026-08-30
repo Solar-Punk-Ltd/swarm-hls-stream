@@ -35,6 +35,7 @@ describe('reading the numbers off the shipped QoE overlay', () => {
       qualitySwitches: 2,
       droppedFrames: 4,
       selectedRungHeight: 720,
+      abrWouldPickHeight: 720,
       abrEnabled: true,
       bandwidthEstimateKbps: 4210,
       ladderHeights: [1080, 720, 480, 360],
@@ -210,6 +211,31 @@ describe('reading the whole ladder the player parsed', () => {
     const elsewhere: OverlayRow[] = [...PLAYING, { section: 'Quality', label: '\u00a0 240p', value: '300 kbps' }];
 
     assert.deepEqual(readOverlayMetrics(elsewhere).ladderHeights, [1080, 720, 480, 360]);
+  });
+
+  /**
+   * ⛔⛔⛔ The whole reason this field was added, and a fixture where both rows read `720p` cannot
+   * catch it. `Selected Rung` is `hls.currentLevel`, which is what DECODED. `ABR would pick` is
+   * `hls.nextAutoLevel`, which is what the algorithm chose. A viewer whose buffer has run dry keeps
+   * reporting the last rung they managed to play while ABR has already moved, and on 2026-08-30 that
+   * gap was read as ABR refusing to adapt.
+   */
+  it('reads what ABR chose apart from what the decoder is showing', () => {
+    const starving: OverlayRow[] = PLAYING.map((row) =>
+      row.label === 'ABR would pick' ? { ...row, value: '360p' } : row,
+    );
+
+    const metrics = readOverlayMetrics(starving);
+
+    assert.equal(metrics.selectedRungHeight, 720, 'the decoder is still showing the rung it last played');
+    assert.equal(metrics.abrWouldPickHeight, 360, 'while ABR has already chosen a lower one');
+  });
+
+  /** A single-rendition stream has no ladder to pick from, so the overlay renders no such row. */
+  it('reads no ABR choice on a player that has no ladder, rather than refusing the run', () => {
+    const singleRendition = PLAYING.filter((row) => row.label !== 'ABR would pick');
+
+    assert.equal(readOverlayMetrics(singleRendition).abrWouldPickHeight, null);
   });
 
   /**
