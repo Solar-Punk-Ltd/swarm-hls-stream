@@ -468,6 +468,189 @@ describe('CustomFragmentLoader fetching through weeb-3 instead of a gateway', ()
 });
 
 /**
+ * What hls.js's ABR actually reads out of those stats, replayed here rather than described.
+ *
+ * ⛔⛔⛔ **A weeb-3 fragment has no network request behind it, so the four numbers the loader writes
+ * are the only evidence hls.js has about this viewer's connection.** It does not read them the
+ * obvious way. It excludes time-to-first-byte from throughput on purpose, because waiting is not
+ * bandwidth, and a loader that stamps the arrival as the first byte tells it the download itself took
+ * no time at all.
+ *
+ * Both formulas below are transcribed from hls.js 1.6.15 `dist/hls.js`: `AbrController.onFragLoaded`
+ * (`sampleTTFB(stats.loading.first - stats.loading.start)`, line 4319) and
+ * `AbrController.onFragBuffered` (line 4371). They are modelled rather than driven because hls.js
+ * stamps `parsing.end` itself, after demuxing, which nothing here can produce. An upgrade that moves
+ * either formula should break these rather than quietly change what a viewer is told they can afford.
+ */
+describe('CustomFragmentLoader telling hls.js what the connection carried', () => {
+  interface RetrievalStats {
+    loaded: number;
+    total: number;
+    loading: { start: number; first: number; end: number };
+  }
+
+  /** How long hls.js spends demuxing a segment before it stamps `parsing.end`. Milliseconds. */
+  const DEMUX_MS = 3;
+
+  /**
+   * `EwmaBandWidthEstimator.minDelayMs_`, the floor hls.js puts under every bandwidth sample.
+   *
+   * ⭐ It is what bounds the absurd reading rather than making it absurd. A demux measured in single
+   * milliseconds would otherwise divide out to tens of gigabits, and this holds it at the 80 Mbps that
+   * matches what the live arms actually reported.
+   */
+  const MIN_SAMPLE_MS = 50;
+
+  /** The lowest value `sampleTTFB` will record, whatever it is handed. */
+  const TTFB_SAMPLE_FLOOR_MS = 5;
+
+  /** The ladder this project publishes, in kbps. See `ABR_LADDER`. */
+  const RUNG_1080P_KBPS = 5000;
+  const RUNG_720P_KBPS = 2800;
+
+  /** `AbrController.onFragLoaded`: what hls.js folds into its running time-to-first-byte estimate. */
+  function ttfbSampleMs(stats: RetrievalStats): number {
+    return stats.loading.first - stats.loading.start;
+  }
+
+  /**
+   * The time-to-first-byte hls.js settles on, after a run of fragments that all looked like this one.
+   *
+   * ⛔ **Not a number a case may choose.** The estimate is driven by the samples the loader itself
+   * feeds, so passing one in lets a test assume the very thing it is meant to be checking, and the
+   * first version of these did exactly that: handing in a zero made the broken loader pass. hls.js
+   * smooths with an EWMA (`EwmaBandWidthEstimator.sampleTTFB`), and over a run of identical samples
+   * any EWMA converges on the sample, which is what a viewer watching a broadcast is.
+   */
+  function settledTtfbEstimateMs(stats: RetrievalStats): number {
+    return Math.max(ttfbSampleMs(stats), TTFB_SAMPLE_FLOOR_MS);
+  }
+
+  /** `AbrController.onFragBuffered`: the span hls.js divides the byte count by, as kbps. */
+  function throughputKbps(stats: RetrievalStats, parsingEndMs: number): number {
+    const discounted = Math.min(ttfbSampleMs(stats), settledTtfbEstimateMs(stats));
+    const processingMs = parsingEndMs - stats.loading.start - discounted;
+    return (stats.loaded * 8) / Math.max(processingMs, MIN_SAMPLE_MS);
+  }
+
+  /**
+   * Fix the clock to two readings, since the honest answer is a ratio of a byte count to a duration
+   * and a real clock leaves the test asserting only that a number is plausible.
+   *
+   * Clamped at the last reading rather than throwing past it, so an extra call from anything else in
+   * the path cannot turn a wrong duration into a crash that reads as an unrelated failure.
+   */
+  function stubClock(readings: readonly number[]): void {
+    let next = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => readings[Math.min(next++, readings.length - 1)]);
+  }
+
+  async function retrieve(bytes: number, tookMs: number): Promise<RetrievalStats> {
+    const START_MS = 1_000;
+    stubClock([START_MS, START_MS + tookMs]);
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array(bytes));
+    vi.stubEnv('VITE_BROWSER_FETCH_BACKEND', FETCH_BACKEND_WEEB3);
+    vi.spyOn(transport, 'load').mockImplementation(() => {});
+
+    const onSuccess = vi.fn();
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    loader.load(
+      { url: WEEB3_FRAGMENT_URL } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      {
+        onSuccess,
+        onError: vi.fn(),
+        onTimeout: vi.fn(),
+      } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+
+    await vi.waitFor(() => assert.equal(onSuccess.mock.calls.length, 1));
+    return onSuccess.mock.calls[0][1] as RetrievalStats;
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    runStaggerInline();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  it('claims no time to first byte, because a retrieval has no observable one', async () => {
+    const stats = await retrieve(500_000, 500);
+
+    assert.equal(ttfbSampleMs(stats), 0, 'hls.js was handed a wait to discount from a path that cannot measure one');
+  });
+
+  it('gives hls.js a throughput within a few percent of the retrieval it just did', async () => {
+    const SEGMENT_BYTES = 500_000;
+    const RETRIEVAL_MS = 500;
+    const TRUE_KBPS = (SEGMENT_BYTES * 8) / RETRIEVAL_MS;
+
+    const stats = await retrieve(SEGMENT_BYTES, RETRIEVAL_MS);
+    const believed = throughputKbps(stats, stats.loading.end + DEMUX_MS);
+
+    assert.ok(
+      believed <= TRUE_KBPS,
+      `hls.js was told ${believed.toFixed(0)} kbps for a retrieval that carried ${TRUE_KBPS.toFixed(0)}`,
+    );
+    assert.ok(
+      believed > TRUE_KBPS * 0.95,
+      `hls.js was told ${believed.toFixed(0)} kbps, which is under-stating ${TRUE_KBPS.toFixed(
+        0,
+      )} by more than the demux`,
+    );
+  });
+
+  /**
+   * ⭐⭐⭐ The live reading this fix exists for, reproduced from the shape the loader used to write.
+   *
+   * Without this the model above is unfalsifiable: it would agree with any loader. Stamping `first` at
+   * arrival is what an in-tab viewer did on 2026-08-30, and hls.js answered 74 to 109 Mbps on a link
+   * capped at 2800 kbps. See `docs/bench/abr-at-a-viewer-2026-08-30.md`.
+   */
+  it('reproduces the absurd estimate when the arrival is stamped as the first byte', () => {
+    const SEGMENT_BYTES = 500_000;
+    const RETRIEVAL_MS = 500;
+    const arrivalStampedAsFirstByte: RetrievalStats = {
+      loaded: SEGMENT_BYTES,
+      total: SEGMENT_BYTES,
+      loading: { start: 1_000, first: 1_000 + RETRIEVAL_MS, end: 1_000 + RETRIEVAL_MS },
+    };
+
+    const believed = throughputKbps(arrivalStampedAsFirstByte, arrivalStampedAsFirstByte.loading.end + DEMUX_MS);
+
+    // The band the three in-tab arms reported: 74221, 97751 and 108794 kbps, plus 82900 and 107981
+    // from the two arms that were squeezed. A model that lands outside it is not this defect.
+    assert.ok(
+      believed > 70_000 && believed < 120_000,
+      `the old shape read as 74 to 109 Mbps live, and the model says ${believed.toFixed(0)} kbps`,
+    );
+  });
+
+  /**
+   * The product statement. A ladder is four times the publishing cost for one quality unless a viewer
+   * whose link cannot carry the top rung is told so.
+   */
+  it('puts 1080p out of reach for a viewer whose link only carries 720p', async () => {
+    const SEGMENT_S = 2;
+    const CARRIED_KBPS = RUNG_720P_KBPS;
+    const segmentBytes = (CARRIED_KBPS * 1_000 * SEGMENT_S) / 8;
+
+    const stats = await retrieve(segmentBytes, SEGMENT_S * 1_000);
+    const believed = throughputKbps(stats, stats.loading.end + DEMUX_MS);
+
+    assert.ok(
+      believed < RUNG_1080P_KBPS,
+      `hls.js was told ${believed.toFixed(0)} kbps, so 1080p still looks affordable`,
+    );
+  });
+});
+
+/**
  * ⛔⛔ The switch has to bite on the NEXT fragment, not the next player.
  *
  * hls.js constructs a loader per fragment, so reading the backend at construction would look correct

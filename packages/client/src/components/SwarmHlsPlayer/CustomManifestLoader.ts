@@ -201,8 +201,23 @@ export class CustomFragmentLoader extends FragmentLoader {
         if (this.abandoned) {
           return;
         }
-        stats.loading.first = performance.now();
-        stats.loading.end = stats.loading.first;
+        // ⛔⛔⛔ **`first` is the start, not the arrival, and that one line is the whole of hls.js's
+        // ABR on this path.** hls.js excludes time-to-first-byte from its bandwidth maths on purpose,
+        // because waiting is not throughput. It samples `parsing.end - loading.start - min(first -
+        // start, estimatedTtfb)` against the byte count (`AbrController.onFragBuffered`, hls.js
+        // 1.6.15) and feeds `first - start` straight into that TTFB estimate from `onFragLoaded`.
+        // Stamping `first` at arrival told it the entire retrieval was latency and the download itself
+        // was the millisecond of demuxing left over, so it divided half a megabyte by about three
+        // milliseconds and believed the viewer had 74 to 109 Mbps. Measured live 2026-08-30, n=3: an
+        // in-tab viewer rode 1080p through a link capped at 2800 kbps while its picture ran at 0.55 of
+        // real time, and never stepped down, because on those numbers 1080p was affordable.
+        //
+        // A weeb-3 retrieval has no observable split between waiting and transferring, since the bytes
+        // appear at once. Charging all of it to transfer is the conservative half of that ignorance:
+        // it can only under-state the connection, and a viewer who under-states their connection
+        // watches a lower rung rather than a frozen one.
+        stats.loading.first = stats.loading.start;
+        stats.loading.end = performance.now();
         stats.loaded = bytes.byteLength;
         stats.total = bytes.byteLength;
         callbacks.onSuccess({ url: context.url, data: asArrayBuffer(bytes), code: 200 }, stats, context, undefined);
