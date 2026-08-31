@@ -88,16 +88,39 @@ apply_port_slot
 TARGET="$(get_target "$SVC_UPLOADER")"
 LEDGER="${SPEND_LEDGER:-${SCRIPT_DIR}/../../.spend-ledger.env}"
 
+# ⛔⛔⛔ A FAILED TRANSPORT AND AN UNANSWERED SERVICE ARE NOT THE SAME REFUSAL, and they arrive as the
+# same empty string. On 2026-08-31 a wedged 1Password SSH agent made this script report that the
+# uploader was not deployed, which was false: the uploader was healthy and the ssh could not sign. A
+# whole measurement arm has already been lost to that confusion, six reds that all read as product
+# faults. ssh exits 255 for connection and authentication failures and passes the remote command's
+# status through otherwise, so the two are separable and are separated here.
 read_url() {
   local port="$1" path="$2"
   if [ "$TARGET" = "localhost" ]; then
     curl -s --max-time 10 "http://127.0.0.1:${port}${path}" 2>/dev/null
-    return 0
+    return $?
   fi
-  ssh "$TARGET" "curl -s --max-time 10 'http://127.0.0.1:${port}${path}'" 2>/dev/null
+  ssh -o ConnectTimeout=10 "$TARGET" "curl -s --max-time 10 'http://127.0.0.1:${port}${path}'" 2>/dev/null
+  return $?
+}
+
+SSH_TRANSPORT_FAILED=255
+
+# Refuse the transport, naming it, rather than letting the caller blame whatever it was reading.
+refuse_unreachable() {
+  echo "spend-ledger: REFUSING, could not reach ${TARGET} over ssh."
+  echo "  That is the transport and not the deployment, so nothing here says anything about the stack."
+  echo "  On this machine it is usually the 1Password SSH agent listing keys and refusing to sign,"
+  echo "  which needs 1Password fully quit and reopened rather than merely unlocked. Check with:"
+  echo "    ssh-add -l && ssh ${TARGET} true"
+  echo "  Nothing was read and nothing was written."
+  exit 1
 }
 
 HEALTH="$(read_url "${API_PORT}" /health)"
+if [ "$?" = "${SSH_TRANSPORT_FAILED}" ] && [ "$TARGET" != "localhost" ]; then
+  refuse_unreachable
+fi
 if [ -z "${HEALTH}" ]; then
   echo "spend-ledger: REFUSING, the uploader on :${API_PORT} did not answer /health."
   echo "  The node set is read off its routing, and a deployment that cannot say which node carries"
@@ -168,6 +191,10 @@ esac
 BALANCES=""
 for port in ${PORTS}; do
   body="$(read_url "${port}" /chequebook/balance)"
+  # shellcheck disable=SC2181
+  if [ "$?" = "${SSH_TRANSPORT_FAILED}" ] && [ "$TARGET" != "localhost" ]; then
+    refuse_unreachable
+  fi
   plur="$(printf '%s' "${body}" | python3 -c '
 import json, re, sys
 

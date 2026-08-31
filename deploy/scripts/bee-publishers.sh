@@ -115,6 +115,12 @@ if ! is_enabled "$TARGET"; then
 fi
 
 # Read one node's /stamps. Either from the host it runs on, or from a captured file when rehearsing.
+# ⛔⛔⛔ A FAILED TRANSPORT AND AN UNANSWERED SERVICE ARE NOT THE SAME REFUSAL, and they arrive as the
+# same empty string. On 2026-08-31 a wedged 1Password SSH agent made this script report that the
+# uploader was not deployed, which was false: the uploader was healthy and the ssh could not sign. A
+# whole measurement arm has already been lost to that confusion, six reds that all read as product
+# faults. ssh exits 255 for connection and authentication failures and passes the remote command's
+# status through otherwise, so the two are separable and are separated here.
 read_stamps() {
   local port="$1"
   if [ -n "$STAMPS_FROM" ]; then
@@ -123,10 +129,13 @@ read_stamps() {
   fi
   if [ "$TARGET" = "localhost" ]; then
     curl -s --max-time 10 "http://127.0.0.1:${port}/stamps" 2>/dev/null
-    return 0
+    return $?
   fi
-  ssh "$TARGET" "curl -s --max-time 10 'http://127.0.0.1:${port}/stamps'" 2>/dev/null
+  ssh -o ConnectTimeout=10 "$TARGET" "curl -s --max-time 10 'http://127.0.0.1:${port}/stamps'" 2>/dev/null
+  return $?
 }
+
+SSH_TRANSPORT_FAILED=255
 
 # The uploader is network_mode: host on every deployment that splits its bees this way (see
 # deploy/docker-compose.host.yml), so 127.0.0.1 from inside the container is the host's loopback and
@@ -148,6 +157,15 @@ for pair in "${RUNG_PORT_VARS[@]}"; do
   fi
 
   stamps="$(read_stamps "$port")"
+  # shellcheck disable=SC2181
+  if [ "$?" = "${SSH_TRANSPORT_FAILED}" ] && [ "$TARGET" != "localhost" ] && [ -z "$STAMPS_FROM" ]; then
+    echo "bee-publishers: REFUSING, could not reach ${TARGET} over ssh."
+    echo "  That is the transport and not the node, so this says nothing about what ${rung} holds. On"
+    echo "  this machine it is usually the 1Password SSH agent listing keys and refusing to sign, which"
+    echo "  needs 1Password fully quit and reopened rather than merely unlocked. Check with:"
+    echo "    ssh-add -l && ssh ${TARGET} true"
+    exit 1
+  fi
   if [ -z "$stamps" ]; then
     echo "bee-publishers: REFUSING, the ${rung} node on :${port} did not answer /stamps."
     echo "  A node that cannot say what it holds is not a node with a usable batch."
