@@ -19,6 +19,11 @@ export function createHealthRouter(streamOrchestrator: StreamOrchestrator, engin
       reasons,
       ...signals,
       engines: engineNames,
+      // Static config rather than a signal, and here because this is the one place an operator and
+      // the e2e preflight both already read. It is what tells a stage with one Bee node per rung
+      // apart from a stage pushing every rung through one, which nothing outside the process could
+      // see before. See BeePublisherPool.routing for what is and is not safe to say here.
+      publishers: streamOrchestrator.publisherRouting(),
     });
   });
 

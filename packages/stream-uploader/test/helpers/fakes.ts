@@ -1,6 +1,6 @@
 import { Bee } from '@ethersphere/bee-js';
 
-import { BeePublisher, BeePublisherPool, SINGLE_PUBLISHER } from '../../src/libs/BeePublisherPool.js';
+import { BeePublisher, BeePublisherPool, shortBatchId, SINGLE_PUBLISHER } from '../../src/libs/BeePublisherPool.js';
 import { Clock, systemClock } from '../../src/libs/Clock.js';
 import { RecoveryStore } from '../../src/libs/RecoveryStore.js';
 import { MetricsSnapshot } from '../../src/libs/ServiceMetrics.js';
@@ -208,9 +208,21 @@ export function toRecoveryFileId(streamId: string): string {
  * Every rung resolves to the same publisher, so a test that turns the ladder on still writes through
  * one fake bee and can assert on it without knowing which rung asked.
  */
+/**
+ * A url the real pool would accept. It used to be the empty string, which no deployment could have
+ * and which `BeePublisherPool.single` refuses, so anything reading a publisher's url off this fake
+ * was reading a value that cannot occur.
+ */
+const FAKE_BEE_URL = 'http://fake-bee:1633';
+
 function makeFakePublishers(bee: Bee): BeePublisherPool {
-  const publisher: BeePublisher = { rung: SINGLE_PUBLISHER, url: '', stamp: 'stamp', bee };
-  return { coordinator: () => publisher, forRung: () => publisher } as unknown as BeePublisherPool;
+  const publisher: BeePublisher = { rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, stamp: 'stamp', bee };
+  return {
+    coordinator: () => publisher,
+    forRung: () => publisher,
+    nodes: () => [publisher],
+    routing: () => [{ rung: SINGLE_PUBLISHER, url: FAKE_BEE_URL, batch: shortBatchId(publisher.stamp) }],
+  } as unknown as BeePublisherPool;
 }
 
 /**

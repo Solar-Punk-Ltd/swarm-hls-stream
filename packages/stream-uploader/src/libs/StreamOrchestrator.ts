@@ -33,7 +33,7 @@ import { getErrorMessage } from '../utils/common.js';
 import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from '../utils/segmentDuration.js';
 
 import { AbrLadder } from './AbrLadder.js';
-import { BeePublisherPool } from './BeePublisherPool.js';
+import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -1348,6 +1348,18 @@ export class StreamOrchestrator {
   /** A request a credential gate refused. On the wall clock, since the gates have no clock seam. */
   public recordAuthRejection(): void {
     this.metrics.recordAuthRejection(Date.now());
+  }
+
+  /**
+   * Which Bee node and postage batch each rung is routed to.
+   *
+   * Static for the life of the process, so it is not a health *signal* and is kept out of
+   * {@link getHealthSignals}. It is on the health *payload* because that is the one place an operator
+   * and the e2e preflight both already read, and because the difference it reports is the difference
+   * between one rung going quiet and the whole stage stopping. See {@link BeePublisherPool.routing}.
+   */
+  public publisherRouting(): PublisherRoute[] {
+    return this.publishers.routing();
   }
 
   public getHealthSignals(): HealthSignals {

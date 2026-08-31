@@ -104,6 +104,7 @@ describe('api server over http (S0.7 test layer)', () => {
       [
         'activeStreams',
         'engines',
+        'publishers',
         'maxConsecutiveManifestFailures',
         'maxConsecutiveSegmentFailures',
         'msSinceCatalogAnnounceFailed',
@@ -125,6 +126,29 @@ describe('api server over http (S0.7 test layer)', () => {
       // health.sh reads only the status code (curl -o /dev/null), so the body's consumer is the e2e
       // suite in streaming-infra-manager, which asserts on status and activeStreams.
       'the health body is a published contract',
+    );
+  });
+
+  /**
+   * ⛔ The reading that was missing for days. Which Bee node carries which rung is a deployment
+   * decision nothing outside the process could see, so a stage routing every rung through one node
+   * was indistinguishable from a stage with one node per rung, and eleven live arms were scored
+   * against the wrong cause. `/health` is where an operator and the e2e preflight both already look.
+   *
+   * Asserted as the pool's own answer rather than as a literal, because what a route is safe to say
+   * is `BeePublisherPool.routing`'s business and is pinned in its own tests. What this pins is that
+   * the endpoint asks, and hands over what it is told without dropping or reshaping it.
+   */
+  it('names the node behind every rung, so a stage that never split can be told from one that did', async () => {
+    const orchestrator = makeTestOrchestrator();
+    const api = await start(orchestrator);
+
+    const { body } = await api.request('/health');
+
+    assert.deepEqual((body as { publishers: unknown }).publishers, orchestrator.publisherRouting());
+    assert.ok(
+      (body as { publishers: unknown[] }).publishers.length > 0,
+      'an empty list would make every deployment look the same, which is the failure this closes',
     );
   });
 
