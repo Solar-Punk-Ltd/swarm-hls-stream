@@ -10,3 +10,18 @@ services:
   bee-gateway:
     environment:
       BEE_NAT_ADDR: '${BEE_GATEWAY_NAT_ADDR}:${BEE_GATEWAY_P2P_PORT:-1734}'
+
+  # Each rung node announces its OWN p2p port. They share the uploader's public address because they
+  # share the host, and a shared NAT address with one node's port would have three of the four
+  # telling peers to dial a port nothing listens on.
+  bee-uploader-480p:
+    environment:
+      BEE_NAT_ADDR: '${BEE_UPLOADER_NAT_ADDR}:${BEE_RUNG_480P_P2P_PORT:-11002}'
+
+  bee-uploader-720p:
+    environment:
+      BEE_NAT_ADDR: '${BEE_UPLOADER_NAT_ADDR}:${BEE_RUNG_720P_P2P_PORT:-11004}'
+
+  bee-uploader-1080p:
+    environment:
+      BEE_NAT_ADDR: '${BEE_UPLOADER_NAT_ADDR}:${BEE_RUNG_1080P_P2P_PORT:-11006}'

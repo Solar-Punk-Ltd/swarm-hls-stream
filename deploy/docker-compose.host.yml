@@ -8,6 +8,21 @@ services:
   bee-gateway:
     network_mode: host
 
+  # ⛔ The per-rung nodes need this for the same reason `bee-uploader` does, and leaving them off it
+  # is not a slow start, it is a restart loop. The blockchain RPC this deployment uses is on the
+  # HOST's loopback, so on the bridge `127.0.0.1:9000` is the container's own loopback and bee exits
+  # with `init chain: get client version: dial tcp 127.0.0.1:9000: connect: connection refused`
+  # before it finishes booting. It writes its keystore first, so the node has a wallet address and no
+  # node, which reads like a funding problem and is not one.
+  bee-uploader-480p:
+    network_mode: host
+
+  bee-uploader-720p:
+    network_mode: host
+
+  bee-uploader-1080p:
+    network_mode: host
+
   stream-uploader:
     network_mode: host
 
