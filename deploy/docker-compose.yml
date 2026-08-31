@@ -34,6 +34,86 @@ services:
       - --verbosity=${BEE_VERBOSITY:-5}
       - --password-file=/home/bee/.bee/password
 
+  # --- One Bee node per ABR rung ---
+  #
+  # ⛔⛔⛔ **Owner instruction, and measuring around its absence cost real runs.** All four rungs
+  # pushing through the single `bee-uploader` above is a shared pipe, and on 2026-08-31 that pipe
+  # delivered 5.61 segment uploads a second across the ladder where four rungs at 0.5s segments need
+  # 8.00. Per rung it was 1.14 to 1.53 a second against the 2.00 realtime asks for, so the broadcast
+  # itself was produced below realtime and every viewer reading taken on that stage was of a viewer
+  # that could not have kept up whatever it did. `BEE_PUBLISHERS` has existed, built and unit-tested,
+  # the whole time; there were simply no nodes for it to name.
+  #
+  # ⭐ `bee-uploader` above is the 360p rung as well as the shared default, because the catalog and
+  # each ladder's master playlist go through the LOWEST rung's node (see `.env.sample`), and those two
+  # feeds are the only addresses a viewer needs to open a stage.
+  #
+  # ⚠️ Each of these is a separate Swarm node: its own wallet, its own chequebook and its own postage
+  # batch. Four nodes is four things to fund and four batches to watch, which is the cost of the
+  # measurement being honest rather than an accident of one node's ceiling.
+  bee-uploader-480p:
+    image: ethersphere/bee:2.8.2
+    profiles: ['bee-uploader-480p']
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - '${BEE_RUNG_480P_API_BIND:-0.0.0.0}:${BEE_RUNG_480P_API_PORT:-11001}:${BEE_RUNG_480P_API_PORT:-11001}'
+      - '${BEE_RUNG_480P_P2P_PORT:-11002}:${BEE_RUNG_480P_P2P_PORT:-11002}'
+    volumes:
+      - ${BEE_RUNG_480P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-480p}:/home/bee/.bee
+    command:
+      - start
+      - --api-addr=${BEE_RUNG_480P_API_LISTEN:-}:${BEE_RUNG_480P_API_PORT:-11001}
+      - --p2p-addr=:${BEE_RUNG_480P_P2P_PORT:-11002}
+      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      - --full-node=${BEE_RUNG_FULL_NODE:-false}
+      - --swap-enable=true
+      - --cors-allowed-origins=*
+      - --verbosity=${BEE_VERBOSITY:-5}
+      - --password-file=/home/bee/.bee/password
+
+  bee-uploader-720p:
+    image: ethersphere/bee:2.8.2
+    profiles: ['bee-uploader-720p']
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - '${BEE_RUNG_720P_API_BIND:-0.0.0.0}:${BEE_RUNG_720P_API_PORT:-11003}:${BEE_RUNG_720P_API_PORT:-11003}'
+      - '${BEE_RUNG_720P_P2P_PORT:-11004}:${BEE_RUNG_720P_P2P_PORT:-11004}'
+    volumes:
+      - ${BEE_RUNG_720P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-720p}:/home/bee/.bee
+    command:
+      - start
+      - --api-addr=${BEE_RUNG_720P_API_LISTEN:-}:${BEE_RUNG_720P_API_PORT:-11003}
+      - --p2p-addr=:${BEE_RUNG_720P_P2P_PORT:-11004}
+      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      - --full-node=${BEE_RUNG_FULL_NODE:-false}
+      - --swap-enable=true
+      - --cors-allowed-origins=*
+      - --verbosity=${BEE_VERBOSITY:-5}
+      - --password-file=/home/bee/.bee/password
+
+  bee-uploader-1080p:
+    image: ethersphere/bee:2.8.2
+    profiles: ['bee-uploader-1080p']
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - '${BEE_RUNG_1080P_API_BIND:-0.0.0.0}:${BEE_RUNG_1080P_API_PORT:-11005}:${BEE_RUNG_1080P_API_PORT:-11005}'
+      - '${BEE_RUNG_1080P_P2P_PORT:-11006}:${BEE_RUNG_1080P_P2P_PORT:-11006}'
+    volumes:
+      - ${BEE_RUNG_1080P_DATA_DIR:-${BEE_DATA_ROOT:-./data}/bee-uploader-1080p}:/home/bee/.bee
+    command:
+      - start
+      - --api-addr=${BEE_RUNG_1080P_API_LISTEN:-}:${BEE_RUNG_1080P_API_PORT:-11005}
+      - --p2p-addr=:${BEE_RUNG_1080P_P2P_PORT:-11006}
+      - --blockchain-rpc-endpoint=${RPC_ENDPOINT:-https://rpc.gnosischain.com}
+      - --full-node=${BEE_RUNG_FULL_NODE:-false}
+      - --swap-enable=true
+      - --cors-allowed-origins=*
+      - --verbosity=${BEE_VERBOSITY:-5}
+      - --password-file=/home/bee/.bee/password
+
   bee-gateway:
     image: ethersphere/bee:2.8.2
     profiles: ['bee-gateway']

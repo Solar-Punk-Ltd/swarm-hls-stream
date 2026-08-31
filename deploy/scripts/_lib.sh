@@ -9,9 +9,19 @@ readonly SVC_UPLOADER="stream-uploader"
 readonly SVC_BEE_UPLOADER="bee-uploader"
 readonly SVC_BEE_GATEWAY="bee-gateway"
 readonly SVC_CLIENT="client"
-readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "$SVC_UPLOADER" "$SVC_SRS" "$SVC_OME" "$SVC_CLIENT")
 
-readonly DEFAULT_DISABLED_SERVICES=("$SVC_OME")
+# One Bee node per ABR rung, so the ladder does not share one upload pipe. `bee-uploader` is the
+# 360p rung as well as the shared default: the catalog and every ladder master go through the lowest
+# rung's node. Disabled by default, because each is a wallet and a postage batch to fund and a
+# single-rendition deployment needs none of them. See `BEE_PUBLISHERS` in `.env.sample`.
+readonly SVC_BEE_RUNG_480P="bee-uploader-480p"
+readonly SVC_BEE_RUNG_720P="bee-uploader-720p"
+readonly SVC_BEE_RUNG_1080P="bee-uploader-1080p"
+readonly BEE_RUNG_SERVICES=("$SVC_BEE_RUNG_480P" "$SVC_BEE_RUNG_720P" "$SVC_BEE_RUNG_1080P")
+
+readonly ALL_SERVICES=("$SVC_BEE_UPLOADER" "$SVC_BEE_GATEWAY" "${BEE_RUNG_SERVICES[@]}" "$SVC_UPLOADER" "$SVC_SRS" "$SVC_OME" "$SVC_CLIENT")
+
+readonly DEFAULT_DISABLED_SERVICES=("$SVC_OME" "${BEE_RUNG_SERVICES[@]}")
 
 # --- Targets ---
 readonly TARGET_LOCAL="localhost"
@@ -83,6 +93,21 @@ readonly PORT_VARS=(
   "BEE_GATEWAY_P2P_PORT:1734:10008"
   # SRS's read-only stats API. Added so two profiles no longer collide on the fixed 1985 it bound.
   "SRS_HTTP_API_PORT:1985:10009"
+
+  # ⛔ A SECOND DECADE, because the first one has no digit left. The rule above is that each service
+  # holds a unique last digit 0-9 within its own thousand so slots cannot collide, and all ten of
+  # 1000x are taken. The per-rung Bee nodes need six more ports, so they open 1100x on the same
+  # arithmetic and the same unique-digit rule inside it.
+  #
+  # ⚠️ The two blocks meet at slot 100, where 10000 + 100*10 is 11000. Slots are documented 1-999, so
+  # a deployment at slot 100 or above would collide. Nothing enforces that today and it is the one
+  # thing this second decade costs. Filed with the port scheme's own note above.
+  "BEE_RUNG_480P_API_PORT:11001:11001"
+  "BEE_RUNG_480P_P2P_PORT:11002:11002"
+  "BEE_RUNG_720P_API_PORT:11003:11003"
+  "BEE_RUNG_720P_P2P_PORT:11004:11004"
+  "BEE_RUNG_1080P_API_PORT:11005:11005"
+  "BEE_RUNG_1080P_P2P_PORT:11006:11006"
 )
 
 # Parse profile + portSlot flags from argv.
