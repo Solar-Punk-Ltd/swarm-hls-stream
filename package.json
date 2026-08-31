@@ -30,6 +30,7 @@
     "ome:down": "cd engines/ome && docker compose down",
     "ome:logs": "cd engines/ome && docker compose logs -f",
     "e2e:smoke": "pnpm --filter @swarm-hls-stream/e2e test:e2e:smoke",
+    "e2e:preflight": "pnpm --filter @swarm-hls-stream/e2e test:e2e:preflight",
     "e2e:run": "pnpm --filter @swarm-hls-stream/e2e test:e2e",
     "bench:latency": "pnpm --filter @swarm-hls-stream/e2e bench:latency",
     "bench:longrun": "pnpm --filter @swarm-hls-stream/e2e bench:longrun",
