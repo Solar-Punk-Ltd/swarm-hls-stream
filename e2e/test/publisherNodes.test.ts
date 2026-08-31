@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { nodesBehind, type PublisherRoute } from '../src/harness/publishers.js';
+import { BEE_SERVICE_BY_RUNG, nodesBehind, type PublisherRoute, publisherServices } from '../src/harness/publishers.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** The port a bridge deployment publishes its one bee-uploader on, as `_lib.sh` allocates it. */
 const DEPLOY_PORT = 10075;
@@ -112,5 +117,80 @@ describe('nodesBehind', () => {
 
   it('refuses a url it cannot parse rather than skipping the node', () => {
     assert.throws(() => nodesBehind([route('360p', 'not a url')], DEPLOY_PORT), /is not a url/);
+  });
+});
+
+/**
+ * The map that says which container carries which rung, and the deploy script that must agree.
+ *
+ * ⛔⛔⛔ Both halves matter and they fail differently. A map missing a rung means a fault cannot reach
+ * that rung's node, which is how `scenarios/bee-outage-short` came to PASS while testing nothing on a
+ * four-node stage. A map naming a container the deployment does not have means a fault silently does
+ * nothing, which is indistinguishable from one the product survived.
+ */
+describe('which Bee service carries which rung', () => {
+  it('names a service for every rung the deploy script knows', () => {
+    const script = readFileSync(join(ROOT, 'deploy', 'scripts', 'bee-publishers.sh'), 'utf8');
+    const declared = [...script.matchAll(/^\s*"([0-9]+p):BEE_[A-Z0-9_]+"/gm)].map((m) => m[1]);
+
+    assert.notEqual(declared.length, 0, 'the deploy script no longer declares its rungs the same way');
+    assert.deepEqual([...declared].sort(), Object.keys(BEE_SERVICE_BY_RUNG).sort());
+  });
+
+  it('names a service the compose file actually defines, for every rung', () => {
+    const compose = readFileSync(join(ROOT, 'deploy', 'docker-compose.yml'), 'utf8');
+
+    for (const service of Object.values(BEE_SERVICE_BY_RUNG)) {
+      assert.match(compose, new RegExp(`^  ${service}:`, 'm'), `compose defines no service ${service}`);
+    }
+  });
+
+  it('lists every service a routing would need taken down', () => {
+    const nodes = nodesBehind(
+      [
+        { rung: '360p', url: 'http://127.0.0.1:10075', batch: 'aa…' },
+        { rung: '480p', url: 'http://127.0.0.1:11071', batch: 'bb…' },
+        { rung: '720p', url: 'http://127.0.0.1:11073', batch: 'cc…' },
+        { rung: '1080p', url: 'http://127.0.0.1:11075', batch: 'dd…' },
+      ],
+      10075,
+    );
+
+    assert.deepEqual(publisherServices(nodes), [
+      'bee-uploader',
+      'bee-uploader-480p',
+      'bee-uploader-720p',
+      'bee-uploader-1080p',
+    ]);
+  });
+
+  /** One node carrying everything is the unsplit stage, and its rung name is not a rung. */
+  it('maps the single-node stage to the shared service', () => {
+    const nodes = nodesBehind([{ rung: 'all', url: 'http://127.0.0.1:10075', batch: 'aa…' }], 10075);
+
+    assert.deepEqual(publisherServices(nodes), ['bee-uploader']);
+  });
+
+  /** Two rungs on one node is one container, and faulting it twice would be a second outage. */
+  it('names a shared node once however many rungs ride it', () => {
+    const nodes = nodesBehind(
+      [
+        { rung: '360p', url: 'http://127.0.0.1:10075', batch: 'aa…' },
+        { rung: '480p', url: 'http://127.0.0.1:10075', batch: 'aa…' },
+      ],
+      10075,
+    );
+
+    assert.deepEqual(publisherServices(nodes), ['bee-uploader']);
+  });
+
+  it('refuses a rung it has no service for, rather than faulting the ones it knows', () => {
+    const nodes = nodesBehind([{ rung: '4k', url: 'http://127.0.0.1:11079', batch: 'ee…' }], 10075);
+
+    assert.throws(() => publisherServices(nodes), /no Bee service/);
+  });
+
+  it('refuses an empty routing rather than answering with an empty fault', () => {
+    assert.throws(() => publisherServices([]), /establishes nothing/);
   });
 });
