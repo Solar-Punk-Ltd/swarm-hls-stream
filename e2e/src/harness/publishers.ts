@@ -48,17 +48,22 @@ export function nodesBehind(routes: readonly PublisherRoute[] | undefined, deplo
     );
   }
 
-  const byUrl = new Map<string, PublisherNode>();
+  // ⛔ Grouped by `host:port` rather than by the url string. Two rungs can name one node with and
+  // without a trailing slash, or with userinfo on one of them, and grouping on the raw string would
+  // read that as two nodes: the funding preflight would then read one chequebook twice, and
+  // `judgeCost` would count that node's spend twice while dividing by the run's bytes once.
+  const byNode = new Map<string, PublisherNode>();
   for (const route of routes) {
-    const existing = byUrl.get(route.url);
+    const key = parseUrl(route.url).host;
+    const existing = byNode.get(key);
     if (existing) {
       existing.rungs.push(route.rung);
       continue;
     }
-    byUrl.set(route.url, { rungs: [route.rung], url: route.url, batch: route.batch, port: 0 });
+    byNode.set(key, { rungs: [route.rung], url: route.url, batch: route.batch, port: 0 });
   }
 
-  const nodes = [...byUrl.values()];
+  const nodes = [...byNode.values()];
   return nodes.map((node) => ({ ...node, port: portOf(node, nodes.length, deployPort) }));
 }
 

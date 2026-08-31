@@ -43,6 +43,26 @@ describe('nodesBehind', () => {
     );
   });
 
+  /**
+   * ⛔ One node, however it was spelled. Grouping on the raw url string would read these as two, and
+   * then the funding preflight reads one chequebook twice while `judgeCost` counts that node's spend
+   * twice against the run's bytes once, which is a cost figure too high rather than merely repeated.
+   */
+  it('reads one node when two rungs name it with a trailing slash and with userinfo', () => {
+    const nodes = nodesBehind(
+      [
+        route('360p', 'http://127.0.0.1:10075'),
+        route('480p', 'http://127.0.0.1:10075/'),
+        route('720p', 'http://operator@127.0.0.1:10075'),
+      ],
+      DEPLOY_PORT,
+    );
+
+    assert.equal(nodes.length, 1);
+    assert.deepEqual(nodes[0].rungs, ['360p', '480p', '720p']);
+    assert.equal(nodes[0].port, 10075);
+  });
+
   it('takes the host port from a loopback url, which is what a split deployment configures', () => {
     const nodes = nodesBehind([route('360p', 'http://localhost:11073')], DEPLOY_PORT);
 
