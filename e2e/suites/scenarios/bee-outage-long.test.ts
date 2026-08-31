@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
-import { containerName, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { containerName, containerNameFor, loadConfig } from '../../src/config.js';
+import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { nodesBehind, publisherServices } from '../../src/harness/publishers.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -50,12 +51,23 @@ const cfg = loadConfig();
 
 describe('B — bee crash > retry window: discontinuity, clean skip, resume', () => {
   const host = makeHost(cfg);
-  const bee = containerName(cfg, 'bee-uploader');
+  /**
+   * ⛔⛔⛔ EVERY publisher node, not `bee-uploader` alone, and that is what this suite got wrong on a
+   * four-node stage. It stopped one container and asserted below that **every** rung shows a hole.
+   * `bee-uploader` now carries 360p only, so 480p came back `0,1,2 … 72` unbroken and the suite failed
+   * against a rung whose node was never touched. Read off the uploader's own routing, so a node added
+   * to the stage cannot be one the fault misses.
+   */
+  let bees: string[] = [];
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;
   let startedAt: string;
 
   before(async () => {
+    bees = publisherServices(nodesBehind((await uploaderHealth(host, cfg)).publishers, cfg.ports.beeUploaderApi)).map(
+      (service) => containerNameFor(cfg.profile, service),
+    );
+
     const stamp = await discoverStamp(host, cfg);
     assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
     await waitForIdle(host, cfg);
@@ -65,7 +77,7 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
 
   after(async () => {
     await publisher?.stop();
-    await host.start(bee).catch(() => undefined);
+    await Promise.all(bees.map((bee) => host.start(bee).catch(() => undefined)));
   });
 
   it('arms a discontinuity for the dropped segment and resumes cleanly', async () => {
@@ -89,9 +101,11 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
     const preOutageMaxOf = new Map([...(await byStream())].map(([id, idx]) => [id, Math.max(...idx)]));
     const preOutageManifestMax = preOutage.manifestSocIndices.length ? Math.max(...preOutage.manifestSocIndices) : -1;
 
-    await host.stop(bee);
+    // Together rather than in sequence: staggering them would give the rungs different outage
+    // windows, and the assertion below is that they all lost the same stretch.
+    await Promise.all(bees.map((bee) => host.stop(bee)));
     await sleep(STOP_SLEEP_MS);
-    await host.start(bee);
+    await Promise.all(bees.map((bee) => host.start(bee)));
 
     await waitFor(
       async () => {

@@ -1,3 +1,5 @@
+import { type ServiceName, SERVICES } from '../config.js';
+
 /**
  * One rung's routing, exactly as the uploader's `/health` reports it.
  *
@@ -39,11 +41,11 @@ export interface PublisherNode {
  * 360p is on the shared `bee-uploader` deliberately: the catalog and every ladder master go through
  * the coordinator, which is the lowest rung.
  */
-export const BEE_SERVICE_BY_RUNG: Readonly<Record<string, string>> = {
-  '360p': 'bee-uploader',
-  '480p': 'bee-uploader-480p',
-  '720p': 'bee-uploader-720p',
-  '1080p': 'bee-uploader-1080p',
+export const BEE_SERVICE_BY_RUNG: Readonly<Record<string, ServiceName>> = {
+  '360p': SERVICES.beeUploader,
+  '480p': SERVICES.beeRung480p,
+  '720p': SERVICES.beeRung720p,
+  '1080p': SERVICES.beeRung1080p,
 };
 
 /**
@@ -75,7 +77,7 @@ const COORDINATOR_RUNG = '360p';
  * ⛔ Refuses rather than returning the services it does know. A fault reaching three nodes of four is
  * the defect this exists to end, and a partial list is exactly how it would come back.
  */
-export function publisherServices(nodes: readonly PublisherNode[]): string[] {
+export function publisherServices(nodes: readonly PublisherNode[]): ServiceName[] {
   if (nodes.length === 0) {
     throw new Error(
       'asked which services carry a publisher routing with no nodes in it. An empty routing ' +
@@ -83,7 +85,7 @@ export function publisherServices(nodes: readonly PublisherNode[]): string[] {
     );
   }
 
-  const services: string[] = [];
+  const services: ServiceName[] = [];
   for (const node of nodes) {
     const service = serviceCarrying(node);
     if (!services.includes(service)) {
@@ -94,7 +96,7 @@ export function publisherServices(nodes: readonly PublisherNode[]): string[] {
 }
 
 /** The one container behind a node, or a refusal naming why this topology cannot be resolved. */
-function serviceCarrying(node: PublisherNode): string {
+function serviceCarrying(node: PublisherNode): ServiceName {
   if (node.rungs.includes(EVERY_RUNG) || node.rungs.includes(COORDINATOR_RUNG)) {
     return BEE_SERVICE_BY_RUNG[COORDINATOR_RUNG];
   }

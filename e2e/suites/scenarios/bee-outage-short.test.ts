@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
-import { containerName, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { containerName, containerNameFor, loadConfig } from '../../src/config.js';
+import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { nodesBehind, publisherServices } from '../../src/harness/publishers.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -31,12 +32,23 @@ const cfg = loadConfig();
 
 describe('A — bee outage < retry window: buffer, zero loss, no discontinuity', () => {
   const host = makeHost(cfg);
-  const bee = containerName(cfg, 'bee-uploader');
+  /**
+   * ⛔⛔⛔ EVERY publisher node, and this suite is why that matters more here than in its sibling.
+   * It asserts NOTHING was lost, so on a four-node stage where only `bee-uploader` was paused three
+   * rungs were never faulted at all and the assertion was trivially true of them. **It passed while
+   * testing nothing**, which is worse than the red its sibling produced, and only that red made it
+   * visible. Read off the uploader's own routing so a node added to the stage cannot be missed.
+   */
+  let bees: string[] = [];
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;
   let startedAt: string;
 
   before(async () => {
+    bees = publisherServices(nodesBehind((await uploaderHealth(host, cfg)).publishers, cfg.ports.beeUploaderApi)).map(
+      (service) => containerNameFor(cfg.profile, service),
+    );
+
     const stamp = await discoverStamp(host, cfg);
     assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
     await waitForIdle(host, cfg);
@@ -46,8 +58,8 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
 
   after(async () => {
     await publisher?.stop();
-    // Make sure bee is unfrozen even if the test bailed mid-outage.
-    await host.unpause(bee).catch(() => undefined);
+    // Make sure every node is unfrozen even if the test bailed mid-outage.
+    await Promise.all(bees.map((bee) => host.unpause(bee).catch(() => undefined)));
   });
 
   it('loses no segments across an 8s outage and arms no discontinuity', async () => {
@@ -62,9 +74,11 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
 
     const resumeTarget = Math.max(...(await uploaded())) + POST_OUTAGE_SEGMENTS;
 
-    await host.pause(bee);
+    // Together rather than in sequence: a staggered pause gives the rungs different outage windows,
+    // and what this asserts is that none of them lost anything over the same one.
+    await Promise.all(bees.map((bee) => host.pause(bee)));
     await sleep(OUTAGE_MS);
-    await host.unpause(bee);
+    await Promise.all(bees.map((bee) => host.unpause(bee)));
 
     await waitFor(
       async () => {

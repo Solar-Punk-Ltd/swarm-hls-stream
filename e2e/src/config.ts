@@ -478,14 +478,24 @@ export const SERVICES = {
   srs: 'srs',
   ome: 'ome',
   streamUploader: 'stream-uploader',
+  /**
+   * The shared publisher, which on a split stage carries the coordinator rung and nothing else.
+   *
+   * ⛔ Do not read this as "the publisher". It was the only bee publisher this file named until
+   * 2026-08-31, so a fault could reach no other, and `scenarios/bee-outage-long` stopped it while
+   * asserting every rung had lost segments. See `BEE_SERVICE_BY_RUNG` in `harness/publishers.ts`.
+   */
   beeUploader: 'bee-uploader',
+  beeRung480p: 'bee-uploader-480p',
+  beeRung720p: 'bee-uploader-720p',
+  beeRung1080p: 'bee-uploader-1080p',
   beeGateway: 'bee-gateway',
   client: 'client',
 } as const;
 
 export type ServiceName = (typeof SERVICES)[keyof typeof SERVICES];
 
-function containerNameFor(profile: string, service: ServiceName): string {
+export function containerNameFor(profile: string, service: ServiceName): string {
   return `${profile}-${service}-1`;
 }
 
