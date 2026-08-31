@@ -15,6 +15,10 @@ import { loadEngines } from './engines/load.js';
 import { BeePublisherPool } from './libs/BeePublisherPool.js';
 import { CatalogIndexStore } from './libs/CatalogIndexStore.js';
 import { bzzToPlur, ChequebookGate } from './libs/ChequebookGate.js';
+import { PostageGate } from './libs/PostageGate.js';
+
+/** The gate's floor is configured in hours, because that is the unit an operator tops a batch up in. */
+const SECONDS_PER_HOUR = 3_600;
 import { LadderGroupStore } from './libs/LadderGroupStore.js';
 import { Logger } from './libs/Logger.js';
 import { MasterFeedWriter } from './libs/MasterFeedWriter.js';
@@ -62,6 +66,18 @@ async function start() {
     // here costs a restart. Reaching the engines first costs a broadcast that looks live and uploads
     // nothing. See ChequebookGate for the full account.
     await new ChequebookGate(publishers.nodes(), bzzToPlur(config.chequebookMinBzz), logger).assertFunded();
+
+    // Beside the chequebook check and for the same reason. A batch that is full or expired fails
+    // every upload while the node answers normally and the config reads correctly, so it is the same
+    // silent shape and it gets the same refusal. BeePublisherPool already rejects a batch id that is
+    // malformed or does not cover the ladder; this is the half that asks whether the batch it names
+    // can still carry anything. See PostageGate.
+    await new PostageGate(
+      publishers.nodes(),
+      config.stampMinTtlHours * SECONDS_PER_HOUR,
+      config.stampMaxUtilization,
+      logger,
+    ).assertUsable();
 
     const recoveryStore = new RecoveryStore(config.stateDir);
 

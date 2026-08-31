@@ -27,6 +27,29 @@ const DEFAULT_CHEQUEBOOK_MIN_BZZ = 0.5;
 const MAX_CHEQUEBOOK_MIN_BZZ = 1000;
 
 /**
+ * How much time a postage batch must have left before the uploader will start on it.
+ *
+ * A day, because a batch that expires mid-broadcast stops paying for the data it was keeping, and a
+ * floor shorter than the longest run anyone books here would clear a batch that cannot finish it.
+ * This is a chosen bound and not a measured one: it is "comfortably longer than a sitting", and a
+ * deployment that knows its run is shorter can lower it.
+ */
+const DEFAULT_STAMP_MIN_TTL_HOURS = 24;
+const MAX_STAMP_MIN_TTL_HOURS = 24 * 365;
+
+/**
+ * How full a postage batch may be before the uploader will start on it.
+ *
+ * An immutable batch that reaches capacity stops accepting chunks, and that arrives as a failed
+ * upload rather than as a warning. 0.9 leaves a tenth of the batch for the run ahead.
+ *
+ * ⚠️ It is deliberately a ceiling on a ratio rather than a byte figure, because how fast a batch
+ * fills depends on the rung: across the shipped ladder 1080p burns roughly seven times the bytes of
+ * 360p, so no single amount of headroom means the same thing on two rungs.
+ */
+const DEFAULT_STAMP_MAX_UTILIZATION = 0.9;
+
+/**
  * The ABR ladder, or null when the engine is producing a single rendition.
  *
  * Parsed eagerly and allowed to throw: a malformed ABR_LADDER means the uploader would group
@@ -64,6 +87,14 @@ export const config = {
   chequebookMinBzz: optionalNumber('CHEQUEBOOK_MIN_BZZ', DEFAULT_CHEQUEBOOK_MIN_BZZ, {
     min: 0,
     max: MAX_CHEQUEBOOK_MIN_BZZ,
+  }),
+  stampMinTtlHours: optionalNumber('STAMP_MIN_TTL_HOURS', DEFAULT_STAMP_MIN_TTL_HOURS, {
+    min: 0,
+    max: MAX_STAMP_MIN_TTL_HOURS,
+  }),
+  stampMaxUtilization: optionalNumber('STAMP_MAX_UTILIZATION', DEFAULT_STAMP_MAX_UTILIZATION, {
+    min: 0,
+    max: 1,
   }),
   streamKey: required('STREAM_KEY'),
   streamListTopic: required('STREAM_LIST_TOPIC'),
