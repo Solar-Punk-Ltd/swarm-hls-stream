@@ -183,12 +183,13 @@ alone reports part of a run as the whole of it.
 
 Preflight:
 
-| file                           | proves                                                                                                 |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `preflight/chequebook-funding` | the uploader node holds ≥ 0.5 BZZ. Read-only: it reports a shortfall and fails, never spends           |
-| `preflight/spend-ceiling`      | the run is inside what the owner authorised in `.spend-ledger.env`. Reads two balances, spends nothing |
-| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host                      |
-| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host           |
+| file                           | proves                                                                                                                        |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `preflight/chequebook-funding` | every publisher node holds ≥ 0.5 BZZ available. Read-only: it reports a shortfall and fails, never spends                     |
+| `preflight/spend-ceiling`      | the run is inside what the owner authorised in `.spend-ledger.env`. Reads one balance per node that can spend, spends nothing |
+| `preflight/bee-publishers`     | the uploader's live routing is the one `BEE_PUBLISHERS` declares. Reads `/health` only, spends nothing                        |
+| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host                                             |
+| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host                                  |
 
 Fault scenarios:
 

@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { loadConfig } from '../../src/config.js';
-import { makeHost } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth } from '../../src/harness/host.js';
+import { nodesBehind } from '../../src/harness/publishers.js';
 import {
   availablePlur,
   ledgerRefusal,
+  NodeReading,
   parseSpendLedger,
   readSpendLedger,
   SPEND_LEDGER_PATH,
@@ -21,11 +23,15 @@ import {
  * The owner authorises an amount by writing `.spend-ledger.env` at the repository root. Until this
  * existed nothing read it at launch time, so every launch was gated by an operator remembering the
  * number, which is a threshold written down rather than a control. `deploy/scripts/spend-ceiling.sh`
- * refuses a bench sitting on the same four keys, and the two read one file so two paths cannot each
+ * refuses a bench sitting on the same ledger, and the two read one file so two paths cannot each
  * spend the whole allowance.
  *
- * Read-only, and only reads: two chequebook balances and one local file. It costs nothing, so it can
- * refuse while the stack is still cold.
+ * Read-only, and only reads: the uploader's routing, one chequebook balance per node that can spend,
+ * and one local file. It costs nothing, so it can refuse while the stack is still cold.
+ *
+ * ⛔⛔⛔ The node set comes from the uploader's own `/health` routing rather than from a constant. It
+ * was a hardcoded uploader-and-gateway pair until 2026-08-31, when the publisher became one Bee node
+ * per ABR rung and the three new ones spent unwatched while holding 5.00 BZZ each.
  *
  * ⛔⛔ THE REFUSAL ONLY STOPS THE SPEND BECAUSE OF THE `&&` IN `test:e2e`. KEEP THEM TOGETHER.
  *
@@ -58,18 +64,27 @@ describe('preflight — the run stays inside what the owner authorised', () => {
       assert.fail(ledgerRefusal(SPEND_LEDGER_PATH, ledgerText));
     }
 
-    // Read one node at a time so a chequebook that does not answer is attributable to its node, and
-    // so a refusal on the first leaves no second request in flight to reject unhandled.
-    const uploaderPlur = availablePlur(
-      await host.localJson<unknown>(cfg.ports.beeUploaderApi, '/chequebook/balance'),
-      'uploader',
-    );
-    const gatewayPlur = availablePlur(
-      await host.localJson<unknown>(cfg.ports.beeGatewayApi, '/chequebook/balance'),
-      'gateway',
-    );
+    // Every node the uploader publishes through, named by the rungs it carries, plus the gateway.
+    // Taken from the routing the service reports rather than from this suite's own idea of the
+    // deployment, so a node added to the stage cannot be one the ceiling is blind to.
+    const routing = nodesBehind((await uploaderHealth(host, cfg)).publishers, cfg.ports.beeUploaderApi);
+    const nodes = [
+      ...routing.map((node) => ({ port: node.port, who: `${node.rungs.join('/')} publisher` })),
+      { port: cfg.ports.beeGatewayApi, who: 'gateway' },
+    ];
 
-    const verdict = spendAgainstCeiling(ledger, { uploaderPlur, gatewayPlur });
+    // Read one node at a time so a chequebook that does not answer is attributable to its node, and
+    // so a refusal on the first leaves no later request in flight to reject unhandled.
+    const readings: NodeReading[] = [];
+    for (const node of nodes) {
+      readings.push({
+        port: String(node.port),
+        who: node.who,
+        plur: availablePlur(await host.localJson<unknown>(node.port, '/chequebook/balance'), node.who),
+      });
+    }
+
+    const verdict = spendAgainstCeiling(ledger, readings);
     const refusal = spendRefusal(verdict, SPEND_LEDGER_PATH);
 
     // The summary is printed only once the run is cleared, and that ordering is the point. A run
@@ -80,5 +95,8 @@ describe('preflight — the run stays inside what the owner authorised', () => {
     }
 
     console.log(`  authorised ${ledger.authorisedAt}: ${spendSummary(verdict)}`);
+    for (const reading of readings) {
+      console.log(`    ${reading.who} on ${reading.port}`);
+    }
   });
 });

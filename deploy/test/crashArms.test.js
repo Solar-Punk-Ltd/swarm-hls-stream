@@ -192,8 +192,11 @@ exit 0
     [
       'authorised_at=2026-08-27T00:00:00Z',
       `ceiling_plur=${ceilingPlur}`,
-      `uploader_start_plur=${startPlur}`,
-      `gateway_start_plur=${startPlur}`,
+      // One baseline per node, keyed by port, because the gate reads every node that can
+      // spend and refuses one it has no baseline for. Both ports are the same here, so the
+      // gate dedupes them into a single node and a second line would be a baseline nothing
+      // reads, which it also refuses.
+      `node_${port}_start_plur=${startPlur}`,
       '',
     ].join('\n'),
   );

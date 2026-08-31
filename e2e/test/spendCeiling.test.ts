@@ -34,11 +34,15 @@ function bzzMilli(thousandths: bigint): bigint {
   return thousandths * (PLUR_PER_BZZ / 1000n);
 }
 
+/** The two ports the cases below are written against: a publisher node and the gateway. */
+const UPLOADER_PORT = '10075';
+const GATEWAY_PORT = '10077';
+
 const FULL_LEDGER: Record<string, string> = {
   authorised_at: '2026-08-28T20:45:00Z',
   ceiling_plur: String(bzzMilli(2400n)),
-  uploader_start_plur: String(bzzMilli(3000n)),
-  gateway_start_plur: String(bzzMilli(1000n)),
+  [`node_${UPLOADER_PORT}_start_plur`]: String(bzzMilli(3000n)),
+  [`node_${GATEWAY_PORT}_start_plur`]: String(bzzMilli(1000n)),
 };
 
 /** The ledger as the owner writes it. An override of `undefined` means that line is absent. */
@@ -51,16 +55,51 @@ function ledgerText(overrides: Record<string, string | undefined> = {}): string 
 
 const LEDGER = parseSpendLedger(ledgerText())!;
 
+/**
+ * The reading for a two-node stage, which is what these cases describe.
+ *
+ * Every node that can spend has to appear, in both directions: a reading with no baseline and a
+ * baseline with no reading are both refused, so a helper that quietly dropped one would be writing
+ * the gate's own blind spot into its tests.
+ */
+function readings(uploaderPlur: bigint, gatewayPlur: bigint) {
+  return [
+    { port: UPLOADER_PORT, who: 'uploader', plur: uploaderPlur },
+    { port: GATEWAY_PORT, who: 'gateway', plur: gatewayPlur },
+  ];
+}
+
 describe('reading the owner authorisation out of the ledger', () => {
-  it('reads the four fields a run is authorised by', () => {
+  it('reads the ceiling, the time and one baseline per node', () => {
     const ledger = parseSpendLedger(ledgerText());
 
     assert.deepEqual(ledger, {
       authorisedAt: '2026-08-28T20:45:00Z',
       ceilingPlur: bzzMilli(2400n),
-      uploaderStartPlur: bzzMilli(3000n),
-      gatewayStartPlur: bzzMilli(1000n),
+      startsByPort: new Map([
+        [UPLOADER_PORT, bzzMilli(3000n)],
+        [GATEWAY_PORT, bzzMilli(1000n)],
+      ]),
     });
+  });
+
+  /**
+   * ⛔⛔⛔ The regression that made this file's fixtures grow a port. The gate read exactly two
+   * chequebooks, so when the publisher became one Bee node per ABR rung on 2026-08-31 the three new
+   * nodes spent unwatched while holding 5.00 BZZ each. A ledger has to be able to carry however many
+   * nodes the deployment has.
+   */
+  it('reads a baseline for every node, not a fixed pair', () => {
+    const five = parseSpendLedger(
+      ledgerText({
+        node_11071_start_plur: String(bzzMilli(5000n)),
+        node_11073_start_plur: String(bzzMilli(5000n)),
+        node_11075_start_plur: String(bzzMilli(5000n)),
+      }),
+    );
+
+    assert.equal(five?.startsByPort.size, 5);
+    assert.equal(five?.startsByPort.get('11073'), bzzMilli(5000n));
   });
 
   it('skips comment and blank lines, which is how the owner annotates the night', () => {
@@ -77,7 +116,10 @@ describe('reading the owner authorisation out of the ledger', () => {
   it('keeps a balance past 2^53 exactly', () => {
     const exact = '30000000000000001';
 
-    assert.equal(parseSpendLedger(ledgerText({ uploader_start_plur: exact }))?.uploaderStartPlur, BigInt(exact));
+    assert.equal(
+      parseSpendLedger(ledgerText({ [`node_${UPLOADER_PORT}_start_plur`]: exact }))?.startsByPort.get(UPLOADER_PORT),
+      BigInt(exact),
+    );
   });
 
   /**
@@ -100,9 +142,30 @@ describe('reading the owner authorisation out of the ledger', () => {
     assert.equal(parseSpendLedger(ledgerText({ ceiling_plur: undefined })), null);
   });
 
-  it('refuses a ledger missing either start balance, since that node cost is then unknown', () => {
-    assert.equal(parseSpendLedger(ledgerText({ uploader_start_plur: undefined })), null);
-    assert.equal(parseSpendLedger(ledgerText({ gateway_start_plur: undefined })), null);
+  /**
+   * ⛔ Zero baselines is a fault rather than an authorisation covering nothing. It would make the
+   * spend total zero on every run, which reads exactly like a night that cost nothing. A ledger
+   * naming SOME of the nodes is caught later, by the coverage check, which needs the live node set.
+   */
+  it('refuses a ledger with no start balance for any node at all', () => {
+    const bare = parseSpendLedger(
+      ledgerText({
+        [`node_${UPLOADER_PORT}_start_plur`]: undefined,
+        [`node_${GATEWAY_PORT}_start_plur`]: undefined,
+      }),
+    );
+
+    assert.equal(bare, null);
+  });
+
+  it('refuses a ledger whose start balance is not a plain PLUR integer', () => {
+    for (const bad of ['', 'lots', '2.4', '-1']) {
+      assert.equal(
+        parseSpendLedger(ledgerText({ [`node_${UPLOADER_PORT}_start_plur`]: bad })),
+        null,
+        `accepted a start balance of ${bad}`,
+      );
+    }
   });
 
   it('refuses a ledger with no authorisation time, so a run can always be dated to a decision', () => {
@@ -123,10 +186,10 @@ describe('the refusal an unledgered run gets', () => {
     assert.match(ledgerRefusal(PATH, null), /\/repo\/\.spend-ledger\.env/);
   });
 
-  it('names all four keys, so the file can be written from the message alone', () => {
+  it('names every key, so the file can be written from the message alone', () => {
     const refusal = ledgerRefusal(PATH, null);
 
-    for (const key of ['authorised_at', 'ceiling_plur', 'uploader_start_plur', 'gateway_start_plur']) {
+    for (const key of ['authorised_at', 'ceiling_plur', 'node_<port>_start_plur']) {
       assert.match(refusal, new RegExp(key), `the refusal does not name ${key}`);
     }
   });
@@ -141,10 +204,34 @@ describe('the refusal an unledgered run gets', () => {
    * into a one-line edit.
    */
   it('names the key that is missing when the ledger exists but is short one', () => {
-    const refusal = ledgerRefusal(PATH, ledgerText({ gateway_start_plur: undefined }));
+    const refusal = ledgerRefusal(PATH, ledgerText({ ceiling_plur: undefined }));
 
-    assert.match(refusal, /does not name[^\n]*gateway_start_plur/);
+    assert.match(refusal, /does not name[^\n]*ceiling_plur/);
     assert.doesNotMatch(refusal, /no spend ledger/i);
+  });
+
+  /** A baseline that is present and unusable names its own key, port and all, so the edit is one line. */
+  it('names the node whose start balance it cannot read', () => {
+    const refusal = ledgerRefusal(PATH, ledgerText({ [`node_${GATEWAY_PORT}_start_plur`]: 'lots' }));
+
+    assert.match(refusal, new RegExp(`does not name[^\n]*node_${GATEWAY_PORT}_start_plur`));
+  });
+
+  /** A ledger naming no node at all cannot say which node is missing, so it names the shape instead. */
+  it('names the line shape when the ledger baselines nothing', () => {
+    const refusal = ledgerRefusal(
+      PATH,
+      ledgerText({
+        [`node_${UPLOADER_PORT}_start_plur`]: undefined,
+        [`node_${GATEWAY_PORT}_start_plur`]: undefined,
+      }),
+    );
+
+    assert.match(refusal, /node_<port>_start_plur/);
+  });
+
+  it('points at the script that writes the baselines, since they are read off the nodes', () => {
+    assert.match(ledgerRefusal(PATH, null), /spend-ledger\.sh --authorise=/);
   });
 
   it('says the ledger is absent when there is no file, rather than listing every key as missing', () => {
@@ -186,10 +273,7 @@ describe('reading a chequebook balance off the wire', () => {
 
 describe('what this run has already cost, against the authorisation', () => {
   it('sums what both nodes have spent since the ledger was written', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(2700n),
-      gatewayPlur: bzzMilli(800n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(2700n), bzzMilli(800n)));
 
     assert.equal(verdict.spentPlur, bzzMilli(500n));
     assert.equal(verdict.remainingPlur, bzzMilli(1900n));
@@ -197,10 +281,7 @@ describe('what this run has already cost, against the authorisation', () => {
   });
 
   it('counts nothing spent on a run that has not started', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(3000n),
-      gatewayPlur: bzzMilli(1000n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(3000n), bzzMilli(1000n)));
 
     assert.equal(verdict.spentPlur, 0n);
     assert.equal(verdict.withinCeiling, true);
@@ -213,30 +294,21 @@ describe('what this run has already cost, against the authorisation', () => {
    * headroom that nobody authorised.
    */
   it('clamps a node whose balance rose, so a deposit cannot fund an overrun on the other', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(2500n),
-      gatewayPlur: bzzMilli(13000n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(2500n), bzzMilli(13000n)));
 
     assert.equal(verdict.spentPlur, bzzMilli(500n));
     assert.deepEqual(verdict.rose, ['gateway']);
   });
 
   it('names both nodes when both rose', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(9000n),
-      gatewayPlur: bzzMilli(9000n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(9000n), bzzMilli(9000n)));
 
     assert.equal(verdict.spentPlur, 0n);
     assert.deepEqual(verdict.rose, ['uploader', 'gateway']);
   });
 
   it('leaves rose empty when neither node gained, which is the ordinary run', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(2900n),
-      gatewayPlur: bzzMilli(900n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(2900n), bzzMilli(900n)));
 
     assert.deepEqual(verdict.rose, []);
   });
@@ -246,10 +318,7 @@ describe('what this run has already cost, against the authorisation', () => {
    * with nothing left to spend, which then overruns by whatever the run itself costs.
    */
   it('refuses a run that has already spent the ceiling exactly', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(600n),
-      gatewayPlur: bzzMilli(1000n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(600n), bzzMilli(1000n)));
 
     assert.equal(verdict.spentPlur, bzzMilli(2400n));
     assert.equal(verdict.remainingPlur, 0n);
@@ -257,20 +326,14 @@ describe('what this run has already cost, against the authorisation', () => {
   });
 
   it('admits a run one PLUR under the ceiling', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(600n) + 1n,
-      gatewayPlur: bzzMilli(1000n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(600n) + 1n, bzzMilli(1000n)));
 
     assert.equal(verdict.remainingPlur, 1n);
     assert.equal(verdict.withinCeiling, true);
   });
 
   it('reports an overrun as a negative remainder rather than wrapping it', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: 0n,
-      gatewayPlur: bzzMilli(1000n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(0n, bzzMilli(1000n)));
 
     assert.equal(verdict.spentPlur, bzzMilli(3000n));
     assert.equal(verdict.remainingPlur, -bzzMilli(600n));
@@ -278,10 +341,7 @@ describe('what this run has already cost, against the authorisation', () => {
   });
 
   it('keeps single-PLUR precision on balances past 2^53', () => {
-    const verdict = spendAgainstCeiling(LEDGER, {
-      uploaderPlur: bzzMilli(3000n) - 1n,
-      gatewayPlur: bzzMilli(1000n),
-    });
+    const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(3000n) - 1n, bzzMilli(1000n)));
 
     assert.equal(verdict.spentPlur, 1n);
   });
@@ -289,9 +349,7 @@ describe('what this run has already cost, against the authorisation', () => {
 
 describe('what the run prints about its own spend', () => {
   it('states spent, ceiling and remaining in BZZ to three decimals', () => {
-    const summary = spendSummary(
-      spendAgainstCeiling(LEDGER, { uploaderPlur: bzzMilli(2518n), gatewayPlur: bzzMilli(1000n) }),
-    );
+    const summary = spendSummary(spendAgainstCeiling(LEDGER, readings(bzzMilli(2518n), bzzMilli(1000n))));
 
     assert.match(summary, /0\.482/);
     assert.match(summary, /2\.400/);
@@ -301,7 +359,7 @@ describe('what the run prints about its own spend', () => {
   /** Truncated rather than rounded, so this reads the same as `spend_bzz` in the shell gate. */
   it('truncates the fourth decimal instead of rounding it up', () => {
     const summary = spendSummary(
-      spendAgainstCeiling(LEDGER, { uploaderPlur: bzzMilli(3000n) - 9_999_999_999_999n, gatewayPlur: bzzMilli(1000n) }),
+      spendAgainstCeiling(LEDGER, readings(bzzMilli(3000n) - 9_999_999_999_999n, bzzMilli(1000n))),
     );
 
     assert.match(summary, /0\.000 BZZ spent/);
@@ -313,7 +371,7 @@ describe('what the run prints about its own spend', () => {
    * either of which reads like there is room left.
    */
   it('prints a negative remainder with its sign', () => {
-    const summary = spendSummary(spendAgainstCeiling(LEDGER, { uploaderPlur: 0n, gatewayPlur: bzzMilli(1000n) }));
+    const summary = spendSummary(spendAgainstCeiling(LEDGER, readings(0n, bzzMilli(1000n))));
 
     assert.match(summary, /-0\.600 BZZ remaining/);
   });
@@ -324,9 +382,7 @@ describe('what the run prints about its own spend', () => {
    * note on it would describe a state the printing path cannot be in.
    */
   it('carries no deposit caveat, because a run that saw a deposit never reaches this line', () => {
-    const summary = spendSummary(
-      spendAgainstCeiling(LEDGER, { uploaderPlur: bzzMilli(2500n), gatewayPlur: bzzMilli(13000n) }),
-    );
+    const summary = spendSummary(spendAgainstCeiling(LEDGER, readings(bzzMilli(2500n), bzzMilli(13000n))));
 
     assert.doesNotMatch(summary, /deposit/i);
   });
@@ -336,7 +392,7 @@ describe('why a run is refused, or is not', () => {
   const PATH = '/repo/.spend-ledger.env';
 
   function refusalFor(uploaderPlur: bigint, gatewayPlur: bigint): string | null {
-    return spendRefusal(spendAgainstCeiling(LEDGER, { uploaderPlur, gatewayPlur }), PATH);
+    return spendRefusal(spendAgainstCeiling(LEDGER, readings(uploaderPlur, gatewayPlur)), PATH);
   }
 
   it('lets an ordinary run through', () => {
@@ -378,7 +434,7 @@ describe('why a run is refused, or is not', () => {
    */
   describe('after a deposit', () => {
     it('refuses even though the ceiling arithmetic is nowhere near it', () => {
-      const verdict = spendAgainstCeiling(LEDGER, { uploaderPlur: bzzMilli(2500n), gatewayPlur: bzzMilli(13000n) });
+      const verdict = spendAgainstCeiling(LEDGER, readings(bzzMilli(2500n), bzzMilli(13000n)));
 
       assert.equal(verdict.withinCeiling, true, 'the ceiling is not what should stop this run');
       assert.notEqual(spendRefusal(verdict, PATH), null);
@@ -443,6 +499,131 @@ describe('why a run is refused, or is not', () => {
     it('quotes no spend total, because the whole point is that the total is unknown', () => {
       assert.doesNotMatch(String(refusalFor(bzzMilli(2500n), bzzMilli(13000n))), /BZZ spent/);
     });
+  });
+});
+
+describe('every node that can spend, in both directions', () => {
+  const PATH = '/repo/.spend-ledger.env';
+
+  /** The five-node stage as it stands after the rung split: four publishers and a gateway. */
+  function splitStage(uploaderPlur: bigint) {
+    return [
+      { port: UPLOADER_PORT, who: '360p publisher', plur: uploaderPlur },
+      { port: '11071', who: '480p publisher', plur: bzzMilli(5000n) },
+      { port: '11073', who: '720p publisher', plur: bzzMilli(5000n) },
+      { port: '11075', who: '1080p publisher', plur: bzzMilli(5000n) },
+      { port: GATEWAY_PORT, who: 'gateway', plur: bzzMilli(1000n) },
+    ];
+  }
+
+  /**
+   * ⛔⛔⛔ The defect this whole change exists for, as a test that fails against the old gate.
+   *
+   * On 2026-08-31 the publisher became one Bee node per ABR rung. The ledger baselined two
+   * chequebooks, three new nodes joined holding 5.00 BZZ each, and the gate went on summing the two
+   * it knew about and passing. It did not report a smaller number, it reported a different quantity,
+   * with nothing anywhere saying so.
+   */
+  it('refuses a two-node ledger once the stage has five nodes', () => {
+    const verdict = spendAgainstCeiling(LEDGER, splitStage(bzzMilli(3000n)));
+
+    assert.deepEqual(verdict.unbaselined, [
+      '480p publisher on 11071',
+      '720p publisher on 11073',
+      '1080p publisher on 11075',
+    ]);
+    assert.equal(spendRefusal(verdict, PATH)?.includes('480p publisher on 11071'), true);
+  });
+
+  /** ⛔ And it quotes no total, for the reason the deposit refusal quotes none: a partial sum reads like a whole one. */
+  it('quotes no spend figure when it cannot cover every node', () => {
+    const refusal = spendRefusal(spendAgainstCeiling(LEDGER, splitStage(bzzMilli(2000n))), PATH);
+
+    assert.doesNotMatch(refusal ?? '', /BZZ spent/);
+    assert.match(refusal ?? '', /Unknown spend is not zero spend/);
+  });
+
+  /** A baselined node nothing read is the other direction, and a node that stopped answering is when to stop. */
+  it('refuses a ledger baselining a node the run did not read', () => {
+    const verdict = spendAgainstCeiling(LEDGER, [{ port: UPLOADER_PORT, who: 'uploader', plur: bzzMilli(3000n) }]);
+
+    assert.deepEqual(verdict.unread, [GATEWAY_PORT]);
+    assert.match(spendRefusal(verdict, PATH) ?? '', new RegExp(`port ${GATEWAY_PORT}`));
+  });
+
+  /**
+   * Order is load-bearing. A run with an unbaselined node AND a deposit has no measurable spend for
+   * either reason, and the deposit message would send the operator to rewrite start balances without
+   * telling them the node set changed too.
+   */
+  it('reports missing coverage ahead of a deposit', () => {
+    const verdict = spendAgainstCeiling(LEDGER, splitStage(bzzMilli(9000n)));
+
+    assert.deepEqual(verdict.rose, ['360p publisher']);
+    assert.match(spendRefusal(verdict, PATH) ?? '', /cannot be measured against the authorisation/);
+  });
+
+  /** And ahead of an overrun, which is the same argument: the total it would quote is not the total. */
+  it('reports missing coverage ahead of an overrun', () => {
+    const verdict = spendAgainstCeiling(LEDGER, splitStage(0n));
+
+    assert.equal(verdict.withinCeiling, false);
+    assert.match(spendRefusal(verdict, PATH) ?? '', /cannot be measured against the authorisation/);
+  });
+
+  /** Exact coverage passes, which is what makes the two refusals above falsifiable. */
+  it('passes when the ledger baselines exactly the nodes that were read', () => {
+    const ledger = parseSpendLedger(
+      ledgerText({
+        node_11071_start_plur: String(bzzMilli(5000n)),
+        node_11073_start_plur: String(bzzMilli(5000n)),
+        node_11075_start_plur: String(bzzMilli(5000n)),
+      }),
+    )!;
+    const verdict = spendAgainstCeiling(ledger, splitStage(bzzMilli(3000n)));
+
+    assert.deepEqual(verdict.unbaselined, []);
+    assert.deepEqual(verdict.unread, []);
+    assert.equal(spendRefusal(verdict, PATH), null);
+  });
+
+  /**
+   * ⛔ Two rungs can share one Bee node, and on an unsplit deployment the gateway can be that node.
+   * A caller that lists the publishers and then appends the gateway hands over the same port twice,
+   * and counting it twice would double that node's spend: an overrun this gate creates rather than
+   * catches.
+   */
+  it('counts a node once when the same port is handed over twice', () => {
+    const verdict = spendAgainstCeiling(LEDGER, [
+      { port: UPLOADER_PORT, who: '360p publisher', plur: bzzMilli(2900n) },
+      { port: UPLOADER_PORT, who: 'gateway', plur: bzzMilli(2900n) },
+      { port: GATEWAY_PORT, who: 'gateway', plur: bzzMilli(1000n) },
+    ]);
+
+    // One hundred thousandths of a BZZ, not two hundred.
+    assert.equal(verdict.spentPlur, bzzMilli(100n));
+    assert.deepEqual(verdict.unbaselined, []);
+  });
+
+  /** Every publisher's fall is counted, not just the coordinator's. This is the arithmetic the split needed. */
+  it('sums what every node spent', () => {
+    const ledger = parseSpendLedger(
+      ledgerText({
+        node_11071_start_plur: String(bzzMilli(5000n)),
+        node_11073_start_plur: String(bzzMilli(5000n)),
+        node_11075_start_plur: String(bzzMilli(5000n)),
+      }),
+    )!;
+    const verdict = spendAgainstCeiling(ledger, [
+      { port: UPLOADER_PORT, who: '360p publisher', plur: bzzMilli(2900n) },
+      { port: '11071', who: '480p publisher', plur: bzzMilli(4800n) },
+      { port: '11073', who: '720p publisher', plur: bzzMilli(4700n) },
+      { port: '11075', who: '1080p publisher', plur: bzzMilli(4400n) },
+      { port: GATEWAY_PORT, who: 'gateway', plur: bzzMilli(950n) },
+    ]);
+
+    // 100 + 200 + 300 + 600 + 50 thousandths of a BZZ.
+    assert.equal(verdict.spentPlur, bzzMilli(1250n));
   });
 });
 

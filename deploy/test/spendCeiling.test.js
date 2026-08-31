@@ -46,7 +46,7 @@ const BZZ = 10_000_000_000_000_000n;
  * ledger arithmetic and the refusals, and routing that through a fake HTTP server would test the
  * stub.
  */
-async function askGate({ ledger, balances, minutes = 60, ceilingEnv = undefined }) {
+async function askGate({ ledger, balances, minutes = 60, ceilingEnv = undefined, publishers = '' }) {
   const dir = mkdtempSync(join(tmpdir(), 'spend-ceiling-'));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -78,6 +78,9 @@ ${readerCases}
     *) printf '' ;;
   esac
 }
+# The gate asks the running uploader which nodes it publishes through, because a set of nodes
+# fixed here is exactly the blindness it exists to stop. Empty is the single-node stage.
+uploader_env() { [ "$1" = BEE_PUBLISHERS ] && printf '%s' '${publishers}'; }
 . "${GATE}"
 within_ceiling ${minutes}
 echo "VERDICT=$?"
@@ -97,14 +100,41 @@ echo "VERDICT=$?"
   return { allowed: verdict !== null && verdict[1] === '0', log: logText, stdout };
 }
 
-/** A ledger written when the owner gave the authorisation, with both nodes at their start balance. */
+/**
+ * A ledger written when the owner gave the authorisation, with both nodes at their start balance.
+ *
+ * Keyed by port, one line per node that can spend. The gate refuses a node it has no baseline for and
+ * a baseline no node answers to, so these two have to be exactly the ports the harness configures.
+ */
 function ledgerAt({ ceiling, uploaderStart, gatewayStart }) {
   return [
     '# written when the owner authorised this night, not edited by hand',
     'authorised_at=2026-08-14T00:00:00Z',
     `ceiling_plur=${ceiling}`,
-    `uploader_start_plur=${uploaderStart}`,
-    `gateway_start_plur=${gatewayStart}`,
+    `node_10075_start_plur=${uploaderStart}`,
+    `node_10077_start_plur=${gatewayStart}`,
+    '',
+  ].join('\n');
+}
+
+/** The four-node routing the uploader reports after the ladder split, as BEE_PUBLISHERS spells it. */
+const SPLIT_PUBLISHERS = [
+  '360p@http://127.0.0.1:10075<aa>',
+  '480p@http://127.0.0.1:11071<bb>',
+  '720p@http://127.0.0.1:11073<cc>',
+  '1080p@http://127.0.0.1:11075<dd>',
+].join(' ');
+
+/** An authorisation covering all five nodes of the split stage. */
+function splitLedger({ ceiling }) {
+  return [
+    'authorised_at=2026-08-31T10:00:00Z',
+    `ceiling_plur=${ceiling}`,
+    `node_10075_start_plur=${35n * BZZ}`,
+    `node_11071_start_plur=${5n * BZZ}`,
+    `node_11073_start_plur=${5n * BZZ}`,
+    `node_11075_start_plur=${5n * BZZ}`,
+    `node_10077_start_plur=${20n * BZZ}`,
     '',
   ].join('\n');
 }
@@ -204,7 +234,7 @@ describe('the spend ceiling', () => {
 
   it('refuses a ledger with no ceiling in it rather than treating a missing one as unlimited', async () => {
     const { allowed, log } = await askGate({
-      ledger: 'authorised_at=2026-08-14T00:00:00Z\nuploader_start_plur=1\ngateway_start_plur=1\n',
+      ledger: 'authorised_at=2026-08-14T00:00:00Z\nnode_10075_start_plur=1\nnode_10077_start_plur=1\n',
       balances: { 10075: 35n * BZZ, 10077: 20n * BZZ },
       minutes: 10,
     });
@@ -269,5 +299,99 @@ describe('the spend ceiling', () => {
 
     assert.match(log, /2\.400 BZZ authorised/);
     assert.match(log, /1\.422 BZZ projected/);
+  });
+
+  /**
+   * ⛔⛔⛔ The defect the ladder split created, as a test that fails against the old gate.
+   *
+   * The publisher became one Bee node per ABR rung on 2026-08-31. This gate summed the shared node
+   * and the gateway, so the 480p, 720p and 1080p chequebooks were invisible to it while holding 5.00
+   * BZZ each. It did not report a smaller number, it reported a different quantity, and it passed.
+   */
+  it('refuses a two-node ledger once the uploader publishes through four nodes', async () => {
+    const { allowed, log } = await askGate({
+      publishers: SPLIT_PUBLISHERS,
+      ledger: ledgerAt({ ceiling: (24n * BZZ) / 10n, uploaderStart: 35n * BZZ, gatewayStart: 20n * BZZ }),
+      balances: { 10075: 35n * BZZ, 11071: 5n * BZZ, 11073: 5n * BZZ, 11075: 5n * BZZ, 10077: 20n * BZZ },
+    });
+
+    assert.equal(allowed, false);
+    assert.match(log, /no start balance for/);
+    assert.match(log, /480p publisher on 11071/);
+    assert.match(log, /1080p publisher on 11075/);
+  });
+
+  /** The other direction: an authorisation written for a stage that is not the one about to run. */
+  it('refuses a ledger baselining a node nothing on this stage reads', async () => {
+    const { allowed, log } = await askGate({
+      ledger: [
+        'authorised_at=2026-08-31T10:00:00Z',
+        `ceiling_plur=${(24n * BZZ) / 10n}`,
+        `node_10075_start_plur=${35n * BZZ}`,
+        `node_10077_start_plur=${20n * BZZ}`,
+        `node_19999_start_plur=${5n * BZZ}`,
+        '',
+      ].join('\n'),
+      balances: { 10075: 35n * BZZ, 10077: 20n * BZZ },
+    });
+
+    assert.equal(allowed, false);
+    assert.match(log, /baselines port 19999/);
+    assert.match(log, /different set of nodes/);
+  });
+
+  /** And it passes on exact coverage, which is what makes the two refusals above falsifiable. */
+  it('allows a split stage whose ledger baselines every node', async () => {
+    const { allowed } = await askGate({
+      publishers: SPLIT_PUBLISHERS,
+      ledger: splitLedger({ ceiling: (24n * BZZ) / 10n }),
+      balances: { 10075: 35n * BZZ, 11071: 5n * BZZ, 11073: 5n * BZZ, 11075: 5n * BZZ, 10077: 20n * BZZ },
+    });
+
+    assert.equal(allowed, true);
+  });
+
+  /** Every publisher's fall counts, which is the arithmetic the split needed and did not have. */
+  it('sums what each of the four publishers spent, not just the shared one', async () => {
+    // 0.1 off each publisher and 0.05 off the gateway is 0.45 BZZ, past what is left of a 0.4 ceiling.
+    const tenth = BZZ / 10n;
+    const { allowed, log } = await askGate({
+      publishers: SPLIT_PUBLISHERS,
+      ledger: splitLedger({ ceiling: (4n * BZZ) / 10n }),
+      balances: {
+        10075: 35n * BZZ - tenth,
+        11071: 5n * BZZ - tenth,
+        11073: 5n * BZZ - tenth,
+        11075: 5n * BZZ - tenth,
+        10077: 20n * BZZ - BZZ / 20n,
+      },
+      minutes: 1,
+    });
+
+    assert.match(log, /0\.450 BZZ already spent/);
+    assert.equal(allowed, false);
+  });
+
+  /**
+   * ⛔ Two rungs can share one Bee node. Reading it once per rung would double-count its spend, which
+   * is an overrun the gate would create rather than catch.
+   */
+  it('reads a node once however many rungs route through it', async () => {
+    const tenth = BZZ / 10n;
+    const { log } = await askGate({
+      publishers: '360p@http://127.0.0.1:10075<aa> 480p@http://127.0.0.1:10075<aa>',
+      ledger: [
+        'authorised_at=2026-08-31T10:00:00Z',
+        `ceiling_plur=${(24n * BZZ) / 10n}`,
+        `node_10075_start_plur=${35n * BZZ}`,
+        `node_10077_start_plur=${20n * BZZ}`,
+        '',
+      ].join('\n'),
+      balances: { 10075: 35n * BZZ - tenth, 10077: 20n * BZZ },
+      minutes: 1,
+    });
+
+    // One tenth, not two. The same node behind two rungs is one chequebook.
+    assert.match(log, /0\.100 BZZ already spent/);
   });
 });

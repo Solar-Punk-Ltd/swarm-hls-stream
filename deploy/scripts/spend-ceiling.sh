@@ -46,6 +46,18 @@
 # measured from stale baselines is not a smaller number, it is an unknown one, and unknown spend is
 # refused here for the same reason an unreadable chequebook is.
 #
+# ## ⛔⛔⛔ EVERY NODE THAT CAN SPEND, NEVER A FIXED PAIR
+#
+# This read exactly two chequebooks until 2026-08-31, an `uploader` and a `gateway`, which was the
+# whole deployment when it was written. Splitting the publisher into one Bee node per ABR rung made it
+# four plus the gateway, and the three new ones were invisible here while holding 5.00 BZZ each. That
+# is worse than a refusal: the gate would pass a sitting while watching a minority of the money, and
+# most publishing spend now lands on the nodes it was not looking at.
+#
+# The publisher set therefore comes from the uploader's own `BEE_PUBLISHERS`, and coverage is checked
+# both ways. A node with no baseline is refused because unknown spend is not zero spend. A baseline
+# with no node is refused because a node that stopped answering is exactly when a run should stop.
+#
 # ## What the caller owes it
 #
 # These drivers run `set -u` without `set -e`, so a gate that quietly did nothing because its caller
@@ -57,6 +69,10 @@ declare -F say > /dev/null 2>&1 || {
 }
 declare -F available_plur > /dev/null 2>&1 || {
   echo "spend-ceiling.sh: source me after available_plur(), which is how it reads a chequebook" >&2
+  exit 1
+}
+declare -F uploader_env > /dev/null 2>&1 || {
+  echo "spend-ceiling.sh: source me after capacity-gate.sh, which is where uploader_env() lives. The set of nodes that can spend comes from the uploader's own BEE_PUBLISHERS, not from a constant here" >&2
   exit 1
 }
 : "${LOG:?spend-ceiling.sh needs LOG, the file its refusals are written to}"
@@ -78,24 +94,65 @@ ledger_field() {
   sed -n "s/^$1=//p" "${SPEND_LEDGER}" 2>/dev/null | head -1
 }
 
+# Every node that can spend, as "port name" lines: each publisher the uploader routes through, then
+# the gateway.
+#
+# ⛔ Deduplicated by port, because two rungs can share one Bee node and reading that node twice would
+# count its spend twice, which is an overrun the gate would create rather than catch.
+#
+# ⛔ Takes the publisher list as an argument rather than reading it, for the reason `resolve_batches`
+# in capacity-gate.sh does: this runs inside a command substitution, so anything it assigned would be
+# assigned in a subshell and lost.
+spend_nodes() {
+  local publishers="$1" entry url port seen='' rung
+  if [ -z "${publishers}" ]; then
+    printf '%s uploader\n' "${UPLOADER_BEE_PORT}"
+    seen="${UPLOADER_BEE_PORT}"
+  else
+    for entry in ${publishers}; do
+      rung="${entry%%@*}"
+      url="${entry#*@}"
+      # Angle brackets are the batch form; `#` is the older one, which an env file truncates at.
+      url="${url%%<*}"
+      url="${url%%#*}"
+      port="${url##*:}"
+      port="${port%%/*}"
+      case " ${seen} " in *" ${port} "*) continue ;; esac
+      seen="${seen}${seen:+ }${port}"
+      printf '%s %s\n' "${port}" "${rung} publisher"
+    done
+  fi
+  case " ${seen} " in
+    *" ${GATEWAY_BEE_PORT} "*) ;;
+    *) printf '%s gateway\n' "${GATEWAY_BEE_PORT}" ;;
+  esac
+}
+
+# The ports the ledger holds a baseline for, so a baseline nothing read can be named.
+ledger_ports() {
+  sed -n 's/^node_\([0-9]\{1,\}\)_start_plur=.*/\1/p' "${SPEND_LEDGER}" 2>/dev/null | sort -u
+}
+
 # What this night has cost so far, summed over every node that can spend.
 #
-# Prints two lines: the total in plur, then the names of any nodes now holding MORE than their start
-# balance. Prints nothing at all when any node's balance is unknown. ⛔ An unreadable chequebook is
-# not zero spend: a node that stopped answering is exactly when a run should stop.
+# Prints three lines: the total in plur, the names of any nodes now holding MORE than their start
+# balance, then the nodes with no baseline at all. Prints nothing when any node's balance is unknown.
+# ⛔ An unreadable chequebook is not zero spend: a node that stopped answering is exactly when a run
+# should stop.
 #
-# ⛔ The second line exists because this runs inside a command substitution, so a variable set here
+# ⛔ The extra lines exist because this runs inside a command substitution, so a variable set here
 # dies with the subshell and cannot reach the caller.
 spent_so_far_plur() {
-  local total=0 rose='' who port start now fell
-  for pair in "uploader:${UPLOADER_BEE_PORT}:uploader_start_plur" \
-    "gateway:${GATEWAY_BEE_PORT}:gateway_start_plur"; do
-    who="${pair%%:*}"
-    port="$(echo "${pair}" | cut -d: -f2)"
-    start="$(ledger_field "$(echo "${pair}" | cut -d: -f3)")"
+  local total=0 rose='' missing='' who port start now fell nodes
+  nodes="$(spend_nodes "$1")"
+  # A heredoc rather than a pipe: a piped `while` runs in its own subshell, so every total below would
+  # be discarded at the `done`.
+  while read -r port who; do
+    [ -z "${port}" ] && continue
+    start="$(ledger_field "node_${port}_start_plur")"
     if [ -z "${start}" ]; then
-      say "  REFUSING: the spend ledger has no start balance for the ${who}, so tonight's cost is unknown"
-      return 1
+      missing="${missing}${missing:+, }${who} on ${port}"
+      continue
     fi
     now="$(available_plur "${port}")"
     if [ -z "${now}" ]; then
@@ -111,13 +168,15 @@ spent_so_far_plur() {
       rose="${rose}${rose:+ }${who}"
     fi
     total=$((total + fell))
-  done
-  printf '%s\n%s' "${total}" "${rose}"
+  done << NODES
+${nodes}
+NODES
+  printf '%s\n%s\n%s' "${total}" "${rose}" "${missing}"
 }
 
 # Zero when this sitting fits inside what is left of the authorisation.
 within_ceiling() {
-  local minutes="$1" ceiling reading spent rose projected remaining
+  local minutes="$1" ceiling reading spent rose missing projected remaining publishers unread port nodes
   if [ ! -r "${SPEND_LEDGER}" ]; then
     say "  REFUSING: no spend ledger at ${SPEND_LEDGER}, so nothing here is authorised to spend"
     return 1
@@ -130,15 +189,43 @@ within_ceiling() {
       ;;
   esac
 
-  reading="$(spent_so_far_plur)" || return 1
+  # Assigned out here rather than inside spent_so_far_plur, which runs in a command substitution.
+  publishers="${BEE_PUBLISHERS:-$(uploader_env BEE_PUBLISHERS)}"
+
+  reading="$(spent_so_far_plur "${publishers}")" || return 1
   spent="$(printf '%s\n' "${reading}" | sed -n 1p)"
   rose="$(printf '%s\n' "${reading}" | sed -n 2p)"
+  missing="$(printf '%s\n' "${reading}" | sed -n 3p)"
+
+  # The other direction: a baseline the ledger holds for a node nothing on this stage reads.
+  #
+  # ⛔ Anchored at the start of a line rather than matched anywhere in the list, because a port that
+  # is a suffix of another one would otherwise report itself as covered.
+  nodes="$(spend_nodes "${publishers}")"
+  unread=''
+  for port in $(ledger_ports); do
+    printf '%s\n' "${nodes}" | grep -q "^${port} " || unread="${unread}${unread:+, }${port}"
+  done
+
+  # ⚠️ Measured on a single 720p rendition at 2500 kbps. A four-rung ladder publishes about 3.9x that
+  # many bytes, so this forecast is LOW on a split stage and the override in burn-rates.sh is how a
+  # caller corrects it. Deliberately not scaled by an invented multiplier here: the first four-rung
+  # sitting measures the real rate, and a number nobody measured does not belong in a money gate.
   projected=$(((UPLOADER_BURN_PLUR_PER_MIN + GATEWAY_BURN_PLUR_PER_MIN) * minutes))
   remaining=$((ceiling - spent))
 
   say "  spend ceiling: $(spend_bzz "${ceiling}") BZZ authorised, $(spend_bzz "${spent}") BZZ already spent, $(spend_bzz "${projected}") BZZ projected for ${minutes} min"
   # Printed after the summary on purpose, so the run log carries the number this refusal is rejecting
   # rather than leaving a reader to wonder what the gate saw.
+  # Coverage outranks both refusals below. A total summed over some of the nodes is not a smaller
+  # total, it is a different quantity, so quoting it would tell the operator to act on a number that
+  # does not mean what it says.
+  if [ -n "${missing}" ] || [ -n "${unread}" ]; then
+    [ -n "${missing}" ] && say "  REFUSING: the spend ledger has no start balance for ${missing}, and unknown spend is not zero spend"
+    [ -n "${unread}" ] && say "  REFUSING: the spend ledger baselines port ${unread}, which nothing on this stage reads, so it was written for a different set of nodes"
+    say "  Rewrite ${SPEND_LEDGER} covering every node that can spend: deploy/scripts/spend-ledger.sh --authorise=<BZZ>"
+    return 1
+  fi
   if [ -n "${rose}" ]; then
     say "  REFUSING: balance is above its start on ${rose}, so a deposit landed after this authorisation was written and the spend above is measured from baselines that predate it"
     say "  Rewrite ${SPEND_LEDGER} with fresh start balances and the total the owner has now authorised."

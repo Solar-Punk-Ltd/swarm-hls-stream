@@ -225,8 +225,11 @@ exit 0
     [
       'authorised_at=2026-08-14T00:00:00Z',
       `ceiling_plur=${ceilingPlur}`,
-      `uploader_start_plur=${plur}`,
-      `gateway_start_plur=${plur}`,
+      // One baseline per node, keyed by port, because the gate reads every node that can
+      // spend and refuses one it has no baseline for. These are the ports the driver derives
+      // from the default port slot.
+      `node_10075_start_plur=${plur}`,
+      `node_10077_start_plur=${plur}`,
       '',
     ].join('\n'),
   );
