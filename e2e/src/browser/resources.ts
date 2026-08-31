@@ -94,7 +94,7 @@ export interface ResourceCost {
 }
 
 export async function readResources(host: Host, cfg: E2EConfig): Promise<ResourceReading> {
-  const [stamp, cheque] = await Promise.all([discoverStamp(host, cfg), chequebookBalance(host, cfg)]);
+  const [stamp, cheque] = await Promise.all([discoverStamp(host, cfg), chequebookBalance(host, cfg.ports.beeUploaderApi)]);
 
   return {
     atMs: Date.now(),

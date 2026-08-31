@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 
 import { containerName, type E2EConfig } from '../config.js';
 
+import type { PublisherRoute } from './publishers.js';
 import { sleep, waitFor } from './wait.js';
 
 const execFileAsync = promisify(execFile);
@@ -61,6 +62,15 @@ export interface UploaderHealth {
   queuePressure: string;
   quarantinedRecoveryEntries: number;
   engines: string[];
+  /**
+   * Which Bee node and postage batch each rung publishes through.
+   *
+   * Optional on this type and **not** because it is optional in practice. An uploader built before
+   * the per-rung split answers without it, and a suite that treated the absence as "no publishers"
+   * would report every deployment as identical, which is the exact blindness the field was added to
+   * end. {@link nodesBehind} refuses an absent routing rather than reading it as an empty one.
+   */
+  publishers?: PublisherRoute[];
 }
 
 /**
@@ -305,9 +315,14 @@ export interface ChequebookBalance {
   availableBalance: string;
 }
 
-/** Read the bee-uploader node's SWAP chequebook balance (bandwidth funds, distinct from postage stamps). */
-export function chequebookBalance(host: Host, cfg: E2EConfig): Promise<ChequebookBalance> {
-  return host.localJson<ChequebookBalance>(cfg.ports.beeUploaderApi, '/chequebook/balance');
+/**
+ * Read one bee node's SWAP chequebook balance (bandwidth funds, distinct from postage stamps).
+ *
+ * Takes a port rather than the config because a split deployment has one of these per rung, and the
+ * ports come off the routing the uploader reports. See {@link nodesBehind}.
+ */
+export function chequebookBalance(host: Host, port: number): Promise<ChequebookBalance> {
+  return host.localJson<ChequebookBalance>(port, '/chequebook/balance');
 }
 
 /**
