@@ -148,6 +148,45 @@ export function browserArmCommand({ image, containerName, repoDir, script, env }
 const WROTE_ARTIFACT_RE = /^browser: wrote (.+)\.md$/gm;
 
 /**
+ * What the arm said about itself: its own narration, and the page console lines it forwards.
+ *
+ * ⛔⛔⛔ **All of this was being thrown away, and it cost a whole sitting.** `openViewer` installs a
+ * console handler that forwards every page error and every ladder, rung and restart line, precisely
+ * so a ladder failure is diagnosable without a second paid run. The arm prints them to its stdout,
+ * `runBrowserArm` read ONE line out of that stdout and dropped the rest, and the suite log therefore
+ * carried not a single word the client said. On 2026-08-31 V3 went red with the viewer stuck on a
+ * dead rung, and the one thing that would have said whether the client had decided to drop that rung
+ * had been captured, forwarded, and then binned by the harness.
+ *
+ * ⭐ The client narrates itself. Something has to listen.
+ */
+const ARM_NARRATION_RE = /^\s*(browser: |page (log|warning|error|info|debug): ).*$/gm;
+
+/** Enough to carry a fault and its lead-up, bounded so a chatty arm cannot bury the TAP output. */
+const ARM_NARRATION_LINES = 80;
+
+/**
+ * Print what the arm said, newest lines kept when there are more than fit.
+ *
+ * Printed even when the arm succeeded: a green run's narration is the baseline the next red one is
+ * read against, and it is the only place the client's own account of a broadcast is ever written.
+ */
+export function reportArmNarration(stdout: string, log: (line: string) => void = console.log): void {
+  const lines = stdout.match(ARM_NARRATION_RE)?.map((line) => line.trimEnd()) ?? [];
+  if (lines.length === 0) {
+    return;
+  }
+
+  const shown = lines.slice(-ARM_NARRATION_LINES);
+  const dropped = lines.length - shown.length;
+  // Named rather than silently truncated. A bound nobody is told about reads as "that was all of it".
+  log(`  arm said ${lines.length} line(s)${dropped > 0 ? `, oldest ${dropped} not shown` : ''}:`);
+  for (const line of shown) {
+    log(`  | ${line.trim()}`);
+  }
+}
+
+/**
  * The state file a run wrote, out of the run's own output.
  *
  * The stem names the report, the json and the request log, so the json is the report's path with its
@@ -830,6 +869,10 @@ export async function runBrowserArm(host: Host, cfg: E2EConfig, options: Browser
 
   const timeoutMs = options.watchMinutes * 60_000 + BROWSER_ARM_OVERHEAD_MS;
   const { stdout } = await host.run(command, timeoutMs);
+
+  // Before anything below can throw. An arm whose artifact line is missing is exactly the arm whose
+  // narration is worth reading, and printing it afterwards would print it never.
+  reportArmNarration(stdout);
 
   // Quoted like everything else. This path is read out of the container's own output, so it is data
   // from the far side of the run rather than something the suite chose.

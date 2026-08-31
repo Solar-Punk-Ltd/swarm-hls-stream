@@ -17,6 +17,7 @@ import {
   DEFAULT_BROWSER_CONTAINER,
   DEFAULT_BROWSER_IMAGE,
   parseBrowserArmState,
+  reportArmNarration,
   runBrowserArm,
 } from '../src/harness/browser.js';
 import { type Host } from '../src/harness/host.js';
@@ -696,4 +697,64 @@ describe('what a driver writing a fault verdict owes the reader', () => {
       .filter((file) => file.endsWith('.ts'))
       .filter((file) => /^\s+recovery: judgeRecovery\(/m.test(readFileSync(join(DRIVERS_DIR, file), 'utf8')));
   }
+});
+
+/**
+ * ⛔⛔⛔ **The arm's own account of the broadcast, which the harness used to bin.**
+ *
+ * `openViewer` forwards every page error and every ladder, rung and restart line from the client's
+ * console, so a ladder failure is diagnosable without a second paid run. `runBrowserArm` read one
+ * line out of that stdout and dropped the rest. On 2026-08-31 a sitting went red with a viewer stuck
+ * on a rung that had stopped, and the client's own statement of whether it had decided to drop that
+ * rung was captured, forwarded, and then discarded by the layer above.
+ */
+describe('what the browser arm said about itself', () => {
+  const ARM_STDOUT = [
+    'browser: watching http://127.0.0.1:10074/#/watch/video/abc/def',
+    '  page log: ladder master arrived with 4 rungs',
+    'browser: playback started',
+    '  page warning: Rung 480p has stopped being produced, dropping it from the ladder',
+    '  page error: something the player shouted about',
+    'some unrelated container chatter nobody asked for',
+    'browser: wrote /repo/docs/bench/browser-rung-outage-1.md',
+  ].join('\n');
+
+  function captured(stdout: string): string[] {
+    const lines: string[] = [];
+    reportArmNarration(stdout, (line) => lines.push(line));
+    return lines;
+  }
+
+  it('carries the line that says whether the client dropped the rung', () => {
+    assert.ok(
+      captured(ARM_STDOUT).some((line) => line.includes('has stopped being produced')),
+      'the one line a rung-outage run is read by was dropped',
+    );
+  });
+
+  it('keeps the arm narration and the page console, and leaves the container chatter out', () => {
+    const lines = captured(ARM_STDOUT).join('\n');
+
+    assert.ok(lines.includes('playback started'), 'the arm narrates its own progress');
+    assert.ok(lines.includes('page error: something the player shouted about'), 'a page error is the point');
+    assert.ok(!lines.includes('unrelated container chatter'), 'unmatched output should stay out');
+  });
+
+  /** Silence has to stay silent, or every arm gains a heading over nothing. */
+  it('says nothing at all when the arm said nothing', () => {
+    assert.deepEqual(captured('no matching output here\nnor here'), []);
+  });
+
+  /**
+   * ⛔ A bound nobody is told about reads as "that was all of it". The count is the whole point of
+   * the heading, so it is asserted rather than the lines alone.
+   */
+  it('names how many lines it dropped rather than truncating quietly', () => {
+    const many = Array.from({ length: 200 }, (_, n) => `  page log: rung line ${n}`).join('\n');
+    const lines = captured(many);
+
+    assert.match(lines[0], /arm said 200 line\(s\), oldest 120 not shown/);
+    assert.equal(lines.length, 81, 'the heading plus the bound');
+    assert.ok(lines.at(-1)?.includes('rung line 199'), 'the newest lines are the ones kept');
+  });
 });
