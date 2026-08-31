@@ -1176,6 +1176,7 @@ describe('FeedHealthTracker judging the rung a viewer is actually watching', () 
 describe('FeedHealthTracker telling a rung that stopped being produced from a broadcast that stopped', () => {
   const GROUP = 'entry-topic-the-viewer-linked';
   const RUNG_1080 = 'rung-1080p';
+  const RUNG_720 = 'rung-720p';
   const RUNG_480 = 'rung-480p';
   const RUNG_360 = 'rung-360p';
 
@@ -1433,16 +1434,16 @@ describe('FeedHealthTracker telling a rung that stopped being produced from a br
    * every surviving rung level again on the way out of every single death.
    */
   it('keeps what it has counted when the poller re-tracks the ladder it just dropped a rung from', () => {
-    const { tracker, clock, stopped } = makeLadder([RUNG_1080, RUNG_480, RUNG_360]);
+    const { tracker, clock, stopped } = makeLadder([RUNG_1080, RUNG_720, RUNG_480, RUNG_360]);
 
     tracker.recordUnservedSlot(RUNG_1080);
     tracker.recordUnservedSlot(RUNG_480);
-    ladderDelivers(tracker, clock, [RUNG_360], RUNG_DEATH_LAG_SEGMENTS);
+    ladderDelivers(tracker, clock, [RUNG_720, RUNG_360], RUNG_DEATH_LAG_SEGMENTS);
 
     assert.deepEqual(stopped, [RUNG_1080, RUNG_480], 'both dead rungs should have been announced');
 
     // The player drops 1080 and the poller re-tracks what is left, which is what really happens.
-    tracker.trackGroup(GROUP, [RUNG_480, RUNG_360]);
+    tracker.trackGroup(GROUP, [RUNG_720, RUNG_480, RUNG_360]);
     tracker.recordUnservedSlot(RUNG_480);
 
     assert.equal(
@@ -1450,6 +1451,75 @@ describe('FeedHealthTracker telling a rung that stopped being produced from a br
       true,
       'a rung already four segments behind was made level again by its neighbour being dropped',
     );
+  });
+
+  /**
+   * ⛔⛔⛔ **The fourth live regression, 2026-08-31, and the reference was a `Math.max`.**
+   *
+   * A viewer settled on 1080p and the client had already dropped 720p, 480p and 360p during the
+   * settle, before the run silenced anything. It then silenced the one rung left, the viewer had
+   * nowhere to go, and the result read exactly like the original defect it was meant to fix.
+   *
+   * ⭐⭐⭐ A maximum lets ONE rung condemn every other. It only takes one to run ahead, for any reason,
+   * and the rest of the ladder is instantly behind by however far it ran. `LadderFeedPoller` alone
+   * offers two ways in: a pass may consume up to 25 indices, and the rungs are separate feeds under
+   * no obligation to advance in step. A middle rung is a reference no single rung can move.
+   */
+  it('lets no single rung running ahead condemn the rest of a healthy ladder', () => {
+    const { tracker, clock, stopped } = makeLadder([RUNG_1080, RUNG_720, RUNG_480, RUNG_360]);
+
+    // Three rungs advance together, and one takes a whole catch-up pass in a single go.
+    ladderDelivers(tracker, clock, [RUNG_1080, RUNG_720, RUNG_480, RUNG_360], 3);
+    for (let index = 0; index < CATCH_UP_PER_PASS; index++) {
+      tracker.recordGatewayResponse(RUNG_1080);
+    }
+    // The moment that condemned them live: the other three are simply between segments.
+    for (const rung of [RUNG_720, RUNG_480, RUNG_360]) {
+      tracker.recordUnservedSlot(rung);
+    }
+
+    assert.deepEqual(stopped, [], 'one rung getting ahead was read as every other rung dying');
+  });
+
+  /**
+   * ⛔⛔⛔ **The fifth live regression, 2026-08-31, and it is why totals cannot be compared.**
+   *
+   * The rungs of a real ladder do not advance in lockstep. They are separate transcodes writing
+   * separate feeds at slightly different speeds, so any CUMULATIVE comparison drifts apart without
+   * bound for reasons that have nothing to do with failure. Live, the client dropped 480p, then
+   * 720p, then 1080p, then reported 360p as the only one left, each "4 segments behind the ladder"
+   * in turn, on a broadcast where nothing had been silenced.
+   *
+   * ⭐ Here 1080p is served once for every two segments its siblings get, for long enough that a
+   * cumulative rule would have condemned it many times over. What saves it is that its reading is
+   * reset every time it is served, so being slow costs it a bounded lag rather than a growing one.
+   */
+  it('never condemns a rung that is merely slower than the rest of the ladder', () => {
+    const { tracker, clock, stopped } = makeLadder([RUNG_1080, RUNG_720, RUNG_480, RUNG_360]);
+    const FAST = [RUNG_720, RUNG_480, RUNG_360];
+    const SEGMENTS = RUNG_DEATH_LAG_SEGMENTS * 20;
+
+    for (let segment = 0; segment < SEGMENTS; segment++) {
+      ladderDelivers(tracker, clock, FAST, 1);
+      // 1080p is between segments on the polls where it has nothing, exactly as the walker sees it.
+      if (segment % 2 === 1) {
+        ladderDelivers(tracker, clock, [RUNG_1080], 1);
+      } else {
+        tracker.recordUnservedSlot(RUNG_1080);
+      }
+    }
+
+    assert.deepEqual(stopped, [], 'a rung running at half the pace of its siblings was called dead');
+  });
+
+  /** And the ladder must still lose a rung that really stops, with the same reference. */
+  it('still judges a dead rung when the ladder around it is four strong', () => {
+    const { tracker, clock, stopped } = makeLadder([RUNG_1080, RUNG_720, RUNG_480, RUNG_360]);
+
+    tracker.recordUnservedSlot(RUNG_480);
+    ladderDelivers(tracker, clock, [RUNG_1080, RUNG_720, RUNG_360], RUNG_DEATH_LAG_SEGMENTS);
+
+    assert.deepEqual(stopped, [RUNG_480]);
   });
 
   /** A rung the ladder did not have a moment ago has missed nothing, whatever the others have counted. */

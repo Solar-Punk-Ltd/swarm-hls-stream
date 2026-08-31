@@ -746,15 +746,39 @@ describe('what the browser arm said about itself', () => {
   });
 
   /**
+   * ⛔⛔⛔ **The case a wasted run bought.** A viewer at the live edge asks for a slot the publisher
+   * has not written several times a second, and Chrome reports each as a 404 page error. Keeping the
+   * newest N lines therefore kept 78 copies of one message and dropped the single line the run
+   * existed to read. Repetition must never be able to crowd information out.
+   */
+  it('lets one line said four hundred times cost one line', () => {
+    const flood = [
+      '  page warning: Rung 480p has stopped being produced, dropping it from the ladder',
+      ...Array.from({ length: 400 }, () => '  page error: Failed to load resource: 404'),
+    ].join('\n');
+
+    const lines = captured(flood);
+
+    assert.ok(
+      lines.some((line) => line.includes('has stopped being produced')),
+      'a flood of one repeated message buried the one line that mattered',
+    );
+    assert.ok(
+      lines.some((line) => line.includes('(x400)')),
+      'and the flood is counted rather than hidden',
+    );
+    assert.equal(lines.length, 3, 'the heading and the two distinct things that were said');
+  });
+
+  /**
    * ⛔ A bound nobody is told about reads as "that was all of it". The count is the whole point of
    * the heading, so it is asserted rather than the lines alone.
    */
-  it('names how many lines it dropped rather than truncating quietly', () => {
+  it('names how many kinds it dropped rather than truncating quietly', () => {
     const many = Array.from({ length: 200 }, (_, n) => `  page log: rung line ${n}`).join('\n');
     const lines = captured(many);
 
-    assert.match(lines[0], /arm said 200 line\(s\), oldest 120 not shown/);
-    assert.equal(lines.length, 81, 'the heading plus the bound');
-    assert.ok(lines.at(-1)?.includes('rung line 199'), 'the newest lines are the ones kept');
+    assert.match(lines[0], /arm said 200 line\(s\), 200 distinct, 140 kind\(s\) not shown/);
+    assert.equal(lines.length, 61, 'the heading plus the bound');
   });
 });

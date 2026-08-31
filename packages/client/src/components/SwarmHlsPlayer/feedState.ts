@@ -141,6 +141,9 @@ export const UNSERVED_SLOT_STALL_MS = 8_000;
  */
 export const RUNG_DEATH_LAG_SEGMENTS = 4;
 
+/** Below this there is no middle rung to measure against, and nowhere for a viewer to go anyway. */
+const MIN_RUNGS_TO_COMPARE = 2;
+
 /**
  * How many consecutive unserved polls the walk keeps probing past a refusal for.
  *
@@ -421,6 +424,15 @@ export class FeedHealthTracker {
    */
   private readonly segmentsServed = new Map<string, number>();
 
+  /**
+   * What {@link ladderReference} read the last time each rung was served.
+   *
+   * ⛔ The reset that makes a slow rung safe. Without it the comparison is between two cumulative
+   * totals, and two feeds running at slightly different speeds drift apart for ever, so a healthy
+   * rung is condemned eventually no matter what the threshold is. See {@link ladderLagSegments}.
+   */
+  private readonly referenceAtLastServe = new Map<string, number>();
+
   /** Rungs already announced as stopped, so one death is one announcement. */
   private readonly stoppedRungsAnnounced = new Set<string>();
 
@@ -452,8 +464,13 @@ export class FeedHealthTracker {
     // restarted whenever the poller re-tracked would put every rung level again, and dropping one
     // dead rung re-tracks the group, so a second dead rung would have its evidence erased by the
     // first one being dealt with.
-    const carried = new Map(
-      (this.rungsOfGroup.get(groupId) ?? []).map((rung) => [rung, this.segmentsServed.get(rung) ?? 0]),
+    const known = this.rungsOfGroup.get(groupId) ?? [];
+    const carried = new Map(known.map((rung) => [rung, this.segmentsServed.get(rung) ?? 0]));
+    const carriedReference = new Map(
+      known.flatMap((rung) => {
+        const at = this.referenceAtLastServe.get(rung);
+        return at === undefined ? [] : [[rung, at] as const];
+      }),
     );
     this.untrackGroup(groupId);
     const rungs = [...new Set(rungTopicIds)].filter((rung) => rung !== groupId);
@@ -469,6 +486,12 @@ export class FeedHealthTracker {
     for (const rung of rungs) {
       this.groupOfRung.set(rung, groupId);
       this.segmentsServed.set(rung, carried.get(rung) ?? furthestAhead);
+    }
+    // After every count is in place, so a rung joining now reads as level with the ladder it joined
+    // rather than owing it the whole broadcast.
+    const joiningAt = this.ladderReference(rungs);
+    for (const rung of rungs) {
+      this.referenceAtLastServe.set(rung, carriedReference.get(rung) ?? joiningAt);
     }
     if (watched !== undefined && rungs.includes(watched)) {
       this.watchedRungOfGroup.set(groupId, watched);
@@ -487,6 +510,7 @@ export class FeedHealthTracker {
       this.groupOfRung.delete(rung);
       this.stoppedRungsAnnounced.delete(rung);
       this.segmentsServed.delete(rung);
+      this.referenceAtLastServe.delete(rung);
     }
     this.rungsOfGroup.delete(groupId);
     this.watchedRungOfGroup.delete(groupId);
@@ -522,10 +546,51 @@ export class FeedHealthTracker {
   }
 
   /**
-   * How many segments the best-served rung of this ladder has had that this one has not.
+   * How far this ladder has got, as most of it agrees rather than as its fastest rung claims.
    *
-   * Zero for a ladder of one, which has nothing to be compared against, and zero for anything that
-   * is not a rung.
+   * ⛔⛔⛔ **This was `Math.max` and it amputated three healthy rungs before a fault was even
+   * injected.** Measured live 2026-08-31: a viewer settled on 1080p, and the client had already
+   * dropped 720p, 480p and 360p during the settle, leaving one rung. The run then silenced that one,
+   * the viewer had nowhere to go, and the failure read exactly like the original defect.
+   *
+   * ⭐⭐⭐ **A maximum lets any single rung condemn every other one.** It only takes one rung to run
+   * ahead, for any reason at all, and the whole rest of the ladder is instantly "behind" by the
+   * amount it ran ahead by. `LadderFeedPoller` alone gives two ways in: a pass may consume up to 25
+   * indices, and the rungs are separate feeds that need not advance in step. The rule was never
+   * measuring the ladder, it was measuring the distance to whichever rung happened to lead.
+   *
+   * So the reference is a middle rung, which no single rung can move. This is the same
+   * agreement-over-worst-case rule {@link foldLadderHealth} already uses, for the same reason.
+   *
+   * ⚠️ **The upper middle, not the lower**, so that two rungs dying together are both still judged
+   * against the two that live. Its limit is honest and worth knowing: on a four rung ladder, if
+   * THREE rungs die at once the middle sits among the dead and none of them is called dead. That is
+   * a broadcast falling apart rather than a rung failing, and the overlay covers it.
+   */
+  private ladderReference(rungs: readonly string[]): number {
+    const progress = rungs.map((rung) => this.segmentsServed.get(rung) ?? 0).sort((a, b) => a - b);
+    return progress[Math.floor(progress.length / 2)] ?? 0;
+  }
+
+  /**
+   * How far the ladder has moved on **since this rung was last served**.
+   *
+   * ⛔⛔⛔ **Comparing cumulative totals was wrong, and a fifth live run is what proved it.** The
+   * rungs of a real ladder do not advance in lockstep. They are separate transcodes writing separate
+   * feeds, they run at slightly different speeds, and a cumulative count therefore drifts apart
+   * WITHOUT BOUND for reasons that have nothing to do with any of them failing. Measured 2026-08-31:
+   * the client dropped 480p, then 720p, then 1080p, then reported 360p as the last one left, each of
+   * them "4 segments behind the ladder" in turn, on a broadcast where nothing had been silenced. A
+   * few percent of rate difference over a 45 second settle is four segments.
+   *
+   * ⭐⭐⭐ **So the question is not how far apart two totals are, it is how much the ladder delivered
+   * while this rung delivered nothing.** Every time a rung is served its reading is reset, so a rung
+   * that is merely slow can never accumulate: its lag is bounded by how much the ladder moves between
+   * two of its own segments, whatever their ratio. A rung that has stopped is never reset, so its lag
+   * grows for as long as the ladder runs. Drift cannot reach it, and neither can any of the four
+   * earlier faults, because nothing accumulates while nothing is being delivered.
+   *
+   * Zero for a ladder with no middle rung to measure against, and for anything that is not a rung.
    */
   private ladderLagSegments(rungTopicId: string): number {
     const group = this.groupOfRung.get(rungTopicId);
@@ -533,9 +598,11 @@ export class FeedHealthTracker {
       return 0;
     }
     const rungs = this.rungsOfGroup.get(group) ?? [];
-    const own = this.segmentsServed.get(rungTopicId) ?? 0;
-    const furthestAhead = rungs.reduce((most, rung) => Math.max(most, this.segmentsServed.get(rung) ?? 0), own);
-    return furthestAhead - own;
+    if (rungs.length < MIN_RUNGS_TO_COMPARE) {
+      return 0;
+    }
+    const sinceOwnLastServe = this.referenceAtLastServe.get(rungTopicId) ?? this.ladderReference(rungs);
+    return Math.max(0, this.ladderReference(rungs) - sinceOwnLastServe);
   }
 
   /**
@@ -624,6 +691,18 @@ export class FeedHealthTracker {
    */
   stallsRecorded(topicId: string): number {
     return this.topics.get(topicId)?.stallsAtMs.length ?? 0;
+  }
+
+  /**
+   * How many segments the ladder has had that this rung has not, as the rule sees it.
+   *
+   * ⛔ Read by the player so the console line that announces a dead rung carries the arithmetic that
+   * condemned it. A warning that says only "this rung stopped" cannot be checked against a broadcast
+   * afterwards, and on 2026-08-31 that cost two sittings: the client dropped three healthy rungs and
+   * said so, and there was no way to tell from what it said whether the count or the rule was wrong.
+   */
+  ladderLagOf(rungTopicId: string): number {
+    return this.ladderLagSegments(rungTopicId);
   }
 
   /**
@@ -778,8 +857,12 @@ export class FeedHealthTracker {
   recordGatewayResponse(topicId: string): void {
     // The one place a rung's count moves, and it moves by exactly one segment. Rungs of a tracked
     // ladder only: a single-rendition topic has no sibling to be compared with.
-    if (this.groupOfRung.has(topicId)) {
+    const group = this.groupOfRung.get(topicId);
+    if (group !== undefined) {
       this.segmentsServed.set(topicId, (this.segmentsServed.get(topicId) ?? 0) + 1);
+      // After its own count has moved, so a rung that has just been served reads as level with the
+      // ladder rather than one segment behind it.
+      this.referenceAtLastServe.set(topicId, this.ladderReference(this.rungsOfGroup.get(group) ?? []));
       // A rung being served again is what re-arms it, so a rung that dies twice is announced twice.
       // Not the judgement going false, which would re-announce a rung every time the ladder around
       // it happened to catch up with the gap.
@@ -838,6 +921,7 @@ export class FeedHealthTracker {
       this.topics.clear();
       this.stoppedRungsAnnounced.clear();
       this.segmentsServed.clear();
+      this.referenceAtLastServe.clear();
       this.publishAll(forgotten);
       return;
     }

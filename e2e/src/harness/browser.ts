@@ -162,27 +162,46 @@ const WROTE_ARTIFACT_RE = /^browser: wrote (.+)\.md$/gm;
  */
 const ARM_NARRATION_RE = /^\s*(browser: |page (log|warning|error|info|debug): ).*$/gm;
 
-/** Enough to carry a fault and its lead-up, bounded so a chatty arm cannot bury the TAP output. */
-const ARM_NARRATION_LINES = 80;
+/** Distinct things the arm said, bounded so a chatty arm cannot bury the TAP output. */
+const ARM_NARRATION_KINDS = 60;
 
 /**
- * Print what the arm said, newest lines kept when there are more than fit.
+ * Print what the arm said, one line per distinct thing said, with how many times it said it.
+ *
+ * ⛔⛔⛔ **Keeping the newest N lines is the wrong bound, and it wasted a run proving it.** The first
+ * version kept the last 80 of 480, and a viewer at the live edge asks for a slot the publisher has
+ * not written yet several times a second, each of which Chrome reports as `Failed to load resource:
+ * 404`. So 400 lines were dropped and the 80 kept were 78 copies of that one message. The single
+ * line the run existed to read, printed once at the moment the client judged a rung dead, was in the
+ * dropped part.
+ *
+ * ⭐ **Repetition is not information, and it must not be able to crowd information out.** Collapsing
+ * to distinct lines in first-appearance order makes a flood cost one line however long it runs, so
+ * the bound now falls on how many DIFFERENT things happened, which is a number that stays small.
  *
  * Printed even when the arm succeeded: a green run's narration is the baseline the next red one is
  * read against, and it is the only place the client's own account of a broadcast is ever written.
  */
 export function reportArmNarration(stdout: string, log: (line: string) => void = console.log): void {
-  const lines = stdout.match(ARM_NARRATION_RE)?.map((line) => line.trimEnd()) ?? [];
+  const lines = stdout.match(ARM_NARRATION_RE)?.map((line) => line.trim()) ?? [];
   if (lines.length === 0) {
     return;
   }
 
-  const shown = lines.slice(-ARM_NARRATION_LINES);
-  const dropped = lines.length - shown.length;
+  const timesSaid = new Map<string, number>();
+  for (const line of lines) {
+    timesSaid.set(line, (timesSaid.get(line) ?? 0) + 1);
+  }
+
+  const shown = [...timesSaid].slice(0, ARM_NARRATION_KINDS);
+  const kindsDropped = timesSaid.size - shown.length;
   // Named rather than silently truncated. A bound nobody is told about reads as "that was all of it".
-  log(`  arm said ${lines.length} line(s)${dropped > 0 ? `, oldest ${dropped} not shown` : ''}:`);
-  for (const line of shown) {
-    log(`  | ${line.trim()}`);
+  log(
+    `  arm said ${lines.length} line(s), ${timesSaid.size} distinct` +
+      `${kindsDropped > 0 ? `, ${kindsDropped} kind(s) not shown` : ''}:`,
+  );
+  for (const [line, times] of shown) {
+    log(`  | ${line}${times > 1 ? `  (x${times})` : ''}`);
   }
 }
 

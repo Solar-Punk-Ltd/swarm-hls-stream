@@ -97,9 +97,14 @@ export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () 
     }
 
     const level = hls.levels[index];
+    // ⛔ The arithmetic that condemned it, in the line that announces it. A warning saying only that
+    // a rung stopped cannot be checked against the broadcast afterwards, and on 2026-08-31 that cost
+    // two sittings: the client dropped three healthy rungs, said so four times, and nothing it said
+    // could distinguish a wrong count from a wrong rule.
+    const lag = `${feedHealth.ladderLagOf(rungTopicId)} segments behind the ladder`;
     if (hls.levels.length < MIN_LEVELS_TO_DROP_ONE) {
       console.warn(
-        `Rung ${level.height}p has stopped being produced and is the only one left, so playback stays on it`,
+        `Rung ${level.height}p has stopped being produced (${lag}) and is the only one left, so playback stays on it`,
       );
       return;
     }
@@ -110,7 +115,7 @@ export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () 
     // viewer whose own rung was just taken away needs somewhere to go.
     const tookThePlayingLevel = hls.loadLevel === index;
 
-    console.warn(`Rung ${level.height}p has stopped being produced, dropping it from the ladder`);
+    console.warn(`Rung ${level.height}p has stopped being produced (${lag}), dropping it from the ladder`);
     hls.removeLevel(index);
 
     // hls.js clears the current level when the removed one was playing, and nothing else picks a
