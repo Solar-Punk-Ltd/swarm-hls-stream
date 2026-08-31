@@ -872,6 +872,8 @@ function beeWithHeldFirstPublish(held: Promise<void>, entered: () => void, socWr
 interface UploaderFixtureOptions {
   restoreState?: unknown;
   metrics?: ServiceMetrics;
+  /** Present makes this one rung of a ladder, absent makes it a single-rendition stream. */
+  ladder?: { group: string; rung: { name: string; width: number; height: number; configuredKbps: number } };
 }
 
 function uploaderWith(bee: Bee, options: UploaderFixtureOptions = {}): StreamUploader {
@@ -887,6 +889,7 @@ function uploaderWith(bee: Bee, options: UploaderFixtureOptions = {}): StreamUpl
     mediatype: MEDIA_TYPE_VIDEO,
     restoreState: options.restoreState as never,
     metrics: options.metrics,
+    ladder: options.ladder,
   });
 }
 
@@ -984,6 +987,46 @@ describe('segments the live window outran before anything published them', () =>
         `no line reported the ${lost} segments this stream published nothing for`,
       );
     });
+  });
+
+  /**
+   * ⛔ The reading the per-rung split turns on. Four rungs at 0.5s segments need 2.00 uploads a second
+   * each and 8.00 between them, and one shared Bee node was measured delivering 5.61 in total. The
+   * only answer available before this was a grep of the service's log, which is not where the decision
+   * is made. Asserted end to end from a published segment, because the counter is only worth having if
+   * the rung actually reaches it.
+   */
+  it('counts an upload against its rung as well as against the total', async () => {
+    const metrics = new ServiceMetrics();
+    const uploader = uploaderWith(makeBee({}), {
+      metrics,
+      ladder: { group: 'group-1', rung: { name: '720p', width: 1280, height: 720, configuredKbps: 2800 } },
+    });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    const counters = metrics.getCounters();
+    assert.equal(counters.segmentsUploadedTotal, 1);
+    assert.deepEqual(counters.segmentsUploadedByRung, { '720p': 1 });
+  });
+
+  /**
+   * ⛔ Under no rung, rather than under a placeholder one. A segment from a single-rendition stream
+   * belongs to no rung, and inventing one would make the breakdown's sum look complete while naming a
+   * rung the deployment does not have. So the two counters are not required to agree, and a check
+   * that insisted they did would be wrong.
+   */
+  it('counts a single-rendition upload in the total and under no rung', async () => {
+    const metrics = new ServiceMetrics();
+    const uploader = uploaderWith(makeBee({}), { metrics });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    const counters = metrics.getCounters();
+    assert.equal(counters.segmentsUploadedTotal, 1);
+    assert.deepEqual(counters.segmentsUploadedByRung, {});
   });
 
   it('counts nothing while every segment still reaches a manifest', async () => {

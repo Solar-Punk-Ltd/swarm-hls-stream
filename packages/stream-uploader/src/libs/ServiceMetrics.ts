@@ -25,13 +25,34 @@ export class ServiceMetrics {
   private segmentsNeverNamed = 0;
   private authRejections = 0;
   private takeoversRefused = 0;
+  /**
+   * Uploads per ABR rung, which the totals above cannot give.
+   *
+   * ⛔ Four rungs at 0.5s segments need 2.00 uploads a second each, and one shared Bee node was
+   * measured delivering 5.61 across all four rather than 8.00. Whether one node per rung fixes that
+   * is a per-rung question, and until 2026-08-31 the only reading was a grep of this service's log.
+   *
+   * Unbounded in principle, bounded in practice by ABR_LADDER, which the engine and this service both
+   * refuse to start on if it is malformed. A rung only appears once it has uploaded something.
+   */
+  private readonly segmentsUploadedByRung = new Map<string, number>();
   private lastSegmentAt: number | null = null;
   private lastAuthRejectionAt: number | null = null;
 
-  /** A segment whose payload reached Swarm. */
-  public recordSegmentUploaded(at: number): void {
+  /**
+   * A segment whose payload reached Swarm.
+   *
+   * `rung` is the ABR rung it belongs to, absent on a single-rendition stream. Absent is not folded
+   * into a placeholder rung: a segment that belongs to no rung is counted in the total and nowhere in
+   * the breakdown, because inventing a rung for it would make the breakdown's sum look complete while
+   * naming a rung the deployment does not have.
+   */
+  public recordSegmentUploaded(at: number, rung?: string): void {
     this.segmentsUploaded += 1;
     this.lastSegmentAt = at;
+    if (rung !== undefined) {
+      this.segmentsUploadedByRung.set(rung, (this.segmentsUploadedByRung.get(rung) ?? 0) + 1);
+    }
   }
 
   /** A segment that reached the uploader and whose upload retry window was spent. The data is gone. */
@@ -170,6 +191,7 @@ export class ServiceMetrics {
   public getCounters(): MetricsCounters {
     return {
       segmentsUploadedTotal: this.segmentsUploaded,
+      segmentsUploadedByRung: Object.fromEntries(this.segmentsUploadedByRung),
       segmentsDroppedTotal: this.segmentsDropped,
       segmentsLostTotal: this.segmentsLost,
       segmentsSkippedTotal: this.segmentsSkipped,
@@ -189,6 +211,14 @@ export class ServiceMetrics {
 
 export interface MetricsCounters {
   segmentsUploadedTotal: number;
+  /**
+   * Uploads per ABR rung. Empty on a single-rendition deployment, where a segment belongs to no rung.
+   *
+   * ⚠️ These do **not** have to sum to `segmentsUploadedTotal`, and a check that insists they do is
+   * wrong: a single-rendition stream and a ladder stream can both be live at once, and the first
+   * contributes to the total alone.
+   */
+  segmentsUploadedByRung: Readonly<Record<string, number>>;
   segmentsDroppedTotal: number;
   segmentsLostTotal: number;
   /** Segments the CON-20 handover floor discarded on purpose. Correct behaviour, not a failure. */

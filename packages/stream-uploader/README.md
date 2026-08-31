@@ -151,6 +151,7 @@ killed it answers `ok` with `activeStreams: 0`.
 | Metric                                      | Type    | Meaning                                                     |
 | ------------------------------------------- | ------- | ----------------------------------------------------------- |
 | `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                        |
+| `swarm_hls_rung_segments_uploaded_total`    | counter | The same, by ABR rung. Empty with no ladder, see below      |
 | `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone     |
 | `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin      |
 | `swarm_hls_segments_skipped_total`          | counter | Segments discarded on purpose at a puller handover          |
@@ -167,6 +168,14 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_active_streams`                  | gauge   | Streams registered and expected to be producing             |
 | `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream              |
 | `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream              |
+
+**The per-rung breakdown is empty on a single-rendition deployment, and that is not zero uploads.** A
+stream with no ABR ladder has no rung to attribute a segment to, so it is counted in
+`swarm_hls_segments_uploaded_total` alone. The two therefore do not have to sum, and both can be live
+at once: a ladder broadcast and a single-rendition one running together contribute to the total, and
+only the first to the breakdown. Difference two scrapes to get a rate. Four rungs at 0.5s segments
+need 2.00 uploads a second each and 8.00 between them, which is the number one shared Bee node could
+not reach.
 
 **Who may take a stream id that is already live.** An announce for an id a live session holds is
 refused when both publisher addresses are known and different and something is still publishing into

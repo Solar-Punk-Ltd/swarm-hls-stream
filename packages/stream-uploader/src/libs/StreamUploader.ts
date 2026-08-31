@@ -241,7 +241,7 @@ export class StreamUploader {
 
     this.logger.log(segmentUploaded(this.streamId, segmentIndex, ref));
 
-    this.metrics?.recordSegmentUploaded(Date.now());
+    this.metrics?.recordSegmentUploaded(Date.now(), this.ladder?.rung.name);
     this.uploadLiveManifest();
     await this.refreshBandwidthIfDrifted();
     this.persistState();

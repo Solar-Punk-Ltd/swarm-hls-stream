@@ -87,16 +87,29 @@ describe('metrics exposition format', () => {
     activeStreams: 2,
     queueDepth: 7,
     queueBacklogSeconds: 14,
+    segmentsUploadedByRung: { '1080p': 3, '360p': 4, '480p': 3, '720p': 2 },
   };
+
+  /** 17 unlabelled metrics, plus the per-rung family, whose four series are four sample lines. */
+  const UNLABELLED = 17;
+  const FAMILIES = UNLABELLED + 1;
+  const RUNGS_IN_SNAPSHOT = 4;
 
   it('renders every metric with a help line, a type line and a value', () => {
     const body = renderPrometheusMetrics(SNAPSHOT);
 
     const samples = parseExposition(body);
-    assert.equal(samples.size, 17, `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`);
+    assert.equal(
+      samples.size,
+      UNLABELLED + RUNGS_IN_SNAPSHOT,
+      `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`,
+    );
     for (const name of samples.keys()) {
-      assert.ok(body.includes(`# HELP ${name} `), `${name} has no HELP line`);
-      assert.ok(body.includes(`# TYPE ${name} `), `${name} has no TYPE line`);
+      // A labelled series carries its labels in the sample line and shares one HELP and TYPE with the
+      // rest of its family, so the documentation is looked up under the family name.
+      const family = name.replace(/\{.*\}$/, '');
+      assert.ok(body.includes(`# HELP ${family} `), `${name} has no HELP line`);
+      assert.ok(body.includes(`# TYPE ${family} `), `${name} has no TYPE line`);
     }
     assert.ok(body.endsWith('\n'), 'the exposition format requires a trailing newline');
   });
@@ -113,7 +126,7 @@ describe('metrics exposition format', () => {
   it('gives every metric help text that actually describes it', () => {
     const help = parseHelp(renderPrometheusMetrics(SNAPSHOT));
 
-    assert.equal(help.size, 17, 'every metric must carry a HELP line');
+    assert.equal(help.size, FAMILIES, 'every metric must carry a HELP line');
     for (const [name, text] of help) {
       assert.ok(text.trim().length > 0, `${name} has a HELP line with no text in it`);
     }
@@ -134,6 +147,73 @@ describe('metrics exposition format', () => {
     const samples = parseExposition(renderPrometheusMetrics({ ...SNAPSHOT, lastSegmentAt: null }));
 
     assert.equal(samples.get('swarm_hls_last_segment_timestamp_seconds'), 0);
+  });
+
+  /**
+   * ⛔ The reading this phase turns on. Four rungs at 0.5s segments need 2.00 uploads a second each
+   * and 8.00 between them, and one shared Bee node was measured delivering 5.61 in total. Whether one
+   * node per rung fixes it is a per-rung question, and until this existed the only answer available
+   * was a grep of the service's log.
+   */
+  it('renders one sample per rung, under a single help and type line', () => {
+    const body = renderPrometheusMetrics(SNAPSHOT);
+
+    assert.equal(
+      (body.match(/^# TYPE swarm_hls_rung_segments_uploaded_total counter$/gm) ?? []).length,
+      1,
+      'a labelled family carries one TYPE line, not one per series',
+    );
+    const samples = parseExposition(body);
+    assert.equal(samples.get('swarm_hls_rung_segments_uploaded_total{rung="1080p"}'), 3);
+    assert.equal(samples.get('swarm_hls_rung_segments_uploaded_total{rung="720p"}'), 2);
+    assert.equal(samples.get('swarm_hls_rung_segments_uploaded_total{rung="480p"}'), 3);
+    assert.equal(samples.get('swarm_hls_rung_segments_uploaded_total{rung="360p"}'), 4);
+  });
+
+  /** Two scrapes of an unchanged service must be byte-identical, or a diff shows noise as movement. */
+  it('orders the rung samples, so an unchanged service scrapes identically twice', () => {
+    const rungLines = (snapshot: Parameters<typeof renderPrometheusMetrics>[0]) =>
+      renderPrometheusMetrics(snapshot)
+        .split('\n')
+        .filter((line) => line.startsWith('swarm_hls_rung_segments_uploaded_total{'));
+
+    const written = rungLines(SNAPSHOT);
+    const reordered = rungLines({
+      ...SNAPSHOT,
+      segmentsUploadedByRung: { '720p': 2, '1080p': 3, '360p': 4, '480p': 3 },
+    });
+
+    assert.deepEqual(written, reordered);
+    assert.equal(written.length, RUNGS_IN_SNAPSHOT);
+  });
+
+  /**
+   * ⛔ Present with no samples rather than absent. An operator whose dashboard panel disappears reads
+   * a broken exporter, and one whose panel is empty reads a deployment with no ladder, which is what
+   * this is. The HELP text carries the same warning.
+   */
+  it('keeps the family present with no samples on a single-rendition deployment', () => {
+    const body = renderPrometheusMetrics({ ...SNAPSHOT, segmentsUploadedByRung: {} });
+
+    assert.match(body, /^# TYPE swarm_hls_rung_segments_uploaded_total counter$/m);
+    assert.equal(
+      body.split('\n').filter((line) => line.startsWith('swarm_hls_rung_segments_uploaded_total{')).length,
+      0,
+    );
+  });
+
+  /**
+   * A rung name comes from configuration. `AbrLadder` refuses one containing a quote today, so nothing
+   * that reaches here needs escaping, but an unescaped value would corrupt every sample after it in
+   * the response rather than only its own line.
+   */
+  it('escapes a label value that would otherwise break out of its quotes', () => {
+    const body = renderPrometheusMetrics({
+      ...SNAPSHOT,
+      segmentsUploadedByRung: { 'we"ird\\one': 1 },
+    });
+
+    assert.match(body, /\{rung="we\\"ird\\\\one"\} 1$/m);
   });
 });
 
