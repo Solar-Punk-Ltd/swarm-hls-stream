@@ -127,6 +127,15 @@ export interface E2EConfig {
    * this cannot name the rungs, so a suite asserting on specific names has to say so.
    */
   abrEnabled: boolean;
+  /**
+   * BEE_PUBLISHERS exactly as the deployment's env file has it, unparsed.
+   *
+   * Read rather than interpreted here: whether it is well formed is the uploader's to decide, and it
+   * decides by refusing to start. What the suite needs is the shape the deployment *declares*, so it
+   * can be held against the shape the uploader reports on `/health`. Empty is an unsplit deployment,
+   * one Bee node carrying every rung. See `src/publisherRouting.ts`.
+   */
+  declaredPublishers: string;
   abrRungs: readonly string[];
   /**
    * Every resolution `ABR_LADDER` declares, as the client renders them: `1920×1080`, U+00D7.
@@ -353,6 +362,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     ),
     publishKeySecret: requireUsableSecret(env(resolved, 'PUBLISH_KEY_SECRET', '')),
     abrEnabled: isEnabled(env(resolved, 'ABR_ENABLED', 'false')),
+    declaredPublishers: env(resolved, 'BEE_PUBLISHERS', ''),
     abrRungs: ladderRungNames(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
     abrLadderResolutions: ladderResolutions(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
     abrLadder: ladderRungs(env(resolved, 'ABR_LADDER', DEFAULT_LADDER_SPEC)),
