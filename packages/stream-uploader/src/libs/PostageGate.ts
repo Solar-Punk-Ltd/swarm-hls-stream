@@ -1,3 +1,4 @@
+import { shortBatchId } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
 
 /**
@@ -71,7 +72,7 @@ export class PostageGate {
       }
 
       this.logger.info(
-        `[PostageGate] ${publisher.rung} ${publisher.url} batch ${short(publisher.stamp)}: ` +
+        `[PostageGate] ${publisher.rung} ${publisher.url} batch ${shortBatchId(publisher.stamp)}: ` +
           `${percent(batch.utilization)} used, ${hours(batch.ttlSeconds)}h left ` +
           `(ceilings ${percent(this.maxUtilization)}, ${hours(this.minTtlSeconds)}h)`,
       );
@@ -95,7 +96,7 @@ export class PostageGate {
 
   private unreadableRefusal(publisher: StampedPublisher, reason: string): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${short(publisher.stamp)} on ${publisher.url} is absent or ` +
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} is absent or ` +
       `unreadable: ${reason}. The uploader refuses to run without a batch reading, because a batch ` +
       'nothing can read is not one anyone can call usable, and every way of learning nothing here ' +
       'looks identical to a healthy answer at the first failed upload.'
@@ -104,7 +105,7 @@ export class PostageGate {
 
   private unusableRefusal(publisher: StampedPublisher, batch: BatchReading): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${short(publisher.stamp)} on ${publisher.url} reports ` +
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} reports ` +
       `exists=${batch.exists}, usable=${batch.usable}. A batch the node will not spend cannot carry a ` +
       'broadcast, and the uploader refuses rather than failing on the first segment. Buy a batch on ' +
       "that node and put its id in this rung's BEE_PUBLISHERS entry."
@@ -113,7 +114,7 @@ export class PostageGate {
 
   private expiringRefusal(publisher: StampedPublisher, batch: BatchReading): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${short(publisher.stamp)} on ${publisher.url} has ` +
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} has ` +
       `${hours(batch.ttlSeconds)}h left and the floor is ${hours(this.minTtlSeconds)}h. A batch that ` +
       'expires mid-broadcast stops paying for the data it was keeping, so the uploader refuses to ' +
       'start one it cannot finish. Top it up with a postage top-up on that node, or lower the floor ' +
@@ -123,7 +124,7 @@ export class PostageGate {
 
   private fullRefusal(publisher: StampedPublisher, batch: BatchReading): string {
     return (
-      `[PostageGate] ${publisher.rung} batch ${short(publisher.stamp)} on ${publisher.url} is ` +
+      `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} is ` +
       `${percent(batch.utilization)} used and the ceiling is ${percent(this.maxUtilization)}. An ` +
       'immutable batch that reaches capacity stops accepting chunks, and that arrives as a failed ' +
       'upload rather than as a warning. Dilute it on that node to buy depth, or buy a fresh batch. ' +
@@ -216,11 +217,6 @@ function distinctByNodeAndStamp(publishers: readonly StampedPublisher[]): Stampe
 
 function describeFailure(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** Enough of a batch id to tell two apart in a log, and never the whole thing. */
-function short(stamp: string): string {
-  return `${stamp.slice(0, 8)}…`;
 }
 
 function percent(ratio: number): string {

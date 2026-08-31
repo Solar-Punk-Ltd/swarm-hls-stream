@@ -217,3 +217,89 @@ describe('BeePublisherPool.perRung', () => {
     assert.equal(pool.forRung('1440p').rung, '360p');
   });
 });
+
+/**
+ * ⛔⛔⛔ **Which node a rung publishes through was invisible from outside the process.** Nothing on the
+ * wire told a stage with one Bee node per rung apart from a stage routing all four rungs through one,
+ * so a deployment that had never been split read identically to a split one in every measurement
+ * anyone took. That is not hypothetical: on 2026-08-31 eleven live arms were attributed to viewer
+ * behaviour while the single shared node was the constraint, and the only record that the split had
+ * never happened was a note somebody had to remember to read.
+ *
+ * A reading that names a decision has to come from where the decision is made, so the pool says it.
+ *
+ * This is exposed on an unauthenticated endpoint, and the two ways that could leak are both pinned
+ * below: a bee URL may be configured with credentials in its userinfo, and a batch id is the whole of
+ * what authorises paying for a rung, so it is truncated to enough to tell two apart.
+ */
+describe('BeePublisherPool.routing', () => {
+  it('names the node and batch behind every rung, in ladder order', () => {
+    const pool = BeePublisherPool.perRung(
+      [spec('1080p', 1663), spec('480p', 1643), spec('360p', 1633), spec('720p', 1653)],
+      RUNG_ORDER,
+    );
+
+    assert.deepEqual(pool.routing(), [
+      { rung: '360p', url: 'http://localhost:1633', batch: '11111111…' },
+      { rung: '480p', url: 'http://localhost:1643', batch: '22222222…' },
+      { rung: '720p', url: 'http://localhost:1653', batch: '33333333…' },
+      { rung: '1080p', url: 'http://localhost:1663', batch: '44444444…' },
+    ]);
+  });
+
+  /**
+   * The shape that must stay distinguishable from the one above, because the whole point of reading
+   * this is telling the two apart. `all` is what {@link SINGLE_PUBLISHER} means: not a rung, every
+   * rung.
+   */
+  it('describes a single-node deployment as the one route it is', () => {
+    const pool = BeePublisherPool.single('http://localhost:1633', BATCH['360p']);
+
+    assert.deepEqual(pool.routing(), [{ rung: SINGLE_PUBLISHER, url: 'http://localhost:1633', batch: '11111111…' }]);
+  });
+
+  it('never hands out a whole batch id', () => {
+    const routes = BeePublisherPool.perRung(
+      [spec('360p', 1633), spec('480p', 1643), spec('720p', 1653), spec('1080p', 1663)],
+      RUNG_ORDER,
+    ).routing();
+
+    for (const route of routes) {
+      assert.equal(route.batch.length, 9, `${route.rung} batch should be 8 characters and an ellipsis`);
+      assert.ok(!Object.values(BATCH).includes(route.batch), `${route.rung} handed out a full batch id`);
+    }
+  });
+
+  it('strips credentials a bee URL was configured with', () => {
+    const pool = BeePublisherPool.perRung(
+      [
+        { rung: '360p', url: 'http://operator:hunter2@localhost:1633', stamp: BATCH['360p'] },
+        spec('480p', 1643),
+        spec('720p', 1653),
+        spec('1080p', 1663),
+      ],
+      RUNG_ORDER,
+    );
+
+    const [lowest] = pool.routing();
+    assert.equal(lowest.url, 'http://localhost:1633/');
+    assert.ok(!lowest.url.includes('hunter2'));
+    assert.ok(!lowest.url.includes('operator'));
+  });
+
+  /** Userinfo is one of two places a credential hides in a URL. The redactor already knows the other. */
+  it('redacts a secret carried in the query string', () => {
+    const pool = BeePublisherPool.perRung(
+      [
+        { rung: '360p', url: 'http://localhost:1633/?token=hunter2', stamp: BATCH['360p'] },
+        spec('480p', 1643),
+        spec('720p', 1653),
+        spec('1080p', 1663),
+      ],
+      RUNG_ORDER,
+    );
+
+    const [lowest] = pool.routing();
+    assert.ok(!lowest.url.includes('hunter2'), `query secret survived redaction: ${lowest.url}`);
+  });
+});

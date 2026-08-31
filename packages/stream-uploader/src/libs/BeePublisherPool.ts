@@ -1,5 +1,7 @@
 import { Bee } from '@ethersphere/bee-js';
 
+import { redactUrlSecrets } from '../utils/urlSecrets.js';
+
 import { Logger } from './Logger.js';
 
 /** One funded Bee node, and the postage batch it pays with. */
@@ -145,6 +147,40 @@ export class BeePublisherPool {
   public coordinator(): BeePublisher {
     return this.ordered[0];
   }
+
+  /**
+   * Which node and batch each rung publishes through, in a shape safe to hand an unauthenticated
+   * reader.
+   *
+   * ⛔ Exists because this decision was invisible from outside the process. A stage with one Bee node
+   * per rung and a stage pushing all four rungs through one looked identical on the wire, in the logs,
+   * and in every measurement taken off them, so a deployment that had never been split could not be
+   * told from one that had — and was not, for days. A reading that names a decision has to come from
+   * where the decision is made.
+   *
+   * Two things here are deliberately not verbatim. A configured URL's userinfo is removed, because
+   * bee accepts basic auth there and this is served without any. A batch id is truncated, because it
+   * is the whole of what authorises spending on a rung. Everything else passes through exactly as
+   * configured, so what an operator reads here compares against their own BEE_PUBLISHERS without
+   * having to allow for normalisation.
+   */
+  public routing(): PublisherRoute[] {
+    return this.ordered.map((publisher) => ({
+      rung: publisher.rung,
+      url: safeUrl(publisher.url),
+      batch: shortBatchId(publisher.stamp),
+    }));
+  }
+}
+
+/** One rung's routing, as an unauthenticated reader may safely be told it. */
+export interface PublisherRoute {
+  /** The rung, or {@link SINGLE_PUBLISHER} when one node carries everything. */
+  readonly rung: string;
+  /** As configured, minus any credential: see {@link safeUrl}. */
+  readonly url: string;
+  /** Enough of the batch id to tell two apart, and never the whole one. */
+  readonly batch: string;
 }
 
 /**
@@ -210,6 +246,39 @@ function parseEntry(entry: string): PublisherSpec {
   assertHttpUrl(`BEE_PUBLISHERS url for "${rung}"`, url);
 
   return { rung, url, stamp };
+}
+
+/**
+ * Enough of a batch id to tell two apart in a log or a health payload, and never the whole thing.
+ *
+ * Lives here rather than beside either caller because this file owns what a batch id is — the shape
+ * {@link assertBatchId} enforces and the reason it is worth guarding.
+ */
+export function shortBatchId(stamp: string): string {
+  return `${stamp.slice(0, 8)}…`;
+}
+
+/**
+ * A configured node URL with any credential removed, for a reader that is not authenticated.
+ *
+ * Two places a URL can carry one. Userinfo is stripped here, since bee accepts basic auth in it, and
+ * {@link redactUrlSecrets} handles the query string, which is where a publish key arrives.
+ *
+ * ⚠️ A URL with no userinfo is returned **verbatim** rather than round-tripped through the parser.
+ * That is deliberate: this value exists to be compared against the operator's own BEE_PUBLISHERS
+ * entry, and `new URL('http://h:1633').toString()` appends a path, so normalising every URL would
+ * make an identical pair read as a mismatch. One that had a credential removed is rebuilt, and so
+ * normalised, because it is no longer what was configured either way.
+ */
+function safeUrl(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.username === '' && parsed.password === '') {
+    return redactUrlSecrets(url);
+  }
+
+  parsed.username = '';
+  parsed.password = '';
+  return redactUrlSecrets(parsed.toString());
 }
 
 function assertBatchId(subject: string, stamp: string): void {
