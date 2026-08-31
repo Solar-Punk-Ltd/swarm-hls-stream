@@ -17,6 +17,9 @@
 #   deploy/scripts/bench-on-host.sh [--profile latbench] [--portSlot 7] [--target manager-host]
 #                                   [--script bench:latency]
 #
+# `--setup-only` syncs, builds and installs, then stops without running anything. That is the state a
+# viewer arm of the e2e suite needs, since it mounts this checkout into the browser container.
+#
 # Anything after `--` is passed to the container as environment, so a knob sweep reads:
 #   deploy/scripts/bench-on-host.sh -- BENCH_GOP_SECONDS=4 BENCH_BITRATE_KBPS=1200
 #
@@ -42,6 +45,16 @@ DOCKERFILE="e2e/Dockerfile.bench"
 # Syncing, building and installing are idempotent but not free, and a sweep repeats one setting many
 # times over an unchanged tree. `--no-setup` skips all three for the repeat runs.
 SETUP=1
+
+# `--setup-only` does the three and stops.
+#
+# ⛔⛔⛔ Added 2026-08-31 because there was no way to bring the host's checkout up to date without
+# running a bench, and the e2e suite needs it current for a reason that has nothing to do with a
+# bench: a viewer arm bind-mounts this same directory into the browser container as /repo and runs
+# the harness FROM it. The suite itself runs on the workstation, so nothing in its path syncs
+# anything. The checkout was found three days stale under a sitting about to be paid for, which is
+# the harness-side version of the fifteen-day-stale client that every browser sitting played.
+SETUP_ONLY=0
 SCRIPT="bench:latency"
 
 # A long run holds one ssh session open for the whole broadcast with nothing crossing it, which is
@@ -59,6 +72,7 @@ while [ $# -gt 0 ]; do
     --image) IMAGE="$2"; shift 2 ;;
     --dockerfile) DOCKERFILE="$2"; shift 2 ;;
     --no-setup) SETUP=0; shift ;;
+    --setup-only) SETUP_ONLY=1; shift ;;
     --) shift; BENCH_ENV=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -99,6 +113,15 @@ ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && docker build -q -f ${DOCKE
 
 echo "bench-on-host: installing dependencies in the container"
 ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${IMAGE} pnpm install --frozen-lockfile"
+fi
+
+if [ "${SETUP_ONLY}" -eq 1 ]; then
+  if [ "${SETUP}" -eq 0 ]; then
+    echo "bench-on-host: --setup-only with --no-setup does nothing at all, so neither was meant." >&2
+    exit 2
+  fi
+  echo "bench-on-host: --setup-only, ${TARGET}:${REMOTE_DIR} is current and nothing was run"
+  exit 0
 fi
 
 # `local` is the sentinel that makes the harness shell out instead of ssh, which the host cannot do to
