@@ -106,7 +106,7 @@ const WATCH_MINUTES = 3;
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-const skip = viewerGate(cfg.viewerExpectation, backend);
+const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir);
 
 describe('V4 — a finished recording plays through, with the whole ladder it was published as', { skip }, () => {
   const host = makeHost(cfg);

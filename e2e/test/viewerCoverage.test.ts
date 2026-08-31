@@ -139,7 +139,7 @@ describe('the gate a viewer suite opens with', () => {
   });
 
   it('hands a declared browser-less run its reason, rather than throwing at it', () => {
-    assert.match(String(viewerGate('none', null)), /E2E_EXPECT_BROWSER/);
+    assert.match(String(viewerGate('none', null, '')), /E2E_EXPECT_BROWSER/);
   });
 
   /**
@@ -147,7 +147,7 @@ describe('the gate a viewer suite opens with', () => {
    * where a skip would reach no column at all, which is the defect this module exists for.
    */
   it('throws on an undeclared run, so the file fails during import', () => {
-    assert.throws(() => viewerGate('undeclared', null), /E2E_EXPECT_BROWSER/);
+    assert.throws(() => viewerGate('undeclared', null, ''), /E2E_EXPECT_BROWSER/);
   });
 
   it('throws on a browser run with no byte source, before a broadcast is published', () => {

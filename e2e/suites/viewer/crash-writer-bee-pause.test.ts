@@ -110,7 +110,7 @@ const MIN_STAMP_TTL_S = 600;
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-const skip = viewerGate(cfg.viewerExpectation, backend);
+const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir);
 
 describe("V8 — a viewer barely notices an eight second pause of the writer's node", { skip }, () => {
   const host = makeHost(cfg);

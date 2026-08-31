@@ -73,7 +73,7 @@ const WATCH_MINUTES = rungArmMinutes();
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-const skip = viewerGate(cfg.viewerExpectation, backend) || abrOff(cfg.abrEnabled);
+const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || abrOff(cfg.abrEnabled);
 
 describe('V3 — a viewer whose rung goes quiet moves to one that has not', { skip }, () => {
   const host = makeHost(cfg);

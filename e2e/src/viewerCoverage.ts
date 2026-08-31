@@ -113,6 +113,10 @@ export function viewerSkipReason(expectation: ViewerExpectation): string | false
 /**
  * The gate a viewer suite opens with: stop an ambiguous run, or say why this one skips.
  *
+ * ⛔ `repoDir` is required rather than defaulted off `process.env`. The deployment declares it in the
+ * profile's env file, which only `loadConfig` reads, so a default that reached past the config made a
+ * value declared exactly where the refusal says to put it invisible to the gate that asks for it.
+ *
  * Called at module scope so an undeclared run fails the file during import. A throw inside a
  * `describe` callback prints `not ok` and is still reported as `# fail 0` with exit 0, which is the
  * defect this whole module exists for, one level down.
@@ -120,7 +124,7 @@ export function viewerSkipReason(expectation: ViewerExpectation): string | false
 export function viewerGate(
   expectation: ViewerExpectation,
   backend: ByteSource | null,
-  repoDir: string = process.env.E2E_BROWSER_REPO_DIR ?? '',
+  repoDir: string,
 ): string | false {
   const refusal = viewerCoverageRefusal({ expectation, backend, repoDir });
   if (refusal !== null) {

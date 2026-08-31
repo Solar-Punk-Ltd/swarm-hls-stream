@@ -86,7 +86,7 @@ const WATCH_MINUTES = squeezeArmMinutes();
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-const skip = viewerGate(cfg.viewerExpectation, backend) || abrOff(cfg.abrEnabled);
+const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || abrOff(cfg.abrEnabled);
 
 describe('V2 — a viewer whose connection gets worse keeps watching, at a quality it can carry', { skip }, () => {
   const host = makeHost(cfg);

@@ -782,8 +782,12 @@ interface BrowserArmHostSetup {
  * happened not to exist would make docker create an empty directory, mount that, and fail minutes
  * later looking like a broken image.
  */
-export function browserArmHostSetup(env: NodeJS.ProcessEnv = process.env): BrowserArmHostSetup {
-  const repoDir = env.E2E_BROWSER_REPO_DIR ?? '';
+/**
+ * ⛔ `repoDir` is passed in rather than read from `process.env`, because the deployment declares it in
+ * the profile's env file and only `loadConfig` reads those. Taking it from the environment here meant
+ * a value declared exactly where `viewer-coverage`'s refusal says to put it was invisible.
+ */
+export function browserArmHostSetup(repoDir: string, env: NodeJS.ProcessEnv = process.env): BrowserArmHostSetup {
   if (repoDir === '') {
     throw new Error(
       'E2E_BROWSER_REPO_DIR is required to launch a viewer: it is the absolute path of the bench ' +
@@ -872,7 +876,7 @@ export function browserArmScript(options: BrowserArmOptions): string {
  * failing, and the message it throws says which gate.
  */
 export async function runBrowserArm(host: Host, cfg: E2EConfig, options: BrowserArmOptions): Promise<BrowserArmResult> {
-  const setup = browserArmHostSetup();
+  const setup = browserArmHostSetup(cfg.browserRepoDir);
   const command = browserArmCommand({
     ...setup,
     script: browserArmScript(options),

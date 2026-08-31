@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
@@ -540,11 +540,11 @@ describe('where the arm runs on the host', () => {
    * like a broken image.
    */
   it('refuses to launch without the host path of the bench checkout', () => {
-    assert.throws(() => browserArmHostSetup({}), /E2E_BROWSER_REPO_DIR/);
+    assert.throws(() => browserArmHostSetup(''), /E2E_BROWSER_REPO_DIR/);
   });
 
   it('uses the image and container name the bench scripts use, unless told otherwise', () => {
-    const setup = browserArmHostSetup({ E2E_BROWSER_REPO_DIR: '/srv/bench' });
+    const setup = browserArmHostSetup('/srv/bench');
 
     assert.equal(setup.repoDir, '/srv/bench');
     assert.equal(setup.image, DEFAULT_BROWSER_IMAGE);
@@ -552,8 +552,7 @@ describe('where the arm runs on the host', () => {
   });
 
   it('lets an operator name a different image and container', () => {
-    const setup = browserArmHostSetup({
-      E2E_BROWSER_REPO_DIR: '/srv/bench',
+    const setup = browserArmHostSetup('/srv/bench', {
       E2E_BROWSER_IMAGE: 'swarm-hls-browser:pr-221',
       E2E_BROWSER_CONTAINER: 'viewer-v1',
     });
@@ -583,28 +582,20 @@ function stubHost(stdout: string, state: unknown = armState()): { host: Host; ru
 const AN_ARM_THAT_FINISHED = 'browser: wrote /repo/docs/bench/browser-watch-2026-08-28T10-00-00-000Z.md';
 
 describe('running an arm end to end', () => {
-  const previous = process.env.E2E_BROWSER_REPO_DIR;
-
-  // Per test rather than once for the suite: `runBrowserArm` reads the live process environment, so
-  // a single restore after the first case would leave every later one launching from nowhere.
-  beforeEach(() => {
-    process.env.E2E_BROWSER_REPO_DIR = '/srv/bench';
-  });
-
-  afterEach(() => {
-    if (previous === undefined) {
-      delete process.env.E2E_BROWSER_REPO_DIR;
-      return;
-    }
-    process.env.E2E_BROWSER_REPO_DIR = previous;
-  });
+  /**
+   * The host checkout comes off the config rather than the live process environment, which is what
+   * changed on 2026-08-31. A deployment declares it in the profile's env file, only `loadConfig`
+   * reads those, and every consumer used to reach past the config to `process.env` instead. This
+   * suite juggled that variable per test for exactly that reason.
+   */
+  const armCfg = { ...cfg, browserRepoDir: '/srv/bench' };
 
   const arm = { backend: WEEB3_BYTES, watchMinutes: 4 } as const;
 
   it('returns what the viewer got, read off the state file the run wrote', async () => {
     const { host } = stubHost(AN_ARM_THAT_FINISHED);
 
-    const result = await runBrowserArm(host, cfg, arm);
+    const result = await runBrowserArm(host, armCfg, arm);
 
     assert.equal(result.advanceRatio, 0.999);
     assert.equal(result.proof.reported, WEEB3_BYTES);
@@ -619,7 +610,7 @@ describe('running an arm end to end', () => {
   it('reclaims a leftover container by name before it launches anything', async () => {
     const { host, runs } = stubHost(AN_ARM_THAT_FINISHED);
 
-    await runBrowserArm(host, cfg, arm);
+    await runBrowserArm(host, armCfg, arm);
 
     assert.match(runs[0].command, new RegExp(`^docker rm -f '${DEFAULT_BROWSER_CONTAINER}' `));
     assert.match(runs[1].command, /^docker run --rm --network host/);
@@ -632,7 +623,7 @@ describe('running an arm end to end', () => {
   it('gives the arm the whole watch plus the overhead outside the measured window', async () => {
     const { host, runs } = stubHost(AN_ARM_THAT_FINISHED);
 
-    await runBrowserArm(host, cfg, arm);
+    await runBrowserArm(host, armCfg, arm);
 
     assert.equal(runs[1].timeoutMs, 4 * 60_000 + BROWSER_ARM_OVERHEAD_MS);
   });
@@ -640,7 +631,7 @@ describe('running an arm end to end', () => {
   it('reads the state file from the host checkout, not from the path inside the container', async () => {
     const { host, runs } = stubHost(AN_ARM_THAT_FINISHED);
 
-    await runBrowserArm(host, cfg, arm);
+    await runBrowserArm(host, armCfg, arm);
 
     assert.equal(runs[2].command, "cat '/srv/bench/docs/bench/browser-watch-2026-08-28T10-00-00-000Z.json'");
   });
@@ -652,7 +643,7 @@ describe('running an arm end to end', () => {
   it('surfaces an arm that wrote no artifact rather than returning an empty verdict', async () => {
     const { host } = stubHost('browser: playback started\n');
 
-    await assert.rejects(runBrowserArm(host, cfg, arm), /wrote no artifact/);
+    await assert.rejects(runBrowserArm(host, armCfg, arm), /wrote no artifact/);
   });
 });
 

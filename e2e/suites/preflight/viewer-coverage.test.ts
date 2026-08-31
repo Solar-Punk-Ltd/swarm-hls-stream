@@ -40,7 +40,7 @@ describe('preflight — the run says whether a real viewer watched', () => {
     const refusal = viewerCoverageRefusal({
       expectation: cfg.viewerExpectation,
       backend,
-      repoDir: process.env.E2E_BROWSER_REPO_DIR ?? '',
+      repoDir: cfg.browserRepoDir,
     });
 
     if (refusal === null) {

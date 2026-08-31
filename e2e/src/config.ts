@@ -187,6 +187,19 @@ export interface E2EConfig {
    * the gate that refuses a stack producing the other one.
    */
   segmentExpectation: SegmentExpectation;
+  /**
+   * Absolute path of the bench checkout ON THE HOST, out of `E2E_BROWSER_REPO_DIR`, or empty.
+   *
+   * A viewer arm bind-mounts it into the browser container as `/repo` and runs the harness from it,
+   * and the suite cannot work the host path out for itself from inside that mount.
+   *
+   * ⛔ Read from the env files here, and it was not until 2026-08-31. Every consumer took it straight
+   * off `process.env`, while `viewer-coverage`'s own refusal told the operator to put it in the
+   * profile's env file "alongside E2E_SSH_TARGET". Following that advice exactly left the value
+   * invisible and the refusal identical, so the gate's instructions could not clear the gate. Its two
+   * neighbours were always read from these files, which is what made the advice look right.
+   */
+  browserRepoDir: string;
   /** Env files that were actually found and read, in precedence order. Printed by the smoke test. */
   envFiles: readonly string[];
 }
@@ -369,6 +382,7 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     abrExpectation: readAbrExpectation(env(resolved, 'E2E_EXPECT_ABR', '')),
     viewerExpectation: readViewerExpectation(env(resolved, 'E2E_EXPECT_BROWSER', '')),
     segmentExpectation: readSegmentExpectation(env(resolved, 'E2E_EXPECT_SEGMENT_S', '')),
+    browserRepoDir: env(resolved, 'E2E_BROWSER_REPO_DIR', ''),
     envFiles: [rootPath, enginePath],
   };
 }
