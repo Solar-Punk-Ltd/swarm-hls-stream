@@ -143,6 +143,12 @@ available_plur() {
 # ⭐ Priced as minutes AND broadcasts, because the two sittings of 2026-08-12 night differed by 2.6x
 # per broadcast hour and the difference tracks how many broadcasts each started, not how long each
 # ran. A sweep of eight short arms is dominated by setup; a soak is dominated by minutes.
+# ⚠️ TWO NODES OF FIVE, and the ladder split is what made that a gap. This reads the shared publisher
+# and the gateway; the 480p, 720p and 1080p nodes each hold their own chequebook and are not read
+# here. The uploader's own `ChequebookGate` clears every one of them against a 0.5 BZZ floor, but only
+# at startup, so a rung node that drains after a deploy is not refused by anything on this path. The
+# e2e preflight `chequebook-funding` does read them all. Fixing this means one affordability loop
+# shared by the drivers rather than five copies of it, which is its own change.
 can_afford() {
   local minutes="$1" broadcasts="${2:-1}" short=0 who port burn setup have need
   for pair in "uploader:${UPLOADER_BEE_PORT}:${UPLOADER_BURN_PLUR_PER_MIN}:${UPLOADER_SETUP_PLUR}" \

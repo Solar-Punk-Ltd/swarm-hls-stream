@@ -176,7 +176,13 @@ conditions_are_distinct() {
   return 0
 }
 
-# Zero when every node that can spend can pay for the given minutes.
+# Zero when the nodes read below can pay for the given minutes.
+# ⚠️ TWO NODES OF FIVE, and the ladder split is what made that a gap. This reads the shared publisher
+# and the gateway; the 480p, 720p and 1080p nodes each hold their own chequebook and are not read
+# here. The uploader's own `ChequebookGate` clears every one of them against a 0.5 BZZ floor, but only
+# at startup, so a rung node that drains after a deploy is not refused by anything on this path. The
+# e2e preflight `chequebook-funding` does read them all. Fixing this means one affordability loop
+# shared by the drivers rather than five copies of it, which is its own change.
 #
 # ⛔ The unfunded gateway is deliberately absent. It has no chequebook by construction, and asking
 # whether it can pay would refuse the sitting on the strength of its own treatment. That mistake has a
