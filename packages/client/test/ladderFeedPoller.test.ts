@@ -828,3 +828,93 @@ describe('LadderFeedPoller telling the viewer the publisher has gone quiet', () 
     }
   });
 });
+
+/**
+ * ⛔⛔⛔ **The layer every unit test of this rule skips, and the one the live run failed in.**
+ *
+ * `feedState.test.ts` drives `FeedHealthTracker` by hand and its whole failover block is green.
+ * V3 went red anyway on 2026-08-31 against the deployed client, with three healthy rungs served 5.4
+ * times a second beside a dead one for 90.4 seconds and zero level changes. A rule that is right and
+ * a rule that is reached are different claims, and only the poller can settle the second one: it is
+ * what calls `recordGatewayResponse`, and nothing below it had ever been exercised end to end.
+ */
+describe('LadderFeedPoller telling the player a rung has stopped being produced', () => {
+  let state: ManifestStateManager;
+
+  beforeEach(() => {
+    state = ManifestStateManager.getInstance();
+    state.clear();
+  });
+
+  const GROUP = Topic.fromString('the-broadcast-a-viewer-linked-to').toString();
+  const DEAD = Topic.fromString('group-1-480p');
+  const LIVING = ['group-1-360p', 'group-1-720p', 'group-1-1080p'].map((name) => Topic.fromString(name));
+  const ALL = [DEAD, ...LIVING];
+  /** Comfortably more than the ladder has to deliver past a rung before that rung is called dead. */
+  const SEGMENTS_PUBLISHED = 40;
+
+  /** Every rung bootstrapped, then only the living ones ever get another index. */
+  function ladderWithOneDeadRung(): FakeGateway {
+    const gateway = new FakeGateway();
+    // A slot the publisher has not written yet, which is what a stopped rung looks like, rather
+    // than a transport error, which is a gateway fault and a different thing entirely.
+    gateway.missingSlotStatus = 404;
+    for (const topic of ALL) {
+      gateway.publishFeedHead(topic, 0, manifest(1));
+    }
+    for (const topic of LIVING) {
+      for (let index = 1; index <= SEGMENTS_PUBLISHED; index++) {
+        gateway.publishSoc(topic, index, manifest(index + 1));
+      }
+    }
+    return gateway;
+  }
+
+  it('announces the dead rung, and only it', async () => {
+    const gateway = ladderWithOneDeadRung();
+    const feedHealth = new FeedHealthTracker();
+    const stopped: string[] = [];
+    feedHealth.onRungStopped((rung) => stopped.push(rung));
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, feedHealth);
+    poller.start(OWNER, ALL, GROUP);
+
+    try {
+      await waitFor(() => stopped.length > 0, 'the dead rung to be announced');
+      assert.deepEqual(stopped, [DEAD.toString()]);
+    } finally {
+      poller.stop(ALL);
+    }
+  });
+
+  /**
+   * The control, and it is what keeps the case above from passing on a rule that fires at anything.
+   * The same ladder with nothing silenced has to stay silent.
+   */
+  it('says nothing while every rung is still being produced', async () => {
+    const gateway = new FakeGateway();
+    gateway.missingSlotStatus = 404;
+    for (const topic of ALL) {
+      gateway.publishFeedHead(topic, 0, manifest(1));
+      for (let index = 1; index <= SEGMENTS_PUBLISHED; index++) {
+        gateway.publishSoc(topic, index, manifest(index + 1));
+      }
+    }
+    const feedHealth = new FeedHealthTracker();
+    const stopped: string[] = [];
+    feedHealth.onRungStopped((rung) => stopped.push(rung));
+
+    const poller = new LadderFeedPoller(state, gateway.fetchResource, POLL_MS, feedHealth);
+    poller.start(OWNER, ALL, GROUP);
+
+    try {
+      await waitFor(
+        () => ALL.every((topic) => segmentCount(state, topic) === SEGMENTS_PUBLISHED + 1),
+        'every rung to reach the live edge',
+      );
+      assert.deepEqual(stopped, [], 'a healthy ladder had one of its rungs called dead');
+    } finally {
+      poller.stop(ALL);
+    }
+  });
+});
