@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { LIVE_SYNC_DURATION_S } from '../src/bench/clientTuning.js';
 import { FEED_STATE_LIVE } from '../src/browser/feedState.js';
-import { judgeCost, type ResourceReading } from '../src/browser/resources.js';
+import { judgeCost, type NodeReading, type ResourceReading } from '../src/browser/resources.js';
 import { thinRequestLog } from '../src/browser/runFiles.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import { judgeStability, MIN_WINDOWS_FOR_TREND, stabilitySection, WINDOW_MS } from '../src/browser/stability.js';
@@ -134,14 +134,28 @@ describe('whether a long run held or only started well', () => {
 });
 
 describe('what a run cost the deployment', () => {
-  const reading = (atMs: number, utilization: number, bzz: number): ResourceReading => ({
-    atMs,
+  const node = (
+    rung: string,
+    port: number,
+    utilization: number,
+    bzz: number,
+    over: Partial<NodeReading> = {},
+  ): NodeReading => ({
+    rung,
+    port,
     batchId: '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd',
     postageUtilization: utilization,
     postageCapacity: 256,
     postageTtlDays: 30,
     postageImmutable: true,
-    uploaderBzz: bzz,
+    bzz,
+    ...over,
+  });
+
+  /** The unsplit deployment: one node carrying every rung, which is what `all` means. */
+  const reading = (atMs: number, utilization: number, bzz: number): ResourceReading => ({
+    atMs,
+    nodes: [node('all', 10075, utilization, bzz)],
   });
 
   it('turns two readings into a rate per broadcast-minute', () => {
@@ -234,6 +248,147 @@ describe('what a run cost the deployment', () => {
 
   it('says nothing when both resources are comfortable', () => {
     assert.deepEqual(judgeCost(reading(0, 10, 10), reading(60_000, 11, 9.9)).warnings, []);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **What a split stage costs, which was read off one node of four until 2026-08-31.** That did
+ * not make the cost figures partial, it made them wrong: `bzzPerMegabyte` divided one node's spend by
+ * every rung's delivered bytes, and the runway came off one batch's headroom while three others were
+ * draining. Across the shipped ladder 1080p burns roughly seven times the bytes of 360p, so the
+ * numbers understated the stage by about 4x and the runway overstated by the same. A wrong number is
+ * worse than a missing one, because it gets planned against.
+ */
+describe('what a run cost a stage with one bee node per rung', () => {
+  const node = (
+    rung: string,
+    port: number,
+    utilization: number,
+    bzz: number,
+    over: Partial<NodeReading> = {},
+  ): NodeReading => ({
+    rung,
+    port,
+    batchId: `${port}`.padEnd(64, 'a'),
+    postageUtilization: utilization,
+    postageCapacity: 256,
+    postageTtlDays: 30,
+    postageImmutable: true,
+    bzz,
+    ...over,
+  });
+
+  const at = (atMs: number, nodes: NodeReading[]): ResourceReading => ({ atMs, nodes });
+
+  const TEN_MINUTES = 10 * 60_000;
+
+  it('sums what the whole stage spent, not what one node spent', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10), node('1080p', 11075, 10, 10)]),
+      at(TEN_MINUTES, [node('360p', 10075, 11, 9.9), node('1080p', 11075, 80, 9.2)]),
+    );
+
+    assert.equal(cost.bucketsUsed, 71, '1 bucket on 360p and 70 on 1080p');
+    assert.ok(Math.abs(cost.bzzSpent - 0.9) < 1e-9, '0.1 BZZ on 360p and 0.8 on 1080p');
+    assert.ok(Math.abs(cost.bucketsPerMinute - 7.1) < 1e-9);
+  });
+
+  /**
+   * ⛔ The minimum, never the sum. Summing the headroom across four batches and dividing by the total
+   * rate reports a runway the stage does not have, because the stage stops when the FIRST batch fills.
+   */
+  it('projects the runway of the rung that runs out first', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10), node('1080p', 11075, 10, 10)]),
+      at(TEN_MINUTES, [node('360p', 10075, 11, 9.9), node('1080p', 11075, 80, 9.2)]),
+    );
+
+    const bindingRung = (256 - 80) / 7;
+    const naiveWholeStage = (256 - 11 + (256 - 80)) / 7.1;
+    assert.ok(cost.minutesOfPostageLeft !== null);
+    assert.ok(Math.abs(cost.minutesOfPostageLeft - bindingRung) < 1e-6, 'should be the 1080p runway');
+    assert.ok(cost.minutesOfPostageLeft < naiveWholeStage / 2, 'summing the headroom would more than double it');
+  });
+
+  it('projects the chequebook of the node that empties first', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10), node('1080p', 11075, 10, 2)]),
+      at(TEN_MINUTES, [node('360p', 10075, 11, 9.9), node('1080p', 11075, 80, 1.2)]),
+    );
+
+    // 1080p spends 0.8 over 10 minutes and has 1.2 left: 15 minutes. 360p has 990.
+    assert.ok(cost.minutesOfBzzLeft !== null && Math.abs(cost.minutesOfBzzLeft - 15) < 1e-6);
+  });
+
+  it('prices the run per megabyte against every node’s spend', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10), node('1080p', 11075, 10, 10)]),
+      at(TEN_MINUTES, [node('360p', 10075, 11, 9.9), node('1080p', 11075, 80, 9.2)]),
+      900_000_000,
+    );
+
+    // 0.9 BZZ over 900 MB. Read off the 360p node alone it would have been 0.1 over the same bytes.
+    assert.ok(cost.bzzPerMegabyte !== null);
+    assert.ok(Math.abs(cost.bzzPerMegabyte - 0.001) < 1e-12, `got ${cost.bzzPerMegabyte}`);
+  });
+
+  it('names the rung whose batch is nearly full, not just the batch', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10), node('1080p', 11075, 200, 10)]),
+      at(TEN_MINUTES, [node('360p', 10075, 11, 9.9), node('1080p', 11075, 215, 9.2)]),
+    );
+
+    assert.ok(
+      cost.warnings.some((warning) => warning.includes('1080p') && warning.includes('215/256')),
+      `the warning did not name the rung: ${cost.warnings.join(' | ')}`,
+    );
+    assert.ok(!cost.warnings.some((warning) => warning.includes('360p')), '360p is fine and should be quiet');
+  });
+
+  it('reports the first expiry rather than any one batch’s', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10, { postageTtlDays: 30 }), node('1080p', 11075, 10, 10, { postageTtlDays: 2 })]),
+      at(TEN_MINUTES, [
+        node('360p', 10075, 11, 9.9, { postageTtlDays: 30 }),
+        node('1080p', 11075, 20, 9.9, { postageTtlDays: 2 }),
+      ]),
+    );
+
+    assert.ok(
+      cost.warnings.some((warning) => warning.includes('1080p') && warning.includes('expires in 2.0 days')),
+      `the near expiry was not reported: ${cost.warnings.join(' | ')}`,
+    );
+  });
+
+  /**
+   * ⛔ A rate that spans a re-route compares two different stages. The run has already happened so its
+   * other numbers are still worth reading, but nobody should plan off the rates without knowing.
+   */
+  it('warns when the deployment was re-routed while the run was in flight', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10)]),
+      at(TEN_MINUTES, [node('360p', 10075, 11, 9.9), node('1080p', 11075, 5, 10)]),
+    );
+
+    assert.ok(
+      cost.warnings.some((warning) => warning.includes('re-routed')),
+      `no re-route warning: ${cost.warnings.join(' | ')}`,
+    );
+    assert.equal(cost.perNode.length, 1, 'only the node present in both readings can carry a rate');
+  });
+
+  it('reports one row per node, so which rung is the constraint is visible', () => {
+    const cost = judgeCost(
+      at(0, [node('360p', 10075, 10, 10), node('1080p', 11075, 10, 10)]),
+      at(TEN_MINUTES, [node('360p', 10075, 11, 9.9), node('1080p', 11075, 80, 9.2)]),
+    );
+
+    assert.deepEqual(
+      cost.perNode.map((entry) => entry.rung),
+      ['360p', '1080p'],
+    );
+    assert.equal(cost.perNode[0].bucketsUsed, 1);
+    assert.equal(cost.perNode[1].bucketsUsed, 70);
   });
 });
 
