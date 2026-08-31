@@ -271,7 +271,7 @@ if (process.argv[2] === 'inspect') process.stdout.write(${JSON.stringify(uploade
     const { code, log } = await checkCapacity(stubNode({ uploaderEnv: 'LOG_LEVEL=debug\n' }));
 
     assert.equal(code, 1);
-    assert.match(log, /could not read a postage batch/);
+    assert.match(log, /could not read STAMP/);
   });
 
   /**

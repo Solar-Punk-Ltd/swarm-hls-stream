@@ -122,8 +122,13 @@ export interface ResourceCost {
   warnings: string[];
 }
 
-/** One node's consumption over the run, matched between the two readings by port. */
-export interface NodeCost {
+/**
+ * One node's consumption over the run, matched between the two readings by port.
+ *
+ * Not exported: it is reachable as `ResourceCost['perNode'][number]` for anyone who needs to name it,
+ * and an exported name with no importer is what the unused-export ratchet exists to catch.
+ */
+interface NodeCost {
   rung: string;
   port: number;
   before: NodeReading;

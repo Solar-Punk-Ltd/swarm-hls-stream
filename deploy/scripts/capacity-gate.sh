@@ -67,9 +67,11 @@ resolve_stamp() {
 # the shipped ladder 1080p burns roughly seven times the bytes of 360p, which makes the batch most
 # likely to run out mid-sitting precisely the one that gate would never read. Same failure shape as
 # the one this file was written for, one level up: a gate that reads a row the sitting does not write.
+# ⛔ Takes BEE_PUBLISHERS as an argument rather than reading it, because the caller needs to know which
+# of the two sources was used in order to word its refusal, and this runs inside a command
+# substitution: anything it assigned would be assigned in a subshell and lost.
 resolve_batches() {
-  local publishers
-  publishers="${BEE_PUBLISHERS:-$(uploader_env BEE_PUBLISHERS)}"
+  local publishers="$1"
 
   if [ -z "${publishers}" ]; then
     local batch
@@ -114,10 +116,15 @@ resolve_batches() {
 # rung, which is what stops a batch that is already past the line. Naming the gap rather than scaling
 # it by a number nobody measured.
 has_capacity() {
-  local minutes="$1" pairs port batch rung refused=0
-  pairs="$(resolve_batches)"
+  local minutes="$1" publishers batch_source pairs port batch rung refused=0
+  publishers="${BEE_PUBLISHERS:-$(uploader_env BEE_PUBLISHERS)}"
+  # Named so a refusal points at the variable an operator has to go and fix.
+  batch_source="STAMP"
+  [ -n "${publishers}" ] && batch_source="BEE_PUBLISHERS"
+
+  pairs="$(resolve_batches "${publishers}")"
   if [ -z "${pairs}" ]; then
-    say "  REFUSING: could not read a postage batch off ${UPLOADER_CONTAINER}, so capacity is unknown"
+    say "  REFUSING: could not read ${batch_source} off ${UPLOADER_CONTAINER}, so batch capacity is unknown"
     return 1
   fi
 
@@ -132,7 +139,12 @@ has_capacity() {
         continue
         ;;
     esac
-    if [ "${#batch}" != 64 ]; then
+    # ⛔ Only on a batch that came out of BEE_PUBLISHERS. That is a composite string an operator or a
+    # script assembles, and its batch is the field a lost character or an env-file `#` truncates. A
+    # STAMP is a single variable that `BeePublisherPool.single` already validates with `assertBatchId`
+    # at startup, so a running uploader's STAMP is provably 64 hex and re-litigating it here would
+    # only refuse deployments the service itself accepted.
+    if [ "${batch_source}" = "BEE_PUBLISHERS" ] && [ "${#batch}" != 64 ]; then
       say "  REFUSING: the ${rung} batch id is ${#batch} characters, not 64, so it is a truncated paste"
       refused=1
       continue
