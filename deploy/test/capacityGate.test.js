@@ -271,7 +271,7 @@ if (process.argv[2] === 'inspect') process.stdout.write(${JSON.stringify(uploade
     const { code, log } = await checkCapacity(stubNode({ uploaderEnv: 'LOG_LEVEL=debug\n' }));
 
     assert.equal(code, 1);
-    assert.match(log, /could not read STAMP/);
+    assert.match(log, /could not read a postage batch/);
   });
 
   /**
@@ -309,5 +309,177 @@ if (process.argv[2] === 'inspect') process.stdout.write(${JSON.stringify(uploade
     const { log } = await checkCapacity(stubNode({ utilization: 369 }), 60);
 
     assert.match(log, /ending at 73%/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **The same failure this file was written for, one level up.** The gate read STAMP, which after
+ * the per-rung split names only the fallback node, so it checked one batch of four. Across the shipped
+ * ladder 1080p burns roughly seven times the bytes of 360p, which makes the batch most likely to run
+ * out mid-sitting precisely the one the gate would never have read. A gate that reads a row the
+ * sitting does not write to is the defect, whether the row is chosen by shape or by being the only one
+ * anybody looked at.
+ */
+describe('the shared gate reads every batch a split deployment publishes with', () => {
+  const BATCH_360 = 'aa49851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+  const BATCH_1080 = 'bb49851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+  const HEALTHY = { utilization: 254, ttlSeconds: 941760 };
+
+  /** One stub node per port, so a gate that reads only one of them is visibly reading only one. */
+  function stubSplit({ perPort, publishers }) {
+    const dir = mkdtempSync(join(tmpdir(), 'capacity-gate-split-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const bin = join(dir, 'bin');
+    mkdirSync(bin, { recursive: true });
+
+    const byPort = Object.fromEntries(
+      Object.entries(perPort).map(([port, batch]) => [
+        port,
+        {
+          stamps: [
+            {
+              batchID: batch.batchID,
+              utilization: batch.utilization,
+              usable: true,
+              label: 'stub',
+              depth: 25,
+              amount: '36043833600',
+              bucketDepth: 16,
+              immutableFlag: true,
+              exists: true,
+              batchTTL: batch.ttlSeconds,
+            },
+          ],
+        },
+      ]),
+    );
+
+    writeFileSync(
+      join(bin, 'curl'),
+      `#!/usr/bin/env node
+const byPort = ${JSON.stringify(JSON.stringify(byPort))};
+const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
+const port = (url.match(/:(\\d+)\\//) || [])[1];
+const table = JSON.parse(byPort);
+if (url.includes('/stamps') && table[port]) process.stdout.write(JSON.stringify(table[port]));
+`,
+    );
+    writeFileSync(
+      join(bin, 'docker'),
+      `#!/usr/bin/env node
+if (process.argv[2] === 'inspect') process.stdout.write(${JSON.stringify(
+        `STAMP=${BATCH_360}\nBEE_PUBLISHERS=${''}`,
+      )} + ${JSON.stringify(publishers)} + '\\n');
+`,
+    );
+    for (const name of ['curl', 'docker']) {
+      chmodSync(join(bin, name), 0o755);
+    }
+    return { dir, bin };
+  }
+
+  async function checkSplit(node, minutes = 60) {
+    const log = join(node.dir, 'gate.log');
+    writeFileSync(log, '');
+    const preamble = [
+      `say() { printf '%s\\n' "$*" >> "${log}"; }`,
+      `LOG="${log}"`,
+      'UPLOADER_BEE_PORT=10075',
+      `. "${SHARED}"`,
+      `has_capacity ${minutes}`,
+    ].join('\n');
+
+    let code = 0;
+    try {
+      await run('bash', ['-c', `set -u\n${preamble}`], {
+        env: { ...process.env, PATH: `${node.bin}:${process.env.PATH}`, BEE_PUBLISHERS: '' },
+        encoding: 'utf8',
+      });
+    } catch (failure) {
+      code = failure.code;
+    }
+    return { code, log: readFileSync(log, 'utf8') };
+  }
+
+  const twoRungs = `360p@http://127.0.0.1:10075<${BATCH_360}> ` + `1080p@http://127.0.0.1:11075<${BATCH_1080}>`;
+
+  it('checks the batch on every node, not only the one STAMP names', async () => {
+    const { code, log } = await checkSplit(
+      stubSplit({
+        perPort: { 10075: { batchID: BATCH_360, ...HEALTHY }, 11075: { batchID: BATCH_1080, ...HEALTHY } },
+        publishers: twoRungs,
+      }),
+    );
+
+    assert.equal(code, 0);
+    assert.match(log, new RegExp(BATCH_360.slice(0, 8)), 'the 360p batch was never read');
+    assert.match(log, new RegExp(BATCH_1080.slice(0, 8)), 'the 1080p batch was never read');
+  });
+
+  /** The case that matters: the rung in trouble is not the one the old gate looked at. */
+  it('refuses when the rung that cannot carry the sitting is not the one STAMP names', async () => {
+    const { code, log } = await checkSplit(
+      stubSplit({
+        perPort: {
+          10075: { batchID: BATCH_360, ...HEALTHY },
+          11075: { batchID: BATCH_1080, utilization: 500, ttlSeconds: 941760 },
+        },
+        publishers: twoRungs,
+      }),
+    );
+
+    assert.equal(code, 1);
+    assert.match(log, /REFUSING/);
+    assert.match(log, /1080p/);
+  });
+
+  it('names every rung that cannot carry it rather than stopping at the first', async () => {
+    const { code, log } = await checkSplit(
+      stubSplit({
+        perPort: {
+          10075: { batchID: BATCH_360, utilization: 500, ttlSeconds: 941760 },
+          11075: { batchID: BATCH_1080, utilization: 500, ttlSeconds: 941760 },
+        },
+        publishers: twoRungs,
+      }),
+    );
+
+    assert.equal(code, 1);
+    assert.match(log, /360p/);
+    assert.match(log, /1080p/);
+  });
+
+  it('refuses a publisher entry whose url carries no port, rather than dialing something else', async () => {
+    const { code, log } = await checkSplit(
+      stubSplit({
+        perPort: { 10075: { batchID: BATCH_360, ...HEALTHY } },
+        publishers: `360p@http://bee-uploader<${BATCH_360}>`,
+      }),
+    );
+
+    assert.equal(code, 1);
+    assert.match(log, /names no port/);
+  });
+
+  it('refuses a truncated batch id rather than reading /stamps with it', async () => {
+    const { code, log } = await checkSplit(
+      stubSplit({
+        perPort: { 10075: { batchID: BATCH_360, ...HEALTHY } },
+        publishers: `360p@http://127.0.0.1:10075<${BATCH_360.slice(0, 40)}>`,
+      }),
+    );
+
+    assert.equal(code, 1);
+    assert.match(log, /truncated paste/);
+  });
+
+  /** The unsplit deployment is still a deployment, and the rewrite must not have cost it its gate. */
+  it('falls back to the STAMP batch when BEE_PUBLISHERS is unset', async () => {
+    const { code, log } = await checkSplit(
+      stubSplit({ perPort: { 10075: { batchID: BATCH_360, ...HEALTHY } }, publishers: '' }),
+    );
+
+    assert.equal(code, 0);
+    assert.match(log, new RegExp(BATCH_360.slice(0, 8)));
   });
 });
