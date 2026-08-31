@@ -447,8 +447,26 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     // works alone: the failover moves the picture, the reporter is what lets the overlay say so
     // during the seconds before it does. A single-rendition stream gets neither, because there is
     // no second rung to move to and nothing for a group's health to be folded from.
+    //
+    // ⛔⛔⛔ **The failover half is OFF, by the owner's decision of 2026-08-31, and turning it back on
+    // without reading this is how a viewer loses their ladder.** Seven attempts at the rule, and the
+    // last three amputated THREE OF FOUR HEALTHY RUNGS during the settle, before any fault was
+    // injected, on three consecutive live runs. That is worse than the defect it exists to fix: the
+    // defect freezes one viewer on one dead rung, this destroys the ladder on a broadcast where
+    // nothing is wrong.
+    //
+    // The reporter stays on. It is measured and it works: a viewer on a dead rung is correctly told
+    // the feed has stalled rather than being shown `live`, which is most of the harm and all of the
+    // honesty.
+    //
+    // ⭐ The rule may not be the thing that is wrong. The same runs record the viewer advancing at
+    // 0.26 to 0.41 of realtime with 79% of feed polls returning nothing, BEFORE any fault, so every
+    // rung on that stage looks sick and a rule that compares rungs is reading the starvation. Settle
+    // that before the next attempt. See the session memory `swarm-hls-rung-failover-design`.
+    const RUNG_FAILOVER_ENABLED = false;
     const ladderTopic = isLadder ? toHexTopic(topicString) : null;
-    const detachRungFailover = hls ? attachRungFailover(hls, manifestFetcher.feedHealth) : null;
+    const detachRungFailover =
+      hls && RUNG_FAILOVER_ENABLED ? attachRungFailover(hls, manifestFetcher.feedHealth) : null;
     const detachWatchedRung =
       hls && ladderTopic ? attachWatchedRungReporter(hls, ladderTopic, manifestFetcher.feedHealth) : null;
 
