@@ -48,7 +48,12 @@ MIN_TTL_HOURS="${STAMP_MIN_TTL_HOURS:-24}"
 MAX_UTILIZATION="${STAMP_MAX_UTILIZATION:-0.9}"
 
 parse_profile_args "$@"
-set -- "${REST_ARGS[@]}"
+# ⛔ `${arr[@]+"${arr[@]}"}` rather than `"${REST_ARGS[@]}"`, because macOS ships bash 3.2 and there an
+# EMPTY array expanded under `set -u` is an unbound variable, not an empty list. Every other script
+# here writes the plain form and gets away with it only because none of them sets `-u`. The failure is
+# invisible until someone runs this with no argument after the profile flags, which is the ordinary
+# way to run it.
+set -- ${REST_ARGS[@]+"${REST_ARGS[@]}"}
 while [ $# -gt 0 ]; do
   case "$1" in
     --write) WRITE=1; shift ;;
