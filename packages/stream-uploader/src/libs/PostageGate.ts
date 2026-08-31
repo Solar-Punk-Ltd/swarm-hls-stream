@@ -1,3 +1,5 @@
+import { PostageBatch } from '@ethersphere/bee-js';
+
 import { shortBatchId } from './BeePublisherPool.js';
 import { Logger } from './Logger.js';
 
@@ -61,7 +63,7 @@ export class PostageGate {
     for (const publisher of distinct) {
       const batch = await this.readBatch(publisher);
 
-      if (!batch.exists || !batch.usable) {
+      if (!batch.usable) {
         throw new Error(this.unusableRefusal(publisher, batch));
       }
       if (batch.ttlSeconds < this.minTtlSeconds) {
@@ -79,8 +81,14 @@ export class PostageGate {
     }
   }
 
+  /**
+   * ⛔ The catch is the absent-batch path, not an oversight. bee answers `/stamps/<id>` with
+   * **404 "issuer does not exist"** for a batch it does not hold, verified against a live node on
+   * 2026-08-31, so bee-js throws instead of returning something with `exists: false` on it. There is
+   * no field to read for absence, and looking for one is what this gate used to do.
+   */
   private async readBatch(publisher: StampedPublisher): Promise<BatchReading> {
-    let body: unknown;
+    let body: PostageBatch;
     try {
       body = await publisher.bee.getPostageBatch(publisher.stamp);
     } catch (error) {
@@ -106,7 +114,7 @@ export class PostageGate {
   private unusableRefusal(publisher: StampedPublisher, batch: BatchReading): string {
     return (
       `[PostageGate] ${publisher.rung} batch ${shortBatchId(publisher.stamp)} on ${publisher.url} reports ` +
-      `exists=${batch.exists}, usable=${batch.usable}. A batch the node will not spend cannot carry a ` +
+      `usable=${batch.usable}. A batch the node will not spend cannot carry a ` +
       'broadcast, and the uploader refuses rather than failing on the first segment. Buy a batch on ' +
       "that node and put its id in this rung's BEE_PUBLISHERS entry."
     );
@@ -144,21 +152,26 @@ export interface StampedPublisher {
 /**
  * The one call this gate makes, as `Bee.getPostageBatch` from bee-js provides it.
  *
- * Typed as `unknown` rather than as the library's `PostageBatch` for the same reason
- * {@link ChequebookGate} does it: a node that does not hold the batch does not answer in that shape,
- * so the gate narrows the body itself rather than trusting a type that describes only the healthy
- * answer.
+ * ⛔⛔⛔ Typed as the library's own `PostageBatch` rather than as `unknown`, which is the fix for the
+ * defect that stopped the four-node stage starting on 2026-08-31. bee answers `/stamps/<id>` with
+ * `batchTTL` in seconds and `utilizationRatio`; bee-js 9 replaces both before any caller sees them,
+ * with a `Duration` instance and a `usage` ratio. This gate parsed bee's names off an `unknown`, so
+ * it could not read a single live batch, while a test fake built from bee's JSON passed every case.
+ * Reading through the library's type makes the next rename a compile error here instead.
+ *
+ * The runtime narrowing below stays, because the type describes bee-js and this contract does not
+ * require the caller to be bee-js: a proxy or a hand-rolled client can answer in a shape the type
+ * says is impossible, and absence of a reading has to refuse rather than default.
  */
 export interface PostageClient {
-  getPostageBatch(batchId: string): Promise<unknown>;
+  getPostageBatch(batchId: string): Promise<PostageBatch>;
 }
 
 /** What the gate needs out of a batch, once the response has been narrowed. */
 interface BatchReading {
-  readonly exists: boolean;
   readonly usable: boolean;
   readonly ttlSeconds: number;
-  /** 0 to 1. bee reports `utilization` in buckets and `utilizationRatio` already divided. */
+  /** 0 to 1, which is bee-js's `usage`. Its `utilization` is the raw count in the fullest bucket. */
   readonly utilization: number;
 }
 
@@ -167,28 +180,48 @@ interface FundingLogger {
 }
 
 /**
- * Narrow bee's answer, or null when it is not one.
+ * Narrow bee-js's answer, or null when it is not one.
  *
- * ⛔ Absence is a refusal rather than a default. A batch whose `batchTTL` is missing is not a batch
+ * ⛔ Absence is a refusal rather than a default. A batch whose duration is missing is not a batch
  * with plenty of time, and reading it as one would make every unreadable answer pass the gate, which
  * is the failure this whole file exists to stop.
+ *
+ * ⚠️ `usage` is bee-js's own `utilization / 2 ** (depth - bucketDepth)`, which is arithmetically the
+ * same number bee publishes as `utilizationRatio`. Checked against a live batch on 2026-08-31:
+ * 232 of 256 buckets, both ways round to 0.90625. The library's is used rather than a second copy of
+ * its formula, for the reason `BatchLimits` in the CLI package gives: a duplicated formula is a thing
+ * nothing notices drifting.
+ *
+ * ⚠️ A negative TTL never arrives here. bee reports -1 for a batch whose lifetime it cannot work out,
+ * and bee-js clamps that to one second on the way through, so an expired batch is refused by the
+ * floor below rather than read as unreadable.
  */
-function parseBatch(body: unknown): BatchReading | null {
-  if (typeof body !== 'object' || body === null) {
-    return null;
-  }
-  const batch = body as Record<string, unknown>;
-  const ttl = numberOf(batch.batchTTL);
-  const ratio = numberOf(batch.utilizationRatio);
-  if (ttl === null || ratio === null) {
+function parseBatch(batch: PostageBatch): BatchReading | null {
+  const ttl = numberOf(secondsOf(batch.duration));
+  const usage = numberOf(batch.usage);
+  if (ttl === null || usage === null) {
     return null;
   }
   return {
-    exists: batch.exists === true,
     usable: batch.usable === true,
     ttlSeconds: ttl,
-    utilization: ratio,
+    utilization: usage,
   };
+}
+
+/**
+ * Seconds off a bee-js `Duration`, read through `unknown` on purpose.
+ *
+ * The type promises an instance with the method on it. A proxy or a hand-rolled client can hand over
+ * a plain object instead, and calling a method that is not there throws a TypeError that reads as
+ * this gate crashing rather than as it refusing.
+ */
+function secondsOf(duration: unknown): unknown {
+  if (typeof duration !== 'object' || duration === null) {
+    return null;
+  }
+  const toSeconds = (duration as { toSeconds?: unknown }).toSeconds;
+  return typeof toSeconds === 'function' ? (toSeconds as () => unknown).call(duration) : null;
 }
 
 /** bee reports numbers as numbers here, but a proxy that stringifies them is not a reason to refuse. */
