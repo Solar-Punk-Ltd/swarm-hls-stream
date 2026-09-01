@@ -118,7 +118,12 @@ export function makeFakeBee(uploads: FakeUploads = {}): Bee {
  */
 export function makeFakeCatalog(overrides: Record<string, unknown> = {}): StreamCatalog {
   return {
-    addStream: async () => {},
+    // `true` rather than nothing, because the real `addStream` answers whether the entry it just
+    // wrote is the moment the broadcast became a recording, and a fake holding no previous state is
+    // in the position the real catalog is in when it holds no previous entry: the write IS the flip.
+    // Returning nothing would silently drop `Updating stream in list to VOD` from every test that
+    // takes this default, which is the line six e2e scenarios wait on.
+    addStream: async () => true,
     getMsSinceIndexSaveFailed: () => null,
     // Called from the uploader's segment path, so every fake needs it or the segment path throws.
     recordRungDelivered: () => {},
@@ -126,11 +131,17 @@ export function makeFakeCatalog(overrides: Record<string, unknown> = {}): Stream
   } as unknown as StreamCatalog;
 }
 
-/** A catalog that appends every published entry, for asserting that a VOD actually landed. */
+/**
+ * A catalog that appends every published entry, for asserting that a VOD actually landed.
+ *
+ * Answers `true` for the same reason the default above does: it keeps no previous state, so every
+ * write it takes is a first one.
+ */
 export function makeRecordingCatalog(published: unknown[]): StreamCatalog {
   return makeFakeCatalog({
     addStream: async (entry: unknown) => {
       published.push(entry);
+      return true;
     },
   });
 }
