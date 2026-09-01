@@ -25,6 +25,29 @@ import { parseSwarmUri } from './playlist';
 const MIN_LEVELS_TO_DROP_ONE = 2;
 
 /**
+ * How many rungs this player will ever take out of one ladder.
+ *
+ * ⛔⛔⛔ Owner ruling, 2026-09-01, after the first sitting with this armed. V7 kills the uploader, so
+ * every rung stops. The player read that as three separate rungs failing, deleted them one by one,
+ * hls.js raised a fatal `levelSwitchError`, and the whole player destroyed and restarted itself.
+ *
+ * Rungs do not stop at the same instant, which is what the rule's safety argument assumed. Each
+ * drains whatever it was already holding, the queues differ, and a rung that drains further pushes
+ * the middle reference up past rungs that stopped with less in hand. So a broadcast ending cascades.
+ *
+ * One is the whole of the feature: **one quality dies and the others carry on**. A second going
+ * quiet is not two independent failures, it is the source going away, and the answer to that is to
+ * wait and recover rather than to take the ladder apart under a viewer.
+ *
+ * ⚠️ Its accepted cost: two rungs failing genuinely separately in one broadcast leaves the second
+ * dead one in the ladder, and a viewer sitting on it can freeze.
+ *
+ * **Kept the same as the uploader's `MAX_RUNGS_DROPPED_AT_ONCE`**, which decides what the master
+ * advertises. `e2e/test/rungDeathAgreement.test.ts` pins the pair that must move together.
+ */
+const MAX_RUNGS_DROPPED_PER_LADDER = 1;
+
+/**
  * The feed a parsed level reads from, or null when its URI is not one of ours.
  *
  * Null rather than a guess. `parseSwarmUri` splits any string it is handed, so a level pointing at an
@@ -88,11 +111,27 @@ export function attachWatchedRungReporter(hls: Hls, groupHexTopic: string, feedH
  * so a rung that resumes publishing is available again only to viewers who join afterwards. The
  * alternative is rebuilding the player, which costs the viewer their place in a live stream to
  * recover a rung they are not watching.
+ *
+ * ⛔ **At most one rung is ever removed.** See {@link MAX_RUNGS_DROPPED_PER_LADDER} for the live
+ * failure that bought that limit. It also retires the reindexing hazard that used to sit here: hls.js
+ * renumbers levels on every removal, so a second removal had to be resolved against a list that had
+ * already shifted. There is no second removal now.
  */
 export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () => void {
+  let dropped = 0;
+
   return feedHealth.onRungStopped((rungTopicId) => {
     const index = levelIndexOfRung(hls, rungTopicId);
     if (index < 0) {
+      return;
+    }
+
+    // ⛔ Before the level is read, so this cannot be reordered into an accidental second removal.
+    if (dropped >= MAX_RUNGS_DROPPED_PER_LADDER) {
+      console.warn(
+        `Rung ${hls.levels[index]?.height}p has stopped being produced too, and a second rung going ` +
+          'quiet is a broadcast ending rather than two rungs failing, so the ladder is left alone',
+      );
       return;
     }
 
@@ -116,6 +155,7 @@ export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () 
     const tookThePlayingLevel = hls.loadLevel === index;
 
     console.warn(`Rung ${level.height}p has stopped being produced (${lag}), dropping it from the ladder`);
+    dropped += 1;
     hls.removeLevel(index);
 
     // hls.js clears the current level when the removed one was playing, and nothing else picks a

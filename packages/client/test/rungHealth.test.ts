@@ -155,17 +155,46 @@ describe('dropping a rung that has stopped being produced', () => {
   });
 
   /**
-   * ⛔ The index a rung sits at is not a property of the rung. hls.js reindexes on every removal, so
-   * a second death resolved against a remembered index removes whichever rung has shifted into it.
+   * ⛔⛔⛔ Owner ruling, 2026-09-01: **one drop per broadcast, and no more.**
+   *
+   * The first sitting with this armed killed the uploader in V7, so every rung stopped. The player
+   * read that as three separate rungs failing and deleted them one by one, hls.js raised a fatal
+   * `levelSwitchError`, and the whole player destroyed and restarted itself. Rungs do not stop at
+   * the same instant: each drains what it was already holding, the queues differ, and a rung that
+   * drains further pushes the reference past rungs that stopped with less in hand.
+   *
+   * One is the whole of the feature: one quality dies and the others carry on. A second going quiet
+   * is the source going away, and the answer to that is to wait rather than take the ladder apart.
+   *
+   * ⚠️ The accepted cost: two rungs genuinely failing separately in one broadcast leaves the second
+   * one in the ladder, and a viewer on it can freeze.
+   *
+   * ⭐ It also retires a hazard rather than only adding a limit. A second removal had to be resolved
+   * against a freshly reindexed level list, because hls.js renumbers on every removal. There is no
+   * second removal now.
    */
-  it('finds the second dead rung where it now sits, not where it started', () => {
+  it('refuses a second drop, because a whole broadcast ending is not two rungs failing', () => {
     const player = makeLadderPlayer();
     attachRungFailover(player.hls, player.feedHealth);
 
     player.silence('rung-1080p');
     player.silence('rung-480p');
 
-    assert.deepEqual(player.heightsLeft(), [720, 360]);
+    assert.deepEqual(player.heightsLeft(), [720, 480, 360], 'the second death took a rung out anyway');
+    assert.deepEqual(player.removed, [0], 'exactly one level was ever handed to removeLevel');
+  });
+
+  /** ⛔ And it must stay refused however many follow, not merely for the second. */
+  it('stays refused when the rest of the ladder goes quiet too', () => {
+    const player = makeLadderPlayer();
+    attachRungFailover(player.hls, player.feedHealth);
+
+    player.silence('rung-1080p');
+    player.silence('rung-480p');
+    player.silence('rung-360p');
+
+    assert.deepEqual(player.heightsLeft(), [720, 480, 360]);
+    assert.deepEqual(player.removed, [0]);
   });
 
   /**
