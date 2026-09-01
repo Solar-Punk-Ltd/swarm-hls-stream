@@ -3,15 +3,17 @@ import { describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { srtIngestUrl } from '../../src/harness/engine.js';
-import { discoverStamp, makeHost, uploaderHealth } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth } from '../../src/harness/host.js';
 import { redactPublishKey } from '../../src/harness/redactPublishKey.js';
+import { readStageStamps, stageStampsRefusal } from '../../src/harness/stageStamps.js';
 import { effectiveLogLevel, logLevelProblem } from '../../src/logLevel.js';
 
 const ONE_HOUR_S = 3600;
 
 /**
- * Read-only smoke test: proves the harness can reach the deployed profile and discover its live
- * stamp. No fault injection, no deploy, no BZZ — safe to run anytime. Run: pnpm test:e2e:smoke
+ * Read-only smoke test: proves the harness can reach the deployed profile and discover a live stamp
+ * on every node it publishes through. No fault injection, no deploy, no BZZ, safe to run anytime.
+ * Run: pnpm test:e2e:smoke
  */
 const cfg = loadConfig();
 
@@ -30,18 +32,28 @@ describe('attach smoke (read-only)', () => {
     console.log(`  uploader: ${JSON.stringify(health)}`);
   });
 
-  it('discovers a usable stamp with TTL headroom', async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.equal(stamp.usable, true);
-    assert.ok(
-      stamp.batchTTL > ONE_HOUR_S,
-      `stamp TTL ${stamp.batchTTL}s is under 1h — top up before running a stream test`,
-    );
-    console.log(
-      `  stamp ${stamp.batchID.slice(0, 12)}… TTL ${(stamp.batchTTL / ONE_HOUR_S).toFixed(1)}h util ${
-        stamp.utilization
-      }`,
-    );
+  /**
+   * ⛔ Every publisher node, never the coordinator alone. Each rung publishes through its own Bee node
+   * holding its own postage batch, so an expired batch on the 1080p node is invisible to a read of the
+   * coordinator and turns up mid-broadcast as a rung that stopped being produced.
+   *
+   * This one prints, which `requireStageStamps` deliberately does not. It is the read-only run an
+   * operator makes first and its whole job is to report what is out there.
+   */
+  it('discovers a usable stamp with TTL headroom on every publisher node', async () => {
+    const readings = await readStageStamps(host, cfg);
+
+    console.log(`  ${readings.length} publisher node(s):`);
+    for (const reading of readings) {
+      const headroom = reading.ttlS === null ? 'no usable batch' : `TTL ${(reading.ttlS / ONE_HOUR_S).toFixed(1)}h`;
+      console.log(
+        `  | ${reading.rungs.join(', ')} :${reading.port} batch ${reading.batch ?? 'none'} ${headroom}` +
+          (reading.problem === null ? '' : ` (${reading.problem})`),
+      );
+    }
+
+    const refusal = stageStampsRefusal(readings, ONE_HOUR_S);
+    assert.equal(refusal, null, refusal ?? '');
   });
 
   /**

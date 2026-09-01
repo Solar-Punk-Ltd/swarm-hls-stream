@@ -6,7 +6,7 @@ import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
 import { MAX_WEEB3_SEGMENT_REQUESTS } from '../../src/harness/crashArm.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import {
@@ -18,6 +18,7 @@ import {
   steppedDownRefusal,
   throttleRefusal,
 } from '../../src/harness/qualityArm.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { waitFor } from '../../src/harness/wait.js';
 import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
 
@@ -95,8 +96,7 @@ describe('V2 — a viewer whose connection gets worse keeps watching, at a quali
   let startedAt: string;
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     await waitForIdle(host, cfg);
     startedAt = await host.nowIso();
     publisher = startPublisher(cfg);

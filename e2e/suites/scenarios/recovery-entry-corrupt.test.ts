@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import {
   quarantinedEntryNames,
   readRecoveryEntry,
@@ -57,8 +58,7 @@ describe('J — a corrupt recovery entry: repaired, skipped, or lost', () => {
   let startedAt: string;
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     await waitForIdle(host, cfg);
     startedAt = await host.nowIso();
     publisher = startPublisher(cfg);

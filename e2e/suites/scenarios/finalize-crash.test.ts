@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   announcedVodFinalizeCount,
@@ -10,6 +10,7 @@ import {
   parseUploaderLog,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
@@ -67,8 +68,7 @@ describe('H — killed inside finalize: one recording, and the catalog points at
   let startedAt: string;
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     feed = await discoverCatalogFeed(host, cfg);
     await waitForIdle(host, cfg);
     startedAt = await host.nowIso();

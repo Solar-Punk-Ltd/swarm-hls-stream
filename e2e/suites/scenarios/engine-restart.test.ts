@@ -3,8 +3,9 @@ import { after, before, describe, it } from 'node:test';
 
 import { loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { type CatalogEntry, type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
@@ -63,8 +64,7 @@ describe('E — media-engine restart: broadcaster resumes', () => {
   ];
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     feed = await discoverCatalogFeed(host, cfg);
     await waitForIdle(host, cfg);
     // Deliberately NOT the swallowing `safeFetch`. A failed read here yields an empty baseline, and

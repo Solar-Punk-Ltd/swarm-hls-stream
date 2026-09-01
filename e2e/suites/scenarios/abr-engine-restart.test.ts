@@ -3,9 +3,10 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { type AnnouncedRung, announcedRungs, ladderRungs, segmentUploads } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -75,8 +76,7 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
   let rungsBefore: string[] = [];
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     assert.ok(
       cfg.abrRungs.length > 1,
       'ABR_LADDER names fewer than two rungs, so a split ladder would be indistinguishable from a whole one',

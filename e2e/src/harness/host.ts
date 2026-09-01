@@ -8,8 +8,13 @@ import { sleep, waitFor } from './wait.js';
 
 const execFileAsync = promisify(execFile);
 
-/** A bee node's stamp `usable` flag lags for tens of seconds after a restart (batch re-sync). */
-const STAMP_READY_TIMEOUT_MS = 60_000;
+/**
+ * A bee node's stamp `usable` flag lags for tens of seconds after a restart (batch re-sync).
+ *
+ * Exported because a refusal that says a node had no stamp has to say how long it was given, and the
+ * stage gate in `stageStamps.ts` is the one composing that sentence.
+ */
+export const STAMP_READY_TIMEOUT_MS = 60_000;
 
 const DEFAULT_CONNECT_TIMEOUT_S = 10;
 const DEFAULT_RUN_TIMEOUT_MS = 30_000;
@@ -281,32 +286,64 @@ export function uploaderHealth(host: Host, cfg: E2EConfig): Promise<UploaderHeal
   return host.localJson<UploaderHealth>(cfg.ports.uploaderApi, '/health');
 }
 
-/** Discover the live upload stamp on the profile's bee-uploader, preferring the most TTL headroom. */
-export async function discoverStamp(host: Host, cfg: E2EConfig): Promise<Stamp> {
-  // Poll rather than fail on the first read: a scenario that restarts bee-uploader leaves its stamp
-  // reporting usable=false for tens of seconds (batch re-sync) even though uploads already work, and
-  // that must not poison the next test's discovery.
+/** The best usable stamp one Bee node holds, or what that node last said instead of offering one. */
+interface StampPoll {
+  stamp: Stamp | null;
+  /** The last thing the node answered before the poll gave up. Null once a stamp was found. */
+  lastSeen: string | null;
+}
+
+/**
+ * Poll one Bee node's `/stamps` until it offers a usable batch, preferring the most TTL headroom.
+ *
+ * Polls rather than failing on the first read, because a scenario that restarts a bee leaves its
+ * stamp reporting `usable: false` for tens of seconds while the batch re-syncs, even though uploads
+ * already work, and that must not poison the next test's discovery.
+ *
+ * Takes a port rather than the config, because a split deployment has one Bee node per rung and the
+ * ports come off the routing the uploader reports. See {@link nodesBehind}.
+ *
+ * ⛔ Returns the failure rather than throwing it. `stageStamps.ts` reads every publisher node and has
+ * to name all of the ones that cannot stamp, not stop at the first, so composing the message is the
+ * caller's job. {@link discoverStamp} composes the throw its own callers have always had.
+ */
+export async function pollUsableStamp(host: Host, port: number): Promise<StampPoll> {
   const deadline = Date.now() + STAMP_READY_TIMEOUT_MS;
   let lastSeen = 'no response';
   for (;;) {
     try {
-      const body = await host.localJson<{ stamps: Stamp[] }>(cfg.ports.beeUploaderApi, '/stamps');
+      const body = await host.localJson<{ stamps: Stamp[] }>(port, '/stamps');
       const usable = (body.stamps ?? []).filter((s) => s.usable && s.exists);
       if (usable.length > 0) {
-        return usable.sort((a, b) => b.batchTTL - a.batchTTL)[0];
+        return { stamp: usable.sort((a, b) => b.batchTTL - a.batchTTL)[0], lastSeen: null };
       }
       lastSeen = `${(body.stamps ?? []).length} stamp(s), none usable+exists yet`;
     } catch (error) {
       lastSeen = (error as Error).message;
     }
     if (Date.now() >= deadline) {
-      throw new Error(
-        `no usable stamp on ${containerName(cfg, 'bee-uploader')} (:${cfg.ports.beeUploaderApi}) ` +
-          `after ${STAMP_READY_TIMEOUT_MS}ms — last: ${lastSeen}`,
-      );
+      return { stamp: null, lastSeen };
     }
     await sleep(3_000);
   }
+}
+
+/**
+ * Discover the live upload stamp on the profile's bee-uploader, preferring the most TTL headroom.
+ *
+ * ⚠️ One node, the coordinator, which is all this has ever read. A stage with one Bee node per rung
+ * needs `requireStageStamps` in `stageStamps.ts` instead: an answer from the coordinator says nothing
+ * about whether the 1080p node can still stamp.
+ */
+export async function discoverStamp(host: Host, cfg: E2EConfig): Promise<Stamp> {
+  const { stamp, lastSeen } = await pollUsableStamp(host, cfg.ports.beeUploaderApi);
+  if (stamp !== null) {
+    return stamp;
+  }
+  throw new Error(
+    `no usable stamp on ${containerName(cfg, 'bee-uploader')} (:${cfg.ports.beeUploaderApi}) ` +
+      `after ${STAMP_READY_TIMEOUT_MS}ms — last: ${lastSeen}`,
+  );
 }
 
 /** bee's on-chain SWAP chequebook balances, as PLUR integer strings (1 BZZ = 1e16 PLUR). */
