@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   isContiguous,
   parseUploaderLog,
@@ -10,15 +10,20 @@ import {
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
  * Service — two concurrent live streams upload independently. The uploader must track both in
  * activeStreams, give each its own catalog entry (distinct topic), and finalize each to its own VOD
- * — no cross-talk, no spurious discontinuity from the concurrency. Per-stream segments can't be
- * split from the logs (the "Segment N uploaded" line has no stream id), so streams are told apart by
- * their distinct catalog entries and counted via /health.
+ * — no cross-talk, no spurious discontinuity from the concurrency.
+ *
+ * Segments carry their stream now: the uploader writes `Segment N of <stream> uploaded`, so the
+ * ladder case below judges gaps per rung-stream through `segmentIndicesByStream` rather than over a
+ * merged list, and groups the rungs by the ladder each one names. The two BROADCASTS are still told
+ * apart the way they always were, by their distinct catalog entries and counted through /health,
+ * because that is what a viewer sees and what activeStreams counts.
  */
 
 // Each stream's catalog entry is a deferred feed write through the single bee-uploader node; two
@@ -56,8 +61,7 @@ describe('service — two concurrent streams upload independently', () => {
   ];
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     feed = await discoverCatalogFeed(host, cfg);
     await waitForIdle(host, cfg);
     // Deliberately NOT the swallowing `safeFetch`. A failed read here yields an empty baseline, and
