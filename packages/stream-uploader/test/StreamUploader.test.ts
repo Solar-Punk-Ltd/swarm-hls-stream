@@ -1326,6 +1326,7 @@ describe('StreamUploader catalog failures on the segment path', () => {
       upsertRendition: async () => {
         throw new Error('catalog feed read failed after the retry window');
       },
+      recordRungDelivered: () => {},
     } as unknown as StreamCatalog;
 
     try {
@@ -1356,6 +1357,7 @@ describe('StreamUploader catalog failures on the segment path', () => {
       upsertRendition: async () => {
         throw new Error('catalog feed read failed after the retry window');
       },
+      recordRungDelivered: () => {},
     } as unknown as StreamCatalog;
 
     const uploader = uploaderWithCatalog(catalog);
@@ -1375,6 +1377,7 @@ describe('StreamUploader catalog failures on the segment path', () => {
       upsertRendition: async (_identity: unknown, rendition: { bandwidth: number }) => {
         announced.push(rendition.bandwidth);
       },
+      recordRungDelivered: () => {},
     } as unknown as StreamCatalog;
 
     const uploader = uploaderWithCatalog(catalog);
@@ -1406,6 +1409,7 @@ describe('StreamUploader ladder finalize metrics', () => {
     const catalog = {
       addStream: async () => {},
       upsertRendition: async () => {},
+      recordRungDelivered: () => {},
     } as unknown as StreamCatalog;
 
     return new StreamUploader({
@@ -1482,6 +1486,7 @@ describe('StreamUploader ladder re-announce safety', () => {
       upsertRendition: async (_identity: unknown, rendition: { name: string; topic: string }) => {
         rungsByName.set(rendition.name, { name: rendition.name, topic: rendition.topic });
       },
+      recordRungDelivered: () => {},
     } as unknown as StreamCatalog;
 
     // The outgoing session for the 360p rung, on its own feed topic. Publishing a segment gives it a

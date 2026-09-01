@@ -72,6 +72,8 @@ export function makeFakeCatalog(overrides: Record<string, unknown> = {}): Stream
   return {
     addStream: async () => {},
     getMsSinceIndexSaveFailed: () => null,
+    // Called from the uploader's segment path, so every fake needs it or the segment path throws.
+    recordRungDelivered: () => {},
     ...overrides,
   } as unknown as StreamCatalog;
 }

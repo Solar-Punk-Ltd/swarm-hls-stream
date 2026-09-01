@@ -1,0 +1,222 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import {
+  advertisableRenditions,
+  LadderLiveness,
+  RUNG_DEATH_LAG_SEGMENTS,
+} from '../src/libs/LadderLiveness.js';
+
+/**
+ * The rule that stops a master advertising a rung nothing is producing.
+ *
+ * ⛔⛔⛔ **Every case here is a live failure the CLIENT's version of this rule shipped**, ported with
+ * it. They are not hypotheticals and they are not this module's own history: they are what eight
+ * attempts in `packages/client/.../feedState.ts` cost, and the reason that rule was copied rather
+ * than a second one invented. If one of these starts failing, read that file before changing this
+ * one.
+ */
+
+const LADDER = ['360p', '480p', '720p', '1080p'];
+
+/** Every rung delivers one segment, which is what a healthy ladder does. */
+function everyRungDelivers(liveness: LadderLiveness, rungs: readonly string[] = LADDER): void {
+  for (const rung of rungs) {
+    liveness.recordDelivered(rung);
+  }
+}
+
+describe('a healthy ladder', () => {
+  it('calls no rung stopped while every one of them is delivering', () => {
+    const liveness = new LadderLiveness();
+
+    for (let round = 0; round < 20; round++) {
+      everyRungDelivers(liveness);
+    }
+
+    for (const rung of LADDER) {
+      assert.equal(liveness.hasStopped(rung, LADDER), false, `${rung} was called dead on a healthy ladder`);
+    }
+  });
+
+  /**
+   * ⛔ The regression that disabled the client's failover outright, on 2026-08-31: rungs are separate
+   * transcodes writing separate feeds and they do not advance in lockstep, so a rule comparing
+   * cumulative totals drifts apart without bound while nothing is wrong.
+   */
+  it('tolerates rungs drifting apart, because separate transcodes never advance in lockstep', () => {
+    const liveness = new LadderLiveness();
+
+    // 1080p delivers half as often as the rest, for fifty rounds. Nothing has failed.
+    for (let round = 0; round < 50; round++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+      if (round % 2 === 0) {
+        liveness.recordDelivered('1080p');
+      }
+    }
+
+    assert.equal(liveness.hasStopped('1080p', LADDER), false, 'a slower rung is not a stopped one');
+  });
+
+  /** A rung that has not started yet is not a rung that has stopped. */
+  it('keeps advertising a rung that has never delivered anything', () => {
+    const liveness = new LadderLiveness();
+
+    for (let round = 0; round < 20; round++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+
+    assert.equal(liveness.hasStopped('1080p', LADDER), false);
+  });
+});
+
+describe('a rung that stops', () => {
+  it('is called stopped once the ladder has delivered four segments it has not', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+
+    assert.equal(liveness.lagOf('1080p', LADDER), RUNG_DEATH_LAG_SEGMENTS);
+    assert.equal(liveness.hasStopped('1080p', LADDER), true);
+  });
+
+  it('is not called stopped one segment early', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS - 1; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+
+    assert.equal(liveness.hasStopped('1080p', LADDER), false);
+  });
+
+  it('is alive again the moment it delivers, because the lag is measured from its last delivery', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+    assert.equal(liveness.hasStopped('1080p', LADDER), true);
+
+    liveness.recordDelivered('1080p');
+
+    assert.equal(liveness.hasStopped('1080p', LADDER), false, 'a rung that publishes again is not dead');
+  });
+});
+
+describe('the reference is a middle rung, never the leader', () => {
+  /**
+   * ⛔⛔⛔ The live failure this exists for. 2026-08-31: a viewer settled on 1080p and the client had
+   * already dropped 720p, 480p and 360p during the settle, leaving one rung, before any fault was
+   * injected. A maximum lets ONE rung running ahead condemn every other one at once.
+   */
+  it('does not let one rung running ahead condemn the whole ladder', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    // 1080p sprints twenty segments ahead. Every other rung keeps its own steady pace.
+    for (let segment = 0; segment < 20; segment++) {
+      liveness.recordDelivered('1080p');
+    }
+
+    for (const rung of ['360p', '480p', '720p']) {
+      assert.equal(liveness.hasStopped(rung, LADDER), false, `${rung} was condemned by a sibling running ahead`);
+    }
+  });
+
+  /** Upper middle, so two rungs dying together are both still judged against the two that live. */
+  it('still catches two rungs dying together', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p']);
+    }
+
+    assert.equal(liveness.hasStopped('720p', LADDER), true);
+    assert.equal(liveness.hasStopped('1080p', LADDER), true);
+  });
+
+  /**
+   * ⚠️ The inherited limit, asserted so it is a known property rather than a surprise. Three of four
+   * dying puts the middle among the dead. That is a broadcast falling apart, not a rung failing.
+   */
+  it('cannot see three of four dying, and that is documented rather than fixed', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    for (let segment = 0; segment < 20; segment++) {
+      liveness.recordDelivered('360p');
+    }
+
+    assert.equal(liveness.hasStopped('1080p', LADDER), false);
+  });
+});
+
+describe('a ladder too small to judge', () => {
+  it('calls nothing stopped on a single rendition, which has no middle and nowhere to go', () => {
+    const liveness = new LadderLiveness();
+    liveness.recordDelivered('720p');
+
+    for (let segment = 0; segment < 50; segment++) {
+      liveness.recordDelivered('720p');
+    }
+
+    assert.equal(liveness.hasStopped('720p', ['720p']), false);
+  });
+});
+
+describe('what the master is allowed to advertise', () => {
+  const rendition = (name: string) => ({ name, height: Number(name.replace('p', '')) });
+
+  it('drops a rung the ladder has left behind', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+
+    const advertised = advertisableRenditions(LADDER.map(rendition), liveness);
+
+    assert.deepEqual(
+      advertised.map((r) => r.name),
+      ['360p', '480p', '720p'],
+    );
+  });
+
+  it('advertises the whole ladder while every rung is producing', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    assert.deepEqual(
+      advertisableRenditions(LADDER.map(rendition), liveness).map((r) => r.name),
+      LADDER,
+    );
+  });
+
+  /**
+   * ⛔ A master naming nothing is not a degraded ladder, it is an unplayable stream. The last rung
+   * standing is still the only thing a viewer can be offered.
+   */
+  it('never advertises nothing, however much of the ladder has died', () => {
+    const liveness = new LadderLiveness();
+    const single = [rendition('720p')];
+    liveness.recordDelivered('720p');
+    for (let segment = 0; segment < 50; segment++) {
+      liveness.recordDelivered('360p');
+    }
+
+    assert.deepEqual(
+      advertisableRenditions(single, liveness).map((r) => r.name),
+      ['720p'],
+    );
+  });
+
+  it('hands back an empty list unchanged rather than inventing a rendition', () => {
+    assert.deepEqual(advertisableRenditions([], new LadderLiveness()), []);
+  });
+});

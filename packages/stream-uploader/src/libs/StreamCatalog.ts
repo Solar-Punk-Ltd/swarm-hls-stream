@@ -8,6 +8,7 @@ import { getErrorMessage, retryUntilDeadlineAsync } from '../utils/common.js';
 import { BeePublisher, BeePublisherPool } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
 import { ErrorHandler } from './ErrorHandler.js';
+import { advertisableRenditions, LadderLiveness } from './LadderLiveness.js';
 import { Logger } from './Logger.js';
 import { MasterFeedWriter, PublishedMaster } from './MasterFeedWriter.js';
 
@@ -87,6 +88,35 @@ export class StreamCatalog {
    * lowest rung, which is what a client without master support reads.
    */
   private masterWriter?: MasterFeedWriter;
+
+  /**
+   * How far each ladder's rungs have got, one tracker per group.
+   *
+   * ⛔ Kept here rather than in {@link MasterFeedWriter} because the writer is handed a rendition
+   * list and should stay that way: what a master is ALLOWED to say is a catalog decision, and the
+   * writer's job is to write what it is given.
+   */
+  private readonly liveness = new Map<string, LadderLiveness>();
+
+  /**
+   * One segment of this rung reached Swarm.
+   *
+   * Called from the uploader's segment path beside the per-rung metric, because that is the one
+   * place a delivery is known to have actually landed rather than been attempted.
+   */
+  public recordRungDelivered(group: string, rung: string): void {
+    this.livenessOf(group).recordDelivered(rung);
+  }
+
+  private livenessOf(group: string): LadderLiveness {
+    const existing = this.liveness.get(group);
+    if (existing) {
+      return existing;
+    }
+    const created = new LadderLiveness();
+    this.liveness.set(group, created);
+    return created;
+  }
 
   constructor(
     publishers: BeePublisherPool,
@@ -248,7 +278,14 @@ export class StreamCatalog {
           // the catalog feed, which neither an operator's grep nor the harness can wait on cheaply.
           this.logger.log(ladderFinalized(identity.group));
         }
-        const published = await this.masterWriter?.publish(identity.group, entry.renditions ?? []);
+        // ⛔ A master naming a rung nothing is producing offers a viewer a quality with nothing
+        // behind it. The player moves them off within about seven seconds, so this is the last few
+        // seconds of that harm rather than all of it, and it is harm a stream need not cause.
+        const advertised = advertisableRenditions(
+          entry.renditions ?? [],
+          this.livenessOf(identity.group),
+        );
+        const published = await this.masterWriter?.publish(identity.group, advertised);
 
         return [
           ...withoutGroup(previous, identity.owner, identity.group),

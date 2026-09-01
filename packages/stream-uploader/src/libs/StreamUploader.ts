@@ -242,6 +242,11 @@ export class StreamUploader {
     this.logger.log(segmentUploaded(this.streamId, segmentIndex, ref));
 
     this.metrics?.recordSegmentUploaded(Date.now(), this.ladder?.rung.name);
+    if (this.ladder) {
+      // Beside the metric and not instead of it: the metric is an observation, this decides what the
+      // master is allowed to advertise. Both want the same moment, which is a segment that landed.
+      this.streamCatalog.recordRungDelivered(this.ladder.group, this.ladder.rung.name);
+    }
     this.uploadLiveManifest();
     await this.refreshBandwidthIfDrifted();
     this.persistState();
