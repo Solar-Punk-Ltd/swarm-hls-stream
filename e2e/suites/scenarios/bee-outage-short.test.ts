@@ -73,7 +73,10 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
 
   it('loses no segments across an 8s outage and arms no discontinuity', async () => {
     const byStream = async () => segmentIndicesByStream(await host.logsSince(uploader, startedAt));
-    const expectedStreams = cfg.abrEnabled ? cfg.abrRungs.length : 1;
+    // ⛔ Floored at one. This count is DECLARED by the deployment's `ABR_LADDER` rather than observed,
+    // so a stage declaring no rungs at all would make `size >= 0` true of an empty map and `every()`
+    // vacuously true beside it, and the warmup would clear before a single segment existed.
+    const expectedStreams = Math.max(1, cfg.abrEnabled ? cfg.abrRungs.length : 1);
 
     await waitFor(
       async () => {
@@ -126,7 +129,18 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
     );
     // Per stream: the merged view of a ladder's four counters holes at window boundaries while no
     // rung has lost anything, and can mask a real one-rung gap behind a sibling's healthy index.
-    for (const [streamId, indices] of segmentIndicesByStream(settled)) {
+    //
+    // ⛔ Guarded first, the way `bee-outage-long` guards it. A loop over an empty map makes no
+    // assertion and passes, and this is the suite whose whole claim is that nothing was lost: an
+    // empty window means no rung's uploads were attributable at all, so there is nothing here to
+    // have survived the outage and the claim cannot be made.
+    const perStream = [...segmentIndicesByStream(settled)];
+    assert.ok(
+      perStream.length > 0,
+      'no attributable segment uploads at all in this window, so "no segment was lost" would be a ' +
+        'verdict about an empty log rather than about the outage',
+    );
+    for (const [streamId, indices] of perStream) {
       assert.ok(
         isContiguous(indices),
         `segment indices of ${streamId} must be gapless through the outage; got: ${indices.join(',')}`,

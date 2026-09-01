@@ -55,7 +55,10 @@ describe('G — gateway (viewer-side) outage: uploads unaffected', () => {
     const byStream = async () => segmentIndicesByStream(await host.logsSince(uploader, startedAt));
     const maxOf = (streams: Map<string, number[]>): Map<string, number> =>
       new Map([...streams].map(([id, idx]) => [id, Math.max(...idx)]));
-    const expectedStreams = cfg.abrEnabled ? cfg.abrRungs.length : 1;
+    // ⛔ Floored at one. This count is DECLARED by the deployment's `ABR_LADDER` rather than observed,
+    // so a stage declaring no rungs at all would make `size >= 0` true of an empty map and `every()`
+    // vacuously true beside it, and the warmup would clear before a single segment existed.
+    const expectedStreams = Math.max(1, cfg.abrEnabled ? cfg.abrRungs.length : 1);
 
     // Per stream, and every stream must be here before the fault. A rung with no pre-outage index is
     // a rung the loop below never looks up, so the assertion would simply not be made about it.
@@ -118,7 +121,16 @@ describe('G — gateway (viewer-side) outage: uploads unaffected', () => {
         events.discontinuitiesArmed
       } (upload-failure segments: ${events.discontinuitySegments.join(',')})`,
     );
-    for (const [streamId, indices] of segmentIndicesByStream(settled)) {
+    // ⛔ Guarded first, the way `bee-outage-long` guards it. A loop over an empty map makes no
+    // assertion and passes, so an empty window would print this suite's verdict over nothing: no
+    // rung's uploads were attributable at all, which is not the same as uploads that stayed gapless.
+    const perStream = [...segmentIndicesByStream(settled)];
+    assert.ok(
+      perStream.length > 0,
+      'no attributable segment uploads at all in this window, so "the upload path was unaffected" ' +
+        'would be a verdict about an empty log rather than about the gateway outage',
+    );
+    for (const [streamId, indices] of perStream) {
       assert.ok(
         isContiguous(indices),
         `uploads of ${streamId} stay gapless during a gateway outage; got: ${indices.join(',')}`,

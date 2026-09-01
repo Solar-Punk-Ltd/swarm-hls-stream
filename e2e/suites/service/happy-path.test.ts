@@ -94,6 +94,16 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
     const segments = segmentIndicesByStream(text);
     const published = manifestIndicesByStream(text);
 
+    // ⛔ Guarded before anything is looped over, the way `bee-outage-long` guards it. Both loops
+    // below iterate this map, so an empty one makes no assertion at all and passes: no rung's
+    // uploads were attributable in this window, which is a case that found nothing rather than a
+    // happy path that held.
+    assert.ok(
+      segments.size > 0,
+      'no attributable segment uploads at all in this window, so the gapless-and-advancing verdict ' +
+        'below would be printed over an empty log',
+    );
+
     // Judged per stream: a ladder is four counters starting at different SRS sequence numbers, so
     // the merged view holes at window boundaries while no rung has lost anything.
     for (const [streamId, indices] of segments) {
