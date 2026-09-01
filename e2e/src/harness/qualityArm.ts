@@ -205,10 +205,20 @@ export function steppedDownRefusal(quality: QualitySwitchVerdict): string | null
     return 'the player had selected no rung when the cap landed, so there is nothing for it to have stepped down from';
   }
   if (quality.steppedDownAfterMs === null) {
+    // ⛔ Which half failed. Deciding to come down and managing to are different faults with different
+    // owners, and until 2026-09-01 this called both of them the first. V2 that day: the cap landed,
+    // ABR asked for 360p three seconds later, and the player did not arrive until after the cap had
+    // been lifted. Blaming ABR sent a reader to the one part that had worked.
+    const decided =
+      quality.abrChoseLowerAfterMs === null
+        ? 'and ABR never asked for a lower rung, so the decision is what failed'
+        : `and ABR asked for a lower rung ${(quality.abrChoseLowerAfterMs / 1000).toFixed(1)}s in, so the ` +
+          'decision was right and the player could not act on it. A starving player cannot fetch the ' +
+          'fragment it would switch to, so look at the buffer and the in-flight fragment, not at ABR';
     return (
       `this viewer rode ${baseline}p through a connection capped at ${quality.throttledToKbps} kbps and never ` +
-      `came below it. The lowest rung they selected while capped was ${quality.during.lowestRungHeight ?? 'none'}p. ` +
-      'A ladder nobody descends is four times the publishing cost for one quality'
+      `came below it. The lowest rung they selected while capped was ${quality.during.lowestRungHeight ?? 'none'}p, ` +
+      `${decided}. A ladder nobody descends is four times the publishing cost for one quality`
     );
   }
   return null;

@@ -77,6 +77,16 @@ export interface RungTimeline {
   abrEnabledThroughout: boolean;
   /** Wall time from the treatment landing to the first sample selecting a lower rung. Null where none did. */
   steppedDownAfterMs: number | null;
+  /**
+   * Wall time from the treatment landing to the first sample where ABR ASKED for a lower rung.
+   *
+   * ⛔ The other half of {@link steppedDownAfterMs}, and the two come apart. Read off the V2 artifact
+   * of 2026-09-01: the cap landed at 46.0s, ABR asked for 360p by 49.0s, and the player did not
+   * arrive there until 108.0s, after the cap had been lifted. Deciding took three seconds and acting
+   * took fifty-nine. Without this the suite reports "the viewer never came down" and a reader
+   * concludes ABR is broken, when ABR was the part that worked.
+   */
+  abrChoseLowerAfterMs: number | null;
   /** Wall time from the cap coming off to the first sample selecting a taller rung. Null where none did. */
   climbedBackAfterMs: number | null;
 }
@@ -131,6 +141,33 @@ function qualityPhase(samples: readonly ViewerSample[], from: number, to: number
  * adapted. They had ridden the top rung through the entire cap with their picture at 0.539 of real
  * time.
  */
+/**
+ * {@link firstCrossingBetween} against what ABR ASKED for rather than what the player is on.
+ *
+ * Separate rather than a parameter, because the two fields answer different questions and a caller
+ * choosing between them by flag reads as though they were interchangeable. They are the opposite
+ * ends of the same failure.
+ */
+function firstAbrChoiceBetween(
+  samples: readonly ViewerSample[],
+  from: number,
+  until: number,
+  reference: number | null,
+  crossed: (height: number, reference: number) => boolean,
+): number | null {
+  if (reference === null) {
+    return null;
+  }
+  const choice = samples.find(
+    (sample) =>
+      sample.atMs >= from &&
+      sample.atMs < until &&
+      sample.abrWouldPickHeight !== null &&
+      crossed(sample.abrWouldPickHeight, reference),
+  );
+  return choice === undefined ? null : choice.atMs - from;
+}
+
 function firstCrossingBetween(
   samples: readonly ViewerSample[],
   from: number,
@@ -174,6 +211,13 @@ export function judgeRungTimeline(samples: readonly ViewerSample[], window: Trea
     abrEnabledThroughout: samples.length > 0 && samples.every((sample) => sample.abrEnabled),
     // Bounded by the treatment. A step down that lands after the cap comes off is the player
     // reacting to a link that has already recovered, which is the opposite of what is being asked.
+    abrChoseLowerAfterMs: firstAbrChoiceBetween(
+      samples,
+      window.appliedAtMs,
+      window.liftedAtMs,
+      before.endedOnRungHeight,
+      (height, reference) => height < reference,
+    ),
     steppedDownAfterMs: firstCrossingBetween(
       samples,
       window.appliedAtMs,

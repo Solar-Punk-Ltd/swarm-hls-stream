@@ -674,6 +674,7 @@ function readTimeline(timeline: Record<string, unknown>, at: string): RungTimeli
     switchesCounted: asNumber(timeline.switchesCounted, `${at}.switchesCounted`),
     abrEnabledThroughout: asBoolean(timeline.abrEnabledThroughout, `${at}.abrEnabledThroughout`),
     steppedDownAfterMs: asNumberOrNull(timeline.steppedDownAfterMs, `${at}.steppedDownAfterMs`),
+    abrChoseLowerAfterMs: asNumberOrNull(timeline.abrChoseLowerAfterMs, `${at}.abrChoseLowerAfterMs`),
     climbedBackAfterMs: asNumberOrNull(timeline.climbedBackAfterMs, `${at}.climbedBackAfterMs`),
   };
 }

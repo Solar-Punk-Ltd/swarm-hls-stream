@@ -70,6 +70,11 @@ function rungSection(run: QualityRun): string[] {
     `| while capped | ${orDash(q.during.bandwidthEstimateKbps)} kbps |`,
     `| after | ${orDash(q.after.bandwidthEstimateKbps)} kbps |`,
     `| level changes hls.js counted | ${q.switchesCounted} |`,
+    // ⛔ Above the arrival, because deciding and arriving come apart and the decision is read first.
+    // V2 on 2026-09-01: ABR asked at 3.0s and the player arrived after the cap had already lifted.
+    `| ABR asked for a lower rung, after the cap | ${
+      q.abrChoseLowerAfterMs === null ? 'it never asked' : `${seconds(q.abrChoseLowerAfterMs)}s`
+    } |`,
     `| it came down, after the cap | ${
       q.steppedDownAfterMs === null ? 'it never did' : `${seconds(q.steppedDownAfterMs)}s`
     } |`,

@@ -198,6 +198,42 @@ describe('whether the viewer stepped down when their link could not carry their 
     assert.match(String(steppedDownRefusal(stubborn)), /never came below it/);
   });
 
+  /**
+   * ⛔⛔⛔ The two ways a viewer fails to descend are different faults with different owners, and
+   * until 2026-09-01 the refusal called both of them the first one.
+   *
+   * Read off the V2 artifact of that day: the cap landed at 46.0s, **ABR asked for 360p by 49.0s**,
+   * and the player did not arrive on 360p until 108.0s, a second AFTER the cap was lifted at 106.9s.
+   * So the decision took three seconds and the execution took fifty-nine. Its estimate had fallen
+   * 21616 → 700 kbps and its buffer was down to 0.31s: it was starving on an in-flight 1080p fragment
+   * it could not finish, not ignoring its bandwidth.
+   *
+   * The gate is unchanged, because a viewer who does not actually descend inside the squeeze has a
+   * real problem either way. What changes is that the message stops blaming ABR for a decision ABR
+   * got right, the same correction scenario H needed. See [[swarm-hls-abr-reacts-fast-viewer-starves]].
+   */
+  it('says the decision was made when ABR asked for a lower rung and the player never got there', () => {
+    const decided = wentThrough({
+      steppedDownAfterMs: null,
+      abrChoseLowerAfterMs: 3_000,
+      during: { ...SQUEEZED.during, lowestRungHeight: 1080 },
+    });
+
+    const refusal = String(steppedDownRefusal(decided));
+    assert.match(refusal, /ABR asked for a lower rung 3.0s/, 'the refusal must say the decision was made');
+    assert.match(refusal, /could not act on it/, 'and that what failed was acting on it');
+  });
+
+  it('still blames the decision when ABR never asked for anything lower', () => {
+    const stubborn = wentThrough({
+      steppedDownAfterMs: null,
+      abrChoseLowerAfterMs: null,
+      during: { ...SQUEEZED.during, lowestRungHeight: 1080 },
+    });
+
+    assert.match(String(steppedDownRefusal(stubborn)), /never asked for a lower rung/);
+  });
+
   it('refuses a run where the player had chosen no rung when the cap landed', () => {
     const unstarted = wentThrough({ before: { ...SQUEEZED.before, endedOnRungHeight: null } });
 
