@@ -153,6 +153,64 @@ describe('the reference is a middle rung, never the leader', () => {
   });
 });
 
+describe('the whole broadcast stopping', () => {
+  /**
+   * ⛔⛔⛔ **THIS ASSERTS A DEFECT, ON PURPOSE, AND THE OWNER HAS NOT YET RULED ON THE FIX.**
+   *
+   * Observed live 2026-09-01 in V7, the first sitting after the rung failover was armed. The
+   * uploader was killed, so every rung stopped. The client dropped **three of the four** — "Rung
+   * 360p ... 480p ... 1080p has stopped being produced (4 segments behind the ladder)" — hls.js
+   * raised a fatal `levelSwitchError`, and the player destroyed and restarted itself. This case
+   * reproduces that rung for rung, 720p surviving included.
+   *
+   * The class docblock claims a whole broadcast stopping is safe, because it "freezes every rung's
+   * count and leaves the comparison where it was". That holds only if they stop at the SAME INSTANT.
+   * They do not. Each rung drains whatever it was already holding, the queues differ, and a rung
+   * that drains further pushes the middle reference up past rungs that stopped with less in hand.
+   *
+   * A fix has to decide something this class currently has no opinion on: how much of a ladder may
+   * be condemned at once before the right conclusion is "the broadcast ended" rather than "these
+   * rungs failed". The docblock already says three of four dying is out of scope, and the code does
+   * not enforce that, which is how it enforced the opposite here. ⛔ **That is a product call on the
+   * riskiest rule in this client — eight attempts, three shipped regressions — so it is recorded
+   * rather than guessed at.** See [[swarm-hls-rung-failover-design]].
+   */
+  it('condemns three rungs of four when the source goes away, which is the open defect', () => {
+    const liveness = new LadderLiveness();
+    for (let round = 0; round < 20; round++) {
+      everyRungDelivers(liveness);
+    }
+
+    // The tail of a broadcast whose source went away. Every rung drains whatever it was already
+    // holding, and they were not holding the same amount: 1080p had four segments queued and 720p
+    // had eight. Nothing has failed, the source is simply gone.
+    for (let segment = 0; segment < 4; segment++) {
+      liveness.recordDelivered('1080p');
+    }
+    for (let segment = 0; segment < 8; segment++) {
+      liveness.recordDelivered('720p');
+    }
+
+    assert.deepEqual(
+      LADDER.filter((rung) => liveness.hasStopped(rung, LADDER)),
+      ['360p', '480p', '1080p'],
+      'the cascade changed shape. Read the docblock: this pins a known defect, so a change here is ' +
+        'either the fix (make it [] and say so) or a new way of getting it wrong',
+    );
+  });
+
+  /** The floor that stopped it being all four, and the only reason playback had anywhere to go. */
+  it('never condemns the last rung standing, which is what kept V7 playable at all', () => {
+    const liveness = new LadderLiveness();
+    liveness.recordDelivered('720p');
+    for (let segment = 0; segment < 50; segment++) {
+      liveness.recordDelivered('720p');
+    }
+
+    assert.equal(liveness.hasStopped('720p', ['720p']), false);
+  });
+});
+
 describe('a ladder too small to judge', () => {
   it('calls nothing stopped on a single rendition, which has no middle and nowhere to go', () => {
     const liveness = new LadderLiveness();
