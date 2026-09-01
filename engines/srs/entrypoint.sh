@@ -66,20 +66,36 @@ require_rung_name() {
 # These were configurable on `main` and this branch hard-coded them back, which took the knob away
 # without anything failing. Restored under main's names.
 #
-# The default is 1.0 rather than main's 1.5, from the sweep of 2026-08-03: 105 samples across four
-# segment durations on the deployment host, where capture to fetchable came out at 1.96s, 2.94s,
-# 5.00s and 9.42s for segments of 0.5s, 1.0s, 2.0s and 4.0s. It is close to linear in the segment,
-# and the segment is not the only term that moves, because a shorter one is less data to write into
-# Swarm and less to pull back.
+# The sweep of 2026-08-03 took 105 samples across four segment durations on the deployment host, and
+# capture to fetchable came out at 1.96s, 2.94s, 5.00s and 9.42s for segments of 0.5s, 1.0s, 2.0s and
+# 4.0s. Close to linear in the segment, and the segment is not the only term that moves, because a
+# shorter one is less data to write into Swarm and less to pull back.
 #
-# 1.0 rather than the 0.5 that measured best, because segment count is an operational cost as well as
-# a latency lever: per minute of broadcast, 0.5s segments mean four times the uploads and four times
-# the manifest feed writes of the 2.0s this replaces. 1.0 takes most of the latency and doubles that
-# rate rather than quadrupling it. 0.5 is measured, supported, and there for anyone who wants it.
+# The default is 0.5, the value that measured best, and `deploy/test/srsTuning.test.js` holds it
+# there. This comment claimed 1.0 for weeks after the default had been lowered, which is worth one
+# line of warning on its own: it was read as authorising 1.0 by a later session that never opened the
+# test.
 #
-# `LIVE_SYNC_DURATION_S` in the client is 6 for exactly this default. The two were chosen together:
-# a deployment that raises this has to raise that or it will rebuffer.
-# `HLS_WINDOW` stays at fifteen fragments, which is what 22.5 against 1.5 already was.
+# ⛔ **A SHORT FRAGMENT IS NOT ONLY A LATENCY LEVER, AND ON A LADDER IT HAS A CEILING.** SRS announces
+# each closed segment over `on_hls`, once per rung, so the announcement rate is `rungs / HLS_FRAGMENT`
+# a second. Measured 2026-08-31 on the deployment host, SRS sustains about **6.7 announcements a
+# second** while its own encoders were producing 8.0, and the shortfall does not appear as an error.
+# It appears as announcements falling behind the media at 0.46s per second of video until the lag
+# passes `HLS_WINDOW`, after which SRS deletes each segment before it announces it and the uploader
+# gets a callback naming a file that is already gone. The tallest rung crosses first and its stream is
+# unpublished mid-broadcast while the master feed goes on advertising it.
+#
+# So a four-rung ladder at 0.5 asks for 8.0/s and loses a rung about two minutes in. At 1.0 it asks
+# for 4.0/s and fits. A single-rendition deployment at 0.5 asks for 2.0/s and is unaffected, which is
+# why the default is still 0.5 and why the constraint is the ladder's, not the fragment's.
+# ⚠️ The 6.7/s is one measurement on a co-tenanted host and wants replicating before it becomes a
+# gate. What SRS spends the time on is not known: the uploader answers each callback in 1ms.
+#
+# `LIVE_SYNC_DURATION_S` in the client is 6, chosen against a 1.0s segment. The two go together, so a
+# deployment that raises the fragment past 1.0 has to raise that or it will rebuffer.
+#
+# ⚠️ `HLS_WINDOW` is SECONDS of playlist, not fragments. This comment used to say "fifteen fragments",
+# which is only the same number when the fragment is 1.0 and is double the intent at 0.5.
 require_number HLS_FRAGMENT "${HLS_FRAGMENT:-0.5}"
 require_number HLS_WINDOW "${HLS_WINDOW:-15}"
 # 2.1 is SRS's own default, so naming it here changes no deployment that does not set it.
