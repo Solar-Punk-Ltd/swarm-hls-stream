@@ -97,9 +97,25 @@ publishes and an idle stage would look identical to a stale one. One `docker exe
 refusal names redeploying as the fix and rewording the patterns as the wrong one, because the wrong
 one is tempting and buys a green run against code nobody is shipping.
 
+Since 2026-09-01 it lists every family the harness parses, fourteen in all: the four originals, the
+finalize flips and session ends seven scenarios wait on, the four lines that arm a discontinuity
+(six suites assert that count is zero, and a line nothing matches passes them vacuously green), the
+catalog-lost discriminator and the catalog announce. Two of the fourteen refuse any uploader built
+before the messages moved into the shared contract even though no wording changed, one string used
+to be assembled across a `+` join and one lived in a file the gate does not read, so the first run
+after this checkout lands asks for exactly one redeploy.
+
 `logLevel.ts` and `suites/smoke/attach.test.ts` guard the sibling precondition, whether the
 deployment's `LOG_LEVEL` admits these lines at all. Level and shape are separate questions and both
 have now been answered the expensive way once.
+
+`e2e/src/harness/stageStamps.ts` gates every suite's `before()` on postage: every Bee node the
+uploader publishes through must hold a usable batch with more TTL than the run needs, or the suite
+refuses before its publisher starts. The check it replaced read the coordinator alone and spoke for
+the stage, so an expired batch on the 1080p node passed it and surfaced mid-broadcast as a rung that
+stopped being produced, which reaches a viewer as an ABR fault and gets scored as one. The gateway
+node is deliberately not read, it holds no upload batch, and batch utilization stays with
+`deploy/scripts/stamp-guard.sh` and the uploader's own `PostageGate`.
 
 ## The map
 
