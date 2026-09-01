@@ -1,5 +1,5 @@
 import { Bee, BeeResponseError, FeedIndex, PrivateKey } from '@ethersphere/bee-js';
-import { finalizeResumed, ladderFinalized } from '@swarm-hls-stream/shared';
+import { finalizeResumed, ladderFinalized, updatingStreamToVod } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -8,7 +8,14 @@ import { Logger } from '../src/libs/Logger.js';
 import { ManifestManager } from '../src/libs/ManifestManager.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
-import { LadderMembership, MEDIA_TYPE_VIDEO, SegmentEntry, StreamStatus } from '../src/types.js';
+import {
+  LadderMembership,
+  MEDIA_TYPE_VIDEO,
+  SegmentEntry,
+  STREAM_STATUS_LIVE,
+  STREAM_STATUS_VOD,
+  StreamStatus,
+} from '../src/types.js';
 
 import { FakeFeedHead, makeFakeBee, makeFakeCatalog, makeFakeRecoveryStore } from './helpers/fakes.js';
 
@@ -126,20 +133,48 @@ function makeRecovered(options: RecoveredOptions = {}): RecoveredUploader {
   return { uploader, published, removed, headReads: () => reads };
 }
 
-/** The log lines written while `run` is in flight, with the previous sink restored afterwards. */
-async function logLinesDuring(run: () => Promise<void>): Promise<string[]> {
-  const lines: string[] = [];
+/** What a catalog feed write puts into the sequence below, so an ordering can be read off it. */
+const CATALOG_WRITE = '<catalog feed write>';
+
+/**
+ * Everything that happened while `run` was in flight, appended to `sequence` in order: every log line,
+ * and every catalog feed write for a fixture that records them. One array, because the assertion that
+ * needs this is about which of the two came first.
+ */
+async function sequenceDuring(sequence: string[], run: () => Promise<void>): Promise<string[]> {
   const logger = Logger.getInstance();
-  const previous = logger.configure({ sink: (_level, line) => lines.push(line) });
+  const previous = logger.configure({ sink: (_level, line) => sequence.push(line) });
   try {
     await run();
   } finally {
     logger.configure(previous);
   }
-  return lines;
+  return sequence;
+}
+
+/** The log lines written while `run` is in flight, with the previous sink restored afterwards. */
+async function logLinesDuring(run: () => Promise<void>): Promise<string[]> {
+  return sequenceDuring([], run);
 }
 
 const linesHolding = (lines: string[], message: string): number => lines.filter((l) => l.includes(message)).length;
+
+/**
+ * A stand-in nothing in these messages can contain, so a composed message splits cleanly into the
+ * fixed half a negative assertion should be anchored on.
+ */
+const MESSAGE_PROBE = 'MESSAGEPROBE';
+
+/**
+ * The fixed openings of the two announces, split back out of their composers rather than written out
+ * beside them.
+ *
+ * ⛔ A negative assertion on a hardcoded literal is the one that cannot fail. Reword the message and
+ * the grep finds nothing, which is exactly what the assertion asks for, so it goes green on the day
+ * the thing it guards stops being observable at all.
+ */
+const RESUME_ANNOUNCE = finalizeResumed(MESSAGE_PROBE, 0).split(MESSAGE_PROBE)[0];
+const VOD_FLIP_ANNOUNCE = updatingStreamToVod(MESSAGE_PROBE).split(MESSAGE_PROBE)[0];
 
 describe('a single-rendition finalize that comes back after a crash', () => {
   it('publishes nothing when its recording is already at the head of its own feed', async () => {
@@ -184,7 +219,7 @@ describe('a single-rendition finalize that comes back after a crash', () => {
     const lines = await logLinesDuring(() => uploader.notifyStop());
 
     assert.equal(published.length, 2, 'the closing playlist and the recording both still had to be written');
-    assert.equal(linesHolding(lines, 'Resuming the finalize of'), 0, 'nothing was resumed, so nothing may say so');
+    assert.equal(linesHolding(lines, RESUME_ANNOUNCE), 0, 'nothing was resumed, so nothing may say so');
     assert.ok(published[1].playlist.includes('#EXT-X-PLAYLIST-TYPE:VOD'), 'the second write is the recording');
     assert.deepEqual(
       entries.map((e) => e.index),
@@ -194,11 +229,28 @@ describe('a single-rendition finalize that comes back after a crash', () => {
     assert.deepEqual(removed, [STREAM_ID]);
   });
 
+  /**
+   * ⚠️ The saved index is left at its default so the read actually happens. This test used to pass
+   * `socIndex: null`, which short-circuits `publishedRecordingIndex` before any feed is touched, so
+   * it proved the guard's other branch and said nothing at all about what a 404 does. The read count
+   * is asserted for that reason: it is the only thing separating the two.
+   */
   it('runs the full publish when the feed holds nothing at all', async () => {
-    const { uploader, published } = makeRecovered({ socIndex: null });
+    const { uploader, published, headReads } = makeRecovered();
 
     await uploader.notifyStop();
 
+    assert.equal(headReads(), 1, 'the head was never asked, so the 404 answer was never exercised');
+    assert.equal(published.length, 2, 'a feed nothing was ever written to leaves the whole publish still to do');
+  });
+
+  /** The branch the test above used to cover by accident, kept deliberately and on its own. */
+  it('never asks the feed when this stream committed no manifest before the crash', async () => {
+    const { uploader, published, headReads } = makeRecovered({ socIndex: null });
+
+    await uploader.notifyStop();
+
+    assert.equal(headReads(), 0, 'a stream with no SOC index has an empty feed by construction, not by enquiry');
     assert.equal(published.length, 2, 'a crash before the first manifest leaves an empty feed and a full path');
   });
 
@@ -241,7 +293,10 @@ describe('a single-rendition finalize that comes back after a crash', () => {
   it('refuses to publish when it cannot read the head, and leaves the recovery entry behind', async () => {
     const { uploader, published, removed } = makeRecovered({
       feedHead: () => {
-        throw new BeeResponseError('GET', '/feeds', 'Internal Server Error', undefined, 500, 'Internal Server Error');
+        // 400 rather than a plausible 500, purely so `retryUntilDeadlineAsync` rethrows on the first
+        // attempt instead of spending the whole window. What a retryable status does is the sibling
+        // below, which is the one test here that pays for the wall clock.
+        throw new BeeResponseError('GET', '/feeds', 'Bad Request', undefined, 400, 'Bad Request');
       },
     });
 
@@ -249,6 +304,33 @@ describe('a single-rendition finalize that comes back after a crash', () => {
 
     assert.deepEqual(published, [], 'a read it could not complete must never become a second recording');
     assert.deepEqual(removed, [], 'the entry is the only record the broadcast was live, so a deferral keeps it');
+  });
+
+  /**
+   * ⛔⛔⛔ The 503 that read as an empty feed. `isFeedAbsent` maps 404 **and 503** to absent, which is
+   * right for a reader with nothing else to go on: bee answers 503 for a topic that exists and holds
+   * no update yet. This path has something else to go on. It runs only for a stream holding a SOC
+   * index it wrote itself, so the feed is known non-empty and a 503 is a warming or busy node. Taken
+   * for an empty feed it short-circuits the retry window on the first attempt, answers "nothing was
+   * published", and buys the recording a second time. That is the measured double publish,
+   * reinstated on exactly the node that was already struggling.
+   *
+   * ⏱️ **This test spends the whole of `FEED_HEAD_READ_WINDOW_MS` in real time, and it is the only one
+   * here that does.** That is not incidental: 503 is retryable, so proving it is NOT short-circuited
+   * means letting the window run out. Raising that constant slows this file by the same amount.
+   */
+  it('treats a 503 as a node it could not read, never as a feed with nothing in it', async () => {
+    const { uploader, published, removed, headReads } = makeRecovered({
+      feedHead: () => {
+        throw new BeeResponseError('GET', '/feeds', 'Service Unavailable', undefined, 503, 'Service Unavailable');
+      },
+    });
+
+    await assert.rejects(() => uploader.notifyStop(), /did not read within/);
+
+    assert.ok(headReads() > 1, 'a 503 answered on the first attempt is a 503 being read as an empty feed');
+    assert.deepEqual(published, [], 'a 503 taken for an empty feed is how a paid-for recording gets bought twice');
+    assert.deepEqual(removed, [], 'the deferral keeps the entry, so the next boot asks the question again');
   });
 
   /**
@@ -282,6 +364,32 @@ describe('a single-rendition finalize that comes back after a crash', () => {
     assert.equal(headReads(), 0, 'a session that published every index it holds has nothing to ask');
     assert.ok(published.length >= 2, 'and it finalizes exactly as it always did');
   });
+
+  /**
+   * ⛔ Being rebuilt from a recovery entry is not the same as having published nothing, and the flag
+   * that says so cannot tell the difference. A rung that came back and then broadcast for an hour is
+   * `resumedFromCrash` for the whole of it, and it would ask the feed at the end of every broadcast
+   * it ever ran, spending that read's failure modes on a question it already knows the answer to: a
+   * warming node there costs the broadcast its finalize, and the entry it strands is a recording
+   * nobody publishes.
+   *
+   * `announcedThrough` is the discriminator, because it is null exactly until this session publishes
+   * a live manifest of its own. The feed below is left answering with a finished recording, which is
+   * the loaded fixture: a session that DID ask would resume and publish nothing at all. This one
+   * publishes, and that is the read not happening.
+   */
+  it('stops asking once the recovered session has published a manifest of its own', async () => {
+    const { uploader, published, headReads } = makeRecovered({
+      feedHead: () => ({ index: 9, manifest: PLAYLISTS.vod }),
+    });
+
+    uploader.handleSegment(42, 1, Buffer.from('seg42'));
+    await uploader.segmentQueue.onIdle();
+    await uploader.notifyStop();
+
+    assert.equal(headReads(), 0, 'this session owns every index it holds, so the head has nothing to tell it');
+    assert.equal(published.length, 3, 'the live manifest it resumed with, then the closing playlist and the VOD');
+  });
 });
 
 /** One write the catalog feed took, as a reader would parse it back. */
@@ -290,8 +398,13 @@ interface CatalogWrite {
   payload: string;
 }
 
-/** A catalog feed that hands back whatever was last written to it, which is what a reboot reads. */
-function catalogFeedBee(writes: CatalogWrite[]): Bee {
+/**
+ * A catalog feed that hands back whatever was last written to it, which is what a reboot reads.
+ *
+ * @param onWrite called as each write lands, so a test can place the write among the log lines around
+ * it. Only the ordering test supplies one.
+ */
+function catalogFeedBee(writes: CatalogWrite[], onWrite: () => void = () => {}): Bee {
   const latest = () => (writes.length === 0 ? [] : JSON.parse(writes[writes.length - 1].payload));
   return {
     makeFeedReader: () => ({
@@ -304,6 +417,7 @@ function catalogFeedBee(writes: CatalogWrite[]): Bee {
     makeFeedWriter: () => ({
       uploadPayload: async (_stamp: string, payload: unknown, opts: { index: FeedIndex }) => {
         writes.push({ index: opts.index, payload: String(payload) });
+        onWrite();
         return { reference: { toHex: () => 'ref' } };
       },
     }),
@@ -330,9 +444,9 @@ const LADDER: LadderMembership = {
  * previous entry and every announce reads as the first flip. That is the fixture failing, not the
  * guard, and it looks identical to the defect.
  */
-const LADDER_OWNER = new PrivateKey(TEST_STREAM_KEY).publicKey().address().toHex();
+const STREAM_OWNER = new PrivateKey(TEST_STREAM_KEY).publicKey().address().toHex();
 
-const LADDER_IDENTITY = { title: 'title', owner: LADDER_OWNER, group: LADDER_GROUP, mediatype: MEDIA_TYPE_VIDEO };
+const LADDER_IDENTITY = { title: 'title', owner: STREAM_OWNER, group: LADDER_GROUP, mediatype: MEDIA_TYPE_VIDEO };
 
 const rungOf360p = { name: '360p', width: 640, height: 360, topic: 'rung-topic-360p' };
 const rungOf1080p = { name: '1080p', width: 1920, height: 1080, topic: RUNG_TOPIC };
@@ -432,5 +546,130 @@ describe('a recovered ladder rung whose entry outlived the recording', () => {
     assert.deepEqual(published, [], 'the recording was already in the feed, whatever the catalog had missed');
     assert.equal(linesHolding(after, ladderFinalized(LADDER_GROUP)), 1, 'the flip the crash cut short still happens');
     assert.equal(heldEntry(writes).state, 'vod');
+  });
+});
+
+/**
+ * The catalog entry a single-rendition stream publishes for itself, in whichever state a fixture
+ * needs it left in. The owner and topic must be the uploader's own or `withoutTopic` finds no
+ * previous entry, every announce reads as a first flip, and the fixture fails in the exact shape of
+ * the defect.
+ */
+function singleEntry(state: StreamStatus, finished: { index?: number; duration?: number } = {}) {
+  return {
+    title: 'title',
+    owner: STREAM_OWNER,
+    topic: RUNG_TOPIC,
+    state,
+    mediatype: MEDIA_TYPE_VIDEO,
+    timestamp: Date.now(),
+    ...finished,
+  };
+}
+
+/**
+ * ## The same two crash windows on the shape that has no ladder
+ *
+ * The ladder path fixed both halves of this and the single-rendition path kept both. `Updating stream
+ * in list to VOD` was written **before** `addStream`, so a crash between them left the log claiming a
+ * finished broadcast over an entry that honestly still said live, and it was written **every time**,
+ * so a resumed finalize over a catalog that already said vod announced a second flip for one
+ * broadcast. `vodFinalizeCount` in the e2e harness counts exactly this line, which is what makes the
+ * second one expensive: the fix for the double publish reports itself as the double publish.
+ */
+describe('a recovered single-rendition stream whose entry outlived the recording', () => {
+  it('rewrites the entry without announcing a second flip when the catalog already says vod', async () => {
+    const writes: CatalogWrite[] = [];
+    const bee = catalogFeedBee(writes);
+    const live = makeCatalog(bee);
+    await live.init();
+
+    const before = await logLinesDuring(async () => {
+      await live.addStream(singleEntry(STREAM_STATUS_LIVE));
+      await live.addStream(singleEntry(STREAM_STATUS_VOD, { index: 9, duration: 2 }));
+    });
+    assert.equal(linesHolding(before, VOD_FLIP_ANNOUNCE), 0, 'the catalog does not write this line, the uploader does');
+    assert.equal(heldEntry(writes).state, 'vod', 'the broadcast had already finished when the kill landed');
+
+    const rebooted = makeCatalog(bee);
+    await rebooted.init();
+    const { uploader, published, removed } = makeRecovered({
+      catalog: rebooted,
+      feedHead: () => ({ index: 9, manifest: PLAYLISTS.vod }),
+    });
+
+    const after = await logLinesDuring(() => uploader.notifyStop());
+
+    assert.deepEqual(published, [], 'the surviving stream bought its recording a second time');
+    assert.equal(linesHolding(after, RESUME_ANNOUNCE), 1, 'the resume must say so, once');
+    assert.equal(
+      linesHolding(after, VOD_FLIP_ANNOUNCE),
+      0,
+      'a finalize re-running over a catalog that already says vod is not a second flip',
+    );
+    assert.equal(heldEntry(writes).state, 'vod');
+    assert.deepEqual(removed, [STREAM_ID]);
+  });
+
+  /**
+   * The other side of the window: the kill landed after the recording went into the feed and before
+   * the catalog write, so the entry the reboot reads honestly still says live and the one flip of the
+   * broadcast is announced here.
+   */
+  it('announces the flip once when the crash beat the catalog write', async () => {
+    const writes: CatalogWrite[] = [];
+    const bee = catalogFeedBee(writes);
+    const live = makeCatalog(bee);
+    await live.init();
+    await live.addStream(singleEntry(STREAM_STATUS_LIVE));
+    assert.equal(heldEntry(writes).state, 'live', 'the catalog write the crash cut short never landed');
+
+    const rebooted = makeCatalog(bee);
+    await rebooted.init();
+    const { uploader, published } = makeRecovered({
+      catalog: rebooted,
+      feedHead: () => ({ index: 9, manifest: PLAYLISTS.vod }),
+    });
+
+    const after = await logLinesDuring(() => uploader.notifyStop());
+
+    assert.deepEqual(published, [], 'the recording was already in the feed, whatever the catalog had missed');
+    assert.equal(linesHolding(after, VOD_FLIP_ANNOUNCE), 1, 'the flip the crash cut short still happens, once');
+    const finished = heldEntry(writes) as { state: StreamStatus; index?: number };
+    assert.equal(finished.state, 'vod');
+    assert.equal(finished.index, 9, 'the entry must point at the recording that was already in the feed');
+  });
+
+  /**
+   * ⛔⛔⛔ After the write, never before it. This is the ordering `StreamCatalog.upsertRendition`
+   * records at length for the ladder, asserted here because the single-rendition path had the
+   * opposite one: the announce went out while the feed write and everything it could fail on still
+   * lay ahead of it, so a crash in that gap left a log saying a broadcast had ended over a catalog
+   * that said it had not.
+   */
+  it('writes the catalog before it announces the flip', async () => {
+    const writes: CatalogWrite[] = [];
+    const sequence: string[] = [];
+    const bee = catalogFeedBee(writes, () => sequence.push(CATALOG_WRITE));
+    const live = makeCatalog(bee);
+    await live.init();
+    await live.addStream(singleEntry(STREAM_STATUS_LIVE));
+
+    const rebooted = makeCatalog(bee);
+    await rebooted.init();
+    const { uploader } = makeRecovered({
+      catalog: rebooted,
+      feedHead: () => ({ index: 9, manifest: PLAYLISTS.vod }),
+    });
+
+    // Cleared so the seeding write above is not the one the ordering is read against.
+    sequence.length = 0;
+    await sequenceDuring(sequence, () => uploader.notifyStop());
+
+    const wroteAt = sequence.indexOf(CATALOG_WRITE);
+    const announcedAt = sequence.findIndex((event) => event.includes(VOD_FLIP_ANNOUNCE));
+    assert.notEqual(wroteAt, -1, 'the finalize never wrote the catalog at all');
+    assert.notEqual(announcedAt, -1, 'the finalize never announced the flip at all');
+    assert.ok(wroteAt < announcedAt, `the flip was announced before the write landed: ${sequence.join(' | ')}`);
   });
 });

@@ -1,4 +1,4 @@
-import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
+import { Bee, BeeResponseError, PrivateKey, Topic } from '@ethersphere/bee-js';
 import {
   addingStreamToList,
   finalizeResumed,
@@ -22,7 +22,7 @@ import {
   STREAM_STATUS_VOD,
   StreamState,
 } from '../types.js';
-import { getErrorMessage, isFeedAbsent, retryUntilDeadlineAsync } from '../utils/common.js';
+import { getErrorMessage, retryUntilDeadlineAsync } from '../utils/common.js';
 import { HLS_ENDLIST, HLS_PLAYLIST_TYPE_VOD } from '../utils/hlsTags.js';
 
 import {
@@ -69,6 +69,24 @@ const FEED_HEAD_READ_WINDOW_MS = 15_000;
  */
 function isFinishedRecording(manifest: string): boolean {
   return manifest.includes(HLS_PLAYLIST_TYPE_VOD) && manifest.includes(HLS_ENDLIST);
+}
+
+/**
+ * The one answer that means this stream's manifest feed was never written to.
+ *
+ * ⛔⛔ **Deliberately narrower than `isFeedAbsent`, which also takes 503, and the difference is a
+ * recording.** The two predicates answer different questions. `isFeedAbsent` answers "is this feed
+ * empty" for a reader with no other information, and bee says 503 when a topic exists with no update
+ * on it, so taking 503 there is right. This one is asked on the recovered-finalize path, where the
+ * feed is already KNOWN non-empty: the caller reaches the read only with a non-null `socIndex`, which
+ * is an index this stream wrote. A 503 there cannot mean an empty feed. It is a warming or busy node,
+ * it is retryable, and short-circuiting the retry window on it answers "nothing was published" to a
+ * question that was never asked, which republishes a recording that is already in the feed and paid
+ * for. Left retryable it ends in the deferring throw, which costs an unfinalized interval and nothing
+ * that cannot be undone.
+ */
+function isFeedNeverWritten(error: unknown): boolean {
+  return error instanceof BeeResponseError && error.status === 404;
 }
 
 /**
@@ -350,7 +368,9 @@ export class StreamUploader {
     };
 
     this.logger.log(addingStreamToList(JSON.stringify(entry)));
-    return this.streamCatalog.addStream(entry);
+    // The flip answer is `false` for a live announce by construction, so it is discarded here rather
+    // than checked. `completeFinalize` is the caller that reads it.
+    await this.streamCatalog.addStream(entry);
   }
 
   /**
@@ -451,8 +471,17 @@ export class StreamUploader {
       timestamp: Date.now(),
     };
 
-    this.logger.log(updatingStreamToVod(JSON.stringify(entry)));
-    await this.streamCatalog.addStream(entry);
+    // ⛔⛔⛔ After the write and only when the entry really flipped, which is the single-rendition
+    // half of what `StreamCatalog.upsertRendition` records at length for a ladder. Both halves were
+    // wrong here. Written before the write, the line announced a flip the feed had not taken yet, so
+    // a crash in that gap left the log claiming a finished broadcast over an entry that honestly
+    // still said `live`. Written unconditionally, a resumed finalize over a catalog that already
+    // said `vod` announced a second flip for one broadcast, and `vodFinalizeCount` reads exactly
+    // this line, so the fix for the double publish reported itself as the double publish.
+    const flippedToVod = await this.streamCatalog.addStream(entry);
+    if (flippedToVod) {
+      this.logger.log(updatingStreamToVod(JSON.stringify(entry)));
+    }
 
     // Counted here rather than by the orchestrator because `notifyStop` is memoized, so this line
     // runs exactly once however many drains ask. Counting it from a drain double-counted a session
@@ -479,11 +508,21 @@ export class StreamUploader {
    *
    * Only a session rebuilt off disk pays even that. A session this process announced has published
    * every index it holds and there is nothing to ask.
+   *
+   * ⛔ **And a recovered session stops paying it the moment it publishes something of its own.**
+   * `resumedFromCrash` means built from a recovery entry, which is not the same as published nothing:
+   * a rung that came back and carried on broadcasting for an hour is still flagged, and it would ask
+   * the feed at the end of every one of those broadcasts. `announcedThrough` is the discriminator,
+   * because it is null exactly until this session publishes a live manifest itself. Once it is set,
+   * the head of the feed is this session's own live manifest, the dead process's indices are all
+   * below it, and there is nothing a recording could be hiding at. The read would answer "no
+   * recording" and buy that answer with the whole of its failure surface: a warming node costs the
+   * broadcast its finalize, and the recovery entry it strands is a recording nobody publishes.
    */
   private async publishedRecordingIndex(): Promise<number | null> {
     // A stream that never committed a manifest has an empty feed, so there is nothing to read and
     // the closing playlist below is the first thing this topic will ever hold.
-    if (!this.resumedFromCrash || this.socIndex === null) {
+    if (!this.resumedFromCrash || this.socIndex === null || this.announcedThrough !== null) {
       return null;
     }
 
@@ -522,10 +561,10 @@ export class StreamUploader {
         try {
           return await feedReader.downloadPayload();
         } catch (error) {
-          // Inside the retried function deliberately: 503 is both "this feed is empty" and a
-          // retryable status, so asked outside it an empty feed would spend the whole window
-          // before answering what the first attempt already knew.
-          if (isFeedAbsent(error)) {
+          // Inside the retried function deliberately: a 404 is settled on the first attempt, and
+          // asked outside the retry it would spend the whole window before answering what that
+          // attempt already knew. 404 alone, never `isFeedAbsent`: see {@link isFeedNeverWritten}.
+          if (isFeedNeverWritten(error)) {
             return null;
           }
           throw error;

@@ -49,6 +49,12 @@ export function getErrorMessage(error: unknown): string {
  * {@link retryUntilDeadlineAsync} has to ask this **inside** the retried function. Asked outside,
  * an empty feed spends the whole retry window before answering a question that was settled on the
  * first attempt.
+ *
+ * ⛔⛔ **Not for a reader that already knows the feed is non-empty.** This answers "could the feed be
+ * empty" for a caller with nothing else to go on. `StreamUploader.readManifestFeedHead` has something
+ * else: it runs only for a stream holding a SOC index it wrote itself, so an empty feed is already
+ * ruled out and a 503 there is a warming node rather than an answer. That path uses its own
+ * `isFeedNeverWritten`, which takes 404 alone. Taking 503 there republished a paid-for recording.
  */
 export function isFeedAbsent(error: unknown): boolean {
   return error instanceof BeeResponseError && (error.status === 404 || error.status === 503);
