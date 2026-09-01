@@ -130,6 +130,31 @@ async function logLinesDuring(run: () => Promise<void>): Promise<string[]> {
 
 /**
 /** The catalog reaches its node through the pool's coordinator, so that is all a double needs. */
+/**
+ * A catalog feed that reads back whatever was last written to it.
+ *
+ * `makeCatalogBee` serves a fixed payload, which is right for testing one write but cannot express
+ * the read-merge-write four rungs of a ladder perform against each other.
+ */
+function feedbackBee(writes: CapturedWrite[]): Bee {
+  const latest = () => (writes.length === 0 ? [] : JSON.parse(writes[writes.length - 1].payload));
+  return {
+    makeFeedReader: () => ({
+      downloadPayload: async (dlOpts?: { index?: FeedIndex }) =>
+        dlOpts?.index
+          ? { payload: { toJSON: latest } }
+          : { feedIndex: FeedIndex.fromBigInt(BigInt(writes.length)), payload: { toJSON: latest } },
+    }),
+    isConnected: async () => true,
+    makeFeedWriter: () => ({
+      uploadPayload: async (_stamp: string, payload: unknown, writeOpts: Omit<CapturedWrite, 'payload'>) => {
+        writes.push({ ...writeOpts, payload: String(payload) });
+        return { reference: { toHex: () => 'ref' } };
+      },
+    }),
+  } as unknown as Bee;
+}
+
 function makePublishers(bee: Bee): BeePublisherPool {
   const publisher = { rung: SINGLE_PUBLISHER, url: '', stamp: 'stamp', bee };
   return {
@@ -716,6 +741,152 @@ describe('StreamCatalog ladder write path', () => {
     assert.equal(written[0].group, 'group-1');
     assert.equal(written[0].topic, 'master-topic', 'the catalog entry must point at the master, not the lowest rung');
     assert.equal(written[0].renditions.length, 1, 'the rung it still carries for a client without master support');
+  });
+
+  /**
+   * Scenario H's open red, asked of the code rather than of a broadcast.
+   *
+   * `finalize-crash` kills the uploader the instant the ladder flips to VOD, reboots it, and asserts
+   * the catalog was finalized once. On 2026-08-31 it counted two, and the count is of the
+   * `Ladder <group> finalized to VOD` line, whose guard is "the entry the feed currently holds is
+   * not already VOD". So the question these two cases settle is which of the two things a second
+   * line means: a genuine second finalize, or a first finalize the guard could not see.
+   */
+  const finishedRung = { ...rung, index: 7, duration: 12 };
+
+  /** A ladder entry as the feed holds it. `CatalogEntry` is the single-rendition shape. */
+  const ladderEntries = (write: CapturedWrite) =>
+    JSON.parse(write.payload) as Array<{ state: string; renditions?: unknown[] }>;
+  const lastLadderEntry = (writes: CapturedWrite[]) => ladderEntries(writes[writes.length - 1])[0];
+
+  it('logs the ladder finalize once when the same finished rung is re-announced after a crash', async () => {
+    const writes: CapturedWrite[] = [];
+    const bee = makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND });
+    const catalog = new StreamCatalog(makePublishers(bee), TEST_STREAM_KEY, TEST_TOPIC);
+    await catalog.init();
+
+    const first = await logLinesDuring(() => catalog.upsertRendition(identity, finishedRung));
+    // What the feed now holds is what a reboot would read back before re-finalizing.
+    const afterFirst = publishedBy(writes[writes.length - 1]);
+    const rebooted = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupIndex: 1n, published: afterFirst })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+    );
+    await rebooted.init();
+    const second = await logLinesDuring(() => rebooted.upsertRendition(identity, finishedRung));
+
+    assert.equal(first.filter((l) => l.includes('finalized to VOD')).length, 1, 'the first finalize must say so');
+    assert.equal(
+      second.filter((l) => l.includes('finalized to VOD')).length,
+      0,
+      're-announcing a rung of an already finalized ladder is not a second finalize',
+    );
+  });
+
+  /**
+   * ⛔ The mechanism that would make H red without anything being finalized twice. The guard reads
+   * the feed, so a reboot that comes back to an empty or unreadable catalog sees no previous entry,
+   * concludes this is the live-to-VOD moment, and says so a second time. The line would then be
+   * counting what the reader could see rather than what the uploader did.
+   */
+  it('says finalized a second time when the reboot reads a catalog that has lost the entry', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+    );
+    await catalog.init();
+    await logLinesDuring(() => catalog.upsertRendition(identity, finishedRung));
+
+    // A reboot whose catalog read yields nothing, which is what an empty or stale head looks like.
+    const blind = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+    );
+    await blind.init();
+    const second = await logLinesDuring(() => blind.upsertRendition(identity, finishedRung));
+
+    assert.equal(
+      second.filter((l) => l.includes('finalized to VOD')).length,
+      1,
+      'a blind read makes the guard call it the first finalize, which is what H would count twice',
+    );
+  });
+
+  /**
+   * ⛔⛔ What a blind read would cost beyond the log line. `buildLadderEntry` merges the incoming
+   * rung into whatever the previous entry held, so a read that yields nothing rebuilds the ladder
+   * from the one rung in hand and would write THAT over a finished four rung recording.
+   *
+   * ⚠️ Booted **without** a `CatalogIndexStore`, which is the case this pins and is NOT how the
+   * deployment runs. The realistic reboot is the case below, which has the persisted index the
+   * store saves on every write. Both are kept because the difference between them is the whole of
+   * the protection, and a change that quietly stopped passing the store would otherwise look fine.
+   */
+  it('rebuilds a four rung recording as a one rung recording when it reboots with no persisted index', async () => {
+    const writes: CapturedWrite[] = [];
+    const ladder = ['360p', '480p', '720p', '1080p'].map((name, i) => ({
+      ...rung,
+      name,
+      topic: `rung-${name}`,
+      index: 7 + i,
+      duration: 12,
+    }));
+
+    // A feed that hands back what was last written to it, which is what four rungs merging needs.
+    const live = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC);
+    await live.init();
+    for (const r of ladder) {
+      await live.upsertRendition(identity, r);
+    }
+    assert.equal(lastLadderEntry(writes).renditions?.length, 4, 'all four rungs were recorded');
+
+    const blind = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+    );
+    await blind.init();
+    await blind.upsertRendition(identity, ladder[0]);
+
+    assert.equal(
+      lastLadderEntry(writes).renditions?.length,
+      1,
+      'with no floor to resume above, the rebuilt entry is the one rung it holds',
+    );
+  });
+
+  /** The reboot the deployment actually performs: the store saved an index on every write. */
+  it('keeps all four rungs when the reboot resumes from its persisted index', async () => {
+    const writes: CapturedWrite[] = [];
+    const ladder = ['360p', '480p', '720p', '1080p'].map((name, i) => ({
+      ...rung,
+      name,
+      topic: `rung-${name}`,
+      index: 7 + i,
+      duration: 12,
+    }));
+
+    const live = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC);
+    await live.init();
+    for (const r of ladder) {
+      await live.upsertRendition(identity, r);
+    }
+    assert.equal(lastLadderEntry(writes).renditions?.length, 4);
+
+    const { store } = fakeIndexStore(BigInt(writes.length));
+    const rebooted = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC, store);
+    await rebooted.init();
+    const before = writes.length;
+    await rebooted.upsertRendition(identity, ladder[0]);
+
+    const entry = lastLadderEntry(writes);
+    assert.equal(entry.renditions?.length, 4, 'the reboot must read the finished ladder back, not replace it');
+    assert.equal(entry.state, 'vod', 'and it must still be a finished recording');
+    assert.ok(writes.length > before, 'the re-announce still wrote, so this is not passing by doing nothing');
   });
 
   it('falls back to pointing the entry at the lowest rung when no master writer is configured', async () => {
