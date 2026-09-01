@@ -4,13 +4,14 @@ import { after, before, describe, it } from 'node:test';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   announcedVodFinalizeCount,
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import {
   type CatalogEntry,
   type CatalogFeed,
@@ -28,6 +29,7 @@ import {
   wholeLadderRefusal,
 } from '../../src/harness/vodArm.js';
 import { waitFor } from '../../src/harness/wait.js';
+import { SEGMENT_ANY, type SegmentExpectation } from '../../src/segmentLength.js';
 import { viewerGate } from '../../src/viewerCoverage.js';
 
 /**
@@ -106,7 +108,7 @@ const WATCH_MINUTES = 3;
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir);
+const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || noSegmentLength(cfg.segmentExpectation);
 
 describe('V4 — a finished recording plays through, with the whole ladder it was published as', { skip }, () => {
   const host = makeHost(cfg);
@@ -136,8 +138,7 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
   };
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     await waitForIdle(host, cfg);
     // ⛔ Before the broadcast, so a discovery that needs an old catalog line does not depend on this
     // run having already produced one.
@@ -265,12 +266,41 @@ function mediaSecondsPublished(text: string): number {
 }
 
 /**
+ * The reason a run that pinned no segment length skips this file, or `false` to run it.
+ *
+ * ⛔ `E2E_EXPECT_SEGMENT_S=any` is a legal declaration rather than a gap.
+ * `suites/preflight/segment-length.test.ts` accepts it on purpose and never asks again. What it
+ * costs is this file's own question: every length reading here starts from how much media the
+ * broadcast published, which is a segment COUNT off the uploader's log multiplied by how long a
+ * segment is, and with no declared length there is no second factor. So whether the recording is
+ * the whole broadcast cannot be asked at all, and a run that cannot ask it should say so rather
+ * than red on the arithmetic. A numeric `E2E_EXPECT_SEGMENT_S` runs the case.
+ *
+ * ⛔ Composed into the browser gate at module scope rather than checked inside the case, because a
+ * skip has to be declared where the describe is. A case discovering this from the inside could only
+ * throw, and a throw inside a describe callback prints `not ok` and is still summarised as
+ * `# fail 0`, exit 0.
+ */
+function noSegmentLength(declared: SegmentExpectation): string | false {
+  return declared === SEGMENT_ANY
+    ? `E2E_EXPECT_SEGMENT_S=${SEGMENT_ANY}: a broadcast length cannot be computed from a segment count ` +
+        'without a declared segment length, so whether this recording is the whole broadcast cannot be asked'
+    : false;
+}
+
+/**
  * How long one segment is, as the run declared it.
  *
  * ⛔ Required rather than defaulted. Multiplying a segment count by a guessed length gives a
  * broadcast duration nobody chose, and `wholeBroadcastRefusal` would then compare the recording
- * against it and pass or fail on the guess. `suites/preflight/segment-length.test.ts` refuses an
- * undeclared run before any broadcast starts, so reaching this is a defect in the gate.
+ * against it and pass or fail on the guess.
+ *
+ * ⛔ A defence rather than a path, which is what it should have been all along. An undeclared run is
+ * refused by `suites/preflight/segment-length.test.ts` before any broadcast starts, and a run
+ * declaring `any` skips this whole file at {@link noSegmentLength}, so reaching this throw is a
+ * defect in one of those two gates. Until that skip existed it also threw at `any` and blamed the
+ * segment preflight, which ACCEPTS `any` as a declaration, so a legal run reached the first wait and
+ * failed against a gate that had done exactly what it was written to do.
  */
 function declaredSegmentSeconds(): number {
   const declared = cfg.segmentExpectation;
