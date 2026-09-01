@@ -89,7 +89,7 @@ this cannot read.
 | Publish, gapless segments, manifest advances                                                             | `happy-path`, green 2026-08-03                                                   | rerun on ladder deploy                         |
 | Ladder: 4 rungs publish, one group, gapless                                                              | `abr-ladder`, never green (attempted 2026-08-27, instrument defects since fixed) | first green pending                            |
 | Ladder survives engine restart as one ladder                                                             | `abr-engine-restart`, same status                                                | first green pending                            |
-| One rung dies, others carry on                                                                           | gap, recorded in `abr-engine-restart` docblock                                   | new scenario planned, uploader and viewer legs |
+| One rung dies, others carry on                                                                           | both legs built: the viewer steps down (V3) and the master stops advertising it   | rerun, neither leg has run inside a full suite |
 | Uploader crash recovery                                                                                  | F, green 2026-08-03                                                              | rerun                                          |
 | Finalize/recovery family (mid-finalize kill, whole-stack restart, corrupt entry, reconnect during drain) | H I J K, ran 2026-08-09 only, never in a full green                              | rerun                                          |
 | Writer bee outage short and long                                                                         | A B, green 2026-08-03                                                            | rerun                                          |
@@ -97,9 +97,9 @@ this cannot read.
 | Catalog live to VOD, /health lifecycle                                                                   | green 2026-08-03                                                                 | rerun                                          |
 | Two simultaneous broadcasts                                                                              | green 2026-08-03, single-rendition only                                          | ladder version planned after viewer scenarios  |
 | Viewer: live playback in a real browser                                                                  | V1, built 2026-08-28                                                             | run both profiles                              |
-| Viewer: quality switch works                                                                             | nothing                                                                          | new V2, both profiles                          |
-| Viewer: rung goes quiet, viewer steps down instead of freezing                                           | nothing                                                                          | new V3                                         |
-| Viewer: VOD playback                                                                                     | driver only                                                                      | new V4, both profiles                          |
+| Viewer: quality switch works                                                                             | V2, built 2026-08-30, green through a gateway                                    | rerun on the 1.0s stage                        |
+| Viewer: rung goes quiet, viewer steps down instead of freezing                                           | V3, built 2026-08-30, failover armed 2026-09-01 and green live                   | rerun, it has never run with the failover on   |
+| Viewer: VOD playback                                                                                     | V4, built 2026-08-30, green three for three                                      | rerun on the 1.0s stage                        |
 | Viewer: broadcast ends cleanly on screen                                                                 | V5, built 2026-08-28                                                             | rerun                                          |
 | Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, promoted 2026-08-29, first green pending                              | run both profiles                              |
 | weeb3 actually served the bytes (arm proof)                                                              | sitting-only assertion                                                           | built into every in-browser viewer test        |
@@ -121,15 +121,15 @@ The single letters are the scenario labels the suite files carry in their own do
 
 ### Reading the V numbers
 
-The V numbers are the viewer scenarios, the ones that open a real browser. V2, V3 and V4 are rows in
-the map above that nothing implements yet, and their numbers are held for them.
+The V numbers are the viewer scenarios, the ones that open a real browser. V2, V3 and V4 were held
+empty when this table was first written and were built on 2026-08-30.
 
 | Number | File                                                | Built   |
 | ------ | --------------------------------------------------- | ------- |
 | V1     | `e2e/suites/viewer/live-playback.test.ts`           | yes     |
-| V2     | viewer: quality switch works                        | not yet |
-| V3     | viewer: a rung goes quiet and the viewer steps down | not yet |
-| V4     | viewer: VOD playback                                | not yet |
+| V2     | `e2e/suites/viewer/quality-switch.test.ts`          | yes     |
+| V3     | `e2e/suites/viewer/rung-outage.test.ts`             | yes     |
+| V4     | `e2e/suites/viewer/vod-playback.test.ts`            | yes     |
 | V5     | `e2e/suites/viewer/broadcast-ended.test.ts`         | yes     |
 | V6     | `e2e/suites/viewer/crash-gateway-outage.test.ts`    | yes     |
 | V7     | `e2e/suites/viewer/crash-uploader-killed.test.ts`   | yes     |
@@ -146,6 +146,12 @@ than two files.
 the picture is frozen, which is issue #100 and is what the deployment does. They are written so that
 fixing #100 turns them red with a message saying exactly that. The alternative, asserting the
 behaviour we want, is a case that has never passed and tells nobody anything.
+
+⛔ **Expect V9 to turn red on its next run, for the good reason.** On 2026-08-31 it recorded the cost
+of having no failover: one rung's node stopped, three kept publishing, and the viewer froze
+permanently and was told nothing. The failover was armed on 2026-09-01 and a viewer now leaves a dead
+rung in about seven seconds with no freeze at all, so the frozen picture V9 asserts should no longer
+happen. A red there means read the message before touching the assertion.
 
 ### What "driver only" means
 

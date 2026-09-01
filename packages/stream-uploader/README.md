@@ -36,6 +36,22 @@ encoder's target, and is re-announced when it drifts more than 15% (at most ever
 catalog is one feed shared by every stream). `EXT-X-MEDIA-SEQUENCE` carries the engine's own
 sequence number, which is what tells a player that two rungs share a timeline.
 
+The master also stops advertising a rung that has stopped being produced. A rung the ladder has
+delivered four segments past is dropped from the next master write, and it is put back the moment it
+delivers again, so a viewer joining during an outage is not offered a quality with nothing behind it.
+Measured live on 2026-09-01: dropped 6.9s after the rung went down, restored 11.3s after it came
+back. The rule is `LadderLiveness`, and it is deliberately a copy of the player's own rule in
+`packages/client/src/components/SwarmHlsPlayer/feedState.ts` rather than a second independent one.
+That file took eight attempts to get right and all three of its properties are load bearing: count
+delivered segments rather than read a clock, compare against a middle rung rather than the leader,
+and measure each rung's lag from where the ladder stood at its own last delivery. A master naming no
+renditions at all is never written, because that is an unplayable stream rather than a degraded one.
+
+⛔ A rung dying is not a rendition announcement, so nothing on the announce path asks this question.
+The segment path asks it on every delivery and rewrites the master only when the set of live rungs
+actually changes. A version of this filter shipped correct, tested and deployed, and never ran once,
+because only `upsertRendition` wrote a master.
+
 ### One Bee node per rung
 
 A feed's address is a pure function of its signing key and topic — `makeFeedIdentifier` is
@@ -436,6 +452,7 @@ curl -G http://localhost:3000/stream/status \
 | `MasterPlaylist`     | Builds a ladder's multivariant playlist                                         |
 | `MasterFeedWriter`   | Publishes that master to a feed per ladder, topic = the ladder's group id       |
 | `BitrateMeter`       | Measures each rung's real bitrate, which becomes the master's `BANDWIDTH`       |
+| `LadderLiveness`     | Which rungs are still producing, so the master stops advertising one that is not |
 
 ## Scripts
 
