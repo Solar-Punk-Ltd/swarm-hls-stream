@@ -249,6 +249,58 @@ export const STEPPED_DOWN_AND_BACK: Record<string, unknown> = {
   climbedBackAfterMs: 12_000,
 };
 
+const TOP_RUNG = 'swarm://0xowner/top';
+const BOTTOM_RUNG = 'swarm://0xowner/bottom';
+const CAPPED_AT_MS = 1_756_377_645_000;
+const LIFTED_AT_MS = CAPPED_AT_MS + 60_000;
+
+/** A stretch of requests for one level, one a second, in the shape the raw list carries them. */
+function askedRepeatedly(count: number, level: string, rung: string, fromMs: number, firstSn: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    atMs: fromMs + i * 1_000,
+    level,
+    sn: String(firstSn + i),
+    rung,
+  }));
+}
+
+/**
+ * The list the phase counts below are a bucketing of.
+ *
+ * ⛔ Generated from the same counts rather than written out, so the two halves of this fixture cannot
+ * drift apart. A reader tested against a file whose list and buckets disagreed would be tested against a
+ * shape no driver produces.
+ */
+const RAW_REQUESTS = [
+  ...askedRepeatedly(45, '3', TOP_RUNG, CAPPED_AT_MS - 45_000, 100),
+  ...askedRepeatedly(4, '3', TOP_RUNG, CAPPED_AT_MS, 145),
+  ...askedRepeatedly(36, '0', BOTTOM_RUNG, CAPPED_AT_MS + 4_000, 149),
+  ...askedRepeatedly(55, '3', TOP_RUNG, LIFTED_AT_MS, 185),
+];
+
+/** Every one of those requests, ended half a second later, with the four that failed under the cap. */
+const RAW_SETTLES = RAW_REQUESTS.map((request, i) => ({
+  atMs: request.atMs + 500,
+  level: request.level,
+  sn: request.sn,
+  outcome: i >= 45 && i < 49 ? 'errored' : 'loaded',
+  elapsedMs: i >= 45 && i < 49 ? 8_000 : 140,
+}));
+
+/** One stretch's endings, in the shape `judgeFragmentSettles` writes it. */
+function settlePhase(
+  settled: number,
+  outcomes: readonly (readonly [string, number])[],
+  pairedToRequests: number,
+): Record<string, unknown> {
+  return {
+    settled,
+    outcomes: outcomes.map(([outcome, count]) => ({ outcome, settled: count })),
+    elapsed: { minMs: 140, medianMs: 140, maxMs: 8_000, samples: settled },
+    pairedToRequests,
+  };
+}
+
 /**
  * The fragment requests of a viewer who asked for the top rung until the cap, and the bottom one
  * under it.
@@ -256,19 +308,38 @@ export const STEPPED_DOWN_AND_BACK: Record<string, unknown> = {
  * The shape a healthy squeeze produces: level 3 throughout the baseline, level 0 taking over while
  * capped, level 3 again once it lifts. ⛔ V2's three reds are the opposite shape, level 3 in all
  * three phases, and that is what this instrument was built to be able to state.
+ *
+ * ⭐ Carries the raw lists as well as the buckets, because a driver writes both. The artifact WITHOUT
+ * them is a real shape too, and it has its own case: it is a file written before the lists existed.
  */
 export const ASKED_FOR_A_CHEAPER_RUNG: Record<string, unknown> = {
-  before: { requests: 45, levels: [{ level: '3', requests: 45, rungs: ['swarm://0xowner/top'] }] },
+  before: { requests: 45, levels: [{ level: '3', requests: 45, rungs: [TOP_RUNG] }] },
   during: {
     requests: 40,
     levels: [
-      { level: '3', requests: 4, rungs: ['swarm://0xowner/top'] },
-      { level: '0', requests: 36, rungs: ['swarm://0xowner/bottom'] },
+      { level: '3', requests: 4, rungs: [TOP_RUNG] },
+      { level: '0', requests: 36, rungs: [BOTTOM_RUNG] },
     ],
   },
-  after: { requests: 55, levels: [{ level: '3', requests: 55, rungs: ['swarm://0xowner/top'] }] },
+  after: { requests: 55, levels: [{ level: '3', requests: 55, rungs: [TOP_RUNG] }] },
   captured: 140,
   state: 'recorded',
+  requests: RAW_REQUESTS,
+  settled: {
+    before: settlePhase(45, [['loaded', 45]], 45),
+    during: settlePhase(
+      40,
+      [
+        ['loaded', 36],
+        ['errored', 4],
+      ],
+      40,
+    ),
+    after: settlePhase(55, [['loaded', 55]], 55),
+    captured: 140,
+    state: 'recorded',
+    settles: RAW_SETTLES,
+  },
 };
 
 /**

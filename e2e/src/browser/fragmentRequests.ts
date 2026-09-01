@@ -14,6 +14,15 @@
  * This is the reading that separates them. The client writes one line per fragment request through
  * `clientLog.ts`, the page console carries it, and what is below counts them per squeeze phase.
  *
+ * ## The second question, and the second line
+ *
+ * The first reading this instrument took, on 2026-09-01, answered the first question and raised two
+ * more. A capped viewer's stretch held one level-3 request and six level-0 ones, and the artifact had
+ * bucketed them into counts, so nobody could say whether that was six fragments or ONE fragment asked
+ * for six times. Nothing recorded when any attempt finished either. So the client now writes a second
+ * line when an attempt ends, `fragmentSettled`, and both raw lists are carried into the artifact whole
+ * rather than only as the buckets. ⛔ An aggregate is a convenience. The list is the evidence.
+ *
  * ## ⛔ It records and it refuses nothing
  *
  * Owner ruling of 2026-08-29: an e2e suite checks that a feature works and is stable, never how fast
@@ -28,7 +37,7 @@
  * often. {@link judgeFragmentRequests} tells the two apart and {@link fragmentLogVerdict} says which.
  */
 
-import { fragmentRequestedPattern } from '@swarm-hls-stream/shared';
+import { fragmentRequestedPattern, fragmentSettledPattern } from '@swarm-hls-stream/shared';
 import type { Page } from 'playwright-core';
 
 /** One fragment request the page announced, stamped when the harness heard it. */
@@ -57,14 +66,71 @@ export function readFragmentRequest(text: string, atMs: number): FragmentRequest
   return match === null ? null : { atMs, level: match[1], sn: match[2], rung: match[3] };
 }
 
+/** One fragment attempt the page announced the end of, stamped when the harness heard it. */
+export interface FragmentSettle {
+  /** Wall clock in the harness, on the same clock as {@link FragmentRequest.atMs}. */
+  atMs: number;
+  /** The level index hls.js named, as written, so it pairs against a request's without conversion. */
+  level: string;
+  /** The segment number, as written. Legally the word `initSegment`. */
+  sn: string;
+  /**
+   * How the attempt ended, as the client wrote it.
+   *
+   * ⛔ Kept as the written word and checked against nothing. The client's set is closed and this reader's
+   * is not, so a word the client gains reaches the report as itself instead of being dropped by a reader
+   * built before it. A settle nobody can classify is still a settle, and losing it would understate the
+   * run.
+   */
+  outcome: string;
+  /**
+   * What the attempt took, in milliseconds, or null where the client wrote something unreadable.
+   *
+   * ⛔⛔ Null is not zero. A missing duration leaves the attempt counted and out of the spread, because
+   * folding it in as a zero would drag a median toward a number nothing measured.
+   */
+  elapsedMs: number | null;
+}
+
 /**
- * Keep every fragment request the page announces, for as long as the page is open.
+ * One page console line read as the end of a fragment attempt, or null where it is not one.
+ *
+ * Matched through the shared pattern for the same reason {@link readFragmentRequest} is. ⚠️ The elapsed
+ * is parsed here rather than by the pattern: the pattern accepts any non-space so a clock stepped
+ * backwards cannot silence the whole line, which leaves this the place where an unreadable one is named.
+ */
+export function readFragmentSettle(text: string, atMs: number): FragmentSettle | null {
+  const match = fragmentSettledPattern().exec(text);
+  if (match === null) {
+    return null;
+  }
+  const elapsedMs = Number(match[4]);
+  return {
+    atMs,
+    level: match[1],
+    sn: match[2],
+    outcome: match[3],
+    elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : null,
+  };
+}
+
+/** What one viewer's console said about its fragments: every attempt, and how each one ended. */
+export interface FragmentLog {
+  requests: FragmentRequest[];
+  settles: FragmentSettle[];
+}
+
+/**
+ * Keep every fragment line the page announces, of either kind, for as long as the page is open.
  *
  * ⛔ Its own console listener rather than a hook into `openViewer`'s. That handler exists to FORWARD
  * the client's voice to the arm's stdout, and these lines must never reach it: they arrive several
  * times a second, every one is distinct, and `reportArmNarration` shows sixty distinct kinds. A flood
  * of them would push everything else the client said out of the arm log. Listening separately also
  * leaves the four other browser drivers untouched.
+ *
+ * ⭐ One listener for both halves rather than two. The pair is only worth having joined, and a second
+ * subscription installed at a different moment would give the two lists different starts.
  *
  * ⭐ Install before navigating, beside `recordRequests`. A listener added afterwards misses whatever
  * the player asked for while the harness was still setting up, and a phase count short at one end is
@@ -74,11 +140,20 @@ export function readFragmentRequest(text: string, atMs: number): FragmentRequest
  * this is a few hundred small entries, and a cap that silently dropped lines would corrupt the very
  * counts the run is for.
  */
-export function recordFragmentRequests(page: Page, into: FragmentRequest[]): void {
+export function recordFragmentLog(page: Page, into: FragmentLog): void {
   page.on('console', (message) => {
-    const request = readFragmentRequest(message.text(), Date.now());
+    const heardAtMs = Date.now();
+    const text = message.text();
+
+    const request = readFragmentRequest(text, heardAtMs);
     if (request !== null) {
-      into.push(request);
+      into.requests.push(request);
+      return;
+    }
+
+    const settle = readFragmentSettle(text, heardAtMs);
+    if (settle !== null) {
+      into.settles.push(settle);
     }
   });
 }
@@ -113,6 +188,73 @@ export type FragmentLogState =
   /** None were captured and the picture never moved, so the silence says nothing either way. */
   | 'unplayed';
 
+/**
+ * Whether the settle half of the instrument is a reading at all.
+ *
+ * ⛔ Its own state rather than a share of {@link FragmentLogState}. The two lines are written by the
+ * same client and can still arrive apart, because one shipped before the other: an artifact whose
+ * requests are full and whose settles are empty is a client carrying half the pair, which is a
+ * deployment to rebuild rather than a run in which nothing ever finished.
+ */
+export type FragmentSettleState =
+  /** Settle lines were captured, so the outcomes and the durations are what the attempts did. */
+  | 'recorded'
+  /** Requests were captured and no settle was, so the deployed client writes only the first half. */
+  | 'absent'
+  /** Neither kind was captured, so this half adds nothing to what {@link FragmentLogState} already says. */
+  | 'unheard';
+
+/** The min, median and max of one stretch's attempt durations, over the ones that carried a duration. */
+interface ElapsedSpread {
+  minMs: number;
+  medianMs: number;
+  maxMs: number;
+  /** How many attempts the three numbers are over, which is not every attempt in the stretch. */
+  samples: number;
+}
+
+/** One way attempts ended in a stretch, and how many ended that way. */
+interface SettleOutcomeCount {
+  /** The outcome as the client wrote it. */
+  outcome: string;
+  settled: number;
+}
+
+/** How the attempts in one stretch of the run ended. ⛔ Observations, every one of them. */
+export interface FragmentSettlePhase {
+  settled: number;
+  /** Each distinct outcome, in the order it was first seen. */
+  outcomes: readonly SettleOutcomeCount[];
+  /** Null where no attempt in the stretch carried a readable duration, which is not the same as zero. */
+  elapsed: ElapsedSpread | null;
+  /**
+   * How many of these attempts name a level and segment number that some request in the run also named.
+   *
+   * ⛔ A check on the join, not a finding. Paired against the WHOLE run rather than the stretch, because
+   * a fragment asked for just before a cap lands routinely finishes after it. A phase whose settles pair
+   * with nothing means the two halves are describing different fragments, and every count beside it
+   * should be read as suspect.
+   */
+  pairedToRequests: number;
+}
+
+/** How each attempt ended, either side of the treatment, and whether that can be believed. */
+export interface FragmentSettleReading {
+  before: FragmentSettlePhase;
+  during: FragmentSettlePhase;
+  after: FragmentSettlePhase;
+  /** Every settle line captured across the whole run, phases included and excluded alike. */
+  captured: number;
+  state: FragmentSettleState;
+  /**
+   * Every settle the run heard, in the order it heard them, aggregated away nowhere.
+   *
+   * The aggregates above cannot say when one particular attempt finished, and a request list without
+   * that is half an answer.
+   */
+  settles: readonly FragmentSettle[];
+}
+
 /** What the player asked for either side of a treatment, and whether that can be believed. */
 export interface FragmentRequestTimeline {
   before: FragmentRequestPhase;
@@ -121,6 +263,20 @@ export interface FragmentRequestTimeline {
   /** Every line captured across the whole run, phases included and excluded alike. */
   captured: number;
   state: FragmentLogState;
+  /**
+   * Every request the run heard, in the order it heard them, aggregated away nowhere.
+   *
+   * ⛔⛔ **The buckets above cannot separate six fragments from one fragment asked for six times**, and
+   * on 2026-09-01 that was exactly the question a squeeze arm left open. The segment numbers here answer
+   * it. ⚠️ Null ONLY when read back out of an artifact written before this list existed: every driver
+   * writes an array, an empty one included, so a null is an old file rather than a quiet run.
+   */
+  requests: readonly FragmentRequest[] | null;
+  /**
+   * How the attempts ended. ⚠️ Null on the same terms as {@link requests}, and for the same reason: the
+   * artifact predates the reading rather than the run lacking one.
+   */
+  settled: FragmentSettleReading | null;
 }
 
 /**
@@ -166,10 +322,11 @@ function phaseOf(requests: readonly FragmentRequest[], from: number, to: number)
  * interval between two samples because an advance describes a gap. A fragment request is a point.
  */
 export function judgeFragmentRequests(
-  requests: readonly FragmentRequest[],
+  log: FragmentLog,
   window: TreatmentWindow,
   pictureMoved: boolean,
 ): FragmentRequestTimeline {
+  const { requests } = log;
   const state: FragmentLogState = requests.length > 0 ? 'recorded' : pictureMoved ? 'absent' : 'unplayed';
 
   return {
@@ -178,6 +335,75 @@ export function judgeFragmentRequests(
     after: phaseOf(requests, window.liftedAtMs, Number.POSITIVE_INFINITY),
     captured: requests.length,
     state,
+    requests: [...requests],
+    settled: judgeFragmentSettles(log, window),
+  };
+}
+
+/** Every level and segment number the run asked for, as the join key a settle carries. */
+function askedAddresses(requests: readonly FragmentRequest[]): Set<string> {
+  return new Set(requests.map((request) => `${request.level} ${request.sn}`));
+}
+
+function settlePhaseOf(
+  settles: readonly FragmentSettle[],
+  asked: ReadonlySet<string>,
+  from: number,
+  to: number,
+): FragmentSettlePhase {
+  const within = settles.filter((settle) => settle.atMs >= from && settle.atMs < to);
+  const byOutcome = new Map<string, number>();
+
+  for (const settle of within) {
+    byOutcome.set(settle.outcome, (byOutcome.get(settle.outcome) ?? 0) + 1);
+  }
+
+  return {
+    settled: within.length,
+    outcomes: [...byOutcome].map(([outcome, settled]) => ({ outcome, settled })),
+    elapsed: spreadOf(within.map((settle) => settle.elapsedMs).filter((ms): ms is number => ms !== null)),
+    pairedToRequests: within.filter((settle) => asked.has(`${settle.level} ${settle.sn}`)).length,
+  };
+}
+
+/**
+ * ⛔ Null rather than three zeroes when nothing carried a duration. A spread of zeroes reads as a run of
+ * instant retrievals, which is the most flattering possible misreading of no data at all.
+ */
+function spreadOf(durations: readonly number[]): ElapsedSpread | null {
+  if (durations.length === 0) {
+    return null;
+  }
+  const sorted = [...durations].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  return {
+    minMs: sorted[0],
+    medianMs: sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle],
+    maxMs: sorted[sorted.length - 1],
+    samples: sorted.length,
+  };
+}
+
+/**
+ * How the attempts ended, phase by phase.
+ *
+ * ⛔ The state is decided against the REQUESTS, not against the picture. A run that heard requests and
+ * no settle is a client writing half the pair, and it is the one silence a reader of this half must
+ * never print as "nothing finished".
+ */
+function judgeFragmentSettles(log: FragmentLog, window: TreatmentWindow): FragmentSettleReading {
+  const { requests, settles } = log;
+  const state: FragmentSettleState = settles.length > 0 ? 'recorded' : requests.length > 0 ? 'absent' : 'unheard';
+  const asked = askedAddresses(requests);
+
+  return {
+    before: settlePhaseOf(settles, asked, Number.NEGATIVE_INFINITY, window.appliedAtMs),
+    during: settlePhaseOf(settles, asked, window.appliedAtMs, window.liftedAtMs),
+    after: settlePhaseOf(settles, asked, window.liftedAtMs, Number.POSITIVE_INFINITY),
+    captured: settles.length,
+    state,
+    settles: [...settles],
   };
 }
 
@@ -210,4 +436,55 @@ export function describeLevelRequests(phase: FragmentRequestPhase): string {
     return 'none';
   }
   return phase.levels.map((level) => `level ${level.level} x${level.requests}`).join(', ');
+}
+
+/**
+ * The sentence that has to be read before any outcome or duration below it.
+ *
+ * ⛔ The `absent` wording names the CLIENT and says which half it is missing, because a client writing
+ * requests and no settles is a build to redeploy rather than a player whose fragments never finished.
+ */
+export function fragmentSettleVerdict(settled: FragmentSettleReading | null): string {
+  if (settled === null) {
+    return (
+      'how the attempts ended is not in this artifact at all: it was written before the settle line ' +
+      'existed, so this run can say what was asked for and not what came of it'
+    );
+  }
+  if (settled.state === 'absent') {
+    return (
+      'settle instrument absent from the deployed client: fragment requests were captured and not one ' +
+      'line saying how an attempt ended, so the client this arm watched writes the first half of the ' +
+      'pair and not the second. It was built before the settle line existed, or is not writing it'
+    );
+  }
+  if (settled.state === 'unheard') {
+    return (
+      'no line of either kind was captured, so nothing here says anything about how attempts ended. ' +
+      'Read the fragment request verdict, which is where that silence is explained'
+    );
+  }
+  return `${settled.captured} settled attempt(s) recorded`;
+}
+
+/** One phase as a reader sees it: each way an attempt ended, with how many ended that way. */
+export function describeSettleOutcomes(phase: FragmentSettlePhase): string {
+  if (phase.outcomes.length === 0) {
+    return 'none';
+  }
+  return phase.outcomes.map((outcome) => `${outcome.outcome} x${outcome.settled}`).join(', ');
+}
+
+/**
+ * One phase's durations as a reader sees them.
+ *
+ * ⛔ Says how many attempts the three numbers cover, because a spread over two attempts and a spread
+ * over two hundred print identically and mean very different things.
+ */
+export function describeElapsed(phase: FragmentSettlePhase): string {
+  const { elapsed } = phase;
+  if (elapsed === null) {
+    return 'no attempt carried a duration';
+  }
+  return `${elapsed.minMs} / ${elapsed.medianMs} / ${elapsed.maxMs} ms over ${elapsed.samples}`;
 }

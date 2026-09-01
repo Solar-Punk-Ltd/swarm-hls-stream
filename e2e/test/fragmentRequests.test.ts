@@ -1,15 +1,27 @@
-import { fragmentRequested } from '@swarm-hls-stream/shared';
+import {
+  FRAGMENT_ABORTED,
+  FRAGMENT_ERRORED,
+  FRAGMENT_LOADED,
+  fragmentRequested,
+  fragmentSettled,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Page } from 'playwright-core';
 
 import {
+  describeElapsed,
   describeLevelRequests,
+  describeSettleOutcomes,
+  type FragmentLog,
   fragmentLogVerdict,
   type FragmentRequest,
+  type FragmentSettle,
+  fragmentSettleVerdict,
   judgeFragmentRequests,
   readFragmentRequest,
-  recordFragmentRequests,
+  readFragmentSettle,
+  recordFragmentLog,
 } from '../src/browser/fragmentRequests.js';
 
 /**
@@ -30,6 +42,27 @@ const WINDOW = { appliedAtMs: CAPPED_AT, liftedAtMs: RELEASED_AT };
 /** One request, as the harness would have heard it. */
 const asked = (atMs: number, level: string, rung = TOP, sn = '1'): FragmentRequest => ({ atMs, level, sn, rung });
 
+/** One ending, as the harness would have heard it. */
+const ended = (
+  atMs: number,
+  level: string,
+  outcome: string,
+  elapsedMs: number | null = 120,
+  sn = '1',
+): FragmentSettle => ({
+  atMs,
+  level,
+  sn,
+  outcome,
+  elapsedMs,
+});
+
+/** What one console listener collected, which is what the judge is given. */
+const fragmentLog = (requests: FragmentRequest[], settles: FragmentSettle[] = []): FragmentLog => ({
+  requests,
+  settles,
+});
+
 describe('reading a fragment request off a page console line', () => {
   it('takes the level, the number and the rung out of the line the client wrote', () => {
     const heard = readFragmentRequest(fragmentRequested(3, 412, TOP), START_MS);
@@ -47,30 +80,103 @@ describe('reading a fragment request off a page console line', () => {
    * keeps the requests and lets everything else past without keeping it.
    */
   it('keeps every request the page announces and nothing else', () => {
-    const into: FragmentRequest[] = [];
-    let heard: ((message: { text: () => string }) => void) | null = null;
-    const page = {
-      on: (event: string, handler: (message: { text: () => string }) => void) => {
-        if (event === 'console') {
-          heard = handler;
-        }
-      },
-    } as unknown as Page;
+    const into = fragmentLog([]);
+    const say = subscribed(into);
 
-    recordFragmentRequests(page, into);
-    assert.ok(heard, 'nothing subscribed to the page console');
-    const listener = heard as unknown as (message: { text: () => string }) => void;
-    listener({ text: () => fragmentRequested(3, 1, TOP) });
-    listener({ text: () => 'Failed to load resource: the server responded with a status of 404' });
-    listener({ text: () => fragmentRequested(0, 2, BOTTOM) });
+    say(fragmentRequested(3, 1, TOP));
+    say('Failed to load resource: the server responded with a status of 404');
+    say(fragmentRequested(0, 2, BOTTOM));
 
     assert.deepEqual(
-      into.map((request) => [request.level, request.rung]),
+      into.requests.map((request) => [request.level, request.rung]),
       [
         ['3', TOP],
         ['0', BOTTOM],
       ],
     );
+  });
+
+  /**
+   * ⭐ One listener for both halves, and each line goes to exactly one list. A settle counted as a
+   * request would double every level count in the run, since the client writes one of each per attempt.
+   */
+  it('sorts each line into the half it belongs to, and keeps neither out', () => {
+    const into = fragmentLog([]);
+    const say = subscribed(into);
+
+    say(fragmentRequested(3, 1, TOP));
+    say(fragmentSettled(3, 1, FRAGMENT_LOADED, 140));
+    say('[SwarmHls] something else entirely');
+    say(fragmentSettled(0, 2, FRAGMENT_ERRORED, 9_000));
+
+    assert.equal(into.requests.length, 1, 'a settle line was kept as a request');
+    assert.deepEqual(
+      into.settles.map((settle) => [settle.level, settle.outcome, settle.elapsedMs]),
+      [
+        ['3', 'loaded', 140],
+        ['0', 'errored', 9_000],
+      ],
+    );
+  });
+});
+
+/** Hand the module a page whose console the caller drives, and hand back the way to speak into it. */
+function subscribed(into: FragmentLog): (text: string) => void {
+  let listener: ((message: { text: () => string }) => void) | null = null;
+  const page = {
+    on: (event: string, handler: (message: { text: () => string }) => void) => {
+      if (event === 'console') {
+        listener = handler;
+      }
+    },
+  } as unknown as Page;
+
+  recordFragmentLog(page, into);
+  assert.ok(listener, 'nothing subscribed to the page console');
+  const heard = listener as unknown as (message: { text: () => string }) => void;
+  return (text: string) => heard({ text: () => text });
+}
+
+/**
+ * The other half: what became of each of those requests.
+ *
+ * ⛔ A level count is a count of ASKING. Six requests at one level is six fragments if they arrived and
+ * one fragment six times if they did not, and those are opposite findings about where a defect lives.
+ */
+describe('reading how an attempt ended off a page console line', () => {
+  it('takes the level, the number, the outcome and the elapsed out of the line the client wrote', () => {
+    const settle = readFragmentSettle(fragmentSettled(3, 412, FRAGMENT_LOADED, 217), START_MS);
+
+    assert.deepEqual(settle, { atMs: START_MS, level: '3', sn: '412', outcome: 'loaded', elapsedMs: 217 });
+  });
+
+  // The control. Without it, everything below passes on a reader that treats every line as a settle.
+  it('ignores a line that is not one', () => {
+    assert.equal(readFragmentSettle('[SwarmHls] master playlist for swarm://0xowner/top', START_MS), null);
+    assert.equal(readFragmentSettle(fragmentRequested(3, 412, TOP), START_MS), null, 'a request read as a settle');
+  });
+
+  /**
+   * ⛔⛔ Null is not zero. An attempt whose duration could not be read is still an attempt that ended,
+   * and folding it in as a zero would drag a median toward a number nothing measured.
+   */
+  it('keeps an attempt whose duration is unreadable, and says the duration is missing', () => {
+    const settle = readFragmentSettle('Fragment settled: level 3 sn 412 loaded after later ms', START_MS);
+
+    assert.ok(settle, 'an unreadable duration took the whole attempt with it');
+    assert.equal(settle.outcome, 'loaded');
+    assert.equal(settle.elapsedMs, null);
+  });
+
+  /**
+   * ⛔ The client's set of outcomes is closed and this reader's is not. A word the client gains has to
+   * reach the report as itself, because a settle nobody can classify is still a settle and dropping it
+   * would understate the run.
+   */
+  it('reads an outcome word it has never seen as itself, rather than dropping the line', () => {
+    const settle = readFragmentSettle('Fragment settled: level 2 sn 9 recycled after 40 ms', START_MS);
+
+    assert.equal(settle?.outcome, 'recycled');
   });
 });
 
@@ -85,7 +191,7 @@ describe('what the player asked for, phase by phase', () => {
   ];
 
   it('counts each phase against the treatment window', () => {
-    const timeline = judgeFragmentRequests(SQUEEZE_THAT_WORKED, WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog(SQUEEZE_THAT_WORKED), WINDOW, true);
 
     assert.deepEqual(
       [timeline.before.requests, timeline.during.requests, timeline.after.requests],
@@ -101,7 +207,11 @@ describe('what the player asked for, phase by phase', () => {
    * `session.ts` already uses so two readings of one run cannot disagree about where a phase begins.
    */
   it('puts a request at the instant of the cap under it, and one at the lift after it', () => {
-    const timeline = judgeFragmentRequests([asked(CAPPED_AT, '3'), asked(RELEASED_AT, '0', BOTTOM)], WINDOW, true);
+    const timeline = judgeFragmentRequests(
+      fragmentLog([asked(CAPPED_AT, '3'), asked(RELEASED_AT, '0', BOTTOM)]),
+      WINDOW,
+      true,
+    );
 
     assert.equal(timeline.during.requests, 1);
     assert.equal(timeline.after.requests, 1);
@@ -109,7 +219,7 @@ describe('what the player asked for, phase by phase', () => {
   });
 
   it('reports each distinct level with its count, in the order it was first asked for', () => {
-    const timeline = judgeFragmentRequests(SQUEEZE_THAT_WORKED, WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog(SQUEEZE_THAT_WORKED), WINDOW, true);
 
     assert.deepEqual(
       timeline.during.levels.map((level) => [level.level, level.requests]),
@@ -128,13 +238,13 @@ describe('what the player asked for, phase by phase', () => {
   it('names every rung playlist a level asked against', () => {
     const crossed = [asked(CAPPED_AT + 1_000, '0', BOTTOM), asked(CAPPED_AT + 2_000, '0', TOP)];
 
-    const timeline = judgeFragmentRequests(crossed, WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog(crossed), WINDOW, true);
 
     assert.deepEqual(timeline.during.levels[0].rungs, [BOTTOM, TOP]);
   });
 
   it('reads a level the client could not resolve as itself, rather than as a rung', () => {
-    const timeline = judgeFragmentRequests([asked(CAPPED_AT + 1_000, 'unknown', 'unknown')], WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog([asked(CAPPED_AT + 1_000, 'unknown', 'unknown')]), WINDOW, true);
 
     assert.deepEqual(
       timeline.during.levels.map((level) => level.level),
@@ -143,10 +253,10 @@ describe('what the player asked for, phase by phase', () => {
   });
 
   it('says which levels a phase held, for a reader', () => {
-    const timeline = judgeFragmentRequests(SQUEEZE_THAT_WORKED, WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog(SQUEEZE_THAT_WORKED), WINDOW, true);
 
     assert.equal(describeLevelRequests(timeline.during), 'level 3 x1, level 0 x2');
-    assert.equal(describeLevelRequests(judgeFragmentRequests([], WINDOW, true).during), 'none');
+    assert.equal(describeLevelRequests(judgeFragmentRequests(fragmentLog([]), WINDOW, true).during), 'none');
   });
 });
 
@@ -160,18 +270,18 @@ describe('what the player asked for, phase by phase', () => {
  */
 describe('telling a silent instrument from a silent player', () => {
   it('calls an empty capture over a moving picture an absent instrument', () => {
-    const timeline = judgeFragmentRequests([], WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog([]), WINDOW, true);
 
     assert.equal(timeline.state, 'absent');
     assert.match(fragmentLogVerdict(timeline), /instrument absent from the deployed client/);
   });
 
   it('never reports an absent instrument as a player that asked for nothing', () => {
-    assert.doesNotMatch(fragmentLogVerdict(judgeFragmentRequests([], WINDOW, true)), /asked for nothing/);
+    assert.doesNotMatch(fragmentLogVerdict(judgeFragmentRequests(fragmentLog([]), WINDOW, true)), /asked for nothing/);
   });
 
   it('says an empty capture over a frozen picture settles nothing either way', () => {
-    const timeline = judgeFragmentRequests([], WINDOW, false);
+    const timeline = judgeFragmentRequests(fragmentLog([]), WINDOW, false);
 
     assert.equal(timeline.state, 'unplayed');
     assert.match(fragmentLogVerdict(timeline), /says nothing/);
@@ -183,7 +293,7 @@ describe('telling a silent instrument from a silent player', () => {
    * anything else. One line heard is a working instrument, however few the run went on to hear.
    */
   it('calls a capture with anything in it a reading', () => {
-    const timeline = judgeFragmentRequests([asked(START_MS + 1_000, '3')], WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog([asked(START_MS + 1_000, '3')]), WINDOW, true);
 
     assert.equal(timeline.state, 'recorded');
     assert.match(fragmentLogVerdict(timeline), /1 fragment request\(s\) recorded/);
@@ -194,9 +304,208 @@ describe('telling a silent instrument from a silent player', () => {
    * about the player. Only a run that heard nothing at all is about the instrument.
    */
   it('leaves a phase at zero inside a recorded run reading as the player', () => {
-    const timeline = judgeFragmentRequests([asked(START_MS + 1_000, '3')], WINDOW, true);
+    const timeline = judgeFragmentRequests(fragmentLog([asked(START_MS + 1_000, '3')]), WINDOW, true);
 
     assert.equal(timeline.during.requests, 0);
     assert.equal(timeline.state, 'recorded');
+  });
+});
+
+/**
+ * ⛔⛔ The raw list, which is the whole reason this timeline is not just its buckets.
+ *
+ * A phase reporting six level-0 requests has aggregated away the one thing that separates six fragments
+ * from ONE fragment asked for six times, and those are opposite findings: a player stepping down and
+ * being served, against a player stepping down and getting nothing. A squeeze arm on 2026-09-01 hit
+ * exactly that and the artifact could not answer it.
+ */
+describe('the raw list the buckets are a bucketing of', () => {
+  const RETRIED_THE_SAME_SEGMENT = [
+    asked(CAPPED_AT + 1_000, '0', BOTTOM, '77'),
+    asked(CAPPED_AT + 2_000, '0', BOTTOM, '77'),
+    asked(CAPPED_AT + 3_000, '0', BOTTOM, '77'),
+  ];
+
+  it('carries every request in the order it was heard, with its own segment number', () => {
+    const timeline = judgeFragmentRequests(fragmentLog(RETRIED_THE_SAME_SEGMENT), WINDOW, true);
+
+    assert.deepEqual(
+      timeline.requests?.map((request) => [request.atMs, request.level, request.sn, request.rung]),
+      RETRIED_THE_SAME_SEGMENT.map((request) => [request.atMs, request.level, request.sn, request.rung]),
+    );
+  });
+
+  /** ⭐ The reading the bucket cannot give, stated as the two shapes it has to separate. */
+  it('shows one segment asked for three times where the bucket shows three requests', () => {
+    const retried = judgeFragmentRequests(fragmentLog(RETRIED_THE_SAME_SEGMENT), WINDOW, true);
+    const distinct = judgeFragmentRequests(
+      fragmentLog([
+        asked(CAPPED_AT + 1_000, '0', BOTTOM, '77'),
+        asked(CAPPED_AT + 2_000, '0', BOTTOM, '78'),
+        asked(CAPPED_AT + 3_000, '0', BOTTOM, '79'),
+      ]),
+      WINDOW,
+      true,
+    );
+
+    assert.equal(retried.during.levels[0].requests, distinct.during.levels[0].requests, 'the buckets differ');
+    assert.deepEqual(new Set(retried.requests?.map((request) => request.sn)), new Set(['77']));
+    assert.deepEqual(new Set(distinct.requests?.map((request) => request.sn)), new Set(['77', '78', '79']));
+  });
+
+  /** ⛔ A copy, so a driver that keeps collecting after the judge ran cannot rewrite what it filed. */
+  it('files a copy rather than the list the harness is still filling', () => {
+    const collecting = fragmentLog([asked(START_MS + 1_000, '3')]);
+
+    const timeline = judgeFragmentRequests(collecting, WINDOW, true);
+    collecting.requests.push(asked(RELEASED_AT + 1_000, '0', BOTTOM));
+
+    assert.equal(timeline.requests?.length, 1, 'the filed list moved after it was filed');
+  });
+});
+
+/**
+ * ⛔⛔ Zero settled is not zero finished, and the discipline is the request half's, one line down.
+ *
+ * A run that heard requests and no settle is a client writing the FIRST half of the pair and not the
+ * second, which is a build to redeploy. Printing that as "no attempt ever finished" would be the same
+ * wrong answer in a measurement's clothes that the request half already exists to prevent.
+ */
+describe('how those attempts ended, phase by phase', () => {
+  const CAPPED_AND_STRUGGLED = [
+    ended(START_MS + 1_500, '3', FRAGMENT_LOADED, 100),
+    ended(START_MS + 2_500, '3', FRAGMENT_LOADED, 300),
+    ended(CAPPED_AT + 1_500, '3', FRAGMENT_ERRORED, 8_000),
+    ended(CAPPED_AT + 2_500, '0', FRAGMENT_LOADED, 400),
+    ended(CAPPED_AT + 3_500, '0', FRAGMENT_ABORTED, 200),
+    ended(RELEASED_AT + 1_500, '3', FRAGMENT_LOADED, 120),
+  ];
+  const SQUEEZED_REQUESTS = [
+    asked(START_MS + 1_000, '3'),
+    asked(CAPPED_AT + 1_000, '3'),
+    asked(CAPPED_AT + 2_000, '0', BOTTOM),
+  ];
+  const settled = () =>
+    judgeFragmentRequests(fragmentLog([...SQUEEZED_REQUESTS], CAPPED_AND_STRUGGLED), WINDOW, true).settled;
+
+  it('counts each phase against the same window the requests are cut on', () => {
+    const reading = settled();
+
+    assert.deepEqual([reading?.before.settled, reading?.during.settled, reading?.after.settled], [2, 3, 1]);
+    assert.equal(reading?.captured, 6);
+  });
+
+  it('reports each distinct outcome with its count, in the order it was first seen', () => {
+    assert.deepEqual(
+      settled()?.during.outcomes.map((outcome) => [outcome.outcome, outcome.settled]),
+      [
+        ['errored', 1],
+        ['loaded', 1],
+        ['aborted', 1],
+      ],
+    );
+    assert.equal(describeSettleOutcomes(settled()!.during), 'errored x1, loaded x1, aborted x1');
+  });
+
+  it('reports the spread of what those attempts took, and how many it is over', () => {
+    const during = settled()!.during;
+
+    assert.deepEqual(
+      [during.elapsed?.minMs, during.elapsed?.medianMs, during.elapsed?.maxMs, during.elapsed?.samples],
+      [200, 400, 8_000, 3],
+    );
+    assert.equal(describeElapsed(during), '200 / 400 / 8000 ms over 3');
+  });
+
+  /**
+   * ⛔ Null rather than three zeroes. A spread of zeroes reads as a run of instant retrievals, which is
+   * the most flattering possible misreading of no data at all.
+   */
+  it('says no attempt carried a duration rather than reporting a spread of zeroes', () => {
+    const unreadable = [ended(CAPPED_AT + 1_000, '0', FRAGMENT_LOADED, null)];
+
+    const during = judgeFragmentRequests(fragmentLog([asked(CAPPED_AT, '0')], unreadable), WINDOW, true).settled
+      ?.during;
+
+    assert.equal(during?.settled, 1, 'the attempt was dropped along with its missing duration');
+    assert.equal(during?.elapsed, null);
+    assert.match(describeElapsed(during!), /no attempt carried a duration/);
+  });
+
+  /**
+   * ⭐ A check on the JOIN rather than a finding. Paired against the whole run rather than the stretch,
+   * because a fragment asked for just before a cap lands routinely finishes after it.
+   */
+  it('pairs an attempt to a request from any phase, on the level and the segment number', () => {
+    const askedBefore = [asked(CAPPED_AT - 500, '3', TOP, '41')];
+    const endedAfter = [ended(CAPPED_AT + 500, '3', FRAGMENT_LOADED, 1_000, '41')];
+
+    const during = judgeFragmentRequests(fragmentLog(askedBefore, endedAfter), WINDOW, true).settled?.during;
+
+    assert.equal(during?.pairedToRequests, 1, 'an attempt that crossed the cap paired with nothing');
+  });
+
+  // The control. Without it the case above passes on a join that matches everything it is handed.
+  it('leaves an attempt unpaired when nothing in the run asked for that segment', () => {
+    const during = judgeFragmentRequests(
+      fragmentLog([asked(CAPPED_AT, '3', TOP, '41')], [ended(CAPPED_AT + 500, '3', FRAGMENT_LOADED, 100, '99')]),
+      WINDOW,
+      true,
+    ).settled?.during;
+
+    assert.equal(during?.pairedToRequests, 0);
+  });
+
+  it('carries every settle in the order it was heard', () => {
+    assert.deepEqual(
+      settled()?.settles.map((settle) => settle.outcome),
+      CAPPED_AND_STRUGGLED.map((settle) => settle.outcome),
+    );
+  });
+});
+
+/**
+ * ⛔⛔⛔ Three silences on this half too, and each has a different fix.
+ *
+ * Settles heard is a reading. Requests heard and no settle is the deployed CLIENT writing half the pair,
+ * and the fix is a redeploy. Neither kind heard says nothing this half can add, and the request verdict
+ * is where that silence is explained.
+ */
+describe('telling a client with half the instrument from a run with no attempts', () => {
+  it('calls requests without settles an absent settle instrument, naming the client', () => {
+    const timeline = judgeFragmentRequests(fragmentLog([asked(START_MS + 1_000, '3')]), WINDOW, true);
+
+    assert.equal(timeline.settled?.state, 'absent');
+    assert.match(fragmentSettleVerdict(timeline.settled), /settle instrument absent from the deployed client/);
+  });
+
+  it('never reports that silence as attempts which did not finish', () => {
+    const timeline = judgeFragmentRequests(fragmentLog([asked(START_MS + 1_000, '3')]), WINDOW, true);
+
+    assert.doesNotMatch(fragmentSettleVerdict(timeline.settled), /settled attempt\(s\) recorded/);
+  });
+
+  it('says nothing of its own when neither kind of line was heard', () => {
+    const timeline = judgeFragmentRequests(fragmentLog([]), WINDOW, true);
+
+    assert.equal(timeline.settled?.state, 'unheard');
+    assert.match(fragmentSettleVerdict(timeline.settled), /Read the fragment request verdict/);
+  });
+
+  /** The control, and the case that keeps the two above from passing on a judge that never says else. */
+  it('calls a capture with anything in it a reading', () => {
+    const timeline = judgeFragmentRequests(
+      fragmentLog([asked(START_MS, '3')], [ended(START_MS + 100, '3', FRAGMENT_LOADED, 100)]),
+      WINDOW,
+      true,
+    );
+
+    assert.equal(timeline.settled?.state, 'recorded');
+    assert.match(fragmentSettleVerdict(timeline.settled), /1 settled attempt\(s\) recorded/);
+  });
+
+  /** ⛔ The fourth silence, about the FILE rather than the run: an artifact older than this reading. */
+  it('says the artifact predates the reading when there is no settle section at all', () => {
+    assert.match(fragmentSettleVerdict(null), /written before the settle line existed/);
   });
 });

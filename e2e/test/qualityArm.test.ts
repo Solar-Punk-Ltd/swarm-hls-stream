@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { fragmentSettleVerdict } from '../src/browser/fragmentRequests.js';
 import { type QualitySwitchVerdict } from '../src/browser/qualitySwitch.js';
 import { parseBrowserArmState } from '../src/harness/browser.js';
 import {
@@ -381,6 +382,124 @@ describe('which level the player asked for, and the three ways it can be missing
       () => parseBrowserArmState(qualityArmState({ fragmentRequests: halfStated })),
       /run\.fragmentRequests\.during/,
     );
+  });
+});
+
+/**
+ * ⛔⛔ The raw lists, and the FOURTH silence, which is about the file rather than about any deployment.
+ *
+ * An artifact written before these lists existed carries the buckets and nothing else, and every count
+ * in it is still good. Re-reading old artifacts is how this project works, so refusing that file would
+ * take away readings that are fine. A list that is PRESENT is read whole: half a list of segment numbers
+ * is exactly the evidence someone would draw a retry conclusion from.
+ */
+describe('the raw lists an artifact carries, and the artifact that predates them', () => {
+  const parsed = () => parseBrowserArmState(qualityArmState()).fragmentRequests;
+
+  it('reads back every request the run heard, with its own segment number', () => {
+    const requests = parsed()?.requests;
+
+    assert.equal(requests?.length, 140, 'the raw request list did not come back whole');
+    assert.deepEqual(requests?.[45], { atMs: 1_756_377_645_000, level: '3', sn: '145', rung: 'swarm://0xowner/top' });
+  });
+
+  it('reads back how each attempt ended, phase by phase and line by line', () => {
+    const settled = parsed()?.settled;
+
+    assert.equal(settled?.state, 'recorded');
+    assert.deepEqual(
+      settled?.during.outcomes.map((outcome) => [outcome.outcome, outcome.settled]),
+      [
+        ['loaded', 36],
+        ['errored', 4],
+      ],
+    );
+    assert.equal(settled?.during.elapsed?.maxMs, 8_000);
+    assert.equal(settled?.settles.length, 140);
+  });
+
+  /** ⛔ The backward case. Tonight's earlier build wrote the buckets and threw the lines away. */
+  it('reads an artifact that carries no raw lists, and says they are absent rather than empty', () => {
+    const older = { ...ASKED_FOR_A_CHEAPER_RUNG };
+    delete (older as Record<string, unknown>).requests;
+    delete (older as Record<string, unknown>).settled;
+
+    const asked = parseBrowserArmState(qualityArmState({ fragmentRequests: older })).fragmentRequests;
+
+    assert.equal(asked?.requests, null, 'a list that was never written read as a list that was empty');
+    assert.equal(asked?.settled, null);
+    assert.equal(asked?.during.requests, 40, 'the buckets that file does carry were thrown away with the lists');
+  });
+
+  it('says the artifact predates the settle reading rather than reporting nothing settled', () => {
+    const older = { ...ASKED_FOR_A_CHEAPER_RUNG };
+    delete (older as Record<string, unknown>).settled;
+
+    const asked = parseBrowserArmState(qualityArmState({ fragmentRequests: older })).fragmentRequests;
+
+    assert.match(fragmentSettleVerdict(asked?.settled ?? null), /written before the settle line existed/);
+  });
+
+  it('refuses a request entry missing its segment number, rather than reading the rest', () => {
+    const damaged = {
+      ...ASKED_FOR_A_CHEAPER_RUNG,
+      requests: [{ atMs: 1, level: '3', rung: 'swarm://0xowner/top' }],
+    };
+
+    assert.throws(
+      () => parseBrowserArmState(qualityArmState({ fragmentRequests: damaged })),
+      /run\.fragmentRequests\.requests\[0\]\.sn/,
+    );
+  });
+
+  /** ⛔ Checked against the states this harness knows, never cast to them, exactly as a feed state is. */
+  it('refuses a settle state it does not recognise', () => {
+    const settled = ASKED_FOR_A_CHEAPER_RUNG.settled as Record<string, unknown>;
+    const damaged = { ...ASKED_FOR_A_CHEAPER_RUNG, settled: { ...settled, state: 'probably' } };
+
+    assert.throws(
+      () => parseBrowserArmState(qualityArmState({ fragmentRequests: damaged })),
+      /run\.fragmentRequests\.settled\.state/,
+    );
+  });
+
+  it('refuses a settle section missing a phase, rather than counting the ones it has', () => {
+    const settled = { ...(ASKED_FOR_A_CHEAPER_RUNG.settled as Record<string, unknown>) };
+    delete settled.during;
+
+    assert.throws(
+      () => parseBrowserArmState(qualityArmState({ fragmentRequests: { ...ASKED_FOR_A_CHEAPER_RUNG, settled } })),
+      /run\.fragmentRequests\.settled\.during/,
+    );
+  });
+
+  /**
+   * ⛔ A spread of three numbers has to arrive whole. One missing and the other two believed is a
+   * median over a range nobody stated.
+   */
+  it('refuses a duration spread that is missing one of its numbers', () => {
+    const settled = { ...(ASKED_FOR_A_CHEAPER_RUNG.settled as Record<string, unknown>) };
+    const during = { ...(settled.during as Record<string, unknown>) };
+    during.elapsed = { minMs: 140, maxMs: 8_000, samples: 40 };
+    settled.during = during;
+
+    assert.throws(
+      () => parseBrowserArmState(qualityArmState({ fragmentRequests: { ...ASKED_FOR_A_CHEAPER_RUNG, settled } })),
+      /run\.fragmentRequests\.settled\.during\.elapsed\.medianMs/,
+    );
+  });
+
+  /** The counterpart: a stretch where nothing carried a duration is a READING, and reads as null. */
+  it('reads a stretch that carried no duration at all as having none', () => {
+    const settled = { ...(ASKED_FOR_A_CHEAPER_RUNG.settled as Record<string, unknown>) };
+    settled.during = { ...(settled.during as Record<string, unknown>), elapsed: null };
+
+    const asked = parseBrowserArmState(
+      qualityArmState({ fragmentRequests: { ...ASKED_FOR_A_CHEAPER_RUNG, settled } }),
+    ).fragmentRequests;
+
+    assert.equal(asked?.settled?.during.elapsed, null);
+    assert.equal(asked?.settled?.during.settled, 40, 'the attempts went with the durations');
   });
 });
 

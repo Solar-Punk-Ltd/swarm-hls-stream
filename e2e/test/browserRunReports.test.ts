@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { type FragmentRequest, judgeFragmentRequests } from '../src/browser/fragmentRequests.js';
+import { type FragmentRequest, type FragmentSettle, judgeFragmentRequests } from '../src/browser/fragmentRequests.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { judgeQualitySwitch, judgeRungTimeline } from '../src/browser/qualitySwitch.js';
 import { type QualityRun, renderQualityReport } from '../src/browser/qualitySwitchReport.js';
@@ -88,7 +88,19 @@ const ASKED_AND_CAME_DOWN: FragmentRequest[] = [
   { atMs: LIFTED_AT + 1_000, level: '3', sn: '4', rung: TOP_RUNG },
 ];
 
-function qualityRunOf(samples: ViewerSample[], asked: FragmentRequest[] = ASKED_AND_CAME_DOWN): QualityRun {
+/** What became of each of those requests: the level-3 one under the cap failed, the rest arrived. */
+const HOW_THEY_ENDED: FragmentSettle[] = [
+  { atMs: APPLIED_AT - 1_800, level: '3', sn: '1', outcome: 'loaded', elapsedMs: 200 },
+  { atMs: APPLIED_AT + 1_500, level: '3', sn: '2', outcome: 'errored', elapsedMs: 8_000 },
+  { atMs: APPLIED_AT + 2_400, level: '0', sn: '3', outcome: 'loaded', elapsedMs: 400 },
+  { atMs: LIFTED_AT + 1_200, level: '3', sn: '4', outcome: 'loaded', elapsedMs: 180 },
+];
+
+function qualityRunOf(
+  samples: ViewerSample[],
+  asked: FragmentRequest[] = ASKED_AND_CAME_DOWN,
+  ended: FragmentSettle[] = HOW_THEY_ENDED,
+): QualityRun {
   const throttle = { appliedAtMs: APPLIED_AT, liftedAtMs: LIFTED_AT, kbps: 1200 };
   const summary = summarize(samples);
   return {
@@ -100,7 +112,11 @@ function qualityRunOf(samples: ViewerSample[], asked: FragmentRequest[] = ASKED_
     throttle,
     summary,
     quality: judgeQualitySwitch(samples, throttle),
-    fragmentRequests: judgeFragmentRequests(asked, throttle, summary.overallAdvanceRatio > 0),
+    fragmentRequests: judgeFragmentRequests(
+      { requests: asked, settles: ended },
+      throttle,
+      summary.overallAdvanceRatio > 0,
+    ),
     instrument: judgeRun([]),
     samples,
     screenshots: [],
@@ -198,10 +214,59 @@ describe('the report a squeezed viewer leaves behind', () => {
    * as a player which asked for nothing would be a wrong answer wearing a measurement's clothes.
    */
   it('calls an empty capture over a moving picture an absent instrument, never a silent player', () => {
-    const report = renderQualityReport(qualityRunOf(adapted, []));
+    const report = renderQualityReport(qualityRunOf(adapted, [], []));
 
     assert.match(report, /instrument absent from the deployed client/);
     assert.doesNotMatch(report, /fragment request\(s\) recorded/);
+  });
+
+  /**
+   * ⭐ The second half of that reading. A level count is a count of ASKING, and what became of the
+   * attempts is what separates a player stepping down and being served from one stepping down and
+   * getting nothing.
+   */
+  it('names how the attempts of each phase ended, and what they took', () => {
+    const report = renderQualityReport(qualityRunOf(adapted));
+
+    assert.match(report, /## How each of those attempts ended/);
+    assert.match(report, /\| while capped \| 2 \| errored x1, loaded x1 \| 400 \/ 4200 \/ 8000 ms over 2 \| 2 \|/);
+  });
+
+  /**
+   * ⛔⛔ Requests captured and no settle is the deployed CLIENT writing half the pair, which is a build
+   * to redeploy. Printing it as attempts that never finished would be the same wrong answer in a
+   * measurement's clothes that the request half already exists to prevent.
+   */
+  it('calls a run with requests and no settles an absent settle instrument, never a stalled player', () => {
+    const report = renderQualityReport(qualityRunOf(adapted, ASKED_AND_CAME_DOWN, []));
+
+    assert.match(report, /settle instrument absent from the deployed client/);
+    assert.doesNotMatch(report, /settled attempt\(s\) recorded/);
+  });
+
+  /**
+   * ⛔⛔ The section the buckets cannot replace. Six requests at one level is six fragments if they
+   * arrived and one fragment six times if they did not, and only the segment numbers say which.
+   */
+  it('prints every request it heard, in order, with its own segment number', () => {
+    const report = renderQualityReport(qualityRunOf(adapted));
+
+    assert.match(report, /### Every fragment this viewer asked for/);
+    assert.match(report, /\| 1 \| 8\.0s \| 3 \| 1 \| …/);
+    assert.match(report, /\| 3 \| 12\.0s \| 0 \| 3 \| …/);
+  });
+
+  it('says how many it left out when the list is longer than the table', () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({
+      atMs: APPLIED_AT + i,
+      level: '3',
+      sn: String(i),
+      rung: TOP_RUNG,
+    }));
+
+    const report = renderQualityReport(qualityRunOf(adapted, many, []));
+
+    assert.match(report, /The first 200 of 250\. The state file beside this report carries them all\./);
   });
 });
 

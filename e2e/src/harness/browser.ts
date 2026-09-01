@@ -34,8 +34,13 @@ import { FEED_STATE_ENDED, isViewerFeedState, type ViewerFeedState } from '../br
 import { type ByteSource } from '../browser/fetchBackendSweep.js';
 import {
   type FragmentLogState,
+  type FragmentRequest,
   type FragmentRequestPhase,
   type FragmentRequestTimeline,
+  type FragmentSettle,
+  type FragmentSettlePhase,
+  type FragmentSettleReading,
+  type FragmentSettleState,
 } from '../browser/fragmentRequests.js';
 import { type QualityPhase, type QualitySwitchVerdict, type RungTimeline } from '../browser/qualitySwitch.js';
 import { type E2EConfig } from '../config.js';
@@ -375,6 +380,10 @@ export interface BrowserArmResult {
    * nothing. Printing any of the three as another would be a wrong answer wearing a measurement's
    * clothes.
    *
+   * ⛔ Its `requests` and `settled` fields carry a fourth silence of their own, about the FILE rather
+   * than about any of the three above: an artifact written before the raw list and the settle line
+   * existed reads with both null, and every phase count beside them is still good.
+   *
    * ⛔ An observation. Nothing asserts on it, per the owner ruling of 2026-08-29.
    */
   fragmentRequests: FragmentRequestTimeline | null;
@@ -631,7 +640,118 @@ function readFragmentRequests(run: Record<string, unknown>): FragmentRequestTime
     after: readFragmentPhase(asked.after, 'run.fragmentRequests.after'),
     captured: asNumber(asked.captured, 'run.fragmentRequests.captured'),
     state: state as FragmentLogState,
+    requests: readRequestList(asked.requests, 'run.fragmentRequests.requests'),
+    settled: readFragmentSettled(asked.settled, 'run.fragmentRequests.settled'),
   };
+}
+
+/**
+ * The raw request list, or the absence of it.
+ *
+ * ⛔ Absent is legitimate here and means ONE thing: the artifact was written before the list was carried,
+ * by a driver that bucketed the lines into phase counts and threw the lines away. Re-reading an old
+ * artifact is how this project works, so refusing that file would take away readings that are still
+ * good. A list that is PRESENT is read whole and a malformed entry is refused, because a half-read list
+ * of segment numbers is exactly the evidence a reader would draw the retry conclusion from.
+ */
+function readRequestList(value: unknown, at: string): readonly FragmentRequest[] | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  return asArray(value, at).map((entry, i) => {
+    const request = asObject(entry, `${at}[${i}]`);
+    return {
+      atMs: asNumber(request.atMs, `${at}[${i}].atMs`),
+      level: asString(request.level, `${at}[${i}].level`),
+      sn: asString(request.sn, `${at}[${i}].sn`),
+      rung: asString(request.rung, `${at}[${i}].rung`),
+    };
+  });
+}
+
+/** The states `judgeFragmentSettles` writes, checked rather than cast, exactly as a feed state is. */
+const FRAGMENT_SETTLE_STATES: readonly FragmentSettleState[] = ['recorded', 'absent', 'unheard'];
+
+/**
+ * How the attempts ended, or the absence of the whole reading.
+ *
+ * ⛔ Absent means the artifact predates the settle line, and it is the fourth silence this section can
+ * hold. The other three are about the browser image, the deployed client and the player, and this one is
+ * about the FILE. A reader that flattened it into any of the three would send someone to rebuild
+ * something that is already right.
+ */
+function readFragmentSettled(value: unknown, at: string): FragmentSettleReading | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const settled = asObject(value, at);
+  const state = asString(settled.state, `${at}.state`);
+  if (!FRAGMENT_SETTLE_STATES.includes(state as FragmentSettleState)) {
+    throw new Error(
+      `the arm's state has no settle state this harness knows at ${at}.state, got ${shownValue(state)}. The ` +
+        'driver gained a state, or the file was written by one this reader does not match.',
+    );
+  }
+
+  return {
+    before: readSettlePhase(settled.before, `${at}.before`),
+    during: readSettlePhase(settled.during, `${at}.during`),
+    after: readSettlePhase(settled.after, `${at}.after`),
+    captured: asNumber(settled.captured, `${at}.captured`),
+    state: state as FragmentSettleState,
+    settles: readSettleList(settled.settles, `${at}.settles`),
+  };
+}
+
+function readSettlePhase(value: unknown, at: string): FragmentSettlePhase {
+  const phase = asObject(value, at);
+
+  return {
+    settled: asNumber(phase.settled, `${at}.settled`),
+    outcomes: asArray(phase.outcomes, `${at}.outcomes`).map((entry, i) => {
+      const outcome = asObject(entry, `${at}.outcomes[${i}]`);
+      return {
+        outcome: asString(outcome.outcome, `${at}.outcomes[${i}].outcome`),
+        settled: asNumber(outcome.settled, `${at}.outcomes[${i}].settled`),
+      };
+    }),
+    elapsed: readElapsedSpread(phase.elapsed, `${at}.elapsed`),
+    pairedToRequests: asNumber(phase.pairedToRequests, `${at}.pairedToRequests`),
+  };
+}
+
+/**
+ * The durations of one stretch, or the absence of them.
+ *
+ * ⛔ Null is a READING here rather than a gap in the file: no attempt in that stretch carried a
+ * duration. Where the spread is present it is read whole, so three numbers can never arrive with one
+ * of them quietly missing and the other two believed.
+ */
+function readElapsedSpread(value: unknown, at: string): FragmentSettlePhase['elapsed'] {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const spread = asObject(value, at);
+
+  return {
+    minMs: asNumber(spread.minMs, `${at}.minMs`),
+    medianMs: asNumber(spread.medianMs, `${at}.medianMs`),
+    maxMs: asNumber(spread.maxMs, `${at}.maxMs`),
+    samples: asNumber(spread.samples, `${at}.samples`),
+  };
+}
+
+function readSettleList(value: unknown, at: string): readonly FragmentSettle[] {
+  return asArray(value, at).map((entry, i) => {
+    const settle = asObject(entry, `${at}[${i}]`);
+    return {
+      atMs: asNumber(settle.atMs, `${at}[${i}].atMs`),
+      level: asString(settle.level, `${at}[${i}].level`),
+      sn: asString(settle.sn, `${at}[${i}].sn`),
+      outcome: asString(settle.outcome, `${at}[${i}].outcome`),
+      elapsedMs: asNumberOrNull(settle.elapsedMs, `${at}[${i}].elapsedMs`),
+    };
+  });
 }
 
 function readFragmentPhase(value: unknown, at: string): FragmentRequestPhase {

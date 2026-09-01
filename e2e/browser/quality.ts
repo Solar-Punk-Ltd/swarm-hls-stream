@@ -28,11 +28,14 @@ import {
 } from '../src/browser/byteSourceArm.js';
 import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
 import {
+  describeElapsed,
   describeLevelRequests,
+  describeSettleOutcomes,
+  type FragmentLog,
   fragmentLogVerdict,
-  type FragmentRequest,
+  fragmentSettleVerdict,
   judgeFragmentRequests,
-  recordFragmentRequests,
+  recordFragmentLog,
 } from '../src/browser/fragmentRequests.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
@@ -104,7 +107,7 @@ async function main(): Promise<void> {
 
   const requests: RequestRecord[] = [];
   /** ⛔ An observation. Nothing below branches on it and no gate reads it. */
-  const fragmentRequests: FragmentRequest[] = [];
+  const fragmentLog: FragmentLog = { requests: [], settles: [] };
   let byteSourceArm: ByteSourceArmSession | undefined;
   let throttle: ThrottleHandle | undefined;
   const stretches: SampledStretch[] = [];
@@ -126,7 +129,7 @@ async function main(): Promise<void> {
     recordRequests(page, requests);
     // Before the navigation, for the reason `recordRequests` is: a listener added afterwards misses
     // whatever the player asked for while the harness was still opening the page.
-    recordFragmentRequests(page, fragmentRequests);
+    recordFragmentLog(page, fragmentLog);
     watchUrl = await openViewer(page, clientUrl);
 
     byteSourceArm = await openByteSourceArmSession({
@@ -208,10 +211,12 @@ async function main(): Promise<void> {
     },
     summary,
     quality: judgeQualitySwitch(samples, throttleWindow),
-    // ⛔ Which level the player ASKED for, which no other reading in this artifact carries. An
-    // observation: nothing asserts on it. `pictureMoved` is what lets an empty capture read as a
-    // client without the instrument rather than as a player that requested nothing.
-    fragmentRequests: judgeFragmentRequests(fragmentRequests, throttleWindow, summary.overallAdvanceRatio > 0),
+    // ⛔ Which level the player ASKED for and what became of each attempt, neither of which any other
+    // reading in this artifact carries. An observation: nothing asserts on it. `pictureMoved` is what
+    // lets an empty capture read as a client without the instrument rather than as a player that
+    // requested nothing. ⭐ Both raw lists go in whole, because the bucketed counts cannot separate six
+    // fragments from one fragment asked for six times.
+    fragmentRequests: judgeFragmentRequests(fragmentLog, throttleWindow, summary.overallAdvanceRatio > 0),
     instrumentProofs,
     instrument: judgeRun(stretches.flatMap((stretch) => stretch.readings)),
     network,
@@ -247,6 +252,14 @@ async function main(): Promise<void> {
     `browser: levels asked for: ${describeLevelRequests(asked.before)} before the cap, then ` +
       `${describeLevelRequests(asked.during)} while capped, then ${describeLevelRequests(asked.after)} after the lift`,
   );
+  console.log(`browser: ${fragmentSettleVerdict(asked.settled)}`);
+  if (asked.settled !== null) {
+    const { during } = asked.settled;
+    console.log(
+      `browser: while capped those attempts ended ${describeSettleOutcomes(during)}, taking ` +
+        `${describeElapsed(during)}`,
+    );
+  }
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 
   byteSourceArm?.proveBytesCameFromIt(requests);

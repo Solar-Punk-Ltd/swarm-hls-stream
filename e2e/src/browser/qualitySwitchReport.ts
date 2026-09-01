@@ -9,7 +9,15 @@
 
 import { type LadderRung } from '../config.js';
 
-import { fragmentLogVerdict, type FragmentRequestPhase, type FragmentRequestTimeline } from './fragmentRequests.js';
+import {
+  describeElapsed,
+  describeSettleOutcomes,
+  fragmentLogVerdict,
+  type FragmentRequestPhase,
+  type FragmentRequestTimeline,
+  type FragmentSettlePhase,
+  fragmentSettleVerdict,
+} from './fragmentRequests.js';
 import { type QualitySwitchVerdict, type ThrottleWindow } from './qualitySwitch.js';
 import {
   type BrowserRun,
@@ -140,6 +148,104 @@ function fragmentRequestSection(run: QualityRun): string[] {
     '',
     '⛔ Counted and filed, never asserted on. A rung address is shortened to the tail of its topic here',
     'and written out in full in the state file beside this report.',
+    '',
+    ...settleSection(asked),
+    // On the report's own axis, seconds from its first sample, so this table can be read straight
+    // against `What the player chose` and `Every sample`. The state file keeps the wall clock.
+    ...everyRequestSection(asked, (atMs) => seconds(atMs - run.samples[0].atMs)),
+  ];
+}
+
+function settleRow(phase: FragmentSettlePhase, named: string): string {
+  return `| ${named} | ${phase.settled} | ${describeSettleOutcomes(phase)} | ${describeElapsed(phase)} | ${
+    phase.pairedToRequests
+  } |`;
+}
+
+/**
+ * ⭐ What became of each of those requests, which the level counts above cannot say.
+ *
+ * A level count is a count of ASKING. Six requests at one level is six fragments if they all arrived and
+ * one fragment six times if they did not, and on 2026-09-01 a squeeze arm produced exactly that shape
+ * with no way to tell which. The outcomes here decide it, and the durations say what the attempts cost.
+ *
+ * ⛔ The verdict line comes first, as it does above and for the same reason. Zero attempts settled and a
+ * client that writes no settle line print the same digits and mean opposite things.
+ */
+function settleSection(asked: FragmentRequestTimeline): string[] {
+  const { settled } = asked;
+  const heading = ['## How each of those attempts ended', '', `**${fragmentSettleVerdict(settled)}.**`, ''];
+
+  if (settled === null) {
+    return heading;
+  }
+
+  return [
+    ...heading,
+    '| | attempts settled | how they ended | elapsed min / median / max | paired to a request |',
+    '| --- | ---: | --- | ---: | ---: |',
+    settleRow(settled.before, 'before the cap'),
+    settleRow(settled.during, 'while capped'),
+    settleRow(settled.after, 'after the cap lifted'),
+    '',
+    '⛔ Observations, all of them, and no duration here is held against a ceiling. An attempt is paired to',
+    'a request when some request in the run named the same level and segment number, which is a check on',
+    'the join rather than a finding: a phase pairing with nothing means the two halves are describing',
+    `different fragments. The whole list of ${settled.captured} settled attempt(s) is in the state file.`,
+    '',
+  ];
+}
+
+/**
+ * How many raw requests the markdown prints before it stops.
+ *
+ * A six-minute squeeze arm asks for a few hundred fragments, which is a table a person can still scroll.
+ * ⚠️ The cap is on the RENDER only. The state file beside this report carries every entry, and the
+ * counts above are computed over all of them, so no figure here changes when the table is truncated.
+ */
+const MAX_RENDERED_REQUESTS = 200;
+
+/**
+ * ⭐⭐ Every request, in order, with its own segment number.
+ *
+ * ⛔⛔ **This is the section the buckets above cannot replace.** A phase that reports six level-0
+ * requests has aggregated away the one thing that separates six fragments from one fragment asked for
+ * six times, and that difference is where a defect lives: the first is a player stepping down and being
+ * served, the second is a player stepping down and getting nothing. Repeated segment numbers here are
+ * retries, plainly.
+ */
+function everyRequestSection(asked: FragmentRequestTimeline, at: (atMs: number) => string): string[] {
+  const { requests } = asked;
+  if (requests === null) {
+    return [
+      '### Every fragment this viewer asked for',
+      '',
+      'Not in this artifact: it was written before the raw list was carried, so only the buckets above',
+      'survive from that run. Retries cannot be told from distinct fragments in a file of that vintage.',
+      '',
+    ];
+  }
+
+  const shown = requests.slice(0, MAX_RENDERED_REQUESTS);
+  const truncated =
+    requests.length > shown.length
+      ? [`⚠️ The first ${shown.length} of ${requests.length}. The state file beside this report carries them all.`, '']
+      : [];
+
+  return [
+    '### Every fragment this viewer asked for',
+    '',
+    '| # | at | level | sn | rung |',
+    '| ---: | ---: | :---: | ---: | --- |',
+    ...shown.map(
+      (request, i) =>
+        `| ${i + 1} | ${at(request.atMs)}s | ${request.level} | ${request.sn} | ${shortRung(request.rung)} |`,
+    ),
+    '',
+    ...truncated,
+    '⛔ A repeated segment number at one level is the same fragment asked for again, which is the reading',
+    'a count of requests cannot give. Each instant is seconds from the first sample, the axis every other',
+    'table here uses, and the state file carries the wall clock the phase boundaries were cut on.',
     '',
   ];
 }
