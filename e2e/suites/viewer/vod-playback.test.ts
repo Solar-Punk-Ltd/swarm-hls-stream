@@ -29,7 +29,7 @@ import {
   wholeLadderRefusal,
 } from '../../src/harness/vodArm.js';
 import { waitFor } from '../../src/harness/wait.js';
-import { SEGMENT_ANY, type SegmentExpectation } from '../../src/segmentLength.js';
+import { SEGMENT_ANY } from '../../src/segmentLength.js';
 import { viewerGate } from '../../src/viewerCoverage.js';
 
 /**
@@ -75,6 +75,20 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  *
  * Owner ruling of 2026-08-29. How fast a seek landed is measured, printed and filed.
  *
+ * ## ⛔⛔ A run that pinned no segment length still runs this file
+ *
+ * `E2E_EXPECT_SEGMENT_S=any` is a legal declaration rather than a gap, and this file used to answer
+ * it by skipping the whole describe. That is the silent shrink this suite's own gates exist to
+ * prevent: a describe-level skip prints `# tests 0, # skipped 0, # fail 0`, exit 0, so a run where a
+ * real Chrome never opened a recording reads character for character like one where it did.
+ *
+ * What `any` actually costs is ONE of the questions here. Every length reading starts from a segment
+ * COUNT off the uploader's log multiplied by how long a segment is, and with no declared length there
+ * is no second factor, so {@link wholeBroadcastRefusal} cannot be asked. So it is not asked, the run
+ * says so in one line beside the observations, and every other assertion runs exactly as it does on a
+ * numeric run. The recording is sized in segments instead of seconds, at
+ * {@link RECORD_SEGMENTS_WHEN_UNPINNED}.
+ *
  * ⛔ Requires a deployed profile, a funded stamp and the browser image on the host, like every suite
  * under `suites/`. Nothing in CI runs these.
  */
@@ -90,6 +104,21 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  * times as much on one as the other and mean something different on each.
  */
 const RECORD_MEDIA_SECONDS = 30;
+/**
+ * How much to record when the run declared no segment length, counted in SEGMENTS on the widest rung.
+ *
+ * ⛔ A count is the wrong unit for the numeric path and the only unit available here. The two stages
+ * cut at different lengths, so 30 segments is 15s of media on one and 60s on the other, and a
+ * recording judged against a broadcast length would be judged against a different broadcast on each.
+ * Nothing here judges one: {@link wholeBroadcastRefusal} is the single question a run without a
+ * declared length does not ask, and every other assertion is indifferent to how long the recording is
+ * as long as it is long enough to seek around in.
+ *
+ * ⭐ 30 rather than a handful, for {@link RECORD_MEDIA_SECONDS}'s reason: a recording that fits whole
+ * in the player's buffer answers nothing about retrieval, and a missing segment out of three is
+ * invisible where one out of thirty is not.
+ */
+const RECORD_SEGMENTS_WHEN_UNPINNED = 30;
 const SEGMENT_WAIT_MS = 300_000;
 const VOD_WAIT_MS = 120_000;
 /**
@@ -108,7 +137,14 @@ const WATCH_MINUTES = 3;
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || noSegmentLength(cfg.segmentExpectation);
+const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir);
+/**
+ * Whether this run declared how long a segment is, which is what turns a segment count into seconds.
+ *
+ * ⛔ The only thing it decides is whether the broadcast-length question is asked. It is deliberately
+ * not a skip: see the header for what a describe-level skip does to a run summary.
+ */
+const pinsSegmentLength = typeof cfg.segmentExpectation === 'number';
 
 describe('V4 — a finished recording plays through, with the whole ladder it was published as', { skip }, () => {
   const host = makeHost(cfg);
@@ -154,10 +190,20 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
   it('plays back whole, from a finished timeline, offering every rung it was published as', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
 
-    await waitFor(async () => mediaSecondsPublished(await log()) >= RECORD_MEDIA_SECONDS, {
+    // Seconds where the run pinned a segment length, segments where it did not. The same recording
+    // either way, sized in whichever unit this run can actually name.
+    const recordedEnough = async (): Promise<boolean> =>
+      pinsSegmentLength
+        ? mediaSecondsPublished(await log()) >= RECORD_MEDIA_SECONDS
+        : segmentsPublished(await log()) >= RECORD_SEGMENTS_WHEN_UNPINNED;
+
+    await waitFor(recordedEnough, {
       timeoutMs: SEGMENT_WAIT_MS,
       intervalMs: 3_000,
-      label: `recording: ${RECORD_MEDIA_SECONDS}s of media before the broadcast is stopped`,
+      label: pinsSegmentLength
+        ? `recording: ${RECORD_MEDIA_SECONDS}s of media before the broadcast is stopped`
+        : `recording: ${RECORD_SEGMENTS_WHEN_UNPINNED} segments on the widest rung before the broadcast is ` +
+          `stopped, because this run declares E2E_EXPECT_SEGMENT_S=${SEGMENT_ANY} and cannot count seconds`,
     });
 
     // ⛔ Measured either side of the stop rather than from the publisher's own start. What the
@@ -197,11 +243,6 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
         'the catalog describes, whatever was actually written',
     );
 
-    // ⭐ The broadcast's own length, from the segments the uploader says it published, rather than
-    // from wall clock. Wall clock includes the settle before the first segment and the drain after
-    // the last, and neither is media a viewer can reach.
-    const publishedS = mediaSecondsPublished(finalLog);
-
     const result = await runBrowserArm(host, cfg, {
       backend: requireByteSourceForVod(backend),
       watchMinutes: WATCH_MINUTES,
@@ -233,22 +274,41 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
     );
     assert.equal(shortLadder, null, `this recording is not the ladder it was published as: ${shortLadder}`);
 
-    const truncated = wholeBroadcastRefusal(vod, publishedS);
-    assert.equal(truncated, null, `this recording is not the whole broadcast: ${truncated}`);
+    // ⛔ The one question a run that pinned no segment length cannot put. Its answer needs the
+    // broadcast's own length, which is a segment count times a declared segment length, and this run
+    // has no second factor. It is skipped rather than guessed at, and said out loud below: a
+    // recording judged against a length nobody chose passes or fails on the guess.
+    //
+    // ⭐ The length comes from the segments the uploader says it published, rather than from wall
+    // clock. Wall clock includes the settle before the first segment and the drain after the last,
+    // and neither is media a viewer can reach.
+    if (pinsSegmentLength) {
+      const truncated = wholeBroadcastRefusal(vod, mediaSecondsPublished(finalLog));
+      assert.equal(truncated, null, `this recording is not the whole broadcast: ${truncated}`);
+    }
 
     const nothingShown = pictureMovedRefusal(result);
     assert.equal(nothingShown, null, `nothing was actually shown: ${nothingShown}`);
 
+    const segments = segmentsPublished(finalLog);
+    const wallS = (broadcastEndedAtMs - Date.parse(startedAt)) / 1000;
     console.log(
-      `  observations, none of them asserted. ${publishedS.toFixed(1)}s of media published over ` +
-        `${((broadcastEndedAtMs - Date.parse(startedAt)) / 1000).toFixed(1)}s of wall clock, and the ` +
-        `recording reports ${vod.durationS?.toFixed(1)}s`,
+      `  observations, none of them asserted. ${segments} segment(s) published on the widest rung` +
+        `${pinsSegmentLength ? `, ${mediaSecondsPublished(finalLog).toFixed(1)}s of media` : ''} over ` +
+        `${wallS.toFixed(1)}s of wall clock, and the recording reports ${vod.durationS?.toFixed(1)}s`,
     );
+    if (!pinsSegmentLength) {
+      console.log(
+        `  the broadcast-length question was not asked, because this run declares ` +
+          `E2E_EXPECT_SEGMENT_S=${SEGMENT_ANY} and a segment count cannot be turned into seconds ` +
+          'without one. Every other assertion in this case ran',
+      );
+    }
   });
 });
 
 /**
- * How many seconds of MEDIA the broadcast published, off the uploader's own log.
+ * How many segments the broadcast published, off the uploader's own log.
  *
  * ⛔⛔ Per rung-stream, and taking the widest. `uploadedSegments` counts every rung, so on a four rung
  * ladder it is four times the media that exists and a recording would be judged against a broadcast
@@ -259,33 +319,19 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
  * longest one is the broadcast, and a rung that lagged behind at the moment of the stop does not
  * shorten it.
  */
-function mediaSecondsPublished(text: string): number {
+function segmentsPublished(text: string): number {
   const perStream = [...segmentIndicesByStream(text).values()].map((indices) => indices.length);
-  const longest = perStream.length === 0 ? 0 : Math.max(...perStream);
-  return longest * declaredSegmentSeconds();
+  return perStream.length === 0 ? 0 : Math.max(...perStream);
 }
 
 /**
- * The reason a run that pinned no segment length skips this file, or `false` to run it.
+ * How many seconds of MEDIA the broadcast published.
  *
- * ⛔ `E2E_EXPECT_SEGMENT_S=any` is a legal declaration rather than a gap.
- * `suites/preflight/segment-length.test.ts` accepts it on purpose and never asks again. What it
- * costs is this file's own question: every length reading here starts from how much media the
- * broadcast published, which is a segment COUNT off the uploader's log multiplied by how long a
- * segment is, and with no declared length there is no second factor. So whether the recording is
- * the whole broadcast cannot be asked at all, and a run that cannot ask it should say so rather
- * than red on the arithmetic. A numeric `E2E_EXPECT_SEGMENT_S` runs the case.
- *
- * ⛔ Composed into the browser gate at module scope rather than checked inside the case, because a
- * skip has to be declared where the describe is. A case discovering this from the inside could only
- * throw, and a throw inside a describe callback prints `not ok` and is still summarised as
- * `# fail 0`, exit 0.
+ * ⛔ Only reachable where the run declared a segment length. {@link declaredSegmentSeconds} throws
+ * otherwise, and the two callers are both behind `pinsSegmentLength`.
  */
-function noSegmentLength(declared: SegmentExpectation): string | false {
-  return declared === SEGMENT_ANY
-    ? `E2E_EXPECT_SEGMENT_S=${SEGMENT_ANY}: a broadcast length cannot be computed from a segment count ` +
-        'without a declared segment length, so whether this recording is the whole broadcast cannot be asked'
-    : false;
+function mediaSecondsPublished(text: string): number {
+  return segmentsPublished(text) * declaredSegmentSeconds();
 }
 
 /**
@@ -295,20 +341,21 @@ function noSegmentLength(declared: SegmentExpectation): string | false {
  * broadcast duration nobody chose, and `wholeBroadcastRefusal` would then compare the recording
  * against it and pass or fail on the guess.
  *
- * ⛔ A defence rather than a path, which is what it should have been all along. An undeclared run is
- * refused by `suites/preflight/segment-length.test.ts` before any broadcast starts, and a run
- * declaring `any` skips this whole file at {@link noSegmentLength}, so reaching this throw is a
- * defect in one of those two gates. Until that skip existed it also threw at `any` and blamed the
- * segment preflight, which ACCEPTS `any` as a declaration, so a legal run reached the first wait and
- * failed against a gate that had done exactly what it was written to do.
+ * ⛔ A defence rather than a path. An undeclared run is refused by
+ * `suites/preflight/segment-length.test.ts` before any broadcast starts, and a run declaring
+ * `E2E_EXPECT_SEGMENT_S=any` never reaches here because every caller is behind `pinsSegmentLength`.
+ * So this throw is a defect in one of those two, and it says which rather than blaming the segment
+ * preflight, which ACCEPTS `any` as a declaration and is doing exactly what it was written to do.
  */
 function declaredSegmentSeconds(): number {
   const declared = cfg.segmentExpectation;
   if (typeof declared !== 'number') {
     throw new Error(
       `this run declares E2E_EXPECT_SEGMENT_S as '${declared}', so a segment count cannot be turned into ` +
-        'a broadcast length and whether the recording is the whole of it cannot be asked. The segment ' +
-        'preflight should have refused this run before it published anything.',
+        'a broadcast length and whether the recording is the whole of it cannot be asked. Reaching this ' +
+        `is a defect in one of two gates rather than in the run: '${SEGMENT_ANY}' should have been kept ` +
+        'out by `pinsSegmentLength`, and an undeclared run should have been refused by ' +
+        'suites/preflight/segment-length.test.ts before anything was published.',
     );
   }
   return declared;
