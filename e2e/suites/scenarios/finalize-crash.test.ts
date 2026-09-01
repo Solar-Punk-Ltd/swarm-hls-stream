@@ -165,11 +165,20 @@ describe('H — killed inside finalize: one recording, and the catalog points at
     const commitsAfterReboot = vodCommits(finalLog);
     console.log(`H: catalog writes — ${commitsBeforeReboot} before the reboot, ${commitsAfterReboot} in total`);
 
+    // ⛔ What this line does and does not prove, pinned by unit tests in
+    // `packages/stream-uploader/test/StreamCatalog.test.ts` on 2026-09-01. The guard behind it is
+    // "the entry the catalog feed currently holds is not already VOD". Re-announcing a finished
+    // rung after a crash does NOT trip it, so a second line is not recovery re-finalizing: it means
+    // the reboot's catalog read came back without the entry and the guard called it the first
+    // finalize. That is its own defect, because the same blind read rebuilds the ladder from the one
+    // rung in hand, but it is not the second payment the old wording here claimed.
     assert.equal(
       commitsAfterReboot,
       1,
-      `a broadcast must be finalized once. The uploader wrote the catalog ${commitsAfterReboot} times, ` +
-        'so the recording was published and paid for more than once',
+      `a broadcast must be finalized once, and the uploader announced the flip ${commitsAfterReboot} times. ` +
+        'A second one means the reboot could not read its own catalog entry back, so it treated the ' +
+        'finished ladder as a new one. Check the rendition count reported below before reading this ' +
+        'as a recording published twice',
     );
 
     assert.deepEqual(
@@ -187,5 +196,18 @@ describe('H — killed inside finalize: one recording, and the catalog points at
       intervalMs: 3_000,
       label: 'the recording surfaces as a VOD in the gateway catalog',
     });
+
+    // The other half of a blind reboot read: the entry is rebuilt from whichever rung re-announced,
+    // so a four rung recording comes back as a one rung recording. Reported for every run, because
+    // it is what tells a reader which failure the count above was.
+    const finished = (await safeFetch()).find((entry) => entryCarriesTopic(entry, ourTopics));
+    const recorded = finished?.renditions?.length ?? 0;
+    console.log(`H: the finished entry carries ${recorded} rendition(s), from ${ourTopics.size} announced rung(s)`);
+    assert.ok(
+      recorded === 0 || recorded >= ourTopics.size,
+      `the recording lost renditions across the crash: ${recorded} left of ${ourTopics.size} announced. ` +
+        'A reboot that cannot read its catalog entry back rebuilds the ladder from the one rung it ' +
+        'holds and writes that over the finished one',
+    );
   });
 });
