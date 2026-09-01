@@ -46,6 +46,11 @@ interface ArmStateOverrides {
   vod?: Record<string, unknown> | null;
   /** The squeeze section `browser/quality.ts` writes, naming the rung and why it could not be asked. */
   squeeze?: Record<string, unknown> | null;
+  /**
+   * Which level the player asked for, which only `browser/quality.ts` writes. Null leaves it out,
+   * ⛔ which is not an empty reading but a browser image built before the instrument existed.
+   */
+  fragmentRequests?: Record<string, unknown> | null;
 }
 
 const SAMPLE_COUNT = 240;
@@ -78,6 +83,7 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     silenced = null,
     vod = null,
     squeeze = null,
+    fragmentRequests = null,
   } = overrides;
 
   const run: Record<string, unknown> = {
@@ -158,6 +164,9 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
   }
   if (squeeze !== null) {
     run.squeeze = squeeze;
+  }
+  if (fragmentRequests !== null) {
+    run.fragmentRequests = fragmentRequests;
   }
   if (scenario !== null) {
     run.scenario = { name: scenario, service: 'bee-gateway', action: 'stop', downMs: 20_000 };
@@ -241,13 +250,35 @@ export const STEPPED_DOWN_AND_BACK: Record<string, unknown> = {
 };
 
 /**
+ * The fragment requests of a viewer who asked for the top rung until the cap, and the bottom one
+ * under it.
+ *
+ * The shape a healthy squeeze produces: level 3 throughout the baseline, level 0 taking over while
+ * capped, level 3 again once it lifts. ⛔ V2's three reds are the opposite shape, level 3 in all
+ * three phases, and that is what this instrument was built to be able to state.
+ */
+export const ASKED_FOR_A_CHEAPER_RUNG: Record<string, unknown> = {
+  before: { requests: 45, levels: [{ level: '3', requests: 45, rungs: ['swarm://0xowner/top'] }] },
+  during: {
+    requests: 40,
+    levels: [
+      { level: '3', requests: 4, rungs: ['swarm://0xowner/top'] },
+      { level: '0', requests: 36, rungs: ['swarm://0xowner/bottom'] },
+    ],
+  },
+  after: { requests: 55, levels: [{ level: '3', requests: 55, rungs: ['swarm://0xowner/top'] }] },
+  captured: 140,
+  state: 'recorded',
+};
+
+/**
  * A squeeze arm's state file, which is a watch's plus the section only `browser/quality.ts` writes.
  *
  * A caller overriding `quality` states the whole verdict rather than a patch of one, for the same
  * reason `crashArmState` does: a half-stated verdict is what the reader is supposed to refuse.
  */
 export function qualityArmState(overrides: ArmStateOverrides = {}): unknown {
-  return armState({ quality: STEPPED_DOWN_AND_BACK, ...overrides });
+  return armState({ quality: STEPPED_DOWN_AND_BACK, fragmentRequests: ASKED_FOR_A_CHEAPER_RUNG, ...overrides });
 }
 
 /**

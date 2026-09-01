@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { type FragmentRequest, judgeFragmentRequests } from '../src/browser/fragmentRequests.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { judgeQualitySwitch, judgeRungTimeline } from '../src/browser/qualitySwitch.js';
 import { type QualityRun, renderQualityReport } from '../src/browser/qualitySwitchReport.js';
@@ -76,8 +77,20 @@ function watched(plans: readonly SamplePlan[]): ViewerSample[] {
 
 const held = (count: number, plan: SamplePlan): SamplePlan[] => Array.from({ length: count }, () => plan);
 
-function qualityRunOf(samples: ViewerSample[]): QualityRun {
+const TOP_RUNG = 'swarm://0xowner/9c4e1f60b8a2d357e0f1a2b3c4d5e6f7';
+const BOTTOM_RUNG = 'swarm://0xowner/1a2b3c4d5e6f708192a3b4c5d6e7f809';
+
+/** What the player asked for while it rode the top rung and then came down off it. */
+const ASKED_AND_CAME_DOWN: FragmentRequest[] = [
+  { atMs: APPLIED_AT - 2_000, level: '3', sn: '1', rung: TOP_RUNG },
+  { atMs: APPLIED_AT + 1_000, level: '3', sn: '2', rung: TOP_RUNG },
+  { atMs: APPLIED_AT + 2_000, level: '0', sn: '3', rung: BOTTOM_RUNG },
+  { atMs: LIFTED_AT + 1_000, level: '3', sn: '4', rung: TOP_RUNG },
+];
+
+function qualityRunOf(samples: ViewerSample[], asked: FragmentRequest[] = ASKED_AND_CAME_DOWN): QualityRun {
   const throttle = { appliedAtMs: APPLIED_AT, liftedAtMs: LIFTED_AT, kbps: 1200 };
+  const summary = summarize(samples);
   return {
     measuredAt: '2026-08-30T01:00:00.000Z',
     watchUrl: 'http://127.0.0.1:10074/watch',
@@ -85,8 +98,9 @@ function qualityRunOf(samples: ViewerSample[]): QualityRun {
     gopSeconds: 2,
     ladder: LADDER,
     throttle,
-    summary: summarize(samples),
+    summary,
     quality: judgeQualitySwitch(samples, throttle),
+    fragmentRequests: judgeFragmentRequests(asked, throttle, summary.overallAdvanceRatio > 0),
     instrument: judgeRun([]),
     samples,
     screenshots: [],
@@ -160,6 +174,34 @@ describe('the report a squeezed viewer leaves behind', () => {
 
     assert.match(report, /\| 480p \| 1200 kbps \| yes \|/);
     assert.match(report, /\| 720p \| 2800 kbps \| no \|/);
+  });
+
+  /**
+   * ⭐ The reading V2's three reds had no way to take. Every other section says what the player
+   * DECODED or what ABR would pick next, and neither separates a player riding a rung it cannot carry
+   * from one asking for a cheaper rung that upstream answers with the expensive one.
+   */
+  it('names the level the player asked for in each phase, and the rung it asked against', () => {
+    const report = renderQualityReport(qualityRunOf(adapted));
+
+    assert.match(report, /## Which level the player asked for/);
+    assert.match(report, /\| before the cap \| 3 \| 1 \|/);
+    assert.match(report, /\| while capped \| 0 \| 1 \|/);
+    assert.match(report, /\| after the cap lifted \| 3 \| 1 \|/);
+    // Shortened to the tail of the topic, which is what tells two rungs of one ladder apart.
+    assert.ok(report.includes(`…${BOTTOM_RUNG.slice(-12)}`), 'the rung the cheap level asked against is not named');
+  });
+
+  /**
+   * ⛔⛔⛔ Zero captured is not zero requested. A picture that moved cannot have requested no
+   * fragments, so an empty capture means the CLIENT this arm watched has no instrument. Printing that
+   * as a player which asked for nothing would be a wrong answer wearing a measurement's clothes.
+   */
+  it('calls an empty capture over a moving picture an absent instrument, never a silent player', () => {
+    const report = renderQualityReport(qualityRunOf(adapted, []));
+
+    assert.match(report, /instrument absent from the deployed client/);
+    assert.doesNotMatch(report, /fragment request\(s\) recorded/);
   });
 });
 

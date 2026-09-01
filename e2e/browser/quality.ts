@@ -27,6 +27,13 @@ import {
   openByteSourceArmSession,
 } from '../src/browser/byteSourceArm.js';
 import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
+import {
+  describeLevelRequests,
+  fragmentLogVerdict,
+  type FragmentRequest,
+  judgeFragmentRequests,
+  recordFragmentRequests,
+} from '../src/browser/fragmentRequests.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { judgeQualitySwitch } from '../src/browser/qualitySwitch.js';
@@ -96,6 +103,8 @@ async function main(): Promise<void> {
   console.log(`browser: ${chromeVersion}, ladder ${cfg.abrLadder.map((r) => `${r.name}@${r.kbps}`).join(' ')}`);
 
   const requests: RequestRecord[] = [];
+  /** ⛔ An observation. Nothing below branches on it and no gate reads it. */
+  const fragmentRequests: FragmentRequest[] = [];
   let byteSourceArm: ByteSourceArmSession | undefined;
   let throttle: ThrottleHandle | undefined;
   const stretches: SampledStretch[] = [];
@@ -115,6 +124,9 @@ async function main(): Promise<void> {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     recordRequests(page, requests);
+    // Before the navigation, for the reason `recordRequests` is: a listener added afterwards misses
+    // whatever the player asked for while the harness was still opening the page.
+    recordFragmentRequests(page, fragmentRequests);
     watchUrl = await openViewer(page, clientUrl);
 
     byteSourceArm = await openByteSourceArmSession({
@@ -176,6 +188,7 @@ async function main(): Promise<void> {
   const network = summarizeNetwork(requests);
   const cost = judgeCost(resourcesBefore, await readResources(host, cfg), network.segmentBytesDelivered);
   const throttleWindow = { appliedAtMs: throttledAtMs, liftedAtMs: releasedAtMs, kbps: throttleKbps };
+  const summary = summarize(samples);
 
   const run = {
     measuredAt,
@@ -193,8 +206,12 @@ async function main(): Promise<void> {
       reported: byteSourceArm.arm.reported,
       settledForMs: byteSourceArm.arm.settledForMs,
     },
-    summary: summarize(samples),
+    summary,
     quality: judgeQualitySwitch(samples, throttleWindow),
+    // ⛔ Which level the player ASKED for, which no other reading in this artifact carries. An
+    // observation: nothing asserts on it. `pictureMoved` is what lets an empty capture read as a
+    // client without the instrument rather than as a player that requested nothing.
+    fragmentRequests: judgeFragmentRequests(fragmentRequests, throttleWindow, summary.overallAdvanceRatio > 0),
     instrumentProofs,
     instrument: judgeRun(stretches.flatMap((stretch) => stretch.readings)),
     network,
@@ -223,6 +240,13 @@ async function main(): Promise<void> {
       `${quality.during.bandwidthEstimateKbps} → ${quality.after.bandwidthEstimateKbps} kbps`,
   );
   console.log(`browser: the picture advanced ${quality.during.advance.ratio.toFixed(3)}x while capped`);
+
+  const asked = run.fragmentRequests;
+  console.log(`browser: ${fragmentLogVerdict(asked)}`);
+  console.log(
+    `browser: levels asked for: ${describeLevelRequests(asked.before)} before the cap, then ` +
+      `${describeLevelRequests(asked.during)} while capped, then ${describeLevelRequests(asked.after)} after the lift`,
+  );
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 
   byteSourceArm?.proveBytesCameFromIt(requests);

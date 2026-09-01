@@ -9,6 +9,7 @@
 
 import { type LadderRung } from '../config.js';
 
+import { fragmentLogVerdict, type FragmentRequestPhase, type FragmentRequestTimeline } from './fragmentRequests.js';
 import { type QualitySwitchVerdict, type ThrottleWindow } from './qualitySwitch.js';
 import {
   type BrowserRun,
@@ -24,6 +25,8 @@ export interface QualityRun extends BrowserRun {
   ladder: readonly LadderRung[];
   throttle: ThrottleWindow;
   quality: QualitySwitchVerdict;
+  /** Which level the player asked for, per phase. An observation, asserted nowhere. */
+  fragmentRequests: FragmentRequestTimeline;
 }
 
 const rung = (height: number | null): string => (height === null ? '—' : `${height}p`);
@@ -85,6 +88,58 @@ function rungSection(run: QualityRun): string[] {
     '',
     '⛔ Every duration above is measured and filed rather than held against a ceiling. Owner ruling of',
     '2026-08-29: an e2e suite checks that the feature works and is stable, never how fast it is.',
+    '',
+  ];
+}
+
+/**
+ * How much of a rung address to print, counted from its end.
+ *
+ * A rung is `swarm://<40 hex owner>/<64 hex topic>`, which is 113 characters and would make the table
+ * unreadable. The tail is the end of the topic, and the topic is what differs between rungs of one
+ * ladder. ⚠️ The state file carries every address in full, so nothing here is the only copy.
+ */
+const RUNG_TAIL_CHARS = 12;
+
+const shortRung = (rung: string): string =>
+  rung.length <= RUNG_TAIL_CHARS ? rung : `…${rung.slice(-RUNG_TAIL_CHARS)}`;
+
+function levelRows(phase: FragmentRequestPhase, named: string): string[] {
+  if (phase.levels.length === 0) {
+    return [`| ${named} | — | 0 | — |`];
+  }
+  return phase.levels.map(
+    (level) => `| ${named} | ${level.level} | ${level.requests} | ${level.rungs.map(shortRung).join(', ')} |`,
+  );
+}
+
+/**
+ * ⭐ The one reading that says which rung the fragments in flight belonged to.
+ *
+ * Every other quality figure in this report is about what the player DECODED or what ABR would pick
+ * NEXT. Neither can separate a player that kept asking for a rung it could not afford from a player
+ * that asked for a cheaper one and was served the expensive one. This can.
+ *
+ * ⛔ The verdict line comes first and has to be read first. An arm with no lines captured prints the
+ * same zeroes whether the player asked for nothing or the client it watched never had the instrument,
+ * and those are opposite conclusions.
+ */
+function fragmentRequestSection(run: QualityRun): string[] {
+  const asked = run.fragmentRequests;
+
+  return [
+    '## Which level the player asked for',
+    '',
+    `**${fragmentLogVerdict(asked)}.**`,
+    '',
+    '| | level | fragment requests | rung playlist(s) it named |',
+    '| --- | :---: | ---: | --- |',
+    ...levelRows(asked.before, 'before the cap'),
+    ...levelRows(asked.during, 'while capped'),
+    ...levelRows(asked.after, 'after the cap lifted'),
+    '',
+    '⛔ Counted and filed, never asserted on. A rung address is shortened to the tail of its topic here',
+    'and written out in full in the state file beside this report.',
     '',
   ];
 }
@@ -181,6 +236,7 @@ export function renderQualityReport(run: QualityRun): string {
     '',
     ...ladderSection(run),
     ...rungSection(run),
+    ...fragmentRequestSection(run),
     ...verdictSection(run),
     ...playbackSection(run),
     ...networkSection(run),

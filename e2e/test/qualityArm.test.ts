@@ -9,6 +9,7 @@ import { parseBrowserArmState } from '../src/harness/browser.js';
 import {
   climbedBackRefusal,
   keptPlayingRefusal,
+  levelsAskedForSummary,
   qualityArmRefusal,
   qualityArmSummary,
   SQUEEZE_RECOVER_SECONDS,
@@ -19,7 +20,12 @@ import {
   throttleRefusal,
 } from '../src/harness/qualityArm.js';
 
-import { armState, qualityArmState, STEPPED_DOWN_AND_BACK } from './helpers/browserArmFixtures.js';
+import {
+  armState,
+  ASKED_FOR_A_CHEAPER_RUNG,
+  qualityArmState,
+  STEPPED_DOWN_AND_BACK,
+} from './helpers/browserArmFixtures.js';
 
 /**
  * The questions a squeezed viewer's run is asked.
@@ -300,6 +306,81 @@ describe('the line an operator reads while a squeeze arm runs', () => {
 
   it('has something to say about an arm that drove no squeeze, rather than throwing at the printer', () => {
     assert.match(qualityArmSummary(parseBrowserArmState(armState())), /no squeeze/);
+  });
+
+  /**
+   * ⭐ The added observation, and the reason it is worth the line. Every other figure in this summary
+   * is what the player DECODED or what ABR would pick next, and neither separates a player riding a
+   * rung it cannot afford from one asking for a cheaper rung that upstream answers with the expensive
+   * one.
+   */
+  it('carries which level the player asked for, phase by phase', () => {
+    const line = qualityArmSummary(parseBrowserArmState(qualityArmState()));
+
+    assert.match(line, /levels asked for: level 3 x45 before the cap/);
+    assert.match(line, /level 3 x4, level 0 x36 while capped/);
+    assert.match(line, /level 3 x55 after the lift/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ Three silences, three sentences, and none of them may be printed as another.
+ *
+ * A null timeline is the BROWSER IMAGE having no instrument, since only a driver carrying it writes
+ * the section. A state of `absent` is the deployed CLIENT having none. A recorded run with an empty
+ * phase is the player, which is the only one of the three that is a finding about the product. Each
+ * has a different fix, so a reader that conflated them would send someone to the wrong place.
+ */
+describe('which level the player asked for, and the three ways it can be missing', () => {
+  const askedNothing = (state: string): Record<string, unknown> => ({
+    before: { requests: 0, levels: [] },
+    during: { requests: 0, levels: [] },
+    after: { requests: 0, levels: [] },
+    captured: 0,
+    state,
+  });
+
+  it('names the browser image when the artifact carries no such section at all', () => {
+    const stale = parseBrowserArmState(qualityArmState({ fragmentRequests: null }));
+
+    assert.equal(stale.fragmentRequests, null);
+    assert.match(levelsAskedForSummary(stale.fragmentRequests), /browser image .* predates the instrument/);
+  });
+
+  it('names the deployed client when the section is there and heard nothing over a moving picture', () => {
+    const armed = parseBrowserArmState(qualityArmState({ fragmentRequests: askedNothing('absent') }));
+
+    assert.match(levelsAskedForSummary(armed.fragmentRequests), /instrument absent from the deployed client/);
+  });
+
+  it('never reports either silence as a player that asked for nothing', () => {
+    const armed = parseBrowserArmState(qualityArmState({ fragmentRequests: askedNothing('absent') }));
+
+    assert.doesNotMatch(levelsAskedForSummary(armed.fragmentRequests), /levels asked for/);
+  });
+
+  it('says a silence over a frozen picture settles nothing either way', () => {
+    const frozen = parseBrowserArmState(qualityArmState({ fragmentRequests: askedNothing('unplayed') }));
+
+    assert.match(levelsAskedForSummary(frozen.fragmentRequests), /says nothing/);
+  });
+
+  /** ⛔ Checked against the states this harness knows, never cast to them, exactly as a feed state is. */
+  it('refuses a state it does not recognise rather than reading it as a reading', () => {
+    assert.throws(
+      () => parseBrowserArmState(qualityArmState({ fragmentRequests: askedNothing('probably') })),
+      /run\.fragmentRequests\.state/,
+    );
+  });
+
+  it('refuses a section missing a phase, rather than counting the ones it has', () => {
+    const halfStated = { ...ASKED_FOR_A_CHEAPER_RUNG };
+    delete (halfStated as Record<string, unknown>).during;
+
+    assert.throws(
+      () => parseBrowserArmState(qualityArmState({ fragmentRequests: halfStated })),
+      /run\.fragmentRequests\.during/,
+    );
   });
 });
 

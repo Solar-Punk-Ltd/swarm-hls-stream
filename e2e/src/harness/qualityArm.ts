@@ -32,6 +32,11 @@
 
 import { DEFAULT_BYTE_SOURCE_SETTLE_SECONDS } from '../browser/byteSourceArm.js';
 import { WEEB3_BYTES } from '../browser/fetchBackendSweep.js';
+import {
+  describeLevelRequests,
+  fragmentLogVerdict,
+  type FragmentRequestTimeline,
+} from '../browser/fragmentRequests.js';
 import { type QualitySwitchVerdict } from '../browser/qualitySwitch.js';
 
 import { type BrowserArmResult } from './browser.js';
@@ -273,6 +278,35 @@ export function climbedBackRefusal(quality: QualitySwitchVerdict): string | null
   );
 }
 
+/**
+ * Which level the player ASKED for across the three phases, as one sentence.
+ *
+ * ⛔⛔ **Three silences, three sentences, and none of them may be printed as another.** A null
+ * timeline is the BROWSER IMAGE having no instrument, because only a driver carrying it writes the
+ * section at all, and the fix for that is rebuilding the image the arm runs in. A timeline whose state
+ * is `absent` is the deployed CLIENT having none, and the fix is redeploying the client. A timeline
+ * that recorded lines and shows a phase at zero is the player, which is the only one of the three that
+ * is a finding about the product.
+ *
+ * ⛔ An observation. Nothing here refuses a run, per the owner ruling of 2026-08-29.
+ */
+export function levelsAskedForSummary(asked: FragmentRequestTimeline | null): string {
+  if (asked === null) {
+    return (
+      'which level was asked for is not in this artifact at all: the browser image that ran this arm ' +
+      'predates the instrument, so rebuild it before reading this run for a level'
+    );
+  }
+  if (asked.state !== 'recorded') {
+    return fragmentLogVerdict(asked);
+  }
+
+  return (
+    `levels asked for: ${describeLevelRequests(asked.before)} before the cap, then ` +
+    `${describeLevelRequests(asked.during)} while capped, then ${describeLevelRequests(asked.after)} after the lift`
+  );
+}
+
 /** The line an operator reads while a squeeze arm runs, so a long arm shows what it is producing. */
 export function qualityArmSummary(result: BrowserArmResult): string {
   const { quality } = result;
@@ -286,6 +320,10 @@ export function qualityArmSummary(result: BrowserArmResult): string {
     `${rung(quality.during.lowestRungHeight)} under it, up to ${rung(quality.after.tallestRungHeight)} after. ` +
     `${quality.switchesCounted} level changes, the picture advanced ${quality.during.advance.ratio.toFixed(3)} ` +
     `while capped, and the player's own estimate went ${quality.before.bandwidthEstimateKbps ?? '—'} → ` +
-    `${quality.during.bandwidthEstimateKbps ?? '—'} → ${quality.after.bandwidthEstimateKbps ?? '—'} kbps`
+    `${quality.during.bandwidthEstimateKbps ?? '—'} → ${quality.after.bandwidthEstimateKbps ?? '—'} kbps. ` +
+    // ⛔ An added observation, asserted nowhere. Every rung figure above is what the player DECODED or
+    // what ABR would pick NEXT, and neither can tell a player riding a rung it cannot afford from one
+    // asking for a cheaper rung that something upstream answers with the expensive one.
+    `${levelsAskedForSummary(result.fragmentRequests)}`
   );
 }

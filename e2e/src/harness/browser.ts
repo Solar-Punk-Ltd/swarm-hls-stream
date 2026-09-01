@@ -32,6 +32,11 @@
 
 import { FEED_STATE_ENDED, isViewerFeedState, type ViewerFeedState } from '../browser/feedState.js';
 import { type ByteSource } from '../browser/fetchBackendSweep.js';
+import {
+  type FragmentLogState,
+  type FragmentRequestPhase,
+  type FragmentRequestTimeline,
+} from '../browser/fragmentRequests.js';
 import { type QualityPhase, type QualitySwitchVerdict, type RungTimeline } from '../browser/qualitySwitch.js';
 import { type E2EConfig } from '../config.js';
 
@@ -361,6 +366,19 @@ export interface BrowserArmResult {
    */
   cannotSqueeze: string | null;
   /**
+   * Which level their player ASKED for, per squeeze phase, on a squeeze arm. Null on every other arm.
+   *
+   * ⛔⛔ **Three different silences, and only one of them is about the player.** Null here is the
+   * BROWSER IMAGE having no instrument, because only a driver carrying it writes the section at all. A
+   * present section whose state is `absent` is the deployed CLIENT having none, which is a different
+   * thing to rebuild. A present section whose phases are empty is a player that genuinely asked for
+   * nothing. Printing any of the three as another would be a wrong answer wearing a measurement's
+   * clothes.
+   *
+   * ⛔ An observation. Nothing asserts on it, per the owner ruling of 2026-08-29.
+   */
+  fragmentRequests: FragmentRequestTimeline | null;
+  /**
    * What their player chose across a silenced rung, on a rung-outage arm. Null on every other arm.
    *
    * ⛔ Paired with {@link recovery}, which a rung-outage arm also carries. Either alone reads as a
@@ -490,6 +508,7 @@ export function parseBrowserArmState(raw: unknown): BrowserArmResult {
     recovery: readCrashRecovery(run),
     quality: readQualityVerdict(run),
     cannotSqueeze: readCannotSqueeze(run),
+    fragmentRequests: readFragmentRequests(run),
     rungs: readRungTimeline(run),
     silencedRung: readSilencedRung(run),
     vod: readVodResult(run),
@@ -577,6 +596,59 @@ function readQualityVerdict(run: Record<string, unknown>): QualitySwitchVerdict 
   return {
     ...readTimeline(quality, 'run.quality'),
     throttledToKbps: asNumber(quality.throttledToKbps, 'run.quality.throttledToKbps'),
+  };
+}
+
+/** The states `judgeFragmentRequests` writes, checked rather than cast, exactly as a feed state is. */
+const FRAGMENT_LOG_STATES: readonly FragmentLogState[] = ['recorded', 'absent', 'unplayed'];
+
+/**
+ * Which level the player asked for, or the absence of the whole reading.
+ *
+ * ⛔ Absent is legitimate and means one specific thing: the BROWSER IMAGE this arm ran predates the
+ * instrument, since only a driver carrying it writes the section. That is not the same silence as a
+ * section present with nothing in it, which is the deployed CLIENT lacking it, and the caller has to
+ * be able to say which. So the section is read whole where it exists, and a malformed one is refused
+ * rather than flattened into the absent case.
+ */
+function readFragmentRequests(run: Record<string, unknown>): FragmentRequestTimeline | null {
+  if (run.fragmentRequests === undefined || run.fragmentRequests === null) {
+    return null;
+  }
+  const asked = asObject(run.fragmentRequests, 'run.fragmentRequests');
+  const state = asString(asked.state, 'run.fragmentRequests.state');
+  if (!FRAGMENT_LOG_STATES.includes(state as FragmentLogState)) {
+    throw new Error(
+      `the arm's state has no fragment log state this harness knows at run.fragmentRequests.state, got ` +
+        `${shownValue(state)}. The driver gained a state, or the file was written by one this reader ` +
+        'does not match.',
+    );
+  }
+
+  return {
+    before: readFragmentPhase(asked.before, 'run.fragmentRequests.before'),
+    during: readFragmentPhase(asked.during, 'run.fragmentRequests.during'),
+    after: readFragmentPhase(asked.after, 'run.fragmentRequests.after'),
+    captured: asNumber(asked.captured, 'run.fragmentRequests.captured'),
+    state: state as FragmentLogState,
+  };
+}
+
+function readFragmentPhase(value: unknown, at: string): FragmentRequestPhase {
+  const phase = asObject(value, at);
+
+  return {
+    requests: asNumber(phase.requests, `${at}.requests`),
+    levels: asArray(phase.levels, `${at}.levels`).map((entry, i) => {
+      const level = asObject(entry, `${at}.levels[${i}]`);
+      return {
+        level: asString(level.level, `${at}.levels[${i}].level`),
+        requests: asNumber(level.requests, `${at}.levels[${i}].requests`),
+        rungs: asArray(level.rungs, `${at}.levels[${i}].rungs`).map((rung, r) =>
+          asString(rung, `${at}.levels[${i}].rungs[${r}]`),
+        ),
+      };
+    }),
   };
 }
 
