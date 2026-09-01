@@ -311,9 +311,20 @@ export class StreamCatalog {
   public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<void> {
     return this.queue.add(() =>
       this.writeFeed(async (previous) => {
-        const wasVod =
-          previous.find((e) => e.owner === identity.owner && e.group === identity.group)?.state === STREAM_STATUS_VOD;
+        const held = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
+        const wasVod = held?.state === STREAM_STATUS_VOD;
         const entry = buildLadderEntry(identity, previous, rendition);
+        // ⛔ The guard's own input, which has never been recorded and is why scenario H has cost
+        // three sittings. Every round has been able to see the DECISION (`Ladder … finalized to VOD`)
+        // and never the STATE it was made from, so each explanation had to be reasoned rather than
+        // read, and three of them were wrong. Debug rather than log: it fires on every announce.
+        this.logger.debug(
+          `[StreamCatalog] Ladder ${identity.group}: the catalog held ` +
+            `${held === undefined ? 'no entry' : `state=${held.state} renditions=${held.renditions?.length ?? 0}`}` +
+            `, this announce carries ${rendition.name}` +
+            `${rendition.index === undefined ? ' with no index' : ` at index ${rendition.index}`}` +
+            `, so the entry becomes ${entry.state}`,
+        );
         if (entry.state === STREAM_STATUS_VOD && !wasVod) {
           // The one externally visible moment a ladder ends. Everything else about the flip lives in
           // the catalog feed, which neither an operator's grep nor the harness can wait on cheaply.
