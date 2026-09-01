@@ -8,20 +8,26 @@
  * corrects for that; `split.ts` takes a measured skew and says which hops it moves between.
  */
 
-import { manifestUploadedPattern } from '@swarm-hls-stream/shared';
+import { manifestUploadedPattern, segmentUploadedPattern } from '@swarm-hls-stream/shared';
 
 import { type TimestampedMessage, timestampedMessages } from '../harness/logwatch.js';
 
 /**
- * `Segment 41 uploaded: <64 hex>` — the payload reached Swarm.
+ * `Segment 41 of live/stream_720p uploaded: <ref>`. The payload reached Swarm.
+ *
+ * Derived from the composer rather than written out, for the same reason the manifest pattern below
+ * is. A hand-written copy goes silently empty the moment the message is reworded, and this one did:
+ * it held the pre-ladder `Segment N uploaded: <hex>` shape from 2026-08-27 to 2026-09-01, so every
+ * bench run in between read zero segments and measured no capture-to-fetchable latency at all, with
+ * nothing thrown and nothing logged.
  *
  * Anchored to the whole message, which nothing the uploader prints today makes load-bearing: the
  * three failure paths that also name a segment say `segment` in lower case, so an unanchored pattern
- * excludes them too. Kept anchored because the safe failure here is the loud one — the bench looks
- * up one specific reference and says so when the log does not hold it, whereas a pattern that
- * matched too much would attribute a stranger's timestamp to the measured segment.
+ * excludes them too. Kept anchored because the safe failure here is the loud one. The bench looks up
+ * one specific reference and says so when the log does not hold it, whereas a pattern that matched
+ * too much would attribute a stranger's timestamp to the measured segment.
  */
-const RE_SEGMENT_UPLOADED = /^Segment (\d+) uploaded: ([0-9a-f]+)$/;
+const RE_SEGMENT_UPLOADED = new RegExp(`^${segmentUploadedPattern().source}$`);
 /**
  * `Manifest of live/stream_720p uploaded at SOC index 12` — the feed write returned.
  *
@@ -31,7 +37,10 @@ const RE_SEGMENT_UPLOADED = /^Segment (\d+) uploaded: ([0-9a-f]+)$/;
 const RE_MANIFEST_PUBLISHED = new RegExp(`^${manifestUploadedPattern().source}$`);
 
 export interface UploadedSegment {
+  /** The rung's own playlist position. A ladder counts four of these independently from zero. */
   index: number;
+  /** Which rung uploaded it, so an index and a manifest can both be read against the right one. */
+  streamId: string;
   /** Swarm reference of the payload, which is how a manifest entry names it. */
   ref: string;
   atMs: number;
@@ -56,7 +65,9 @@ export function uploadTimeline(logText: string): UploadTimeline {
   for (const line of timestampedMessages(logText)) {
     const uploaded = RE_SEGMENT_UPLOADED.exec(line.message);
     if (uploaded) {
-      segments.push({ index: Number(uploaded[1]), ref: uploaded[2], atMs: line.atMs });
+      // ⚠️ The two group orders below are reverses of each other, because each follows the words of
+      // its own message: the segment line names the index first, the manifest line names the stream.
+      segments.push({ index: Number(uploaded[1]), streamId: uploaded[2], ref: uploaded[3], atMs: line.atMs });
       continue;
     }
     const published = RE_MANIFEST_PUBLISHED.exec(line.message);
@@ -74,14 +85,31 @@ export function uploadTimeline(logText: string): UploadTimeline {
  * Keyed on the reference rather than the index, because the index is the engine's playlist position
  * and repeats across streams, while the reference is content-addressed and is what the bench actually
  * fetched. Matching on an index would silently pair a measurement with a previous broadcast's upload.
+ *
+ * A ladder does not change that, which is worth stating because it is the one thing that could. Four
+ * rungs put four segments under every index into one log, so an index-keyed lookup would have four
+ * candidates for each. A reference picks one of them out, because the rungs encode video at different
+ * bitrates and so never produce the same bytes.
+ *
+ * ⚠️ One shape escapes that, and it is real rather than theoretical. The ladder ships
+ * `ABR_ACODEC=copy`, so the audio in all four rungs is bit-identical, and a segment holding no video
+ * at all is therefore one payload under one reference. `find` returns the earliest of those lines, so
+ * the instant belongs to whichever rung uploaded first rather than to the rung the bench is
+ * following. `videolessSegments` in the harness is what reports such a segment happened.
  */
 export function segmentByRef(timeline: UploadTimeline, ref: string): UploadedSegment | undefined {
   return timeline.segments.find((segment) => segment.ref === ref);
 }
 
 /**
- * The first manifest published at or after `atMs`. **A lower bound on when that segment became
- * publishable, not the instant itself.**
+ * The first manifest **that rung** published at or after `atMs`. **A lower bound on when that
+ * segment became publishable, not the instant itself.**
+ *
+ * Scoped to one rung, and it has to be. A ladder publishes four independent manifests, so the next
+ * publish after any upload usually belongs to a different rung, and another rung's feed write says
+ * nothing about when this segment became fetchable. Unscoped, `manifestPublish` would report the gap
+ * to whichever rung happened to write next, which shrinks towards zero as rungs are added. On a
+ * single-rendition deployment the filter matches everything and changes nothing.
  *
  * An earlier version of this called it the manifest that first carried the segment, and said that
  * coalescing only meant extra segments might ride along. The real risk runs the other way, and it is
@@ -100,8 +128,12 @@ export function segmentByRef(timeline: UploadTimeline, ref: string): UploadedSeg
  * exactly where it was. Read those two rows as one number. Closing this properly needs the uploader
  * to say which segments a manifest carried, which is a change to the uploader and not to the bench.
  */
-export function firstManifestAtOrAfter(timeline: UploadTimeline, atMs: number): PublishedManifest | undefined {
-  return timeline.manifests.find((manifest) => manifest.atMs >= atMs);
+export function firstManifestAtOrAfter(
+  timeline: UploadTimeline,
+  streamId: string,
+  atMs: number,
+): PublishedManifest | undefined {
+  return timeline.manifests.find((manifest) => manifest.streamId === streamId && manifest.atMs >= atMs);
 }
 
 /** Re-exported so a caller reading a timeline does not also have to reach into the harness. */

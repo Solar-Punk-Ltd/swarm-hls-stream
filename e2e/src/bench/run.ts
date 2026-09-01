@@ -195,16 +195,16 @@ function toSample(
   const uploaded = segmentByRef(timeline, pending.ref);
   if (!uploaded) {
     throw new Error(
-      `the uploader's log holds no "Segment N uploaded: ${pending.ref}" line, though the gateway served ` +
-        'that segment. Either the deployment is not logging at a level that prints it, or the log ' +
-        'window read here does not reach back to when it was uploaded.',
+      `the uploader's log holds no "Segment N of <stream> uploaded: ${pending.ref}" line, though the ` +
+        'gateway served that segment. Either the deployment is not logging at a level that prints it, ' +
+        'or the log window read here does not reach back to when it was uploaded.',
     );
   }
-  const manifest = firstManifestAtOrAfter(timeline, uploaded.atMs);
+  const manifest = firstManifestAtOrAfter(timeline, uploaded.streamId, uploaded.atMs);
   if (!manifest) {
     throw new Error(
-      `segment ${uploaded.index} uploaded but no manifest publish follows it in the log, so the feed ` +
-        'write that made it visible cannot be timed.',
+      `segment ${uploaded.index} of ${uploaded.streamId} uploaded but no manifest publish follows it ` +
+        'in the log for that rung, so the feed write that made it visible cannot be timed.',
     );
   }
 
@@ -218,6 +218,10 @@ function toSample(
   };
 
   return {
+    // The rung's own playlist position, never a ladder-wide one: four rungs each count from zero, so
+    // this number only means anything beside another sample from the same rung. Every sample in a run
+    // is one, because `waitForAnnouncement` picks a single announced stream and `collectSamples` reads
+    // only that feed, and `mediaPacing` relies on it when it subtracts the first index from the last.
     index: uploaded.index,
     ref: pending.ref,
     split: latencySplit(instants, skew),
