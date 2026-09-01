@@ -36,6 +36,7 @@ import {
   segmentUploadFailedPattern,
   streamStoppedPattern,
   updatingStreamToVodPattern,
+  videolessSegmentPattern,
 } from '@swarm-hls-stream/shared';
 
 export interface UploaderEvents {
@@ -100,18 +101,21 @@ const discontinuityPatterns = (): RegExp[] => [
  */
 const manifestSocPattern = () => manifestUploadedPattern('g');
 /**
- * ⚠️ The three below stay raw regexes on purpose. They are observation-only counters that no suite
+ * ⚠️ The two below stay raw regexes on purpose. They are observation-only counters that no suite
  * asserts on, so a reworded message costs a number nobody reads rather than a green run nobody can
  * trust, which is the whole reason the others are a contract.
  */
 const RE_STALE = /is stale: \d+ consecutive/g;
 const RE_RETRY = /Retrying in ~/g;
+
 /**
- * The uploader's own words for a segment carrying no video, from `measureSegmentDuration`'s
- * fallback. Anchored on the reason and not on the warning, because the same warning also fires for a
- * segment whose timestamps are unusable, which is a different fault with a different consequence.
+ * ⛔ Not a raw regex, unlike the two above, and the difference is that something refuses on this one.
+ * `e2e/browser/make-recording.ts` will not hand back a recording whose segments held no video, so a
+ * pattern that quietly stopped matching would let the task #40 failure through as a success: a
+ * recording that plays as sound over a blank picture, called good. Derived from the composer the
+ * uploader writes with, so a reword cannot do that silently.
  */
-const RE_VIDEOLESS_SEGMENT = /Cannot read how much media segment (\d+) of [^\n]*holds no video packets/g;
+const videolessPattern = () => videolessSegmentPattern('g');
 
 /** One line of `LOG_FORMAT=json` output, as `Logger` writes it. */
 interface StructuredLogLine {
@@ -237,7 +241,7 @@ export function parseUploaderLog(text: string): UploaderEvents {
     manifestSocIndices: captureSecondNumbers(messages, manifestSocPattern()),
     staleWarnings: countMatches(messages, RE_STALE),
     retries: countMatches(messages, RE_RETRY),
-    videolessSegments: captureNumbers(messages, RE_VIDEOLESS_SEGMENT),
+    videolessSegments: captureNumbers(messages, videolessPattern()),
   };
 }
 

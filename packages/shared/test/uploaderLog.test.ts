@@ -22,6 +22,7 @@ import {
   replacedSessionFinalizedPattern,
   rungAnnounced,
   rungAnnouncedPattern,
+  segmentDurationUnread,
   segmentsNeverArrived,
   segmentsNeverArrivedPattern,
   segmentUploaded,
@@ -32,6 +33,7 @@ import {
   streamStoppedPattern,
   updatingStreamToVod,
   updatingStreamToVodPattern,
+  videolessSegmentPattern,
 } from '../src/uploaderLog.js';
 
 /**
@@ -419,5 +421,82 @@ describe('the message for a finalize that resumed rather than republished', () =
     const log = [finalizeResumed('live/stream_720p', 8), finalizeResumed('live/stream_1080p', 9)].join('\n');
 
     assert.equal([...log.matchAll(finalizeResumedPattern('g'))].length, 2);
+  });
+});
+
+/**
+ * ⛔ Task #40, and the one message here whose reader REFUSES rather than counts. A recording whose
+ * opening segments hold no video plays as sound over a blank picture for its whole length, because a
+ * player fixes its codec set from the first fragment it parses. `e2e/browser/make-recording.ts` will
+ * not hand such a recording back, and it learns of the fault from this line alone.
+ *
+ * Two faults share the line and only one of them costs the picture, so the pattern is narrowed to the
+ * reason. A matcher taking both would refuse a watchable recording and send someone looking for a
+ * video problem that is not there.
+ */
+describe('the message for a segment whose duration could not be read', () => {
+  const STREAM = 'live/stream';
+  /** The reason `measureSpanTicks` fails a segment with when it carries no video at all. */
+  const NO_VIDEO =
+    'cannot measure how much media this segment holds: it holds no video packets, so the media never reached the far end';
+  /** The other reason the same warning fires: a readable segment whose timestamps are not a segment. */
+  const BAD_TIMESTAMPS = 'its timestamps span 95443.7s, which is not a segment';
+
+  it('round-trips the index, stream, declared duration and reason through the derived pattern', () => {
+    const found = videolessSegmentPattern().exec(segmentDurationUnread(STREAM, 3, 2.082, NO_VIDEO));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[1], '3');
+    assert.equal(found[2], STREAM);
+    assert.equal(found[3], '2.082');
+    assert.equal(found[4], NO_VIDEO);
+  });
+
+  /**
+   * ⛔ The composer has to write the line the deployment already writes, or the migration is a
+   * reword: every historical log stops parsing and `make:recording` starts calling a videoless
+   * recording good. Copied from a real warning of 2026-08-09.
+   */
+  it('composes the line the uploader has always written, byte for byte', () => {
+    const deployed =
+      "[StreamOrchestrator] Cannot read how much media segment 3 of live/stream holds, so 2.082s is being published on the engine's word: cannot measure how much media this segment holds: it holds no video packets, so the media never reached the far end. Reported once per stream; see the segment_durations_unread_total counter for the rate";
+
+    assert.equal(segmentDurationUnread(STREAM, 3, 2.082, NO_VIDEO), deployed);
+    assert.equal(videolessSegmentPattern().exec(deployed)?.[1], '3');
+  });
+
+  it('does not name a segment whose timestamps were merely unusable', () => {
+    assert.equal(videolessSegmentPattern().test(segmentDurationUnread(STREAM, 3, 2, BAD_TIMESTAMPS)), false);
+  });
+
+  it('reads an integer declared duration as readily as a fractional one', () => {
+    assert.equal(videolessSegmentPattern().exec(segmentDurationUnread(STREAM, 7, 2, NO_VIDEO))?.[1], '7');
+  });
+
+  it('scopes the index to the right stream across an interleaved ladder log', () => {
+    const log = [
+      segmentDurationUnread('live/stream_360p', 4, 1, NO_VIDEO),
+      segmentDurationUnread('live/stream_1080p', 9, 1, BAD_TIMESTAMPS),
+      segmentDurationUnread('live/stream_720p', 6, 1, NO_VIDEO),
+    ].join('\n');
+
+    const found = [...log.matchAll(videolessSegmentPattern('g'))];
+
+    assert.deepEqual(
+      found.map((match) => [match[2], Number(match[1])]),
+      [
+        ['live/stream_360p', 4],
+        ['live/stream_720p', 6],
+      ],
+    );
+  });
+
+  it('does not read an ordinary upload or a withheld opening segment as one', () => {
+    for (const message of [
+      segmentUploaded(STREAM, 3, 'abc123'),
+      `[StreamOrchestrator] Segment 3 of ${STREAM} carries no video, so it is withheld rather than published`,
+    ]) {
+      assert.equal(videolessSegmentPattern().test(message), false, message);
+    }
   });
 });

@@ -375,3 +375,62 @@ export function finalizeResumedPattern(flags = ''): RegExp {
   const escaped = finalizeResumed(STREAM_SLOT, INDEX_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)').replace(String(INDEX_SLOT), '(\\d+)'), flags);
 }
+
+/** Free-text stand-in for the parser's own reason, which carries spaces, colons and a full stop. */
+const REASON_SLOT = 'REASONSLOT';
+/** A second numeric stand-in, distinct from {@link INDEX_SLOT} so a message carrying both substitutes each. */
+const DECLARED_SLOT = 353535353535;
+
+/**
+ * Written once per stream when the uploader could not read how much media a segment holds and
+ * published the engine's claim instead. Byte-identical to the line `StreamOrchestrator` wrote before
+ * this composer existed.
+ *
+ * ⛔ **Two different faults share this one line, and only one of them costs the picture.** `reason` is
+ * whatever `measureSegmentDuration` fell back for: timestamps that span no plausible segment, or a
+ * segment holding no video packets at all. The second is task #40 and it is not a complaint about a
+ * duration. A recording whose opening fragment carries only audio plays as sound over a blank picture
+ * **for its whole length**, because the player fixes its codec set from the first fragment it parses
+ * and never revises it. `e2e/browser/make-recording.ts` refuses to hand back such a recording, and
+ * {@link videolessSegmentPattern} is the only thing that tells it one was made.
+ *
+ * ⚠️ Written once per stream rather than once per segment, so a reader learns that a broadcast has
+ * the fault and never how many segments carried it.
+ *
+ * ⛔ One template literal, never split across a `+`, for the reason {@link catalogStateLost} records
+ * at length: `tsc` keeps a join exactly as written, so the fragment spanning it reaches no built file
+ * and the preflight gate then refuses a deployment that writes the line perfectly.
+ */
+export function segmentDurationUnread(streamId: string, index: number, declared: number, reason: string): string {
+  return `[StreamOrchestrator] Cannot read how much media segment ${index} of ${streamId} holds, so ${declared}s is being published on the engine's word: ${reason}. Reported once per stream; see the segment_durations_unread_total counter for the rate`;
+}
+
+/**
+ * The words `measureSpanTicks` fails a segment with when it holds no video packets, which is the half
+ * of {@link segmentDurationUnread}'s reason that separates the fault costing a picture from the one
+ * that costs only an accurate duration.
+ */
+const VIDEOLESS_REASON = 'holds no video packets';
+
+/**
+ * {@link segmentDurationUnread} as a matcher, **narrowed to the videoless fault**: segment index,
+ * stream, declared duration and reason as capture groups 1 to 4.
+ *
+ * ⚠️ Anchored on the reason as well as on the warning. The same warning fires for a segment whose
+ * timestamps are unusable, which is a different fault with a different consequence, and a matcher
+ * that took both would refuse a perfectly watchable recording.
+ */
+export function videolessSegmentPattern(flags = ''): RegExp {
+  const escaped = segmentDurationUnread(STREAM_SLOT, INDEX_SLOT, DECLARED_SLOT, REASON_SLOT).replace(
+    REGEX_SPECIAL,
+    '\\$&',
+  );
+  return new RegExp(
+    escaped
+      .replace(String(INDEX_SLOT), '(\\d+)')
+      .replace(STREAM_SLOT, '(\\S+)')
+      .replace(String(DECLARED_SLOT), '([\\d.]+)')
+      .replace(REASON_SLOT, `([^\\n]*${VIDEOLESS_REASON}[^\\n]*)`),
+    flags,
+  );
+}

@@ -173,6 +173,18 @@ export const PARSED_LINES: readonly ParsedLine[] = [
       'landed inside the window and was answered from one that missed the window entirely. Both ' +
       'leave the same count of one flip, and only this line separates them',
   },
+  {
+    what: 'a segment whose duration could not be read ("Cannot read how much media segment N of <stream> holds")',
+    level: 'warn',
+    emittedBy: {
+      file: 'libs/StreamOrchestrator.ts',
+      fragment: 'segmentDurationUnread(streamId, segmentIndex, declared, reading.fellBackBecause)',
+    },
+    neededBy:
+      'videolessSegments, which is what make:recording refuses on. A segment holding no video makes ' +
+      'a recording that plays as sound over a blank picture for its whole length, and this line is ' +
+      'the only place the uploader says one was published',
+  },
 ];
 
 /** The quietest level that still emits every line above, and so the loudest the suite can require. */

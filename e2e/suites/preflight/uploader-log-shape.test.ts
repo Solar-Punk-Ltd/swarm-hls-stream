@@ -9,6 +9,7 @@ import {
   publishingRendition,
   replacedSessionFinalized,
   rungAnnounced,
+  segmentDurationUnread,
   segmentsNeverArrived,
   segmentUploaded,
   segmentUploadFailed,
@@ -70,8 +71,9 @@ const cfg = loadConfig();
  * ⚠️ Two entries refuse a deployment built before the messages moved into the contract, even though
  * the words never changed. The catalog line used to be assembled from two string literals joined by
  * a `+`, so the fragment spanning the join was in no built file, and the OME line lived under
- * `dist/engines/`, which this gate does not read. Both now compose in the shared module the gate
- * does read. One redeploy answers it, which is what the refusal already asks for.
+ * `dist/engines/`, which this gate did not read until the `cat` below was widened. Both now compose
+ * in the shared module the gate reads either way. One redeploy answers it, which is what the refusal
+ * already asks for.
  */
 const PARSED_MESSAGES: readonly DeployedMessage[] = [
   deployedMessage(
@@ -169,6 +171,13 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
       'aims at and was answered there. A deployment that cannot write this line still passes the ' +
       'scenario, and passes it without anyone being able to say the window was ever exercised',
   ),
+  deployedMessage(
+    'a segment the uploader could not read a duration out of',
+    (stream, index) => segmentDurationUnread(stream, index, index, stream),
+    "make:recording's refusal, which is the only thing standing between a segment that held no video " +
+      'and a recording handed back as good. Such a recording plays as sound over a blank picture for ' +
+      'its whole length, so the refusal going quiet costs the artifact rather than the run',
+  ),
 ];
 
 describe('preflight — the deployed uploader writes the lines this harness reads', () => {
@@ -177,10 +186,12 @@ describe('preflight — the deployed uploader writes the lines this harness read
   it('is built from a checkout that agrees with this one about the messages', async () => {
     const container = containerName(cfg, 'stream-uploader');
     // The bundled contract module itself, which is where every composed message's literal halves
-    // end up, plus the uploader's own libs for anything still written inline.
+    // end up, plus the uploader's own libs and engines for anything still written inline. The
+    // engines are read because one family's producer lives under `dist/engines/ome/`, so a gate
+    // stopping at `dist/libs/*.js` could only ever prove that line through the shared module.
     const { stdout } = await host.run(
       `docker exec ${container} sh -c ` +
-        `'cat dist/node_modules/@swarm-hls-stream/shared/uploaderLog.js dist/libs/*.js 2>/dev/null'`,
+        `'cat dist/node_modules/@swarm-hls-stream/shared/uploaderLog.js dist/libs/*.js dist/engines/*/*.js 2>/dev/null'`,
     );
 
     assert.ok(

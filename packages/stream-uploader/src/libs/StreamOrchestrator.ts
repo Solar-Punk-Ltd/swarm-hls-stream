@@ -1,4 +1,9 @@
-import { replacedSessionFinalized, rungAnnounced, streamStopped } from '@swarm-hls-stream/shared';
+import {
+  replacedSessionFinalized,
+  rungAnnounced,
+  segmentDurationUnread,
+  streamStopped,
+} from '@swarm-hls-stream/shared';
 import crypto from 'crypto';
 
 import {
@@ -748,11 +753,7 @@ export class StreamOrchestrator {
     // fact about that engine rather than thousands about its segments.
     if (!this.unreadDurationReported.has(streamId)) {
       this.unreadDurationReported.add(streamId);
-      this.logger.warn(
-        `[StreamOrchestrator] Cannot read how much media segment ${segmentIndex} of ${streamId} holds, so ` +
-          `${declared}s is being published on the engine's word: ${reading.fellBackBecause}. ` +
-          'Reported once per stream; see the segment_durations_unread_total counter for the rate',
-      );
+      this.logger.warn(segmentDurationUnread(streamId, segmentIndex, declared, reading.fellBackBecause));
     }
     return reading.seconds;
   }
