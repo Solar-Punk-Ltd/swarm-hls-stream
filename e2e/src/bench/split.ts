@@ -32,7 +32,7 @@ export interface SegmentInstants {
   segmentDurationS: number;
   /** Uploader host clock. `Segment N uploaded`, so the payload had reached Swarm. */
   uploadedAtMs: number;
-  /** Uploader host clock. The first `Manifest uploaded at SOC index N` at or after the upload. */
+  /** Uploader host clock. The first `Manifest of <stream> uploaded at SOC index N` at or after the upload. */
   manifestPublishedAtMs: number;
   /** Bench clock. The first gateway poll whose manifest named this segment. */
   visibleAtMs: number;

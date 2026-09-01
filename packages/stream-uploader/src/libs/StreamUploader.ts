@@ -1,5 +1,5 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
-import { publishingRendition, segmentUploaded, updatingStreamToVod } from '@swarm-hls-stream/shared';
+import { manifestUploaded, publishingRendition, segmentUploaded, updatingStreamToVod } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import {
@@ -604,7 +604,8 @@ export class StreamUploader {
 
     if (!result) {
       this.logger.error(
-        `Failed to upload manifest at SOC index ${nextIndex}; will retry at the same index when the next segment triggers a publish`,
+        `Failed to upload manifest at SOC index ${nextIndex} of ${this.streamId}; will retry at the same ` +
+          `index when the next segment triggers a publish`,
       );
       return null;
     }
@@ -616,7 +617,7 @@ export class StreamUploader {
       await this.announceToCatalog();
     }
 
-    this.logger.log(`Manifest uploaded at SOC index ${nextIndex}`);
+    this.logger.log(manifestUploaded(this.streamId, nextIndex));
     this.persistState();
     return nextIndex;
   }

@@ -5,23 +5,29 @@ import { firstManifestAtOrAfter, segmentByRef, uploadTimeline } from '../src/ben
 import { timestampedMessages } from '../src/harness/logwatch.js';
 
 /**
- * Both fixtures are verbatim output of the uploader's own `formatLine`, run against it on
- * 2026-08-02 rather than transcribed from the format string. The bench reads timestamps out of these
- * lines, so the two formats a deployment can be configured into are both pinned: `LOG_FORMAT` is an
- * operator's choice and neither value may quietly halve what the bench can measure.
+ * Both fixtures are output of the uploader's own `formatLine`, captured on 2026-08-02 rather than
+ * transcribed from the format string. The bench reads timestamps out of these lines, so the two
+ * formats a deployment can be configured into are both pinned: `LOG_FORMAT` is an operator's choice
+ * and neither value may quietly halve what the bench can measure.
+ *
+ * ⚠️ The manifest lines were rewritten by hand on 2026-09-01 when the message gained its stream id,
+ * so they are composed rather than captured. The segment lines are still the 2026-08-02 capture and
+ * carry the **pre-ladder** shape, which is a live defect rather than an old fixture: the bench's
+ * `RE_SEGMENT_UPLOADED` still matches only that shape, so on a ladder it reads zero segments and
+ * measures nothing. Recapture both against a ladder deployment.
  */
 const TEXT_LOG = [
   '[2026-08-02T19:38:00.000Z] [LOG] - Segment 41 uploaded: 9f2c1a',
-  '[2026-08-02T19:38:00.900Z] [LOG] - Manifest uploaded at SOC index 12',
+  '[2026-08-02T19:38:00.900Z] [LOG] - Manifest of live/stream_720p uploaded at SOC index 12',
   '[2026-08-02T19:38:02.000Z] [LOG] - Segment 42 uploaded: bb0417',
-  '[2026-08-02T19:38:02.750Z] [LOG] - Manifest uploaded at SOC index 13',
+  '[2026-08-02T19:38:02.750Z] [LOG] - Manifest of live/stream_720p uploaded at SOC index 13',
 ].join('\n');
 
 const JSON_LOG = [
   '{"ts":"2026-08-02T19:38:00.000Z","level":"log","msg":"Segment 41 uploaded: 9f2c1a"}',
-  '{"ts":"2026-08-02T19:38:00.900Z","level":"log","msg":"Manifest uploaded at SOC index 12"}',
+  '{"ts":"2026-08-02T19:38:00.900Z","level":"log","msg":"Manifest of live/stream_720p uploaded at SOC index 12"}',
   '{"ts":"2026-08-02T19:38:02.000Z","level":"log","msg":"Segment 42 uploaded: bb0417"}',
-  '{"ts":"2026-08-02T19:38:02.750Z","level":"log","msg":"Manifest uploaded at SOC index 13"}',
+  '{"ts":"2026-08-02T19:38:02.750Z","level":"log","msg":"Manifest of live/stream_720p uploaded at SOC index 13"}',
 ].join('\n');
 
 const AT_SEGMENT_41 = Date.parse('2026-08-02T19:38:00.000Z');
@@ -45,8 +51,8 @@ describe('reading when the uploader did each thing', () => {
       const timeline = uploadTimeline(log);
 
       assert.deepEqual(timeline.manifests, [
-        { socIndex: 12, atMs: AT_MANIFEST_12 },
-        { socIndex: 13, atMs: Date.parse('2026-08-02T19:38:02.750Z') },
+        { socIndex: 12, streamId: 'live/stream_720p', atMs: AT_MANIFEST_12 },
+        { socIndex: 13, streamId: 'live/stream_720p', atMs: Date.parse('2026-08-02T19:38:02.750Z') },
       ]);
     });
   }

@@ -4,6 +4,8 @@ import { describe, it } from 'node:test';
 import {
   ladderFinalized,
   ladderFinalizedPattern,
+  manifestUploaded,
+  manifestUploadedPattern,
   publishingRendition,
   publishingRenditionPattern,
   replacedSessionFinalized,
@@ -102,6 +104,47 @@ describe('the segment upload message', () => {
 
   it('does not match the pre-ladder message shape, which carried no stream', () => {
     assert.equal(segmentUploadedPattern().test('Segment 5 uploaded: abc123'), false);
+  });
+});
+
+describe('the manifest publish message', () => {
+  /**
+   * ⛔ The same defect the segment line was fixed for on 2026-08-27, left standing on this one until
+   * 2026-09-01. A ladder is four independent SOC counters as surely as it is four segment counters,
+   * and `Manifest uploaded at SOC index 3` names neither the rung nor the stream. So one rung's
+   * manifest publishing could freeze for an entire broadcast while the other three climbed, and the
+   * only check on it deduplicated four counters into one set and saw an unbroken run.
+   */
+  it('round-trips the index and the stream through the derived pattern', () => {
+    const found = manifestUploadedPattern().exec(manifestUploaded('live/stream_720p', 7));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    // Stream first, index second: the reverse of the segment pattern, because the words are.
+    assert.equal(found[1], 'live/stream_720p');
+    assert.equal(found[2], '7');
+  });
+
+  it('scopes SOC indices to one rung across an interleaved ladder log', () => {
+    const log = [
+      manifestUploaded('live/stream_1080p', 0),
+      manifestUploaded('live/stream_360p', 0),
+      manifestUploaded('live/stream_1080p', 1),
+      manifestUploaded('live/stream_360p', 1),
+      manifestUploaded('live/stream_360p', 2),
+    ].join('\n');
+
+    const of1080p = [...log.matchAll(manifestUploadedPattern('g'))]
+      .filter((m) => m[1] === 'live/stream_1080p')
+      .map((m) => Number(m[2]));
+
+    assert.deepEqual(of1080p, [0, 1]);
+  });
+
+  it('does not match a failed publish, so a retry is not read as a success', () => {
+    assert.equal(
+      manifestUploadedPattern().test('Failed to upload manifest at SOC index 4 of live/stream_720p'),
+      false,
+    );
   });
 });
 

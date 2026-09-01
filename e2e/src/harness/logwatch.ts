@@ -22,6 +22,7 @@
 
 import {
   ladderFinalizedPattern,
+  manifestUploadedPattern,
   publishingRenditionPattern,
   replacedSessionFinalizedPattern,
   rungAnnouncedPattern,
@@ -80,7 +81,11 @@ const RE_DISCONTINUITY = /marking a discontinuity|marking the next segment/g;
 
 /** The upload-failure path is the only one naming a segment, and scenario B asserts on that index. */
 const RE_DISCONTINUITY_SEGMENT = /Failed to upload segment (\d+)[^\n]*marking a discontinuity/g;
-const RE_MANIFEST = /Manifest uploaded at SOC index (\d+)/g;
+/**
+ * ⚠️ Capture group 2, not 1. `manifestUploadedPattern` puts the stream first because its message
+ * does, which is the reverse of the segment pattern beside it.
+ */
+const manifestSocPattern = () => manifestUploadedPattern('g');
 const RE_STALE = /is stale: \d+ consecutive/g;
 const RE_RETRY = /Retrying in ~/g;
 const RE_STREAM_ANNOUNCE = /Adding stream to list: (\{[^\n]*\})/g;
@@ -188,6 +193,11 @@ function captureNumbers(source: string, re: RegExp): number[] {
   return [...source.matchAll(re)].map((m) => Number(m[1]));
 }
 
+/** For a pattern whose numeric capture is group 2 rather than group 1. */
+function captureSecondNumbers(source: string, re: RegExp): number[] {
+  return [...source.matchAll(re)].map((m) => Number(m[2]));
+}
+
 function countMatches(source: string, re: RegExp): number {
   return [...source.matchAll(re)].length;
 }
@@ -198,7 +208,7 @@ export function parseUploaderLog(text: string): UploaderEvents {
     uploadedSegments: captureNumbers(messages, segmentUploadedPattern('g')),
     discontinuitiesArmed: countMatches(messages, RE_DISCONTINUITY),
     discontinuitySegments: captureNumbers(messages, RE_DISCONTINUITY_SEGMENT),
-    manifestSocIndices: captureNumbers(messages, RE_MANIFEST),
+    manifestSocIndices: captureSecondNumbers(messages, manifestSocPattern()),
     staleWarnings: countMatches(messages, RE_STALE),
     retries: countMatches(messages, RE_RETRY),
     videolessSegments: captureNumbers(messages, RE_VIDEOLESS_SEGMENT),
@@ -394,6 +404,24 @@ export function announcedVodFinalizeCount(text: string): number {
  * so it holes at every log-window boundary while no rung has lost anything, and it can equally
  * mask a real one-rung gap behind a sibling's healthy index.
  */
+/**
+ * Every rung's manifest SOC indices, keyed by stream, in publish order.
+ *
+ * ⛔ The merged list is not a substitute and `service/happy-path` proved it: `isContiguous`
+ * deduplicates, so four rungs each publishing 0,1,2 and a ladder where one rung froze at 0 while the
+ * rest reached 2 produce the identical set {0,1,2}. Judged per stream the frozen rung is a list of
+ * length one beside three of length three, which is visible.
+ */
+export function manifestIndicesByStream(text: string): Map<string, number[]> {
+  const byStream = new Map<string, number[]>();
+  for (const match of messageText(text).matchAll(manifestUploadedPattern('g'))) {
+    const indices = byStream.get(match[1]) ?? [];
+    indices.push(Number(match[2]));
+    byStream.set(match[1], indices);
+  }
+  return byStream;
+}
+
 export function segmentIndicesByStream(text: string): Map<string, number[]> {
   const byStream = new Map<string, number[]>();
   for (const upload of segmentUploads(text)) {

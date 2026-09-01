@@ -8,6 +8,8 @@
  * corrects for that; `split.ts` takes a measured skew and says which hops it moves between.
  */
 
+import { manifestUploadedPattern } from '@swarm-hls-stream/shared';
+
 import { type TimestampedMessage, timestampedMessages } from '../harness/logwatch.js';
 
 /**
@@ -20,8 +22,13 @@ import { type TimestampedMessage, timestampedMessages } from '../harness/logwatc
  * matched too much would attribute a stranger's timestamp to the measured segment.
  */
 const RE_SEGMENT_UPLOADED = /^Segment (\d+) uploaded: ([0-9a-f]+)$/;
-/** `Manifest uploaded at SOC index 12` — the feed write returned. */
-const RE_MANIFEST_PUBLISHED = /^Manifest uploaded at SOC index (\d+)$/;
+/**
+ * `Manifest of live/stream_720p uploaded at SOC index 12` — the feed write returned.
+ *
+ * Derived from the composer rather than written out, so a reworded message cannot leave this reader
+ * silently matching nothing. Anchored for the same reason as the segment pattern above.
+ */
+const RE_MANIFEST_PUBLISHED = new RegExp(`^${manifestUploadedPattern().source}$`);
 
 export interface UploadedSegment {
   index: number;
@@ -32,6 +39,8 @@ export interface UploadedSegment {
 
 export interface PublishedManifest {
   socIndex: number;
+  /** Which rung published it. A ladder is four independent SOC counters interleaved in one log. */
+  streamId: string;
   atMs: number;
 }
 
@@ -52,7 +61,7 @@ export function uploadTimeline(logText: string): UploadTimeline {
     }
     const published = RE_MANIFEST_PUBLISHED.exec(line.message);
     if (published) {
-      manifests.push({ socIndex: Number(published[1]), atMs: line.atMs });
+      manifests.push({ socIndex: Number(published[2]), streamId: published[1], atMs: line.atMs });
     }
   }
 

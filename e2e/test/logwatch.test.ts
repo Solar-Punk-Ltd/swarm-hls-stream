@@ -1,4 +1,4 @@
-import { segmentUploaded } from '@swarm-hls-stream/shared';
+import { manifestUploaded, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -6,6 +6,7 @@ import {
   announcedLiveStreams,
   announcedLiveTopics,
   isContiguous,
+  manifestIndicesByStream,
   messageText,
   newIndices,
   parseUploaderLog,
@@ -44,7 +45,7 @@ function announcement(topic: string, state: string): string {
 }
 
 const UPLOADED = (index: number) => segmentUploaded('live/stream', index, 'bzz://a1b2c3');
-const MANIFEST = (index: number) => `Manifest uploaded at SOC index ${index}`;
+const MANIFEST = (index: number, streamId = 'live/stream') => manifestUploaded(streamId, index);
 const DISCONTINUITY = (index: number) =>
   `Failed to upload segment ${index} for stream stream-7 within the retry window; marking a discontinuity`;
 /** `handleSegmentLoss`, count 1. Arms a discontinuity and names no index the harness can capture. */
@@ -373,5 +374,52 @@ describe('newIndices', () => {
 
   it('treats an empty before as everything being new', () => {
     assert.deepEqual(newIndices([], [1, 2]), [1, 2]);
+  });
+});
+
+describe('manifest publishes, per rung', () => {
+  /**
+   * ⛔ The hole this closes. `service/happy-path` was the only check on manifest publishing and it
+   * judged the merged list, which `isContiguous` deduplicates. Four rungs publishing 0,1,2 each
+   * collapse to the set {0,1,2}, and so does a ladder where 1080p froze at 0 while the rest reached
+   * 2. The one failure mode this deployment actually has was the one the check could not see.
+   */
+  it('separates four rungs that share one log and one counter sequence', () => {
+    const log = [
+      textLine('log', MANIFEST(0, 'live/stream_1080p')),
+      textLine('log', MANIFEST(0, 'live/stream_360p')),
+      textLine('log', MANIFEST(1, 'live/stream_360p')),
+      textLine('log', MANIFEST(2, 'live/stream_360p')),
+    ].join('\n');
+
+    const byStream = manifestIndicesByStream(log);
+
+    assert.deepEqual(byStream.get('live/stream_1080p'), [0]);
+    assert.deepEqual(byStream.get('live/stream_360p'), [0, 1, 2]);
+  });
+
+  it('reads a rung that stopped as a short list rather than as a gap in a long one', () => {
+    const log = [
+      textLine('log', MANIFEST(0, 'live/stream_1080p')),
+      textLine('log', MANIFEST(0, 'live/stream_720p')),
+      textLine('log', MANIFEST(1, 'live/stream_720p')),
+      textLine('log', MANIFEST(2, 'live/stream_720p')),
+    ].join('\n');
+
+    const byStream = manifestIndicesByStream(log);
+
+    assert.equal(isContiguous(byStream.get('live/stream_1080p') ?? []), true, 'one publish is still contiguous');
+    assert.equal((byStream.get('live/stream_1080p') ?? []).length, 1);
+    assert.equal((byStream.get('live/stream_720p') ?? []).length, 3);
+  });
+
+  it('reads the json format too, which is what the deployment writes', () => {
+    const byStream = manifestIndicesByStream(jsonLine('log', MANIFEST(4, 'live/stream_480p')));
+
+    assert.deepEqual(byStream.get('live/stream_480p'), [4]);
+  });
+
+  it('is empty rather than throwing when nothing has published', () => {
+    assert.equal(manifestIndicesByStream('').size, 0);
   });
 });

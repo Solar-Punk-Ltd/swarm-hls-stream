@@ -63,10 +63,10 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     neededBy: 'every scenario that counts segments or checks they are gapless',
   },
   {
-    what: 'manifest publishes ("Manifest uploaded at SOC index N")',
+    what: 'manifest publishes ("Manifest of <stream> uploaded at SOC index N")',
     level: 'log',
-    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'Manifest uploaded at SOC index' },
-    neededBy: 'service/happy-path, which asserts the live manifest keeps advancing',
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'manifestUploaded(this.streamId, nextIndex)' },
+    neededBy: 'service/happy-path, which asserts every rung keeps its manifest advancing',
   },
   {
     what: 'single-rendition VOD finalizes ("Updating stream in list to VOD")',

@@ -68,6 +68,33 @@ export function segmentUploadedPattern(flags = ''): RegExp {
 }
 
 /**
+ * Written once per published live manifest. Carries the stream for exactly the reason
+ * {@link segmentUploaded} does: a ladder is four independent SOC counters, and four interleaved
+ * `Manifest uploaded at SOC index N` lines are one unreadable sequence.
+ *
+ * ⛔ Found 2026-09-01, two days after the same defect was fixed on the segment line and five weeks
+ * after this line was first parsed. `service/happy-path` was the only check on it, it deduplicated
+ * the four counters into one set, and a set is contiguous whether one rung froze at index 3 or none
+ * did. A rung whose manifest publishing stopped for a whole broadcast was therefore invisible to the
+ * suite, on the deployment whose entire failure mode this year has been one rung of four stopping.
+ */
+export function manifestUploaded(streamId: string, index: number): string {
+  return `Manifest of ${streamId} uploaded at SOC index ${index}`;
+}
+
+/**
+ * {@link manifestUploaded} as a matcher, with the stream and the index as capture groups 1 and 2.
+ *
+ * ⚠️ That order is the reverse of {@link segmentUploadedPattern}'s, because the groups follow the
+ * words and these two messages read in opposite orders. Read the group numbers off this docblock
+ * rather than off the sibling.
+ */
+export function manifestUploadedPattern(flags = ''): RegExp {
+  const escaped = manifestUploaded(STREAM_SLOT, INDEX_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)').replace(String(INDEX_SLOT), '(\\d+)'), flags);
+}
+
+/**
  * Written once when a rung is grouped into its ladder, at session start. Byte-identical to the line
  * `StreamOrchestrator` wrote before this composer existed, so the derived pattern also reads logs
  * from deployments that predate it.
