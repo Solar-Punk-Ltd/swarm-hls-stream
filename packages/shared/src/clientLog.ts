@@ -51,6 +51,12 @@ export const CLIENT_LOG_UNKNOWN = 'unknown';
  * log then collapses distinct lines to sixty kinds. This message is written several times a second
  * and every copy is distinct, so a rewording that reached that filter would push every other thing the
  * client said out of the arm log. That is the failure `reportArmNarration` was written to end.
+ *
+ * ⭐ The guard over that is the fixed wording, which is all a test can hold. Of the interpolated values
+ * only the rung is not a number, and by construction it cannot spell any of the four either: a
+ * `swarm://` address is hex, and a preview playlist's blob url is a UUID. ⚠️ That blob url also carries
+ * the page origin, so a viewer served from a host named after one of those words would forward every
+ * line it wrote.
  */
 export function fragmentRequested(level: number | string, sn: number | string, rung: string): string {
   return `Fragment requested: level ${level} sn ${sn} of ${rung}`;
@@ -101,14 +107,15 @@ export type FragmentOutcome =
 /**
  * Written once per fragment attempt, when that attempt stops being in flight, on either byte source.
  *
- * The other half of {@link fragmentRequested}, and the half that says what happened next. A request
- * line alone cannot separate six fragments from one fragment asked for six times, because it carries
- * no ending: measured live on 2026-09-01, a squeezed viewer's capped stretch held six level-0 requests
- * and nothing in the artifact could say whether that was six segments or one retried. Pairing the two
- * lines on level and segment number answers it, and the elapsed says what the attempt cost.
+ * The other half of {@link fragmentRequested}, and the half that says what happened next. What only this
+ * line can give is whether each attempt succeeded and what it cost. ⛔ It is NOT what separates six
+ * fragments from one fragment asked for six times, which is the question a squeezed viewer's capped
+ * stretch left open on 2026-09-01: the request line's own segment numbers answer that, and pairing the
+ * two lines on level and segment number cannot, because a retry repeats that key by construction. The
+ * pairing is a check that the two halves are describing the same fragments, and nothing beyond it.
  *
- * `elapsedMs` is wall clock from the `load` call to this line, held per loader instance because hls.js
- * builds one loader per fragment.
+ * `elapsedMs` is a monotonic difference from the `load` call to this line, held per loader instance
+ * because hls.js builds one loader per fragment.
  *
  * ⛔⛔ **The words `master`, `ladder`, `rung` and `Restarting` must stay out of this line**, for the
  * reason spelled out on {@link fragmentRequested}: the e2e harness forwards any page line carrying one
@@ -134,9 +141,10 @@ export function fragmentSettled(
  * capture groups 1, 2, 3 and 4.
  *
  * Built the same way {@link fragmentRequestedPattern} is, and every group is `\S+` for the same reason.
- * ⚠️ That includes the elapsed. A clock stepped backwards by NTP mid-arm writes a negative one, and a
- * pattern demanding digits would drop the whole line, losing the outcome along with the duration. The
- * reader parses the number and says so where it cannot.
+ * ⚠️ That includes the elapsed, and it stays that way even though the client writes a rounded difference
+ * on a monotonic clock and so should never produce anything but digits. A pattern that insisted would
+ * drop the WHOLE line on any environment that surprised it, losing the outcome along with the duration.
+ * The reader parses the number and says so where it cannot.
  */
 export function fragmentSettledPattern(flags = ''): RegExp {
   const escaped = fragmentSettled(LEVEL_SLOT, SN_SLOT, OUTCOME_SLOT, ELAPSED_SLOT).replace(REGEX_SPECIAL, '\\$&');

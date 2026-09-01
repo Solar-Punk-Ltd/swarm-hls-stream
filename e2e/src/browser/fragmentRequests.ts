@@ -204,7 +204,13 @@ export type FragmentSettleState =
   /** Neither kind was captured, so this half adds nothing to what {@link FragmentLogState} already says. */
   | 'unheard';
 
-/** The min, median and max of one stretch's attempt durations, over the ones that carried a duration. */
+/**
+ * The min, median and max of one stretch's attempt durations, over the ones that carried a duration.
+ *
+ * ⚠️ The client stamps an attempt when hls.js asks for it, which is in front of the request stagger, so
+ * at a nonzero `GATEWAY_REQUEST_JITTER_MS` these durations carry the stagger wait as well as the
+ * transfer, and at the shipped bound of zero they carry only the transfer.
+ */
 interface ElapsedSpread {
   minMs: number;
   medianMs: number;

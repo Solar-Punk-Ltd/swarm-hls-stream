@@ -81,6 +81,10 @@ describe('the fragment request message', () => {
    * stdout, and the arm log then shows sixty distinct kinds. This message is written several times a
    * second and every copy is distinct, so a rewording that reached that filter would push everything
    * else the client said out of the arm log.
+   *
+   * ⭐ The rung is stripped out before the check, because what is guarded here is this module's fixed
+   * wording rather than a caller's value. Why that value is safe too is written where the message is
+   * composed: a `swarm://` address is hex, and a preview playlist's blob url is a UUID.
    */
   it('carries none of the words the harness forwards to the arm log', () => {
     const composed = fragmentRequested(3, 412, 'a-rung-address');
@@ -130,9 +134,10 @@ describe('the fragment settle message', () => {
   });
 
   /**
-   * ⚠️ The elapsed group is `\S+` rather than `\d+` for this. Wall clock can step backwards under NTP
-   * mid-arm, and a pattern demanding digits would drop the whole line, losing the OUTCOME along with the
-   * duration. The reader is where an unreadable number is named.
+   * ⚠️ The elapsed group is `\S+` rather than `\d+` for this. The client writes a rounded difference on a
+   * monotonic clock, so it should never produce anything but digits, and a pattern that insisted would
+   * drop the whole line on any environment that surprised it, losing the OUTCOME along with the duration.
+   * The reader is where an unreadable number is named.
    */
   it('keeps the outcome when the duration is not a number the pattern could have demanded', () => {
     const match = fragmentSettledPattern().exec(fragmentSettled(2, 9, FRAGMENT_ERRORED, -3));

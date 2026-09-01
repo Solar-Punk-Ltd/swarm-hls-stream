@@ -535,8 +535,8 @@ describe('CustomFragmentLoader telling hls.js what the connection carried', () =
   }
 
   /**
-   * Fix the clock to two readings, since the honest answer is a ratio of a byte count to a duration
-   * and a real clock leaves the test asserting only that a number is plausible.
+   * Fix the clock to a fixed run of readings, since the honest answer is a ratio of a byte count to a
+   * duration and a real clock leaves the test asserting only that a number is plausible.
    *
    * Clamped at the last reading rather than throwing past it, so an extra call from anything else in
    * the path cannot turn a wrong duration into a crash that reads as an unrelated failure.
@@ -548,7 +548,9 @@ describe('CustomFragmentLoader telling hls.js what the connection carried', () =
 
   async function retrieve(bytes: number, tookMs: number): Promise<RetrievalStats> {
     const START_MS = 1_000;
-    stubClock([START_MS, START_MS + tookMs]);
+    // Three reads, in order: the settle instrument stamping the attempt, `loading.start` as the
+    // retrieval begins, and `loading.end` as it answers. The settle's own read past those is clamped.
+    stubClock([START_MS, START_MS, START_MS + tookMs]);
     vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array(bytes));
     vi.stubEnv('VITE_BROWSER_FETCH_BACKEND', FETCH_BACKEND_WEEB3);
     vi.spyOn(transport, 'load').mockImplementation(() => {});
@@ -811,8 +813,12 @@ describe('CustomFragmentLoader announcing how each attempt ended', () => {
    * Drive one fragment through the loader, and hand back the loader plus both sets of callbacks: the
    * ones hls.js gave it, and the ones it gave the transport. The second is how a test answers as the
    * network would, including with the endings hls.js's own loader would produce.
+   *
+   * `destroysOnError` replays what hls.js does inside its own `onError`: `FragmentLoader.resetLoader`
+   * (1.6.15) destroys the loader there and then, re-entrantly, while `load` is still on the stack. Only
+   * the cases about that re-entrancy ask for it, so the rest stay about one thing each.
    */
-  function drive(context: Partial<FragmentLoaderContext> = {}) {
+  function drive(context: Partial<FragmentLoaderContext> = {}, { destroysOnError = false } = {}) {
     let handed: LoaderCallbacks<LoaderContext> | null = null;
     vi.spyOn(transport, 'load').mockImplementation((_context, _config, callbacks) => {
       handed = callbacks;
@@ -823,7 +829,11 @@ describe('CustomFragmentLoader announcing how each attempt ended', () => {
     const loader = new CustomFragmentLoader({} as HlsConfig);
     const fromHls = {
       onSuccess: vi.fn(),
-      onError: vi.fn(),
+      onError: vi.fn(() => {
+        if (destroysOnError) {
+          loader.destroy();
+        }
+      }),
       onTimeout: vi.fn(),
     } as unknown as LoaderCallbacks<LoaderContext>;
 
@@ -933,15 +943,52 @@ describe('CustomFragmentLoader announcing how each attempt ended', () => {
     assert.deepEqual(settles()[0].slice(0, 3), ['2', '9', 'errored']);
   });
 
-  it('reports the elapsed as the wall clock the attempt actually took', () => {
+  /**
+   * ⛔⛔ The ORDER at that refusal, which is load-bearing and was not pinned by anything until this.
+   * hls.js destroys the loader from inside the `onError` it is handed, re-entrantly, before `load` has
+   * returned. The settle is written first, so the refusal reads as the error it is and the teardown that
+   * follows finds nothing left to record. Move it after the callback and this same attempt lands in the
+   * artifact as `aborted`, with no error anywhere and no test to say so.
+   */
+  it('reports the refusal as an error even though hls.js tears the loader down inside the callback', () => {
+    const { fromHls } = drive({ url: 'blob:http:/bytes/abc123', frag: fragmentOf(2, 9) }, { destroysOnError: true });
+
+    assert.equal((fromHls.onError as unknown as { mock: { calls: unknown[][] } }).mock.calls.length, 1);
+    assert.equal(settles().length, 1, 'the re-entrant teardown wrote an ending of its own');
+    assert.deepEqual(settles()[0].slice(0, 3), ['2', '9', 'errored']);
+  });
+
+  /**
+   * ⭐ `performance.now`, not `Date.now`. An elapsed is a difference within one clock, so it gains
+   * nothing from wall time and loses the one property that matters: a monotonic clock cannot be stepped
+   * by NTP mid-broadcast into a duration that never happened. Fixed to two readings here, since a real
+   * clock would leave this asserting only that a number is plausible, and clamped at the last one so an
+   * extra call from anything else in the path cannot read as an unrelated failure.
+   */
+  it('reports the elapsed as the monotonic time the attempt actually took', () => {
     const readings = [1_000, 1_350];
     let next = 0;
-    vi.spyOn(Date, 'now').mockImplementation(() => readings[Math.min(next++, readings.length - 1)]);
+    vi.spyOn(performance, 'now').mockImplementation(() => readings[Math.min(next++, readings.length - 1)]);
 
     const { transport: toTransport } = drive();
     toTransport?.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
 
     assert.equal(settles()[0][3], '350');
+  });
+
+  /**
+   * Whole milliseconds, which the wall-clock reading gave for free and a sub-millisecond one does not.
+   * Unrounded, this line would carry `350.79999999999995` and every reader of it would be parsing that.
+   */
+  it('rounds the elapsed rather than writing the clock’s fractions into the line', () => {
+    const readings = [1_000, 1_350.8];
+    let next = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => readings[Math.min(next++, readings.length - 1)]);
+
+    const { transport: toTransport } = drive();
+    toTransport?.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
+
+    assert.equal(settles()[0][3], '351');
   });
 
   // A settle is an observation, so it must not be able to stop a fragment however badly it goes.
@@ -974,16 +1021,26 @@ describe('CustomFragmentLoader announcing how an in-tab attempt ended', () => {
       .filter((match): match is RegExpExecArray => match !== null)
       .map((match) => match.slice(1, 5));
 
-  /** Drive one fragment through a loader built while the in-tab backend was selected. */
-  function driveThroughWeeb3(url = WEEB3_FRAGMENT_URL) {
+  /**
+   * Drive one fragment through a loader built while the in-tab backend was selected.
+   *
+   * `destroysOnError` replays hls.js destroying the loader from inside its own `onError`, re-entrantly,
+   * which is what `FragmentLoader.resetLoader` (1.6.15) does.
+   */
+  function driveThroughWeeb3(url = WEEB3_FRAGMENT_URL, { destroysOnError = false } = {}) {
     vi.stubEnv('VITE_BROWSER_FETCH_BACKEND', FETCH_BACKEND_WEEB3);
     vi.spyOn(transport, 'load').mockImplementation(() => {});
     vi.spyOn(transport, 'abort').mockImplementation(() => {});
+    vi.spyOn(transport, 'destroy').mockImplementation(() => {});
 
     const loader = new CustomFragmentLoader({} as HlsConfig);
     const fromHls = {
       onSuccess: vi.fn(),
-      onError: vi.fn(),
+      onError: vi.fn(() => {
+        if (destroysOnError) {
+          loader.destroy();
+        }
+      }),
       onTimeout: vi.fn(),
     } as unknown as LoaderCallbacks<LoaderContext>;
 
@@ -1077,6 +1134,22 @@ describe('CustomFragmentLoader announcing how an in-tab attempt ended', () => {
 
     assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'errored']);
   });
+
+  /**
+   * ⛔⛔ The same load-bearing order as the gateway refusal's, on the other byte source. hls.js destroys
+   * this loader from inside the `onError` it was handed, before `load` has returned, so a settle written
+   * after that call would be dropped as the duplicate and the attempt would reach the artifact as
+   * `aborted` rather than as the refusal it was.
+   */
+  it('reports the refusal as an error even though hls.js tears the loader down inside the callback', () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes');
+
+    const { errors } = driveThroughWeeb3('http://127.0.0.1:1633/bytes/not-a-reference', { destroysOnError: true });
+
+    assert.equal(errors().length, 1);
+    assert.equal(settles().length, 1, 'the re-entrant teardown wrote an ending of its own');
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'errored']);
+  });
 });
 
 /**
@@ -1148,16 +1221,156 @@ describe('CustomFragmentLoader settling a fragment abandoned before it was sent'
   });
 
   /**
-   * The counterpart, and the reason this is keyed on the stagger still holding the fragment. Once it is
-   * away, the transport owns the ending, and settling here as well would double-count the attempt.
+   * ⛔⛔ The counterpart, INVERTED on 2026-09-02, and the inversion is the fix. This used to leave a
+   * fragment already handed to the gateway for the transport to end, on the belief that hls.js's own
+   * loader always produces an ending. It does not: `XhrLoader.destroy` (1.6.15) nulls its callbacks and
+   * only then aborts itself, so a teardown with no `abort()` in front of it reached the wrapped `onAbort`
+   * never and that attempt settled nowhere at all. The loader stamps its own ending now, and the wrapped
+   * callback is the duplicate `recordSettle` drops.
    */
-  it('leaves the ending to the transport once the fragment is away', () => {
+  it('settles a fragment already handed over, rather than trusting the transport to call back', () => {
     const loader = heldBack();
     staggered[0]();
 
     loader.abort();
 
-    assert.equal(settles().length, 0, 'a fragment already handed over was settled by the stagger path too');
+    assert.equal(settles().length, 1, 'an abandoned attempt was left for a callback that may never come');
+    assert.deepEqual(settles()[0].slice(0, 3), ['1', '88', 'aborted']);
+  });
+});
+
+/**
+ * Every attempt gets exactly one ending, against the two teardowns that used to lose one.
+ *
+ * ⛔⛔⛔ hls.js's own loader is NOT a reliable owner of an ending, which is what this loader used to
+ * rest on. Read out of `XhrLoader` in hls.js 1.6.15: `abort()` aborts and then calls `onAbort` through
+ * the callbacks it is holding, but `destroy()` nulls those callbacks FIRST and only then aborts itself,
+ * so a teardown with no `abort()` in front of it calls nothing back at all. Both teardowns are real
+ * paths: `FragmentLoader.resetLoader` ends every attempt with a bare `destroy()`, and only
+ * `FragmentLoader.abort()` goes through `abort()`. A gateway attempt torn down the first way announced a
+ * request and then never announced an ending, which reads in an artifact as a fragment still in flight
+ * when the arm closed.
+ *
+ * The base's behaviour is REPLAYED below rather than described, so an hls.js upgrade that changed either
+ * teardown would have to change these too.
+ */
+describe('CustomFragmentLoader keeping one ending per attempt', () => {
+  const RUNG = 'swarm://0x4f0e1c2b3a49586772635441302f1e0d0c0b0a09/9c4e1f60b8a2d357e0f1a2b3c4d5e6f7';
+
+  const fragmentOf = (level: number, sn: number) => ({ level, sn, baseurl: RUNG } as FragmentLoaderContext['frag']);
+
+  let announced: string[];
+
+  const settles = (): string[][] =>
+    announced
+      .map((line) => fragmentSettledPattern().exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => match.slice(1, 5));
+
+  const requests = (): string[][] =>
+    announced
+      .map((line) => fragmentRequestedPattern().exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => match.slice(1, 3));
+
+  /** hls.js's own loader as 1.6.15 really behaves, in the three methods this one goes through. */
+  function baseLoader() {
+    const base = { callbacks: null as LoaderCallbacks<LoaderContext> | null, abortsCalledBack: 0 };
+
+    vi.spyOn(transport, 'load').mockImplementation((_context, _config, callbacks) => {
+      base.callbacks = callbacks;
+    });
+    // `XhrLoader.abort`: abort the transfer, then call back through whatever callbacks are still held.
+    vi.spyOn(transport, 'abort').mockImplementation(() => {
+      if (base.callbacks?.onAbort) {
+        base.abortsCalledBack += 1;
+        base.callbacks.onAbort({} as never, {} as LoaderContext, undefined);
+      }
+    });
+    // `XhrLoader.destroy`: drop the callbacks, THEN abort internally. Nothing is ever called back.
+    vi.spyOn(transport, 'destroy').mockImplementation(() => {
+      base.callbacks = null;
+    });
+
+    return base;
+  }
+
+  function loadOne(frag: FragmentLoaderContext['frag'], loader = new CustomFragmentLoader({} as HlsConfig)) {
+    loader.load(
+      { url: FRAGMENT_URL, frag } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      { onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn() } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+    return loader;
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    runStaggerInline();
+    announced = [];
+    vi.spyOn(console, 'debug').mockImplementation((line: unknown) => {
+      announced.push(String(line));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  /** The defect itself: hls.js's ordinary teardown, on a fragment the gateway is still fetching. */
+  it('settles a gateway attempt destroyed without an abort in front of it', () => {
+    const base = baseLoader();
+    const loader = loadOne(fragmentOf(3, 412));
+    assert.ok(base.callbacks, 'the fragment never reached the transport, so there is nothing to tear down');
+
+    loader.destroy();
+
+    assert.equal(base.abortsCalledBack, 0, 'the base called back on destroy, which is not what 1.6.15 does');
+    assert.equal(settles().length, 1, 'an in-flight attempt was destroyed and announced no ending');
+    assert.deepEqual(settles()[0].slice(0, 3), ['3', '412', 'aborted']);
+  });
+
+  /**
+   * The other direction, and the reason the wrapper stays. When the base DOES call back, its `onAbort`
+   * arrives after this loader has already settled the attempt, and `recordSettle` drops it.
+   */
+  it('writes one ending, not two, when the transport does call back', () => {
+    const base = baseLoader();
+    const loader = loadOne(fragmentOf(3, 412));
+
+    loader.abort();
+
+    assert.equal(base.abortsCalledBack, 1, 'the base never called back, so nothing tested the duplicate');
+    assert.equal(settles().length, 1, 'the loader and the transport each announced an ending');
+    assert.deepEqual(settles()[0].slice(0, 3), ['3', '412', 'aborted']);
+  });
+
+  /**
+   * ⛔ Unreachable in hls.js 1.6.15, and self-enforced anyway. Its loader throws `Loader can only be used
+   * once` on a second `load` and its fragment loader builds one per fragment, so nothing here is a bug
+   * report about hls.js. It is the invariant refusing to rest on somebody else's behaviour: without the
+   * settle at the top of `load`, the first attempt would announce no ending at all and the second would
+   * inherit its start, reporting a duration that includes however long the first one ran.
+   */
+  it('settles the attempt it is dropping when a second load lands on the same loader', () => {
+    const base = baseLoader();
+    const loader = loadOne(fragmentOf(3, 412));
+
+    loadOne(fragmentOf(0, 7), loader);
+    base.callbacks?.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
+
+    assert.deepEqual(requests(), [
+      ['3', '412'],
+      ['0', '7'],
+    ]);
+    assert.deepEqual(
+      settles().map((settle) => settle.slice(0, 3)),
+      [
+        ['3', '412', 'aborted'],
+        ['0', '7', 'loaded'],
+      ],
+    );
   });
 });
 
