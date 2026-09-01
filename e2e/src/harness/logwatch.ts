@@ -399,12 +399,6 @@ export function announcedVodFinalizeCount(text: string): number {
 }
 
 /**
- * Each stream's uploaded indices, in upload order: the only sound unit for gap analysis. Under a
- * ladder the merged view interleaves four counters that start at different SRS sequence numbers,
- * so it holes at every log-window boundary while no rung has lost anything, and it can equally
- * mask a real one-rung gap behind a sibling's healthy index.
- */
-/**
  * Every rung's manifest SOC indices, keyed by stream, in publish order.
  *
  * ⛔ The merged list is not a substitute and `service/happy-path` proved it: `isContiguous`
@@ -422,6 +416,12 @@ export function manifestIndicesByStream(text: string): Map<string, number[]> {
   return byStream;
 }
 
+/**
+ * Each stream's uploaded indices, in upload order: the only sound unit for gap analysis. Under a
+ * ladder the merged view interleaves four counters that start at different SRS sequence numbers,
+ * so it holes at every log-window boundary while no rung has lost anything, and it can equally
+ * mask a real one-rung gap behind a sibling's healthy index.
+ */
 export function segmentIndicesByStream(text: string): Map<string, number[]> {
   const byStream = new Map<string, number[]>();
   for (const upload of segmentUploads(text)) {
