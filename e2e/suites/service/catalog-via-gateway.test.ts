@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
-import { type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
+import { type CatalogEntry, type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -39,8 +40,7 @@ describe('service — viewer catalog via gateway reflects live→VOD', () => {
   };
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     feed = await discoverCatalogFeed(host, cfg);
     await waitForIdle(host, cfg);
     // Deliberately NOT the swallowing `safeFetch`. A failed read here yields an empty baseline, and
@@ -75,13 +75,27 @@ describe('service — viewer catalog via gateway reflects live→VOD', () => {
 
     await publisher.stop();
 
-    await waitFor(async () => (await safeFetch()).find((e) => e.topic === ourTopic)?.state === 'vod', {
-      timeoutMs: VOD_WAIT_MS,
-      intervalMs: 3_000,
-      label: 'our catalog entry flips to VOD after the broadcaster stops',
-    });
+    // ⛔ The entry is KEPT from inside the poll, the way `ourTopic` is above, rather than re-read
+    // once the wait has passed. `safeFetch` swallows a failed read into an empty list, which is the
+    // right answer for a poller and the wrong one for a verdict: one transient blip on that last
+    // read would fail a scenario that had already succeeded, and name the feed transport rather
+    // than the product. What the assertions below judge is the last state the poll actually saw.
+    let finalEntry: CatalogEntry | undefined;
+    await waitFor(
+      async () => {
+        const mine = (await safeFetch()).find((e) => e.topic === ourTopic);
+        if (mine?.state === 'vod') {
+          finalEntry = mine;
+        }
+        return finalEntry !== undefined;
+      },
+      {
+        timeoutMs: VOD_WAIT_MS,
+        intervalMs: 3_000,
+        label: 'our catalog entry flips to VOD after the broadcaster stops',
+      },
+    );
 
-    const finalEntry = (await safeFetch()).find((e) => e.topic === ourTopic);
     assert.equal(finalEntry?.state, 'vod', 'the entry must end as VOD');
     assert.ok(
       (finalEntry?.duration ?? 0) > 0,
