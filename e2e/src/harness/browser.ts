@@ -43,7 +43,7 @@ import {
   type FragmentSettleState,
 } from '../browser/fragmentRequests.js';
 import { type QualityPhase, type QualitySwitchVerdict, type RungTimeline } from '../browser/qualitySwitch.js';
-import { type E2EConfig } from '../config.js';
+import { type E2EConfig, runProfile } from '../config.js';
 
 import { type Host } from './host.js';
 import { shellQuoted } from './shellQuote.js';
@@ -1002,6 +1002,13 @@ export function browserArmHostSetup(repoDir: string, env: NodeJS.ProcessEnv = pr
  * `E2E_SSH_TARGET=local` is what makes the driver's own harness shell out rather than try to ssh from
  * the host to itself, and `127.0.0.1` is what the client and the gateway are both reached on from a
  * host-networked container.
+ *
+ * ⛔⛔⛔ **`E2E_RUN_PROFILE` travels with the other two, and it did not until now.** The suite states
+ * which deployment the arm points at and never said which RUN it is, so the container resolved
+ * `DEFAULT_RUN_PROFILE` for itself: a light-client sitting launched a browser that read the in-browser
+ * profile's `E2E_EXPECT_SEGMENT_S` and every other key the profile decides. That is this repo's oldest
+ * class of defect, an unread variable looking exactly like one set to its default, and it is how three
+ * drivers came to run on the gateway while their reports named the in-tab node.
  */
 export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Record<string, string> {
   // ⛔ A squeeze arm is not watching either. `browser:quality` owns its own windows and never reads
@@ -1016,6 +1023,7 @@ export function browserArmEnv(cfg: E2EConfig, options: BrowserArmOptions): Recor
     E2E_PUBLIC_HOST: '127.0.0.1',
     E2E_PROFILE: cfg.profile,
     E2E_PORT_SLOT: String(cfg.portSlot),
+    E2E_RUN_PROFILE: runProfile.name,
     BROWSER_CLIENT_URL: `http://127.0.0.1:${cfg.ports.client}`,
     BROWSER_FETCH_BACKEND: options.backend,
     ...(watching ? { BROWSER_WATCH_SECONDS: String(Math.round(options.watchMinutes * 60)) } : {}),

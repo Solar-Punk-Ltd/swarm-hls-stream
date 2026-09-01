@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, runProfile } from '../src/config.js';
 import {
   artifactJsonFromArmLog,
   artifactReadPath,
@@ -430,6 +430,21 @@ describe('the environment an arm is run with', () => {
     assert.equal(watch.E2E_PROFILE, 'latbench');
     assert.equal(watch.E2E_PORT_SLOT, '7');
     assert.equal(watch.BROWSER_CLIENT_URL, `http://127.0.0.1:${cfg.ports.client}`);
+  });
+
+  /**
+   * ⛔⛔⛔ Which RUN this is, beside which deployment it points at. Without it the container resolves
+   * `DEFAULT_RUN_PROFILE` for itself, so a light-client sitting launches a browser reading the
+   * in-browser profile's `E2E_EXPECT_SEGMENT_S` and everything else a profile decides, while the
+   * report names the profile that was asked for. An unread variable looks exactly like one set to its
+   * default, which is how three drivers came to run on the gateway while claiming otherwise.
+   *
+   * Asserted against the profile this process itself resolved rather than a literal, because the name
+   * follows `E2E_RUN_PROFILE` and pinning a string here would fail the moment a sitting names another.
+   */
+  it('tells the container which run profile this sitting is', () => {
+    assert.equal(watch.E2E_RUN_PROFILE, runProfile.name);
+    assert.ok(runProfile.name.length > 0, 'a run always resolves a profile, so an empty name is a defect here');
   });
 
   it('names the byte source, which is the one thing a viewer arm is a reading of', () => {
