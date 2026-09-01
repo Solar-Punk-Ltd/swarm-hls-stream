@@ -99,9 +99,6 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
       intervalMs: 250,
       label: 'the engine reports the first session ended, which opens the drain window',
     });
-    // The host's own clock, taken here so the log below can be scoped to the reconnected session
-    // alone. Read the reason at the wait that uses it.
-    const reconnectedAt = await host.nowIso();
     second = startPublisher(cfg);
 
     // A second topic is the proof the replacement was registered as its own session rather than
@@ -139,6 +136,9 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
       intervalMs: 2_000,
       label: 'the drained session finalizes into its own recording',
     });
+    // The host's own clock, taken the instant the outgoing session finished rather than at the
+    // reconnect. Read the reason at the wait that uses it.
+    const outgoingFinalizedAt = await host.nowIso();
 
     const health = await uploaderHealth(host, cfg);
     assert.ok(
@@ -157,20 +157,24 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
 
     // And it has to be the live session's own state, not the drained session's left in place.
     //
-    // ⛔ Counted from the reconnect rather than from the suite's own start. The old count was every
-    // segment logged since the suite began reaching `WARMUP_SEGMENTS * 2`, and on a four rung ladder
-    // the FIRST session clears that on its own before the disconnect: four rungs times four warmup
-    // segments is sixteen against a target of eight. The wait was therefore already satisfied when
-    // the reconnect happened, and would have passed had the second session never uploaded a byte.
-    // Scoped to the window that opens when the second publisher starts, the only other thing that
-    // can land in it is the first session's remaining drain, which is bounded by what it had
-    // buffered rather than by how long this waits.
-    const sinceReconnect = async (): Promise<number> =>
-      parseUploaderLog(await host.logsSince(uploader, reconnectedAt)).uploadedSegments.length;
-    await waitFor(async () => (await sinceReconnect()) >= WARMUP_SEGMENTS, {
+    // ⛔ Counted from the instant the outgoing session finalized, which is what this window is
+    // supposed to mean. Opened at the reconnect instead, it holds the whole of the outgoing drain:
+    // the first session keeps uploading whatever it had buffered for as long as that takes, and those
+    // segments are logged inside the window while belonging to the session that is leaving. A
+    // reconnected session that never uploaded a byte could clear the bar on the drain alone. A
+    // session that has finalized publishes nothing more, so every segment logged after this instant
+    // is the reconnected session's.
+    //
+    // ⛔ Scoped at all because the older version counted every segment since the suite began against
+    // `WARMUP_SEGMENTS * 2`, and on a four rung ladder the FIRST session clears that on its own
+    // before the disconnect: four rungs times four warmup segments is sixteen against a target of
+    // eight.
+    const sinceOutgoingFinalized = async (): Promise<number> =>
+      parseUploaderLog(await host.logsSince(uploader, outgoingFinalizedAt)).uploadedSegments.length;
+    await waitFor(async () => (await sinceOutgoingFinalized()) >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,
       intervalMs: 2_000,
-      label: 'the reconnected session itself keeps uploading past the drain',
+      label: 'the reconnected session itself keeps uploading once the previous one has finalized',
     });
 
     await second.stop();
