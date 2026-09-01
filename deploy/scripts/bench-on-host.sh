@@ -20,6 +20,14 @@
 # `--setup-only` syncs, builds and installs, then stops without running anything. That is the state a
 # viewer arm of the e2e suite needs, since it mounts this checkout into the browser container.
 #
+# ⛔ THIS SYNCS THE HARNESS. IT DOES NOT REDEPLOY THE STACK. The stream-uploader ships as a prebuilt
+# `dist/` through `deploy/scripts/deploy.sh`, so a run launched from here measures THIS checkout's
+# harness against WHATEVER WAS LAST DEPLOYED. On 2026-09-01 that cost a paid sitting: a log line the
+# harness parses was reworded here and not deployed, so two scenarios reported the uploader never
+# publishing manifests on a stage that was publishing them throughout. The e2e preflight
+# `uploader-log-shape` now refuses that before the first frame, but it only covers the log messages.
+# Deploy first whenever the change is in the uploader rather than in the suite.
+#
 # Anything after `--` is passed to the container as environment, so a knob sweep reads:
 #   deploy/scripts/bench-on-host.sh -- BENCH_GOP_SECONDS=4 BENCH_BITRATE_KBPS=1200
 #
