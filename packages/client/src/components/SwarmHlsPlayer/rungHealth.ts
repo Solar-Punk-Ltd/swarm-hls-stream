@@ -90,40 +90,117 @@ export function attachWatchedRungReporter(hls: Hls, groupHexTopic: string, feedH
  * recover a rung they are not watching.
  */
 export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () => void {
-  return feedHealth.onRungStopped((rungTopicId) => {
-    const index = levelIndexOfRung(hls, rungTopicId);
-    if (index < 0) {
+  /** Rungs currently believed dead, by topic. Held here so a second death composes with the first. */
+  const dead = new Set<string>();
+
+  const detachStopped = feedHealth.onRungStopped((rungTopicId) => {
+    if (levelIndexOfRung(hls, rungTopicId) < 0) {
       return;
     }
-
-    const level = hls.levels[index];
+    dead.add(rungTopicId);
     // ⛔ The arithmetic that condemned it, in the line that announces it. A warning saying only that
     // a rung stopped cannot be checked against the broadcast afterwards, and on 2026-08-31 that cost
     // two sittings: the client dropped three healthy rungs, said so four times, and nothing it said
     // could distinguish a wrong count from a wrong rule.
-    const lag = `${feedHealth.ladderLagOf(rungTopicId)} segments behind the ladder`;
-    if (hls.levels.length < MIN_LEVELS_TO_DROP_ONE) {
-      console.warn(
-        `Rung ${level.height}p has stopped being produced (${lag}) and is the only one left, so playback stays on it`,
-      );
+    reconcileLadder(hls, dead, `${feedHealth.ladderLagOf(rungTopicId)} segments behind the ladder`);
+  });
+
+  const detachResumed = feedHealth.onRungResumed((rungTopicId) => {
+    if (!dead.delete(rungTopicId)) {
       return;
     }
+    reconcileLadder(hls, dead, 'publishing again');
+  });
 
-    // ⛔ Read BEFORE the removal, because the removal is what sets `loadLevel` to -1 and the two
-    // reasons it can be -1 must not be confused. A player that has not chosen a level yet is also at
-    // -1, and steering that one forces a level while hls.js is still settling the ladder. Only a
-    // viewer whose own rung was just taken away needs somewhere to go.
-    const tookThePlayingLevel = hls.loadLevel === index;
+  return () => {
+    detachStopped();
+    detachResumed();
+  };
+}
 
-    console.warn(`Rung ${level.height}p has stopped being produced (${lag}), dropping it from the ladder`);
-    hls.removeLevel(index);
+/** `autoLevelCapping`'s own value for "ABR may pick anything". */
+const NO_CAP = -1;
 
-    // hls.js clears the current level when the removed one was playing, and nothing else picks a
-    // replacement. Left at -1 the player buffers out and stops, which is the freeze this exists to
-    // end. `nextAutoLevel` is ABR's own choice among what is left, so the viewer lands on the best
-    // rung they can carry rather than on the bottom of the ladder.
-    if (tookThePlayingLevel) {
+/**
+ * Put the ladder into the shape the dead set implies, and say what changed.
+ *
+ * ⛔⛔⛔ **Capping is preferred over removing because removing cannot be undone.** hls.js has
+ * `removeLevel` and no way to put a level back, so a viewer who sat through one outage used to be
+ * held below their bandwidth for the rest of the session while the rung published happily beside
+ * them. `autoLevelCapping` is one number, ABR obeys it, and setting it back to {@link NO_CAP} restores
+ * the rung the moment it publishes again.
+ *
+ * ⚠️ **A cap excludes everything ABOVE it too, so it only fits a dead run at the TOP of the ladder.**
+ * That is the case that actually happens: rungs are announced in bitrate order and the tallest is the
+ * one that starves first. A dead rung with a live one above it cannot be expressed as a cap, and
+ * falls back to `removeLevel` with the loss stated in the log rather than being papered over.
+ */
+function reconcileLadder(hls: Hls, dead: ReadonlySet<string>, why: string): void {
+  const indices = deadLevelIndices(hls, dead);
+
+  if (indices.length === 0) {
+    if (hls.autoLevelCapping !== NO_CAP) {
+      hls.autoLevelCapping = NO_CAP;
+      console.warn(`Every rung is producing again (${why}), so the whole ladder is available`);
+    }
+    return;
+  }
+
+  if (indices.length >= hls.levels.length || hls.levels.length < MIN_LEVELS_TO_DROP_ONE) {
+    console.warn(`Rung ${heightAt(hls, indices[0])}p has stopped being produced (${why}) and there is nowhere to move`);
+    return;
+  }
+
+  if (isTopOfLadder(indices, hls.levels.length)) {
+    const cap = indices[0] - 1;
+    const heights = indices.map((index) => `${heightAt(hls, index)}p`).join(', ');
+    console.warn(`Rung ${heights} has stopped being produced (${why}), capping the ladder at ${heightAt(hls, cap)}p`);
+    hls.autoLevelCapping = cap;
+    // Capping steers what ABR picks NEXT and does not move a player already loading an excluded
+    // level, which is the dead one. Left there it buffers out and stops, which is the freeze this
+    // exists to end. `nextAutoLevel` is ABR's own choice under the cap just set.
+    if (hls.loadLevel > cap) {
       hls.nextLoadLevel = hls.nextAutoLevel;
     }
+    return;
+  }
+
+  // A dead rung with a live one above it. Not expressible as a cap, so it goes the old way and the
+  // log says the cost out loud, because this viewer will not get that rung back without a reload.
+  const index = indices[0];
+  const tookThePlayingLevel = hls.loadLevel === index;
+  console.warn(
+    `Rung ${heightAt(hls, index)}p has stopped being produced (${why}) with a taller rung still live, ` +
+      `so it is dropped rather than capped and will not return to this viewer`,
+  );
+  hls.removeLevel(index);
+  if (tookThePlayingLevel) {
+    hls.nextLoadLevel = hls.nextAutoLevel;
+  }
+
+  // ⛔ Every level above the removed one has shifted down, so a cap set against the old indices now
+  // points at a different rung. Run again on the shortened ladder: any rung still dead is re-resolved
+  // and the cap recomputed. Terminates because each pass through here removes exactly one level.
+  reconcileLadder(hls, dead, why);
+}
+
+/** Ascending indices of levels the ladder still holds whose rung is in the dead set. */
+function deadLevelIndices(hls: Hls, dead: ReadonlySet<string>): number[] {
+  const indices: number[] = [];
+  hls.levels.forEach((level, index) => {
+    const topic = rungTopicOfLevel(level.uri);
+    if (topic !== null && dead.has(topic)) {
+      indices.push(index);
+    }
   });
+  return indices;
+}
+
+/** Whether these indices are an unbroken run reaching the top level, which is what a cap can express. */
+function isTopOfLadder(indices: readonly number[], levelCount: number): boolean {
+  return indices[indices.length - 1] === levelCount - 1 && indices[0] + indices.length === levelCount;
+}
+
+function heightAt(hls: Hls, index: number): number | undefined {
+  return hls.levels[index]?.height;
 }

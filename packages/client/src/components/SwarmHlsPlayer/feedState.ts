@@ -439,6 +439,17 @@ export class FeedHealthTracker {
   private readonly rungStoppedListeners = new Set<(rungTopicId: string) => void>();
 
   /**
+   * Told when a rung that was announced dead starts being served again.
+   *
+   * ⛔ Exists so the player can put a rung BACK. Without it the only honest thing the failover could
+   * do was `removeLevel`, which hls.js cannot undo, and a viewer who sat through one outage was
+   * capped below their bandwidth for the rest of the session while the rung published happily beside
+   * them. Announced only for a rung this tracker actually announced as stopped, so a rung that was
+   * merely quiet never produces a resume nobody was waiting for.
+   */
+  private readonly rungResumedListeners = new Set<(rungTopicId: string) => void>();
+
+  /**
    * @param now A monotonic clock. `Date.now` is not one: a system clock correction during an outage
    *   moves every deadline already scheduled against it, either releasing the backoff at once or
    *   holding it for as long as the correction was large.
@@ -667,6 +678,30 @@ export class FeedHealthTracker {
     };
   }
 
+  /**
+   * Watch for a rung that had stopped starting to publish again.
+   *
+   * Fires only for a rung {@link onRungStopped} announced, so the pair is balanced and a listener can
+   * hold a set of dead rungs without it drifting. A rung that resumes and dies again produces the
+   * whole pair a second time.
+   */
+  onRungResumed(listener: (rungTopicId: string) => void): () => void {
+    this.rungResumedListeners.add(listener);
+    return () => {
+      this.rungResumedListeners.delete(listener);
+    };
+  }
+
+  private announceRungResumed(topicId: string): void {
+    for (const listener of [...this.rungResumedListeners]) {
+      try {
+        listener(topicId);
+      } catch (error) {
+        console.error('Rung resumed listener threw:', error);
+      }
+    }
+  }
+
   private healthFor(topicId: string): TopicHealth | undefined {
     const rungs = this.rungsOfGroup.get(topicId);
     if (rungs === undefined) {
@@ -866,7 +901,12 @@ export class FeedHealthTracker {
       // A rung being served again is what re-arms it, so a rung that dies twice is announced twice.
       // Not the judgement going false, which would re-announce a rung every time the ladder around
       // it happened to catch up with the gap.
-      this.stoppedRungsAnnounced.delete(topicId);
+      //
+      // The same edge is the resume signal, and it is the same edge on purpose: the thing that makes
+      // a rung announceable again is exactly the thing that makes it playable again.
+      if (this.stoppedRungsAnnounced.delete(topicId)) {
+        this.announceRungResumed(topicId);
+      }
     }
     this.update(topicId, (health) => ({ ...HEALTHY, hasEnded: health.hasEnded, stallsAtMs: health.stallsAtMs }));
   }
