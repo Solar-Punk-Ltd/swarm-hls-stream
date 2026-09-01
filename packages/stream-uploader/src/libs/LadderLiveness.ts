@@ -123,7 +123,7 @@ export class LadderLiveness {
 }
 
 /** Named so a caller reads as filtering renditions rather than as knowing about rung names. */
-export interface NamedRendition {
+interface NamedRendition {
   readonly name: string;
 }
 

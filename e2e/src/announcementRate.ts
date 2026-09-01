@@ -50,9 +50,9 @@ export const ACKNOWLEDGE_UNMEASURED = 'E2E_ACK_UNMEASURED_ANNOUNCEMENT_RATE';
 /** `engine <name> {`, which `engines/srs/entrypoint.sh` writes once per `ABR_LADDER` rung. */
 const LADDER_ENGINE = /^[ \t]*engine[ \t]+([A-Za-z0-9-]+)[ \t]*\{/gm;
 
-export type RateBand = 'sustained' | 'unmeasured' | 'broken';
+type RateBand = 'sustained' | 'unmeasured' | 'broken';
 
-export interface AnnouncementLoad {
+interface AnnouncementLoad {
   /** Rung names the stage transcodes, or a single synthetic rendition when it transcodes nothing. */
   readonly rungs: readonly string[];
   readonly segmentSeconds: number;
