@@ -7,6 +7,7 @@ import {
   announcedSessionTopics,
   announcedVodFinalizeCount,
   catalogContinuedEmpty,
+  manifestIndicesByStream,
   parseUploaderLog,
   resumedFinalizeCount,
 } from '../../src/harness/logwatch.js';
@@ -37,21 +38,44 @@ import { waitFor } from '../../src/harness/wait.js';
  * VOD manifest at a higher feed index and pay for it, and the catalog would name the newer one while
  * the older sits in the feed, bought and unreachable.
  *
- * ## Why the trigger is a log line and not a delay
+ * ## Why the trigger is the finalize's own feed writes
  *
  * The window is the gap between an upload and a catalog write, which is hundreds of milliseconds. A
  * wall-clock delay measured from the publisher stopping would land inside it only by luck.
- * `Updating stream in list to VOD` is logged immediately before `streamCatalog.addStream`, so waiting
- * for that line puts the kill at the start of the window rather than somewhere near it.
  *
- * ⚠️ **The race is still a race.** Reading the log costs a round trip, and the two steps after that
- * line can finish inside one. So the run reports which state it actually caught, and the assertions
- * hold for either: a scenario that quietly missed its window and passed anyway would be worth less
- * than no scenario at all.
+ * ⛔ **It used to be armed on the flip announce, and that line moved.** `Updating stream in list to
+ * VOD` and `Ladder <group> finalized to VOD` are now both written AFTER the catalog write:
+ * `StreamCatalog.upsertRendition` deliberately logs outside its own feed update so that a line
+ * claiming a finished ladder is only written once the entry actually says so. That fix is right and
+ * it took this trigger with it. By the time either line exists the window this scenario is named for
+ * has already closed, so the kill landed on a finalize that had finished.
+ *
+ * So the kill is armed on the two feed writes finalize makes BEFORE the catalog instead. `finalize`
+ * publishes the closing live manifest, then the VOD manifest, and `commitManifest` logs
+ * `Manifest of <stream> uploaded at SOC index <n>` for each. Two of those on ONE rung after the
+ * broadcaster stopped means that rung's recording is in the feed and `completeFinalize` runs next,
+ * which is the catalog write. Counted per rung, because a ladder is four independent uploaders and
+ * the first one to reach the window is the one that opens it.
+ *
+ * ⚠️ **The race is still a race, and it can now also fire early.** A rung holding a buffered segment
+ * when the broadcaster stopped publishes an ordinary live manifest first, so its second post-stop
+ * publish can be the CLOSING playlist rather than the VOD one. A kill there lands before the
+ * recording is bought at all, which is a legal outcome the assertions below already hold for: nothing
+ * was published twice because nothing was published once, and the reboot finalizes from the recovery
+ * entry that survived. So the run reports which state it actually caught, because a scenario that
+ * quietly missed its window and passed anyway would be worth less than no scenario at all.
  */
 
 const WARMUP_SEGMENTS = 4;
 const WARMUP_WAIT_MS = 120_000;
+/**
+ * Manifest publishes one rung must make after the broadcaster stops before the kill is fired.
+ *
+ * Two, because that is what `finalize` writes to the manifest feed ahead of the catalog: the closing
+ * live playlist and then the VOD manifest. See the header for what a rung that was still flushing a
+ * buffered segment does to this count, and why that outcome is legal rather than a missed run.
+ */
+const FINALIZE_MANIFEST_PUBLISHES = 2;
 const FINALIZE_WAIT_MS = 90_000;
 const REBOOT_WAIT_MS = 60_000;
 /** Past the 60s recovery timer, so a re-finalize triggered by recovery has run before anything is read. */
@@ -86,8 +110,8 @@ describe('H — killed inside finalize: one recording, and the catalog points at
   it('does not publish a second recording after a crash mid-finalize', async () => {
     const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
     // Scoped to broadcasts announced in our own window: scenario E's resumed stream drains past its
-    // own suite, and its trailing flip inside this window once armed the kill early and then read
-    // as this broadcast publishing twice, which the uploader's log disproved.
+    // own suite, and its trailing flip inside this window once read as this broadcast publishing
+    // twice, which the uploader's log disproved. It counts the flips and no longer arms the kill.
     const vodCommits = (text: string): number => announcedVodFinalizeCount(text);
 
     await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
@@ -101,12 +125,20 @@ describe('H — killed inside finalize: one recording, and the catalog points at
 
     await publisher.stop();
 
-    // The kill is armed on the log line rather than on a delay: see the header. Polled as fast as a
-    // round trip allows, because everything after that line is what the scenario is trying to split.
-    await waitFor(async () => vodCommits(await log()) >= 1, {
+    // Read straight after the stop returns, so what the wait below counts is what finalize adds
+    // rather than the whole broadcast's publishing. The engine has not fired its unpublish webhook
+    // yet at this point, so nothing of the drain is in this baseline.
+    const manifestsAtStop = manifestCounts(await log());
+
+    // The kill is armed on finalize's own feed writes rather than on a delay or on the flip line:
+    // see the header. Polled as fast as a round trip allows, because the catalog write that follows
+    // them is exactly what the scenario is trying to split.
+    await waitFor(async () => publishesSinceStop(await log(), manifestsAtStop) >= FINALIZE_MANIFEST_PUBLISHES, {
       timeoutMs: FINALIZE_WAIT_MS,
       intervalMs: 250,
-      label: 'the uploader reaches the catalog write at the end of finalize',
+      label:
+        `a draining rung makes ${FINALIZE_MANIFEST_PUBLISHES} manifest publishes past the stop, which puts ` +
+        "finalize's catalog write next",
     });
     await host.kill(uploader);
 
@@ -237,3 +269,22 @@ describe('H — killed inside finalize: one recording, and the catalog points at
     );
   });
 });
+
+/** How many manifest publishes each rung has made in this log window, keyed by stream. */
+function manifestCounts(text: string): Map<string, number> {
+  return new Map([...manifestIndicesByStream(text)].map(([streamId, indices]) => [streamId, indices.length]));
+}
+
+/**
+ * The most manifest publishes any ONE rung has made since the counts in `atStop` were taken.
+ *
+ * ⛔ Per rung and never summed. Four rungs each making one publish is four rungs still running live,
+ * and summed it looks identical to the one rung that has published its closing playlist and its VOD
+ * manifest. Only the second is the window this scenario kills into.
+ *
+ * A rung absent from `atStop` counts from zero, which is right: it published nothing before the stop.
+ */
+function publishesSinceStop(text: string, atStop: ReadonlyMap<string, number>): number {
+  const advanced = [...manifestCounts(text)].map(([streamId, count]) => count - (atStop.get(streamId) ?? 0));
+  return Math.max(0, ...advanced);
+}
