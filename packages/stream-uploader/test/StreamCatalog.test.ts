@@ -859,6 +859,55 @@ describe('StreamCatalog ladder write path', () => {
     );
   });
 
+  /**
+   * ⛔⛔⛔ Scenario H's actual mechanism, read off the host log on 2026-09-01.
+   *
+   * Ladder `fdbd7167` logged `finalized to VOD` at 05:58:04, was killed, rebooted with a CLEAN
+   * catalog read (`Loaded feed at index …`, not a blind resume), recovered one stream, and logged
+   * `finalized to VOD` again at 05:59:08. Sixty-four seconds, which is the recovery timer.
+   *
+   * The guard asks whether the entry is already VOD. It was, at 05:58:04. So something put it back
+   * to `live` in between, and the only writer in that window is the recovering rung re-announcing
+   * itself before it finalizes: a rendition with no `index` makes `renditions.every(r => r.index)`
+   * false, and the whole finished ladder reopens as live.
+   */
+  it('does not reopen a finished recording as live when one rung re-announces without an index', async () => {
+    const writes: CapturedWrite[] = [];
+    const ladder = ['360p', '480p', '720p', '1080p'].map((name, i) => ({
+      ...rung,
+      name,
+      topic: `rung-${name}`,
+      index: 7 + i,
+      duration: 12,
+    }));
+
+    const catalog = new StreamCatalog(makePublishers(feedbackBee(writes)), TEST_STREAM_KEY, TEST_TOPIC);
+    await catalog.init();
+    for (const r of ladder) {
+      await catalog.upsertRendition(identity, r);
+    }
+    assert.equal(lastLadderEntry(writes).state, 'vod', 'the ladder finished');
+
+    // What a recovered 1080p announces on its way back up, before its own finalize runs.
+    const { index: _dropped, duration: _also, ...reannounced } = ladder[3];
+    await catalog.upsertRendition(identity, reannounced);
+
+    const entry = lastLadderEntry(writes);
+    assert.equal(
+      entry.state,
+      'vod',
+      'a finished recording was advertised as live again because one rung re-announced itself',
+    );
+
+    // The index names a position inside the feed the topic addresses, so they survive together or
+    // the entry points at a place in the wrong feed.
+    const recovered = (entry.renditions as Array<{ name: string; index?: number; topic: string }>).find(
+      (r) => r.name === '1080p',
+    );
+    assert.equal(recovered?.index, 10, 'the finished rung kept the index its recording lives at');
+    assert.equal(recovered?.topic, 'rung-1080p', 'and the topic that index is an index into');
+  });
+
   /** The reboot the deployment actually performs: the store saved an index on every write. */
   it('keeps all four rungs when the reboot resumes from its persisted index', async () => {
     const writes: CapturedWrite[] = [];

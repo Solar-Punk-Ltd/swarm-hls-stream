@@ -525,7 +525,32 @@ function withoutGroup(entries: StreamEntry[], owner: string, group: string): Str
 }
 
 function mergeRendition(existing: Rendition[], incoming: Rendition): Rendition[] {
+  const previous = existing.find((r) => r.name === incoming.name);
   const merged = existing.filter((r) => r.name !== incoming.name);
-  merged.push(incoming);
+  merged.push(keepingWhatFinished(previous, incoming));
   return merged.sort((a, b) => a.height - b.height);
+}
+
+/**
+ * A rung that has already finished stays finished when it announces itself again.
+ *
+ * ⛔⛔⛔ Scenario H, caused 2026-09-01 after being an open red since 2026-08-31. A rung recovered
+ * from a crash announces itself before it finalizes, and that announcement carries no `index`
+ * because it has not published its recording yet. The merge replaced the finished rendition
+ * wholesale, so the index recorded when the rung DID finalize was thrown away,
+ * `renditions.every(r => r.index !== undefined)` went false, and **the whole finished ladder went
+ * back to `live` in the catalog**. Read off the host log: ladder `fdbd7167` finalized at 05:58:04,
+ * was killed, rebooted with a clean catalog read, and finalized again at 05:59:08 when the recovery
+ * timer fired. For that minute a recording that had ended was advertised as a live broadcast, and
+ * the second flip paid for another catalog write.
+ *
+ * `index`, `duration` and `topic` move together or not at all: the index names a position inside the
+ * feed the topic addresses, so keeping one without the other would point at a place in the wrong
+ * feed. Everything the re-announce genuinely knows better — the measured bitrates — is taken from it.
+ */
+function keepingWhatFinished(previous: Rendition | undefined, incoming: Rendition): Rendition {
+  if (previous?.index === undefined || incoming.index !== undefined) {
+    return incoming;
+  }
+  return { ...incoming, topic: previous.topic, index: previous.index, duration: previous.duration };
 }
