@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import { readAbrExpectation } from '../src/abrCoverage.js';
+import { announcementLoad, announcementRefusal } from '../src/announcementRate.js';
 import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
 import {
   applyRunProfile,
@@ -25,6 +26,9 @@ import {
  * run deliberately, and a file that silently won that argument would hand back a run that is not the
  * one they asked for, under a report that names the profile they thought they had overridden.
  */
+
+/** The ladder both shipped profiles declare, and the unit an SRS announcement is per. */
+const LADDER_RUNGS = ['1080p', '720p', '480p', '360p'];
 
 const sandboxes: string[] = [];
 
@@ -224,8 +228,8 @@ describe('the two profiles this repo ships', () => {
   });
 
   /**
-   * The byte source separates them, and the segment length separates them BECAUSE the byte source
-   * does. Nothing else may, or a reader comparing the pair carries a difference nobody chose.
+   * The byte source separates them, and the segment length separates them too. Nothing else may, or
+   * a reader comparing the pair carries a difference nobody chose.
    *
    * ⛔⛔⛔ This assertion used to read `['BROWSER_FETCH_BACKEND']` alone, and widening it is the whole
    * point rather than a concession. Measured 2026-08-16 by the sibling repo swarm-stream-loadlab: an
@@ -235,8 +239,17 @@ describe('the two profiles this repo ships', () => {
    * profiles, and a session that "fixed the inconsistency" by equalising them would hand one of the
    * two viewer types a stage it cannot run on, silently. That is the failure this list guards
    * against, in both directions.
+   *
+   * ⚠️ **WHY light-client says 1.0 and not the 0.5 its byte source measured best at, since
+   * 2026-09-01.** A second constraint outranks the byte source on a ladder. SRS fires `on_hls` once
+   * per closed segment per rung, so a four-rung ladder at 0.5s asks for 8.00 announcements a second
+   * against the ~6.7 it was measured sustaining, and past that it deletes each segment before
+   * announcing it and unpublishes the tallest rung about two minutes in. So the docblock above still
+   * holds, and the reason the numbers differ is now partly the ladder. `preflight/announcement-rate`
+   * is the gate. **Do not "restore" 0.5 here.** It is not a drift and the 21-arm measurement behind
+   * it is not withdrawn: it is unreachable while four rungs are announced.
    */
-  it('differs in the byte source and in the segment length that byte source needs', () => {
+  it('differs in the byte source and in the segment length, and neither may be equalised', () => {
     const inBrowser = resolveRunProfile({ env: {}, dir: PROFILE_DIR }).applied;
     const lightClient = resolveRunProfile({ env: { [RUN_PROFILE_VAR]: 'light-client' }, dir: PROFILE_DIR }).applied;
 
@@ -246,7 +259,22 @@ describe('the two profiles this repo ships', () => {
 
     assert.deepEqual(differing.sort(), ['BROWSER_FETCH_BACKEND', 'E2E_EXPECT_SEGMENT_S']);
     assert.equal(inBrowser.E2E_EXPECT_SEGMENT_S, '2');
-    assert.equal(lightClient.E2E_EXPECT_SEGMENT_S, '0.5');
+    assert.equal(lightClient.E2E_EXPECT_SEGMENT_S, '1.0');
+  });
+
+  /**
+   * ⛔ Both shipped profiles must sit inside the announcement rate a sitting has sustained, on the
+   * four-rung ladder they both declare. A profile that cannot clear `preflight/announcement-rate`
+   * is one whose every run refuses at the gate, which nobody discovers until they book a sitting.
+   */
+  it('asks for an announcement rate the ladder has been shown sustaining', () => {
+    for (const name of availableRunProfiles(PROFILE_DIR)) {
+      const applied = resolveRunProfile({ env: { [RUN_PROFILE_VAR]: name }, dir: PROFILE_DIR }).applied;
+      const segmentSeconds = Number(applied.E2E_EXPECT_SEGMENT_S);
+      const load = announcementLoad(LADDER_RUNGS, segmentSeconds);
+
+      assert.equal(announcementRefusal(load, false), null, `${name} asks ${load.perSecond.toFixed(2)} announcements/s`);
+    }
   });
 
   /**

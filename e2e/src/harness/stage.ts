@@ -42,8 +42,19 @@ const SRS_CONF_PATH = '/usr/local/srs/conf/srs.conf';
  * for a mismatch.
  */
 export async function readStageSegmenting(host: Host, cfg: E2EConfig): Promise<StageSegmenting> {
+  return parseStageSegmenting(await readStageConf(host, cfg), PUBLISHER_GOP_SECONDS);
+}
+
+/**
+ * The same config as text, for callers that need what {@link parseStageSegmenting} does not carry.
+ *
+ * `announcement-rate` needs the ladder's rung count, which is one `engine <name> {` block per rung
+ * and is not part of a segmenting reading. Reading the file twice would be two `docker exec` calls
+ * that could disagree if a co-tenant redeployed between them, so both preflights take one read.
+ */
+export async function readStageConf(host: Host, cfg: E2EConfig): Promise<string> {
   const container = containerName(cfg, 'srs');
   const { stdout } = await host.run(`docker exec ${container} cat ${SRS_CONF_PATH}`);
 
-  return parseStageSegmenting(stdout, PUBLISHER_GOP_SECONDS);
+  return stdout;
 }
