@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import {
   announcedLiveStreams,
   announcedLiveTopics,
+  catalogContinuedEmpty,
   isContiguous,
   manifestIndicesByStream,
   messageText,
@@ -421,5 +422,43 @@ describe('manifest publishes, per rung', () => {
 
   it('is empty rather than throwing when nothing has published', () => {
     assert.equal(manifestIndicesByStream('').size, 0);
+  });
+});
+
+describe('the catalog giving up on its own previous state', () => {
+  /**
+   * ⛔ The one line that separates the two things scenario H's count can mean. `readPreviousState`
+   * continues from an empty list only after a boot that resumed to an unread index AND three failed
+   * reads of it, and says so at error level. Without this the harness cannot tell a genuine second
+   * finalize from a first one the guard could not see, and H has been ambiguous since 2026-08-31.
+   */
+  const LOST = (index: number) =>
+    `[StreamCatalog] State at index ${index} failed to read 3 times; ` +
+    'continuing with an empty catalog — earlier entries are lost';
+
+  it('sees the uploader announce that it lost the catalog', () => {
+    assert.equal(catalogContinuedEmpty(textLine('error', LOST(12))), 1);
+  });
+
+  it('reads it out of the json format the deployment writes', () => {
+    assert.equal(catalogContinuedEmpty(jsonLine('error', LOST(12))), 1);
+  });
+
+  it('counts each occurrence, because one boot can lose the catalog more than once', () => {
+    assert.equal(catalogContinuedEmpty([textLine('error', LOST(12)), textLine('error', LOST(13))].join('\n')), 2);
+  });
+
+  /** The two warnings before it are retries that kept the catalog, and must not be counted as loss. */
+  it('does not count the attempts that still refused to continue', () => {
+    const retry = textLine(
+      'warn',
+      '[StreamCatalog] State at index 12 did not read (chunk not found); attempt 2 of 3 before it counts as gone',
+    );
+
+    assert.equal(catalogContinuedEmpty(retry), 0);
+  });
+
+  it('is zero on a log where nothing went wrong', () => {
+    assert.equal(catalogContinuedEmpty(textLine('log', MANIFEST(3))), 0);
   });
 });

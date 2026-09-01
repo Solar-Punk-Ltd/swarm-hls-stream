@@ -3,7 +3,12 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
-import { announcedSessionTopics, announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
+import {
+  announcedSessionTopics,
+  announcedVodFinalizeCount,
+  catalogContinuedEmpty,
+  parseUploaderLog,
+} from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
@@ -163,7 +168,13 @@ describe('H — killed inside finalize: one recording, and the catalog points at
 
     const finalLog = await log();
     const commitsAfterReboot = vodCommits(finalLog);
+    // The discriminator, printed before the assertions so it is in the log whichever way they go.
+    const lostCatalog = catalogContinuedEmpty(finalLog);
     console.log(`H: catalog writes — ${commitsBeforeReboot} before the reboot, ${commitsAfterReboot} in total`);
+    console.log(
+      `H: the uploader gave up on its previous catalog state ${lostCatalog} time(s) ` +
+        '(non-zero means a second finalize count is a blind read, not a second finalize)',
+    );
 
     // ⛔ What this line does and does not prove, pinned by unit tests in
     // `packages/stream-uploader/test/StreamCatalog.test.ts` on 2026-09-01. The guard behind it is
@@ -177,8 +188,17 @@ describe('H — killed inside finalize: one recording, and the catalog points at
       1,
       `a broadcast must be finalized once, and the uploader announced the flip ${commitsAfterReboot} times. ` +
         'A second one means the reboot could not read its own catalog entry back, so it treated the ' +
-        'finished ladder as a new one. Check the rendition count reported below before reading this ' +
-        'as a recording published twice',
+        `finished ladder as a new one. The uploader reported losing its catalog ${lostCatalog} time(s), ` +
+        'and a non-zero there is that read failing rather than a recording published twice',
+    );
+
+    // ⛔ Its own failure, whatever the count above did. Continuing from an empty catalog overwrites
+    // every other stream's entry as well as this one, and the uploader says so at error level.
+    assert.equal(
+      lostCatalog,
+      0,
+      `the uploader continued from an empty catalog ${lostCatalog} time(s) during this scenario. ` +
+        "Every entry the feed held was written over, not just this broadcast's",
     );
 
     assert.deepEqual(

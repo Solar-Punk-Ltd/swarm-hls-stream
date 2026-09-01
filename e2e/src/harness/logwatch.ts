@@ -399,6 +399,25 @@ export function announcedVodFinalizeCount(text: string): number {
 }
 
 /**
+ * `StreamCatalog` giving up on its previous state and writing over it with an empty list.
+ *
+ * ⛔ This is the discriminator scenario H needs. Its count of `Ladder <group> finalized to VOD` is
+ * guarded by "the catalog does not already say VOD", so a second one means either a genuine second
+ * finalize or a first one the guard could not see. Only this line separates them, and it is emitted
+ * exactly where the second case happens: after a boot that resumed to an index whose state it never
+ * read AND three consecutive failures to read it.
+ *
+ * ⚠️ Anchored on the conclusion, not on the warning. The two attempts before it carry a nearly
+ * identical message and they KEPT the catalog, so counting those would report loss that did not
+ * happen.
+ */
+const RE_CATALOG_LOST = /continuing with an empty catalog/g;
+
+export function catalogContinuedEmpty(text: string): number {
+  return countMatches(messageText(text), RE_CATALOG_LOST);
+}
+
+/**
  * Every rung's manifest SOC indices, keyed by stream, in publish order.
  *
  * ⛔ The merged list is not a substitute and `service/happy-path` proved it: `isContiguous`
