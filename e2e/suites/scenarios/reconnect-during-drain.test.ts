@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
-import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   announcedVodFinalizeCount,
@@ -11,6 +11,7 @@ import {
   sessionEnds,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
 import { waitFor } from '../../src/harness/wait.js';
 
@@ -63,8 +64,7 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
   let startedAt: string;
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     await waitForIdle(host, cfg);
     startedAt = await host.nowIso();
     first = startPublisher(cfg);
@@ -99,6 +99,9 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
       intervalMs: 250,
       label: 'the engine reports the first session ended, which opens the drain window',
     });
+    // The host's own clock, taken here so the log below can be scoped to the reconnected session
+    // alone. Read the reason at the wait that uses it.
+    const reconnectedAt = await host.nowIso();
     second = startPublisher(cfg);
 
     // A second topic is the proof the replacement was registered as its own session rather than
@@ -116,6 +119,15 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
     // a ladder's entry is shared with the live replacement and deliberately never flips mid-group,
     // so the outgoing rungs are seen ending session by session, whichever way each one's
     // drain-versus-reconnect race went.
+    //
+    // ⛔ What the ladder branch CANNOT tell apart, and nothing at these lines can fix. `sessionEnds`
+    // returns stream ids, and a reconnect republishes to the same stream path, so the second
+    // session's rungs carry the same ids as the first session's. The set therefore counts rung
+    // names, not sessions: four distinct ids is equally consistent with all four of the outgoing
+    // rungs draining and with two of them draining while two of the INCOMING rungs died early. The
+    // topic is the only thing that separates the sessions and this line family does not carry it.
+    // The `activeStreams >= 1` assertion just below is the backstop: a second session that died
+    // during the drain leaves nothing live, so it fails there.
     const outgoingFinalized = async (): Promise<boolean> => {
       if (!cfg.abrEnabled) {
         return (await vodCommits()) >= 1;
@@ -144,10 +156,21 @@ describe('K — reconnect during drain: two recordings, and the live one keeps i
     );
 
     // And it has to be the live session's own state, not the drained session's left in place.
-    await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS * 2, {
+    //
+    // ⛔ Counted from the reconnect rather than from the suite's own start. The old count was every
+    // segment logged since the suite began reaching `WARMUP_SEGMENTS * 2`, and on a four rung ladder
+    // the FIRST session clears that on its own before the disconnect: four rungs times four warmup
+    // segments is sixteen against a target of eight. The wait was therefore already satisfied when
+    // the reconnect happened, and would have passed had the second session never uploaded a byte.
+    // Scoped to the window that opens when the second publisher starts, the only other thing that
+    // can land in it is the first session's remaining drain, which is bounded by what it had
+    // buffered rather than by how long this waits.
+    const sinceReconnect = async (): Promise<number> =>
+      parseUploaderLog(await host.logsSince(uploader, reconnectedAt)).uploadedSegments.length;
+    await waitFor(async () => (await sinceReconnect()) >= WARMUP_SEGMENTS, {
       timeoutMs: WARMUP_WAIT_MS,
       intervalMs: 2_000,
-      label: 'the reconnected session keeps uploading past the drain',
+      label: 'the reconnected session itself keeps uploading past the drain',
     });
 
     await second.stop();
