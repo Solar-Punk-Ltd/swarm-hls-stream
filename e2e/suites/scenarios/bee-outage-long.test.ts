@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, containerNameFor, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { nodesBehind, publisherServices } from '../../src/harness/publishers.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -68,8 +69,7 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
       (service) => containerNameFor(cfg.profile, service),
     );
 
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     await waitForIdle(host, cfg);
     startedAt = await host.nowIso();
     publisher = startPublisher(cfg);
@@ -133,7 +133,10 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
       { timeoutMs: SEGMENT_WAIT_MS, intervalMs: 2_000, label: 'every stream resumes after the crash outage' },
     );
 
-    const ev = await events();
+    // One log read for both verdicts below, so the discontinuity count and the per-rung indices
+    // describe the same moment rather than two fetches apart.
+    const settled = await host.logsSince(uploader, startedAt);
+    const ev = parseUploaderLog(settled);
     assert.ok(
       ev.discontinuitiesArmed >= 1,
       `a crash outage (> 15s window) must arm at least one discontinuity; armed: ${
@@ -144,7 +147,7 @@ describe('B — bee crash > retry window: discontinuity, clean skip, resume', ()
     // each rung dropped its own segments and each rung's own sequence must show the hole. The merged
     // view cannot be trusted in either direction: a sibling's healthy index fills a real gap, and
     // window boundaries invent one.
-    const perStream = [...(await byStream())];
+    const perStream = [...segmentIndicesByStream(settled)];
     assert.ok(perStream.length > 0, 'no attributable segment uploads at all, so nothing here survived the outage');
     for (const [streamId, indices] of perStream) {
       assert.ok(

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import {
   isContiguous,
   manifestIndicesByStream,
@@ -10,6 +10,7 @@ import {
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -45,8 +46,7 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
   let startedAt: string;
 
   before(async () => {
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     await waitForIdle(host, cfg);
     startedAt = await host.nowIso();
     publisher = startPublisher(cfg);
@@ -72,18 +72,31 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
       return (await rungsPublishing()).filter((rung) => (published.get(rung) ?? []).length < TARGET_MANIFESTS_PER_RUNG);
     };
 
+    // ⛔ The label names the state when the wait STARTED, because that is the only state it can
+    // hold. It is built once, at options construction, so the version that read "still short: …"
+    // printed a snapshot taken before the first poll as though it were the state at the timeout,
+    // pointing an operator at rungs that had long since caught up.
+    const shortAtStart = await rungShort();
     await waitFor(async () => (await rungShort()).length === 0, {
       timeoutMs: MANIFEST_WAIT_MS,
       intervalMs: 2_000,
       label:
         `every rung that uploaded a segment publishes ${TARGET_MANIFESTS_PER_RUNG} manifests ` +
-        `(still short: ${(await rungShort()).join(', ') || 'none'})`,
+        `(short when this wait started: ${shortAtStart.join(', ') || 'none'})`,
     });
 
-    const ev = await events();
+    // ⛔ One log read, and every verdict below comes out of it. This used to be four separate
+    // fetches: the events, the segment streams, the rung list and the manifest map. A rung whose
+    // first segment landed between two of them was in the segment list and not yet in the manifest
+    // list, and the case red on a rung that was fine and had merely been born mid-read.
+    const text = await host.logsSince(uploader, startedAt);
+    const ev = parseUploaderLog(text);
+    const segments = segmentIndicesByStream(text);
+    const published = manifestIndicesByStream(text);
+
     // Judged per stream: a ladder is four counters starting at different SRS sequence numbers, so
     // the merged view holes at window boundaries while no rung has lost anything.
-    for (const [streamId, indices] of segmentIndicesByStream(await host.logsSince(uploader, startedAt))) {
+    for (const [streamId, indices] of segments) {
       assert.ok(
         isContiguous(indices),
         `happy-path segment indices of ${streamId} must be gapless; got: ${indices.join(',')}`,
@@ -101,8 +114,7 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
     // four rungs merged into one list read as contiguous whether one of them froze at index 0 or
     // none did. A rung whose manifest stops advancing is this deployment's actual failure mode, and
     // the merged check was structurally unable to see it.
-    const published = await manifestsByRung();
-    for (const rung of await rungsPublishing()) {
+    for (const rung of segments.keys()) {
       const indices = published.get(rung) ?? [];
       assert.ok(
         indices.length >= TARGET_MANIFESTS_PER_RUNG,
