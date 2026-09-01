@@ -1,4 +1,6 @@
+import { CLIENT_LOG_UNKNOWN, fragmentRequested } from '@swarm-hls-stream/shared';
 import type {
+  Fragment,
   FragmentLoaderContext,
   HlsConfig,
   Loader,
@@ -89,6 +91,8 @@ export class CustomFragmentLoader extends FragmentLoader {
   load(context: FragmentLoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<LoaderContext>) {
     const url = context.url;
     this.abandoned = false;
+
+    recordFragmentRequest(context);
 
     // Every playlist this client hands hls.js names its segments absolutely, so anything else here is
     // a bug upstream rather than a URL to repair, and it is not repairable anyway. A preview playlist
@@ -234,6 +238,54 @@ export class CustomFragmentLoader extends FragmentLoader {
         );
       },
     );
+  }
+}
+
+/**
+ * Announce which level hls.js has just asked for a fragment of.
+ *
+ * ⛔ **An instrument, and only an instrument.** Nothing below reads it, no fragment waits on it and no
+ * branch in this loader depends on it. `clientLog.ts` owns the wording, which the e2e harness parses.
+ *
+ * ⭐ **At the top of `load`, above every branch.** hls.js builds a loader per fragment and calls
+ * `load` once per attempt, so one line here is one line per attempt. It sits above the url check and
+ * above the byte-source split on purpose: the question is which level was ASKED for, and a line
+ * placed after either branch would answer it only for the fragments that got past that branch. The
+ * two backends record identically, which is the whole basis for reading one arm against the other.
+ *
+ * ⚠️ This is the only place the level index is observable at all. The shipped overlay reports what
+ * was decoded, what ABR would pick next and what the player believes it can afford, and none of the
+ * three says which rung the fragments in flight belong to.
+ */
+function recordFragmentRequest(context: FragmentLoaderContext): void {
+  // A logging line must never cost a fragment. `context.frag` is required by hls.js's own types and
+  // is absent in every unit test that drives this loader directly, which is a shape a future hls.js
+  // could arrive in as well.
+  try {
+    const frag: Fragment | undefined = context.frag;
+    console.debug(fragmentRequested(frag?.level ?? CLIENT_LOG_UNKNOWN, frag?.sn ?? CLIENT_LOG_UNKNOWN, rungOf(frag)));
+  } catch {
+    // Silent by design. A viewer whose console throws still has to get their video.
+  }
+}
+
+/**
+ * The rung this fragment belongs to, which is its own playlist's address.
+ *
+ * ⛔ **Not the fragment url, which names no rung.** Every segment this client plays is
+ * `<gateway>/bytes/<reference>` and a Swarm reference says nothing about which rendition produced it.
+ * `baseurl` is the level playlist the fragment was parsed out of, `swarm://<owner>/<topic>`, and the
+ * topic is the rung's identity everywhere else in this project.
+ *
+ * Guarded on its own rather than left to the caller's catch. It is a getter over a field hls.js sets,
+ * so it is the one part of the line that can throw, and losing the level index because the rung was
+ * unreadable would silence the reading this exists for.
+ */
+function rungOf(frag: Fragment | undefined): string {
+  try {
+    return frag?.baseurl || CLIENT_LOG_UNKNOWN;
+  } catch {
+    return CLIENT_LOG_UNKNOWN;
   }
 }
 

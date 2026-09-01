@@ -1,3 +1,4 @@
+export * from './clientLog.js';
 export * from './feedFollow.js';
 export * from './hlsTags.js';
 export * from './manifest.js';

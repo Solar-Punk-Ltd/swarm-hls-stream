@@ -1,3 +1,4 @@
+import { CLIENT_LOG_UNKNOWN, fragmentRequestedPattern } from '@swarm-hls-stream/shared';
 import type { FragmentLoaderContext, HlsConfig, LoaderCallbacks, LoaderConfiguration, LoaderContext } from 'hls.js';
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, vi } from 'vitest';
@@ -647,6 +648,135 @@ describe('CustomFragmentLoader telling hls.js what the connection carried', () =
       believed < RUNG_1080P_KBPS,
       `hls.js was told ${believed.toFixed(0)} kbps, so 1080p still looks affordable`,
     );
+  });
+});
+
+/**
+ * The one place a viewer's own choice of LEVEL is observable, which nothing else in this project can
+ * see.
+ *
+ * ⛔ An instrument. It records and refuses nothing, and no branch of the loader reads it. What it
+ * exists for is a reading V2 could not take: a player riding a rung its link cannot carry and a player
+ * asking for a cheaper rung that something upstream answers with the expensive one look identical in
+ * the overlay, in the decoded resolution and in `nextAutoLevel`. They differ here.
+ */
+describe('CustomFragmentLoader announcing which level hls.js asked for', () => {
+  const RUNG = 'swarm://0x4f0e1c2b3a49586772635441302f1e0d0c0b0a09/9c4e1f60b8a2d357e0f1a2b3c4d5e6f7';
+
+  /** As much of an hls.js `Fragment` as this line reads: its level, its number and its playlist. */
+  const fragmentOf = (level: number, sn: number | string, baseurl = RUNG) =>
+    ({ level, sn, baseurl } as FragmentLoaderContext['frag']);
+
+  let announced: string[];
+
+  /** Drive one fragment through the loader and hand back every fragment request line it wrote. */
+  function requestsWrittenFor(context: Partial<FragmentLoaderContext>): (readonly string[])[] {
+    vi.spyOn(transport, 'load').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    loader.load(
+      { url: FRAGMENT_URL, ...context } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      {
+        onSuccess: vi.fn(),
+        onError: vi.fn(),
+        onTimeout: vi.fn(),
+      } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+
+    return announced
+      .map((line) => fragmentRequestedPattern().exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => match.slice(1, 4));
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    runStaggerInline();
+    announced = [];
+    vi.spyOn(console, 'debug').mockImplementation((line: unknown) => {
+      announced.push(String(line));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  it('writes one line per fragment, carrying the level, the number and the rung playlist', () => {
+    assert.deepEqual(requestsWrittenFor({ frag: fragmentOf(3, 412) }), [['3', '412', RUNG]]);
+  });
+
+  /**
+   * ⛔ Above the byte-source split, so the two arms of the matrix record identically. A line written
+   * inside one branch would make the other read as a viewer that asked for nothing.
+   */
+  it('writes it on the in-tab path as well as the gateway one', async () => {
+    vi.stubEnv('VITE_BROWSER_FETCH_BACKEND', FETCH_BACKEND_WEEB3);
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array([1]));
+
+    assert.deepEqual(requestsWrittenFor({ url: WEEB3_FRAGMENT_URL, frag: fragmentOf(0, 7) }), [['0', '7', RUNG]]);
+  });
+
+  /**
+   * ⛔ Above the url check too. hls.js asked for this fragment, and a refusal that went unrecorded
+   * would leave the phase count short at exactly the moment worth reading.
+   */
+  it('writes it for a url the loader is about to refuse', () => {
+    assert.deepEqual(requestsWrittenFor({ url: 'blob:http:/bytes/abc123', frag: fragmentOf(2, 9) }), [
+      ['2', '9', RUNG],
+    ]);
+  });
+
+  it('carries an initialisation segment, whose number hls.js writes as a word', () => {
+    assert.deepEqual(requestsWrittenFor({ frag: fragmentOf(1, 'initSegment') }), [['1', 'initSegment', RUNG]]);
+  });
+
+  /**
+   * A logging line must never cost a fragment. `frag` is required by hls.js's own types and is absent
+   * from every other case in this file, which is a shape a future hls.js could arrive in as well.
+   */
+  it('says so rather than throwing when the fragment carries nothing to read', () => {
+    assert.deepEqual(requestsWrittenFor({}), [[CLIENT_LOG_UNKNOWN, CLIENT_LOG_UNKNOWN, CLIENT_LOG_UNKNOWN]]);
+  });
+
+  /**
+   * ⛔ The rung is guarded on its own. `baseurl` is a getter over a field hls.js sets, so it is the one
+   * part of the line that can throw, and losing the level index with it would silence the reading.
+   */
+  it('keeps the level when the rung playlist cannot be read', () => {
+    const frag = {
+      level: 3,
+      sn: 5,
+      get baseurl(): string {
+        throw new Error('no base');
+      },
+    } as FragmentLoaderContext['frag'];
+
+    assert.deepEqual(requestsWrittenFor({ frag }), [['3', '5', CLIENT_LOG_UNKNOWN]]);
+  });
+
+  // The line is an observation, so it must not be able to stop a fragment however badly it goes.
+  it('still fetches the fragment when the console itself throws', () => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {
+      throw new Error('the console is gone');
+    });
+    const reachedTransport = vi.spyOn(transport, 'load').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    loader.load(
+      { url: FRAGMENT_URL } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      {
+        onSuccess: vi.fn(),
+        onError: vi.fn(),
+        onTimeout: vi.fn(),
+      } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+
+    assert.equal(reachedTransport.mock.calls.length, 1, 'a logging failure cost the viewer their fragment');
   });
 });
 
