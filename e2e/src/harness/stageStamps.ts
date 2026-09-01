@@ -20,10 +20,13 @@
  * The gateway is deliberately not read. It serves retrievals and holds no upload batch, so a stamp
  * question has no answer there.
  *
- * Batch **utilization** is not read either. How full a batch is stays the job of
- * `deploy/scripts/stamp-guard.sh` and of the uploader's own `PostageGate`, both of which refuse a
- * batch that is too full to accept the next chunk. This gate asks the one thing neither of those
- * asks per run, which is whether each publisher can stamp at all for as long as a scenario lasts.
+ * Batch **utilization** is carried on each reading and nothing here judges it. How full a batch is
+ * stays the job of `deploy/scripts/stamp-guard.sh` and of the uploader's own `PostageGate`, both of
+ * which refuse a batch that is too full to accept the next chunk and both of which own the stop line.
+ * A third opinion about the same number, in a third place, would mean an operator had to find out
+ * which of the three had fired. This gate asks the one thing neither of those asks per run, which is
+ * whether each publisher can stamp at all for as long as a scenario lasts, and it reports the fill so
+ * the read-only smoke run can show a node the other two are about to refuse.
  *
  * The verdict is pure so `test/stageStamps.test.ts` covers it under `pnpm verify`, which nothing
  * under `suites/` is. That leaves {@link readStageStamps} as the only untested part, and it is wiring.
@@ -31,7 +34,7 @@
 
 import type { E2EConfig } from '../config.js';
 
-import { type Host, pollUsableStamp, STAMP_READY_TIMEOUT_MS, uploaderHealth } from './host.js';
+import { type Host, pollUsableStamp, type Stamp, STAMP_READY_TIMEOUT_MS, uploaderHealth } from './host.js';
 import { nodesBehind } from './publishers.js';
 
 /**
@@ -61,12 +64,39 @@ export interface NodeStampReading {
   readonly batch: string | null;
   /** `batchTTL` on that stamp, in seconds, or null when there was no stamp to read one off. */
   readonly ttlS: number | null;
+  /**
+   * How full that batch is, as a percentage of its fullest bucket's capacity, or null with no stamp.
+   *
+   * ⛔⛔ **Display only, and {@link stageStampsRefusal} deliberately ignores it.** How full a batch is
+   * stays the job of `deploy/scripts/stamp-guard.sh` and the uploader's own `PostageGate`, both of
+   * which refuse a batch too full to accept the next chunk and both of which own the stop line.
+   * Refusing on it here would put a third opinion about the same number in a third place, and the one
+   * that fired first would be the one an operator had to go and find.
+   *
+   * ⭐ Carried anyway because the read-only smoke run prints these, and a node at 90% with a year of
+   * TTL clears this gate and is about to be refused by the other two. An operator seeing that on the
+   * run they make first is the whole difference between fixing it now and discovering it mid-sitting.
+   *
+   * ⚠️ The fullest bucket, never the mean: bee's `utilization` counts the fullest of
+   * `2 ^ (depth - bucketDepth)` buckets, and the batch is full when THAT one fills.
+   */
+  readonly utilizationPct: number | null;
   /** What the node said instead of offering a stamp. Null when it offered one. */
   readonly problem: string | null;
 }
 
 /** How much of a batch id ever reaches a printed line. See {@link NodeStampReading.batch}. */
 const BATCH_ID_SHOWN = 8;
+
+/**
+ * How full a batch is, as a percentage, by the same arithmetic `deploy/scripts/stamp-guard.sh` uses.
+ *
+ * `utilization` is the fullest of `2 ^ (depth - bucketDepth)` buckets, so this is what the batch
+ * actually enforces rather than a share of bytes uploaded.
+ */
+function utilizationPct(stamp: Stamp): number {
+  return (100 * stamp.utilization) / 2 ** (stamp.depth - stamp.bucketDepth);
+}
 
 /**
  * Null when this stage may run, or the refusal to print and stop on.
@@ -146,6 +176,7 @@ export async function readStageStamps(host: Host, cfg: E2EConfig): Promise<NodeS
       port: node.port,
       batch: stamp === null ? null : stamp.batchID.slice(0, BATCH_ID_SHOWN),
       ttlS: stamp?.batchTTL ?? null,
+      utilizationPct: stamp === null ? null : utilizationPct(stamp),
       problem:
         stamp === null
           ? `nothing usable after ${STAMP_READY_TIMEOUT_MS / 1_000}s of polling, and it last said: ${lastSeen}`
@@ -163,9 +194,9 @@ export async function readStageStamps(host: Host, cfg: E2EConfig): Promise<NodeS
  * output means something.
  *
  * ⚠️ The gateway node is deliberately not read: it serves retrievals and holds no upload batch, so
- * this question does not apply to it. Batch utilization is not read either, that stays with
- * `deploy/scripts/stamp-guard.sh` and the uploader's own `PostageGate`. This asks only whether each
- * publisher can stamp at all, for as long as a scenario runs.
+ * this question does not apply to it. Batch utilization is read and never judged, because refusing on
+ * it stays with `deploy/scripts/stamp-guard.sh` and the uploader's own `PostageGate`. This asks only
+ * whether each publisher can stamp at all, for as long as a scenario runs.
  */
 export async function requireStageStamps(host: Host, cfg: E2EConfig, minTtlS: number): Promise<void> {
   const refusal = stageStampsRefusal(await readStageStamps(host, cfg), minTtlS);

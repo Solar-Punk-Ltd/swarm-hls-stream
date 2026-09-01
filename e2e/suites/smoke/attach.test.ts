@@ -39,6 +39,11 @@ describe('attach smoke (read-only)', () => {
    *
    * This one prints, which `requireStageStamps` deliberately does not. It is the read-only run an
    * operator makes first and its whole job is to report what is out there.
+   *
+   * ⭐ The fill is printed beside the TTL and NOTHING here refuses on it. A batch at 90% with a year
+   * of TTL clears this case and is about to be refused by `deploy/scripts/stamp-guard.sh` and by the
+   * uploader's own `PostageGate`, which are where the stop line lives. Printing it is what turns that
+   * into something an operator sees on the run they make first rather than mid-sitting.
    */
   it('discovers a usable stamp with TTL headroom on every publisher node', async () => {
     const readings = await readStageStamps(host, cfg);
@@ -46,8 +51,9 @@ describe('attach smoke (read-only)', () => {
     console.log(`  ${readings.length} publisher node(s):`);
     for (const reading of readings) {
       const headroom = reading.ttlS === null ? 'no usable batch' : `TTL ${(reading.ttlS / ONE_HOUR_S).toFixed(1)}h`;
+      const fill = reading.utilizationPct === null ? 'fill unknown' : `${reading.utilizationPct.toFixed(0)}% full`;
       console.log(
-        `  | ${reading.rungs.join(', ')} :${reading.port} batch ${reading.batch ?? 'none'} ${headroom}` +
+        `  | ${reading.rungs.join(', ')} :${reading.port} batch ${reading.batch ?? 'none'} ${headroom} ${fill}` +
           (reading.problem === null ? '' : ` (${reading.problem})`),
       );
     }

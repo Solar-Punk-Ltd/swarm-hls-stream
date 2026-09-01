@@ -30,9 +30,10 @@
 
 import { envNumber } from '../src/browser/runFiles.js';
 import { containerName, loadConfig } from '../src/config.js';
-import { discoverStamp, makeHost, waitForIdle } from '../src/harness/host.js';
+import { makeHost, waitForIdle } from '../src/harness/host.js';
 import { announcedLiveStreams, parseUploaderLog } from '../src/harness/logwatch.js';
 import { startPublisher } from '../src/harness/publisher.js';
+import { requireStageStamps } from '../src/harness/stageStamps.js';
 import { waitFor } from '../src/harness/wait.js';
 
 /**
@@ -78,10 +79,12 @@ async function main(): Promise<void> {
   const before = envNumber('RECORDING_BEFORE_SEGMENTS', BEFORE_SEGMENTS);
   const after = envNumber('RECORDING_AFTER_SEGMENTS', AFTER_SEGMENTS);
 
-  const stamp = await discoverStamp(host, cfg);
-  if (stamp.batchTTL <= MIN_STAMP_TTL_S) {
-    throw new Error(`stamp TTL ${stamp.batchTTL}s is too low to run a stream`);
-  }
+  // ⛔ Every publisher node, the way all 27 suites gate. This read the COORDINATOR's stamp alone and
+  // called the answer the stage's, which since the per-rung split speaks for one node of four: an
+  // expired batch on the 1080p node cleared it every time and turned up mid-recording as a rung that
+  // stopped being produced. This script publishes for minutes and pays for every segment, so the
+  // wrong node's TTL here buys an unusable recording rather than a warning.
+  await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
   await waitForIdle(host, cfg);
 
   const startedAt = await host.nowIso();

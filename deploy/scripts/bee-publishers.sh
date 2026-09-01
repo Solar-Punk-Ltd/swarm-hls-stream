@@ -232,7 +232,7 @@ if not usable:
     print(f"REFUSE\tthe {rung} node on :{port} holds no batch that can carry a broadcast: {listed}")
     sys.exit(0)
 
-# Most TTL headroom, which is the same tie-break discoverStamp in the e2e harness uses. Said out
+# Most TTL headroom, which is the same tie-break pollUsableStamp in the e2e harness uses. Said out
 # loud below when there was a choice, because which batch a rung spends is an operator decision and
 # this only makes it when there is exactly one answer.
 usable.sort(key=lambda b: b["batchTTL"], reverse=True)

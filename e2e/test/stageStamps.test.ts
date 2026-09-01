@@ -18,7 +18,15 @@ import { type NodeStampReading, stageStampsRefusal } from '../src/harness/stageS
 const MIN_TTL_S = 600;
 
 function reading(over: Partial<NodeStampReading> = {}): NodeStampReading {
-  return { rungs: ['360p'], port: 10075, batch: 'aabbccdd', ttlS: 86_400, problem: null, ...over };
+  return {
+    rungs: ['360p'],
+    port: 10075,
+    batch: 'aabbccdd',
+    ttlS: 86_400,
+    utilizationPct: 12,
+    problem: null,
+    ...over,
+  };
 }
 
 const HEALTHY_STAGE: NodeStampReading[] = [
@@ -129,5 +137,28 @@ describe('stageStampsRefusal', () => {
   /** A zero TTL is an expired batch, not an absent reading, and must not fall through as one. */
   it('refuses a batch whose TTL has run out', () => {
     assert.match(stageStampsRefusal([reading({ ttlS: 0 })], MIN_TTL_S) ?? '', /0s of TTL left/);
+  });
+
+  /**
+   * ⛔⛔ The fill is carried for the smoke run to PRINT and this rule deliberately does not read it.
+   * How full a batch is belongs to `deploy/scripts/stamp-guard.sh` and to the uploader's own
+   * `PostageGate`, both of which refuse a batch too full to take the next chunk. A third opinion here
+   * would mean an operator had to work out which of the three had stopped them.
+   *
+   * ⭐ Pinned rather than left implicit, because "it also refuses at 95%" is the change somebody makes
+   * in good faith, and the refusal it adds fires on a stage the two real gates were about to explain
+   * properly.
+   */
+  it('clears a batch that is nearly full, because the fill is not this rule to judge', () => {
+    assert.equal(stageStampsRefusal([reading({ utilizationPct: 99.6 })], MIN_TTL_S), null);
+    assert.equal(stageStampsRefusal([reading({ utilizationPct: 100 })], MIN_TTL_S), null);
+  });
+
+  /** And a node that is failing for a real reason is still named by that reason, not by its fill. */
+  it('never mentions the fill in a refusal, which would read as the reason for it', () => {
+    const refusal = stageStampsRefusal([reading({ ttlS: 30, utilizationPct: 97 })], MIN_TTL_S) ?? '';
+
+    assert.match(refusal, /30s of TTL left/);
+    assert.doesNotMatch(refusal, /97/);
   });
 });

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { containerName, type E2EConfig } from '../config.js';
+import { type E2EConfig } from '../config.js';
 
 import type { PublisherRoute } from './publishers.js';
 import { sleep, waitFor } from './wait.js';
@@ -305,7 +305,12 @@ interface StampPoll {
  *
  * ⛔ Returns the failure rather than throwing it. `stageStamps.ts` reads every publisher node and has
  * to name all of the ones that cannot stamp, not stop at the first, so composing the message is the
- * caller's job. {@link discoverStamp} composes the throw its own callers have always had.
+ * caller's job.
+ *
+ * ⛔ This is the only stamp read left, and deliberately so. `discoverStamp` used to sit beside it and
+ * ask the COORDINATOR alone, which on a stage with one Bee node per rung is an answer about one node
+ * of four wearing a statement about the stage. Its last caller moved to `requireStageStamps` on
+ * 2026-09-02 and it went with them, so nothing can reach for the single-node answer by accident.
  */
 export async function pollUsableStamp(host: Host, port: number): Promise<StampPoll> {
   const deadline = Date.now() + STAMP_READY_TIMEOUT_MS;
@@ -326,24 +331,6 @@ export async function pollUsableStamp(host: Host, port: number): Promise<StampPo
     }
     await sleep(3_000);
   }
-}
-
-/**
- * Discover the live upload stamp on the profile's bee-uploader, preferring the most TTL headroom.
- *
- * ⚠️ One node, the coordinator, which is all this has ever read. A stage with one Bee node per rung
- * needs `requireStageStamps` in `stageStamps.ts` instead: an answer from the coordinator says nothing
- * about whether the 1080p node can still stamp.
- */
-export async function discoverStamp(host: Host, cfg: E2EConfig): Promise<Stamp> {
-  const { stamp, lastSeen } = await pollUsableStamp(host, cfg.ports.beeUploaderApi);
-  if (stamp !== null) {
-    return stamp;
-  }
-  throw new Error(
-    `no usable stamp on ${containerName(cfg, 'bee-uploader')} (:${cfg.ports.beeUploaderApi}) ` +
-      `after ${STAMP_READY_TIMEOUT_MS}ms — last: ${lastSeen}`,
-  );
 }
 
 /** bee's on-chain SWAP chequebook balances, as PLUR integer strings (1 BZZ = 1e16 PLUR). */
