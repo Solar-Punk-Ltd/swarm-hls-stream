@@ -21,17 +21,8 @@ const OWNER = '0x1234567890123456789012345678901234567890';
 const GROUP = 'the-broadcast-a-viewer-linked-to';
 
 /** The rungs of the ladder this project publishes, tallest first, as the poller names them. */
-/**
- * ⛔⛔⛔ **ASCENDING BY HEIGHT, BECAUSE THAT IS WHAT `hls.levels` IS.** hls.js sorts the parsed ladder
- * with `a.height - b.height` and its own comment says it does so "for cap-level-controller", so
- * index 0 is the SHORTEST rung and the last index is the tallest. This list ran tallest-first until
- * 2026-09-01, which is the order our master playlist happens to be written in and not the order the
- * player holds. Nothing caught it while the failover only ever called `removeLevel`, which resolves
- * a rung to an index and does not care which end it is: the whole spec passed unchanged when the
- * mechanism was swapped for one that does care.
- */
-const RUNG_NAMES = ['rung-360p', 'rung-480p', 'rung-720p', 'rung-1080p'] as const;
-const HEIGHTS = [360, 480, 720, 1080] as const;
+const RUNG_NAMES = ['rung-1080p', 'rung-720p', 'rung-480p', 'rung-360p'] as const;
+const HEIGHTS = [1080, 720, 480, 360] as const;
 
 const hexOf = (rung: string): string => Topic.fromString(rung).toString();
 
@@ -88,8 +79,6 @@ function makeLadderPlayer({
 
   const switchedListeners = new Set<(event: unknown, data: { level: number }) => void>();
   const removed: number[] = [];
-  /** Rungs this ladder has stopped publishing, so a later fault does not serve them as healthy. */
-  const silenced = new Set<string>();
 
   const hls = {
     levels: parsed.map((rung) => ({
@@ -99,9 +88,6 @@ function makeLadderPlayer({
     loadLevel: 0,
     nextLoadLevel: -1,
     nextAutoLevel: 1,
-    // hls.js's own default: ABR may pick anything. The failover prefers moving this over
-    // `removeLevel`, because a cap can be lifted when the rung publishes again and a removal cannot.
-    autoLevelCapping: -1,
     removeLevel(index: number) {
       removed.push(index);
       if (this.levels.length === 1) {
@@ -133,39 +119,19 @@ function makeLadderPlayer({
     loadLevel: () => hls.loadLevel,
     setLoadLevel: (level: number) => void (hls.loadLevel = level),
     nextLoadLevel: () => hls.nextLoadLevel,
-    capping: () => hls.autoLevelCapping,
     switchTo: (level: number) => {
       for (const listener of switchedListeners) {
         listener(Events.LEVEL_SWITCHED, { level });
       }
     },
-    /**
-     * The rung starting to publish again, which is what lifts a cap. Also takes it out of
-     * {@link silenced}, so a later fault serves it as a healthy sibling again.
-     */
-    resume: (rung: string) => {
-      silenced.delete(rung);
-      feedHealth.recordGatewayResponse(hexOf(rung));
-    },
-    /**
-     * This player's own ladder losing one rung while every other rung it walks carries on.
-     *
-     * ⛔ **Rungs already silenced stay silent.** This used to serve every other rung it walks, so
-     * silencing a second rung SERVED the first one and told the tracker it had come back. A dead
-     * rung does not publish. Nothing noticed while the failover's only move was `removeLevel`,
-     * because the resurrected rung was no longer in the ladder and putting it back was a no-op. The
-     * moment the failover gained a reversible move, this modelled a broadcast that cannot happen and
-     * failed a case that was right.
-     */
-    silence: (rung: string) => {
-      silenced.add(rung);
+    /** This player's own ladder losing one rung while every other rung it walks carries on. */
+    silence: (rung: string) =>
       stopPublishing(
         feedHealth,
         clock,
         rung,
-        walked.filter((other) => other !== rung && !silenced.has(other)),
-      );
-    },
+        walked.filter((other) => other !== rung),
+      ),
   };
 }
 
@@ -179,31 +145,13 @@ function makeLadderPlayer({
  * its playlist perfectly. It just never grows.
  */
 describe('dropping a rung that has stopped being produced', () => {
-  /**
-   * ⛔ The rung is CAPPED OUT, not deleted, and the difference is the whole point. `removeLevel`
-   * cannot be undone by hls.js, so a viewer who sat through one outage stayed below their bandwidth
-   * for the rest of the session. A cap is one number and lifts the moment the rung publishes again.
-   */
-  it('caps the ladder below the dead rung and leaves every level in place', () => {
+  it('takes the dead rung out of the ladder', () => {
     const player = makeLadderPlayer();
     attachRungFailover(player.hls, player.feedHealth);
 
     player.silence('rung-1080p');
 
-    assert.deepEqual(player.heightsLeft(), [...HEIGHTS], 'no level should have been destroyed');
-    assert.equal(player.capping(), 2, 'ABR should be held at 720p, the tallest rung still producing');
-    assert.deepEqual(player.removed, [], 'nothing should have been removed');
-  });
-
-  it('lifts the cap when the rung publishes again, so the viewer gets their quality back', () => {
-    const player = makeLadderPlayer();
-    attachRungFailover(player.hls, player.feedHealth);
-    player.silence('rung-1080p');
-
-    player.resume('rung-1080p');
-
-    assert.equal(player.capping(), -1, 'the ladder should be whole again');
-    assert.deepEqual(player.heightsLeft(), [...HEIGHTS]);
+    assert.deepEqual(player.heightsLeft(), [720, 480, 360]);
   });
 
   /**
@@ -217,10 +165,7 @@ describe('dropping a rung that has stopped being produced', () => {
     player.silence('rung-1080p');
     player.silence('rung-480p');
 
-    // 1080p caps to 720p. 480p then has a live rung above it, which no cap can express, so it is
-    // removed and the loss is stated in the log. The cap is recomputed against the shortened ladder.
-    assert.deepEqual(player.heightsLeft(), [360, 720, 1080], '480p should be the one dropped');
-    assert.equal(player.capping(), 1, 'ABR should still be held at 720p, now at index 1');
+    assert.deepEqual(player.heightsLeft(), [720, 360]);
   });
 
   /**
@@ -267,19 +212,17 @@ describe('dropping a rung that has stopped being produced', () => {
   });
 
   /**
-   * ⛔ A cap steers what ABR picks NEXT and does not move a player already loading an excluded level,
-   * which is the dead one. Left there it buffers out and stops, which is the freeze this exists to
-   * end. So the cap alone is not enough and the viewer has to be pushed.
+   * ⛔ hls.js clears the loading level when the removed one was playing and picks no replacement.
+   * Left at -1 the player buffers out and stops, which is the freeze this whole change exists to end.
    */
-  it('moves the viewer off the dead rung when it was the one they were playing', () => {
+  it('puts the viewer on a living rung when the one they were playing is removed', () => {
     const player = makeLadderPlayer();
-    player.setLoadLevel(3);
     attachRungFailover(player.hls, player.feedHealth);
 
     player.silence('rung-1080p');
 
-    assert.equal(player.capping(), 2);
-    assert.equal(player.nextLoadLevel(), 1, 'the viewer was left above the cap, so the picture stops');
+    assert.equal(player.loadLevel(), -1, 'the double should reproduce hls.js clearing the loading level');
+    assert.equal(player.nextLoadLevel(), 1, 'the viewer was left with no level to load, so the picture stops');
   });
 
   it('leaves the loading level alone when the dead rung was not the one playing', () => {
@@ -304,7 +247,7 @@ describe('dropping a rung that has stopped being produced', () => {
 
     player.silence('rung-480p');
 
-    assert.deepEqual(player.heightsLeft(), [360, 720, 1080], 'the dead rung should still be dropped');
+    assert.deepEqual(player.heightsLeft(), [1080, 720, 360], 'the dead rung should still be dropped');
     assert.equal(player.nextLoadLevel(), -1, 'a player still settling its ladder was forced onto a level');
   });
 
@@ -329,8 +272,7 @@ describe('telling the feed health which rung this viewer is on', () => {
     const player = makeLadderPlayer();
     attachWatchedRungReporter(player.hls, GROUP, player.feedHealth);
 
-    // Index 3 is 1080p: hls.levels is sorted ascending by height. See RUNG_NAMES.
-    player.switchTo(3);
+    player.switchTo(0);
     player.silence('rung-1080p');
 
     assert.equal(player.feedHealth.state(GROUP), FEED_STATE_STALLED);
@@ -340,9 +282,9 @@ describe('telling the feed health which rung this viewer is on', () => {
     const player = makeLadderPlayer();
     attachWatchedRungReporter(player.hls, GROUP, player.feedHealth);
 
-    player.switchTo(3);
-    player.silence('rung-1080p');
     player.switchTo(0);
+    player.silence('rung-1080p');
+    player.switchTo(3);
 
     assert.equal(player.feedHealth.state(GROUP), FEED_STATE_LIVE);
   });
@@ -352,7 +294,7 @@ describe('telling the feed health which rung this viewer is on', () => {
     const player = makeLadderPlayer();
     attachWatchedRungReporter(player.hls, GROUP, player.feedHealth);
 
-    player.switchTo(3);
+    player.switchTo(0);
     player.switchTo(99);
     player.silence('rung-1080p');
 
