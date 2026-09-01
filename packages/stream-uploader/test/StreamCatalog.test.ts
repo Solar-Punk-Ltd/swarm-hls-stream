@@ -785,6 +785,72 @@ describe('StreamCatalog ladder write path', () => {
   });
 
   /**
+   * ⛔⛔⛔ The other half of scenario H, and the reason its count reached two on 2026-09-01 with a
+   * correct guard and a clean catalog read.
+   *
+   * The line used to be written from inside the update callback, so it went out **before** the
+   * master write and before the catalog feed write it announces. A kill in that window left the log
+   * saying a ladder had finalized while the feed still said `live`, and H arms its kill on exactly
+   * this line. The reboot then read an honest `live` entry, flipped it for real, and said so again:
+   * two lines for one flip, and neither of them wrong about what its own process did.
+   *
+   * So the line has to mean the entry IS vod in the feed, not that a write claiming so was about to
+   * be attempted. A write that fails must leave the log silent, which is what this pins.
+   */
+  it('does not announce the flip when the catalog write fails', async () => {
+    const writes: CapturedWrite[] = [];
+    const catalog = new StreamCatalog(
+      makePublishers(
+        makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND, writeFails: () => beeStatusError(400, 'refused') }),
+      ),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+    );
+    await catalog.init();
+
+    const lines = await logLinesDuring(async () => {
+      await assert.rejects(() => catalog.upsertRendition(identity, finishedRung));
+    });
+
+    assert.equal(writes.length, 0, 'the write was supposed to fail, so this test is not measuring what it thinks');
+    assert.equal(
+      lines.filter((l) => l.includes('finalized to VOD')).length,
+      0,
+      'a flip nothing wrote was announced, so a crash in that window costs the count a second line',
+    );
+  });
+
+  /** The positive half of the ordering: announced, and only once the entry is really in the feed. */
+  it('announces the flip after the entry carrying it has landed', async () => {
+    const writes: CapturedWrite[] = [];
+    const announcedAfter: number[] = [];
+    const catalog = new StreamCatalog(
+      makePublishers(makeCatalogBee(writes, { lookupThrows: FEED_NOT_FOUND })),
+      TEST_STREAM_KEY,
+      TEST_TOPIC,
+    );
+    await catalog.init();
+
+    await logLinesDuring(async () => {
+      const logger = Logger.getInstance();
+      const previous = logger.configure({
+        sink: (_level, line) => {
+          if (line.includes('finalized to VOD')) {
+            announcedAfter.push(writes.length);
+          }
+        },
+      });
+      try {
+        await catalog.upsertRendition(identity, finishedRung);
+      } finally {
+        logger.configure(previous);
+      }
+    });
+
+    assert.deepEqual(announcedAfter, [1], 'the flip must be announced once, with the entry already written');
+  });
+
+  /**
    * ⛔ The mechanism that would make H red without anything being finalized twice. The guard reads
    * the feed, so a reboot that comes back to an empty or unreadable catalog sees no previous entry,
    * concludes this is the live-to-VOD moment, and says so a second time. The line would then be

@@ -23,6 +23,7 @@
 import {
   addingStreamToListPattern,
   catalogStateLostPattern,
+  finalizeResumedPattern,
   ladderFinalizedPattern,
   manifestUploadedPattern,
   omeSegmentLossReportedPattern,
@@ -439,6 +440,23 @@ export function announcedVodFinalizeCount(text: string): number {
  */
 export function catalogContinuedEmpty(text: string): number {
   return countMatches(messageText(text), catalogStateLostPattern('g'));
+}
+
+/**
+ * Finalizes that came back after a crash, found their own recording already in the feed, and
+ * published nothing rather than buying it a second time.
+ *
+ * ⛔ An observation, not a fault, and the difference matters to whoever reads a run. A non-zero here
+ * means the kill in scenario H landed inside the window it aims at AND the uploader answered it the
+ * way it is supposed to. Zero means either a clean ordering or a window the kill missed, which the
+ * scenario already reports for itself off the surviving recovery entries.
+ *
+ * Deliberately separate from {@link announcedVodFinalizeCount}: this line is not a flip and must
+ * never be added to one. A reader that counted it would report the fix for the double publish as
+ * the double publish.
+ */
+export function resumedFinalizeCount(text: string): number {
+  return countMatches(messageText(text), finalizeResumedPattern('g'));
 }
 
 /**

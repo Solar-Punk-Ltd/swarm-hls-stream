@@ -8,6 +8,7 @@ import {
   announcedVodFinalizeCount,
   catalogContinuedEmpty,
   parseUploaderLog,
+  resumedFinalizeCount,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -175,6 +176,11 @@ describe('H — killed inside finalize: one recording, and the catalog points at
       `H: the uploader gave up on its previous catalog state ${lostCatalog} time(s) ` +
         '(non-zero means a second finalize count is a blind read, not a second finalize)',
     );
+    // Observation, never asserted. A non-zero says the kill landed inside the window AND the
+    // uploader answered it by resuming at the catalog write instead of buying the recording twice.
+    // Zero with a caught window means the crash beat the recording's publish, so the full path ran
+    // once, which is the other correct answer.
+    console.log(`H: finalizes resumed rather than republished: ${resumedFinalizeCount(finalLog)}`);
 
     // ⛔ What this line does and does not prove, pinned by unit tests in
     // `packages/stream-uploader/test/StreamCatalog.test.ts` on 2026-09-01. The guard behind it is

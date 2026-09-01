@@ -1,6 +1,7 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
 import {
   addingStreamToList,
+  finalizeResumed,
   manifestUploaded,
   originDeclaredDiscontinuity,
   publishingRendition,
@@ -21,7 +22,8 @@ import {
   STREAM_STATUS_VOD,
   StreamState,
 } from '../types.js';
-import { retryUntilDeadlineAsync } from '../utils/common.js';
+import { getErrorMessage, isFeedAbsent, retryUntilDeadlineAsync } from '../utils/common.js';
+import { HLS_ENDLIST, HLS_PLAYLIST_TYPE_VOD } from '../utils/hlsTags.js';
 
 import {
   AnnounceReadiness,
@@ -45,6 +47,29 @@ const SEGMENT_UPLOAD_RETRY_WINDOW_MS = 15_000;
 const MANIFEST_UPLOAD_RETRY_WINDOW_MS = 15_000;
 const UPLOAD_RETRY_BASE_MS = 350;
 const UPLOAD_RETRY_CAP_MS = 2_000;
+
+/**
+ * How long a recovered finalize keeps asking its own manifest feed whether the recording is already
+ * there, before it gives up and defers rather than guesses.
+ *
+ * The same window as a manifest publish, because it is the same node answering about the same feed,
+ * and this read is the thing standing between a crash and a second paid recording.
+ */
+const FEED_HEAD_READ_WINDOW_MS = 15_000;
+
+/**
+ * Whether a playlist read back out of the feed is this stream's finished recording.
+ *
+ * ⛔ `#EXT-X-ENDLIST` on its own is not the test, and the difference is a paid feed write.
+ * `buildClosingLiveManifest` ends the live playlist and carries ENDLIST too, and it is published at
+ * the SOC index **before** the VOD manifest. A crash between the two leaves that closing playlist at
+ * the head with the recording it promises not written yet, so a resume reading only ENDLIST would
+ * skip the one publish that still had to happen and hand the catalog an index holding a live window.
+ * `#EXT-X-PLAYLIST-TYPE:VOD` is written by `buildVODManifest` and by nothing else.
+ */
+function isFinishedRecording(manifest: string): boolean {
+  return manifest.includes(HLS_PLAYLIST_TYPE_VOD) && manifest.includes(HLS_ENDLIST);
+}
 
 /**
  * How long to wait before re-attempting a catalog announce that failed.
@@ -147,6 +172,15 @@ export class StreamUploader {
   private segmentsNeverNamed = 0;
   /** Whether the recovery entry under this stream id still describes this uploader. See `retire`. */
   private ownsRecoveryEntry = true;
+  /**
+   * Whether this session was rebuilt from a recovery entry rather than announced by an engine.
+   *
+   * The only thing it decides is whether `finalize` asks the feed where it got to before publishing
+   * anything. A session this process started itself has published every SOC index it holds and
+   * knows it, so the read would buy nothing. One rebuilt off disk cannot know how far the run that
+   * wrote that entry got, because the crash is exactly what stopped it saying.
+   */
+  private readonly resumedFromCrash: boolean;
   /** The one finalize this session gets, so a second caller joins it rather than repeating it. */
   private finalizing: Promise<void> | undefined;
   /** When the catalog announce first failed and has not since succeeded, or null while it is listed. */
@@ -184,6 +218,7 @@ export class StreamUploader {
     this.manifestManager = new ManifestManager();
 
     const restoreState = options.restoreState;
+    this.resumedFromCrash = restoreState !== undefined;
     if (restoreState) {
       this.streamRawTopic = restoreState.streamRawTopic;
       this.socIndex = restoreState.socIndex;
@@ -355,6 +390,12 @@ export class StreamUploader {
       return;
     }
 
+    const alreadyPublished = await this.publishedRecordingIndex();
+    if (alreadyPublished !== null) {
+      this.logger.log(finalizeResumed(this.streamId, alreadyPublished));
+      return this.completeFinalize(alreadyPublished);
+    }
+
     // Published first, and to its own slot, because the VOD manifest below renumbers the playlist
     // from zero into the same feed that live viewers are still walking. They read whatever is newest,
     // and a media sequence moving backwards restarts their player at the beginning of the recording.
@@ -375,8 +416,25 @@ export class StreamUploader {
       throw new Error(`Failed to upload VOD manifest for stream ${this.streamId}`);
     }
 
+    return this.completeFinalize(vodIndex);
+  }
+
+  /**
+   * Everything a finalize still owes once the recording is in the feed: name it in the catalog, and
+   * only then stop claiming the broadcast is recoverable.
+   *
+   * Shared with the resume path above rather than repeated, because the two differ in exactly one
+   * thing, whether the recording had to be published, and the ordering of what follows it is the
+   * whole of scenario H. The recovery entry goes last of all: it is the only record the broadcast
+   * was live, so deleting it before the catalog names the recording is the one step that cannot be
+   * taken back.
+   *
+   * @param vodIndex where the recording sits in this stream's own manifest feed, which is what the
+   * catalog entry points a viewer at.
+   */
+  private async completeFinalize(vodIndex: number): Promise<void> {
     if (this.ladder) {
-      await this.announceRendition({ index: this.socIndex!, duration: this.manifestManager.getTotalDuration() });
+      await this.announceRendition({ index: vodIndex, duration: this.manifestManager.getTotalDuration() });
       this.metrics?.recordStreamFinalized();
       this.clearRecoveryEntry();
       return;
@@ -401,6 +459,101 @@ export class StreamUploader {
     // that a reconnect replaced, since two drains await this one promise.
     this.metrics?.recordStreamFinalized();
     this.clearRecoveryEntry();
+  }
+
+  /**
+   * Where this stream's finished recording already sits in its own manifest feed, or null when there
+   * is none there and the ordinary publish has to run.
+   *
+   * ⛔⛔⛔ **Scenario H, measured live 2026-09-01.** `finalize` publishes the closing playlist, then
+   * the VOD manifest, then writes the catalog, and deletes the recovery entry last of all. A kill
+   * anywhere after the VOD manifest lands therefore leaves a recording in the feed, bought and paid
+   * for, under an entry that still says the broadcast is recoverable. The next boot recovered it,
+   * the recovery timer fired, and finalize ran again in full: a **second** recording at a higher
+   * index, and the first one left in the feed unreachable because the catalog now names the newer.
+   *
+   * The feed is the only thing that knows. A recovery entry is written before the writes it
+   * describes complete, so it cannot say how far the dead process got, and that is not a defect in
+   * it: the crash is precisely what stopped it saying. Reading the head is a retrieval and costs no
+   * postage, so this buys the answer for nothing, where guessing costs a recording.
+   *
+   * Only a session rebuilt off disk pays even that. A session this process announced has published
+   * every index it holds and there is nothing to ask.
+   */
+  private async publishedRecordingIndex(): Promise<number | null> {
+    // A stream that never committed a manifest has an empty feed, so there is nothing to read and
+    // the closing playlist below is the first thing this topic will ever hold.
+    if (!this.resumedFromCrash || this.socIndex === null) {
+      return null;
+    }
+
+    const head = await this.readManifestFeedHead();
+    return head !== null && isFinishedRecording(head.manifest) ? head.index : null;
+  }
+
+  /**
+   * The playlist currently at the head of this stream's manifest feed, or null when the feed holds
+   * nothing at all.
+   *
+   * ⛔ Throws rather than answering null when the read fails, and the asymmetry is the point. An
+   * empty feed is an answer: nothing was published, so publish. A read that did not complete is not
+   * one, and taking it for an empty feed reinstates the double publish this exists to prevent, on
+   * exactly the node that was already having trouble. Failing instead defers the finalize: the drain
+   * records it as failed and retires the uploader, which leaves the recovery entry on disk, so the
+   * next boot recovers the stream and asks again. That costs a broadcast an unfinalized interval
+   * and costs nothing that cannot be undone, where the other way round pays twice for one recording.
+   *
+   * ⛔⛔ **Two calls, and neither is redundant.** The index has to be asked for, because
+   * `this.socIndex` is persisted **after** the SOC write it describes, so a crash in that gap leaves
+   * the entry naming an index the feed has already moved past, and reading there returns the live
+   * playlist from before the finalize. Then the payload has to be asked for **at that index**,
+   * because bee-js only rejoins a payload larger than one 4096 byte chunk on the indexed path, and a
+   * VOD manifest naming every segment of a broadcast is far past that. Asked without an index the
+   * answer for a real recording is the wrapper, which reads as "not a recording" and quietly turns
+   * this whole guard off. Both shapes are the ones `StreamCatalog` already runs in production:
+   * `init` takes the index this way and `fetchCurrentState` takes the payload this way.
+   */
+  private async readManifestFeedHead(): Promise<{ index: number; manifest: string } | null> {
+    const owner = this.streamSigner.publicKey().address();
+    const feedReader = this.bee.makeFeedReader(Topic.fromString(this.streamRawTopic), owner);
+
+    try {
+      const head = await this.readWithinWindow(async () => {
+        try {
+          return await feedReader.downloadPayload();
+        } catch (error) {
+          // Inside the retried function deliberately: 503 is both "this feed is empty" and a
+          // retryable status, so asked outside it an empty feed would spend the whole window
+          // before answering what the first attempt already knew.
+          if (isFeedAbsent(error)) {
+            return null;
+          }
+          throw error;
+        }
+      });
+
+      if (head === null) {
+        return null;
+      }
+
+      // No absent-feed branch here, deliberately. The index above says something is at this index,
+      // so a 404 now is a chunk that will not retrieve rather than a feed with nothing in it, and
+      // answering "nothing was published" to that is the mistake this method exists to refuse.
+      const update = await this.readWithinWindow(() => feedReader.downloadPayload({ index: head.feedIndex }));
+
+      return { index: Number(head.feedIndex.toBigInt()), manifest: update.payload.toUtf8() };
+    } catch (error) {
+      throw new Error(
+        `Cannot tell whether stream ${this.streamId} published its recording before the crash, because its ` +
+          `manifest feed head did not read within ${FEED_HEAD_READ_WINDOW_MS}ms: ${getErrorMessage(error)}. ` +
+          'Leaving the broadcast unfinalized for the next boot to retry, rather than publishing a second ' +
+          'recording over one that may already be in the feed',
+      );
+    }
+  }
+
+  private readWithinWindow<T>(read: () => Promise<T>): Promise<T> {
+    return retryUntilDeadlineAsync(read, FEED_HEAD_READ_WINDOW_MS, UPLOAD_RETRY_BASE_MS, UPLOAD_RETRY_CAP_MS);
   }
 
   /**

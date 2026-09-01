@@ -3,7 +3,7 @@ import { catalogStateLost, ladderFinalized } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
-import { getErrorMessage, retryUntilDeadlineAsync } from '../utils/common.js';
+import { getErrorMessage, isFeedAbsent, retryUntilDeadlineAsync } from '../utils/common.js';
 
 import { BeePublisher, BeePublisherPool } from './BeePublisherPool.js';
 import { CatalogIndexStore } from './CatalogIndexStore.js';
@@ -309,8 +309,10 @@ export class StreamCatalog {
    * viewer reading the catalog in that window sees a stream it cannot open.
    */
   public async upsertRendition(identity: LadderIdentity, rendition: Rendition): Promise<void> {
-    return this.queue.add(() =>
-      this.writeFeed(async (previous) => {
+    return this.queue.add(async () => {
+      let flippedToVod = false;
+
+      await this.writeFeed(async (previous) => {
         const held = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
         const wasVod = held?.state === STREAM_STATUS_VOD;
         const entry = buildLadderEntry(identity, previous, rendition);
@@ -325,11 +327,7 @@ export class StreamCatalog {
             `${rendition.index === undefined ? ' with no index' : ` at index ${rendition.index}`}` +
             `, so the entry becomes ${entry.state}`,
         );
-        if (entry.state === STREAM_STATUS_VOD && !wasVod) {
-          // The one externally visible moment a ladder ends. Everything else about the flip lives in
-          // the catalog feed, which neither an operator's grep nor the harness can wait on cheaply.
-          this.logger.log(ladderFinalized(identity.group));
-        }
+        flippedToVod = entry.state === STREAM_STATUS_VOD && !wasVod;
         // ⛔ A master naming a rung nothing is producing offers a viewer a quality with nothing
         // behind it. The player moves them off within about seven seconds, so this is the last few
         // seconds of that harm rather than all of it, and it is harm a stream need not cause.
@@ -344,8 +342,18 @@ export class StreamCatalog {
           ...withoutGroup(previous, identity.owner, identity.group),
           published ? withMaster(entry, published) : entry,
         ];
-      }),
-    );
+      });
+
+      // ⛔⛔⛔ After the write, never inside the update. The one externally visible moment a ladder
+      // ends, and the line scenario H arms its kill on, so written from inside the callback it
+      // announced a flip the feed had not taken yet: the master write and the catalog write both
+      // still lay ahead of it. A crash there left the log claiming a finished ladder over an entry
+      // that honestly still said `live`, and the reboot then flipped it for real and said so again.
+      // Two lines, one flip, and no process wrong about itself. Here it means the entry IS vod.
+      if (flippedToVod) {
+        this.logger.log(ladderFinalized(identity.group));
+      }
+    });
   }
 
   /**
@@ -510,11 +518,6 @@ export function withMaster(entry: StreamEntry, master: PublishedMaster): StreamE
   }
 
   return repointed;
-}
-
-/** Bee's two answers for a feed with nothing to read: 404 topic never used, 503 no entries yet. */
-function isFeedAbsent(error: unknown): boolean {
-  return error instanceof BeeResponseError && (error.status === 404 || error.status === 503);
 }
 
 /** A request that reached the node and lost the response on the way back. */

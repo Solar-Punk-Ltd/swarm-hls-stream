@@ -252,6 +252,15 @@ answers one of:
 A stream the service has never seen, or one whose stop settled more than fifteen minutes ago, answers
 `404` rather than a state, so a caller polling a mistyped id is not told its broadcast is fine.
 
+**A finalize that resumes after a crash publishes nothing twice.** `finalize` writes the closing
+playlist, then the VOD manifest, then the catalog entry, and deletes the recovery entry last of all,
+so a crash between the recording and the catalog leaves a recording that is already bought under an
+entry still saying the broadcast is recoverable. A recovered session therefore reads the head of its
+own manifest feed first, which is a retrieval and costs no postage: finding its finished recording
+there it logs `Resuming the finalize of <stream> at the catalog write`, publishes nothing, and
+completes only the catalog write and the entry delete. A head that did not read is not taken for an
+empty feed, so the finalize is deferred to the next boot rather than risking a second recording.
+
 **Health status:** `GET /health` answers `200` with `status: "ok"`, or `503` with `status: "degraded"` and a
 `reasons` array:
 

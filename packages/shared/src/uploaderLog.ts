@@ -347,3 +347,31 @@ export function catalogStateLostPattern(flags = ''): RegExp {
   const escaped = catalogStateLost(STREAM_SLOT, INDEX_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)').replace(String(INDEX_SLOT), '(\\d+)'), flags);
 }
+
+/**
+ * A finalize that came back after a crash, found its own recording already at the head of the
+ * stream's manifest feed, and therefore published no manifest at all. Written once per rung, in
+ * place of the two feed writes the ordinary path makes.
+ *
+ * ⛔ It is deliberately NOT a flip. `ladderFinalized` and `updatingStreamToVod` mean a broadcast
+ * ended, and a reader counting either of them must not count this: the recording it names was
+ * published and paid for before the crash, and a count that took this line would report the fix for
+ * the double publish as the double publish itself. See scenario H.
+ *
+ * The SOC index is on the line because it is the evidence. It names where the surviving recording
+ * sits in the feed, so an operator can fetch that playlist and see for themselves rather than infer
+ * from the absence of a second publish.
+ *
+ * ⛔ One template literal, never split across a `+`, for the reason {@link catalogStateLost} records
+ * at length: `tsc` keeps a join exactly as written, so the fragment spanning it reaches no built
+ * file and the preflight gate then refuses a deployment that writes the line perfectly.
+ */
+export function finalizeResumed(streamId: string, index: number): string {
+  return `Resuming the finalize of ${streamId} at the catalog write: its VOD manifest is already published at SOC index ${index}`;
+}
+
+/** {@link finalizeResumed} as a matcher, the stream and the SOC index as capture groups 1 and 2. */
+export function finalizeResumedPattern(flags = ''): RegExp {
+  const escaped = finalizeResumed(STREAM_SLOT, INDEX_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)').replace(String(INDEX_SLOT), '(\\d+)'), flags);
+}

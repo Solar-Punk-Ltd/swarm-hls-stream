@@ -6,6 +6,8 @@ import {
   addingStreamToListPattern,
   catalogStateLost,
   catalogStateLostPattern,
+  finalizeResumed,
+  finalizeResumedPattern,
   ladderFinalized,
   ladderFinalizedPattern,
   manifestUploaded,
@@ -390,5 +392,32 @@ describe('the message for the catalog giving up on its own previous state', () =
     const log = [catalogStateLost('12', 3), catalogStateLost('13', 3)].join('\n');
 
     assert.equal([...log.matchAll(catalogStateLostPattern('g'))].length, 2);
+  });
+});
+
+describe('the message for a finalize that resumed rather than republished', () => {
+  it('round-trips the stream and the SOC index through the derived pattern', () => {
+    const found = finalizeResumedPattern().exec(finalizeResumed('live/stream_1080p', 42));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[1], 'live/stream_1080p');
+    assert.equal(found[2], '42');
+  });
+
+  /**
+   * ⛔ The whole point of the line is that it is NOT a second flip. A reader counting finalizes must
+   * not take this one, or the fix for the double publish would read as the double publish.
+   */
+  it('is not read as a ladder flip or as a single-rendition flip', () => {
+    const message = finalizeResumed('live/stream_1080p', 42);
+
+    assert.equal(ladderFinalizedPattern().test(message), false);
+    assert.equal(updatingStreamToVodPattern().test(message), false);
+  });
+
+  it('counts each occurrence, because a ladder resumes one rung at a time', () => {
+    const log = [finalizeResumed('live/stream_720p', 8), finalizeResumed('live/stream_1080p', 9)].join('\n');
+
+    assert.equal([...log.matchAll(finalizeResumedPattern('g'))].length, 2);
   });
 });

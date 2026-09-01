@@ -37,6 +37,23 @@ export function getErrorMessage(error: unknown): string {
   }
 }
 
+/**
+ * Bee's two answers for a feed with nothing to read: 404 the topic was never written to, 503 the
+ * topic exists and holds no update yet.
+ *
+ * Neither is a failure to a reader asking what is at the head, and both have to be told apart from
+ * a read that failed, because a caller that treats "I could not tell" as "there is nothing there"
+ * publishes over whatever is really in the feed.
+ *
+ * ⚠️ 503 is also in `RETRYABLE_HTTP_STATUSES`, so a caller wrapping its read in
+ * {@link retryUntilDeadlineAsync} has to ask this **inside** the retried function. Asked outside,
+ * an empty feed spends the whole retry window before answering a question that was settled on the
+ * first attempt.
+ */
+export function isFeedAbsent(error: unknown): boolean {
+  return error instanceof BeeResponseError && (error.status === 404 || error.status === 503);
+}
+
 const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function extractHttpStatus(error: unknown): number | undefined {

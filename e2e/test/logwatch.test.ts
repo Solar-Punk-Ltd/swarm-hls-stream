@@ -1,16 +1,18 @@
-import { manifestUploaded, segmentUploaded } from '@swarm-hls-stream/shared';
+import { finalizeResumed, ladderFinalized, manifestUploaded, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
   announcedLiveStreams,
   announcedLiveTopics,
+  announcedVodFinalizeCount,
   catalogContinuedEmpty,
   isContiguous,
   manifestIndicesByStream,
   messageText,
   newIndices,
   parseUploaderLog,
+  resumedFinalizeCount,
 } from '../src/harness/logwatch.js';
 
 /**
@@ -456,6 +458,51 @@ describe('manifest publishes, per rung', () => {
 
   it('is empty rather than throwing when nothing has published', () => {
     assert.equal(manifestIndicesByStream('').size, 0);
+  });
+});
+
+describe('a finalize that resumed rather than republishing', () => {
+  /**
+   * ⛔ The observation that says scenario H's kill landed inside the window it aims at. Without it a
+   * run that caught the window and answered it correctly reads exactly like one that missed it: both
+   * end on one flip. Counted rather than asserted, because it is a fact about the race the harness
+   * cannot control, not about whether the uploader is right.
+   */
+  const RESUMED = (stream: string, index: number) => finalizeResumed(stream, index);
+
+  it('sees the uploader say it resumed', () => {
+    assert.equal(resumedFinalizeCount(textLine('log', RESUMED('live/stream_1080p', 9))), 1);
+  });
+
+  it('reads it out of the json format the deployment writes', () => {
+    assert.equal(resumedFinalizeCount(jsonLine('log', RESUMED('live/stream_1080p', 9))), 1);
+  });
+
+  it('counts each rung, because a ladder resumes one rung at a time', () => {
+    const log = [textLine('log', RESUMED('live/stream_720p', 8)), textLine('log', RESUMED('live/stream_1080p', 9))];
+
+    assert.equal(resumedFinalizeCount(log.join('\n')), 2);
+  });
+
+  /**
+   * ⛔⛔ The line means a recording was NOT published a second time, so counting it as a flip would
+   * report the fix for the double publish as the double publish. Pinned here as well as in the
+   * shared package, because this is the reader scenario H's assertion goes through.
+   */
+  it('is not counted as a broadcast finalizing', () => {
+    const log = [
+      textLine('log', announcement('topic-a', 'live')),
+      textLine('log', RESUMED('live/stream_1080p', 9)),
+    ].join('\n');
+
+    assert.equal(announcedVodFinalizeCount(log), 0, 'a resume is not a flip');
+    assert.equal(resumedFinalizeCount(log), 1);
+  });
+
+  it('is zero on a run where nothing crashed', () => {
+    const log = [textLine('log', MANIFEST(3)), textLine('log', ladderFinalized('group-1'))].join('\n');
+
+    assert.equal(resumedFinalizeCount(log), 0);
   });
 });
 

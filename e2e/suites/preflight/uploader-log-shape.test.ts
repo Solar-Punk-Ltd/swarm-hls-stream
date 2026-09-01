@@ -1,6 +1,7 @@
 import {
   addingStreamToList,
   catalogStateLost,
+  finalizeResumed,
   ladderFinalized,
   manifestUploaded,
   omeSegmentLossReported,
@@ -160,6 +161,13 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     (stream, index) => catalogStateLost(stream, index),
     "finalize-crash's discriminator, which is the only thing separating a genuine second finalize " +
       'from a first one the catalog guard was blind to',
+  ),
+  deployedMessage(
+    'a finalize resuming rather than republishing after a crash',
+    (stream, index) => finalizeResumed(stream, index),
+    "resumedFinalizeCount, which reports whether finalize-crash's kill landed inside the window it " +
+      'aims at and was answered there. A deployment that cannot write this line still passes the ' +
+      'scenario, and passes it without anyone being able to say the window was ever exercised',
   ),
 ];
 
