@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { advertisableRenditions, LadderLiveness, RUNG_DEATH_LAG_SEGMENTS } from '../src/libs/LadderLiveness.js';
+import {
+  advertisableRenditions,
+  LadderLiveness,
+  MAX_RUNGS_DROPPED_AT_ONCE,
+  RUNG_DEATH_LAG_SEGMENTS,
+} from '../src/libs/LadderLiveness.js';
 
 /**
  * The rule that stops a master advertising a rung nothing is producing.
@@ -175,7 +180,7 @@ describe('the whole broadcast stopping', () => {
    * riskiest rule in this client — eight attempts, three shipped regressions — so it is recorded
    * rather than guessed at.** See [[swarm-hls-rung-failover-design]].
    */
-  it('condemns three rungs of four when the source goes away, which is the open defect', () => {
+  it('condemns nothing when the source goes away, because that is a broadcast ending', () => {
     const liveness = new LadderLiveness();
     for (let round = 0; round < 20; round++) {
       everyRungDelivers(liveness);
@@ -192,11 +197,41 @@ describe('the whole broadcast stopping', () => {
     }
 
     assert.deepEqual(
-      LADDER.filter((rung) => liveness.hasStopped(rung, LADDER)),
-      ['360p', '480p', '1080p'],
-      'the cascade changed shape. Read the docblock: this pins a known defect, so a change here is ' +
-        'either the fix (make it [] and say so) or a new way of getting it wrong',
+      liveness.liveRungs().sort(),
+      [...LADDER].sort(),
+      'a broadcast that ended cost the ladder its rungs. Owner ruling 2026-09-01: past ' +
+        `${MAX_RUNGS_DROPPED_AT_ONCE} the right conclusion is that the source went away`,
     );
+    assert.deepEqual(
+      advertisableRenditions(
+        LADDER.map((name) => ({ name, height: Number(name.replace('p', '')) })),
+        liveness,
+      ).map((r) => r.name),
+      LADDER,
+      'and the master must go on advertising all of them for the same reason',
+    );
+  });
+
+  /** ⛔ The one rung case must still work, or the ruling has disabled the feature it was about. */
+  it('still drops a single rung that stops while the others carry on', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+
+    assert.deepEqual(liveness.liveRungs().sort(), ['360p', '480p', '720p']);
+  });
+
+  /** Two at once is already past the limit, so it is a broadcast problem and nothing is dropped. */
+  it('drops nothing when two rungs stop together', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p']);
+    }
+
+    assert.deepEqual(liveness.liveRungs().sort(), [...LADDER].sort());
   });
 
   /** The floor that stopped it being all four, and the only reason playback had anywhere to go. */

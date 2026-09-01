@@ -33,9 +33,10 @@
  *    cumulative totals. Rungs are separate transcodes writing separate feeds at slightly different
  *    speeds, so cumulative counts drift apart without bound for reasons that are nobody's fault.
  *
- * ⚠️ Its honest limit, inherited: on a four rung ladder, if THREE die at once the middle sits among
- * the dead and none of them is called dead. That is a broadcast falling apart rather than a rung
- * failing, and it is not this class's job.
+ * ⚠️ Two limits, and they now point the same way. Inherited: if THREE die at once the middle sits
+ * among the dead and none of them reads as dead. Ruled 2026-09-01: past
+ * {@link MAX_RUNGS_DROPPED_AT_ONCE} nothing is dropped anyway. Both say a ladder losing most of
+ * itself is a broadcast ending rather than rungs failing, which is not this class's job.
  */
 
 /**
@@ -47,6 +48,36 @@
  * move with it**, or the master and the player will disagree about which rungs exist.
  */
 export const RUNG_DEATH_LAG_SEGMENTS = 4;
+
+/**
+ * How many rungs may be dropped at once before the right conclusion is that the broadcast ended.
+ *
+ * ⛔⛔⛔ Owner ruling, 2026-09-01, after the first sitting with the failover armed. The uploader was
+ * killed in V7 so every rung stopped, and the player concluded three of the four had individually
+ * failed and deleted them: hls.js raised a fatal `levelSwitchError` and the whole player destroyed
+ * and restarted itself. Rungs do not stop at the same instant, because each drains whatever it was
+ * already holding and the queues differ, so a rung that drains further pushes the middle reference
+ * up past rungs that stopped with less in hand.
+ *
+ * One is the whole of the feature: **one quality dies and the others carry on**. A second going
+ * quiet is not two independent failures, it is the source going away, and the answer to that is to
+ * wait and recover rather than to take the ladder apart.
+ *
+ * ⚠️ Its honest cost, which the owner accepted: if two rungs genuinely fail separately during one
+ * broadcast, the second dead one is kept and a viewer on it can freeze.
+ */
+export const MAX_RUNGS_DROPPED_AT_ONCE = 1;
+
+/**
+ * The subset of `stopped` that may actually be acted on.
+ *
+ * ⛔ The limit lives here rather than in {@link LadderLiveness.hasStopped}, because "has this rung
+ * stopped" and "may we drop it" are different questions. Two dead rungs really have stopped, and a
+ * caller reporting on the ladder should still be told so.
+ */
+function actionable<T>(stopped: readonly T[]): readonly T[] {
+  return stopped.length > MAX_RUNGS_DROPPED_AT_ONCE ? [] : stopped;
+}
 
 /** Below this there is no middle rung to measure against, and a viewer has nowhere to go anyway. */
 const MIN_RUNGS_TO_COMPARE = 2;
@@ -106,7 +137,9 @@ export class LadderLiveness {
    */
   public liveRungs(): string[] {
     const known = [...this.delivered.keys()];
-    return known.filter((rung) => !this.hasStopped(rung, known));
+    const dropped = actionable(known.filter((rung) => this.hasStopped(rung, known)));
+
+    return known.filter((rung) => !dropped.includes(rung));
   }
 
   /**
@@ -139,7 +172,8 @@ export function advertisableRenditions<T extends NamedRendition>(
   liveness: LadderLiveness,
 ): T[] {
   const names = renditions.map((rendition) => rendition.name);
-  const live = renditions.filter((rendition) => !liveness.hasStopped(rendition.name, names));
+  const dropped = actionable(renditions.filter((rendition) => liveness.hasStopped(rendition.name, names)));
+  const live = renditions.filter((rendition) => !dropped.includes(rendition));
 
   return live.length === 0 ? [...renditions] : live;
 }
