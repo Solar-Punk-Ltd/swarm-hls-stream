@@ -116,6 +116,54 @@ export const PARSED_LINES: readonly ParsedLine[] = [
     emittedBy: { file: 'utils/common.ts', fragment: 'Retrying in ~' },
     neededBy: 'the retry counter the bee-outage scenarios report',
   },
+  /*
+   * The four below are one counter, `discontinuitiesArmed` in `harness/logwatch.ts`. Six suites
+   * assert it is zero and scenarios/bee-outage-long asserts it is at least one, so a level that
+   * drops any of the four does not fail those six. It passes them, on a stage arming discontinuities
+   * all night. `originDeclaredDiscontinuity` is the one at `info` and so the first to go.
+   */
+  {
+    what: 'a spent upload retry window ("Failed to upload segment N for stream <stream>")',
+    level: 'error',
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'segmentUploadFailed(this.streamId, segmentIndex)' },
+    neededBy:
+      'discontinuitiesArmed, whose zero the six clean-run suites assert and whose non-zero ' +
+      'scenarios/bee-outage-long needs. Also the only one of the four carrying an index, which is ' +
+      'what discontinuitySegments reads',
+  },
+  {
+    what: 'segments that never arrived ("… for stream <stream> never reached the uploader")',
+    level: 'error',
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'segmentsNeverArrived(subject, this.streamId)' },
+    neededBy: 'discontinuitiesArmed, for a gap the engine could not download from the origin at all',
+  },
+  {
+    what: 'origin-declared discontinuities ("Origin declared a discontinuity for stream <stream>")',
+    level: 'info',
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'originDeclaredDiscontinuity(this.streamId)' },
+    neededBy:
+      'discontinuitiesArmed, and the dangerous one to lose: the segment carrying the marker IS ' +
+      'uploaded, so nothing is missing and the gapless check is no backstop either',
+  },
+  {
+    what: 'the OME puller reporting a loss ("[OME] … lost for <stream> after …")',
+    level: 'error',
+    emittedBy: {
+      file: 'engines/ome/OmeHlsPuller.ts',
+      fragment: 'omeSegmentLossReported(subject, this.streamId, cause)',
+    },
+    neededBy:
+      "discontinuitiesArmed on an OME deployment, where this line rides beside the uploader's own " +
+      'report of the same loss rather than instead of it. One loss there arms the counter twice',
+  },
+  {
+    what: 'the catalog giving up on its own state ("[StreamCatalog] State at index N failed to read")',
+    level: 'error',
+    emittedBy: { file: 'libs/StreamCatalog.ts', fragment: 'catalogStateLost(index, this.unreadableStateReads)' },
+    neededBy:
+      'catalogContinuedEmpty, the discriminator scenarios/finalize-crash prints and asserts is zero. ' +
+      'Without it a second finalize cannot be told from a first one the guard could not see',
+  },
 ];
 
 /** The quietest level that still emits every line above, and so the loudest the suite can require. */
