@@ -125,6 +125,32 @@ export function rungAnnouncedPattern(flags = ''): RegExp {
 const JSON_SLOT = 'JSONSLOT';
 
 /**
+ * Written once when a single-rendition stream is announced to the catalog as live. The JSON payload
+ * is the entry as published, and it is the only place a broadcast's own topic and owner reach the
+ * log before anything has been uploaded.
+ *
+ * ⛔ A ladder never writes this line and a single rendition never announces a rung, so which of the
+ * two a log holds is how a reader tells the two deployment shapes apart. Reworded, it reads as a
+ * broadcast that never started, and the scenario waits out its timeout blaming the publisher.
+ */
+export function addingStreamToList(entryJson: string): string {
+  return `Adding stream to list: ${entryJson}`;
+}
+
+/**
+ * {@link addingStreamToList} as a matcher, the entry JSON as capture group 1.
+ *
+ * ⚠️ Bounded to the braces rather than run to the end of the line, unlike
+ * {@link updatingStreamToVodPattern}. What is captured here goes straight into `JSON.parse`, so a
+ * capture that swallowed anything a later message appended after the entry would parse to nothing,
+ * and a parse that returns nothing is indistinguishable from a stream that was never announced.
+ */
+export function addingStreamToListPattern(flags = ''): RegExp {
+  const escaped = addingStreamToList(JSON_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(JSON_SLOT, '(\\{[^\\n]*\\})'), flags);
+}
+
+/**
  * Written once when a single-rendition stream's catalog entry flips to VOD. Byte-identical to the
  * line the uploader has always written; the JSON payload is the entry as published.
  */
@@ -182,4 +208,142 @@ export function replacedSessionFinalized(streamId: string): string {
 export function replacedSessionFinalizedPattern(flags = ''): RegExp {
   const escaped = replacedSessionFinalized(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
+}
+
+/** Free-text stand-in for a phrase the caller assembles, which can hold spaces the others cannot. */
+const SUBJECT_SLOT = 'SUBJECTSLOT';
+const CAUSE_SLOT = 'CAUSESLOT';
+
+/**
+ * ## The four lines below all mean one thing: a discontinuity was armed
+ *
+ * A discontinuity tells a player the media after it is not a continuation of the media before it, so
+ * it skips the join instead of stalling on a hole it was told was seamless. Four separate messages
+ * report one being armed, and the harness counts all four as one number.
+ *
+ * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast armed
+ * NONE. A message reworded here and not deployed, or deployed and not read, does not fail those
+ * five: it passes them, silently, for ever, on a stage arming discontinuities all night. That is the
+ * worst failure this repo knows how to produce, and it is why these composers exist rather than a
+ * regex written out beside the reader.
+ */
+
+/**
+ * Written when a segment's whole retry window is spent with nothing landing, so the segment is
+ * dropped and the next one to land carries the break.
+ *
+ * The only one of the four that names a segment, which is why it is also the only one an index can
+ * be read off. The bee-outage scenario asserts on that index.
+ */
+export function segmentUploadFailed(streamId: string, index: number): string {
+  return `Failed to upload segment ${index} for stream ${streamId} within the retry window; marking a discontinuity`;
+}
+
+/**
+ * {@link segmentUploadFailed} as a matcher, the index and the stream as capture groups 1 and 2.
+ *
+ * ⚠️ The index is group 1 because the message names it first, which is the reverse of the composer's
+ * own argument order. Read the group numbers off this docblock, never off the signature.
+ */
+export function segmentUploadFailedPattern(flags = ''): RegExp {
+  const escaped = segmentUploadFailed(STREAM_SLOT, INDEX_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(String(INDEX_SLOT), '(\\d+)').replace(STREAM_SLOT, '(\\S+)'), flags);
+}
+
+/**
+ * Written when segments never reached the uploader at all, because the engine could not download
+ * them from the origin. One contiguous gap is one line, however many segments it spans.
+ *
+ * `subject` is the caller's own phrase for what went missing, `Segment 5` or
+ * `3 segments from index 5`. It stays outside the fixed half on purpose: nothing parses it, and
+ * pinning both shapes here would put a branch in the contract that no reader depends on.
+ */
+export function segmentsNeverArrived(subject: string, streamId: string): string {
+  return `${subject} for stream ${streamId} never reached the uploader, marking a discontinuity`;
+}
+
+/**
+ * {@link segmentsNeverArrived} as a matcher, the subject and the stream as capture groups 1 and 2.
+ *
+ * ⚠️ Group 1 is free text at the very start of the message, so on a text-format log line it takes
+ * the line's own `[ts] [LEVEL] -` prefix with it. Nothing reads it. This pattern is counted rather
+ * than captured, and the group is there only because the builder turns every placeholder into one.
+ */
+export function segmentsNeverArrivedPattern(flags = ''): RegExp {
+  const escaped = segmentsNeverArrived(SUBJECT_SLOT, STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(SUBJECT_SLOT, '(.+)').replace(STREAM_SLOT, '(\\S+)'), flags);
+}
+
+/**
+ * Written when the origin itself declared a discontinuity with `#EXT-X-DISCONTINUITY`. An encoder
+ * restarting upstream produces exactly this, and nothing went wrong at the uploader.
+ *
+ * ⛔ The dangerous one to lose. The segment carrying the marker IS accepted and uploaded, so it
+ * leaves no hole in the indices and a gapless-run check is no backstop either. Stop reading this
+ * line and nothing anywhere in the suite can see an origin-declared break.
+ */
+export function originDeclaredDiscontinuity(streamId: string): string {
+  return `Origin declared a discontinuity for stream ${streamId}, marking the next segment`;
+}
+
+/** {@link originDeclaredDiscontinuity} as a matcher, the stream as capture group 1. */
+export function originDeclaredDiscontinuityPattern(flags = ''): RegExp {
+  const escaped = originDeclaredDiscontinuity(STREAM_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)'), flags);
+}
+
+/**
+ * The OME puller's own report of segments it could not download, written **beside** the uploader's
+ * {@link segmentsNeverArrived} for the same loss rather than instead of it.
+ *
+ * ⚠️ So one loss on OME puts two arming lines in the log and a reader counting arms counts two.
+ * That is what the harness has counted since the counter existed, and it is recorded here rather
+ * than corrected, because changing a count in the same step as moving a message leaves neither
+ * provable. Correcting it is a separate change with its own evidence.
+ */
+export function omeSegmentLossReported(subject: string, streamId: string, cause: string): string {
+  return `[OME] ${subject} lost for ${streamId} after ${cause}, marking a discontinuity`;
+}
+
+/**
+ * {@link omeSegmentLossReported} as a matcher, the subject, the stream and the cause as capture
+ * groups 1 to 3. Counted rather than captured, the same as its sibling above.
+ */
+export function omeSegmentLossReportedPattern(flags = ''): RegExp {
+  const escaped = omeSegmentLossReported(SUBJECT_SLOT, STREAM_SLOT, CAUSE_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(
+    escaped.replace(SUBJECT_SLOT, '(.+)').replace(STREAM_SLOT, '(\\S+)').replace(CAUSE_SLOT, '(.+)'),
+    flags,
+  );
+}
+
+/**
+ * `StreamCatalog` giving up on the state it resumed to, and continuing from an empty list. Written
+ * only after a boot that resumed to an index it never read AND three consecutive failures to read
+ * that index, so it means the earlier entries are gone rather than slow.
+ *
+ * ⛔ This is the discriminator the finalize-crash scenario prints. Its count of ladder finalizes is
+ * guarded by "the catalog does not already say VOD", so a second finalize means either a real second
+ * one or a first one the guard was blind to. Only this line separates them.
+ *
+ * ⚠️ Anchored on the conclusion, not on the warning. The two attempts before it carry a nearly
+ * identical message and they KEPT the catalog, so a reader matching those reports a loss that never
+ * happened.
+ *
+ * ⛔ One template literal, never split across a `+`, whatever it costs in line width. `StreamCatalog`
+ * wrote it as two joined strings until this composer existed, and `tsc` keeps such a join exactly as
+ * written, so the fragment spanning it was in no built file. The preflight gate greps the built code
+ * for a message's fixed halves, so a split message makes it refuse a deployment that writes the line
+ * perfectly. `e2e/test/deployedLogShape.test.ts` holds that case.
+ */
+export function catalogStateLost(index: string, reads: number): string {
+  return `[StreamCatalog] State at index ${index} failed to read ${reads} times; continuing with an empty catalog — earlier entries are lost`;
+}
+
+/**
+ * {@link catalogStateLost} as a matcher, the feed index and the read count as capture groups 1 and 2.
+ */
+export function catalogStateLostPattern(flags = ''): RegExp {
+  const escaped = catalogStateLost(STREAM_SLOT, INDEX_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(escaped.replace(STREAM_SLOT, '(\\S+)').replace(String(INDEX_SLOT), '(\\d+)'), flags);
 }

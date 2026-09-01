@@ -1,5 +1,5 @@
 import { BeeResponseError, FeedIndex, PrivateKey, Topic } from '@ethersphere/bee-js';
-import { ladderFinalized } from '@swarm-hls-stream/shared';
+import { catalogStateLost, ladderFinalized } from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import { MediaType, Rendition, STREAM_STATUS_LIVE, STREAM_STATUS_VOD, StreamStatus } from '../types.js';
@@ -443,10 +443,7 @@ export class StreamCatalog {
         throw error;
       }
 
-      this.logger.error(
-        `[StreamCatalog] State at index ${index} failed to read ${this.unreadableStateReads} times; ` +
-          'continuing with an empty catalog — earlier entries are lost',
-      );
+      this.logger.error(catalogStateLost(index, this.unreadableStateReads));
       return [];
     }
   }

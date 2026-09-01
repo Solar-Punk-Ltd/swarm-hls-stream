@@ -156,8 +156,8 @@ describe('every path that arms a discontinuity is counted', () => {
    * `StreamUploader` arms `pendingDiscontinuity` from three call sites and only one of them says
    * "Failed to upload segment". Anchoring on that one matched a third of them, and both misses are
    * reachable only through the OME puller — an engine this harness supports as a first-class
-   * target. Four scenarios assert `discontinuitiesArmed === 0` in the general wording "must not arm
-   * a discontinuity", so on OME each of them was asserting something it could not observe.
+   * target. Six suites assert `discontinuitiesArmed === 0` in the general wording "must not arm a
+   * discontinuity", so on OME each of them was asserting something it could not observe.
    */
   for (const [name, line] of [
     ['the upload retry window being spent', DISCONTINUITY(2)],
@@ -191,6 +191,40 @@ describe('every path that arms a discontinuity is counted', () => {
     const log = [textLine('error', SEGMENT_LOST(2)), textLine('info', ORIGIN_DISCONTINUITY)].join('\n');
     assert.equal(parseUploaderLog(log).discontinuitiesArmed, 2);
     assert.deepEqual(parseUploaderLog(log).discontinuitySegments, []);
+  });
+
+  /**
+   * ⛔ The fourth line, and the one that makes this count double on OME. `OmeHlsPuller` reports the
+   * loss it just handed to `handleSegmentLoss`, beside the uploader's own line rather than instead
+   * of it, so one loss puts two arming lines in the log and this counter reads two.
+   *
+   * Pinned rather than corrected. The count has always behaved this way, the assertions that read it
+   * are `=== 0` and `>= 1` so neither notices, and changing a number in the same breath as moving a
+   * message where the contract can see it would leave neither of the two provable.
+   */
+  const OME_LOSS_REPORT = (first: number, last: number) =>
+    `[OME] Segments ${first} to ${last} lost for stream-7 after 3 consecutive download failures, marking a discontinuity`;
+
+  it('counts the OME puller reporting a loss', () => {
+    assert.equal(parseUploaderLog(textLine('error', OME_LOSS_REPORT(5, 7))).discontinuitiesArmed, 1);
+  });
+
+  it('counts one OME loss twice, because the puller and the uploader each announce it', () => {
+    const log = [textLine('error', OME_LOSS_REPORT(5, 7)), textLine('error', SEGMENTS_LOST(3, 5))].join('\n');
+    const events = parseUploaderLog(log);
+
+    assert.equal(events.discontinuitiesArmed, 2, 'the count that six suites assert is zero must not have moved');
+    assert.deepEqual(events.discontinuitySegments, [], 'and neither line names an index');
+  });
+
+  /** The puller's other two words for the same loss, both of which recorded nothing and armed nothing. */
+  it('leaves out the puller lines that reported no loss at all', () => {
+    const log = [
+      textLine('warn', '[OME] Segment 5 lost for stream-7 after the puller stopped, not reporting'),
+      textLine('warn', '[OME] Segment 5 lost for stream-7 but no stream is registered to record it'),
+    ].join('\n');
+
+    assert.equal(parseUploaderLog(log).discontinuitiesArmed, 0);
   });
 });
 

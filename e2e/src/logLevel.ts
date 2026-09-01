@@ -95,7 +95,7 @@ export const PARSED_LINES: readonly ParsedLine[] = [
   {
     what: 'catalog announcements ("Adding stream to list")',
     level: 'log',
-    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'Adding stream to list:' },
+    emittedBy: { file: 'libs/StreamUploader.ts', fragment: 'addingStreamToList(JSON.stringify(entry))' },
     neededBy: 'announcedLiveTopics, which is how scenario F identifies its own stream',
   },
   {

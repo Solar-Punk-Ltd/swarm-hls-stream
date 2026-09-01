@@ -1,5 +1,14 @@
 import { Bee, PrivateKey, Topic } from '@ethersphere/bee-js';
-import { manifestUploaded, publishingRendition, segmentUploaded, updatingStreamToVod } from '@swarm-hls-stream/shared';
+import {
+  addingStreamToList,
+  manifestUploaded,
+  originDeclaredDiscontinuity,
+  publishingRendition,
+  segmentsNeverArrived,
+  segmentUploaded,
+  segmentUploadFailed,
+  updatingStreamToVod,
+} from '@swarm-hls-stream/shared';
 import PQueue from 'p-queue';
 
 import {
@@ -225,9 +234,7 @@ export class StreamUploader {
       // so players skip the gap instead of stalling on a silent hole.
       this.pendingDiscontinuity = true;
       this.consecutiveSegmentFailures += 1;
-      this.logger.error(
-        `Failed to upload segment ${segmentIndex} for stream ${this.streamId} within the retry window; marking a discontinuity`,
-      );
+      this.logger.error(segmentUploadFailed(this.streamId, segmentIndex));
       this.metrics?.recordSegmentDropped();
       this.persistState();
       return;
@@ -267,9 +274,7 @@ export class StreamUploader {
    */
   public handleSegmentLoss(firstIndex: number, count: number): void {
     const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
-    this.queueDiscontinuity(() =>
-      this.logger.error(`${subject} for stream ${this.streamId} never reached the uploader, marking a discontinuity`),
-    );
+    this.queueDiscontinuity(() => this.logger.error(segmentsNeverArrived(subject, this.streamId)));
   }
 
   /**
@@ -280,9 +285,7 @@ export class StreamUploader {
    * Ordinary rather than an error, unlike a loss: nothing went wrong here and nothing was dropped.
    */
   public markDiscontinuity(): void {
-    this.queueDiscontinuity(() =>
-      this.logger.info(`Origin declared a discontinuity for stream ${this.streamId}, marking the next segment`),
-    );
+    this.queueDiscontinuity(() => this.logger.info(originDeclaredDiscontinuity(this.streamId)));
   }
 
   /**
@@ -311,7 +314,7 @@ export class StreamUploader {
       timestamp: Date.now(),
     };
 
-    this.logger.log(`Adding stream to list: ${JSON.stringify(entry)}`);
+    this.logger.log(addingStreamToList(JSON.stringify(entry)));
     return this.streamCatalog.addStream(entry);
   }
 

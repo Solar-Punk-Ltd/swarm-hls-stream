@@ -1,3 +1,5 @@
+import { omeSegmentLossReported } from '@swarm-hls-stream/shared';
+
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
 import { getErrorMessage } from '../../utils/common.js';
@@ -509,7 +511,7 @@ export class OmeHlsPuller {
       return false;
     }
 
-    logger.error(`[OME] ${subject} lost for ${this.streamId} after ${cause}, marking a discontinuity`);
+    logger.error(omeSegmentLossReported(subject, this.streamId, cause));
     this.lastSeq = lastSeq;
     this.failingSeq = null;
     this.failedAttempts = 0;

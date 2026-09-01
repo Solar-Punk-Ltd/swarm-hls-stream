@@ -21,12 +21,18 @@
  */
 
 import {
+  addingStreamToListPattern,
+  catalogStateLostPattern,
   ladderFinalizedPattern,
   manifestUploadedPattern,
+  omeSegmentLossReportedPattern,
+  originDeclaredDiscontinuityPattern,
   publishingRenditionPattern,
   replacedSessionFinalizedPattern,
   rungAnnouncedPattern,
+  segmentsNeverArrivedPattern,
   segmentUploadedPattern,
+  segmentUploadFailedPattern,
   streamStoppedPattern,
   updatingStreamToVodPattern,
 } from '@swarm-hls-stream/shared';
@@ -34,10 +40,10 @@ import {
 export interface UploaderEvents {
   uploadedSegments: number[];
   /**
-   * How many discontinuities were armed, by any of the three paths.
+   * How many discontinuities were armed, by any of the four lines that say one was.
    *
-   * A count rather than a list of indices, because two of the three paths name no segment. The
-   * scenarios that care read `.length`, and the one that wants an index reads
+   * A count rather than a list of indices, because only one of the four names a segment. The
+   * scenarios that care read this number, and the one that wants an index reads
    * `discontinuitySegments`.
    */
   discontinuitiesArmed: number;
@@ -63,32 +69,42 @@ export interface UploaderEvents {
 }
 
 /**
- * All three ways the uploader arms a discontinuity, not just the upload failure.
+ * Every line that means a discontinuity was armed, in the shapes the producers compose them.
  *
- * `StreamUploader` sets `pendingDiscontinuity` from three call sites, each with its own message:
- * the retry window being spent (`Failed to upload segment N …`), `handleSegmentLoss`
- * (`… never reached the uploader, marking a discontinuity`), and `markDiscontinuity`
- * (`Origin declared a discontinuity …, marking the next segment`). Only the first carries a segment
- * index, which is why this counts occurrences rather than capturing one.
+ * `StreamUploader` sets `pendingDiscontinuity` from three call sites: the retry window being spent,
+ * `handleSegmentLoss`, and `markDiscontinuity`. The OME puller writes a fourth line reporting the
+ * same loss `handleSegmentLoss` is about to record, beside the uploader's rather than instead of it,
+ * so one loss on OME contributes two. That double count is what this counter has always produced and
+ * it is preserved deliberately: changing a count in the same step as moving a message leaves neither
+ * provable, and `test/logwatch.test.ts` pins both halves.
  *
- * Anchoring on the upload failure alone matched one of the three. Both misses are OME-only, and the
- * `markDiscontinuity` one is the dangerous shape: the segment carrying the marker IS accepted and
- * uploaded, so it leaves no hole in the indices and `isContiguous` is not a backstop either. Four
- * scenarios assert `discontinuitiesArmed.length === 0` in the general wording "must not arm a
- * discontinuity", and on OME none of them could observe two of the three ways one gets armed.
+ * ⛔ Not written out here. Each pattern is derived from the composer the producer logs with, so a
+ * reworded message cannot leave this matching nothing. Six suites assert this count is zero on a
+ * clean run and a blind reader passes every one of them, for ever, on a stage arming discontinuities
+ * all night. Anchoring on the upload failure alone once matched one of the four for exactly that
+ * reason, and the `markDiscontinuity` miss is the dangerous shape: the segment carrying an
+ * origin-declared marker IS accepted and uploaded, so it leaves no hole and `isContiguous` is no
+ * backstop either.
  */
-const RE_DISCONTINUITY = /marking a discontinuity|marking the next segment/g;
+const discontinuityPatterns = (): RegExp[] => [
+  segmentUploadFailedPattern('g'),
+  segmentsNeverArrivedPattern('g'),
+  originDeclaredDiscontinuityPattern('g'),
+  omeSegmentLossReportedPattern('g'),
+];
 
-/** The upload-failure path is the only one naming a segment, and scenario B asserts on that index. */
-const RE_DISCONTINUITY_SEGMENT = /Failed to upload segment (\d+)[^\n]*marking a discontinuity/g;
 /**
  * ⚠️ Capture group 2, not 1. `manifestUploadedPattern` puts the stream first because its message
  * does, which is the reverse of the segment pattern beside it.
  */
 const manifestSocPattern = () => manifestUploadedPattern('g');
+/**
+ * ⚠️ The three below stay raw regexes on purpose. They are observation-only counters that no suite
+ * asserts on, so a reworded message costs a number nobody reads rather than a green run nobody can
+ * trust, which is the whole reason the others are a contract.
+ */
 const RE_STALE = /is stale: \d+ consecutive/g;
 const RE_RETRY = /Retrying in ~/g;
-const RE_STREAM_ANNOUNCE = /Adding stream to list: (\{[^\n]*\})/g;
 /**
  * The uploader's own words for a segment carrying no video, from `measureSegmentDuration`'s
  * fallback. Anchored on the reason and not on the warning, because the same warning also fires for a
@@ -202,12 +218,21 @@ function countMatches(source: string, re: RegExp): number {
   return [...source.matchAll(re)].length;
 }
 
+/**
+ * One count over several patterns. Summing is sound here because each arming message matches exactly
+ * one of them, which `test/logwatch.test.ts` asserts message by message rather than leaving to the
+ * reader: a pattern that started matching a sibling's line would double a count nobody would query.
+ */
+function countAnyMatch(source: string, patterns: readonly RegExp[]): number {
+  return patterns.reduce((total, re) => total + countMatches(source, re), 0);
+}
+
 export function parseUploaderLog(text: string): UploaderEvents {
   const messages = messageText(text);
   return {
     uploadedSegments: captureNumbers(messages, segmentUploadedPattern('g')),
-    discontinuitiesArmed: countMatches(messages, RE_DISCONTINUITY),
-    discontinuitySegments: captureNumbers(messages, RE_DISCONTINUITY_SEGMENT),
+    discontinuitiesArmed: countAnyMatch(messages, discontinuityPatterns()),
+    discontinuitySegments: captureNumbers(messages, segmentUploadFailedPattern('g')),
     manifestSocIndices: captureSecondNumbers(messages, manifestSocPattern()),
     staleWarnings: countMatches(messages, RE_STALE),
     retries: countMatches(messages, RE_RETRY),
@@ -231,7 +256,7 @@ export interface AnnouncedStream {
  */
 function announcedLiveEntries(text: string): Partial<AnnouncedStream>[] {
   const entries: Partial<AnnouncedStream>[] = [];
-  for (const match of messageText(text).matchAll(RE_STREAM_ANNOUNCE)) {
+  for (const match of messageText(text).matchAll(addingStreamToListPattern('g'))) {
     try {
       const entry = JSON.parse(match[1]) as Partial<AnnouncedStream> & { state?: string };
       if (entry.state === 'live') {
@@ -409,12 +434,11 @@ export function announcedVodFinalizeCount(text: string): number {
  *
  * ⚠️ Anchored on the conclusion, not on the warning. The two attempts before it carry a nearly
  * identical message and they KEPT the catalog, so counting those would report loss that did not
- * happen.
+ * happen. The pattern comes from `catalogStateLost` in the shared package, built from the composer
+ * `StreamCatalog` writes with, so the two cannot drift into agreeing about a line neither produces.
  */
-const RE_CATALOG_LOST = /continuing with an empty catalog/g;
-
 export function catalogContinuedEmpty(text: string): number {
-  return countMatches(messageText(text), RE_CATALOG_LOST);
+  return countMatches(messageText(text), catalogStateLostPattern('g'));
 }
 
 /**

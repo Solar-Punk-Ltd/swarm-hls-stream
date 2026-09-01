@@ -2,18 +2,30 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  addingStreamToList,
+  addingStreamToListPattern,
+  catalogStateLost,
+  catalogStateLostPattern,
   ladderFinalized,
   ladderFinalizedPattern,
   manifestUploaded,
   manifestUploadedPattern,
+  omeSegmentLossReported,
+  omeSegmentLossReportedPattern,
+  originDeclaredDiscontinuity,
+  originDeclaredDiscontinuityPattern,
   publishingRendition,
   publishingRenditionPattern,
   replacedSessionFinalized,
   replacedSessionFinalizedPattern,
   rungAnnounced,
   rungAnnouncedPattern,
+  segmentsNeverArrived,
+  segmentsNeverArrivedPattern,
   segmentUploaded,
   segmentUploadedPattern,
+  segmentUploadFailed,
+  segmentUploadFailedPattern,
   streamStopped,
   streamStoppedPattern,
   updatingStreamToVod,
@@ -223,5 +235,160 @@ describe('the session-end messages', () => {
       replacedSessionFinalizedPattern().test('The session replaced under live/stream_720p was not finalized'),
       false,
     );
+  });
+});
+
+describe('the catalog announce message', () => {
+  const ENTRY = '{"title":"x","owner":"0xabc","topic":"t-1","state":"live"}';
+
+  it('round-trips the entry through the derived pattern, byte-identical to the deployed line', () => {
+    const found = addingStreamToListPattern().exec(addingStreamToList(ENTRY));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[0].startsWith('Adding stream to list: '), true);
+    assert.equal(found[1], ENTRY);
+  });
+
+  /**
+   * ⛔ The capture stops at the closing brace rather than at the end of the line, which is what
+   * separates this from {@link updatingStreamToVodPattern}. Whatever comes out goes straight into
+   * `JSON.parse`, and a parse that throws is caught and skipped, so a capture running past the entry
+   * reads as a broadcast the uploader never announced.
+   */
+  it('captures the entry alone when something follows it on the line', () => {
+    const found = addingStreamToListPattern().exec(`${addingStreamToList(ENTRY)} (queued)`);
+
+    assert.equal(found?.[1], ENTRY);
+    assert.doesNotThrow(() => JSON.parse(String(found?.[1])));
+  });
+
+  it('finds one announce per line across a log holding several', () => {
+    const log = ['{"topic":"a","state":"live"}', '{"topic":"b","state":"live"}'].map(addingStreamToList).join('\n');
+
+    assert.equal([...log.matchAll(addingStreamToListPattern('g'))].length, 2);
+  });
+
+  it('does not read the VOD update as a fresh announce', () => {
+    assert.equal(addingStreamToListPattern().test(updatingStreamToVod(ENTRY)), false);
+  });
+});
+
+/**
+ * ⛔ The property every zero-arm assertion in the e2e suite rests on. `parseUploaderLog` sums matches
+ * across these four patterns, and that sum is the number of discontinuities armed only while each
+ * message matches exactly one of them. Asserted message by message rather than left to the reader: a
+ * pattern that grew into a sibling's line would double a count six suites assert is zero, and a
+ * count that is never zero fails nothing, it just stops meaning anything.
+ */
+describe('the four messages that mean a discontinuity was armed', () => {
+  const STREAM = 'live/stream_720p';
+  const ARMING: readonly (readonly [string, string])[] = [
+    ['a spent retry window', segmentUploadFailed(STREAM, 41)],
+    ['one segment that never arrived', segmentsNeverArrived('Segment 42', STREAM)],
+    ['several segments that never arrived', segmentsNeverArrived('3 segments from index 42', STREAM)],
+    ['the origin declaring one', originDeclaredDiscontinuity(STREAM)],
+    ['the OME puller reporting a loss', omeSegmentLossReported('Segments 5 to 7', STREAM, '3 download failures')],
+  ];
+
+  const armingPatterns = (): RegExp[] => [
+    segmentUploadFailedPattern('g'),
+    segmentsNeverArrivedPattern('g'),
+    originDeclaredDiscontinuityPattern('g'),
+    omeSegmentLossReportedPattern('g'),
+  ];
+
+  for (const [name, message] of ARMING) {
+    it(`counts ${name} exactly once across the four patterns`, () => {
+      const hits = armingPatterns().reduce((total, re) => total + [...message.matchAll(re)].length, 0);
+
+      assert.equal(hits, 1, `"${message}" matched ${hits} of the four patterns, so the armed count is not a count`);
+    });
+  }
+
+  it('counts a whole log as the number of messages in it, not as the number of patterns', () => {
+    const log = ARMING.map(([, message]) => message).join('\n');
+    const hits = armingPatterns().reduce((total, re) => total + [...log.matchAll(re)].length, 0);
+
+    assert.equal(hits, ARMING.length);
+  });
+
+  it('round-trips the index and the stream off the one message that names a segment', () => {
+    const found = segmentUploadFailedPattern().exec(segmentUploadFailed(STREAM, 41));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    // Index first, stream second: the message names them in that order and the groups follow it.
+    assert.equal(found[1], '41');
+    assert.equal(found[2], STREAM);
+  });
+
+  it('reads no index off the three that name none, so a caller cannot invent one', () => {
+    for (const message of [
+      segmentsNeverArrived('Segment 42', STREAM),
+      originDeclaredDiscontinuity(STREAM),
+      omeSegmentLossReported('Segment 5', STREAM, 'the origin rolled it out of its playlist window'),
+    ]) {
+      assert.equal(segmentUploadFailedPattern().test(message), false, message);
+    }
+  });
+
+  it('round-trips the stream off the origin-declared message', () => {
+    assert.equal(originDeclaredDiscontinuityPattern().exec(originDeclaredDiscontinuity(STREAM))?.[1], STREAM);
+  });
+
+  it('round-trips the stream off the puller report, whose cause carries spaces', () => {
+    const cause = '3 consecutive download failures';
+    const found = omeSegmentLossReportedPattern().exec(omeSegmentLossReported('Segments 5 to 7', STREAM, cause));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[2], STREAM);
+    assert.equal(found[3], cause);
+  });
+
+  /** The puller writes two other lines about the same loss, and neither of them armed anything. */
+  it('does not read the puller lines that report a loss it declined to record', () => {
+    for (const message of [
+      `[OME] Segment 5 lost for ${STREAM} after the puller stopped, not reporting`,
+      `[OME] Segment 5 lost for ${STREAM} but no stream is registered to record it`,
+    ]) {
+      const hits = armingPatterns().reduce((total, re) => total + [...message.matchAll(re)].length, 0);
+
+      assert.equal(hits, 0, message);
+    }
+  });
+
+  it('does not read an ordinary upload or a mere mention of a discontinuity as an arm', () => {
+    const hits = [segmentUploaded(STREAM, 41, 'abc123'), 'Cleared the pending discontinuity for live/stream_720p']
+      .map((message) => armingPatterns().reduce((total, re) => total + [...message.matchAll(re)].length, 0))
+      .reduce((a, b) => a + b, 0);
+
+    assert.equal(hits, 0);
+  });
+});
+
+describe('the message for the catalog giving up on its own previous state', () => {
+  it('round-trips the feed index and the read count through the derived pattern', () => {
+    const found = catalogStateLostPattern().exec(catalogStateLost('12', 3));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[1], '12');
+    assert.equal(found[2], '3');
+  });
+
+  /**
+   * ⛔ Anchored on the conclusion rather than on the warning. The attempts before it read almost the
+   * same and they KEPT the catalog, so a matcher that took them would report a loss that never
+   * happened, and the finalize-crash scenario would call a correct finalize count a blind read.
+   */
+  it('does not read the attempts that still refused to continue', () => {
+    const retry =
+      '[StreamCatalog] State at index 12 did not read (chunk not found); attempt 2 of 3 before it counts as gone';
+
+    assert.equal(catalogStateLostPattern().test(retry), false);
+  });
+
+  it('counts each occurrence, because one boot can lose the catalog more than once', () => {
+    const log = [catalogStateLost('12', 3), catalogStateLost('13', 3)].join('\n');
+
+    assert.equal([...log.matchAll(catalogStateLostPattern('g'))].length, 2);
   });
 });
