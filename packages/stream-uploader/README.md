@@ -440,18 +440,18 @@ curl -G http://localhost:3000/stream/status \
 
 ## Core Components
 
-| Module               | Description                                                                     |
-| -------------------- | ------------------------------------------------------------------------------- |
-| `StreamOrchestrator` | Central coordinator — manages stream lifecycle, queue, backpressure, recovery   |
-| `StreamUploader`     | Per-stream upload session — uploads segments, updates manifests via Swarm feeds |
-| `StreamCatalog`      | Maintains the stream directory as a Swarm feed                                  |
-| `RecoveryStore`      | Persists stream state to disk for crash recovery                                |
-| `ManifestManager`    | Builds and updates HLS manifests                                                |
-| `AbrLadder`          | The rung list from `ABR_LADDER`, and what maps a stream name back to its rung   |
-| `BeePublisherPool`   | Which Bee node and postage batch each rung publishes through                    |
-| `MasterPlaylist`     | Builds a ladder's multivariant playlist                                         |
-| `MasterFeedWriter`   | Publishes that master to a feed per ladder, topic = the ladder's group id       |
-| `BitrateMeter`       | Measures each rung's real bitrate, which becomes the master's `BANDWIDTH`       |
+| Module               | Description                                                                      |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `StreamOrchestrator` | Central coordinator — manages stream lifecycle, queue, backpressure, recovery    |
+| `StreamUploader`     | Per-stream upload session — uploads segments, updates manifests via Swarm feeds  |
+| `StreamCatalog`      | Maintains the stream directory as a Swarm feed                                   |
+| `RecoveryStore`      | Persists stream state to disk for crash recovery                                 |
+| `ManifestManager`    | Builds and updates HLS manifests                                                 |
+| `AbrLadder`          | The rung list from `ABR_LADDER`, and what maps a stream name back to its rung    |
+| `BeePublisherPool`   | Which Bee node and postage batch each rung publishes through                     |
+| `MasterPlaylist`     | Builds a ladder's multivariant playlist                                          |
+| `MasterFeedWriter`   | Publishes that master to a feed per ladder, topic = the ladder's group id        |
+| `BitrateMeter`       | Measures each rung's real bitrate, which becomes the master's `BANDWIDTH`        |
 | `LadderLiveness`     | Which rungs are still producing, so the master stops advertising one that is not |
 
 ## Scripts

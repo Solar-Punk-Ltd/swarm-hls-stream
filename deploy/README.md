@@ -106,12 +106,12 @@ encoders were producing 8.0. Nothing errors. Announcements fall behind the media
 of video until the lag passes `HLS_WINDOW`, after which SRS deletes each segment before announcing
 it, the tallest rung is unpublished about two minutes in, and the master feed goes on advertising it.
 
-| rungs | fragment | asks | against ~6.7/s |
-| ----: | -------: | ---: | -------------- |
-| 1 | 0.5s | 2.0/s | fine, and the table above applies |
-| 4 | 0.5s | **8.0/s** | **over. Loses the top rung every broadcast** |
-| 4 | 1.0s | 4.0/s | 40% spare. Verified over 600s: lag flat, zero lost |
-| 4 | 2.0s | 2.0/s | 70% spare |
+| rungs | fragment |      asks | against ~6.7/s                                     |
+| ----: | -------: | --------: | -------------------------------------------------- |
+|     1 |     0.5s |     2.0/s | fine, and the table above applies                  |
+|     4 |     0.5s | **8.0/s** | **over. Loses the top rung every broadcast**       |
+|     4 |     1.0s |     4.0/s | 40% spare. Verified over 600s: lag flat, zero lost |
+|     4 |     2.0s |     2.0/s | 70% spare                                          |
 
 So a four-rung ladder runs at `HLS_FRAGMENT=1.0` and pays about one second of capture-to-fetchable
 for it (1.96s against 2.94s, 2026-08-03 sweep of 105 samples). ⚠️ The 6.7/s is one measurement on a

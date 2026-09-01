@@ -112,11 +112,11 @@ shows up as announcements falling behind the media at 0.46s per second of video 
 callback naming a file that is already gone, and the tallest rung is unpublished mid-broadcast while
 the master feed goes on advertising it.
 
-| profile | segments | ladder asks | against ~6.7/s | outcome |
-| --- | --- | --- | --- | --- |
-| `light-client` before | 0.5s | **8.0/s** | over | 1080p dead at ~2 min, 765 segments lost |
-| `light-client` now | 1.0s | **4.0/s** | 40% spare | 600s run, lag flat at 0.0s, zero lost |
-| `in-browser` | 2.0s | 2.0/s | 70% spare | never exposed to this |
+| profile               | segments | ladder asks | against ~6.7/s | outcome                                 |
+| --------------------- | -------- | ----------- | -------------- | --------------------------------------- |
+| `light-client` before | 0.5s     | **8.0/s**   | over           | 1080p dead at ~2 min, 765 segments lost |
+| `light-client` now    | 1.0s     | **4.0/s**   | 40% spare      | 600s run, lag flat at 0.0s, zero lost   |
+| `in-browser`          | 2.0s     | 2.0/s       | 70% spare      | never exposed to this                   |
 
 So light-client's `1.0` is **not** where the gateway path measures best. 0.5s is, and that
 measurement stands. 0.5s is simply unreachable while four rungs are being announced. If the ladder

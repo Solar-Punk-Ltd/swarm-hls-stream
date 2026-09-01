@@ -22,7 +22,10 @@ import {
 /** As `engines/srs/entrypoint.sh` writes it, one block per `ABR_LADDER` rung. */
 function confWithRungs(names: readonly string[]): string {
   const engines = names
-    .map((name) => `        engine ${name} {\n            enabled         on;\n            vcodec          libx264;\n        }`)
+    .map(
+      (name) =>
+        `        engine ${name} {\n            enabled         on;\n            vcodec          libx264;\n        }`,
+    )
     .join('\n');
   return `vhost abr {\n    transcode {\n        enabled     on;\n${engines}\n    }\n}\n`;
 }

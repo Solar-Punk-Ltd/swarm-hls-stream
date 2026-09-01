@@ -89,7 +89,7 @@ this cannot read.
 | Publish, gapless segments, manifest advances                                                             | `happy-path`, green 2026-08-03                                                   | rerun on ladder deploy                         |
 | Ladder: 4 rungs publish, one group, gapless                                                              | `abr-ladder`, never green (attempted 2026-08-27, instrument defects since fixed) | first green pending                            |
 | Ladder survives engine restart as one ladder                                                             | `abr-engine-restart`, same status                                                | first green pending                            |
-| One rung dies, others carry on                                                                           | both legs built: the viewer steps down (V3) and the master stops advertising it   | rerun, neither leg has run inside a full suite |
+| One rung dies, others carry on                                                                           | both legs built: the viewer steps down (V3) and the master stops advertising it  | rerun, neither leg has run inside a full suite |
 | Uploader crash recovery                                                                                  | F, green 2026-08-03                                                              | rerun                                          |
 | Finalize/recovery family (mid-finalize kill, whole-stack restart, corrupt entry, reconnect during drain) | H I J K, ran 2026-08-09 only, never in a full green                              | rerun                                          |
 | Writer bee outage short and long                                                                         | A B, green 2026-08-03                                                            | rerun                                          |
@@ -124,18 +124,18 @@ The single letters are the scenario labels the suite files carry in their own do
 The V numbers are the viewer scenarios, the ones that open a real browser. V2, V3 and V4 were held
 empty when this table was first written and were built on 2026-08-30.
 
-| Number | File                                                | Built   |
-| ------ | --------------------------------------------------- | ------- |
-| V1     | `e2e/suites/viewer/live-playback.test.ts`           | yes     |
-| V2     | `e2e/suites/viewer/quality-switch.test.ts`          | yes     |
-| V3     | `e2e/suites/viewer/rung-outage.test.ts`             | yes     |
-| V4     | `e2e/suites/viewer/vod-playback.test.ts`            | yes     |
-| V5     | `e2e/suites/viewer/broadcast-ended.test.ts`         | yes     |
-| V6     | `e2e/suites/viewer/crash-gateway-outage.test.ts`    | yes     |
-| V7     | `e2e/suites/viewer/crash-uploader-killed.test.ts`   | yes     |
-| V8     | `e2e/suites/viewer/crash-writer-bee-pause.test.ts`  | yes     |
-| V9     | `e2e/suites/viewer/crash-writer-bee-outage.test.ts` | yes     |
-| V10    | `e2e/suites/viewer/crash-engine-restart.test.ts`    | yes     |
+| Number | File                                                | Built |
+| ------ | --------------------------------------------------- | ----- |
+| V1     | `e2e/suites/viewer/live-playback.test.ts`           | yes   |
+| V2     | `e2e/suites/viewer/quality-switch.test.ts`          | yes   |
+| V3     | `e2e/suites/viewer/rung-outage.test.ts`             | yes   |
+| V4     | `e2e/suites/viewer/vod-playback.test.ts`            | yes   |
+| V5     | `e2e/suites/viewer/broadcast-ended.test.ts`         | yes   |
+| V6     | `e2e/suites/viewer/crash-gateway-outage.test.ts`    | yes   |
+| V7     | `e2e/suites/viewer/crash-uploader-killed.test.ts`   | yes   |
+| V8     | `e2e/suites/viewer/crash-writer-bee-pause.test.ts`  | yes   |
+| V9     | `e2e/suites/viewer/crash-writer-bee-outage.test.ts` | yes   |
+| V10    | `e2e/suites/viewer/crash-engine-restart.test.ts`    | yes   |
 
 V6 to V10 are the 2026-08-27 crash matrix promoted into pass/fail, one file per fault. The matrix ran
 six arms over five faults: the gateway outage was measured twice, once with segment bytes from a node

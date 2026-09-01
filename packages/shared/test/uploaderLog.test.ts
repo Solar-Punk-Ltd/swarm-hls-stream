@@ -141,10 +141,7 @@ describe('the manifest publish message', () => {
   });
 
   it('does not match a failed publish, so a retry is not read as a success', () => {
-    assert.equal(
-      manifestUploadedPattern().test('Failed to upload manifest at SOC index 4 of live/stream_720p'),
-      false,
-    );
+    assert.equal(manifestUploadedPattern().test('Failed to upload manifest at SOC index 4 of live/stream_720p'), false);
   });
 });
 

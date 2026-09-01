@@ -126,7 +126,10 @@ export function announcementRefusal(load: AnnouncementLoad, unmeasuredAcknowledg
     'segment before announcing it. The tallest rung is unpublished mid-broadcast and the master feed ' +
     'goes on advertising it, so the run looks healthy and silently measures a three-rung ladder.';
 
-  const fix = `Set HLS_FRAGMENT so the ladder fits: ${fitAt(load, MEASURED_SUSTAINED_PER_S)} is the highest rate a sitting has sustained.`;
+  const fix = `Set HLS_FRAGMENT so the ladder fits: ${fitAt(
+    load,
+    MEASURED_SUSTAINED_PER_S,
+  )} is the highest rate a sitting has sustained.`;
 
   if (load.band === 'broken') {
     return (

@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import {
-  advertisableRenditions,
-  LadderLiveness,
-  RUNG_DEATH_LAG_SEGMENTS,
-} from '../src/libs/LadderLiveness.js';
+import { advertisableRenditions, LadderLiveness, RUNG_DEATH_LAG_SEGMENTS } from '../src/libs/LadderLiveness.js';
 
 /**
  * The rule that stops a master advertising a rung nothing is producing.
