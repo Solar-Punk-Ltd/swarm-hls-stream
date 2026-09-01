@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { CLIENT_LOG_UNKNOWN, fragmentRequested, fragmentRequestedPattern } from '../src/clientLog.js';
+import {
+  CLIENT_LOG_UNKNOWN,
+  FRAGMENT_ABORTED,
+  FRAGMENT_ERRORED,
+  FRAGMENT_LOADED,
+  FRAGMENT_TIMED_OUT,
+  fragmentRequested,
+  fragmentRequestedPattern,
+  fragmentSettled,
+  fragmentSettledPattern,
+} from '../src/clientLog.js';
 
 /**
  * The composer and the matcher are one definition read two ways, so these are about the join between
@@ -76,5 +86,106 @@ describe('the fragment request message', () => {
     const composed = fragmentRequested(3, 412, 'a-rung-address');
 
     assert.equal(/master|ladder|rung|Restarting/i.test(composed.replace('a-rung-address', '')), false);
+  });
+});
+
+/**
+ * The other half of the pair, written when an attempt stops being in flight.
+ *
+ * A request line alone cannot separate six fragments from one fragment asked for six times, because it
+ * carries no ending. Everything here is about the join between the composer and the matcher, and about
+ * the join between the two MESSAGES: a reader that confused one for the other would double-count every
+ * attempt in a run.
+ */
+describe('the fragment settle message', () => {
+  it('reads back the level, the segment number, the outcome and the elapsed it was composed from', () => {
+    const match = fragmentSettledPattern().exec(fragmentSettled(3, 412, FRAGMENT_LOADED, 217));
+
+    assert.ok(match, 'the pattern did not match its own composer');
+    assert.deepEqual(match.slice(1, 5), ['3', '412', 'loaded', '217']);
+  });
+
+  it('reads back every outcome the client can write', () => {
+    const outcomes = [FRAGMENT_LOADED, FRAGMENT_ERRORED, FRAGMENT_ABORTED, FRAGMENT_TIMED_OUT] as const;
+
+    const read = outcomes.map((outcome) => fragmentSettledPattern().exec(fragmentSettled(0, 1, outcome, 5))?.[3]);
+
+    assert.deepEqual(read, ['loaded', 'errored', 'aborted', 'timeout']);
+  });
+
+  it('carries an initialisation segment, whose number is a word', () => {
+    const match = fragmentSettledPattern().exec(fragmentSettled(0, 'initSegment', FRAGMENT_LOADED, 44));
+
+    assert.ok(match);
+    assert.equal(match[2], 'initSegment');
+  });
+
+  it('reads back the stand-in the client writes where it could not read a value', () => {
+    const match = fragmentSettledPattern().exec(
+      fragmentSettled(CLIENT_LOG_UNKNOWN, CLIENT_LOG_UNKNOWN, FRAGMENT_ABORTED, 0),
+    );
+
+    assert.ok(match);
+    assert.deepEqual(match.slice(1, 5), [CLIENT_LOG_UNKNOWN, CLIENT_LOG_UNKNOWN, 'aborted', '0']);
+  });
+
+  /**
+   * ⚠️ The elapsed group is `\S+` rather than `\d+` for this. Wall clock can step backwards under NTP
+   * mid-arm, and a pattern demanding digits would drop the whole line, losing the OUTCOME along with the
+   * duration. The reader is where an unreadable number is named.
+   */
+  it('keeps the outcome when the duration is not a number the pattern could have demanded', () => {
+    const match = fragmentSettledPattern().exec(fragmentSettled(2, 9, FRAGMENT_ERRORED, -3));
+
+    assert.ok(match, 'a negative duration took the whole line with it');
+    assert.deepEqual(match.slice(3, 5), ['errored', '-3']);
+  });
+
+  // The control. Without it every case above passes on a pattern that matches anything.
+  it('matches nothing in an ordinary console line', () => {
+    assert.equal(fragmentSettledPattern().exec('[SwarmHls] master playlist for swarm://owner/topic'), null);
+    assert.equal(fragmentSettledPattern().exec('Fragment settled'), null);
+  });
+
+  /**
+   * ⛔⛔ The two messages must never match each other. A run writes both several times a second, so a
+   * pattern that caught the other kind would double every count taken off either half, and the two are
+   * read against each other rather than alone.
+   */
+  it('is told apart from a request line, in both directions', () => {
+    const requestLine = fragmentRequested(3, 412, RUNG);
+    const settleLine = fragmentSettled(3, 412, FRAGMENT_LOADED, 217);
+
+    assert.equal(fragmentSettledPattern().exec(requestLine), null, 'a request line read as a settle');
+    assert.equal(fragmentRequestedPattern().exec(settleLine), null, 'a settle line read as a request');
+  });
+
+  /** A browser console line carries a prefix the page never wrote, so the match cannot be anchored. */
+  it('finds the message inside a longer console line', () => {
+    const match = fragmentSettledPattern().exec(`[SwarmHls] ${fragmentSettled(2, 88, FRAGMENT_TIMED_OUT, 30_000)} `);
+
+    assert.ok(match);
+    assert.deepEqual(match.slice(1, 5), ['2', '88', 'timeout', '30000']);
+  });
+
+  it('finds every settle in a run of them, given the global flag', () => {
+    const heard = [
+      fragmentSettled(3, 1, FRAGMENT_LOADED, 120),
+      fragmentSettled(3, 2, FRAGMENT_ERRORED, 8_000),
+      fragmentSettled(0, 3, FRAGMENT_LOADED, 90),
+    ];
+
+    const outcomes = [...heard.join('\n').matchAll(fragmentSettledPattern('g'))].map((match) => match[3]);
+
+    assert.deepEqual(outcomes, ['loaded', 'errored', 'loaded']);
+  });
+
+  /**
+   * ⛔⛔ The same hazard as the request line's. `openViewer` forwards any page line carrying one of these
+   * words to the arm's stdout, and this message is written just as often, so a rewording that reached
+   * that filter would push everything else the client said out of the arm log.
+   */
+  it('carries none of the words the harness forwards to the arm log', () => {
+    assert.equal(/master|ladder|rung|Restarting/i.test(fragmentSettled(3, 412, FRAGMENT_LOADED, 217)), false);
   });
 });

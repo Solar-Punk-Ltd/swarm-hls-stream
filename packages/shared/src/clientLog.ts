@@ -22,6 +22,8 @@ const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/g;
 const LEVEL_SLOT = 'LEVELSLOT';
 const SN_SLOT = 'SNSLOT';
 const RUNG_SLOT = 'RUNGSLOT';
+const OUTCOME_SLOT = 'OUTCOMESLOT';
+const ELAPSED_SLOT = 'ELAPSEDSLOT';
 
 /**
  * What a composer writes where the client could not read the value.
@@ -70,6 +72,80 @@ export function fragmentRequestedPattern(flags = ''): RegExp {
   const escaped = fragmentRequested(LEVEL_SLOT, SN_SLOT, RUNG_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(
     escaped.replace(LEVEL_SLOT, '(\\S+)').replace(SN_SLOT, '(\\S+)').replace(RUNG_SLOT, '(\\S+)'),
+    flags,
+  );
+}
+
+/** The bytes arrived and were handed to the player. */
+export const FRAGMENT_LOADED = 'loaded';
+/** The attempt failed. The byte source said no, or said nothing this client could use. */
+export const FRAGMENT_ERRORED = 'errored';
+/** The player stopped wanting this fragment before it arrived, on a level switch, a seek or a teardown. */
+export const FRAGMENT_ABORTED = 'aborted';
+/** The transport gave up waiting. Reachable on the gateway path only, which is the only one with a clock. */
+export const FRAGMENT_TIMED_OUT = 'timeout';
+
+/**
+ * How one attempt at one fragment ended.
+ *
+ * A closed set, and closed on the CLIENT's side rather than the reader's: the client always knows which
+ * of the four it is, because each one is a different callback. A reader is deliberately more tolerant,
+ * so a word added here reaches a report as itself rather than being dropped on the way.
+ */
+export type FragmentOutcome =
+  | typeof FRAGMENT_LOADED
+  | typeof FRAGMENT_ERRORED
+  | typeof FRAGMENT_ABORTED
+  | typeof FRAGMENT_TIMED_OUT;
+
+/**
+ * Written once per fragment attempt, when that attempt stops being in flight, on either byte source.
+ *
+ * The other half of {@link fragmentRequested}, and the half that says what happened next. A request
+ * line alone cannot separate six fragments from one fragment asked for six times, because it carries
+ * no ending: measured live on 2026-09-01, a squeezed viewer's capped stretch held six level-0 requests
+ * and nothing in the artifact could say whether that was six segments or one retried. Pairing the two
+ * lines on level and segment number answers it, and the elapsed says what the attempt cost.
+ *
+ * `elapsedMs` is wall clock from the `load` call to this line, held per loader instance because hls.js
+ * builds one loader per fragment.
+ *
+ * ⛔⛔ **The words `master`, `ladder`, `rung` and `Restarting` must stay out of this line**, for the
+ * reason spelled out on {@link fragmentRequested}: the e2e harness forwards any page line carrying one
+ * of them to the arm's stdout, and this message is written as often as that one. ⭐ It names no rung
+ * for the same reason it needs none: the request line beside it already did.
+ */
+export function fragmentSettled(
+  level: number | string,
+  sn: number | string,
+  // ⭐ The stand-ins are in the signature rather than cast in at the pattern builder, so a caller can
+  // pass one of the four outcomes and nothing else. `level` and `sn` need no such narrowing: any string
+  // is legal there, including {@link CLIENT_LOG_UNKNOWN}.
+  outcome: FragmentOutcome | typeof OUTCOME_SLOT,
+  elapsedMs: number | typeof ELAPSED_SLOT,
+): string {
+  // ⚠️ The unit is spaced off the number. Written `217ms` the elapsed group would have to be matched by
+  // backtracking out of its own unit, and a value that was not a number would read as `laterms`.
+  return `Fragment settled: level ${level} sn ${sn} ${outcome} after ${elapsedMs} ms`;
+}
+
+/**
+ * {@link fragmentSettled} as a matcher: the level, the segment number, the outcome and the elapsed as
+ * capture groups 1, 2, 3 and 4.
+ *
+ * Built the same way {@link fragmentRequestedPattern} is, and every group is `\S+` for the same reason.
+ * ⚠️ That includes the elapsed. A clock stepped backwards by NTP mid-arm writes a negative one, and a
+ * pattern demanding digits would drop the whole line, losing the outcome along with the duration. The
+ * reader parses the number and says so where it cannot.
+ */
+export function fragmentSettledPattern(flags = ''): RegExp {
+  const escaped = fragmentSettled(LEVEL_SLOT, SN_SLOT, OUTCOME_SLOT, ELAPSED_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(
+    escaped
+      .replace(LEVEL_SLOT, '(\\S+)')
+      .replace(SN_SLOT, '(\\S+)')
+      .replace(OUTCOME_SLOT, '(\\S+)')
+      .replace(ELAPSED_SLOT, '(\\S+)'),
     flags,
   );
 }

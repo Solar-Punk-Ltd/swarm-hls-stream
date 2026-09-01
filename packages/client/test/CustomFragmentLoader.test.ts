@@ -1,4 +1,4 @@
-import { CLIENT_LOG_UNKNOWN, fragmentRequestedPattern } from '@swarm-hls-stream/shared';
+import { CLIENT_LOG_UNKNOWN, fragmentRequestedPattern, fragmentSettledPattern } from '@swarm-hls-stream/shared';
 import type { FragmentLoaderContext, HlsConfig, LoaderCallbacks, LoaderConfiguration, LoaderContext } from 'hls.js';
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, vi } from 'vitest';
@@ -777,6 +777,387 @@ describe('CustomFragmentLoader announcing which level hls.js asked for', () => {
     );
 
     assert.equal(reachedTransport.mock.calls.length, 1, 'a logging failure cost the viewer their fragment');
+  });
+});
+
+/**
+ * The other half of that instrument: what became of each attempt, and how long it took.
+ *
+ * ⛔ Also an instrument, and nothing below the loader reads it. What it exists for is a reading the
+ * request line cannot give. Six requests at one level is six fragments if they arrived and ONE fragment
+ * asked for six times if they did not, and those are opposite findings: the first is a player stepping
+ * down and being served, the second is a player stepping down and getting nothing. A squeeze arm on
+ * 2026-09-01 produced exactly that shape with no way to tell which.
+ *
+ * ⭐ Both byte sources are driven here, because an ending recorded on one and not the other would make
+ * the arms unreadable against each other, which is the whole basis of this project's viewer matrix.
+ */
+describe('CustomFragmentLoader announcing how each attempt ended', () => {
+  const RUNG = 'swarm://0x4f0e1c2b3a49586772635441302f1e0d0c0b0a09/9c4e1f60b8a2d357e0f1a2b3c4d5e6f7';
+
+  const fragmentOf = (level: number, sn: number | string) =>
+    ({ level, sn, baseurl: RUNG } as FragmentLoaderContext['frag']);
+
+  let announced: string[];
+
+  /** Every settle line written so far, as level, segment number, outcome and elapsed. */
+  const settles = (): string[][] =>
+    announced
+      .map((line) => fragmentSettledPattern().exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => match.slice(1, 5));
+
+  /**
+   * Drive one fragment through the loader, and hand back the loader plus both sets of callbacks: the
+   * ones hls.js gave it, and the ones it gave the transport. The second is how a test answers as the
+   * network would, including with the endings hls.js's own loader would produce.
+   */
+  function drive(context: Partial<FragmentLoaderContext> = {}) {
+    let handed: LoaderCallbacks<LoaderContext> | null = null;
+    vi.spyOn(transport, 'load').mockImplementation((_context, _config, callbacks) => {
+      handed = callbacks;
+    });
+    vi.spyOn(transport, 'abort').mockImplementation(() => {});
+    vi.spyOn(transport, 'destroy').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    const fromHls = {
+      onSuccess: vi.fn(),
+      onError: vi.fn(),
+      onTimeout: vi.fn(),
+    } as unknown as LoaderCallbacks<LoaderContext>;
+
+    loader.load(
+      { url: FRAGMENT_URL, frag: fragmentOf(3, 412), ...context } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      fromHls,
+    );
+
+    const calls = (fn: unknown) => (fn as { mock: { calls: unknown[][] } }).mock.calls;
+    return {
+      loader,
+      fromHls,
+      transport: handed as LoaderCallbacks<LoaderContext> | null,
+      successes: () => calls(fromHls.onSuccess),
+      errors: () => calls(fromHls.onError),
+    };
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    runStaggerInline();
+    announced = [];
+    vi.spyOn(console, 'debug').mockImplementation((line: unknown) => {
+      announced.push(String(line));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  it('says a gateway segment loaded, naming the level and the segment number', () => {
+    const { transport: toTransport } = drive();
+
+    toTransport?.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
+
+    assert.deepEqual(
+      settles().map((settle) => settle.slice(0, 3)),
+      [['3', '412', 'loaded']],
+    );
+  });
+
+  it('says a gateway segment errored', () => {
+    const { transport: toTransport } = drive();
+
+    toTransport?.onError({ code: 0, text: 'gateway unreachable' }, {} as LoaderContext, undefined, {} as never);
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['3', '412', 'errored']);
+  });
+
+  /** ⛔ Its own word, not folded into `errored`. A gateway that answers slowly and one that refuses are
+   * different faults, and this is the only path with a clock to tell them apart. */
+  it('says a gateway segment timed out, rather than calling it an error', () => {
+    const { transport: toTransport } = drive();
+
+    toTransport?.onTimeout({} as never, {} as LoaderContext, undefined);
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['3', '412', 'timeout']);
+  });
+
+  /**
+   * hls.js abandons fragments as a matter of course, on a level switch, a seek and every teardown. An
+   * abandoned attempt that went unrecorded would leave the level's request count with no ending, which
+   * reads as a fragment still in flight at the end of the run.
+   */
+  it('says a gateway segment was aborted', () => {
+    const { transport: toTransport } = drive();
+
+    toTransport?.onAbort?.({} as never, {} as LoaderContext, undefined);
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['3', '412', 'aborted']);
+  });
+
+  /** hls.js declares `onAbort` optional and this loader supplies one regardless, so a caller that had
+   * none must not be handed anything. */
+  it('reports an abort without inventing a callback hls.js never gave it', () => {
+    const { transport: toTransport, fromHls } = drive();
+
+    assert.doesNotThrow(() => toTransport?.onAbort?.({} as never, {} as LoaderContext, undefined));
+    assert.equal(fromHls.onAbort, undefined, 'the loader handed hls.js a callback it never asked for');
+  });
+
+  /**
+   * ⛔⛔ One attempt, one ending. hls.js destroys a loader it has already finished with, and a second
+   * line naming the same level and segment number would be counted twice by anything pairing the two
+   * halves of this instrument.
+   */
+  it('writes one settle per attempt, however many times hls.js tears the loader down', () => {
+    const { loader, transport: toTransport } = drive();
+
+    toTransport?.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
+    loader.abort();
+    loader.destroy();
+    toTransport?.onError({ code: 0, text: 'late' }, {} as LoaderContext, undefined, {} as never);
+
+    assert.equal(settles().length, 1, 'one attempt produced more than one ending');
+  });
+
+  /** ⛔ The request line is written above the url check, so the refusal has to be settled too or that
+   * request would be the one with no ending. */
+  it('settles a url it refuses, since it announced the request for it', () => {
+    drive({ url: 'blob:http:/bytes/abc123', frag: fragmentOf(2, 9) });
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['2', '9', 'errored']);
+  });
+
+  it('reports the elapsed as the wall clock the attempt actually took', () => {
+    const readings = [1_000, 1_350];
+    let next = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => readings[Math.min(next++, readings.length - 1)]);
+
+    const { transport: toTransport } = drive();
+    toTransport?.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined);
+
+    assert.equal(settles()[0][3], '350');
+  });
+
+  // A settle is an observation, so it must not be able to stop a fragment however badly it goes.
+  it('still serves the fragment when the console throws on the settle', () => {
+    const { transport: toTransport, successes } = drive();
+    vi.spyOn(console, 'debug').mockImplementation(() => {
+      throw new Error('the console is gone');
+    });
+
+    assert.doesNotThrow(() => toTransport?.onSuccess(arrived(), {} as never, {} as LoaderContext, undefined));
+    assert.equal(successes().length, 1, 'a logging failure cost the viewer their fragment');
+  });
+});
+
+/**
+ * The same accounting on the in-tab path, which reaches none of the transport's callbacks.
+ *
+ * ⛔ `retrieveBytes` takes no abort signal, so an abandoned fragment cannot be called off and its answer
+ * is dropped instead. That drop is an ENDING and it costs the node real work, so an arm that recorded
+ * nothing there would report abandoned retrievals as free.
+ */
+describe('CustomFragmentLoader announcing how an in-tab attempt ended', () => {
+  const RUNG = 'swarm://0x4f0e1c2b3a49586772635441302f1e0d0c0b0a09/9c4e1f60b8a2d357e0f1a2b3c4d5e6f7';
+
+  let announced: string[];
+
+  const settles = (): string[][] =>
+    announced
+      .map((line) => fragmentSettledPattern().exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => match.slice(1, 5));
+
+  /** Drive one fragment through a loader built while the in-tab backend was selected. */
+  function driveThroughWeeb3(url = WEEB3_FRAGMENT_URL) {
+    vi.stubEnv('VITE_BROWSER_FETCH_BACKEND', FETCH_BACKEND_WEEB3);
+    vi.spyOn(transport, 'load').mockImplementation(() => {});
+    vi.spyOn(transport, 'abort').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    const fromHls = {
+      onSuccess: vi.fn(),
+      onError: vi.fn(),
+      onTimeout: vi.fn(),
+    } as unknown as LoaderCallbacks<LoaderContext>;
+
+    loader.load(
+      { url, frag: { level: 0, sn: 7, baseurl: RUNG } as FragmentLoaderContext['frag'] } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      fromHls,
+    );
+
+    const calls = (fn: unknown) => (fn as { mock: { calls: unknown[][] } }).mock.calls;
+    return { loader, successes: () => calls(fromHls.onSuccess), errors: () => calls(fromHls.onError) };
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    runStaggerInline();
+    announced = [];
+    vi.spyOn(console, 'debug').mockImplementation((line: unknown) => {
+      announced.push(String(line));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  it('says the node served the segment', async () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array([1, 2, 3]));
+
+    const { successes } = driveThroughWeeb3();
+    await vi.waitFor(() => assert.equal(successes().length, 1));
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'loaded']);
+  });
+
+  it('says the node could not serve it', async () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockRejectedValue(new Error('no peer had the chunk'));
+
+    const { errors } = driveThroughWeeb3();
+    await vi.waitFor(() => assert.equal(errors().length, 1));
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'errored']);
+  });
+
+  /**
+   * ⭐ Settled where the retrieval finished rather than where hls.js walked away, because that is when
+   * the node stopped working. An ending stamped at the abort would report the retrieval as instant.
+   */
+  it('says an abandoned retrieval was aborted, when it finally answers', async () => {
+    let deliver = (_bytes: Uint8Array) => {};
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockReturnValue(
+      new Promise<Uint8Array>((resolve) => {
+        deliver = resolve;
+      }),
+    );
+
+    const { loader, successes, errors } = driveThroughWeeb3();
+    loader.abort();
+    assert.equal(settles().length, 0, 'the ending was stamped at the abort rather than at the answer');
+    deliver(new Uint8Array([1, 2, 3]));
+    await vi.waitFor(() => assert.equal(settles().length, 1));
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'aborted']);
+    assert.equal(successes().length, 0, 'an abandoned fragment was still handed to hls.js');
+    assert.equal(errors().length, 0);
+  });
+
+  it('says an abandoned retrieval that failed was aborted, not errored', async () => {
+    let refuse = (_error: Error) => {};
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockReturnValue(
+      new Promise<Uint8Array>((_resolve, reject) => {
+        refuse = reject;
+      }),
+    );
+
+    const { loader, errors } = driveThroughWeeb3();
+    loader.abort();
+    refuse(new Error('no peer had the chunk'));
+    await vi.waitFor(() => assert.equal(settles().length, 1));
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'aborted']);
+    assert.equal(errors().length, 0, 'an abandoned fragment reported its failure to hls.js anyway');
+  });
+
+  it('settles a url carrying no reference, since it announced the request for it', () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes');
+
+    driveThroughWeeb3('http://127.0.0.1:1633/bytes/not-a-reference');
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'errored']);
+  });
+});
+
+/**
+ * The one attempt no callback owns: a fragment hls.js abandons while the stagger still holds it.
+ *
+ * No transport was ever reached, so nothing downstream will ever end it. Left unrecorded it would be the
+ * only request line in a run with no ending, which reads as a fragment still in flight when the arm
+ * closed.
+ */
+describe('CustomFragmentLoader settling a fragment abandoned before it was sent', () => {
+  let staggered: (() => void)[] = [];
+  let announced: string[];
+
+  const settles = (): string[][] =>
+    announced
+      .map((line) => fragmentSettledPattern().exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => match.slice(1, 5));
+
+  function heldBack() {
+    vi.spyOn(transport, 'load').mockImplementation(() => {});
+    vi.spyOn(transport, 'abort').mockImplementation(() => {});
+    vi.spyOn(transport, 'destroy').mockImplementation(() => {});
+
+    const loader = new CustomFragmentLoader({} as HlsConfig);
+    loader.load(
+      {
+        url: FRAGMENT_URL,
+        frag: { level: 1, sn: 88, baseurl: 'swarm://0xowner/topic' } as FragmentLoaderContext['frag'],
+      } as FragmentLoaderContext,
+      {} as LoaderConfiguration,
+      { onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn() } as unknown as LoaderCallbacks<LoaderContext>,
+    );
+    return loader;
+  }
+
+  beforeEach(() => {
+    manifestFetcher.feedHealth.clear();
+    staggered = [];
+    announced = [];
+    vi.spyOn(requestJitter, 'stagger').mockImplementation((task) => {
+      staggered.push(task);
+      return { cancel: () => {} };
+    });
+    vi.spyOn(console, 'debug').mockImplementation((line: unknown) => {
+      announced.push(String(line));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    manifestFetcher.feedHealth.clear();
+  });
+
+  it('says it was aborted when hls.js abandons it inside the stagger', () => {
+    const loader = heldBack();
+
+    loader.abort();
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['1', '88', 'aborted']);
+  });
+
+  it('says the same when hls.js destroys it inside the stagger', () => {
+    const loader = heldBack();
+
+    loader.destroy();
+
+    assert.deepEqual(settles()[0].slice(0, 3), ['1', '88', 'aborted']);
+  });
+
+  /**
+   * The counterpart, and the reason this is keyed on the stagger still holding the fragment. Once it is
+   * away, the transport owns the ending, and settling here as well would double-count the attempt.
+   */
+  it('leaves the ending to the transport once the fragment is away', () => {
+    const loader = heldBack();
+    staggered[0]();
+
+    loader.abort();
+
+    assert.equal(settles().length, 0, 'a fragment already handed over was settled by the stagger path too');
   });
 });
 
