@@ -142,16 +142,18 @@ six arms over five faults: the gateway outage was measured twice, once with segm
 in the tab and once through a gateway, and those are V6 under each of the two run profiles rather
 than two files.
 
-⚠️ **Two of them assert a defect, on purpose.** V7 and V9 assert that the overlay says nothing while
-the picture is frozen, which is issue #100 and is what the deployment does. They are written so that
-fixing #100 turns them red with a message saying exactly that. The alternative, asserting the
-behaviour we want, is a case that has never passed and tells nobody anything.
+⚠️ **V7 and V9 tolerate the overlay saying nothing.** Both pass `mustSpeak: false`, so they refuse
+only what is untrue and let silence through, and each prints whether the client explained the freeze
+as an observation rather than an assertion. That is issue #100: this client may genuinely not know
+what happened, so the day it starts explaining the fault both cases stay green.
 
-⛔ **Expect V9 to turn red on its next run, for the good reason.** On 2026-08-31 it recorded the cost
-of having no failover: one rung's node stopped, three kept publishing, and the viewer froze
-permanently and was told nothing. The failover was armed on 2026-09-01 and a viewer now leaves a dead
-rung in about seven seconds with no freeze at all, so the frozen picture V9 asserts should no longer
-happen. A red there means read the message before touching the assertion.
+⛔ **This paragraph said the opposite until 2026-09-01**, claiming both asserted the defect and would
+turn red when #100 was fixed. They were changed to the tolerant form and the doc was not. Read the
+`frozenOverlayRefusal` call in the suite, not this table, before predicting what a run will do.
+
+**What made V9 red on 2026-08-31 was `resumeRefusal`, not the overlay**: one rung's node stopped,
+three kept publishing, and the viewer never played through the break at all. That is the cost of
+having no failover, and the failover was armed on 2026-09-01, so V9 is expected to go **green**.
 
 ### What "driver only" means
 
