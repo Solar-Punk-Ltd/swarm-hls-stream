@@ -151,9 +151,17 @@ Blocked on money and infrastructure, in this order:
 
 ## Open reds, not part of the phases
 
-- **H, killed inside finalize.** Fixed and proven green at 2s segments on 2026-08-29, red again at
-  0.5s. Either the fix is segment-length sensitive or the shorter stage reopens the window.
-- **E, media-engine restart.** Cancelled by a timeout rather than failing an assertion. Undiagnosed.
+- **H, killed inside finalize. ✅ CAUSED AND FIXED 2026-09-01**, and the segment-length story here was
+  a coincidence rather than a mechanism. Read off the host log: a rung recovered from the crash
+  announces itself before it finalizes, that announcement carries no `index` because it has not
+  published its recording yet, and `mergeRendition` replaced the finished rendition wholesale. The
+  index went, `renditions.every(r => r.index)` went false, and **the whole finished ladder went back
+  to `live` in the catalog** until the recovery timer finalized it a second time. So for about a
+  minute an ended recording was advertised as a live broadcast, which is the larger half of the harm.
+  Fixed in `StreamCatalog.keepingWhatFinished`. **Not yet armed on a deployed stack.**
+- **E, media-engine restart. ✅ PASSES** in the 2026-09-01 sitting. It was last seen cancelled by a
+  timeout rather than failing an assertion, and nothing was changed for it, so treat this as one
+  green rather than as a diagnosis.
 - **V8's counter is soft.** `discontinuitiesArmed` counts log lines across three different messages,
   one of which repeats the same segment up to four times. It is not a count of discontinuities and
   any figure quoted from it should be treated as an upper bound.
