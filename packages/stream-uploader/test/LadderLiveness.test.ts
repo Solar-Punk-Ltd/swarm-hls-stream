@@ -170,6 +170,58 @@ describe('a ladder too small to judge', () => {
   });
 });
 
+describe('the shape of the ladder, which is what decides whether to rewrite the master', () => {
+  it('lists every rung while all of them are producing', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+
+    assert.deepEqual(liveness.liveRungs().sort(), [...LADDER].sort());
+  });
+
+  it('drops a rung that has stopped, which is the change a republish watches for', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+
+    assert.deepEqual(liveness.liveRungs().sort(), ['360p', '480p', '720p']);
+  });
+
+  it('puts it back when it publishes again, so the master is rewritten a second time', () => {
+    const liveness = new LadderLiveness();
+    everyRungDelivers(liveness);
+    for (let segment = 0; segment < RUNG_DEATH_LAG_SEGMENTS; segment++) {
+      everyRungDelivers(liveness, ['360p', '480p', '720p']);
+    }
+    assert.equal(liveness.liveRungs().includes('1080p'), false);
+
+    liveness.recordDelivered('1080p');
+
+    assert.deepEqual(liveness.liveRungs().sort(), [...LADDER].sort());
+  });
+
+  /**
+   * ⛔ The shape must not flicker while nothing is wrong, or a healthy broadcast rewrites its master
+   * on a loop and every rewrite is a feed write that costs postage.
+   */
+  it('does not change on a healthy ladder, however long it runs', () => {
+    const liveness = new LadderLiveness();
+    const shapes = new Set<string>();
+
+    for (let round = 0; round < 60; round++) {
+      everyRungDelivers(liveness);
+      shapes.add(liveness.liveRungs().sort().join(','));
+    }
+
+    assert.equal(shapes.size, 1, `the ladder shape flickered: ${[...shapes].join(' | ')}`);
+  });
+
+  it('knows nothing before the first delivery, rather than guessing a ladder', () => {
+    assert.deepEqual(new LadderLiveness().liveRungs(), []);
+  });
+});
+
 describe('what the master is allowed to advertise', () => {
   const rendition = (name: string) => ({ name, height: Number(name.replace('p', '')) });
 

@@ -98,6 +98,12 @@ export class StreamCatalog {
    */
   private readonly liveness = new Map<string, LadderLiveness>();
 
+  /** The last ladder shape a master was written for, by group, as a joined list of rung names. */
+  private readonly advertised = new Map<string, string>();
+
+  /** The identity each ladder last announced under, so a rung dying can be written as that owner. */
+  private readonly lastIdentity = new Map<string, LadderIdentity>();
+
   /**
    * One segment of this rung reached Swarm.
    *
@@ -105,7 +111,42 @@ export class StreamCatalog {
    * place a delivery is known to have actually landed rather than been attempted.
    */
   public recordRungDelivered(group: string, rung: string): void {
-    this.livenessOf(group).recordDelivered(rung);
+    const liveness = this.livenessOf(group);
+    liveness.recordDelivered(rung);
+    this.republishIfLadderShapeChanged(group, liveness.liveRungs());
+  }
+
+  /**
+   * Rewrite the master when the set of producing rungs changes, and only then.
+   *
+   * ⛔⛔⛔ **Without this the filter never runs at the moment it matters.** `upsertRendition` is the
+   * only path that writes a master, and it fires on a rendition announce: at startup and on bitrate
+   * drift. A rung dying is neither. Measured live 2026-09-01 over a clean two minute outage with
+   * `activeStreams 3` throughout, the master was not rewritten once, so a viewer joining was offered
+   * the dead rung for the whole outage even with the filter deployed and correct.
+   *
+   * Fire and forget, deliberately: the caller is the segment path and a master write is a feed write
+   * behind a queue. `advertised` is stamped BEFORE the write rather than after, so a burst of
+   * deliveries across the transition queues one republish instead of one per segment. The cost of
+   * that ordering is that a failed write is not retried here, which is right: the next transition
+   * republishes, and `upsertRendition` rewrites the master on every announce regardless.
+   */
+  private republishIfLadderShapeChanged(group: string, liveRungs: readonly string[]): void {
+    const shape = liveRungs.join(',');
+    if (this.advertised.get(group) === shape) {
+      return;
+    }
+    const identity = this.lastIdentity.get(group);
+    if (identity === undefined) {
+      // Nothing has announced this ladder yet, so there is no master to correct and no owner to
+      // write as. The first announce publishes the right shape anyway.
+      return;
+    }
+
+    this.advertised.set(group, shape);
+    void this.republishMaster(identity).catch((error) => {
+      this.logger.error(`[StreamCatalog] Could not rewrite the master for ${group} after its rungs changed:`, error);
+    });
   }
 
   private livenessOf(group: string): LadderLiveness {
@@ -281,16 +322,46 @@ export class StreamCatalog {
         // ⛔ A master naming a rung nothing is producing offers a viewer a quality with nothing
         // behind it. The player moves them off within about seven seconds, so this is the last few
         // seconds of that harm rather than all of it, and it is harm a stream need not cause.
-        const advertised = advertisableRenditions(
-          entry.renditions ?? [],
-          this.livenessOf(identity.group),
-        );
+        const advertised = advertisableRenditions(entry.renditions ?? [], this.livenessOf(identity.group));
+        // Both remembered here because this is the path that always runs: a ladder that never
+        // announces has no master for a rung death to correct, and no owner to write it as.
+        this.lastIdentity.set(identity.group, identity);
+        this.advertised.set(identity.group, advertised.map((rendition) => rendition.name).join(','));
         const published = await this.masterWriter?.publish(identity.group, advertised);
 
         return [
           ...withoutGroup(previous, identity.owner, identity.group),
           published ? withMaster(entry, published) : entry,
         ];
+      }),
+    );
+  }
+
+  /**
+   * Rewrite one ladder's master from the entry the catalog already holds.
+   *
+   * Shares `writeFeed` with {@link upsertRendition} rather than reaching for the master writer
+   * directly, because the entry carries the master's index and a master written without updating it
+   * leaves the catalog pointing a viewer at the previous version.
+   */
+  private async republishMaster(identity: LadderIdentity): Promise<void> {
+    return this.queue.add(() =>
+      this.writeFeed(async (previous) => {
+        const entry = previous.find((e) => e.owner === identity.owner && e.group === identity.group);
+        if (!entry) {
+          return previous;
+        }
+
+        const advertised = advertisableRenditions(entry.renditions ?? [], this.livenessOf(identity.group));
+        const published = await this.masterWriter?.publish(identity.group, advertised);
+        if (!published) {
+          return previous;
+        }
+
+        this.logger.log(
+          `[StreamCatalog] Ladder ${identity.group} now produces ${advertised.length} rung(s), master rewritten`,
+        );
+        return [...withoutGroup(previous, identity.owner, identity.group), withMaster(entry, published)];
       }),
     );
   }

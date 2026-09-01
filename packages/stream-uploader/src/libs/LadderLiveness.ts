@@ -98,6 +98,18 @@ export class LadderLiveness {
   }
 
   /**
+   * The rungs this ladder has seen deliver that have not since stopped, in delivery order.
+   *
+   * ⛔ Judged against the rungs this tracker knows about rather than against a caller's list, so it
+   * can answer before anyone has handed it a rendition set. That is what lets the segment path ask
+   * "has the shape of this ladder changed" on every delivery without reading the catalog feed.
+   */
+  public liveRungs(): string[] {
+    const known = [...this.delivered.keys()];
+    return known.filter((rung) => !this.hasStopped(rung, known));
+  }
+
+  /**
    * The upper middle of what the ladder's rungs have delivered.
    *
    * Upper rather than lower so two rungs dying together are both still judged against the two that
