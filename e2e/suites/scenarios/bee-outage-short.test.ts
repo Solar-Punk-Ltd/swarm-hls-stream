@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { containerName, containerNameFor, loadConfig } from '../../src/config.js';
-import { discoverStamp, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { isContiguous, parseUploaderLog, segmentIndicesByStream } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { nodesBehind, publisherServices } from '../../src/harness/publishers.js';
+import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -20,12 +21,21 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * Logs are scoped with `--since <host time captured at start>` because each publish session
  * restarts segment numbering at 0. Publishes a real stream + freezes a real container + uses the
  * live stamp — run with the profile deployed and a funded stamp.
+ *
+ * ⛔ **Counted per rung and waited for per rung, never merged.** The claim here is that nothing was
+ * lost, so every reading has to be of a rung that has finished flushing the backlog the pause built
+ * up. Waiting on the merged fastest rung clears as soon as ONE rung is past the outage, and the
+ * contiguity and discontinuity checks then run against slower rungs that are still catching up: a
+ * loss or a discontinuity landing seconds later is a green this suite has already printed. That is a
+ * false pass in the one scenario whose entire claim is zero loss, and it is why the per-rung
+ * structure its sibling `bee-outage-long` carries belongs here too.
  */
 
 const OUTAGE_MS = 8_000;
 const WARMUP_SEGMENTS = 3;
 const POST_OUTAGE_SEGMENTS = 4;
-const SEGMENT_WAIT_MS = 90_000;
+/** Sized as `bee-outage-long` sizes it: the waits are per rung now, so the slowest rung is the clock. */
+const SEGMENT_WAIT_MS = 120_000;
 const MIN_STAMP_TTL_S = 600;
 
 const cfg = loadConfig();
@@ -49,8 +59,7 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
       (service) => containerNameFor(cfg.profile, service),
     );
 
-    const stamp = await discoverStamp(host, cfg);
-    assert.ok(stamp.batchTTL > MIN_STAMP_TTL_S, `stamp TTL ${stamp.batchTTL}s too low to run a stream`);
+    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
     await waitForIdle(host, cfg);
     startedAt = await host.nowIso();
     publisher = startPublisher(cfg);
@@ -63,16 +72,24 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
   });
 
   it('loses no segments across an 8s outage and arms no discontinuity', async () => {
-    const uploaded = async (): Promise<number[]> =>
-      parseUploaderLog(await host.logsSince(uploader, startedAt)).uploadedSegments;
+    const byStream = async () => segmentIndicesByStream(await host.logsSince(uploader, startedAt));
+    const expectedStreams = cfg.abrEnabled ? cfg.abrRungs.length : 1;
 
-    await waitFor(async () => (await uploaded()).length >= WARMUP_SEGMENTS, {
-      timeoutMs: SEGMENT_WAIT_MS,
-      intervalMs: 2_000,
-      label: `warmup: ${WARMUP_SEGMENTS} segments before outage (check publisher stderr if this stalls)`,
-    });
+    await waitFor(
+      async () => {
+        const streams = await byStream();
+        return streams.size >= expectedStreams && [...streams.values()].every((idx) => idx.length >= WARMUP_SEGMENTS);
+      },
+      {
+        timeoutMs: SEGMENT_WAIT_MS,
+        intervalMs: 2_000,
+        label:
+          `warmup: ${WARMUP_SEGMENTS} segments on each of ${expectedStreams} stream(s) before the outage ` +
+          '(check publisher stderr if this stalls)',
+      },
+    );
 
-    const resumeTarget = Math.max(...(await uploaded())) + POST_OUTAGE_SEGMENTS;
+    const preOutageMaxOf = new Map([...(await byStream())].map(([id, idx]) => [id, Math.max(...idx)]));
 
     // Together rather than in sequence: a staggered pause gives the rungs different outage windows,
     // and what this asserts is that none of them lost anything over the same one.
@@ -80,15 +97,26 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
     await sleep(OUTAGE_MS);
     await Promise.all(bees.map((bee) => host.unpause(bee)));
 
+    // Per stream, and every stream, for the reason the warmup is. Waiting on the fastest rung reads
+    // a slower rung's still-pending backlog as nothing pending: the gap it is about to log has not
+    // been written yet, so the checks below see an unbroken run and call the outage lossless.
     await waitFor(
       async () => {
-        const ups = await uploaded();
-        return ups.length > 0 && Math.max(...ups) >= resumeTarget;
+        const streams = await byStream();
+        return [...preOutageMaxOf].every(([id, preMax]) => {
+          const resumed = streams.get(id) ?? [];
+          return resumed.length > 0 && Math.max(...resumed) >= preMax + POST_OUTAGE_SEGMENTS;
+        });
       },
-      { timeoutMs: SEGMENT_WAIT_MS, intervalMs: 2_000, label: 'segments resume + advance after recovery' },
+      { timeoutMs: SEGMENT_WAIT_MS, intervalMs: 2_000, label: 'every stream resumes and advances after the outage' },
     );
 
-    const events = parseUploaderLog(await host.logsSince(uploader, startedAt));
+    // ⛔ One log read for both verdicts below, so they describe the same moment. Off two fetches
+    // they describe two, and a discontinuity arming in between is absent from the count while the
+    // hole it left is present in the indices, which reads as the two checks contradicting each
+    // other rather than as the one finding it is.
+    const settled = await host.logsSince(uploader, startedAt);
+    const events = parseUploaderLog(settled);
     assert.equal(
       events.discontinuitiesArmed,
       0,
@@ -98,7 +126,7 @@ describe('A — bee outage < retry window: buffer, zero loss, no discontinuity',
     );
     // Per stream: the merged view of a ladder's four counters holes at window boundaries while no
     // rung has lost anything, and can mask a real one-rung gap behind a sibling's healthy index.
-    for (const [streamId, indices] of segmentIndicesByStream(await host.logsSince(uploader, startedAt))) {
+    for (const [streamId, indices] of segmentIndicesByStream(settled)) {
       assert.ok(
         isContiguous(indices),
         `segment indices of ${streamId} must be gapless through the outage; got: ${indices.join(',')}`,
