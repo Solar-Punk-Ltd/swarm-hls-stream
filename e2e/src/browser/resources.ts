@@ -55,6 +55,20 @@ export interface NodeReading {
   rung: string;
   /** Host port, which is how a node is matched between the before and after readings. */
   port: number;
+  /**
+   * The first eight characters of the batch id, which is the form everything downstream may hold.
+   *
+   * ⛔ **Truncate where the field is built, never only where it is printed.** A full batch id is a
+   * live credential-shaped value: anyone holding it can stamp uploads against a batch this project
+   * pays for. The warning line below already sliced to eight, and that was read as the rule being
+   * kept, but `runFiles.ts` serializes this whole object into `docs/bench/*.json` without going near
+   * the display path. Twenty-eight run artifacts carried the full sixty-four characters before anyone
+   * noticed, because the one place that obeyed the rule was not the one place that wrote a file.
+   *
+   * Eight characters is what the deployment already identifies a batch by: `/health` reports the
+   * truncated form, `matchBatch` finds a row by that prefix, and node-to-node matching keys on
+   * `port`. So nothing here needs the rest, and anything that does should read it off the node.
+   */
   batchId: string;
   /** The fullest bucket, which is the number the batch enforces. */
   postageUtilization: number;
@@ -166,7 +180,7 @@ export async function readResources(host: Host, cfg: E2EConfig): Promise<Resourc
       return {
         rung: node.rungs.join('+'),
         port: node.port,
-        batchId: stamp.batchID,
+        batchId: stamp.batchID.slice(0, 8),
         postageUtilization: stamp.utilization,
         postageCapacity: 2 ** (stamp.depth - stamp.bucketDepth),
         postageTtlDays: stamp.batchTTL / 86_400,

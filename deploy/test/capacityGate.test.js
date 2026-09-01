@@ -168,7 +168,8 @@ describe('the shared gate refuses a caller that cannot use it', () => {
  * driver to source it inherits tested behaviour rather than a hope that its own wiring is right.
  */
 describe('the shared gate reads the batch the uploader is publishing with', () => {
-  const BATCH = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+  /** Synthetic. A live batch id in a committed fixture is a stamp anyone can spend against. */
+  const BATCH = 'a'.repeat(64);
 
   /** Depth 25 on purpose: 512 buckets, which is what the measurement batch became when it was diluted. */
   function stubNode({ utilization = 254, ttlSeconds = 941760, usable = true, uploaderEnv = `STAMP=${BATCH}\n` }) {

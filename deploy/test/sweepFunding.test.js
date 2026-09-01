@@ -46,7 +46,8 @@ function bzzToPlur(bzz) {
   return (BigInt(Math.round(bzz * 1000)) * PLUR_PER_BZZ) / 1000n;
 }
 
-const BATCH = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+/** Synthetic. A live batch id in a committed fixture is a stamp anyone can spend against. */
+const BATCH = 'a'.repeat(64);
 
 /**
  * A batch with room and time, so these cases are decided by funding alone.

@@ -10,7 +10,8 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SCRIPT = join(ROOT, 'deploy/scripts/sweep-interleaved.sh');
-const BATCH = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+/** Synthetic. A live batch id in a committed fixture is a stamp anyone can spend against. */
+const BATCH = 'a'.repeat(64);
 
 /**
  * That the screening sweep refuses what it cannot finish, on postage as well as on funds.
@@ -144,7 +145,7 @@ describe('a sweep proves the batch can carry it before it publishes anything', (
     const { code, log } = await runSweep({ preflightOnly: true });
 
     assert.equal(code, 0);
-    assert.match(log, /stamp-guard: 7849851f/);
+    assert.match(log, /stamp-guard: aaaaaaaa/);
   });
 
   /** 400 of a depth-25 batch's 512 buckets is 78%, past the written 75% stop line. */
@@ -186,7 +187,7 @@ describe('a sweep proves the batch can carry it before it publishes anything', (
     const sweep = await runSweep({ rounds: 4, configs: 'a:1280x720:2500:0.5 b:1280x720:2500:2.0' });
 
     assert.ok(sweep.published.length > 0, 'nothing published, so the per-run gate was never reached');
-    assert.ok(sweep.log.split('stamp-guard: 7849851f').length - 1 > 1, 'the batch was read once for the whole sweep');
+    assert.ok(sweep.log.split('stamp-guard: aaaaaaaa').length - 1 > 1, 'the batch was read once for the whole sweep');
   });
 
   it('stops partway with a named reason when the batch fills under it', async () => {

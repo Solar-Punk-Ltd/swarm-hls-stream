@@ -37,7 +37,8 @@ after(() => {
   }
 });
 
-const BATCH = '7849851f404265dd2bea17e4229b45be23e245210ea17ac0af3a2a2b13faa2fd';
+/** Synthetic. A live batch id in a committed fixture is a stamp anyone can spend against. */
+const BATCH = 'a'.repeat(64);
 
 /** Room and time, so nothing here is decided by the capacity gate, which has its own cases. */
 const HEALTHY_BATCH = {

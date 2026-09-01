@@ -53,6 +53,10 @@ docs/bench/profiles-*.log
 docs/bench/sweep-*.log
 docs/bench/browser-vod-*.json
 docs/bench/browser-vod-*.md
+docs/bench/browser-quality-*.json
+docs/bench/browser-quality-*.md
+docs/bench/browser-rung-outage-*.json
+docs/bench/browser-rung-outage-*.md
 
 # Stryker drains the command runner's stdout slowly, and the uploader suite times out against
 # that backpressure. Redirecting it to a file is what makes the dry run pass.
