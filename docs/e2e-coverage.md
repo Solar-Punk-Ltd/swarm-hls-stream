@@ -82,6 +82,25 @@ missing the cadence its own config asks for is invisible here, and is what
 length says `E2E_EXPECT_SEGMENT_S=any` once, which is also the answer for OME, whose segmenter config
 this cannot read.
 
+`e2e/suites/preflight/uploader-log-shape.test.ts` refuses a stage whose **deployed uploader** predates
+the log messages this harness parses. Every upload-side assertion is read out of the uploader's own
+log, so a message reworded in this checkout and not yet deployed leaves the pattern matching nothing
+and the scenario blaming the product for a silence.
+
+That cost a paid sitting on 2026-09-01. The manifest publish line gained a stream id that morning.
+`bench-on-host.sh` syncs this repo to the host and runs the harness from it, and does **not** redeploy
+the uploader, which ships as a prebuilt `dist/`. `bee-outage-long` and `service/happy-path` both went
+red for "manifest publishes never resumed" against a stage that was publishing manifests throughout.
+
+It reads the container's built code rather than a log, because a preflight runs before anything
+publishes and an idle stage would look identical to a stale one. One `docker exec`, no BZZ. ⛔ Its
+refusal names redeploying as the fix and rewording the patterns as the wrong one, because the wrong
+one is tempting and buys a green run against code nobody is shipping.
+
+`logLevel.ts` and `suites/smoke/attach.test.ts` guard the sibling precondition, whether the
+deployment's `LOG_LEVEL` admits these lines at all. Level and shape are separate questions and both
+have now been answered the expensive way once.
+
 ## The map
 
 | Functionality                                                                                            | Today                                                                            | Plan                                           |
