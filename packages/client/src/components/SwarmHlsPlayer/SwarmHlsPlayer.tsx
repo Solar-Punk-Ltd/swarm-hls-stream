@@ -448,22 +448,48 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
     // during the seconds before it does. A single-rendition stream gets neither, because there is
     // no second rung to move to and nothing for a group's health to be folded from.
     //
-    // ⛔⛔⛔ **The failover half is OFF, by the owner's decision of 2026-08-31, and turning it back on
-    // without reading this is how a viewer loses their ladder.** Seven attempts at the rule, and the
-    // last three amputated THREE OF FOUR HEALTHY RUNGS during the settle, before any fault was
-    // injected, on three consecutive live runs. That is worse than the defect it exists to fix: the
-    // defect freezes one viewer on one dead rung, this destroys the ladder on a broadcast where
-    // nothing is wrong.
+    // ⛔⛔⛔ **This was OFF from 2026-08-31 to 2026-09-01, and the condition it was waiting on has
+    // been met. Read all of this before touching it again.**
     //
-    // The reporter stays on. It is measured and it works: a viewer on a dead rung is correctly told
-    // the feed has stalled rather than being shown `live`, which is most of the harm and all of the
-    // honesty.
+    // Seven attempts at the rule, and three of them amputated THREE OF FOUR HEALTHY RUNGS during the
+    // settle, before any fault was injected, on three consecutive live runs. That is worse than the
+    // defect it exists to fix: the defect freezes one viewer on one dead rung, this destroys the
+    // ladder on a broadcast where nothing is wrong. `a7b7220` switched it off.
     //
-    // ⭐ The rule may not be the thing that is wrong. The same runs record the viewer advancing at
-    // 0.26 to 0.41 of realtime with 79% of feed polls returning nothing, BEFORE any fault, so every
-    // rung on that stage looks sick and a rule that compares rungs is reading the starvation. Settle
-    // that before the next attempt. See the session memory `swarm-hls-rung-failover-design`.
-    const RUNG_FAILOVER_ENABLED = false;
+    // ⭐⭐⭐ **It was switched off "until the stage under it is understood", and the stage is now
+    // understood.** That commit's own reasoning is the reason this is back on: fourteen artifacts
+    // said a live viewer took 0.76 to 1.49 segments a second against the 2.00 that 0.5s segments
+    // need, with no fault injected, so every rung looked sick and a rule that compares rungs was
+    // reading the starvation rather than a dead rung.
+    //
+    // That starvation had a cause and it was not the client. SRS fires `on_hls` once per closed
+    // segment per rung, so a four-rung ladder at 0.5s asked for 8.00 announcements a second against
+    // the ~6.7 SRS was measured sustaining. It never errored: announcements fell behind the media at
+    // 0.46s per second of video until the lag passed `hls_window`, and then SRS deleted each segment
+    // before announcing it. Every rung really was intermittently silent, and the 1080p rung really
+    // was dying about two minutes in, on every broadcast the rule was ever judged against.
+    //
+    // The stage moved to 1.0s segments on 2026-09-01 and asks 4.00/s. Verified over 600s: every rung
+    // delivered at 1.00/s, announcement lag flat at 0.0s across 580 segments, ZERO segments lost on
+    // any rung. `suites/preflight/announcement-rate` refuses a stage that goes back over the line.
+    //
+    // ⭐ And the rule itself changed before it was switched off, which is why this is not attempt
+    // eight of the same thing. `6846309` judges a dead rung by **segments the ladder delivered that
+    // this rung did not**, never by a clock. All three amputations were clocks, and a clock runs
+    // during intervals in which nothing could have been served, so it measures the outage rather
+    // than the rung. A delivered-segment count freezes when the whole stage freezes. See
+    // `RUNG_DEATH_LAG_SEGMENTS` in `feedState.ts`.
+    //
+    // ⚠️ **What is still unproven: this rule has never run live at all.** It was written after the
+    // third amputation and switched off before it was ever armed on a stage. The 102 tests in
+    // `test/rungHealth.test.ts` and `test/feedState.test.ts` encode seven live faults and are the
+    // specification, and they pass, but a green spec is not an arm. The next live ladder run is the
+    // first real evidence either way, and the thing to watch for is the old failure: rungs dropped
+    // during the settle with no fault injected.
+    //
+    // The reporter stays on either way. It is measured and it works: a viewer on a dead rung is
+    // told the feed has stalled rather than being shown `live`.
+    const RUNG_FAILOVER_ENABLED = true;
     const ladderTopic = isLadder ? toHexTopic(topicString) : null;
     const detachRungFailover =
       hls && RUNG_FAILOVER_ENABLED ? attachRungFailover(hls, manifestFetcher.feedHealth) : null;
