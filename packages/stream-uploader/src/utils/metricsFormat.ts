@@ -153,11 +153,18 @@ function describe(snapshot: MetricsSnapshot): RenderedMetric[] {
 /**
  * Per-rung breakdowns, which the unlabelled totals above cannot give.
  *
- * ⛔ **Added 2026-08-31 because the number that decides this phase had no instrument.** Four rungs at
- * 0.5s segments need 8.00 uploads a second between them and 2.00 each, and the shared single Bee node
- * was measured delivering 5.61 in total. Whether one node per rung fixes that is a per-rung question,
- * and the only reading anyone had was a grep of the uploader's log. A reading that names a decision
- * has to come from where the decision is made.
+ * ⛔ **Added 2026-08-31 because the number that decides this phase had no instrument.** A ladder needs
+ * `rungs / HLS_FRAGMENT` uploads a second between them and `1 / HLS_FRAGMENT` each, and the shared
+ * single Bee node was measured delivering 5.61 in total. Whether one node per rung fixes that is a
+ * per-rung question, and the only reading anyone had was a grep of the uploader's log. A reading that
+ * names a decision has to come from where the decision is made.
+ *
+ * ⭐⭐⭐ **It answered a different question than the one it was built for, which is why it earned its
+ * keep.** One node per rung was not the constraint: a Bee node takes 2,224 KB/s on a single serial
+ * stream where the tallest rung needs 625, and the uploader uploaded 100% of every segment it was
+ * handed a file for. What this breakdown exposed is that the 1080p rung stopped at ZERO while the
+ * others held, which is what led to SRS announcing 6.7 segments a second while producing 8.0. A rate
+ * that is healthy in aggregate and dead on one label is invisible in `segments_uploaded_total`.
  *
  * ⚠️ **Empty on a single-rendition deployment, and that is not zero uploads.** A stream with no ladder
  * has no rung to attribute a segment to, so it appears in `segments_uploaded_total` and nowhere here.
@@ -168,7 +175,7 @@ function describeByRung(snapshot: MetricsSnapshot): LabelledMetric[] {
     {
       name: 'rung_segments_uploaded_total',
       type: 'counter',
-      help: 'Segments whose payload reached Swarm, by ABR rung. Difference two scrapes to get a rate: four rungs at 0.5s segments need 2.00 a second each. Empty on a single-rendition deployment, where a segment belongs to no rung and is counted only in segments_uploaded_total.',
+      help: 'Segments whose payload reached Swarm, by ABR rung. Difference two scrapes to get a rate: each rung needs 1/HLS_FRAGMENT a second, so 1.00 at the 1.0s a four-rung ladder runs. One rung reading zero while the others hold is the signature of SRS deleting that rung segments before announcing them. Empty on a single-rendition deployment, where a segment belongs to no rung and is counted only in segments_uploaded_total.',
       labelName: 'rung',
       byLabel: snapshot.segmentsUploadedByRung,
     },

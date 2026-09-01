@@ -100,8 +100,27 @@ unresolved as Q23 of its `docs/spec/product-spec.md`:
 An in-tab node admits about one segment per second whatever its peer count, so a 0.5s profile needs
 two admissions a second and can never catch up. The gateway's number is publisher-side by
 construction, because a segment cannot be uploaded until it is complete, so a shorter one is quicker.
-`profiles/in-browser.env` therefore declares `2` and `profiles/light-client.env` declares `0.5`, and
-**that difference is deliberate**. Do not reconcile them.
+`profiles/in-browser.env` declares `2` and `profiles/light-client.env` declares `1.0`, and **that
+difference is deliberate**. Do not reconcile them.
+
+⛔⛔⛔ **A third constraint arrived on 2026-09-01 and it overrides the gateway's optimum.** SRS
+announces every closed segment over `on_hls`, once per rung, so a ladder asks for
+`rungs / HLS_FRAGMENT` announcements a second. Measured on the deployment host, SRS sustains about
+**6.7 a second** while its own encoders were producing 8.0, and the shortfall raises no error. It
+shows up as announcements falling behind the media at 0.46s per second of video until the lag passes
+`HLS_WINDOW`, after which **SRS deletes each segment before announcing it**: the uploader gets a
+callback naming a file that is already gone, and the tallest rung is unpublished mid-broadcast while
+the master feed goes on advertising it.
+
+| profile | segments | ladder asks | against ~6.7/s | outcome |
+| --- | --- | --- | --- | --- |
+| `light-client` before | 0.5s | **8.0/s** | over | 1080p dead at ~2 min, 765 segments lost |
+| `light-client` now | 1.0s | **4.0/s** | 40% spare | 600s run, lag flat at 0.0s, zero lost |
+| `in-browser` | 2.0s | 2.0/s | 70% spare | never exposed to this |
+
+So light-client's `1.0` is **not** where the gateway path measures best. 0.5s is, and that
+measurement stands. 0.5s is simply unreachable while four rungs are being announced. If the ladder
+loses rungs, or the ceiling is understood and raised, 0.5 is the value to come back to.
 
 `preflight/segment-length` refuses a run pointed at the other one:
 

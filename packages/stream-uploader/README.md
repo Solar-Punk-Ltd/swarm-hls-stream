@@ -173,9 +173,15 @@ killed it answers `ok` with `activeStreams: 0`.
 stream with no ABR ladder has no rung to attribute a segment to, so it is counted in
 `swarm_hls_segments_uploaded_total` alone. The two therefore do not have to sum, and both can be live
 at once: a ladder broadcast and a single-rendition one running together contribute to the total, and
-only the first to the breakdown. Difference two scrapes to get a rate. Four rungs at 0.5s segments
-need 2.00 uploads a second each and 8.00 between them, which is the number one shared Bee node could
-not reach.
+only the first to the breakdown. Difference two scrapes to get a rate. Each rung needs
+`1 / HLS_FRAGMENT` uploads a second and the ladder needs `rungs / HLS_FRAGMENT` between them, so
+1.00 each and 4.00 total at the 1.0s a four-rung ladder runs.
+
+⭐⭐⭐ **One rung reading zero while the others hold is the signature to watch for**, and it is
+invisible in `swarm_hls_segments_uploaded_total`. It means SRS is deleting that rung's segments
+before it announces them, because the ladder is asking for more announcements a second than SRS can
+deliver. That is why the ladder runs at 1.0s and not the 0.5s the gateway path measures best at. See
+the block above `HLS_FRAGMENT` in `engines/srs/entrypoint.sh`.
 
 **Who may take a stream id that is already live.** An announce for an id a live session holds is
 refused when both publisher addresses are known and different and something is still publishing into

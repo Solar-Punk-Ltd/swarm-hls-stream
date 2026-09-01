@@ -58,6 +58,20 @@ rendition arrive on the wrong vhost and say so.
 and has to be a whole number of frames; the entrypoint refuses to start rather than round it,
 because a fractional GOP drifts the rungs apart and every switch then lands mid-GOP.
 
+⛔⛔⛔ **`HLS_FRAGMENT` also sets how fast SRS has to announce, and that has a ceiling.** SRS fires
+`on_hls` once per closed segment per rung, so a ladder asks for `rungs / HLS_FRAGMENT` announcements
+a second. Measured on the deployment host 2026-08-31, SRS sustains about **6.7 a second** while its
+own encoders were producing 8.0, and nothing errors when it cannot keep up. Announcements fall behind
+the media at 0.46s per second of video until the lag passes `HLS_WINDOW`, after which SRS deletes
+each segment before announcing it: the uploader gets a callback naming a file that is already gone,
+the tallest rung is unpublished about two minutes in, and the master feed goes on advertising it.
+
+A four-rung ladder therefore runs at `HLS_FRAGMENT=1.0` (4.0/s, verified over 600s with lag flat and
+zero segments lost) and **not** the 0.5s that measures best on latency, which asks 8.0/s. A single
+rendition at 0.5s asks 2.0/s and is unaffected. ⚠️ The 6.7/s is one measurement on a co-tenanted host,
+nothing refuses a ladder that exceeds it, and what SRS spends the time on is not known: the uploader
+answers each callback in 1ms.
+
 Verify a running ladder with `curl http://localhost:1985/api/v1/streams`. That is the SRS stats
 API on `SRS_HTTP_API_PORT`, which defaults to 1985 and shifts with `--portSlot`, and the deploy
 compose now publishes it. Expect five streams (one source, four rungs) and the count _stable_. A

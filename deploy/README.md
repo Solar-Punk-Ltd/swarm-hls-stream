@@ -96,6 +96,27 @@ fps a 0.5s GOP is `-g 15`.
 
 Going from 2.0s to 0.5s costs **19% more BZZ**, because the extra bytes are keyframes.
 
+⛔⛔⛔ **This whole table is for a SINGLE-RENDITION stage. With the ABR ladder on, none of it decides
+the segment length and 0.5s is unreachable.** The transcoders re-GOP every rung from `HLS_FRAGMENT`
+(`ABR_GOP = ABR_FPS x HLS_FRAGMENT`), so the broadcaster's own keyframe interval stops mattering, and
+a second limit appears that a single rendition never meets: SRS announces each closed segment over
+`on_hls` once per rung, so the ladder asks for `rungs / HLS_FRAGMENT` announcements a second.
+Measured on the deployment host 2026-08-31, SRS sustains about **6.7 a second** while its own
+encoders were producing 8.0. Nothing errors. Announcements fall behind the media at 0.46s per second
+of video until the lag passes `HLS_WINDOW`, after which SRS deletes each segment before announcing
+it, the tallest rung is unpublished about two minutes in, and the master feed goes on advertising it.
+
+| rungs | fragment | asks | against ~6.7/s |
+| ----: | -------: | ---: | -------------- |
+| 1 | 0.5s | 2.0/s | fine, and the table above applies |
+| 4 | 0.5s | **8.0/s** | **over. Loses the top rung every broadcast** |
+| 4 | 1.0s | 4.0/s | 40% spare. Verified over 600s: lag flat, zero lost |
+| 4 | 2.0s | 2.0/s | 70% spare |
+
+So a four-rung ladder runs at `HLS_FRAGMENT=1.0` and pays about one second of capture-to-fetchable
+for it (1.96s against 2.94s, 2026-08-03 sweep of 105 samples). ⚠️ The 6.7/s is one measurement on a
+co-tenanted host and is not yet a gate. Nothing refuses a ladder that asks for more.
+
 **Why not go below 0.5s**, on the two reasons that survived a replicate:
 
 1. **Shipped config cannot get there.** `HLS_FRAGMENT` is `0.5`, and a segment is

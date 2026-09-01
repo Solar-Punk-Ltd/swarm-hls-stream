@@ -21,10 +21,22 @@ answers "which run is this" and never "where does the stack live". The files are
 | `light-client` | a gateway                                    | The control. A viewer with no node of their own.                       |
 
 The byte source is the only condition that differs between the two, and the segment length differs
-**because** of it. Both declare that the run covers the ABR ladder.
+partly **because** of it. Both declare that the run covers the ABR ladder.
 
 ⛔⛔⛔ **Do not reconcile the two segment lengths.** `in-browser` declares `E2E_EXPECT_SEGMENT_S=2`
-and `light-client` declares `0.5`, and that is a product trade rather than a drift. Measured
+and `light-client` declares `1.0`, and that is a product trade rather than a drift.
+
+⚠️ **light-client moved from 0.5 to 1.0 on 2026-09-01, and NOT because the byte-source measurement
+changed.** SRS announces each closed segment once per rung, so a four-rung ladder asks for
+`rungs / HLS_FRAGMENT` announcements a second. At 0.5s that is 8.0/s against the ~6.7/s SRS was
+measured sustaining, and the shortfall becomes lag growing 0.46s per second of video until it passes
+`HLS_WINDOW`, after which SRS deletes each segment before announcing it and the 1080p rung is
+unpublished about two minutes in. At 1.0s the ladder asks 4.0/s and a 600s run held lag flat at 0.0s
+with zero segments lost on any rung. `in-browser` at 2.0s asks 2.0/s and was never exposed to it.
+**0.5s remains where the gateway path measures best. It is unreachable while four rungs are
+announced.** See the block above `HLS_FRAGMENT` in `engines/srs/entrypoint.sh`.
+
+The byte-source trade below still stands on its own terms. Measured
 2026-08-16 by the sibling repo `swarm-stream-loadlab`, in
 `docs/measurements/2026-08-16-a-stock-tab-holds-realtime-on-two-second-segments.md`, and carried
 unresolved as Q23 of its `docs/spec/product-spec.md`: a stock in-tab weeb-3 node holds **1.000x of
