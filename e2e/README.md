@@ -176,8 +176,8 @@ formats are parsed.
 pnpm e2e:smoke
 ```
 
-Read-only. Proves ssh reaches the host, the uploader is healthy, a usable stamp exists with TTL
-headroom, and the log level can be read. Safe any time, spends nothing.
+Read-only. Proves ssh reaches the host, the uploader is healthy, **every publisher node** holds a
+usable stamp with TTL headroom, and the log level can be read. Safe any time, spends nothing.
 
 ```bash
 pnpm e2e:run
@@ -202,13 +202,17 @@ alone reports part of a run as the whole of it.
 
 Preflight:
 
-| file                           | proves                                                                                                                        |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `preflight/chequebook-funding` | every publisher node holds ≥ 0.5 BZZ available. Read-only: it reports a shortfall and fails, never spends                     |
-| `preflight/spend-ceiling`      | the run is inside what the owner authorised in `.spend-ledger.env`. Reads one balance per node that can spend, spends nothing |
-| `preflight/bee-publishers`     | the uploader's live routing is the one `BEE_PUBLISHERS` declares. Reads `/health` only, spends nothing                        |
-| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host                                             |
-| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host                                  |
+| file                           | proves                                                                                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preflight/chequebook-funding` | every publisher node holds ≥ 0.5 BZZ available. Read-only: it reports a shortfall and fails, never spends                                               |
+| `preflight/spend-ceiling`      | the run is inside what the owner authorised in `.spend-ledger.env`. Reads one balance per node that can spend, spends nothing                           |
+| `preflight/bee-publishers`     | the uploader's live routing is the one `BEE_PUBLISHERS` declares. Reads `/health` only, spends nothing                                                  |
+| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host                                                                       |
+| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host                                                            |
+| `preflight/profile`            | the run profile parses and declared something. Config only, dials no host, refuses while the stack is cold                                              |
+| `preflight/segment-length`     | the deployed stage cuts at the length this run declares. One `docker exec cat` of the SRS config, spends nothing                                        |
+| `preflight/announcement-rate`  | the ladder does not ask SRS for more announcements a second than it has sustained, which silently kills the top rung. One `docker exec`, spends nothing |
+| `preflight/uploader-log-shape` | the deployed uploader writes all fifteen parsed log families. One `docker exec` against its built code, spends nothing                                  |
 
 Fault scenarios:
 
@@ -390,9 +394,10 @@ that money on numbers nobody should trust.
 
 - `ssh <target>` works non-interactively.
 - `ffmpeg` on PATH, standing in for OBS.
-- A deployed stack with a usable stamp (the smoke test checks TTL first).
-- The uploader node's chequebook funded to ≥ 0.5 BZZ. Fund it yourself. The preflight only reads,
-  and prints the exact `curl` to deposit the shortfall if it is short.
+- A deployed stack where every publisher node holds a usable stamp (the smoke test checks TTL on all
+  of them first).
+- Every publisher node's chequebook funded to ≥ 0.5 BZZ, not just the coordinator's. Fund them
+  yourself. The preflight only reads, and prints the exact `curl` to deposit each shortfall.
 - `PUBLISH_KEY_SECRET` resolves from the same env files, so a deployment that authenticates
   publishers (SEC-28) needs nothing extra: the harness derives the same per-stream key. Left empty,
   the harness publishes bare, which such a deployment refuses.

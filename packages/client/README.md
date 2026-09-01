@@ -104,6 +104,8 @@ Standard hls.js expects static manifest URLs. On Swarm, every manifest update pr
 3. **ManifestStateManager** — Merges incoming live manifests into a growing EVENT-type playlist so segments remain available longer than the sliding window. Tracks feed indices, handles deduplication, and caches serialized output.
 4. **LadderFeedPoller** — For ABR streams, owns the feed walk for _every_ rung rather than letting hls.js drive it. A feed is walked one SOC at a time, and hls.js only refreshes the playlist of the level it is playing, so a rung switched away from stops advancing; two minutes later it is ~120 indices behind at the 1.0s segment a four-rung ladder runs (and was ~240 at the 0.5s the ladder used before 2026-09-01) and catches up at one per refresh. The poller keeps all four at the live edge on its own clock, which is what makes a switch cost nothing. Costs four small SOC lookups per segment interval instead of one.
 
+5. **`fragmentRequested` and `fragmentSettled` are a parsed contract, not debug output.** The loaders write those two console lines, `packages/shared/src/clientLog.ts` composes them and owns their wording, and `e2e/src/browser/fragmentRequests.ts` reads them back. They are the only thing that lets a sitting say whether a down-switch the player asked for actually completed or starved. Rewording either one throws nothing and fails nothing: the e2e quality arm's reading simply comes back empty, and the run reports on a viewer it could not see.
+
 ## Project Structure
 
 ```

@@ -12,9 +12,13 @@ anything, they stayed grouped as one catalog entry, and they came back after an 
 That is the plumbing. It says nothing about a viewer receiving more than one quality, and nothing
 about ever switching between them.
 
-Seven of the twenty-three suites do open a real browser, and they carry live playback, the end of a
-broadcast, and five crash faults. ⛔ **None of the seven is an ABR test.** VOD and concurrent
-broadcasts are also unwatched.
+⚠️ **Recounted 2026-09-02, and the shape of the gap has changed.** `e2e/suites/` holds thirty-six
+test files: nine preflight gates, one smoke check, and twenty-six live scenario suites. Ten of the
+twenty-six open a real browser, which is every V-numbered file and nothing else. They carry live
+playback, the end of a broadcast, five crash faults, and since 2026-08-30 the three ABR viewer tests
+this plan was written to get: the quality switch (V2), the rung outage (V3) and VOD (V4). ✅ **So
+three of the ten are ABR tests, and VOD is watched.** Concurrent broadcasts are still unwatched, and
+deliberately so, for the reason at the end of phase 2.
 
 ⚠️ `suites/scenarios/gateway-outage-viewer.test.ts` has "viewer" in its name and opens no browser.
 It tests the upload side while a viewer's gateway is down.
@@ -43,17 +47,32 @@ product rather than about timing:
 
 Run time and harness work. No new infrastructure. Numbers reserved in `docs/e2e-coverage.md`.
 
-> ✅ **ALL FOUR BUILT 2026-08-30. NONE HAS RUN LIVE.** V2, V3, V4 and the concurrent-ladder case, with
-> 120 new unit tests behind them. The proving run is the next thing, and it was blocked on the night
-> it was written: the 1Password SSH agent stopped signing, so `manager-host` became unreachable
-> partway through. Nothing about the code is waiting.
+> ✅ **ALL FOUR BUILT 2026-08-30, AND ALL THREE VIEWER CASES HAVE NOW RUN LIVE.** V2, V3, V4 and the
+> concurrent-ladder case, with 120 new unit tests behind them. Four sittings across 2026-08-31 and
+> 2026-09-01 put them on real broadcasts. V4 is green repeatedly, V3 is green three times out of
+> four, and V2 is red with a measured cause rather than an unexplained one. V5, which predates this
+> phase, is green.
 >
-> ⛔ **Read this before believing a green.** Not one of these four has ever seen a real broadcast.
-> Each names, in its own docblock, the one thing in it most likely to be wrong.
+> ⚠️ **A green here is a live green.** Each of the four still names, in its own docblock, the one
+> thing in it most likely to be wrong, and those warnings are worth reading before a rerun on a stage
+> that has changed under them.
 
-### V2, quality switch works — ✅ BUILT 2026-08-30, not yet run live
+### V2, quality switch works — ⛔ BUILT 2026-08-30, RED across four sittings, cause measured
 
 `pnpm browser:quality` and `suites/viewer/quality-switch.test.ts`. 42 unit tests.
+
+⛔ **Red four times, and the fourth sitting's instrument flipped the diagnosis.** Per-fragment
+reading from 2026-09-01: 57 requests for the top rung before the cap, then one top-rung request and
+six bottom-rung requests **while capped**, then a climb back after the cap lifted. So the player does
+ask for the lower rung, and it asks within about four seconds. What never happens is a lower rung
+becoming the picture on screen inside the cap, because those capped fetches do not complete. Only
+seven requests were made in a sixty-second cap where a healthy player makes about thirty. **The
+earlier framing, that the player decides and never executes, is dead and should not be repeated.**
+The switch is requested and the fetch starves.
+
+⚠️ The artifact aggregated the raw request list away, so this run cannot say whether those six were
+six fragments or one fragment retried six times. A second instrument keeps the raw list and records
+how each fetch ended, and that is what the next sitting reads.
 
 ⛔ **One thing in it is unverified and could make it red for a reason that is not the product's.**
 Chromium applies the network cap itself, and whether it reaches an in-tab node's own peer connections
@@ -74,26 +93,34 @@ an order of magnitude in request count. Run both, expect both to switch, compare
 
 **Done when:** a client that ignores bandwidth and rides one rung into a stall fails.
 
-### V3, a rung goes quiet and the viewer steps down — ✅ BUILT 2026-08-30, not yet run live
+### V3, a rung goes quiet and the viewer steps down — ✅ BUILT 2026-08-30, GREEN LIVE, three of four
 
 `pnpm browser:rung-outage` and `suites/viewer/rung-outage.test.ts`. SRS runs one ffmpeg per rung, so
 the fault is a SIGSTOP on the transcode producing the rung the viewer settled on, read off the
 overlay after the settle rather than hardcoded.
 
-⛔ **This one is expected to go red, and a red is the finding.** hls.js changes level on a fragment
-load ERROR. A Swarm feed that stops advancing does not error, it stops offering fragments, so a
-player waiting for one it was never offered has nothing to react to. If that is what happens, a
-viewer freezes on a dead rung with three live ones beside them, and `movedOffDeadRungRefusal` says
-exactly that in its own message.
+✅ **This section used to predict a red and call the red the finding. The prediction was refuted, by
+the fix that answers it.** The reasoning was that hls.js changes level on a fragment load ERROR,
+that a Swarm feed which stops advancing does not error but simply stops offering fragments, and that
+a player waiting for one it was never offered has nothing to react to. That was exactly the behaviour
+the client had, and it is what the rung failover armed in `b1414c0` replaced. Since then V3 has run
+four times and gone green three of them, with one red that logged nothing at all and still has no
+cause. The freeze the paragraph predicted is the pre-failover behaviour and is no longer what a run
+measures.
 
 Stop one rung at the engine while a viewer watches it. Assert the viewer moves to a surviving rung
 rather than freezing, and that the overlay does not claim the broadcast ended.
 
 **Done when:** a viewer frozen on a dead rung while three healthy ones sit beside it fails.
 
-### V4, VOD playback in a browser — ✅ BUILT 2026-08-30, not yet run live
+### V4, VOD playback in a browser — ✅ BUILT 2026-08-30, GREEN LIVE, every run so far
 
 `suites/viewer/vod-playback.test.ts`, on an extended `pnpm browser:vod`.
+
+⚠️ **It does not run at all on a stage that pins no segment length.** A run declaring
+`E2E_EXPECT_SEGMENT_S=any` skips the whole file, because a broadcast length cannot be computed from a
+segment count without one, and a skip is the honest answer where the arithmetic has no input. So a
+green suite on an `any` run is a suite that never asked this question.
 
 ⛔ **The gap it closes.** A ladder recording whose master resolved and whose upper rung playlists did
 not plays perfectly at its bottom rung: it starts, the duration is finite, the seeks land, the
@@ -124,23 +151,26 @@ measurement of that rather than of concurrency.
 
 ## Phase 3 — per-rung bee nodes, the shape we meant to ship
 
-⛔ **`BEE_PUBLISHERS` is built, unit-tested, and has never been deployed or tested live.** On our
-stack it is set to empty, so `BeePublisherPool` takes the single-node path and one bee node carries
-all four rungs. The e2e suite mentions the variable in **one comment** and asserts nothing.
+✅ **The split is deployed. `BEE_PUBLISHERS` names one Bee node per rung, and a gate proves it before
+every sitting.** This section used to open by saying the variable had never been deployed or tested
+live, which was true when it was written on 2026-08-29 and stopped being true on 2026-08-31, when the
+four-node stage was funded, wired and ran its first sitting. The gates that read all four nodes
+rather than one landed the day after.
 
-⛔⛔ **Every throughput and cost figure this project has produced is therefore a single-node figure.**
-They do not describe the deployment shape the design intends.
+⛔⛔ **Every throughput and cost figure taken before 2026-08-31 is still a single-node figure**, and
+none of them describes the deployment shape the design intends. That does not change by deploying the
+split. It changes by re-measuring on it.
 
-Blocked on money and infrastructure, in this order:
+Where the three blockers stand:
 
-1. **Three more uploading bee nodes**, each with its own funded chequebook and its own postage batch.
-   Price this properly before asking, rather than guessing.
-2. **A preflight that refuses the lie.** The run declares per-rung or single; the gate reads what the
-   uploader is actually configured with and stops before any spend if they disagree. Same shape as
-   the ABR, browser and segment-length gates. ⛔ Without it, a per-rung run that silently fell back
-   to one node produces a single-node result wearing a per-rung label, which is a wrong number
-   rather than a missing one.
-3. **The tests that only mean something with four nodes:**
+1. ✅ **Three more uploading bee nodes, done.** Each carries its own funded chequebook and its own
+   postage batch, provisioned by `deploy/scripts/bee-publishers.sh`.
+2. ✅ **A preflight that refuses the lie, done.** `e2e/suites/preflight/bee-publishers.test.ts` reads
+   the shape the deployment declares and the shape the uploader reports on `/health`, and the sitting
+   does not start unless the two agree. It never skips, because an unsplit deployment is the case it
+   most needs to report. The postage and chequebook preflights read every node behind that same
+   routing rather than the coordinator alone.
+3. ⛔ **Still open. The tests that only mean something with four nodes:**
    - each rung's bytes actually leave through its own node, proven from the four nodes' **own**
      counters and not from the uploader's log
    - one node's batch runs dry and only that rung degrades, the other three keep publishing
@@ -158,7 +188,25 @@ Blocked on money and infrastructure, in this order:
   index went, `renditions.every(r => r.index)` went false, and **the whole finished ladder went back
   to `live` in the catalog** until the recovery timer finalized it a second time. So for about a
   minute an ended recording was advertised as a live broadcast, which is the larger half of the harm.
-  Fixed in `StreamCatalog.keepingWhatFinished`. **Not yet armed on a deployed stack.**
+  Fixed in `StreamCatalog.keepingWhatFinished`.
+
+  **There was a second cause, and it cost money rather than accuracy.** The recovery timer did not
+  merely re-flip the catalog, it re-ran the whole finalize: a second VOD manifest was published and
+  paid for, and the catalog moved to name the newer one. The discriminator read zero catalog losses,
+  so that second finalize was honest against a feed that genuinely still said live. Fixed in
+  `f2e7305`: the ladder flip announce now happens after the feed write takes, so the line means the
+  entry is already vod, and a finalize on a session rebuilt from a recovery entry first reads its own
+  manifest feed head. A finished recording found there is resumed at the catalog write and never
+  republished, through a new log line that is deliberately not a flip. An unreadable head defers to
+  the next boot rather than guessing, because the guess costs a recording.
+
+  ✅ **Both fixes are deployed**, on the late 2026-09-01 redeploy, and **H ran green on that stack** in
+  the fourth sitting: one flip, zero catalog losses, zero resumes, four of four renditions kept, no
+  recovery entry left behind. ⚠️ That run's kill landed after finalize had completed, so the green
+  proves the clean ordering and not the resume path. The resume path is covered by thirteen unit
+  tests and has not yet been exercised live, because moving the announce later also moved it out of
+  the window the kill is armed on.
+
 - **E, media-engine restart. ✅ PASSES** in the 2026-09-01 sitting. It was last seen cancelled by a
   timeout rather than failing an assertion, and nothing was changed for it, so treat this as one
   green rather than as a diagnosis.
@@ -169,6 +217,7 @@ Blocked on money and infrastructure, in this order:
 ## Order and why
 
 1, then 2, then 3. Phase 1 is free and closes the worst gap in what the current green already
-claims. Phase 2 makes ABR a tested feature rather than a described one. Phase 3 is the largest, is
-the only one blocked on money, and it replaces a body of single-node measurements, so it is worth
-doing after the viewer side is trustworthy enough to judge it by.
+claims. Phase 2 makes ABR a tested feature rather than a described one. Phase 3 is the largest and it
+replaces a body of single-node measurements, so it is worth doing after the viewer side is
+trustworthy enough to judge it by. ⚠️ Its infrastructure blocker is gone as of 2026-08-31, so what is
+left of it is run time on four nodes rather than nodes to run on.

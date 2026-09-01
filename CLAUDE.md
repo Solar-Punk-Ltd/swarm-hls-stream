@@ -59,6 +59,17 @@ so more headroom is often a move rather than a send:
 ssh manager-host 'curl -s http://127.0.0.1:10075/chequebook/balance; echo; curl -s http://127.0.0.1:10075/wallet'
 ```
 
+Since the per-rung split of 2026-08-31 that command reads ONE node of four, the coordinator. Each
+rung publishes through its own bee with its own chequebook and wallet, so read all of them before
+any funds statement (ports 10075, 11071, 11073, 11075, plus the gateway 10077):
+
+```bash
+ssh manager-host 'for p in 10075 11071 11073 11075 10077; do echo "== $p"; curl -s http://127.0.0.1:$p/chequebook/balance; echo; curl -s http://127.0.0.1:$p/wallet; echo; done'
+```
+
+The chequebook preflight and `pnpm e2e:smoke` print the same readings per node. (Amended
+2026-09-02 after the stamp gate closed the same one-node blindness on the postage side.)
+
 ⚠️ Watch `availableBalance`, never `totalBalance`. They differ because `available = total - outstanding
 cheques`, so a peer cashing a cheque the node already wrote moves total without anything being spent.
 

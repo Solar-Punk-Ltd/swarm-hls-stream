@@ -223,7 +223,7 @@ const CAUSE_SLOT = 'CAUSESLOT';
  *
  * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast armed
  * NONE. A message reworded here and not deployed, or deployed and not read, does not fail those
- * five: it passes them, silently, for ever, on a stage arming discontinuities all night. That is the
+ * six: it passes them, silently, for ever, on a stage arming discontinuities all night. That is the
  * worst failure this repo knows how to produce, and it is why these composers exist rather than a
  * regex written out beside the reader.
  */

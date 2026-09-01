@@ -1,6 +1,6 @@
 # What the e2e suite covers, and what it does not
 
-**As of 2026-08-29.** A living map from product functionality to the live end-to-end scenarios that
+**As of 2026-09-02.** A living map from product functionality to the live end-to-end scenarios that
 exercise it, and to when each one was last green against a real deployment. It is here so that
 "is that tested" has one answer rather than a search, and so that a gap is written down as a gap
 instead of being inferred from a suite nobody wrote.
@@ -82,6 +82,11 @@ missing the cadence its own config asks for is invisible here, and is what
 length says `E2E_EXPECT_SEGMENT_S=any` once, which is also the answer for OME, whose segmenter config
 this cannot read.
 
+⚠️ **A run declaring `any` also skips V4 entirely.** VOD playback checks that a recording is the whole
+broadcast, and a broadcast length cannot be computed from a segment count when no segment length was
+declared. The file skips rather than throwing, so a green suite on an `any` run is a suite that never
+asked the question.
+
 `e2e/suites/preflight/uploader-log-shape.test.ts` refuses a stage whose **deployed uploader** predates
 the log messages this harness parses. Every upload-side assertion is read out of the uploader's own
 log, so a message reworded in this checkout and not yet deployed leaves the pattern matching nothing
@@ -97,10 +102,14 @@ publishes and an idle stage would look identical to a stale one. One `docker exe
 refusal names redeploying as the fix and rewording the patterns as the wrong one, because the wrong
 one is tempting and buys a green run against code nobody is shipping.
 
-Since 2026-09-01 it lists every family the harness parses, fourteen in all: the four originals, the
+Since 2026-09-01 it lists every family the harness parses, fifteen in all: the four originals, the
 finalize flips and session ends seven scenarios wait on, the four lines that arm a discontinuity
 (six suites assert that count is zero, and a line nothing matches passes them vacuously green), the
-catalog-lost discriminator and the catalog announce. Two of the fourteen refuse any uploader built
+catalog-lost discriminator, the catalog announce, and the finalize that resumes rather than
+republishes after a crash. That last one is the newest, added with `f2e7305`, and it reports whether
+scenario H's kill landed inside the window it aims at. A deployment that cannot write it still passes
+the scenario, and passes it without anyone being able to say the window was ever exercised. Two of
+the fifteen refuse any uploader built
 before the messages moved into the shared contract even though no wording changed, one string used
 to be assembled across a `+` join and one lived in a file the gate does not read, so the first run
 after this checkout lands asks for exactly one redeploy.
@@ -121,12 +130,12 @@ node is deliberately not read, it holds no upload batch, and batch utilization s
 
 | Functionality                                                                                            | Today                                                                            | Plan                                           |
 | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------- |
-| Publish, gapless segments, manifest advances                                                             | `happy-path`, green 2026-08-03                                                   | rerun on ladder deploy                         |
+| Publish, gapless segments, manifest advances                                                             | `happy-path`, green in the 2026-09-01 sittings two, three and four               | rerun on ladder deploy                         |
 | Ladder: 4 rungs publish, one group, gapless                                                              | `abr-ladder`, never green (attempted 2026-08-27, instrument defects since fixed) | first green pending                            |
 | Ladder survives engine restart as one ladder                                                             | `abr-engine-restart`, same status                                                | first green pending                            |
 | One rung dies, others carry on                                                                           | both legs built: the viewer steps down (V3) and the master stops advertising it  | rerun, neither leg has run inside a full suite |
 | Uploader crash recovery                                                                                  | F, green 2026-08-03                                                              | rerun                                          |
-| Finalize/recovery family (mid-finalize kill, whole-stack restart, corrupt entry, reconnect during drain) | H I J K, ran 2026-08-09 only, never in a full green                              | rerun                                          |
+| Finalize/recovery family (mid-finalize kill, whole-stack restart, corrupt entry, reconnect during drain) | H I J K, all green in sitting four 2026-09-01, H after `f2e7305`                 | rerun, H's resume path has not run live yet    |
 | Writer bee outage short and long                                                                         | A B, green 2026-08-03                                                            | rerun                                          |
 | Gateway outage, upload side                                                                              | G, green 2026-08-03                                                              | rerun                                          |
 | Catalog live to VOD, /health lifecycle                                                                   | green 2026-08-03                                                                 | rerun                                          |
@@ -134,7 +143,7 @@ node is deliberately not read, it holds no upload batch, and batch utilization s
 | Viewer: live playback in a real browser                                                                  | V1, built 2026-08-28                                                             | run both profiles                              |
 | Viewer: quality switch works                                                                             | V2, built 2026-08-30, green through a gateway                                    | rerun on the 1.0s stage                        |
 | Viewer: rung goes quiet, viewer steps down instead of freezing                                           | V3, built 2026-08-30, failover armed 2026-09-01 and green live                   | rerun, it has never run with the failover on   |
-| Viewer: VOD playback                                                                                     | V4, built 2026-08-30, green three for three                                      | rerun on the 1.0s stage                        |
+| Viewer: VOD playback                                                                                     | V4, built 2026-08-30, green three for three, skipped by an `any` segment length  | rerun on the 1.0s stage                        |
 | Viewer: broadcast ends cleanly on screen                                                                 | V5, built 2026-08-28                                                             | rerun                                          |
 | Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, promoted 2026-08-29, first green pending                              | run both profiles                              |
 | weeb3 actually served the bytes (arm proof)                                                              | sitting-only assertion                                                           | built into every in-browser viewer test        |
