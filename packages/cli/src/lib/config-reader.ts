@@ -4,6 +4,8 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { config as loadDotenv } from 'dotenv';
 
+import { parsePublishers } from './publishers.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Monorepo root — two levels up from packages/cli/src/lib/ */
@@ -129,4 +131,58 @@ export function resolveBeeUploaderTarget(): BeeTarget {
  */
 export function resolveBeeGatewayTarget(): BeeTarget | null {
   return resolveBeeTarget(SVC_BEE_GATEWAY, 'BEE_GATEWAY_API_PORT', DEFAULT_BEE_GATEWAY_PORT);
+}
+
+/** A node to act on, with the rung and batch it is configured for when it has them. */
+export interface NamedTarget {
+  name: string;
+  /** Null when the service is explicitly disabled, which is still worth reporting. */
+  target: BeeTarget | null;
+  /** The rung this node publishes. Absent on the gateway and on an unsplit deployment. */
+  rung?: string;
+  /** The batch id configured for this node, from BEE_PUBLISHERS or STAMP. */
+  stamp?: string;
+}
+
+function targetFromUrl(url: string, defaultPort: number): BeeTarget {
+  try {
+    const parsed = new URL(url);
+    return { url, host: parsed.hostname, port: parseInt(parsed.port, 10) || defaultPort };
+  } catch {
+    return { url, host: url, port: defaultPort };
+  }
+}
+
+/**
+ * The nodes that hold postage batches, and therefore the ones every stamp command acts on.
+ *
+ * With BEE_PUBLISHERS set that is one node per rung — acting on only one of them would hide three
+ * quarters of the batch and funding state, which is the whole thing splitting them exists to make
+ * visible. Unset, it is the single uploader node, exactly as before.
+ *
+ * The gateway is deliberately absent: it runs with swap disabled and buys nothing.
+ */
+export function resolvePublisherTargets(): NamedTarget[] {
+  const publishers = parsePublishers(process.env.BEE_PUBLISHERS);
+
+  if (publishers.length > 0) {
+    return publishers.map((publisher) => ({
+      name: `bee-publisher-${publisher.rung}`,
+      rung: publisher.rung,
+      stamp: publisher.stamp,
+      target: targetFromUrl(publisher.url, DEFAULT_BEE_UPLOADER_PORT),
+    }));
+  }
+
+  return [{ name: SVC_BEE_UPLOADER, stamp: process.env.STAMP, target: resolveBeeUploaderTarget() }];
+}
+
+/**
+ * Every node worth inspecting: the publishers, plus the gateway.
+ *
+ * The gateway is listed even when disabled, with a null target, because "the gateway is off" is
+ * information a reader of `node-status` wants rather than an absence they have to notice.
+ */
+export function resolveNodeTargets(): NamedTarget[] {
+  return [...resolvePublisherTargets(), { name: SVC_BEE_GATEWAY, target: resolveBeeGatewayTarget() }];
 }

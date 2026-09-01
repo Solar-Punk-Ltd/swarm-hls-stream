@@ -23,18 +23,24 @@ export class CustomManifestLoader extends PlaylistLoader {
   }
 
   load(context: PlaylistLoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<PlaylistLoaderContext>) {
-    if (['manifest', 'level'].includes(context.type)) {
-      manifestFetcher
-        .fetch(context.url)
-        .then((manifest) => {
-          callbacks.onSuccess({ url: context.url, data: manifest, code: 200 }, this.stats, context, undefined);
-        })
-        .catch((error) => {
-          callbacks.onError?.({ code: 0, text: error.message }, context, undefined, this.stats);
-        });
-    } else {
+    if (!['manifest', 'level'].includes(context.type)) {
       super.load(context, config, callbacks);
+      return;
     }
+
+    // `manifest` is the top-level request — the one whose answer decides whether this stream is a
+    // ladder at all, so it goes through the path that reads the source feed and looks. `level` is
+    // one rung, which is a feed like any other.
+    const manifest =
+      context.type === 'manifest' ? manifestFetcher.fetchSource(context.url) : manifestFetcher.fetch(context.url);
+
+    manifest
+      .then((data) => {
+        callbacks.onSuccess({ url: context.url, data, code: 200 }, this.stats, context, undefined);
+      })
+      .catch((error) => {
+        callbacks.onError?.({ code: 0, text: error.message }, context, undefined, this.stats);
+      });
   }
 }
 

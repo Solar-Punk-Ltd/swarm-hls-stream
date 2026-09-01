@@ -18,6 +18,45 @@ Segments in ──▶ StreamOrchestrator ──▶ StreamUploader ──▶ Swar
                       └─ Crash recovery (persisted state + recovery timeout)
 ```
 
+### ABR ladder
+
+With `ABR_ENABLED=true` (see [engines/srs](../../engines/srs/)) the engine publishes one stream per
+rung, and each gets its own `StreamUploader` and its own manifest feed. Two things then tie them
+back together:
+
+- The four rungs fold into a **single catalog entry**, keyed by a shared group id rather than by
+  topic. Four uploaders write that entry concurrently, which is safe only because every catalog
+  write goes through one serialized queue.
+- That same point is where the ladder's **master playlist** is written, to a fifth feed whose topic
+  is the group id — it is the only place the whole ladder is known, since each uploader holds just
+  its own rung. The catalog entry's `topic` points at the master, so one URL yields every rung.
+
+Each rung's `BANDWIDTH` in the master is measured from real segments rather than copied from the
+encoder's target, and is re-announced when it drifts more than 15% (at most every 30s, since the
+catalog is one feed shared by every stream). `EXT-X-MEDIA-SEQUENCE` carries the engine's own
+sequence number, which is what tells a player that two rungs share a timeline.
+
+### One Bee node per rung
+
+A feed's address is a pure function of its signing key and topic — `makeFeedIdentifier` is
+`keccak256(topic ‖ index)`, and bee-js signs the single owner chunk locally before POSTing it. So a
+Bee node owns nothing here; it is a pipe with a wallet, and which pipe carries which rung is a
+routing decision that `BeePublisherPool` holds.
+
+Set `BEE_PUBLISHERS` to split it (see [.env.sample](../../.env.sample)); unset, one node serves
+everything, exactly as before. The reason to split is that postage batches drain in proportion to
+bitrate — 1080p burns roughly 7× the bytes of 360p, so equal batches expire hours apart — and one
+node per rung makes that "a rung goes quiet and ABR steps down" instead of "the stage stops".
+
+Because nothing about a feed's address depends on the node, all four rungs still publish under one
+signing key and therefore one owner. Rung feeds differ only by topic, and moving a feed to a
+different node later changes nothing a viewer sees.
+
+The catalog and every master playlist are written through **the lowest rung's node**: its batch
+outlives the others by roughly 7×, and those two feeds are the only addresses a viewer needs to open
+a stage. Riding them on the 1080p node would take discovery down first, while three rungs were still
+publishing fine.
+
 ## Prerequisites
 
 - Node.js 20+
@@ -65,6 +104,7 @@ The API server starts on port 3000 (default).
 | `STATE_DIR`           | `./state` | Directory for crash recovery state            |
 | `MAX_QUEUE_SIZE`      | `100`     | Max queued segments per stream                |
 | `RECOVERY_TIMEOUT`    | `60000`   | Crash recovery timeout (ms)                   |
+| `SEGMENT_REDUNDANCY`  | `1`       | Erasure-coding parity on segments (0 = off)   |
 | `ENGINE`              | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty) |
 
 Engine-specific variables (e.g. `SRS_MEDIA_PATH` for SRS, `OME_*` for OME) live in `engines/<name>/.env` and are loaded only when that engine is selected via `ENGINE`. Copy the sample next to each engine to get started: [engines/srs/.env.sample](../../engines/srs/.env.sample), [engines/ome/.env.sample](../../engines/ome/.env.sample). Values in the root `.env` (or injected container env) take precedence over the engine file.
@@ -186,6 +226,11 @@ curl -X POST http://localhost:3000/stream/stop \
 | `StreamCatalog`      | Maintains the stream directory as a Swarm feed                                  |
 | `RecoveryStore`      | Persists stream state to disk for crash recovery                                |
 | `ManifestManager`    | Builds and updates HLS manifests                                                |
+| `AbrLadder`          | The rung list from `ABR_LADDER`, and what maps a stream name back to its rung    |
+| `BeePublisherPool`   | Which Bee node and postage batch each rung publishes through                      |
+| `MasterPlaylist`     | Builds a ladder's multivariant playlist                                          |
+| `MasterFeedWriter`   | Publishes that master to a feed per ladder, topic = the ladder's group id        |
+| `BitrateMeter`       | Measures each rung's real bitrate, which becomes the master's `BANDWIDTH`        |
 
 ## Scripts
 

@@ -1,19 +1,41 @@
 import { SegmentEntry } from '../types.js';
+import {
+  HLS_DISCONTINUITY,
+  HLS_ENDLIST,
+  HLS_EXTINF,
+  HLS_M3U,
+  HLS_MEDIA_SEQUENCE,
+  HLS_PLAYLIST_TYPE,
+  HLS_TARGET_DURATION,
+  HLS_VERSION,
+} from '../utils/hlsTags.js';
 
 import { Logger } from './Logger.js';
 
 const LIVE_WINDOW_SIZE = 10;
 
+/**
+ * One rung's media playlist.
+ *
+ * `EXT-X-MEDIA-SEQUENCE` carries the engine's own sequence number for the playlist's first
+ * segment, not a count of what this uploader has seen. On a single-rendition stream the two are
+ * interchangeable; across an ABR ladder they are not, and the difference is what makes a switch
+ * land where it should. Every rung is transcoded from the same source with keyframes forced to the
+ * same media timestamps, so segment N of 360p and segment N of 1080p cover the same interval —
+ * which is the only thing telling hls.js that two levels share a timeline, since these playlists
+ * carry no `EXT-X-PROGRAM-DATE-TIME`. A count would drift the moment one rung's uploader started a
+ * fragment later than another's, and a switch would then jump by however far apart they were.
+ */
 export class ManifestManager {
   private segments: SegmentEntry[] = [];
-  private hlsHeaders: string[] = ['#EXTM3U', '#EXT-X-VERSION:3'];
+  private hlsHeaders: string[] = [HLS_M3U, `${HLS_VERSION}:3`];
   private targetDuration = 0;
   private logger = Logger.getInstance();
 
   constructor(private manifestBeeUrl: string) {}
 
-  public addSegment(index: number, duration: number, ref: string): void {
-    this.segments.push({ index, duration, ref });
+  public addSegment(index: number, duration: number, ref: string, discontinuity = false): void {
+    this.segments.push({ index, duration, ref, discontinuity });
     this.segments.sort((a, b) => a.index - b.index);
 
     const newTarget = Math.ceil(duration);
@@ -34,18 +56,20 @@ export class ManifestManager {
         ? this.segments
         : this.segments.slice(this.segments.length - LIVE_WINDOW_SIZE);
 
-    const mediaSequence =
-      this.segments.length <= LIVE_WINDOW_SIZE ? 0 : this.segments.length - LIVE_WINDOW_SIZE;
+    const mediaSequence = windowSegments[0].index;
 
     const lines = [
       ...this.hlsHeaders,
-      `#EXT-X-TARGETDURATION:${this.targetDuration}`,
-      `#EXT-X-MEDIA-SEQUENCE:${mediaSequence}`,
+      `${HLS_TARGET_DURATION}:${this.targetDuration}`,
+      `${HLS_MEDIA_SEQUENCE}:${mediaSequence}`,
       '',
     ];
 
     for (const seg of windowSegments) {
-      lines.push(`#EXTINF:${seg.duration},`);
+      if (seg.discontinuity) {
+        lines.push(HLS_DISCONTINUITY);
+      }
+      lines.push(`${HLS_EXTINF}:${seg.duration},`);
       lines.push(this.buildSegmentUri(seg.ref));
     }
 
@@ -59,18 +83,21 @@ export class ManifestManager {
 
     const lines = [
       ...this.hlsHeaders,
-      `#EXT-X-TARGETDURATION:${this.targetDuration}`,
-      '#EXT-X-PLAYLIST-TYPE:VOD',
-      '#EXT-X-MEDIA-SEQUENCE:0',
+      `${HLS_TARGET_DURATION}:${this.targetDuration}`,
+      `${HLS_PLAYLIST_TYPE}:VOD`,
+      `${HLS_MEDIA_SEQUENCE}:${this.segments[0].index}`,
       '',
     ];
 
     for (const seg of this.segments) {
-      lines.push(`#EXTINF:${seg.duration},`);
+      if (seg.discontinuity) {
+        lines.push(HLS_DISCONTINUITY);
+      }
+      lines.push(`${HLS_EXTINF}:${seg.duration},`);
       lines.push(this.buildSegmentUri(seg.ref));
     }
 
-    lines.push('#EXT-X-ENDLIST');
+    lines.push(HLS_ENDLIST);
     return lines.join('\n') + '\n';
   }
 

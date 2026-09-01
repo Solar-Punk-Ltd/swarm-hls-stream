@@ -9,6 +9,7 @@ export function createHealthRouter(streamOrchestrator: StreamOrchestrator, engin
     res.json({
       status: 'ok',
       activeStreams: streamOrchestrator.getActiveStreamCount(),
+      staleManifestStreams: streamOrchestrator.getStaleManifestStreamCount(),
       queuePressure: streamOrchestrator.getOverallQueuePressure(),
       engines: engineNames,
     });

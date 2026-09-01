@@ -1,5 +1,6 @@
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
+import { getErrorMessage } from '../../utils/common.js';
 
 import { isMasterPlaylist, parseMasterPlaylist, parseMediaPlaylist } from './utils.js';
 
@@ -56,7 +57,7 @@ export class OmeHlsPuller {
     }
     this.timer = setTimeout(() => {
       this.tick().catch((error) => {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.warn(`[OME] Puller tick error for ${this.streamId}: ${msg}`);
         this.scheduleNext(this.intervalMs);
       });
@@ -107,7 +108,19 @@ export class OmeHlsPuller {
       throw new Error(`Media playlist HTTP ${rawPlaylistResponse.status}`);
     }
 
-    return await rawPlaylistResponse.text();
+    const body = await rawPlaylistResponse.text();
+
+    // The URL we latched onto can turn out to be a master (variant) playlist — e.g. our first poll
+    // landed on an early stub before OME published the master, so we fell back to the master URL.
+    // Parsing a master as a media playlist yields zero segments forever, so re-resolve and follow the
+    // variant instead of polling a dead URL.
+    if (isMasterPlaylist(body)) {
+      this.setMediaPlaylistUrl(body);
+      this.scheduleNext(this.intervalMs);
+      return null;
+    }
+
+    return body;
   }
 
   private async processPlaylist(playlist: string, url: string): Promise<void> {
@@ -135,11 +148,13 @@ export class OmeHlsPuller {
 
         if (!result.accepted) {
           logger.warn(`[OME] Segment ${segment.seq} not accepted for ${this.streamId}: ${result.reason}`);
+          // Backpressure/rejection: leave lastSeq unchanged so the next tick re-pulls this segment in order.
+          return;
         }
 
         this.lastSeq = segment.seq;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.warn(`[OME] Segment ${segment.seq} fetch error for ${this.streamId}: ${msg}`);
       }
     }

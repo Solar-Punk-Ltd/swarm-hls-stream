@@ -3,6 +3,7 @@ import { Request, Response, Router } from 'express';
 import { Logger } from '../../libs/Logger.js';
 import { StreamOrchestrator } from '../../libs/StreamOrchestrator.js';
 import { REJECT_QUEUE_FULL, REJECT_UNKNOWN_STREAM } from '../../types.js';
+import { getErrorMessage } from '../../utils/common.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { ApiError } from '../middleware/errorHandler.js';
 
@@ -71,7 +72,7 @@ export function createStreamRouter(streamOrchestrator: StreamOrchestrator): Rout
       res.json({ ok: true });
 
       streamOrchestrator.stopStream(streamId).catch((error) => {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.error(`Error during stream stop ${streamId}: ${msg}`);
       });
     }),

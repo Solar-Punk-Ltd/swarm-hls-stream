@@ -2,15 +2,19 @@ import { Request, Response, Router } from 'express';
 
 import { Logger } from '../libs/Logger.js';
 import { StreamOrchestrator } from '../libs/StreamOrchestrator.js';
+import { getErrorMessage } from '../utils/common.js';
 import { optional, optionalBool, optionalInt } from '../utils/env.js';
 
 import { reply, verifyAdmissionSignature } from './ome/http.js';
 import { AppStream, OmeAdmissionPayload, OmeEngineOptions } from './ome/interfaces.js';
 import { OmeHlsPuller } from './ome/OmeHlsPuller.js';
-import { buildStreamId, parseAppStream, resolveMediaType } from './ome/utils.js';
+import { buildStreamId, parseAppStream, parseStreamId, resolveMediaType } from './ome/utils.js';
 import { EnginePlugin } from './types.js';
 
 const logger = Logger.getInstance();
+
+type StartPuller = (orchestrator: StreamOrchestrator, streamId: string, app: string, stream: string) => void;
+type StopPuller = (streamId: string) => void;
 
 export function createOmeEngineFromEnv(): EnginePlugin {
   const hlsBaseUrl = optional('OME_HLS_URL', 'http://ome:8081');
@@ -31,6 +35,35 @@ export function createOmeEngine(
   const admissionSecret = options.admissionSecret ?? '';
   const failOpen = options.failOpen ?? false;
 
+  // The puller lifecycle lives here (not inline in the admission handler) so crash-recovery can
+  // restart it without a fresh admission call — OME never re-announces a session that stayed open
+  // across the crash, so `resumeRecoveredStream` reuses exactly this path.
+  const startPuller: StartPuller = (orchestrator, streamId, app, stream) => {
+    if (pullers.has(streamId)) {
+      return;
+    }
+
+    const onHalt = (): void => {
+      pullers.delete(streamId);
+      orchestrator.stopStream(streamId).catch((error) => {
+        const msg = getErrorMessage(error);
+        logger.error(`[OME] Error stopping stream ${streamId} after puller halt: ${msg}`);
+      });
+    };
+
+    const puller = new OmeHlsPuller(streamId, app, stream, hlsBaseUrl, pollIntervalMs, orchestrator, onHalt);
+    pullers.set(streamId, puller);
+    puller.start();
+  };
+
+  const stopPuller: StopPuller = (streamId) => {
+    const puller = pullers.get(streamId);
+    if (puller) {
+      puller.stop();
+      pullers.delete(streamId);
+    }
+  };
+
   return {
     name: 'ome',
     prefix: '/engines/ome',
@@ -49,10 +82,23 @@ export function createOmeEngine(
           reply(res, { allowed: false, reason: 'invalid signature' });
           return;
         }
-        handleAdmission(req, res, orchestrator, hlsBaseUrl, pollIntervalMs, pullers, failOpen);
+        handleAdmission(req, res, orchestrator, startPuller, stopPuller, failOpen);
       });
 
       return router;
+    },
+
+    // OME is pull-based: after an uploader crash the orchestrator restores the stream, but no new
+    // admission arrives (the broadcaster's session never closed), so nothing restarts the HLS puller.
+    // Restart it here or the recovered stream produces no segments and is VOD-ed at the recovery timeout.
+    resumeRecoveredStream(orchestrator: StreamOrchestrator, streamId: string): void {
+      const { app, stream } = parseStreamId(streamId);
+      if (!app || !stream) {
+        logger.warn(`[OME] Cannot resume recovered stream with unrecognised id: ${streamId}`);
+        return;
+      }
+      logger.info(`[OME] Resuming HLS pull for recovered stream ${streamId}`);
+      startPuller(orchestrator, streamId, app, stream);
     },
   };
 }
@@ -62,9 +108,8 @@ function handleAdmission(
   req: Request,
   res: Response,
   orchestrator: StreamOrchestrator,
-  hlsBaseUrl: string,
-  pollIntervalMs: number,
-  pullers: Map<string, OmeHlsPuller>,
+  startPuller: StartPuller,
+  stopPuller: StopPuller,
   failOpen: boolean,
 ): void {
   try {
@@ -88,15 +133,11 @@ function handleAdmission(
 
     if (request.status === 'closing') {
       logger.info(`[OME] Stream closing: ${streamId}`);
-      const puller = pullers.get(streamId);
-      if (puller) {
-        puller.stop();
-        pullers.delete(streamId);
-      }
+      stopPuller(streamId);
       reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
 
       orchestrator.stopStream(streamId).catch((error) => {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
+        const msg = getErrorMessage(error);
         logger.error(`[OME] Error stopping stream ${streamId}: ${msg}`);
       });
       return;
@@ -114,31 +155,11 @@ function handleAdmission(
     logger.info(`[OME] Stream opening: ${streamId} (${mediatype})`);
 
     // Spin up the HLS poller. Don't block the admission reply on it.
-    if (!pullers.has(streamId)) {
-      const onHalt = (): void => {
-        pullers.delete(streamId);
-        orchestrator.stopStream(streamId).catch((error) => {
-          const msg = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[OME] Error stopping stream ${streamId} after puller halt: ${msg}`);
-        });
-      };
-
-      const puller = new OmeHlsPuller(
-        streamId,
-        parsed.app,
-        parsed.stream,
-        hlsBaseUrl,
-        pollIntervalMs,
-        orchestrator,
-        onHalt,
-      );
-      pullers.set(streamId, puller);
-      puller.start();
-    }
+    startPuller(orchestrator, streamId, parsed.app, parsed.stream);
 
     reply(res, { allowed: true, lifetime: 0, reason: 'ok' });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
+    const msg = getErrorMessage(error);
     logger.error(`[OME] Admission handler error: ${msg}`);
     if (failOpen) {
       reply(res, { allowed: true, reason: 'handler error (fail-open)' });

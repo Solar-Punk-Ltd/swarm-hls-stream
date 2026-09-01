@@ -8,6 +8,14 @@ http_server {
     dir             ./objs/nginx/html;
 }
 
+# Read-only stats, on the port docker-compose has always published. It is what makes a transcode
+# loop visible: with the ABR ladder on, /api/v1/streams must settle at one source plus one stream
+# per rung, and a count that keeps climbing is the loop. Without this the check cannot be run.
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
 srt_server {
     enabled         on;
     listen          10080;
@@ -18,13 +26,15 @@ srt_server {
     tsbpdmode       on;
 }
 
+# The ingest vhost. Without the ABR ladder this is also the vhost that segments and
+# reports; with it, this vhost only decodes, and the rungs land on the ABR vhost below.
 vhost __defaultVhost__ {
     srt {
         enabled     on;
     }
 
     hls {
-        enabled         on;
+        enabled         INGEST_HLS_PLACEHOLDER;
         hls_path        ./objs/nginx/html;
         hls_fragment    HLS_FRAGMENT_PLACEHOLDER;
         hls_window      HLS_WINDOW_PLACEHOLDER;
@@ -32,10 +42,18 @@ vhost __defaultVhost__ {
         hls_m3u8_file   [app]/[stream]/index.m3u8;
     }
 
+    # Kept on even when the ladder is enabled and this vhost segments nothing. The
+    # uploader ignores publishes it sees here, but seeing them is what lets it warn
+    # that a rendition landed on the ingest vhost — the signature of an `?vhost=`
+    # that did not match, which is also the signature of a transcode loop.
     http_hooks {
         enabled         on;
         on_publish      http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/streams;
         on_unpublish    http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/streams;
         on_hls          http://SRS_ADAPTER_HOST_PLACEHOLDER:SRS_ADAPTER_PORT_PLACEHOLDER/engines/srs/hls;
     }
+
+TRANSCODE_PLACEHOLDER
 }
+
+ABR_VHOST_PLACEHOLDER

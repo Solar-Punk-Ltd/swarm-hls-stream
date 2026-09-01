@@ -132,48 +132,84 @@ export const QoeOverlay: React.FC<QoeOverlayProps> = ({ metrics }) => {
   );
 };
 
-const QoePanel: React.FC<{ metrics: QoeMetrics }> = ({ metrics: m }) => (
-  <div className="qoe-overlay__panel">
-    <div className="qoe-overlay__header">QoE Metrics</div>
+const QoePanel: React.FC<{ metrics: QoeMetrics }> = ({ metrics: m }) => {
+  // Read defensively rather than trusted. The metrics object is built once inside a long-lived
+  // closure in attachQoeTracking, so during a hot reload this panel can render against a snapshot
+  // taken before a field existed. An observability panel must not be able to take the player down
+  // with it, which is exactly what an unguarded .map() here did.
+  const ladder = m.ladder ?? [];
 
-    <Section title="Startup">
-      <Row label="Startup Time" value={fmtMs(m.startupTimeMs)} />
-      <Row label="First Frame Time" value={fmtMs(m.firstFrameTimeMs)} />
-      <Row label="Startup Failure" value={m.startupFailed ? 'YES' : 'no'} bad={m.startupFailed} />
-    </Section>
+  return (
+    <div className="qoe-overlay__panel">
+      <div className="qoe-overlay__header">QoE Metrics</div>
 
-    <Section title="Rebuffering">
-      <Row label="Count" value={String(m.rebufferingCount)} bad={m.rebufferingCount > 0} />
-      <Row label="Duration" value={fmtMs(m.rebufferingDurationMs)} />
-      <Row label="Ratio" value={fmtPct(m.rebufferingRatio)} bad={m.rebufferingRatio > 0.01} />
-      <Row label="Any Rebuffering" value={m.hadRebuffering ? 'yes' : 'no'} bad={m.hadRebuffering} />
-    </Section>
+      <Section title="Startup">
+        <Row label="Startup Time" value={fmtMs(m.startupTimeMs)} />
+        <Row label="First Frame Time" value={fmtMs(m.firstFrameTimeMs)} />
+        <Row label="Startup Failure" value={m.startupFailed ? 'YES' : 'no'} bad={m.startupFailed} />
+      </Section>
 
-    <Section title="Quality">
-      <Row label="Delivered Bitrate" value={m.bitrateKbps != null ? `${m.bitrateKbps} kbps` : '—'} />
-      <Row label="Delivered Resolution" value={m.resolution ?? '—'} />
-      <Row label="Quality Switches" value={String(m.qualitySwitchCount)} />
-      <Row label="Switch Frequency" value={`${m.qualitySwitchPerMin.toFixed(2)}/min`} />
-      <Row label="Dropped Frames" value={String(m.droppedFrames)} bad={m.droppedFrames > 0} />
-    </Section>
+      <Section title="Rebuffering">
+        <Row label="Count" value={String(m.rebufferingCount)} bad={m.rebufferingCount > 0} />
+        <Row label="Duration" value={fmtMs(m.rebufferingDurationMs)} />
+        <Row label="Ratio" value={fmtPct(m.rebufferingRatio)} bad={m.rebufferingRatio > 0.01} />
+        <Row label="Any Rebuffering" value={m.hadRebuffering ? 'yes' : 'no'} bad={m.hadRebuffering} />
+      </Section>
 
-    <Section title="Reliability">
-      <Row label="Fatal Errors" value={String(m.fatalErrorCount)} bad={m.fatalErrorCount > 0} />
-      <Row label="Fatal Error Rate" value={m.fatalErrorCount > 0 ? 'yes' : 'none'} bad={m.fatalErrorCount > 0} />
-      <Row label="Session Complete" value={m.sessionCompleted ? 'yes' : 'in progress'} />
-      <Row label="Startup Failure Rate" value={m.startupFailed ? 'failed' : 'ok'} bad={m.startupFailed} />
-      <Row label="Reconnect Attempts" value={String(m.reconnectAttempts)} />
-      <Row label="Reconnect Success Rate" value={m.reconnectAttempts > 0 ? fmtPct(m.reconnectSuccessRate) : '—'} />
-      <Row label="Recovery Time" value={fmtMs(m.lastRecoveryTimeMs)} />
-    </Section>
+      <Section title="Quality">
+        <Row label="Delivered Bitrate" value={m.bitrateKbps != null ? `${m.bitrateKbps} kbps` : '—'} />
+        <Row label="Delivered Resolution" value={m.resolution ?? '—'} />
+        <Row label="Quality Switches" value={String(m.qualitySwitchCount)} />
+        <Row label="Switch Frequency" value={`${m.qualitySwitchPerMin.toFixed(2)}/min`} />
+        <Row label="Dropped Frames" value={String(m.droppedFrames)} bad={m.droppedFrames > 0} />
+      </Section>
 
-    <Section title="Live">
-      <Row label="E2E Live Latency" value={m.liveLatencySec != null ? `${m.liveLatencySec.toFixed(2)} s` : '—'} />
-    </Section>
+      <Section title="ABR">
+        <Row label="Level Selection" value={m.abrEnabled ? 'auto' : 'pinned'} />
+        <Row label="Selected Rung" value={m.selectedHeight != null ? `${m.selectedHeight}p` : '—'} />
+        <Row
+          label="Bandwidth Estimate"
+          value={m.bandwidthEstimateKbps != null ? `${m.bandwidthEstimateKbps} kbps` : '—'}
+        />
+        <Row label="Switch Latency" value={fmtMs(m.lastSwitchLatencyMs)} />
+        <Row label="Switch Latency (avg)" value={fmtMs(m.avgSwitchLatencyMs)} />
+        <Row
+          label="Switch Latency (max)"
+          value={fmtMs(m.maxSwitchLatencyMs)}
+          bad={(m.maxSwitchLatencyMs ?? 0) > 5000}
+        />
+        <Row label="Switches Measured" value={String(m.switchLatencySamples)} />
+        {ladder.map((level) => (
+          <Row
+            key={level.height}
+            label={`${level.current ? '▸' : '\u00A0'} ${level.height}p`}
+            value={`${level.bitrateKbps} kbps${level.capped ? ' · capped' : ''}${
+              level.unaffordable ? ' · unaffordable' : ''
+            }`}
+            bad={level.capped || level.unaffordable}
+          />
+        ))}
+        {ladder.length > 0 && <Row label="ABR would pick" value={m.nextHeight != null ? `${m.nextHeight}p` : '—'} />}
+      </Section>
 
-    <div className="qoe-overlay__footer">Playback: {fmtMs(m.playbackTimeMs)}</div>
-  </div>
-);
+      <Section title="Reliability">
+        <Row label="Fatal Errors" value={String(m.fatalErrorCount)} bad={m.fatalErrorCount > 0} />
+        <Row label="Fatal Error Rate" value={m.fatalErrorCount > 0 ? 'yes' : 'none'} bad={m.fatalErrorCount > 0} />
+        <Row label="Session Complete" value={m.sessionCompleted ? 'yes' : 'in progress'} />
+        <Row label="Startup Failure Rate" value={m.startupFailed ? 'failed' : 'ok'} bad={m.startupFailed} />
+        <Row label="Reconnect Attempts" value={String(m.reconnectAttempts)} />
+        <Row label="Reconnect Success Rate" value={m.reconnectAttempts > 0 ? fmtPct(m.reconnectSuccessRate) : '—'} />
+        <Row label="Recovery Time" value={fmtMs(m.lastRecoveryTimeMs)} />
+      </Section>
+
+      <Section title="Live">
+        <Row label="E2E Live Latency" value={m.liveLatencySec != null ? `${m.liveLatencySec.toFixed(2)} s` : '—'} />
+      </Section>
+
+      <div className="qoe-overlay__footer">Playback: {fmtMs(m.playbackTimeMs)}</div>
+    </div>
+  );
+};
 
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <div className="qoe-overlay__section">
