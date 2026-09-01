@@ -1,4 +1,19 @@
-import { manifestUploaded, publishingRendition, rungAnnounced, segmentUploaded } from '@swarm-hls-stream/shared';
+import {
+  addingStreamToList,
+  catalogStateLost,
+  ladderFinalized,
+  manifestUploaded,
+  omeSegmentLossReported,
+  originDeclaredDiscontinuity,
+  publishingRendition,
+  replacedSessionFinalized,
+  rungAnnounced,
+  segmentsNeverArrived,
+  segmentUploaded,
+  segmentUploadFailed,
+  streamStopped,
+  updatingStreamToVod,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -50,6 +65,12 @@ const cfg = loadConfig();
  * Composed through `packages/shared/src/uploaderLog.ts` rather than written out, so this list cannot
  * drift from the producer the way a copied string would. A line the harness reads that is NOT here
  * is a line a stale deployment can still break silently.
+ *
+ * ⚠️ Two entries refuse a deployment built before the messages moved into the contract, even though
+ * the words never changed. The catalog line used to be assembled from two string literals joined by
+ * a `+`, so the fragment spanning the join was in no built file, and the OME line lived under
+ * `dist/engines/`, which this gate does not read. Both now compose in the shared module the gate
+ * does read. One redeploy answers it, which is what the refusal already asks for.
  */
 const PARSED_MESSAGES: readonly DeployedMessage[] = [
   deployedMessage(
@@ -74,6 +95,71 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     'session topics',
     (stream) => rungAnnounced(stream, stream, stream, stream),
     'every ladder scenario, which scopes its assertions to the topics announced in its own window',
+  ),
+  deployedMessage(
+    'catalog announces',
+    (stream) => addingStreamToList(stream),
+    'the broadcast identification every upload-side scenario does on a single-rendition deployment, ' +
+      'and the feed location the bench resolves before it reads a single segment',
+  ),
+  deployedMessage(
+    'single-rendition VOD flips',
+    (stream) => updatingStreamToVod(stream),
+    'the recording-finalized wait in publish-stop-to-vod, finalize-crash, whole-stack-restart, ' +
+      'reconnect-during-drain, recovery-entry-corrupt, vod-playback and broadcast-ended, on a ' +
+      'single-rendition deployment',
+  ),
+  deployedMessage(
+    'ladder VOD flips',
+    (stream) => ladderFinalized(stream),
+    'the same recording-finalized wait in those seven scenarios on a ladder deployment, where no ' +
+      'rung flips its own entry and the group flip is the only evidence a broadcast ended',
+  ),
+  deployedMessage(
+    'session ends',
+    (stream) => streamStopped(stream),
+    "reconnect-during-drain's ladder path, which waits for every outgoing rung's session to end",
+  ),
+  deployedMessage(
+    'replaced session ends',
+    (stream) => replacedSessionFinalized(stream),
+    'the same wait, for a rung whose drain lost the race to its own reconnect, which is the half of ' +
+      'that scenario nothing else can observe',
+  ),
+  // ⛔ The four below are one counter, `discontinuitiesArmed`. Six suites assert it is zero on a
+  // clean run, so a line nothing matches does not fail them, it passes them for ever on a stage
+  // arming discontinuities all night. A vacuous green is the worst thing this gate can be asked to
+  // prevent, which is why each of the four is listed rather than the family.
+  deployedMessage(
+    'discontinuities armed by a spent retry window',
+    (stream, index) => segmentUploadFailed(stream, index),
+    'the zero-arm assertions in happy-path, abr-ladder, bee-outage-short, gateway-outage-viewer, ' +
+      'multi-stream-concurrent and crash-writer-bee-pause, which turn vacuously green rather than ' +
+      'red, the armed-count assertion in bee-outage-long, which fails red, and the segment indices ' +
+      'every one of them prints when it fails',
+  ),
+  deployedMessage(
+    'discontinuities armed by segments that never arrived',
+    (stream) => segmentsNeverArrived(stream, stream),
+    'the same seven assertions, for the path an engine that could not download from the origin takes',
+  ),
+  deployedMessage(
+    'discontinuities the origin declared',
+    (stream) => originDeclaredDiscontinuity(stream),
+    'the same seven assertions, for the one path that leaves the segment run gapless, so nothing else ' +
+      'in the suite can see it at all',
+  ),
+  deployedMessage(
+    'discontinuities the OME puller reported',
+    (stream) => omeSegmentLossReported(stream, stream, stream),
+    "the same seven assertions on an OME deployment, where this line is written beside the uploader's " +
+      'own and both have always counted, so losing it changes a count as well as blinding a check',
+  ),
+  deployedMessage(
+    'the catalog giving up on its own previous state',
+    (stream, index) => catalogStateLost(stream, index),
+    "finalize-crash's discriminator, which is the only thing separating a genuine second finalize " +
+      'from a first one the catalog guard was blind to',
   ),
 ];
 

@@ -1,4 +1,4 @@
-import { manifestUploaded, segmentUploaded } from '@swarm-hls-stream/shared';
+import { catalogStateLost, manifestUploaded, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -93,5 +93,35 @@ describe('refusing a stage whose uploader predates the harness', () => {
 
   it('says what a green check proved, so a pass is not silence', () => {
     assert.match(deployedLogShapeSummary([MANIFEST, SEGMENT]), /2 parsed log line/);
+  });
+});
+
+/**
+ * ⛔ The rule the whole gate rests on, written down because a message added on 2026-09-01 walked
+ * into it. A composed message survives bundling as literals only where the composer holds it as one,
+ * and `tsc` keeps a `+` between two strings exactly as it was written. So the fragment spanning that
+ * join is in no built file, and the gate refuses a deployment that writes the line perfectly well.
+ *
+ * Right for a stale deployment and wrong for ever, so the fix belongs on the composer's side:
+ * `catalogStateLost` is one template literal and has to stay one, whatever it costs in line width.
+ */
+describe('a message the deployment assembles from more than one literal', () => {
+  const CATALOG_LOST = deployedMessage(
+    'the catalog giving up on its own previous state',
+    (stream, index) => catalogStateLost(stream, index),
+    "finalize-crash's discriminator",
+  );
+
+  /** The catalog line the way `StreamCatalog` wrote it before the composer existed. */
+  const SPLIT_LITERAL_DIST =
+    'error(`[StreamCatalog] State at index ${index} failed to read ${reads} times; ` + ' +
+    "'continuing with an empty catalog — earlier entries are lost')";
+
+  it('refuses it, which is why the composer holds the message as a single template literal', () => {
+    assert.match(String(deployedLogShapeRefusal([CATALOG_LOST], SPLIT_LITERAL_DIST)), /empty catalog/);
+  });
+
+  it('passes the same message where the deployment holds it whole', () => {
+    assert.equal(deployedLogShapeRefusal([CATALOG_LOST], CATALOG_LOST.composed), null);
   });
 });
