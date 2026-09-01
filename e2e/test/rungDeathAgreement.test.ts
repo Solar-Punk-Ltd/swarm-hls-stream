@@ -26,6 +26,21 @@ import { ROOT_DIR } from '../src/config.js';
 
 const CONSTANT = 'RUNG_DEATH_LAG_SEGMENTS';
 
+/**
+ * How many rungs each side will act on at once. Owner ruling 2026-09-01, after a broadcast ending
+ * made the player delete three rungs of four and hls.js go fatal.
+ *
+ * ⚠️ The two names differ on purpose. The player's removal is irreversible, so its limit is per
+ * session; the uploader recomputes what to advertise on every delivery, so its limit is per
+ * evaluation. Same number, different sentence, and they must not drift apart: a master that drops a
+ * rung the player kept, or keeps one the player dropped, is a viewer-side fault a long way from the
+ * number that caused it.
+ */
+const DROP_LIMITS = {
+  'the player': ['packages/client/src/components/SwarmHlsPlayer/rungHealth.ts', 'MAX_RUNGS_DROPPED_PER_LADDER'],
+  'the uploader': ['packages/stream-uploader/src/libs/LadderLiveness.ts', 'MAX_RUNGS_DROPPED_AT_ONCE'],
+} as const;
+
 const SOURCES = {
   'the player, which decides when a viewer leaves a rung': join(
     ROOT_DIR,
@@ -46,10 +61,14 @@ const SOURCES = {
   ),
 } as const;
 
-/** The declared value, or null when the constant is not declared in that file at all. */
-function declaredValue(path: string): number | null {
-  const found = new RegExp(`${CONSTANT}\\s*(?::\\s*number)?\\s*=\\s*(\\d+)`).exec(readFileSync(path, 'utf8'));
+/** The declared value of `name` in `path`, or null when it is not declared there at all. */
+function declaredValueOf(path: string, name: string): number | null {
+  const found = new RegExp(`${name}\\s*(?::\\s*number)?\\s*=\\s*(\\d+)`).exec(readFileSync(path, 'utf8'));
   return found ? Number(found[1]) : null;
+}
+
+function declaredValue(path: string): number | null {
+  return declaredValueOf(path, CONSTANT);
 }
 
 describe('the player and the master agree about when a rung has stopped', () => {
@@ -76,5 +95,46 @@ describe('the player and the master agree about when a rung has stopped', () => 
         'watching. Neither shows up as an error: it shows up as a viewer-side fault a long way from ' +
         'the number that caused it.',
     );
+  });
+});
+
+describe('the player and the master agree how much of a ladder may be dropped at once', () => {
+  for (const [whose, [file, name]] of Object.entries(DROP_LIMITS)) {
+    it(`finds ${name} declared in ${whose}`, () => {
+      assert.notEqual(
+        declaredValueOf(join(ROOT_DIR, file), name),
+        null,
+        `${name} is not declared in ${file}. Either it was renamed, or one side stopped limiting how ` +
+          'much of a ladder it will take apart, which is the failure this limit was ruled in to stop.',
+      );
+    });
+  }
+
+  it('reads the same number on both sides', () => {
+    const [player, uploader] = Object.values(DROP_LIMITS).map(([file, name]) =>
+      declaredValueOf(join(ROOT_DIR, file), name),
+    );
+
+    assert.equal(
+      player,
+      uploader,
+      `the player will drop ${player} rung(s) and the master will drop ${uploader}. They must match, ` +
+        'or the two disagree about which rungs exist and neither says so.',
+    );
+  });
+
+  /**
+   * ⛔ Pinned to the ruling rather than only to each other, because "both sides say 3" would satisfy
+   * the equality above and is not what was decided.
+   */
+  it('is one, which is what the owner ruled on 2026-09-01', () => {
+    for (const [whose, [file, name]] of Object.entries(DROP_LIMITS)) {
+      assert.equal(
+        declaredValueOf(join(ROOT_DIR, file), name),
+        1,
+        `${whose} would take ${declaredValueOf(join(ROOT_DIR, file), name)} rungs out of a ladder. The ` +
+          'ruling was one: a second rung going quiet is a broadcast ending, not two rungs failing.',
+      );
+    }
   });
 });
