@@ -123,6 +123,15 @@ export function attachRungFailover(hls: Hls, feedHealth: FeedHealthTracker): () 
   return feedHealth.onRungStopped((rungTopicId) => {
     const index = levelIndexOfRung(hls, rungTopicId);
     if (index < 0) {
+      // ⛔ Silent until 2026-09-01, and it shares its silence with "the rung was never reported
+      // stopped at all". V3 went red that day having logged NOTHING: no drop, no refusal, no
+      // detection, so the two had to be told apart by reasoning rather than by reading. Most
+      // announcements really are another ladder's and this is the right answer for them, which is
+      // why it says which ladder rather than warning.
+      console.debug(
+        `[SwarmHls] rung ${rungTopicId} was reported stopped and is not one of this player's ` +
+          `${hls.levels.length} level(s), so there is nothing to drop`,
+      );
       return;
     }
 
