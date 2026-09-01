@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { BeePublisherPool, SINGLE_PUBLISHER } from '../src/libs/BeePublisherPool.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
@@ -23,6 +24,15 @@ function makeBee(): Bee {
   } as unknown as Bee;
 }
 
+/** One node for everything, which is what an un-split deployment gets from BeePublisherPool.single. */
+function makePublishers(bee: Bee = makeBee()): BeePublisherPool {
+  const publisher = { rung: SINGLE_PUBLISHER, url: '', stamp: 'stamp', bee };
+  return {
+    coordinator: () => publisher,
+    forRung: () => publisher,
+  } as unknown as BeePublisherPool;
+}
+
 function makeCatalog(): StreamCatalog {
   return { addStream: async () => {} } as unknown as StreamCatalog;
 }
@@ -38,12 +48,12 @@ function makeRecovery(overrides: Partial<Record<keyof RecoveryStore, unknown>> =
 }
 
 function makeOrchestrator(recovery: RecoveryStore = makeRecovery()): StreamOrchestrator {
-  return new StreamOrchestrator(makeBee(), makeCatalog(), recovery, {
+  return new StreamOrchestrator(makePublishers(), makeCatalog(), recovery, {
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
     manifestBeeUrl: '',
     maxQueueSize: 100,
     recoveryTimeout: RECOVERY_TIMEOUT_MS,
+    segmentRedundancy: 1,
   });
 }
 

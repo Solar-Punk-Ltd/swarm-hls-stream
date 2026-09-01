@@ -2,21 +2,264 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Topic } from '@ethersphere/bee-js';
 import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
-import { MEDIA_TYPE_VIDEO, MediaType } from '@/types/stream';
+import { MEDIA_TYPE_VIDEO, MediaType, Rendition } from '@/types/stream';
 
 import { QoeOverlay } from './overlays/qoe/QoeOverlay';
 import { attachQoeTracking, initialMetrics, QoeMetrics } from './overlays/qoe/useHlsQoeMetrics';
-import { CustomFragmentLoader, CustomManifestLoader } from './CustomManifestLoader';
-import { ManifestStateManager } from './ManifestManagement';
+import { CustomFragmentLoader, CustomManifestLoader, manifestFetcher } from './CustomManifestLoader';
+import { ManifestStateManager } from './ManifestState';
+import { buildSwarmUri } from './playlist';
 
 import './SwarmHlsPlayer.scss';
 
+/** Pins playback to a named rung; `AUTO_LEVEL` hands the choice back to hls.js's ABR. */
+export const AUTO_LEVEL = 'auto';
+
 // TODO Consider switching to React.MediaHTMLAttributes<HTMLMediaElement> to support <audio> as well
+/**
+ * The settings this component lets a caller retune.
+ *
+ * Deliberately narrower than `Partial<HlsConfig>`: that type also advertises `xhrSetup`, `loader`,
+ * `abrController` and friends, none of which survive the serialisation below, so promising them
+ * would let a caller write code that compiles and silently never runs.
+ */
+export interface HlsTuning {
+  liveSyncDuration?: number;
+  liveMaxLatencyDuration?: number;
+  maxBufferLength?: number;
+  maxMaxBufferLength?: number;
+  maxBufferSize?: number;
+  maxBufferHole?: number;
+  abrEwmaFastLive?: number;
+  abrEwmaSlowLive?: number;
+  abrEwmaDefaultEstimate?: number;
+  abrBandWidthFactor?: number;
+  abrBandWidthUpFactor?: number;
+  maxStarvationDelay?: number;
+  capLevelToPlayerSize?: boolean;
+  testBandwidth?: boolean;
+}
+
+/**
+ * How this player is tuned for a Swarm-backed live stream.
+ *
+ * Exported so a caller can start from these numbers and override only what it needs, rather than
+ * rediscover them. They are deliberately not hls.js's own defaults.
+ *
+ * The one worth knowing about is `liveSyncDuration`. It is a latency *target*: hls.js parks the
+ * playhead that many seconds behind the live edge (`latency-controller.ts`, `targetLatency` then
+ * `liveSyncPosition = liveEdge - targetLatency`), and that distance is the same at any segment
+ * length. hls.js's own default is `liveSyncDurationCount: 3`, a count multiplied by the playlist's
+ * target duration, which does track segment length. Setting one of these forbids the other:
+ * `mergeConfig` throws on a config carrying both.
+ *
+ * What this has to be checked against is not segment length but the engine's **playlist window**,
+ * because `liveSyncPosition` is clamped to `edge - levelDetails.totalduration`. A target as long as
+ * the window parks the playhead on the oldest fragment, at the eviction boundary. The two engines
+ * express that window differently, so the margin differs: SRS's `hls_window` is a duration and
+ * holds regardless of fragment length, while OME's is `SegmentCount x SegmentDuration`, which at
+ * its defaults is 5 x 2s = 10s, exactly this value.
+ */
+export const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
+  liveSyncDuration: 10,
+  liveMaxLatencyDuration: 30,
+  maxBufferLength: 60,
+  maxMaxBufferLength: 120,
+  maxBufferSize: 60 * 1024 * 1024, // 60MB
+  maxBufferHole: 1,
+
+  // --- ABR ---
+  //
+  // hls.js computes throughput as `bytes / (loading.end - loading.first)`. Over a CDN that is a
+  // measurement of a pipe. Over Swarm it is not: a 2s 1080p segment is a few hundred chunks fanned
+  // out across neighbourhoods, and the elapsed time is dominated by retrieval latency rather than
+  // by any rate. Consecutive samples therefore swing hard, and hls.js's default half-lives turn
+  // that swing into level flapping — so both are lengthened well past them (3 and 9).
+  abrEwmaFastLive: 9,
+  abrEwmaSlowLive: 27,
+
+  // A floor only. Once the ladder has been parsed, {@link startAtTopRung} raises the estimate to
+  // whatever the top rung needs, because any fixed number here is a guess that the ABR gate then
+  // treats as a hard ceiling. This value is what a session runs on for the brief window before the
+  // master is read, and for a single-rendition stream, where it changes nothing.
+  abrEwmaDefaultEstimate: 2_000_000,
+
+  // hls.js's startup probe fetches the first fragment at a low level to measure throughput. That
+  // measurement is retrieval latency here, so it produces a number that is not bandwidth; the
+  // seeded estimate is the more honest input.
+  testBandwidth: false,
+
+  // Off, and this is load-bearing rather than a preference. `capLevelToPlayerSize` caps ABR at the
+  // first rung whose width or height reaches `max(playerWidth, playerHeight) x devicePixelRatio`,
+  // and it sets `autoLevelCapping`, which ABR cannot exceed for any bandwidth. In a 420px-wide
+  // player at devicePixelRatio 1 that resolves to 640x360 — the bottom rung, pinned there
+  // permanently and regardless of how fast Swarm is answering. Sizing the ladder to the box is the
+  // right production default; it is the wrong thing to leave on while measuring what the ladder can
+  // reach. See the watch page, which is laid out wide for the same reason.
+  capLevelToPlayerSize: false,
+
+  // Restated at hls.js's own defaults rather than changed. They are here to be swept from a caller
+  // during the POC without editing this file; there is no evidence yet for moving them.
+  abrBandWidthFactor: 0.95,
+  abrBandWidthUpFactor: 0.7,
+  maxStarvationDelay: 4,
+});
+
+/**
+ * A tuning override, reduced to the values it can actually apply and the ones it can survive.
+ *
+ * Restricted to the keys above for a reason that is not tidiness: `mergeConfig` refuses a config
+ * carrying both `liveSyncDuration` and `liveSyncDurationCount`, and these defaults always supply
+ * the first, so letting the second through would throw inside the effect and take the tree down.
+ *
+ * Non-finite numbers are dropped rather than passed through, because `JSON` turns `NaN` and
+ * `Infinity` into `null`, and a `null` here does not fall back to the default, it replaces it.
+ * `maxBufferLength: null` reaches hls.js as `Math.max(null, …)`, which is zero, and a player that
+ * buffers nothing stalls forever. `Number(searchParams.get('buf'))` on bad input hits exactly this.
+ * Booleans have no such hazard and survive the round trip as themselves.
+ *
+ * Sorted, so a config assembled in a different key order is still the same config and does not
+ * tear the player down and rebuild it mid-playback.
+ */
+function tuningKey(tuning: HlsTuning): string {
+  const tunable = new Set(Object.keys(DEFAULT_HLS_TUNING));
+  const usable = Object.entries(tuning)
+    .filter((entry): entry is [string, number | boolean] => {
+      const [key, value] = entry;
+      return tunable.has(key) && (typeof value === 'boolean' || Number.isFinite(value));
+    })
+    .sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify(Object.fromEntries(usable));
+}
+
+/**
+ * Identity of a ladder, by the only parts of it the player has to be rebuilt for.
+ *
+ * Deliberately excludes bandwidth. The uploader keeps correcting each rung's measured bandwidth,
+ * and rebuilding the player every time it did would restart playback every half minute. A session
+ * therefore runs on the bandwidths that had landed by the time hls.js read the master — which for
+ * a live stream is once, at the start — and later corrections benefit later sessions.
+ */
+function ladderKey(renditions: Rendition[] | undefined): string {
+  if (!renditions || renditions.length === 0) {
+    return '';
+  }
+
+  return renditions.map((r) => `${r.name}:${r.topic}`).join('|');
+}
+
+/** The rung to aim at: tallest, and among equals the one carrying the most bits. */
+function topLevelIndex(levels: readonly { height: number; maxBitrate: number }[]): number {
+  return levels.reduce((best, level, index) => {
+    const incumbent = levels[best];
+    const taller = level.height > incumbent.height;
+    const fatter = level.height === incumbent.height && level.maxBitrate > incumbent.maxBitrate;
+    return taller || fatter ? index : best;
+  }, 0);
+}
+
+/**
+ * Starts the session on the top rung and lets measurement bring it down, rather than starting at
+ * the bottom and waiting for measurement to let it up.
+ *
+ * The second is what hls.js does by default and it cannot work over Swarm. `findBestLevel` will
+ * only move up to a rung when `abrBandWidthUpFactor x bandwidthEstimate >= BANDWIDTH`, and
+ * `bandwidthEstimate` moves only on fragments actually fetched — with `testBandwidth` off there is
+ * no probe, and a probe would measure retrieval latency rather than a rate anyway. So a viewer
+ * fetching 700 kbps segments measures roughly 700 kbps, concludes 700 kbps is all it can afford,
+ * and never tries the rung that would have told it otherwise. The floor is self-fulfilling.
+ *
+ * Seeding the estimate at exactly what the top rung needs under the up-switch factor inverts that:
+ * the whole ladder is affordable from cold, and the first real fragments then move the estimate.
+ * If Swarm keeps up it stays high; if it does not, the EWMA falls and — faster — the starvation
+ * path in `findBestLevel` drops the level as the buffer drains. Falling back on evidence, rather
+ * than never climbing for want of it.
+ *
+ * The cost is an honest one: the first fragment is a top-rung fragment, so a viewer on a slow
+ * gateway pays a slower startup before the first down-switch. That is the trade this branch is
+ * making, and it is what `abrEwmaFastLive` governs the speed of.
+ */
+function startAtTopRung(hls: Hls): void {
+  const levels = hls.levels;
+  if (levels.length < 2) {
+    return;
+  }
+
+  // Clamped because this is a divisor and the factor is caller-tunable for exactly this kind of
+  // sweep. A zero would seed an infinite estimate, which hls.js then multiplies by the same zero
+  // and compares as NaN — no rung is ever selectable and playback simply never starts.
+  const upFactor = Math.min(Math.max(hls.config.abrBandWidthUpFactor, 0.1), 1);
+  const top = topLevelIndex(levels);
+  const affordable = levels[top].maxBitrate / upFactor;
+
+  // Never downward: a caller that deliberately seeded higher keeps its number.
+  hls.bandwidthEstimate = Math.max(hls.config.abrEwmaDefaultEstimate, Math.round(affordable));
+
+  // `startLevel` picks the first fragment only, and leaves ABR enabled — unlike `currentLevel`,
+  // which would pin the session to this rung for good.
+  hls.startLevel = top;
+}
+
+/**
+ * Pins hls.js to one rung. Called only when a rung was asked for; otherwise ABR chooses.
+ *
+ * Matched by feed URI where the catalog supplied one, because a rung's topic is the one attribute
+ * of a level that came from this ladder and cannot collide with another rung's. Falling back to the
+ * height in the rung's name covers the session driven purely by a published master, which knows
+ * every level's resolution but has no rendition names to match against.
+ *
+ * Assigning `currentLevel` is also what turns ABR off — a `startLevel` alone only picks where it
+ * begins, and it would switch away on the first throughput sample.
+ */
+function applyLevel(hls: Hls, owner: string, renditions: Rendition[], level: string): void {
+  const target = renditions.find((r) => r.name === level);
+
+  const index = target
+    ? hls.levels.findIndex((candidate) => candidate.uri === buildSwarmUri(owner, target.topic))
+    : levelIndexByName(hls, level);
+
+  if (index < 0) {
+    console.warn(`Rendition "${level}" is not among the parsed levels, leaving selection on auto`);
+    return;
+  }
+
+  hls.currentLevel = index;
+}
+
+/** `720p` -> the parsed level 720 rows tall, so a rung can be pinned without a catalog entry. */
+function levelIndexByName(hls: Hls, level: string): number {
+  const height = Number.parseInt(level, 10);
+  if (!Number.isFinite(height)) {
+    return -1;
+  }
+
+  return hls.levels.findIndex((candidate) => candidate.height === height);
+}
+
 interface HlsPlayerProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
   owner: string;
   topicString: string;
   mediaType: MediaType;
   enableQoeOverlay?: boolean;
+  /**
+   * The stream's ABR ladder. Absent or empty, the player reads `topicString` as a single media
+   * playlist exactly as it always has.
+   */
+  renditions?: Rendition[];
+  /**
+   * Rung to pin playback to, by name. Omitted, or {@link AUTO_LEVEL}, leaves the choice to ABR,
+   * which is the default. Pinning is for isolating one rung — comparing it against the others, or
+   * telling a bad rung apart from a bad switch. Ignored without a ladder.
+   */
+  level?: string;
+  /**
+   * Overrides merged over {@link DEFAULT_HLS_TUNING}.
+   *
+   * Compared by value rather than by reference, so passing an object literal is safe: it does not
+   * hand the effect a new identity on every render and tear the player down mid-playback. A change
+   * in the values themselves does rebuild the player, which loses playback position.
+   */
+  hlsConfig?: HlsTuning;
 }
 
 export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
@@ -26,16 +269,41 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
   autoPlay = true,
   controls = true,
   enableQoeOverlay = false,
+  renditions,
+  level,
+  hlsConfig,
   ...videoProps
 }) => {
   const [restartTrigger, setRestartTrigger] = useState(0);
   const [metrics, setMetrics] = useState<QoeMetrics>(initialMetrics);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsConfigKey = tuningKey(hlsConfig ?? {});
+  const renditionKey = ladderKey(renditions);
+
+  // Read through a ref, not a dependency. The catalog is polled every few seconds and hands back
+  // a fresh array each time, so depending on it directly would tear the player down and rebuild
+  // it on every poll. `renditionKey` is what the effect actually reacts to.
+  const renditionsRef = useRef(renditions);
+  renditionsRef.current = renditions;
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) {
       return;
+    }
+
+    const sourceUrl = buildSwarmUri(owner, topicString);
+    const ladder = renditionsRef.current;
+
+    // A ladder the catalog knows about. Only the fallback path needs this — a stream whose feed
+    // holds a published master is recognised by the loader from the master itself, catalog or not.
+    const isLadder = renditionKey.length > 0 && !!ladder;
+
+    if (isLadder) {
+      manifestFetcher.registerLadder(sourceUrl, () => ({
+        owner,
+        renditions: renditionsRef.current ?? ladder,
+      }));
     }
 
     let hls: Hls | null = null;
@@ -49,14 +317,18 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
 
     if (Hls.isSupported()) {
       hls = new Hls({
+        ...DEFAULT_HLS_TUNING,
+        ...(JSON.parse(hlsConfigKey) as HlsTuning),
+        // Last, so they cannot be overridden. These loaders are what make this a Swarm player
+        // rather than an HTTP one, and a caller that replaced them would get a component which
+        // looks like this one and fetches from somewhere else entirely.
         pLoader: CustomManifestLoader,
         fLoader: CustomFragmentLoader,
-        liveSyncDuration: 10,
-        liveMaxLatencyDuration: 30,
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
-        maxBufferSize: 60 * 1024 * 1024, // 60MB
-        maxBufferHole: 1,
+        // Fragment loading is started by hand from MANIFEST_PARSED below, once the ladder is known.
+        // Left on, hls.js starts it from its own MANIFEST_LOADED handler, and whether that runs
+        // before or after this component gets to set `startLevel` depends on the order two internal
+        // controllers happened to register for the same event. Not a race worth inheriting.
+        autoStartLoad: false,
       });
 
       const restartStream = () => {
@@ -99,15 +371,26 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       });
 
       hls.attachMedia(video);
-      hls.loadSource(`${owner}/${topicString}`);
+      hls.loadSource(sourceUrl);
 
-      if (autoPlay) {
-        hls.on(Events.MANIFEST_PARSED, () => {
+      hls.on(Events.MANIFEST_PARSED, () => {
+        // The ladder is whatever hls.js parsed, not whatever the catalog said: a published master
+        // is the authority on which rungs exist, and a deep link may have had no catalog at all.
+        const pinned = !!level && level !== AUTO_LEVEL;
+        if (pinned) {
+          applyLevel(hls!, owner, renditionsRef.current ?? ladder ?? [], level!);
+        } else {
+          startAtTopRung(hls!);
+        }
+
+        hls!.startLoad();
+
+        if (autoPlay) {
           video.play().catch((err) => {
             console.warn('Auto-play failed:', err);
           });
-        });
-      }
+        }
+      });
     } else {
       console.error('HLS is not supported in this browser.');
     }
@@ -119,19 +402,25 @@ export const SwarmHlsPlayer: React.FC<HlsPlayerProps> = ({
       video.removeEventListener('play', onHlsPlay);
       detachQoe?.();
 
+      // Stops every rung's walk and discards its accumulated playlist, including rungs discovered
+      // from a published master that this component never saw.
+      manifestFetcher.unregisterLadder(sourceUrl);
+
       if (hls) {
+        // The source feed on top of that. For a single-rendition stream it is the media playlist
+        // and holds the only state there is; for a ladder it is the master, and clearing it is a
+        // no-op. Leaving either behind would have the next session resume someone else's playlist.
         try {
-          const topic = Topic.fromString(topicString);
-          ManifestStateManager.getInstance().clear(topic.toString());
+          ManifestStateManager.getInstance().clear(Topic.fromString(topicString).toString());
         } catch (error) {
           console.warn('Failed to clear manifest state for topic:', topicString, error);
-        } finally {
-          hls.destroy();
-          hls = null;
         }
+
+        hls.destroy();
+        hls = null;
       }
     };
-  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString]);
+  }, [autoPlay, restartTrigger, enableQoeOverlay, owner, topicString, hlsConfigKey, renditionKey, level]);
 
   const videoEl =
     mediaType === MEDIA_TYPE_VIDEO ? (
