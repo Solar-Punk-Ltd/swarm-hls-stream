@@ -73,9 +73,16 @@ RUN apt-get update \
 # ingress policer on this container's own interface. ⛔ It belongs in THIS image and not only in
 # `Dockerfile.bench`: `browser-on-host.sh` builds this one, so a shaped viewer arm runs here, and
 # the shaper refuses the run rather than measuring an unshaped link when `tc` is absent.
+#
+# ⛔ `tc` carries `cap_net_admin` as a FILE capability, set here while there is still a root to set it.
+# `--cap-add=NET_ADMIN` only puts the capability in the container's bounding set, and this container
+# runs as the invoking user, for whom that alone leaves it permitted but not effective: measured
+# 2026-09-02, the first shaped run refused with "the ingress qdisc could not be installed". A file
+# capability on the binary is what lets a non-root process actually use what docker granted.
 ARG DOCKER_CLI_VERSION=27.3.1
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl iproute2 \
+  && apt-get install -y --no-install-recommends curl iproute2 libcap2-bin \
+  && setcap cap_net_admin+ep "$(command -v tc)" \
   && rm -rf /var/lib/apt/lists/* \
   && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
   | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
