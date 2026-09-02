@@ -102,8 +102,13 @@ export async function prewarmByteSource(page: Page): Promise<string | null> {
   );
 }
 
-/** What one retrieval through the in-tab node came back with, or why it did not. */
-export interface InTabRetrieval {
+/**
+ * What one retrieval through the in-tab node came back with, or why it did not.
+ *
+ * Not exported: callers read the fields off it, and an exported name with no importer is what the
+ * repo's unused-export gate exists to catch.
+ */
+interface InTabRetrieval {
   byteLength: number | null;
   /** The client's own measurement of the retrieval, which is the one inside the product path. */
   elapsedMs: number | null;

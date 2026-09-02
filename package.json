@@ -55,7 +55,8 @@
     "browser:vod": "pnpm --filter @swarm-hls-stream/e2e browser:vod",
     "make:recording": "pnpm --filter @swarm-hls-stream/e2e make:recording",
     "browser:weeb3-native": "pnpm --filter @swarm-hls-stream/e2e browser:weeb3-native",
-    "browser:viewer-order": "pnpm --filter @swarm-hls-stream/e2e browser:viewer-order"
+    "browser:viewer-order": "pnpm --filter @swarm-hls-stream/e2e browser:viewer-order",
+    "browser:in-tab-throttle-probe": "pnpm --filter @swarm-hls-stream/e2e browser:in-tab-throttle-probe"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.0",

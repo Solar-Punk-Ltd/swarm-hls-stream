@@ -113,7 +113,7 @@ export interface InTabProbeRun {
   cost: ResourceCost;
 }
 
-export interface AmplificationSummary {
+interface AmplificationSummary {
   n: number;
   min: number;
   median: number;
@@ -121,13 +121,13 @@ export interface AmplificationSummary {
 }
 
 /** One arm of a Part B round: a rung, under the cap or not. */
-export interface ProbeStep {
+interface ProbeStep {
   arm: RungName;
   capped: boolean;
 }
 
 /** The window bounds a driver hands in, with everything about the traffic still to be counted. */
-export interface IdleWindowInput {
+interface IdleWindowInput {
   label: string;
   kbpsCap: number | null;
   startedAtMs: number;
@@ -135,7 +135,7 @@ export interface IdleWindowInput {
 }
 
 /** What the driver watched happen to one retrieval, before any of it is counted. */
-export interface RetrievalObservation {
+interface RetrievalObservation {
   arm: ProbeArm;
   kbpsCap: number | null;
   ref: string;

@@ -261,20 +261,33 @@ export class Host {
     return this.curlJson<T>('POST', port, path, timeoutS);
   }
 
+  /**
+   * curl a localhost port and hand back the body as it came.
+   *
+   * For the routes that answer something other than JSON. A rung's playlist comes back from
+   * `GET /feeds/{owner}/{topic}` as the m3u8 text itself rather than wrapped in an envelope, so
+   * {@link localJson} would throw on it.
+   */
+  async localText(port: number, path: string, timeoutS: number = 5): Promise<string> {
+    const { stdout } = await this.curl('GET', port, path, timeoutS);
+    return stdout;
+  }
+
   private async curlJson<T>(method: 'GET' | 'POST', port: number, path: string, timeoutS: number): Promise<T> {
-    const methodFlag = method === 'POST' ? '-X POST ' : '';
-    // Keep the ssh run bound above curl's own deadline so --max-time is what fires first on a slow reply.
-    const runTimeoutMs = Math.max(DEFAULT_RUN_TIMEOUT_MS, (timeoutS + 5) * 1_000);
-    const { stdout } = await this.run(
-      `curl -s ${methodFlag}--max-time ${timeoutS} http://localhost:${port}${path}`,
-      runTimeoutMs,
-    );
+    const { stdout } = await this.curl(method, port, path, timeoutS);
     const text = stdout.trim();
     try {
       return JSON.parse(text) as T;
     } catch {
       throw new Error(`non-JSON from ${method} :${port}${path} → ${text.slice(0, 200)}`);
     }
+  }
+
+  private async curl(method: 'GET' | 'POST', port: number, path: string, timeoutS: number): Promise<RunResult> {
+    const methodFlag = method === 'POST' ? '-X POST ' : '';
+    // Keep the ssh run bound above curl's own deadline so --max-time is what fires first on a slow reply.
+    const runTimeoutMs = Math.max(DEFAULT_RUN_TIMEOUT_MS, (timeoutS + 5) * 1_000);
+    return this.run(`curl -s ${methodFlag}--max-time ${timeoutS} http://localhost:${port}${path}`, runTimeoutMs);
   }
 }
 
