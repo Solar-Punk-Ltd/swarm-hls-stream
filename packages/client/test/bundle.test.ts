@@ -1,11 +1,12 @@
 import { parse } from 'acorn';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { copyWeeb3Runtime, WEEB3_RUNTIME_ENTRIES, weeb3PackageDir } from '../scripts/copy-weeb3-runtime.mjs';
 import { FETCH_BACKEND_HANDLE } from '../src/components/SwarmHlsPlayer/fetchBackendTestHandle';
 import { PLAYER_HANDLE } from '../src/components/SwarmHlsPlayer/playerTestHandle';
 import { GATEWAY_HANDLE } from '../src/providers/gatewayTestHandle';
@@ -13,6 +14,9 @@ import viteConfig from '../vite.config.js';
 
 const CLIENT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const BUILD_TIMEOUT_MS = 180_000;
+
+/** Where `public/weeb-3/` lands in the built site, and the prefix the deployed nginx answers. */
+const SERVED_RUNTIME_DIR = 'weeb-3';
 
 /**
  * Pinned as a literal, the same way the puller pins its abort default: the value that ships is the
@@ -44,6 +48,17 @@ function declaredEcmaVersion(target: string[]): number {
     throw new Error(`build.target names no ECMAScript version, so nothing says what the JS may use: ${target}`);
   }
   return Number(es.slice(2));
+}
+
+/** Every file below `dir`, as paths relative to it, sorted so two trees can be compared directly. */
+function filesUnder(dir: string): string[] {
+  const walk = (current: string): string[] =>
+    readdirSync(current).flatMap((entry) => {
+      const path = join(current, entry);
+      return statSync(path).isDirectory() ? walk(path) : [relative(dir, path)];
+    });
+
+  return walk(dir).sort();
 }
 
 function readEmittedAssets(outDir: string): EmittedAssets {
@@ -78,6 +93,11 @@ describe('the emitted bundle honours the declared browser target (TEST-22)', () 
   let emitted: EmittedAssets;
 
   beforeAll(async () => {
+    // What `prebuild` does before `vite build`, done here for the same reason the build is done here:
+    // `pnpm test` runs before `pnpm build`, so `public/weeb-3/` is empty on a fresh checkout and every
+    // assertion about the served runtime would report on whatever an earlier build happened to leave.
+    copyWeeb3Runtime(weeb3PackageDir(), join(CLIENT_ROOT, 'public', SERVED_RUNTIME_DIR));
+
     outDir = mkdtempSync(join(tmpdir(), 'swarm-hls-bundle-'));
     await build({
       configFile: join(CLIENT_ROOT, 'vite.config.js'),
@@ -206,5 +226,67 @@ describe('the emitted bundle honours the declared browser target (TEST-22)', () 
     });
 
     expect(unparseable).toEqual([]);
+  });
+
+  /**
+   * ⛔⛔⛔ The in-tab node lives in a SharedWorker from weeb-3 0.0.341001 on, and a SharedWorker script
+   * has to be same-origin, so the built site is the only thing that can serve the package's runtime.
+   * A site that does not carry it answers `/weeb-3/worker.js` with the app's own index and every
+   * viewer gets "SharedWorker request timed out" and no node. That is what the stage did on
+   * 2026-09-02, and nothing in the build reported it: the bundle is identical either way, because the
+   * runtime is served beside it rather than imported into it.
+   *
+   * The chunk assertions above hold the copy that gets bundled for the page. These hold the copy that
+   * gets served to the worker, and the last case holds the two together.
+   */
+  describe('and carries the runtime the shared worker loads', () => {
+    const packageDir = weeb3PackageDir();
+    const servedDir = () => join(outDir as string, SERVED_RUNTIME_DIR);
+    const served = (file: string) => readFileSync(join(servedDir(), file));
+
+    it('serves the worker script the package builds its SharedWorker from', () => {
+      expect(filesUnder(servedDir())).toContain('worker.js');
+    });
+
+    it('serves the glue that worker imports and the wasm the glue fetches beside it', () => {
+      expect(filesUnder(servedDir())).toEqual(expect.arrayContaining(['weeb_3.js', 'weeb_3_bg.wasm']));
+    });
+
+    /**
+     * Compared as trees rather than as a list restated here, so a snippet the glue imports by
+     * relative path cannot be dropped in transit without this failing. `public/` is copied verbatim,
+     * so the built tree and the package's own runtime entries have to hold the same files.
+     */
+    it('carries every file of the runtime through, snippets included', () => {
+      const fromPackage = WEEB3_RUNTIME_ENTRIES.flatMap((entry) => {
+        const source = join(packageDir, entry);
+        return statSync(source).isDirectory() ? filesUnder(source).map((file) => join(entry, file)) : [entry];
+      }).sort();
+
+      expect(filesUnder(servedDir())).toEqual(fromPackage);
+    });
+
+    it('serves the glue byte for byte, because the wasm beside it was built against exactly this one', () => {
+      expect(served('weeb_3.js').equals(readFileSync(join(packageDir, 'weeb_3.js')))).toBe(true);
+      // The control: byte-identity to the package says nothing if the package itself stopped being
+      // wasm-bindgen glue, and this marker is the same one the chunk assertions above look for.
+      expect(served('weeb_3.js').toString('utf8')).toContain(WASM_GLUE_MARKER);
+    });
+
+    /**
+     * The page's glue and the worker's glue are two copies of one release, reached by two different
+     * routes: the bundler inlines one into a chunk and nginx serves the other as a file. A bump that
+     * updated `node_modules` while something stale sat in `public/` would leave a worker talking to a
+     * different build of the wasm than the page expects, and every other assertion here would pass.
+     *
+     * Compared through the wasm rather than the glue because the bundler minifies the glue and copies
+     * the wasm verbatim, so the wasm is the one artefact that is identical on both routes.
+     */
+    it('serves the same build of the wasm that the page chunk was emitted with', () => {
+      const bundled = readdirSync(join(outDir as string, 'assets')).filter((name) => name.endsWith('.wasm'));
+
+      expect(bundled).toHaveLength(1);
+      expect(readFileSync(join(outDir as string, 'assets', bundled[0])).equals(served('weeb_3_bg.wasm'))).toBe(true);
+    });
   });
 });
