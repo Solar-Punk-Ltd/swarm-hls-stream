@@ -1,5 +1,13 @@
 # Under a cap the in-tab node doubles its own traffic and still leaves the link half idle
 
+> **Owner's correction, the same afternoon.** This run measured **our client**, driving **our pinned
+> weeb-3 `0.0.329001` of 10 August** (twelve releases behind Abel's `0.0.341001`), under **Chrome's
+> emulated slow connection**. Abel's latest weeb-3 plays streams well above this bitrate, so weeb-3 is
+> not the suspect and is not to be changed. The mistake is on our side, in the harness, the toolset,
+> the pin or the client, and the next three arms find which: Abel's own player under the same
+> emulated cap, a real shaped link instead of the emulation, and our client on `0.0.341001`. Read
+> every figure below as a reading of that one combination and nothing more.
+
 **2026-09-02, measured on manager-host, 0 BZZ.** One run of `pnpm browser:in-tab-throttle-probe`
 against the shipped client at build `dd21a1e`, Chrome 151, the recording of sitting five. Plan:
 [`in-tab-throttle-probe-prediction-2026-09-02.md`](in-tab-throttle-probe-prediction-2026-09-02.md),
@@ -161,8 +169,8 @@ bandwidth-limited link would test both at once, and the test is this probe run a
 
 ## What it means for V2
 
-V2 is red because a capped in-tab node cannot supply the cheapest rung, and this is why: the node's
-own retrieval policy turns a 350 KB/s link into 54 to 71 KB/s of usable segment and then buries the
-next request under the duplicates of the last one. The fix lives in that retrieval path, per the
-owner's ruling of 2026-09-02, and any change to weeb-3 is drafted here and handed over, never filed
-by me.
+V2 is red because, in this combination, a capped in-tab node cannot supply the cheapest rung: a
+350 KB/s link became 54 to 71 KB/s of usable segment and each new request landed under the
+duplicates of the last one. Which part of our side produces that, the pin, the client's use of the
+node or Chrome's emulation, is what the three arms above decide. weeb-3 itself is not to be changed,
+per the owner.
