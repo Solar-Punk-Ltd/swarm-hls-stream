@@ -87,8 +87,16 @@ const DEFAULT_SETTLE_SECONDS = 45;
  */
 const DEFAULT_SQUEEZE_SECONDS = 60;
 
-/** How long to keep watching after the cap comes off, which is where the climb back is seen. */
-const DEFAULT_RECOVER_SECONDS = 60;
+/**
+ * How long to keep watching after the cap comes off, which is where the climb back is seen.
+ *
+ * 120 rather than 60 since 2026-09-02. The client smooths its bandwidth estimate over 27 s and climbs
+ * only to a rung under 70% of it, so the climb is slow by design: the first green run reached 480p
+ * 28 s after the lift and its estimate stood at 3486 kbps when the 60 s window closed, about six
+ * seconds short of the 4000 that 720p needs (`browser-quality-2026-09-02T12-52-16-340Z`). A window
+ * that ends mid-climb files "climbed back to 480p" about a player that was still climbing.
+ */
+const DEFAULT_RECOVER_SECONDS = 120;
 
 async function main(): Promise<void> {
   const clientUrl = requireEnv('BROWSER_CLIENT_URL');

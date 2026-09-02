@@ -51,7 +51,7 @@ import { weeb3ArmRefusal } from './browserVerdict.js';
  */
 export const SQUEEZE_SETTLE_SECONDS = 45;
 export const SQUEEZE_SECONDS = 60;
-export const SQUEEZE_RECOVER_SECONDS = 60;
+export const SQUEEZE_RECOVER_SECONDS = 120;
 
 /**
  * The most broadcast a squeeze arm may buy.
