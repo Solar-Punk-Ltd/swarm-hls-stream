@@ -23,9 +23,22 @@
  * yamux multiplexes many streams onto one socket, so bytes are readable and attempts are not, and
  * nothing here claims an attempt count.
  *
+ * ## ⛔⛔⛔ THE SQUEEZE RUNS OF 2026-09-02 ARE VOID, AND FOR OUR REASONS
+ *
+ * His page runs the node in a SharedWorker exactly as our client does. The cap was applied to the
+ * page's own debug session, which the node's sockets do not belong to, and the recorder listened on
+ * the same page. So "1.000x under the cap" was a reading of an unconstrained link taken by an
+ * instrument that could not see it, and nothing in the run said so. `workerTargets.ts` attaches both
+ * to the worker targets now, and {@link judgeNativeSqueezeInstrument} is what refuses.
+ *
+ * ⛔ Those two checks are ONE SIDED and the report says so wherever it prints them. His page
+ * publishes no handle a known-size payload could be timed through, so unlike our own client's
+ * squeeze this run cannot PROVE its cap landed. It can only rule out the two failures above.
+ *
  * @see `docs/bench/in-tab-throttle-probe-result-2026-09-02.md` for the run this is the control for.
  */
 
+import { blindWhileDeliveringRefusal, capExceededRefusal } from './capProof.js';
 import { kbpsAsBytesPerSecond } from './throttle.js';
 import { bytesBetween, type WebSocketTraffic } from './webSocketTraffic.js';
 
@@ -202,6 +215,44 @@ export function judgeNativeSqueeze(
 }
 
 /**
+ * Why this run's capped phase is not a reading, or nulls.
+ *
+ * ## ⛔⛔⛔ Both are ONE SIDED, and that is the honest limit of his page
+ *
+ * Our own client publishes `retrieveBytes`, so a squeeze there times a known-size payload through
+ * the node and gets a two-sided proof: too fast means the cap never landed. weeb-3's own page
+ * publishes no such handle and no player handle either, so the strongest readings available are
+ * these two, and neither can PROVE the cap landed:
+ *
+ * - **Over the cap** has no benign explanation, so it refuses. **Under it proves nothing**, because
+ *   an idle node and a blind recorder read the same way.
+ * - **Media gained with zero inbound** is arithmetically impossible on a sighted instrument, so it
+ *   refuses. **Zero media with zero inbound is a starved viewer**, which is a result rather than a
+ *   fault, and it is not refused.
+ *
+ * ⛔ So a run that passes both has not shown its cap landed. What it has shown is that the two
+ * failures which voided the readings of 2026-09-02 did not happen again, and the report says exactly
+ * that rather than implying more.
+ */
+export function judgeNativeSqueezeInstrument(result: NativeSqueezeResult): {
+  capRefusal: string | null;
+  recorderRefusal: string | null;
+} {
+  const { during, windows } = result;
+  const capBytesPerSecond = kbpsAsBytesPerSecond(windows.kbps);
+
+  return {
+    capRefusal: capExceededRefusal(
+      during.inboundBytes,
+      during.window.toMs - during.window.fromMs,
+      capBytesPerSecond,
+      'the capped phase',
+    ),
+    recorderRefusal: blindWhileDeliveringRefusal(during.mediaGainedS, during.inboundBytes, 'the capped phase'),
+  };
+}
+
+/**
  * Media the playhead must gain past the seek before weeb-3's own player counts as having started.
  *
  * A whole second rather than a frame. His page reports decodable media and then buffers, and a
@@ -355,15 +406,49 @@ export function renderNativeSqueezeSection(result: NativeSqueezeResult): string[
     '⛔ A phase with fewer than two samples reads **no ratio**, never 0.000. Zero is what a starved ' +
       'viewer produces, and a window nobody sampled must not borrow that reading.',
     '',
-    "⛔⛔ The inbound figures are the tab's WebSocket frames, which is the only vantage point on a node " +
-      'that publishes no retrieval telemetry. yamux multiplexes many streams onto one socket, so these ' +
-      'are bytes and never attempts, and no attempt count is claimed here.',
+    "⛔⛔ The inbound figures are the tab's WebSocket frames, on the PAGE and on every worker target " +
+      'the browser made, which is the only vantage point on a node that publishes no retrieval ' +
+      'telemetry. yamux multiplexes many streams onto one socket, so these are bytes and never ' +
+      'attempts, and no attempt count is claimed here.',
     '',
-    "⚠️ The cap is applied by Chromium and reaching a given transport is the browser's business. The " +
-      `${windows.kbps} kbps cap allows **${grouped(kbpsAsBytesPerSecond(windows.kbps))} B/s**, so read the ` +
-      'capped row against that figure before believing anything in it: a capped phase pulling more than ' +
-      'its cap is an uncapped link with a cap written beside it, and every capped figure here would then ' +
-      'be a reading of an unconstrained one.',
+    ...instrumentLines(result),
+  ];
+}
+
+/**
+ * What this run can and cannot say about its own cap, in the report rather than in a comment.
+ *
+ * ⛔⛔⛔ His page runs the node in a SharedWorker exactly as our client does, so until 2026-09-02 the
+ * cap was applied to a page session the node's sockets do not belong to and the recorder listened on
+ * the same page. The "1.000x under the cap" readings of that day were taken under both faults, and
+ * they are void. This section is what stops the next such run being quoted.
+ */
+function instrumentLines(result: NativeSqueezeResult): string[] {
+  const { during, windows } = result;
+  const capBytesPerSecond = kbpsAsBytesPerSecond(windows.kbps);
+  const { capRefusal, recorderRefusal } = judgeNativeSqueezeInstrument(result);
+  const meanLabel =
+    during.inboundBytesPerSecondMean === null ? 'no reading' : `${grouped(during.inboundBytesPerSecondMean)} B/s`;
+
+  return [
+    '### The instrument, and the limit of what it can prove here',
+    '',
+    `The ${windows.kbps} kbps cap allows **${grouped(capBytesPerSecond)} B/s**, and the capped phase ` +
+      `pulled ${meanLabel} across page and worker targets together.`,
+    '',
+    `- ${capRefusal === null ? '✅ **nothing crossed the wire faster than the cap allows.**' : `⛔ **${capRefusal}**`}`,
+    `- ${
+      recorderRefusal === null
+        ? '✅ **the recorder was not silent over a phase that delivered media.**'
+        : `⛔ **${recorderRefusal}**`
+    }`,
+    '',
+    "⛔⛔⛔ **BOTH ARE ONE SIDED, and passing them is not evidence the cap landed.** weeb-3's own page " +
+      'publishes no retrieval handle, so a known-size payload cannot be timed through his node the way ' +
+      "our own client's `retrieveBytes` allows. Inbound UNDER a cap proves nothing at all, because an " +
+      'idle node and a blind recorder read identically, and zero media beside zero bytes is a starved ' +
+      'viewer rather than a fault. What these two rule out is the pair of failures that voided the ' +
+      'readings of 2026-09-02: a cap on the wrong target, and a recorder on the wrong target.',
     '',
   ];
 }
@@ -376,4 +461,21 @@ export function nativeSqueezeConsoleLine(result: NativeSqueezeResult): string {
     `${ratioLabel(result.after.realtimeRatio)} after. His player started moving ` +
     `${result.startup.startedMovingAfterS.toFixed(1)}s after media was ready, the settle window opened then`
   );
+}
+
+/**
+ * The one line about the instrument an operator reads before the ratio line above.
+ *
+ * ⛔ First, and it says what it cannot prove. A run whose console printed only a ratio is how the
+ * readings of 2026-09-02 came to be believed.
+ */
+export function nativeSqueezeInstrumentLine(result: NativeSqueezeResult): string {
+  const { capRefusal, recorderRefusal } = judgeNativeSqueezeInstrument(result);
+  const failed = [capRefusal, recorderRefusal].filter((why): why is string => why !== null);
+
+  return failed.length === 0
+    ? 'the instrument: ✅ nothing beat the cap and nothing went silent over a phase that delivered ' +
+        'media. ⛔ Both checks are ONE SIDED and neither proves the cap landed, because his page ' +
+        'publishes no handle a known-size payload could be timed through'
+    : `the instrument: ⛔ ${failed.join(' AND ')}`;
 }

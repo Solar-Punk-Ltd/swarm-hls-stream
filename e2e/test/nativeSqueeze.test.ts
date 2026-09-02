@@ -3,7 +3,9 @@ import { describe, it } from 'node:test';
 
 import {
   judgeNativeSqueeze,
+  judgeNativeSqueezeInstrument,
   nativeSqueezeConsoleLine,
+  nativeSqueezeInstrumentLine,
   type NativeSqueezeResult,
   type NativeSqueezeSample,
   type NativeSqueezeStartup,
@@ -478,5 +480,85 @@ describe('the line a squeeze run prints as it finishes', () => {
 
     assert.match(line, /started moving/);
     assert.match(line, /26\.1/);
+  });
+});
+
+/**
+ * The instrument checks a squeeze of his page can take, and the limit of what they prove.
+ *
+ * ⛔⛔⛔ His page publishes no retrieval handle and no player handle, so there is no known-size
+ * payload to time through his node and no two-sided cap proof available. These two rule out the pair
+ * of failures that voided this driver's squeeze runs of 2026-09-02, a cap applied to a page session
+ * the node's sockets do not belong to and a recorder listening on the same one, and they rule out
+ * nothing else. Both directions are tested, because a check that cannot fire is not evidence.
+ */
+describe('the instrument checks a squeeze of his page takes', () => {
+  /** 2800 kbps allows 350,000 B/s, so 60 s of the capped phase allows 21,000,000 bytes. */
+  const CAP_ALLOWS_OVER_THE_PHASE = 350_000 * SQUEEZE_S;
+
+  const cappedPhaseTraffic = (bytes: number): WebSocketTraffic => ({
+    connections: [{ url: 'wss://peer.test/ws', openedAtMs: START_MS, closedAtMs: null }],
+    frames: [inbound(APPLIED_AT_MS + 1_000, bytes)],
+  });
+
+  it('refuses a capped phase that pulled more than the cap allows', () => {
+    const { capRefusal } = judgeNativeSqueezeInstrument(
+      judged(healthyThenCapped(), cappedPhaseTraffic(CAP_ALLOWS_OVER_THE_PHASE * 3)),
+    );
+
+    assert.ok(capRefusal !== null);
+    assert.match(capRefusal, /never applied to the transport/);
+  });
+
+  it('accepts a capped phase inside the cap, and says in the report that this proves nothing', () => {
+    const result = judged(healthyThenCapped(), cappedPhaseTraffic(1_000_000));
+
+    assert.equal(judgeNativeSqueezeInstrument(result).capRefusal, null);
+    assert.match(renderNativeSqueezeSection(result).join('\n'), /BOTH ARE ONE SIDED/);
+  });
+
+  /**
+   * ⛔⛔ The 2026-09-02 shape. His playhead gained media across the capped phase, so segments were
+   * fetched and appended and bytes crossed the wire, and the page-scoped recorder counted none.
+   */
+  it('refuses a phase that gained media while the recorder counted nothing', () => {
+    const { recorderRefusal } = judgeNativeSqueezeInstrument(judged(healthyThenCapped(), noTraffic));
+
+    assert.ok(recorderRefusal !== null);
+    assert.match(recorderRefusal, /is blind across the capped phase/);
+  });
+
+  /** ⛔ Zero media beside zero bytes is a starved viewer, which is a result rather than a fault. */
+  it('does not refuse a frozen phase that pulled nothing, because that is the finding', () => {
+    const frozen = [
+      ...series({ fromMs: START_MS, seconds: SETTLE_S, ratio: 1, currentTime: 0 }),
+      ...series({ fromMs: APPLIED_AT_MS, seconds: SQUEEZE_S, ratio: 0, currentTime: 100 }),
+      ...series({ fromMs: LIFTED_AT_MS, seconds: RECOVER_S, ratio: 1, currentTime: 100 }),
+    ];
+
+    assert.equal(judgeNativeSqueezeInstrument(judged(frozen, noTraffic)).recorderRefusal, null);
+  });
+
+  it('says nothing about a phase nobody sampled, rather than reading its null as a zero', () => {
+    const { capRefusal, recorderRefusal } = judgeNativeSqueezeInstrument(judged([], noTraffic));
+
+    assert.equal(capRefusal, null);
+    assert.equal(recorderRefusal, null);
+  });
+
+  it('prints an instrument line either way, and never a bare ratio on its own', () => {
+    const blind = nativeSqueezeInstrumentLine(judged(healthyThenCapped(), noTraffic));
+    const sighted = nativeSqueezeInstrumentLine(judged(healthyThenCapped(), cappedPhaseTraffic(1_000_000)));
+
+    assert.match(blind, /^the instrument: ⛔/);
+    assert.match(sighted, /^the instrument: ✅/);
+    assert.match(sighted, /ONE SIDED/);
+  });
+
+  it('names the worker targets in the section, so a reader knows what was counted', () => {
+    const section = renderNativeSqueezeSection(judged(healthyThenCapped(), cappedPhaseTraffic(1_000_000))).join('\n');
+
+    assert.match(section, /every worker target/);
+    assert.match(section, /### The instrument, and the limit of what it can prove here/);
   });
 });

@@ -40,6 +40,16 @@
  * ⛔ Unset, the driver behaves exactly as it did before the mode existed. Nothing in the squeeze
  * phases asserts, refuses or gates on a ratio.
  *
+ * ⛔⛔⛔ **THE SQUEEZE RUNS OF 2026-09-02 ARE VOID, AND FOR OUR REASONS.** His page runs the node in
+ * a SharedWorker exactly as our client does, so the cap went on a page session the node's sockets do
+ * not belong to and the recorder listened on the same one. "1.000x under the cap" was a reading of
+ * an unconstrained link taken by an instrument that could not see it. The cap and the recorder now
+ * attach to every worker target, and two checks refuse a run: anything crossing the wire faster than
+ * the cap allows, and a phase that gained media while the recorder counted nothing. ⛔ Both are ONE
+ * SIDED, because his page publishes no handle a known-size payload could be timed through, so unlike
+ * `browser:vod` this run cannot PROVE its cap landed. It rules out those two failures and no more,
+ * and the report says exactly that. See `src/browser/capProof.ts`.
+ *
  * Usage, against a recording that already exists:
  *   WEEB3_NATIVE_OWNER=<owner> WEEB3_NATIVE_TOPIC=<rawTopic> pnpm browser:weeb3-native
  *
@@ -65,7 +75,9 @@ import {
 } from '../src/browser/liveEdge.js';
 import {
   judgeNativeSqueeze,
+  judgeNativeSqueezeInstrument,
   nativeSqueezeConsoleLine,
+  nativeSqueezeInstrumentLine,
   type NativeSqueezeResult,
   type NativeSqueezeStartup,
   type PhaseWindow,
@@ -834,8 +846,24 @@ async function main(): Promise<void> {
     cost?.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 
     if (squeeze !== null) {
+      // ⛔ The instrument first and above the heading that says nothing after it is asserted. A
+      // console that printed only a ratio is how the readings of 2026-09-02 came to be believed.
+      console.log(`weeb3-native: ${nativeSqueezeInstrumentLine(squeeze)}`);
       console.log('weeb3-native: observations, none of them asserted');
       console.log(`weeb3-native: ${nativeSqueezeConsoleLine(squeeze)}`);
+    }
+
+    // ⛔⛔⛔ After the artifact is on disk, for the reason the gateway-less gate below is: a refused
+    // run's artifact carries the reading that refused it. Neither check proves the cap landed, and
+    // both rule out the failures that voided this driver's squeeze runs of 2026-09-02, a cap applied
+    // to a page session the node's sockets do not belong to and a recorder listening on the same one.
+    if (squeeze !== null) {
+      const { capRefusal, recorderRefusal } = judgeNativeSqueezeInstrument(squeeze);
+      const refusal = capRefusal ?? recorderRefusal;
+      if (refusal !== null) {
+        console.error(`weeb3-native: ⛔ REFUSED, no figure under the cap is a reading of a capped link: ${refusal}`);
+        exitCode = 1;
+      }
     }
 
     if (!gatewayLess) {
