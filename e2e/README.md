@@ -326,9 +326,9 @@ and the driver says so.
 `browser:in-tab-throttle-probe` asks why a capped in-tab viewer gets nothing. It opens no player and
 watches no broadcast: it boots the node through the client's own switch, then pulls fresh segment
 references from an existing recording straight through the client's retrieval path, unthrottled and
-under a cap, counting the tab's WebSocket frames either side of each one. Three idle windows come
-first, which is where the cap is shown to reach the transport at all, and every capped figure is void
-if it does not. Nothing is asserted, the pre-registered predictions in
+under a cap, counting the tab's WebSocket frames either side of each one. Under the emulated cap
+three idle windows come first, which is where the cap is shown to reach the transport at all, and
+every capped figure is void if it does not. Nothing is asserted, the pre-registered predictions in
 `docs/bench/in-tab-throttle-probe-prediction-2026-09-02.md` are restated in the report beside what
 was observed, and it costs **0 BZZ**, so it needs no sitting and no gate. Run it on the host with
 `deploy/scripts/browser-on-host.sh --script browser:in-tab-throttle-probe`. `PROBE_OWNER`,
@@ -350,6 +350,54 @@ exactly like a delivery failure. `WEEB3_NATIVE_HARNESS_BRACKET=1` reads the node
 chequebook counters through the harness instead of over ssh, which is the only way to satisfy the
 node-metrics gate from inside the browser container on the deployment host, and zero spend there is
 the gateway-less claim proved from the nodes' side.
+
+### The shaped mode: a real slow link instead of Chrome's
+
+Every "slow connection" this repository has ever measured was Chrome's
+`Network.emulateNetworkConditions` applied over CDP (`src/browser/throttle.ts`). That is one
+aggregate budget the browser schedules across every transport itself, and an in-tab Swarm node holds
+about two hundred WebSocket connections, so how Chromium divides such a budget across two hundred
+sockets is not a fact about a 2.8 Mbps link. The owner ruled on 2026-09-02 that the emulation, not
+the node, is a prime suspect for what the probe found. Read the owner's-correction banner at the top
+of `docs/bench/in-tab-throttle-probe-result-2026-09-02.md` before quoting any figure from that run.
+
+**Arm 2 repeats the probe under a real shaped link.** Run it on the deployment host with:
+
+```bash
+deploy/scripts/browser-on-host.sh --own-network --shape-kbps 2800 \
+  --script browser:in-tab-throttle-probe \
+  -- PROBE_CAP_MODE=external PROBE_CAP_KBPS=2800
+```
+
+`--shape-kbps` implies `--own-network`, which gives the browser container a network namespace of its
+own instead of the host's. That part is not optional and it is not tidiness: with `--network host`
+the container shares one namespace with all four bee nodes, the uploader, the gateway and every
+co-tenant on the machine, so a shaper installed inside it would throttle all of them. The cost is
+loopback, so `E2E_LOCAL_HOST_ADDRESS`, `E2E_PUBLIC_HOST` and `BROWSER_CLIENT_URL` all move to
+`host.docker.internal`, and the run gains one bridge hop to the host that a host-networked run does
+not have.
+
+`deploy/scripts/shape-container-ingress.sh` then installs a `tc` ingress policer on the container's
+own interface, download only, the same shape `squeezeDownload` has. **It refuses the whole run rather
+than let an unshaped link be measured**, and it refuses four ways: the deployment's client answering
+on the container's own loopback (which proves the namespace is still shared), the client unreachable
+across the bridge unshaped, `tc` missing or denied, and a measured rate more than 25% under or 15%
+over the cap. The rate is measured by downloading the largest asset the client serves, which it
+discovers rather than names because the filename is a build hash. `PROBE_EXTERNAL_CAP_MEASURED_BPS`
+carries the proved rate into the driver, which refuses if it disagrees with `PROBE_CAP_KBPS`.
+
+`PROBE_CAP_MODE=external` changes what the probe does: no CDP squeeze anywhere, **one** idle window
+rather than three, and Part B's "free" arms omitted, because the policer holds for the life of the
+container and cannot be lifted for one window or one row. There is therefore no uncapped condition
+inside the run, the uncapped comparison is the CDP run of the same day, and the report says so. H0
+asks whether the emulation reached the transport, so it does not apply here and the report replaces
+it with the rate the preflight proved. Every row, window and the run carry `capSource`, so no figure
+from either arm can be read without knowing which cap it was taken under.
+
+⚠️ `--cap-add=NET_ADMIN` puts the capability in the container's sets, and the container runs as the
+invoking user rather than as root, which on some runc versions leaves it permitted but not
+effective. The shaper names that as the cause when `tc` is denied, so the arrangement either works
+or says why it did not.
 
 Paid crash and buffer-sweep sittings run through their gated wrappers on the deployment host,
 `deploy/scripts/crash-arms.sh` and `deploy/scripts/buffer-sweep-sitting.sh`: same afford, capacity
