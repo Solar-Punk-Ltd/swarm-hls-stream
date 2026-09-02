@@ -67,13 +67,20 @@ export function selectFetchBackend(backend: FetchBackend | null): void {
 
 const BYTES_ROUTE = '/bytes/';
 
-/**
- * A Swarm reference is 32 bytes, or 64 when the upload was encrypted, and nothing else is one.
- *
- * Checked here rather than left to the node because the reference goes straight into a wasm call,
- * where a malformed one fails without naming itself or the url it came from.
- */
+/** A Swarm reference is 32 bytes, or 64 when the upload was encrypted, and nothing else is one. */
 const SWARM_REFERENCE = /^(?:[0-9a-f]{64}|[0-9a-f]{128})$/i;
+
+/**
+ * Whether this names a chunk the in-tab node could be asked for.
+ *
+ * Checked before the node rather than left to it, because the reference goes straight into a wasm
+ * call where a malformed one fails without naming itself or where it came from. Exported so the
+ * instrumentation handle refuses on exactly the rule {@link segmentRefFromUrl} accepts on, rather
+ * than on a second copy of it that could drift.
+ */
+export function isSwarmReference(ref: string): boolean {
+  return SWARM_REFERENCE.test(ref);
+}
 
 /**
  * The bare Swarm reference a fragment url carries, or `null` if it carries none.
@@ -90,5 +97,5 @@ export function segmentRefFromUrl(url: string): string | null {
   }
 
   const ref = path.slice(route + BYTES_ROUTE.length);
-  return SWARM_REFERENCE.test(ref) ? ref : null;
+  return isSwarmReference(ref) ? ref : null;
 }
