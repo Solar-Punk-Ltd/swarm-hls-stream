@@ -300,7 +300,7 @@ Which command supports which:
 | `browser:fetch-backend-check`   | yes          | the A/B itself                                                                         |
 | `browser:weeb3-native`          | gateway-less | weeb-3's own page                                                                      |
 | `browser:viewer-order`          | both         | native against hybrid, counterbalanced                                                 |
-| `browser:vod`                   | **no**       | recorded playback, still gateway only                                                  |
+| `browser:vod`                   | yes          | recorded playback, seeks or a squeeze                                                  |
 | `browser:selfcheck`             | **no**       | proves the instrument, not a viewer condition                                          |
 | `browser:gateway-check`         | n/a          | gateway by definition                                                                  |
 | `browser:in-tab-throttle-probe` | in-tab only  | no player at all, it drives the node's retrieval path directly                         |
@@ -308,6 +308,20 @@ Which command supports which:
 
 `browser:arm-order` and `browser:byte-source-order` open no viewer: they print the counterbalanced
 order a sitting's arms must run in, so the shell driver reads the rule instead of deriving its own.
+
+`browser:vod` plays a finished recording through the shipped client and, by default, seeks around
+inside it. Set `BROWSER_VOD_SQUEEZE_KBPS` and it stops seeking and squeezes instead: it plays from the
+start, caps the tab's download part way through, lifts the cap and samples the three stretches either
+side, sized by `BROWSER_VOD_SETTLE_S` (45), `BROWSER_VOD_SQUEEZE_S` (60) and `BROWSER_VOD_RECOVER_S`
+(60). A recording is the control a squeezed live watch never had, because a capped live viewer is also
+falling behind an edge that keeps moving and a recording has no edge. Per stretch it reports the
+playback advance ratio, the stalls, which level each fragment belonged to with how every attempt
+ended, and the inbound WebSocket bytes, which is the only vantage point on an in-tab node's own
+traffic. Nothing is asserted. Both modes honour `BROWSER_FETCH_BACKEND` and prove the segment bytes
+came from the source the run is filed under, and both bracket the stage's postage and funding either
+side. ⚠️ A weeb-3 arm spends `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (60) of the recording booting its
+node before any window opens, so a recording shorter than that plus the three windows ends mid-run
+and the driver says so.
 
 `browser:in-tab-throttle-probe` asks why a capped in-tab viewer gets nothing. It opens no player and
 watches no broadcast: it boots the node through the client's own switch, then pulls fresh segment
