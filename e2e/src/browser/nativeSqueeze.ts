@@ -26,6 +26,7 @@
  * @see `docs/bench/in-tab-throttle-probe-result-2026-09-02.md` for the run this is the control for.
  */
 
+import { kbpsAsBytesPerSecond } from './throttle.js';
 import { bytesBetween, type WebSocketTraffic } from './webSocketTraffic.js';
 
 const MS_PER_SECOND = 1_000;
@@ -275,9 +276,11 @@ export function renderNativeSqueezeSection(result: NativeSqueezeResult): string[
       'that publishes no retrieval telemetry. yamux multiplexes many streams onto one socket, so these ' +
       'are bytes and never attempts, and no attempt count is claimed here.',
     '',
-    "⚠️ The cap is applied by Chromium and reaching a given transport is the browser's business. Read " +
-      'the mean inbound of the capped phase against what the cap allows before believing any figure in ' +
-      'that row: a capped phase pulling more than its cap is an uncapped link with a cap written beside it.',
+    "⚠️ The cap is applied by Chromium and reaching a given transport is the browser's business. The " +
+      `${windows.kbps} kbps cap allows **${grouped(kbpsAsBytesPerSecond(windows.kbps))} B/s**, so read the ` +
+      'capped row against that figure before believing anything in it: a capped phase pulling more than ' +
+      'its cap is an uncapped link with a cap written beside it, and every capped figure here would then ' +
+      'be a reading of an unconstrained one.',
     '',
   ];
 }

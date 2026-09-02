@@ -301,6 +301,17 @@ describe('the section a squeeze run files beside its report', () => {
     assert.match(section, new RegExp(String(CAP_KBPS)));
   });
 
+  /**
+   * ⛔ The cap's own allowance, in the units the table reports, so the reader standing in front of
+   * the capped row can see whether the cap reached the transport at all. Chromium applies the
+   * emulation and whether it reaches a WebSocket is the browser's business, so a capped row pulling
+   * more than its cap is an uncapped link, and a note asking for arithmetic nobody does is not a
+   * check. This project has already published capped figures whose instrument nothing had read.
+   */
+  it('prints what the cap allows in the same units as the inbound column', () => {
+    assert.match(rendered(healthyThenCapped()), /350,000 B\/s/);
+  });
+
   /** The ratio cell is the bolded one, so a bolded zero could only be a phase claiming a reading. */
   it('prints a missing ratio in words rather than as a number', () => {
     const section = rendered([]);
