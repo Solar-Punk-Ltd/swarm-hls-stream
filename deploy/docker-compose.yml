@@ -75,6 +75,9 @@ services:
     environment:
       BEE_URL: ${BEE_URL:-http://bee-uploader:1633}
       STAMP: ${STAMP}
+      # One Bee node per ABR rung. Set, it replaces BEE_URL/STAMP entirely — see
+      # .env.sample. Empty is the default and means "publish through BEE_URL".
+      BEE_PUBLISHERS: ${BEE_PUBLISHERS:-}
       STREAM_KEY: ${STREAM_KEY}
       STREAM_LIST_TOPIC: ${STREAM_LIST_TOPIC:-swarm-stream}
       MANIFEST_ACCESS_URL: ${MANIFEST_ACCESS_URL:-}
