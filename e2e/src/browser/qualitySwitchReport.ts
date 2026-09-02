@@ -132,10 +132,12 @@ function levelRows(phase: FragmentRequestPhase, named: string): string[] {
  * ⛔ The verdict line comes first and has to be read first. An arm with no lines captured prints the
  * same zeroes whether the player asked for nothing or the client it watched never had the instrument,
  * and those are opposite conclusions.
+ *
+ * ⭐ Exported and given its own arguments so a second driver can render it. `browser/vod.ts` squeezes
+ * a finished recording and needs this exact reading, and a second copy of the table would drift from
+ * this one. `at` is the caller's time axis, because the report it lands in owns what second zero is.
  */
-function fragmentRequestSection(run: QualityRun): string[] {
-  const asked = run.fragmentRequests;
-
+export function fragmentRequestSection(asked: FragmentRequestTimeline, at: (atMs: number) => string): string[] {
   return [
     '## Which level the player asked for',
     '',
@@ -153,7 +155,7 @@ function fragmentRequestSection(run: QualityRun): string[] {
     ...settleSection(asked),
     // On the report's own axis, seconds from its first sample, so this table can be read straight
     // against `What the player chose` and `Every sample`. The state file keeps the wall clock.
-    ...everyRequestSection(asked, (atMs) => seconds(atMs - run.samples[0].atMs)),
+    ...everyRequestSection(asked, at),
   ];
 }
 
@@ -359,7 +361,7 @@ export function renderQualityReport(run: QualityRun): string {
     '',
     ...ladderSection(run),
     ...rungSection(run),
-    ...fragmentRequestSection(run),
+    ...fragmentRequestSection(run.fragmentRequests, at),
     ...verdictSection(run),
     ...playbackSection(run),
     ...networkSection(run),

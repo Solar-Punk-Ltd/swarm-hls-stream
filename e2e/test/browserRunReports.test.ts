@@ -9,7 +9,7 @@ import {
 } from '../src/browser/fragmentRequests.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { judgeQualitySwitch, judgeRungTimeline } from '../src/browser/qualitySwitch.js';
-import { type QualityRun, renderQualityReport } from '../src/browser/qualitySwitchReport.js';
+import { fragmentRequestSection, type QualityRun, renderQualityReport } from '../src/browser/qualitySwitchReport.js';
 import { judgeRecovery } from '../src/browser/recovery.js';
 import { renderRungOutageReport, type RungOutageRun } from '../src/browser/rungOutageReport.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
@@ -301,6 +301,32 @@ describe('the report a squeezed viewer leaves behind', () => {
 
     assert.match(report, /abandoned attempts the node later answered: none/);
     assert.match(report, /evidence about neither the client nor the node/);
+  });
+});
+
+/**
+ * ⭐ The same three-phase table, reachable by a second driver.
+ *
+ * `browser/vod.ts` squeezes a finished recording rather than a live broadcast and needs exactly this
+ * reading. A second copy of the table would drift from the one above, and the whole value of a
+ * fragment log is that a recording's reads mean what a live watch's do.
+ */
+describe('the fragment-request section, rendered on its own', () => {
+  it('renders all three phases off a timeline and a time axis the caller chooses', () => {
+    const asked = judgeFragmentRequests(
+      { requests: ASKED_AND_CAME_DOWN, settles: HOW_THEY_ENDED, abandonedAnswers: ANSWERED_TOO_LATE },
+      { appliedAtMs: APPLIED_AT, liftedAtMs: LIFTED_AT },
+      true,
+    );
+
+    const section = fragmentRequestSection(asked, (atMs) => ((atMs - START_MS) / 1000).toFixed(1)).join('\n');
+
+    assert.match(section, /## Which level the player asked for/);
+    assert.match(section, /## How each of those attempts ended/);
+    assert.match(section, /abandoned attempts the node later answered: 1 resolved/);
+    // The caller's axis, not the renderer's: the first request is two seconds before the cap, which
+    // lands at eight seconds on a scale counted from the run's start.
+    assert.match(section, /\| 1 \| 8\.0s \| 3 \| 1 \|/);
   });
 });
 
