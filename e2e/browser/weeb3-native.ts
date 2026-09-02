@@ -28,8 +28,24 @@
  * ⚠️ **The visibility sensor proves nothing here.** Playwright forces a visible page, so that check
  * passes by construction and is recorded rather than relied on.
  *
+ * ## The squeeze mode, and what it is the control for
+ *
+ * `WEEB3_NATIVE_SQUEEZE_KBPS` turns one counted window into three: settle, capped, recovered. Our
+ * own client, driving our own pinned weeb-3, could not keep a 360p recording moving once Chrome's
+ * emulation capped the tab, and the owner has ruled that weeb-3 is not at fault and must not be
+ * changed. Abel's published page is the same node inside a client we did not write, so the same
+ * recording under the same cap is the first thing that can tell our harness apart from his node. See
+ * `docs/bench/in-tab-throttle-probe-result-2026-09-02.md`.
+ *
+ * ⛔ Unset, the driver behaves exactly as it did before the mode existed. Nothing in the squeeze
+ * phases asserts, refuses or gates on a ratio.
+ *
  * Usage, against a recording that already exists:
  *   WEEB3_NATIVE_OWNER=<owner> WEEB3_NATIVE_TOPIC=<rawTopic> pnpm browser:weeb3-native
+ *
+ * Usage, squeezing the tab's download mid-watch against a finished recording:
+ *   WEEB3_NATIVE_SQUEEZE_KBPS=2800 WEEB3_NATIVE_OWNER=<owner> WEEB3_NATIVE_TOPIC=<rawTopic> \
+ *     pnpm browser:weeb3-native
  *
  * Usage, against a broadcast that is still running:
  *   WEEB3_NATIVE_LIVE=1 WEEB3_NATIVE_BROADCAST_START_MS=<unix ms the publisher started> \
@@ -47,6 +63,14 @@ import {
   type EdgeSample,
   isExhausted,
 } from '../src/browser/liveEdge.js';
+import {
+  judgeNativeSqueeze,
+  nativeSqueezeConsoleLine,
+  type NativeSqueezeResult,
+  type PhaseWindow,
+  renderNativeSqueezeSection,
+  shortRecordingRefusal,
+} from '../src/browser/nativeSqueeze.js';
 import { type RequestRecord } from '../src/browser/network.js';
 import { costSection, judgeCost, readResources, type ResourceCost } from '../src/browser/resources.js';
 import {
@@ -58,7 +82,9 @@ import {
   thinRequestLog,
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
+import { squeezeDownload } from '../src/browser/throttle.js';
 import { installTimerProbe, launchViewer, readInstrument, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import { recordWebSocketTraffic, thinFrames, type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
 import { loadConfig } from '../src/config.js';
 import { makeHost } from '../src/harness/host.js';
 
@@ -75,6 +101,20 @@ const DEFAULT_PAGE = 'https://lat-murmeldjur.github.io/weeb-3/';
 const APP_SHELL_HOSTS = new Set(['lat-murmeldjur.github.io', 'cdn.jsdelivr.net', 'weeb-3-secure.github.io']);
 
 const SAMPLE_INTERVAL_MS = 1_000;
+
+/**
+ * How long the squeeze mode watches before capping anything.
+ *
+ * The baseline the capped phase is read against. weeb-3 boots its node, joins, seeks and fills a
+ * buffer, and a cap applied during any of that would be measuring the join.
+ */
+const DEFAULT_SETTLE_SECONDS = 45;
+
+/** How long the link stays capped. Long enough for the node to have to live under it. */
+const DEFAULT_SQUEEZE_SECONDS = 60;
+
+/** How long to keep watching after the cap comes off, which is where a recovery would show. */
+const DEFAULT_RECOVER_SECONDS = 60;
 
 /**
  * Bracket the run with the bee nodes' own counters, or refuse to run.
@@ -151,6 +191,14 @@ interface Sample extends EdgeSample {
   readyState: number;
   paused: boolean;
   peers: number | null;
+  /**
+   * The page's stall counter at this instant, polled only in squeeze mode.
+   *
+   * ⛔ Optional so a plain run's artifact is unchanged: a field never set is absent from the json
+   * rather than present and null. A squeeze needs the counter per sample because a phase is judged
+   * on the stalls it ADDED, and the single end-of-run reading below cannot be split three ways.
+   */
+  stalls?: number;
 }
 
 /**
@@ -200,6 +248,23 @@ async function readSample(page: Page): Promise<Sample> {
       peers: peers ? Number(peers[1]) : null,
     };
   });
+}
+
+async function readStalls(page: Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as { __stalls?: number }).__stalls ?? 0);
+}
+
+/**
+ * The same poll, with the stall counter alongside.
+ *
+ * ⛔ Two evaluates rather than one, so {@link readSample} and therefore a plain run's artifact are
+ * untouched. At a sample a second the gap between them cannot matter, and the alternative was
+ * changing what every run before this one recorded.
+ */
+async function readSqueezeSample(page: Page): Promise<Sample> {
+  const sample = await readSample(page);
+
+  return { ...sample, stalls: await readStalls(page) };
 }
 
 /**
@@ -266,6 +331,65 @@ export function offShellTraffic(records: readonly RequestRecord[]): {
   return { contacted, servedBytes };
 }
 
+/** How long each of the squeeze mode's three windows runs for, and what the middle one caps at. */
+interface SqueezePlan {
+  kbps: number;
+  settleMs: number;
+  squeezeMs: number;
+  recoverMs: number;
+}
+
+/**
+ * Poll for a stretch, and hand back the window that stretch covered.
+ *
+ * The window comes off the same clock the cap is applied on, so a phase boundary and a treatment
+ * moment are comparable without either being derived from the other.
+ */
+async function sampleWindow(page: Page, forMs: number, into: Sample[]): Promise<PhaseWindow> {
+  const fromMs = Date.now();
+  while (Date.now() - fromMs < forMs) {
+    into.push(await readSqueezeSample(page));
+    await sleep(SAMPLE_INTERVAL_MS);
+  }
+
+  return { fromMs, toMs: Date.now() };
+}
+
+/**
+ * Settle, cap the tab's download, let it go, and hand back the three phases.
+ *
+ * ⛔⛔ The release is in a `finally`. A squeeze stretch that threw would otherwise leave the cap on
+ * through the recovery window, and the artifact would then carry a recovery phase that had nothing
+ * to recover from while reading exactly like one that failed to recover.
+ */
+async function watchThroughASqueeze(
+  page: Page,
+  into: Sample[],
+  plan: SqueezePlan,
+  traffic: WebSocketTraffic,
+): Promise<NativeSqueezeResult> {
+  console.log(`weeb3-native: settling ${plan.settleMs / 1_000}s before the squeeze`);
+  const before = await sampleWindow(page, plan.settleMs, into);
+
+  console.log(`weeb3-native: capping the tab at ${plan.kbps} kbps`);
+  const throttle = await squeezeDownload(page, plan.kbps);
+  const appliedAtMs = Date.now();
+  let liftedAtMs = appliedAtMs;
+  let during: PhaseWindow;
+
+  try {
+    during = await sampleWindow(page, plan.squeezeMs, into);
+  } finally {
+    await throttle.release().catch((error) => console.error('could not lift the cap:', error));
+    liftedAtMs = Date.now();
+    console.log(`weeb3-native: cap lifted, watching ${plan.recoverMs / 1_000}s for the climb back`);
+  }
+
+  const after = await sampleWindow(page, plan.recoverMs, into);
+
+  return judgeNativeSqueeze(into, { before, during, after, appliedAtMs, liftedAtMs, kbps: plan.kbps }, traffic);
+}
+
 async function main(): Promise<void> {
   const owner = requireEnv('WEEB3_NATIVE_OWNER');
   const topic = requireEnv('WEEB3_NATIVE_TOPIC');
@@ -274,6 +398,23 @@ async function main(): Promise<void> {
   const watchSeconds = envNumber('WEEB3_NATIVE_WATCH_S', 180);
   /** Where to put the playhead before counting. Negative counts back from the end. 0 is the start. */
   const startAtSeconds = envFiniteNumber('WEEB3_NATIVE_START_S', 0);
+  /**
+   * What to cap the tab's download at mid-watch, or null for the single counted window.
+   *
+   * ⛔ Absent rather than zero, and the whole squeeze mode hangs off it. A default cap would put
+   * every existing arm under a treatment nobody asked for, and the corpus of runs this driver has
+   * already produced would stop being comparable with the ones after it.
+   */
+  const squeezeKbps = envNumberOrNull('WEEB3_NATIVE_SQUEEZE_KBPS');
+  const squeezePlan: SqueezePlan | null =
+    squeezeKbps === null
+      ? null
+      : {
+          kbps: squeezeKbps,
+          settleMs: envNumber('WEEB3_NATIVE_SETTLE_S', DEFAULT_SETTLE_SECONDS) * 1_000,
+          squeezeMs: envNumber('WEEB3_NATIVE_SQUEEZE_S', DEFAULT_SQUEEZE_SECONDS) * 1_000,
+          recoverMs: envNumber('WEEB3_NATIVE_RECOVER_S', DEFAULT_RECOVER_SECONDS) * 1_000,
+        };
   /** A live arm holds the edge weeb-3 opened at. A recording arm seeks back to have media ahead. */
   const isLive = process.env.WEEB3_NATIVE_LIVE === '1';
   /** Unix ms the publisher started, which is the only clock that ranks a live arm honestly. */
@@ -319,7 +460,12 @@ async function main(): Promise<void> {
   const metricsDir = `${metricsRoot}/${runId}`;
 
   console.log(`weeb3-native: ${watchUrl}`);
-  console.log(`weeb3-native: boot budget ${bootSeconds}s, counted window ${watchSeconds}s`);
+  console.log(
+    squeezePlan === null
+      ? `weeb3-native: boot budget ${bootSeconds}s, counted window ${watchSeconds}s`
+      : `weeb3-native: boot budget ${bootSeconds}s, then ${squeezePlan.settleMs / 1_000}s settle, ` +
+          `${squeezePlan.squeezeMs / 1_000}s at ${squeezePlan.kbps} kbps, ${squeezePlan.recoverMs / 1_000}s recover`,
+  );
 
   if (metricsHost !== '') {
     bracketNodeMetrics(metricsHost, metricsDir, 'before');
@@ -328,6 +474,7 @@ async function main(): Promise<void> {
 
   const browser = await launchViewer();
   const requests: RequestRecord[] = [];
+  const traffic: WebSocketTraffic = { connections: [], frames: [] };
   let exitCode = 0;
 
   try {
@@ -336,6 +483,10 @@ async function main(): Promise<void> {
     await installTimerProbe(page);
     await installStallCounter(page);
     recordRequests(page, requests);
+    // Before the navigation, for the reason `recordRequests` is: a recorder attached afterwards
+    // misses the sockets the node opened while the harness was still opening the page, and those
+    // are the ones the join is made of.
+    recordWebSocketTraffic(page, traffic);
 
     await page.goto(watchUrl, { waitUntil: 'domcontentloaded' });
 
@@ -358,6 +509,20 @@ async function main(): Promise<void> {
     }
     if (!booted) {
       throw new Error(`no decodable media within ${bootSeconds}s. This is a delivery failure, not a playback one.`);
+    }
+
+    // ⛔⛔ Refused BEFORE the seek and before any window is spent. A squeeze run outlasting its
+    // recording reports the media running out, and that reads exactly like the delivery failure
+    // this arm exists to look for. Read after the boot because a duration is not known before it.
+    if (squeezePlan !== null) {
+      const refusal = shortRecordingRefusal((await readSample(page)).duration, {
+        settleS: squeezePlan.settleMs / 1_000,
+        squeezeS: squeezePlan.squeezeMs / 1_000,
+        recoverS: squeezePlan.recoverMs / 1_000,
+      });
+      if (refusal !== null) {
+        throw new Error(refusal);
+      }
     }
 
     // ⛔⛔⛔ weeb-3 opens a broadcast AT ITS LIVE EDGE. On a FINISHED one that edge is the end of the
@@ -384,10 +549,20 @@ async function main(): Promise<void> {
     await sleep(SAMPLE_INTERVAL_MS);
 
     const samples: Sample[] = [];
-    const countedFrom = Date.now();
-    while (Date.now() - countedFrom < watchSeconds * 1_000) {
-      samples.push(await readSample(page));
-      await sleep(SAMPLE_INTERVAL_MS);
+    let squeeze: NativeSqueezeResult | null = null;
+    if (squeezePlan === null) {
+      const countedFrom = Date.now();
+      while (Date.now() - countedFrom < watchSeconds * 1_000) {
+        samples.push(await readSample(page));
+        await sleep(SAMPLE_INTERVAL_MS);
+      }
+    } else {
+      // ⭐ The three windows are ONE counted stretch as far as everything below is concerned. The
+      // whole-run ratio, the edge readings and the exhaustion check all still apply, and they read
+      // across the treatment on purpose: a run whose recording ran out mid-squeeze must void itself
+      // by the same rule as any other, and the per-phase figures sit beside them rather than
+      // instead of them.
+      squeeze = await watchThroughASqueeze(page, samples, squeezePlan, traffic);
     }
 
     const first = samples[0];
@@ -407,7 +582,7 @@ async function main(): Promise<void> {
       steadyWall > 0 ? (steady[steady.length - 1].currentTime - steady[0].currentTime) / steadyWall : 0;
     const startupSeconds = movedAt > 0 ? (samples[movedAt].atMs - first.atMs) / 1_000 : 0;
 
-    const stalls = await page.evaluate(() => (window as unknown as { __stalls?: number }).__stalls ?? 0);
+    const stalls = await readStalls(page);
     const tally = await readSegmentTally(page);
     const instrument = judgeRun([await readInstrument(page)]);
     const offShell = offShellTraffic(requests);
@@ -492,6 +667,9 @@ async function main(): Promise<void> {
     if (cost !== null) {
       Object.assign(report, { cost });
     }
+    if (squeeze !== null) {
+      Object.assign(report, { squeeze });
+    }
 
     const markdown = [
       `# weeb-3's own page, our broadcast, no gateway`,
@@ -534,6 +712,7 @@ async function main(): Promise<void> {
       } |`,
       `| media ran out inside the window | ${exhausted ? '⛔ **yes, the ratio is void**' : 'no'} |`,
       ``,
+      ...(squeeze === null ? [] : renderNativeSqueezeSection(squeeze)),
       `## What the bee nodes themselves recorded over the same window`,
       ``,
       '```',
@@ -554,7 +733,10 @@ async function main(): Promise<void> {
     const written = await writeRunArtifacts('weeb3-native', runId, {
       markdown,
       run: report,
-      requests: thinRequestLog(requests),
+      // ⭐ A squeeze run files the tab's WebSocket frames instead of its HTTP requests. The gate
+      // above still reads every request, and the interesting log on a gateway-less arm is the one
+      // transport that carried anything: the HTTP log is the app shell and a handful of misses.
+      requests: squeeze === null ? thinRequestLog(requests) : thinFrames(traffic.frames),
     });
     console.log(`weeb3-native: wrote ${written}`);
 
@@ -567,6 +749,11 @@ async function main(): Promise<void> {
     // warning: a batch filling or a chequebook draining means the stage spent on something, and
     // this run is meant to have spent on nothing.
     cost?.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
+
+    if (squeeze !== null) {
+      console.log('weeb3-native: observations, none of them asserted');
+      console.log(`weeb3-native: ${nativeSqueezeConsoleLine(squeeze)}`);
+    }
 
     if (!gatewayLess) {
       console.error(
