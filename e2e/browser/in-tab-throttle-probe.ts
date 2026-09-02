@@ -28,9 +28,19 @@
  * figure this project retracted before 2026-08-11 was retracted for the arithmetic applied
  * afterwards rather than for a mistimed fetch.
  *
- * ⛔ Nothing here is asserted. This is a measurement, not a suite. The one thing it REFUSES is a
- * mislabelled cap, because a row that names a condition the link was never under is not a weak
- * reading, it is a false one.
+ * ⛔ Nothing here is asserted. This is a measurement, not a suite. What it REFUSES is a row that
+ * names a condition the link was never under, which is not a weak reading but a false one. There
+ * are three such refusals and all three are about the instrument rather than the result:
+ *
+ * - **A mislabelled cap.** `PROBE_CAP_KBPS` disagreeing with what the external shaper proved.
+ * - **A cap that never reached the node.** One capped 360p retrieval is timed through the client's
+ *   own path before Part B runs, against how long that payload takes at the cap. Under four fifths
+ *   of that floor the emulation went somewhere the bytes do not travel, and since weeb-3 0.0.341001
+ *   that means the page rather than the SharedWorker the node lives in. Parts B and C are skipped.
+ * - **A recorder that saw less than the node delivered.** Those bytes crossed a wire, so a smaller
+ *   inbound total means sockets the recorder never had. The arm 3 run of 2026-09-02 printed 0 in
+ *   every byte column while its 1.2 MB retrievals succeeded, and its H0 line read that zero as
+ *   healthy. See `src/browser/capProof.ts`.
  *
  * ## Which cap held the link down, and why the run has to say
  *
@@ -58,15 +68,25 @@
 import { Topic } from '@ethersphere/bee-js';
 import { type Page } from 'playwright-core';
 
+import {
+  type CapProof,
+  capProofLine,
+  capProofRefusal,
+  judgeCapProof,
+  recorderBlindRefusal,
+  recorderProofLine,
+} from '../src/browser/capProof.js';
 import { prewarmByteSource, retrieveThroughInTabNode } from '../src/browser/fetchBackendSweep.js';
 import {
   buildRetrievalRow,
+  CAP_PROOF_REFS,
   type CapSource,
   describeCap,
   describeRetrieval,
   externalCapRefusal,
   h0Check,
   type IdleWindow,
+  judgeProbeRecorder,
   judgeRoundDegraded,
   type PairSummary,
   type ProbeArm,
@@ -90,7 +110,7 @@ import {
   type RungName,
   spacedRefs,
 } from '../src/browser/rungManifest.js';
-import { squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
+import { kbpsAsBytesPerSecond, squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
 import { launchViewerWatchingWorkers, VIEWPORT } from '../src/browser/viewer.js';
 import { recordWebSocketTraffic, thinFrames, type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
 import { type E2EConfig, loadConfig } from '../src/config.js';
@@ -289,7 +309,7 @@ async function main(): Promise<void> {
   };
   const perRound = refsNeededPerRound(capSource);
   const needed: Record<RungName, number> = {
-    '360p': rounds * perRound['360p'] + PART_C_ROUNDS * PART_C_CONCURRENCY,
+    '360p': rounds * perRound['360p'] + PART_C_ROUNDS * PART_C_CONCURRENCY + CAP_PROOF_REFS,
     '1080p': rounds * perRound['1080p'],
   };
 
@@ -318,6 +338,15 @@ async function main(): Promise<void> {
   const retrievals: RetrievalRow[] = [];
   const pairs: PairSummary[] = [];
   let joinedInMs = 0;
+  /** Null on an externally shaped run, where the shaper's own preflight is the proof. */
+  let capProof: CapProof | null = null;
+  /**
+   * Why the cap proof refused this run, or null.
+   *
+   * ⛔ Held rather than thrown, so the artifact is written either way. A refused run that leaves no
+   * artifact is a refusal an operator has to reconstruct from a console they may have already lost.
+   */
+  let capProofFailure: string | null = null;
 
   console.log(`probe: ${chromeVersion}, ${parsed['360p'].manifest.segmentCount} segments on 360p, 0 BZZ`);
 
@@ -404,12 +433,42 @@ async function main(): Promise<void> {
       }
     };
 
+    // ⛔⛔⛔ THE CAP PROVES ITSELF HERE, BEFORE ANY ARM RUNS. One capped 360p retrieval, timed by the
+    // client's own clock, against how long that many bytes take at the cap. Under four fifths of
+    // that floor the emulation was applied somewhere the bytes do not travel, and since weeb-3
+    // 0.0.341001 that means it reached the page and not the SharedWorker the node runs in.
+    //
+    // ⛔ Before Part B rather than after it, so a run whose cap never landed costs one retrieval
+    // instead of twenty minutes of rows that all read as a fast uncapped node. The arm 3 probe of
+    // 2026-09-02 spent the whole sitting and published every one of them.
+    //
+    // Skipped under an external cap: a `tc` policer's rate was measured against a real download
+    // from the host before the browser opened, and `externalCapRefusal` has already held the run to
+    // it. There is no emulation here to have missed a transport.
+    if (!external) {
+      const row = await runRetrieval({
+        arm: 'proof',
+        kbpsCap: capKbps,
+        ref: pools['360p'].take(),
+        roundIndex: 0,
+        roundDegraded: false,
+      });
+      retrievals.push(row);
+      capProof = judgeCapProof(row.byteLength, row.elapsedMs, kbpsAsBytesPerSecond(capKbps));
+      capProofFailure = capProofRefusal(capProof, "the client's own in-tab retrieval path");
+      console.log(`probe: ${capProofLine(capProof)}`);
+    }
+
     // ⛔ The canary runs under the external cap too, because there is nowhere uncapped for it to
     // run. So a degraded round there means the node could not answer UNDER THE CAP rather than at
     // all, which is a weaker exclusion than the emulated run's and the report says which it was.
     const armsPerRound = probeArmOrder(0, capSource).length;
-    console.log(`probe: Part B, ${rounds} rounds of a canary and ${armsPerRound} arms`);
-    for (let roundIndex = 0; roundIndex < rounds; roundIndex += 1) {
+    console.log(
+      capProofFailure === null
+        ? `probe: Part B, ${rounds} rounds of a canary and ${armsPerRound} arms`
+        : 'probe: ⛔ SKIPPING Parts B and C, the cap did not reach the node',
+    );
+    for (let roundIndex = 0; capProofFailure === null && roundIndex < rounds; roundIndex += 1) {
       const provisional = await runRetrieval({
         arm: 'canary',
         kbpsCap: external ? capKbps : null,
@@ -436,8 +495,10 @@ async function main(): Promise<void> {
       }
     }
 
-    console.log(`probe: Part C, ${PART_C_ROUNDS} pairs started together under ${describeCap(capKbps, capSource)}`);
-    for (let roundIndex = 0; roundIndex < PART_C_ROUNDS; roundIndex += 1) {
+    if (capProofFailure === null) {
+      console.log(`probe: Part C, ${PART_C_ROUNDS} pairs started together under ${describeCap(capKbps, capSource)}`);
+    }
+    for (let roundIndex = 0; capProofFailure === null && roundIndex < PART_C_ROUNDS; roundIndex += 1) {
       const refs = Array.from({ length: PART_C_CONCURRENCY }, () => pools['360p'].take());
       const throttle = await squeezeTo(capKbps);
       try {
@@ -479,6 +540,11 @@ async function main(): Promise<void> {
   // bracket is what proves that rather than what assumes it.
   const cost = judgeCost(resourcesBefore, await readResources(host, cfg), 0);
 
+  // ⛔⛔ Judged over the rows that returned a payload, whose bytes are known to have crossed a wire.
+  // An inbound total below them is a recorder attached to a wire they did not cross.
+  const recorderProof = judgeProbeRecorder(retrievals);
+  const recorderFailure = recorderBlindRefusal(recorderProof, "the probe's WebSocket frame recorder");
+
   const run = {
     measuredAt,
     clientUrl,
@@ -493,6 +559,8 @@ async function main(): Promise<void> {
     lowCapKbps,
     capSource,
     externalCapMeasuredBps,
+    capProof,
+    recorderProof,
     idleWindows,
     retrievals,
     pairs,
@@ -512,14 +580,27 @@ async function main(): Promise<void> {
     ? `H0 does not apply, the cap is a real shaper proved by the preflight at ${externalCapMeasuredBps} B/s`
     : lowIdle === undefined
     ? 'H0 was not checked, no low-capped idle window'
-    : h0Check(lowIdle);
+    : h0Check(lowIdle, recorderProof);
 
   console.log(`\nprobe: wrote ${stem}.md`);
+  console.log('probe: the instrument, proved by effect');
+  console.log(
+    `  ${capProof === null ? 'the cap is a real shaper, so the timed proof does not apply' : capProofLine(capProof)}`,
+  );
+  console.log(`  ${recorderProofLine(recorderProof)}`);
   console.log('probe: observations, none of them asserted');
   console.log(`  ${h0}`);
   console.log(`  ${missed} of ${retrievals.length} rows did not complete inside their budget`);
   console.log(`  ${degraded} rows come from a degraded round and are in no ratio`);
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
+
+  // ⛔⛔⛔ LAST, and after the artifact is on disk, exactly as `browser:vod` refuses its byte source.
+  // A refused run's artifact is the thing worth keeping: it carries the reading that refused it, and
+  // an operator who only had the console would have to reconstruct the reason from memory.
+  const refusal = capProofFailure ?? recorderFailure;
+  if (refusal !== null) {
+    throw new Error(`⛔ REFUSED, and nothing in ${stem}.md is a reading of a capped link: ${refusal}`);
+  }
 }
 
 main().catch((error) => {

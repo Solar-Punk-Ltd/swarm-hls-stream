@@ -31,6 +31,12 @@
  * the capped figures mean anything. {@link h0Check} is that reading, and it is a sentence in the
  * report rather than a gate: a run that voids itself still has to say so in the artifact.
  *
+ * ⛔⛔⛔ **H0 NOW DEPENDS ON THE RECORDER FIRST, AND ON 2026-09-02 IT DID NOT.** The check compared an
+ * idle mean against the cap and nothing else, so a page-scoped recorder's zero came in under every
+ * ceiling and printed as a pass, over a run whose 1.2 MB retrievals had all succeeded and whose every
+ * byte column read 0. A zero only means the cap held if the instrument was looking at the sockets the
+ * bytes travel over. {@link judgeProbeRecorder} is that reading and `capProof.ts` holds both proofs.
+ *
  * ## ⛔ The cap itself became the suspect
  *
  * The owner's correction of 2026-09-02 was that Chrome's `Network.emulateNetworkConditions` is a
@@ -48,6 +54,7 @@
  * @see `docs/bench/in-tab-throttle-probe-result-2026-09-02.md`, and its owner's correction.
  */
 
+import { type CapProof, capProofLine, judgeRecorderProof, type RecorderProof, recorderProofLine } from './capProof.js';
 import { costSection, type ResourceCost } from './resources.js';
 import { type RungManifest, type RungName } from './rungManifest.js';
 import { kbpsAsBytesPerSecond } from './throttle.js';
@@ -68,8 +75,20 @@ import {
  * `canary` is the 360p reference every round opens with, unthrottled under an emulated cap and under
  * the cap like everything else where the cap is a real shaper. `pair` is Part C, where two
  * references are started together under the cap because that is the shape a live viewer produced.
+ * `proof` is the single capped 360p retrieval taken before Part B runs at all, whose only job is to
+ * show that the cap reached the node. It is kept in the record and out of every arm's figures: it is
+ * a reading of the instrument rather than of a condition.
  */
-export type ProbeArm = RungName | 'canary' | 'pair';
+export type ProbeArm = RungName | 'canary' | 'pair' | 'proof';
+
+/**
+ * How many fresh references the cap proof consumes, once per run rather than per round.
+ *
+ * ⛔ Counted into the pool before the browser opens, for the reason every other reference is: a run
+ * that discovered mid-sitting that it was out of fresh references would either repeat one, which is
+ * a cache hit dressed as a retrieval, or abandon the arms it had not reached.
+ */
+export const CAP_PROOF_REFS = 1;
 
 const CAP_SOURCES = ['cdp', 'external'] as const;
 
@@ -228,6 +247,23 @@ export interface InTabProbeRun {
   externalCapMeasuredBps: number | null;
   /** The quiet time after each row's cap lifted, before the next row started. */
   gapMs: number;
+  /**
+   * What one timed retrieval under the cap said about whether the cap reached the node, or null.
+   *
+   * ⛔⛔⛔ Null on an externally shaped run, where the shaper's own preflight is the proof and there
+   * is no emulation to have missed the transport. On an emulated run it is never null in a published
+   * artifact, because the driver refuses before Part B when this comes back negative. The arm 3
+   * probe of 2026-09-02 had no such field and no such refusal, and every capped figure in it was a
+   * reading of an uncapped link.
+   */
+  capProof: CapProof | null;
+  /**
+   * What the recorder counted against what the node is known to have delivered.
+   *
+   * ⛔⛔ Read this before any byte column below. The same arm 3 report printed **0** in every one of
+   * them while 1.2 MB retrievals succeeded, and then read that zero as a healthy idle reading.
+   */
+  recorderProof: RecorderProof;
   idleWindows: readonly IdleWindow[];
   retrievals: readonly RetrievalRow[];
   /** Part C's pairs, each read as one thing. See {@link summarizePair}. */
@@ -551,6 +587,26 @@ function describeShare(summary: AmplificationSummary | null): string {
 }
 
 /**
+ * Every retrieval that returned a payload, judged as one reading of the recorder.
+ *
+ * ⛔⛔ Part B rows only, because their windows never overlap. Part C starts two retrievals together
+ * on one link, so each of its rows counts the other's bytes and summing the pair would inflate the
+ * inbound side of the comparison and make a blind recorder look sighted.
+ *
+ * ⭐ The window a row is credited is its own PLUS its tail. The frames are stamped by the harness on
+ * receipt and the settle instant comes off the client's own clock, so a chunk that arrived a
+ * moment before a retrieval resolved can be stamped just after it. The tail is ten quiet seconds,
+ * which is far more slack than that skew, and the payload bytes are inside the union either way.
+ */
+export function judgeProbeRecorder(rows: readonly RetrievalRow[]): RecorderProof {
+  const resolved = rows.filter((row) => row.arm !== 'pair' && row.outcome === 'resolved' && row.byteLength !== null);
+  const payloadBytes = resolved.reduce((total, row) => total + (row.byteLength ?? 0), 0);
+  const inboundBytes = resolved.reduce((total, row) => total + row.inBytesDuring + (row.inBytesTailAfter ?? 0), 0);
+
+  return judgeRecorderProof(payloadBytes, inboundBytes, resolved.length);
+}
+
+/**
  * Whether the cap reached the transport, which every capped figure in the report depends on.
  *
  * ⛔⛔⛔ Chromium applies `Network.emulateNetworkConditions` itself, and whether it reaches a given
@@ -558,10 +614,27 @@ function describeShare(summary: AmplificationSummary | null): string {
  * aggregate idle inbound under the low cap exceeds what that cap allows, the cap is per connection
  * or absent, and every capped ratio here is a number about an uncapped link.
  *
+ * ⛔⛔⛔ **A ZERO ONLY MEANS THE CAP HELD IF THE RECORDER COULD SEE.** This compared an idle mean
+ * against the cap and nothing else until 2026-09-02, and on 2026-09-02 it read a **blind** recorder's
+ * zero, found it comfortably under the ceiling, and printed "✅ H0 holds" over a run in which 1.2 MB
+ * retrievals had succeeded and every byte column read 0. So the recorder proof comes first, and a
+ * run whose recorder was not proved to see reads "instrument blind, run refused" instead of holding.
+ *
  * ⛔ A sentence rather than a refusal. A run that voids itself still has to say so in its own
- * artifact, where the reader who would otherwise quote the ratios is standing.
+ * artifact, where the reader who would otherwise quote the ratios is standing. What refuses is the
+ * driver, off the same proofs.
  */
-export function h0Check(idle: IdleWindow): string {
+export function h0Check(idle: IdleWindow, recorder: RecorderProof): string {
+  if (recorder.verdict !== 'saw the delivery') {
+    return (
+      '⛔ **H0 cannot hold: instrument blind, run refused.** ' +
+      `${recorderProofLine(recorder)}. An idle reading under a cap is only evidence the cap held if ` +
+      'the recorder was attached to the sockets the bytes travel over, and this one was not shown to ' +
+      'be. A zero from a blind instrument is what made this line read as a pass on 2026-09-02, over a ' +
+      'run whose 1.2 MB retrievals had all succeeded. Nothing below is a reading of anything.'
+    );
+  }
+
   if (idle.kbpsCap === null) {
     return (
       '⛔ **H0 could not be checked.** The idle window handed in was not capped, so nothing here says ' +
@@ -574,9 +647,10 @@ export function h0Check(idle: IdleWindow): string {
 
   if (idle.inBytesPerSecondMean <= ceiling) {
     return (
-      `✅ **H0 holds.** Idle inbound under the ${idle.kbpsCap} kbps cap averaged ${observed} bytes/s ` +
-      `against the ${grouped(ceiling)} bytes/s that cap allows, so the emulation reaches the WebSocket ` +
-      'transport as one aggregate budget and the capped ratios below mean what they say.'
+      `✅ **H0 holds.** ${recorderProofLine(recorder)}, and idle inbound under the ${idle.kbpsCap} kbps ` +
+      `cap averaged ${observed} bytes/s against the ${grouped(ceiling)} bytes/s that cap allows, so the ` +
+      'emulation reaches the WebSocket transport as one aggregate budget and the capped ratios below ' +
+      'mean what they say.'
     );
   }
 
@@ -623,7 +697,54 @@ function h0Line(run: InTabProbeRun): string {
       'nothing establishes that the cap reached the transport, and no capped figure below can be relied on.'
     );
   }
-  return h0Check(low);
+  return h0Check(low, run.recorderProof);
+}
+
+/**
+ * The two proofs, above every figure they decide the meaning of.
+ *
+ * ⛔ First in the report and not a footnote. A reader who quotes a capped ratio without having read
+ * these is the reader the arm 3 report of 2026-09-02 produced, and the fault was the report's for
+ * putting nothing in their way.
+ */
+function proofSection(run: InTabProbeRun): string[] {
+  const proofRows = run.retrievals.filter((row) => row.arm === 'proof');
+  const unproved: CapProof = {
+    byteLength: null,
+    elapsedMs: null,
+    minimumMs: null,
+    requiredMs: null,
+    capBytesPerSecond: kbpsAsBytesPerSecond(run.capKbps),
+    verdict: 'no reading',
+  };
+
+  return [
+    '## The instrument, proved by effect before anything below it means anything',
+    '',
+    run.capSource === 'external'
+      ? '⛔ **The cap here is a real `tc` policer, so the timed proof does not apply.** The shaper ' +
+        'measured what it delivers against a real download from the host before the browser opened, ' +
+        'and that reading is the proof. See H0 below.'
+      : `- ${capProofLine(run.capProof ?? unproved)}`,
+    `- ${recorderProofLine(run.recorderProof)}`,
+    '',
+    "⛔⛔ Both are readings of OUR HARNESS, not of the node. Since weeb-3 0.0.341001 the node's " +
+      'WebSockets belong to a SharedWorker target, so a page-scoped cap reaches nothing it does and a ' +
+      'page-scoped recorder counts nothing it moves. The cap proof times a known-size payload through ' +
+      'the node against the physical floor at the cap, and the recorder proof compares what the node ' +
+      'delivered against what the recorder counted arriving. **A run that fails either is refused by ' +
+      'the driver**, and this artifact exists so a refused one still says why.',
+    '',
+    ...(proofRows.length === 0
+      ? []
+      : [
+          '### The retrieval the cap proof was taken from',
+          '',
+          ...RETRIEVAL_HEADER,
+          ...proofRows.map(retrievalRow),
+          '',
+        ]),
+  ];
 }
 
 function idleAt(run: InTabProbeRun, kbpsCap: number | null): IdleWindow | undefined {
@@ -742,8 +863,11 @@ const PART_B_ARMS: readonly RungName[] = ['360p', '1080p'];
 
 function partBSection(run: InTabProbeRun): string[] {
   const clean = run.retrievals.filter((row) => !row.roundDegraded);
-  const degraded = run.retrievals.filter((row) => row.roundDegraded);
-  const partB = clean.filter((row) => row.arm !== 'pair');
+  const degraded = run.retrievals.filter((row) => row.roundDegraded && row.arm !== 'proof');
+  // ⛔ The proof row is out of this table and out of every ratio in it. It is a reading of whether
+  // the cap reached the node, and counting it as an arm would put the instrument's own retrieval in
+  // the pre-registration's column.
+  const partB = clean.filter((row) => row.arm !== 'pair' && row.arm !== 'proof');
 
   // No uncapped column under an external cap, because no row could have filled one and a column of
   // dashes reads as a measurement that came back empty.
@@ -841,7 +965,7 @@ function predictionsSection(run: InTabProbeRun): string[] {
   const idleCapped = idleAt(run, run.capKbps);
   const h2Predicted = kbpsAsBytesPerSecond(run.capKbps) * H2_PREDICTED_IDLE_SHARE;
 
-  const cappedRows = run.retrievals.filter((row) => row.kbpsCap !== null && !row.roundDegraded);
+  const cappedRows = run.retrievals.filter((row) => row.kbpsCap !== null && !row.roundDegraded && row.arm !== 'proof');
   const rejected = cappedRows.filter((row) => row.outcome === 'rejected');
   const rejectedQuickly = rejected.filter((row) => row.elapsedMs !== null && row.elapsedMs < HLSJS_ABANDONS_AT_MS);
 
@@ -878,8 +1002,11 @@ export function renderInTabProbeReport(run: InTabProbeRun): string {
     '## Everything below is observations, none of them asserted',
     '',
     'This is a measurement, not a suite. No figure here refuses a run, and a value that hit its budget ' +
-      'is reported as not completing rather than as a duration.',
+      'is reported as not completing rather than as a duration. ⛔ The two INSTRUMENT proofs below are ' +
+      'the exception and always were: a cap that cannot prove itself and a recorder that cannot prove ' +
+      'it saw are not weak readings, they are false ones, and the driver refuses on both.',
     '',
+    ...proofSection(run),
     ...partASection(run),
     ...h0Section(run),
     ...partBSection(run),

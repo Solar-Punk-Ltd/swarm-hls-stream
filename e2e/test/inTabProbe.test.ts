@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { judgeCapProof, judgeRecorderProof } from '../src/browser/capProof.js';
 import {
   buildRetrievalRow,
   describeCap,
@@ -9,6 +10,7 @@ import {
   h0Check,
   type IdleWindow,
   type InTabProbeRun,
+  judgeProbeRecorder,
   judgeRoundDegraded,
   linkOccupancy,
   probeArmOrder,
@@ -159,9 +161,15 @@ describe('the amplification a set of rows shows', () => {
   });
 });
 
+/** A recorder proved to have seen the delivery, which is what every H0 answer now depends on. */
+const SIGHTED = judgeRecorderProof(224_848, 250_192, 1);
+
+/** The arm 3 recorder: 1.2 MB delivered through the node and not one byte counted. */
+const BLIND = judgeRecorderProof(1_163_720, 0, 3);
+
 describe('the instrument check the capped figures depend on', () => {
   it('passes when idle inbound stayed inside what the cap allows', () => {
-    const sentence = h0Check(idleWindow({ kbpsCap: LOW_CAP_KBPS, inBytesPerSecondMean: 4_000 }));
+    const sentence = h0Check(idleWindow({ kbpsCap: LOW_CAP_KBPS, inBytesPerSecondMean: 4_000 }), SIGHTED);
 
     assert.match(sentence, /^✅/);
     assert.match(sentence, /87,500 bytes\/s/);
@@ -173,17 +181,91 @@ describe('the instrument check the capped figures depend on', () => {
    * a number about an uncapped link. The sentence has to say that rather than note it.
    */
   it('fails, and says every capped figure is void, when idle inbound went past the cap', () => {
-    const sentence = h0Check(idleWindow({ kbpsCap: LOW_CAP_KBPS, inBytesPerSecondMean: 120_000 }));
+    const sentence = h0Check(idleWindow({ kbpsCap: LOW_CAP_KBPS, inBytesPerSecondMean: 120_000 }), SIGHTED);
 
     assert.match(sentence, /^⛔/);
     assert.match(sentence, /void/);
   });
 
   it('refuses to answer for a window that was never capped', () => {
-    const sentence = h0Check(idleWindow({ kbpsCap: null }));
+    const sentence = h0Check(idleWindow({ kbpsCap: null }), SIGHTED);
 
     assert.match(sentence, /^⛔/);
     assert.match(sentence, /not capped/);
+  });
+
+  /**
+   * ⛔⛔⛔ The failure of 2026-09-02, in one assertion. A blind recorder reads zero, zero is under
+   * every ceiling, and this line printed "✅ H0 holds" over a run whose 1.2 MB retrievals had all
+   * succeeded and whose every byte column read 0. An idle reading is only evidence the cap held if
+   * the recorder was attached to the sockets the bytes travel over.
+   */
+  it('cannot hold on a blind recorder, however low the idle reading was', () => {
+    const sentence = h0Check(idleWindow({ kbpsCap: LOW_CAP_KBPS, inBytesPerSecondMean: 0 }), BLIND);
+
+    assert.match(sentence, /^⛔/);
+    assert.match(sentence, /instrument blind, run refused/);
+    assert.doesNotMatch(sentence, /H0 holds/);
+  });
+
+  it('cannot hold where nothing established that the recorder saw anything at all', () => {
+    const sentence = h0Check(
+      idleWindow({ kbpsCap: LOW_CAP_KBPS, inBytesPerSecondMean: 0 }),
+      judgeRecorderProof(0, 0, 0),
+    );
+
+    assert.match(sentence, /instrument blind, run refused/);
+  });
+});
+
+/**
+ * The recorder, judged against what the node is known to have delivered.
+ *
+ * ⛔ Part C is deliberately out of it. Two retrievals started together on one link each count the
+ * other's bytes, so summing a pair inflates the inbound side and would let a blind recorder pass.
+ */
+describe('the recorder proof the probe takes off its own rows', () => {
+  it('sums a resolved row against its own window plus its tail', () => {
+    const proof = judgeProbeRecorder([
+      retrieval({ byteLength: 100_000, inBytesDuring: 90_000, inBytesTailAfter: 20_000 }),
+    ]);
+
+    assert.deepEqual(proof, { payloadBytes: 100_000, inboundBytes: 110_000, readings: 1, verdict: 'saw the delivery' });
+  });
+
+  it('calls the arm 3 shape blind: payload delivered and nothing counted', () => {
+    const proof = judgeProbeRecorder([
+      retrieval({ byteLength: 224_848, inBytesDuring: 0, inBytesTailAfter: 0 }),
+      retrieval({ arm: '1080p', byteLength: 1_163_720, inBytesDuring: 0, inBytesTailAfter: 0 }),
+    ]);
+
+    assert.equal(proof.verdict, 'blind');
+    assert.equal(proof.readings, 2);
+  });
+
+  it('leaves a Part C row out, because each of a pair counts the other', () => {
+    const proof = judgeProbeRecorder([
+      retrieval({ byteLength: 100_000, inBytesDuring: 110_000, inBytesTailAfter: 0 }),
+      retrieval({ arm: 'pair', byteLength: 100_000, inBytesDuring: 900_000, inBytesTailAfter: 0 }),
+    ]);
+
+    assert.equal(proof.readings, 1);
+    assert.equal(proof.inboundBytes, 110_000);
+  });
+
+  it('keeps the proof row in, so a run refused before Part B still judges its recorder', () => {
+    const proof = judgeProbeRecorder([
+      retrieval({ arm: 'proof', byteLength: 224_848, inBytesDuring: 250_192, inBytesTailAfter: 0 }),
+    ]);
+
+    assert.equal(proof.readings, 1);
+    assert.equal(proof.verdict, 'saw the delivery');
+  });
+
+  it('reads a run whose every row missed its budget as no reading, never as a pass', () => {
+    const proof = judgeProbeRecorder([retrieval({ outcome: 'budget', byteLength: null, inBytesDuring: 0 })]);
+
+    assert.equal(proof.verdict, 'no reading');
   });
 });
 
@@ -288,6 +370,8 @@ function probeRun(
     lowCapKbps: LOW_CAP_KBPS,
     capSource: 'cdp',
     externalCapMeasuredBps: null,
+    capProof: judgeCapProof(224_848, 3_400, 350_000),
+    recorderProof: judgeProbeRecorder(retrievals),
     idleWindows,
     retrievals,
     pairs: [],
@@ -325,6 +409,43 @@ describe('the report the probe leaves behind', () => {
   /** The line hls.js gives up on is what makes a slow retrieval a viewer-visible fault. */
   it('marks the 20 s line hls.js abandons a fragment at', () => {
     assert.match(renderInTabProbeReport(probeRun(rows, windows)), /20 s/);
+  });
+
+  /**
+   * ⛔⛔ The section a reader has to walk past before reaching a capped ratio. The arm 3 report of
+   * 2026-09-02 had nothing in that position, and its figures were quoted.
+   */
+  it('leads with both instrument proofs, above every figure they decide the meaning of', () => {
+    const markdown = renderInTabProbeReport(probeRun(rows, windows));
+    const proofs = markdown.indexOf('## The instrument, proved by effect');
+
+    assert.ok(proofs > 0, 'no proof section at all');
+    assert.ok(proofs < markdown.indexOf('## Part B'), 'the proofs come after the rows they judge');
+    assert.match(markdown, /the cap reached the node/);
+    assert.match(markdown, /the recorder saw the delivery/);
+  });
+
+  it('reports the arm 3 shape as a refusal rather than as a holding H0', () => {
+    // Every row delivered a payload and the recorder counted nothing, which is that run exactly.
+    const blindRows = rows.map((row) => ({ ...row, inBytesDuring: 0, inBytesTailAfter: 0 }));
+    const markdown = renderInTabProbeReport(
+      probeRun(blindRows, windows, { recorderProof: judgeProbeRecorder(blindRows) }),
+    );
+
+    assert.match(markdown, /instrument blind, run refused/);
+    assert.match(markdown, /the recorder is blind/);
+    assert.doesNotMatch(markdown, /✅ \*\*H0 holds/);
+  });
+
+  it('shows the retrieval its cap proof was taken from, so the reading has a row behind it', () => {
+    const proofRow = retrieval({ arm: 'proof', kbpsCap: CAP_KBPS, roundIndex: 0 });
+    const markdown = renderInTabProbeReport(probeRun([proofRow, ...rows], windows));
+
+    assert.match(markdown, /### The retrieval the cap proof was taken from/);
+    // ⛔ And out of the arms. It is a reading of the instrument, not of a condition, so counting it
+    // as an arm would put the harness's own retrieval in the pre-registration's column.
+    const partB = markdown.slice(markdown.indexOf('## Part B'), markdown.indexOf('## The pre-registration'));
+    assert.doesNotMatch(partB, /\| proof \|/);
   });
 
   it('restates each pre-registered prediction with what was observed beside it', () => {
@@ -425,6 +546,15 @@ describe('the report an external cap leaves behind', () => {
 
   it('names every row as externally capped rather than leaving the kind unsaid', () => {
     assert.match(renderInTabProbeReport(shapedRun), /external 2800 kbps/);
+  });
+
+  it('says the timed cap proof does not apply, rather than reporting it as unproved', () => {
+    // ⛔ A `tc` policer's rate was measured against a real download before the browser opened. A
+    // report that printed "the cap proved nothing" here would understate its own evidence.
+    const markdown = renderInTabProbeReport(shapedRun);
+
+    assert.match(markdown, /real `tc` policer, so the timed proof does not apply/);
+    assert.doesNotMatch(markdown, /the cap proved nothing/);
   });
 
   /**
