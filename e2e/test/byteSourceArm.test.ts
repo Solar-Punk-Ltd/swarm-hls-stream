@@ -3,6 +3,7 @@ import { afterEach, describe, it } from 'node:test';
 import { type Page } from 'playwright-core';
 
 import { openByteSourceArmSession } from '../src/browser/byteSourceArm.js';
+import { type ProofWindow } from '../src/browser/fetchBackendSweep.js';
 
 /**
  * That opening a byte-source arm and proving it cannot come apart.
@@ -46,8 +47,25 @@ afterEach(() => {
   delete (globalThis as Record<string, unknown>)[HANDLE];
 });
 
-const openArm = (source: 'weeb3' | 'gateway' | null) =>
-  openByteSourceArmSession({ page: fakePage(), source, playbackStartedAtMs: Date.now(), settleMs: TEST_SETTLE_MS });
+/** ⛔ `playbackStartedAtMs` is an option so a test can assert against the instant it handed in. */
+const openArm = (
+  source: 'weeb3' | 'gateway' | null,
+  {
+    settleMs = TEST_SETTLE_MS,
+    proofWindow,
+    playbackStartedAtMs = Date.now(),
+  }: { settleMs?: number; proofWindow?: ProofWindow; playbackStartedAtMs?: number } = {},
+) => openByteSourceArmSession({ page: fakePage(), source, playbackStartedAtMs, settleMs, proofWindow });
+
+/**
+ * The settle the window tests below open their arms with.
+ *
+ * Shorter than {@link TEST_SETTLE_MS} because these ask WHICH instant was recorded rather than
+ * whether the fairness guard fires, and an arm-open sleeps out its whole settle in real time. A
+ * second is ten times the event-loop delay that flaked this suite at 40ms, and an arm that lost more
+ * than that throws by name rather than reading as a pass.
+ */
+const WINDOW_SETTLE_MS = 1_000;
 
 describe('a run that asked for no byte source', () => {
   it('reports no arm, so a report cannot claim a condition the run did not set', async () => {
@@ -122,5 +140,55 @@ describe('a run that asked for the in-tab node', () => {
       { url: SEGMENT, startedAtMs: session.arm!.windowStartedAtMs - 1_000 },
       { url: WASM, startedAtMs: session.arm!.windowStartedAtMs + 1 },
     ]);
+  });
+});
+
+/**
+ * ⛔⛔⛔ Which instant an arm is proved from, and why a recording needs a different one.
+ *
+ * A finite recording is fetched whole in its first seconds, and a gateway arm has no node to boot,
+ * so nothing about its settle is waiting for anything. Proved from the settle's end, every healthy
+ * gateway playback arm refused for making no `/bytes/` request inside its window, which is what made
+ * V4 the only red of the sitting of 2026-09-03 on a complete recording. A weeb-3 arm keeps the
+ * settle-end window: the segments it fetched before the switch came from the gateway by design, and
+ * judging it from playback start would refuse it for reading the gateway it was told to read.
+ */
+describe('which instant an arm is proved from', () => {
+  it('proves a live arm from the end of its settle, which is what every driver had', async () => {
+    installSwitch();
+    const playbackStartedAtMs = Date.now();
+    const session = await openArm('weeb3', { settleMs: WINDOW_SETTLE_MS, playbackStartedAtMs });
+
+    assert.equal(session.arm?.proofWindow, 'after-settle');
+    assert.ok(
+      session.arm!.windowStartedAtMs >= playbackStartedAtMs + WINDOW_SETTLE_MS,
+      "the window opened before the settle ended, so a booting node's gateway reads would be counted",
+    );
+  });
+
+  /** ⭐ The settle still happens. All that moves is the instant the request log is read from. */
+  it('proves a recording arm from playback start, while still settling for the same wall clock', async () => {
+    installSwitch({ lands: 'gateway' });
+    const playbackStartedAtMs = Date.now();
+    const session = await openArm('gateway', {
+      settleMs: WINDOW_SETTLE_MS,
+      proofWindow: 'from-playback-start',
+      playbackStartedAtMs,
+    });
+
+    assert.equal(session.arm?.proofWindow, 'from-playback-start');
+    assert.equal(session.arm?.windowStartedAtMs, playbackStartedAtMs);
+    assert.ok(
+      session.arm!.settledForMs >= WINDOW_SETTLE_MS,
+      'the arm returned before its settle was spent, so the two byte sources hold players of different ages',
+    );
+  });
+
+  /** The whole point: the segments a player pulled in its first seconds now prove the arm. */
+  it('accepts a gateway arm whose only segments were fetched before the settle ended', async () => {
+    installSwitch({ lands: 'gateway' });
+    const session = await openArm('gateway', { settleMs: WINDOW_SETTLE_MS, proofWindow: 'from-playback-start' });
+
+    session.proveBytesCameFromIt([{ url: SEGMENT, startedAtMs: session.arm!.windowStartedAtMs + 5 }]);
   });
 });

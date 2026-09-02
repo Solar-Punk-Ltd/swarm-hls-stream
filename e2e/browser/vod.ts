@@ -24,6 +24,11 @@
  * `BROWSER_FETCH_BACKEND` chooses where the segment bytes come from, `weeb3` being the in-tab node
  * and `gateway` the control, and the run proves the bytes came from where it says before it ends.
  *
+ * ⛔ A gateway arm proves itself from PLAYBACK START rather than after its settle, which no live
+ * driver does. A finite recording is fetched whole in its first seconds and a gateway arm has no node
+ * to boot, so a window opening 60s in had nothing left to see and refused every healthy gateway
+ * playback arm. See the call to `openByteSourceArmSession` below.
+ *
  * ## The squeeze mode, `BROWSER_VOD_SQUEEZE_KBPS`
  *
  * Set it and the run stops seeking and squeezes instead: play from the start, cap the tab's download
@@ -77,7 +82,15 @@ import {
   openByteSourceArmSession,
 } from '../src/browser/byteSourceArm.js';
 import { capProofLine, capProofRefusal, judgeCapProof, recorderBlindRefusal } from '../src/browser/capProof.js';
-import { byteSourceFromEnv, retrieveThroughInTabNode, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
+import {
+  byteSourceFromEnv,
+  GATEWAY_BYTES,
+  PROOF_WINDOW_AFTER_SETTLE,
+  PROOF_WINDOW_FROM_PLAYBACK_START,
+  type ProofWindow,
+  retrieveThroughInTabNode,
+  WEEB3_BYTES,
+} from '../src/browser/fetchBackendSweep.js';
 import {
   abandonedAnswerVerdict,
   type FragmentLog,
@@ -776,11 +789,20 @@ async function main(): Promise<void> {
       // the settle has finished before the settle ends, which does not break a seek (the whole
       // timeline is buffered) and does mean the settle was not a settle. Size the recording, or
       // shorten the window with that variable.
+      //
+      // ⛔⛔⛔ A gateway arm proves itself from PLAYBACK START, in both modes. There is no node to
+      // boot here, so the settle waits for nothing, and the player pulls a whole recording in its
+      // first seconds: by the time a 60s window opened there was no segment left to fetch, and the
+      // proof refused every gateway playback arm for making no /bytes/ request inside its window.
+      // That was V4's only red on 2026-09-03, on a complete recording fetched entirely from the
+      // gateway. A weeb-3 arm keeps the settle-end window, because the segments it fetched before the
+      // switch came from the gateway by design.
       byteSourceArm = await openByteSourceArmSession({
         page,
         source: armByteSource,
         playbackStartedAtMs,
         settleMs: byteSourceSettleMs,
+        proofWindow: armByteSource === GATEWAY_BYTES ? PROOF_WINDOW_FROM_PLAYBACK_START : PROOF_WINDOW_AFTER_SETTLE,
       });
 
       if (squeeze !== null) {
@@ -963,6 +985,10 @@ async function main(): Promise<void> {
         requested: byteSourceArm.arm.requested,
         reported: byteSourceArm.arm.reported,
         settledForMs: byteSourceArm.arm.settledForMs,
+        // ⛔ Which window the proof was judged over, because the settle above is no longer the
+        // window's own offset on every arm. A reading that cannot say which of the two it was
+        // judged on is the shape of blindness this driver keeps meeting.
+        proofWindow: byteSourceArm.arm.proofWindow,
       },
       // ⛔ Undefined outside squeeze mode, and `JSON.stringify` drops an undefined key, so a seek
       // battery's artifact is the shape it has always been. `throttle`, `quality` and
@@ -1093,9 +1119,9 @@ function renderVodReport(run: {
     // under the in-tab node's name, which is the whole reason the arm reads itself back.
     lines.push(
       `Segment bytes came from **${run.byteSource.reported}**, which is what the client reports rather ` +
-        `than what was asked for. The window opened ${(run.byteSource.settledForMs / 1000).toFixed(1)}s ` +
-        'after playback started, and only requests from that instant on decide whether this run is the ' +
-        'condition it is filed under.',
+        `than what was asked for. The arm settled for ${(run.byteSource.settledForMs / 1000).toFixed(1)}s, ` +
+        `and its proof window opened ${proofWindowLine(run.byteSource.proofWindow)}. Only requests from ` +
+        'that instant on decide whether this run is the condition it is filed under.',
     );
     lines.push('');
   }
@@ -1230,6 +1256,21 @@ function rungCompletenessSection(rungs: readonly RecordingRung[] | null): string
 /** Enough of a reference to identify a segment. The state file beside the report keeps all of it. */
 function shortRef(reference: string): string {
   return `${reference.slice(0, 12)}…`;
+}
+
+/**
+ * Where the proof window opened, in words.
+ *
+ * ⛔ Absent on a run written before the window became a choice, and that reads as the settle end,
+ * which is what every run before it used. Never as playback start: a gateway arm judged from the
+ * settle end is the defect this key exists to record, so guessing the new behaviour onto an old file
+ * would erase it.
+ */
+function proofWindowLine(proofWindow: ProofWindow | undefined): string {
+  return proofWindow === PROOF_WINDOW_FROM_PLAYBACK_START
+    ? 'at playback start, because a finite recording is fetched whole in its first seconds and this ' +
+        'arm had no node to boot'
+    : 'where that settle ended';
 }
 
 /**

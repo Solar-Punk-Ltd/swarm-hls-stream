@@ -9,6 +9,7 @@
 
 import { LIVE_SYNC_DURATION_S } from '../bench/clientTuning.js';
 
+import type { ProofWindow } from './fetchBackendSweep.js';
 import { type GatewayHealth, gatewaySection } from './gatewayHealth.js';
 import { describeProofs, type InstrumentProof, type InstrumentVerdict } from './instrument.js';
 import type { NetworkSummary } from './network.js';
@@ -79,8 +80,16 @@ export interface ByteSourceCondition {
    * ⛔ Recorded because it is not padding. A weeb-3 arm boots its node inside this period and reads
    * through the gateway while it does, so the window start is what makes the request log decisive:
    * every `/bytes/` request before it is expected and every one after it is a refusal.
+   *
+   * ⚠️ On an arm whose window opens at playback start this is still how long the arm settled, and no
+   * longer where its window began. {@link proofWindow} is what says which of the two a run was.
    */
   settledForMs: number;
+  /**
+   * Which instant the proof read the request log from, or absent on a run written before the choice
+   * existed. Only `browser:vod` sets it today, and every other driver proves after its settle.
+   */
+  proofWindow?: ProofWindow;
 }
 
 /**

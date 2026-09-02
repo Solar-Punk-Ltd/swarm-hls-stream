@@ -510,6 +510,14 @@ holds it for `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (default 60) before opening it
 is never inside a counted stretch. `watch.ts` reads that window from `BROWSER_SETTLE_SECONDS`
 instead, because that is the knob the existing corpus was run with.
 
+⛔ **A gateway arm playing a RECORDING is proved from playback start instead**, which only
+`browser:vod` asks for. It still settles for the same wall clock, so both byte sources hold players
+of the same age, and only the instant its request log is read from moves. There is no node to boot on
+a gateway arm and a finite recording is fetched whole in its first seconds, so a window opening 60s
+in had nothing left to see and refused every healthy gateway playback arm. A weeb-3 arm keeps the
+settle-end window either way, because the segments it fetched while its node booted came from the
+gateway by design. The artifact's `byteSource.proofWindow` says which of the two a run was.
+
 ⛔⛔⛔ **An arm is proved, never believed.** A weeb-3 arm's headline is a _zero_ gateway read, and a
 client that never loaded the node produces the same zero. `openByteSourceArmSession` hands back the
 proof along with the arm so a driver cannot hold one without the other, and the proof requires the

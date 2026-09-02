@@ -209,12 +209,49 @@ export function byteSourceFromEnv(value: string | undefined): ByteSource | null 
   return value;
 }
 
+/**
+ * The window opens once the arm has settled, which is what a LIVE watch needs.
+ *
+ * A weeb-3 arm reads through the gateway for as long as its node is booting, by design, so those
+ * requests are outside the window and only what happened after the switch decides the condition.
+ */
+export const PROOF_WINDOW_AFTER_SETTLE = 'after-settle';
+
+/**
+ * The window opens at playback start, which is what a FINITE recording needs.
+ *
+ * ⛔⛔ A gateway arm playing a recording could not pass the other window at all. There is no node to
+ * boot on a gateway arm, so nothing about the settle is waiting for anything, and the player fetches
+ * a 30s recording whole in its first seconds. By the time a 60s window opened there was nothing left
+ * to fetch, so the proof refused every gateway playback arm for making no `/bytes/` request inside
+ * it. That is what made V4 the only red of the sitting of 2026-09-03, on a recording that was
+ * complete and a client that had fetched every byte of it from the gateway.
+ *
+ * ⛔ Only correct where the arm needs no setup of its own. On a weeb-3 arm the segments fetched before
+ * the switch legitimately came from the gateway, so opening the window at playback start would refuse
+ * a healthy arm for reading the gateway it was told to read.
+ */
+export const PROOF_WINDOW_FROM_PLAYBACK_START = 'from-playback-start';
+
+/** Which instant {@link armBytesCameFromItsSource} judges an arm's request log from. */
+export type ProofWindow = typeof PROOF_WINDOW_AFTER_SETTLE | typeof PROOF_WINDOW_FROM_PLAYBACK_START;
+
 export interface ByteSourceArm {
   requested: ByteSource;
   reported: string;
+  /**
+   * How long the arm held the player before returning, which is playback the run has already spent.
+   *
+   * ⛔ Not the window's own offset since 2026-09-03. The two are the same number on an after-settle
+   * arm and they are not on a from-playback-start one, and `warnIfShorterThanThePlan` in
+   * `browser/vod.ts` needs this one: what it asks is how much of a short recording the settle has
+   * already played through.
+   */
   settledForMs: number;
   /** Requests before this instant are excluded from {@link armBytesCameFromItsSource}. */
   windowStartedAtMs: number;
+  /** Which rule chose that instant, so a reading can say which window it was judged over. */
+  proofWindow: ProofWindow;
 }
 
 /**
@@ -241,17 +278,27 @@ export interface ByteSourceArm {
  * ⛔ An arm whose setup overran the settle is refused rather than shortened. Shortening it would
  * leave the two conditions holding players of different ages, which is a difference in how far
  * hls.js had already drifted, dressed up as a difference in byte source.
+ *
+ * ## ⭐ Why the window is a choice and the settle is not
+ *
+ * Both arms still settle for the same wall clock, whichever window they judge over. What
+ * `proofWindow` moves is only the instant the request log is read from, and it defaults to
+ * {@link PROOF_WINDOW_AFTER_SETTLE} so every existing driver behaves exactly as it did.
+ * {@link PROOF_WINDOW_FROM_PLAYBACK_START} is for a finite recording, which is fetched whole in its
+ * first seconds and therefore has nothing left to prove by the time a settle ends.
  */
 export async function openByteSourceArm({
   page,
   source,
   playbackStartedAtMs,
   settleMs,
+  proofWindow = PROOF_WINDOW_AFTER_SETTLE,
 }: {
   page: Page;
   source: ByteSource;
   playbackStartedAtMs: number;
   settleMs: number;
+  proofWindow?: ProofWindow;
 }): Promise<ByteSourceArm> {
   if (source === WEEB3_BYTES) {
     const failure = await prewarmByteSource(page);
@@ -275,12 +322,13 @@ export async function openByteSourceArm({
   }
   await new Promise((resolve) => setTimeout(resolve, remainingMs));
 
-  const windowStartedAtMs = Date.now();
+  const settledUntilMs = Date.now();
   return {
     requested: source,
     reported: setup.byteSource as string,
-    settledForMs: windowStartedAtMs - playbackStartedAtMs,
-    windowStartedAtMs,
+    settledForMs: settledUntilMs - playbackStartedAtMs,
+    windowStartedAtMs: proofWindow === PROOF_WINDOW_FROM_PLAYBACK_START ? playbackStartedAtMs : settledUntilMs,
+    proofWindow,
   };
 }
 

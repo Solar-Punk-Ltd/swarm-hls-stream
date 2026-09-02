@@ -5,6 +5,9 @@ import {
   type ByteSource,
   type ByteSourceArm,
   openByteSourceArm,
+  PROOF_WINDOW_AFTER_SETTLE,
+  PROOF_WINDOW_FROM_PLAYBACK_START,
+  type ProofWindow,
   type TimedRequest,
 } from './fetchBackendSweep.js';
 
@@ -31,7 +34,8 @@ export interface ByteSourceArmSession {
    * ⛔ Run before the reading is filed, and let it throw.
    *
    * Judges only from the instant the window opened, because an arm legitimately reads through the
-   * gateway while its node boots. A no-op when no arm was requested, so a caller needs no branch.
+   * gateway while its node boots. Which instant that is comes from the session's `proofWindow`. A
+   * no-op when no arm was requested, so a caller needs no branch.
    */
   proveBytesCameFromIt(requests: readonly TimedRequest[]): void;
 }
@@ -66,21 +70,28 @@ export async function openByteSourceArmSession({
   source,
   playbackStartedAtMs,
   settleMs,
+  proofWindow = PROOF_WINDOW_AFTER_SETTLE,
 }: {
   page: Page;
   /** `null` leaves the build's own default in place, which is what an unset variable means. */
   source: ByteSource | null;
   playbackStartedAtMs: number;
   settleMs: number;
+  /**
+   * Which instant the proof reads the request log from. Defaults to after the settle, so a driver
+   * that names nothing behaves exactly as every live driver always has.
+   */
+  proofWindow?: ProofWindow;
 }): Promise<ByteSourceArmSession> {
   if (source === null) {
     return UNSWITCHED;
   }
 
-  const arm = await openByteSourceArm({ page, source, playbackStartedAtMs, settleMs });
+  const arm = await openByteSourceArm({ page, source, playbackStartedAtMs, settleMs, proofWindow });
   console.log(
-    `browser: bytes come from ${arm.reported}, window opens ` +
-      `${(arm.settledForMs / 1000).toFixed(1)}s after playback started`,
+    `browser: bytes come from ${arm.reported}, settled for ${(arm.settledForMs / 1000).toFixed(1)}s, ` +
+      `and the proof window opens ` +
+      `${arm.proofWindow === PROOF_WINDOW_FROM_PLAYBACK_START ? 'at playback start' : 'where that settle ended'}`,
   );
 
   return {
