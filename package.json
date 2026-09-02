@@ -32,6 +32,7 @@
     "e2e:smoke": "pnpm --filter @swarm-hls-stream/e2e test:e2e:smoke",
     "e2e:preflight": "pnpm --filter @swarm-hls-stream/e2e test:e2e:preflight",
     "e2e:run": "pnpm --filter @swarm-hls-stream/e2e test:e2e",
+    "e2e:quality": "pnpm --filter @swarm-hls-stream/e2e test:e2e:quality",
     "bench:latency": "pnpm --filter @swarm-hls-stream/e2e bench:latency",
     "bench:longrun": "pnpm --filter @swarm-hls-stream/e2e bench:longrun",
     "browser:selfcheck": "pnpm --filter @swarm-hls-stream/e2e browser:selfcheck",
