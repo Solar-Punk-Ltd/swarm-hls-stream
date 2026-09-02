@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/copy-weeb3-runtime.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/copy-weeb3-runtime.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

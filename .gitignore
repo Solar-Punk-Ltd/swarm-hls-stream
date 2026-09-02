@@ -27,6 +27,11 @@ deploy/.env.deploy*
 packages/*/src/**/*.js
 packages/*/test/**/*.js
 
+# weeb-3's SharedWorker runtime, copied out of node_modules by the client's `prebuild` so nginx can
+# serve it from our own origin. 4 MB of wasm that the lockfile already pins, so the tracked copy
+# would only ever be a second version of the same bytes.
+packages/client/public/weeb-3/
+
 # Stryker copies the whole tree into a sandbox per run and writes its report beside it.
 .stryker-tmp/
 reports/mutation/

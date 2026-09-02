@@ -1,0 +1,5 @@
+# weeb-3's own worker and glue, copied out of node_modules into the served tree by `prebuild`
+# (scripts/copy-weeb3-runtime.mjs). Vendored bytes rather than code written here, so linting them
+# only ever reports on someone else's release, and reformatting them would break the wasm glue's
+# agreement with the .wasm beside it.
+public/weeb-3
