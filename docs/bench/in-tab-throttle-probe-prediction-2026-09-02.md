@@ -84,11 +84,18 @@ material share of the capped link before any fragment is asked for.
 Prediction if H2 is the cause: inbound bytes while idle are **at least 30% of the cap** (105 KB/s or
 more at 2800 kbps). My own expectation is under 10%, and I am writing that down so it can be wrong.
 
-**H3, accounting refusals.** Peers refuse reservations and the node cycles its overdraft list rather
-than fetching.
-Prediction if H3 is the cause: capped retrievals **reject quickly** with few inbound bytes. Sitting
-five argues against it already, since nothing answered for 20 seconds and more, but it is cheap to
-keep in the table.
+**H3, accounting exhaustion.** Bee grants an unfunded reader a fixed allowance per peer per second
+(450,000 units, measured in the SolarPunk fleet notes `free-bandwidth-is-450k-per-second-per-peer`
+and `the-ceiling-is-a-600ms-sleep-with-no-counter`, and the same number weeb-3 carries as
+`REFRESH_RATE`). Every attempt reserves the chunk's price at its peer before asking, the closest
+peer is asked first, and a peer whose balance plus reserve would pass its threshold refuses, so
+hedges that pile up under a cap can exhaust the closest peers and leave the node cycling its
+overdraft list on a 50 ms sleep, waiting for refreshments that arrive once per second per peer.
+Prediction if H3 dominates: a capped retrieval hangs with the link **mostly idle**, inbound bytes
+per second well below the cap, and the answer, when it comes, is a rejection. Under H1 the link is
+**full**, inbound at or near the cap, while payload goodput is low. The inbound rate during a
+capped retrieval is what separates the two, and H1 can cause H3, so both can be true at once.
+⚠️ Amended 2026-09-02 before the driver ran, from "rejects quickly", after reading those two notes.
 
 **H0, the instrument.** Chromium's `Network.emulateNetworkConditions` must reach the WebSocket
 transport as one aggregate budget for these ratios to mean anything. Check: with the cap at 700 kbps,
