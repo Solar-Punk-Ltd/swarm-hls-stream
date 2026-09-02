@@ -29,8 +29,12 @@
 #
 # Anything after `--` is passed to the container as environment, exactly as `bench-on-host.sh` does.
 #
-# `--own-network` is forwarded, and it moves the client from loopback to `host.docker.internal`
-# along with every other address the container dials. See `bench-on-host.sh` for what it is for.
+# `--own-network` and `--shape-kbps <n>` are forwarded, and either moves the client from loopback to
+# `host.docker.internal` along with every other address the container dials. See `bench-on-host.sh`
+# for what they are for. Arm 2 of the throttle probe, which repeats it over a real shaped link
+# instead of Chrome's emulation:
+#   deploy/scripts/browser-on-host.sh --own-network --shape-kbps 2800 \
+#     --script browser:in-tab-throttle-probe -- PROBE_CAP_MODE=external PROBE_CAP_KBPS=2800
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -59,6 +63,8 @@ while [ $# -gt 0 ]; do
     --target) TARGET="$2"; FORWARDED+=(--target "$2"); shift 2 ;;
     --no-setup) FORWARDED+=(--no-setup); shift ;;
     --own-network) CLIENT_HOST="host.docker.internal"; FORWARDED+=(--own-network); shift ;;
+    # Implies --own-network on the far side, so the client has to move with it here too.
+    --shape-kbps) CLIENT_HOST="host.docker.internal"; FORWARDED+=(--shape-kbps "$2"); shift 2 ;;
     --) shift; PASSTHROUGH=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac

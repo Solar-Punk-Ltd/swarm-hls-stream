@@ -17,8 +17,14 @@ FROM node:22-bookworm-slim
 
 # ffmpeg and ffprobe are the instrument. curl is what `Host.curlJson` shells out to, and bash is what
 # `LOCAL_TARGET` runs every command line through.
+#
+# `iproute2` is `tc` and `ip`, which `deploy/scripts/shape-container-ingress.sh` needs to put a real
+# ingress policer on this container's own interface. That is the alternative to Chrome's
+# `Network.emulateNetworkConditions`, which is what every "slow connection" this project has
+# measured actually was. Installed rather than optional, because the shaper refuses the whole run
+# when `tc` is absent, and a shaped arm that could not shape must not become an unshaped reading.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates bash \
+  && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates bash iproute2 \
   && rm -rf /var/lib/apt/lists/*
 
 # The client alone, not the engine: this talks to the host's daemon over the mounted socket. Pinned,

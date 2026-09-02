@@ -39,6 +39,13 @@
 # its own link: with `--network host` a shaper would throttle the bee nodes, the uploader and every
 # co-tenant on the machine, because they are all in the same namespace. Nothing else wants it, since
 # sharing the host's namespace is what keeps the operator's uplink out of every reading.
+#
+# `--shape-kbps <n>` caps the container's DOWNLOAD at n kbit/s over a real `tc` ingress policer, and
+# implies `--own-network`. This is the alternative to Chrome's `Network.emulateNetworkConditions`,
+# which is what every "slow connection" this project has measured actually was. The shaper refuses
+# the whole run unless it can prove the rate it installed against a download from the host, so a
+# shaped arm either measures a shaped link or does not start. See
+# `deploy/scripts/shape-container-ingress.sh`.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -82,6 +89,11 @@ HOST_GATEWAY_ALIAS="host.docker.internal"
 
 # Off by default, so a run without the flag builds the same container arguments byte for byte.
 OWN_NETWORK=0
+SHAPE_KBPS=""
+
+# Where the shaper leaves the rate it proved. Sourced by the container command below so the driver
+# can label its rows with a measured cap rather than with the number that was asked for.
+SHAPE_ENV_FILE="/tmp/swarm-shape-cap.env"
 
 BENCH_ENV=()
 while [ $# -gt 0 ]; do
@@ -95,10 +107,25 @@ while [ $# -gt 0 ]; do
     --no-setup) SETUP=0; shift ;;
     --setup-only) SETUP_ONLY=1; shift ;;
     --own-network) OWN_NETWORK=1; shift ;;
+    # Implies --own-network rather than asking for both, because a policer in the host's namespace
+    # would throttle every bee node and co-tenant on the machine. The shaper checks it again from
+    # the inside, since a flag is a statement and the namespace is a fact.
+    --shape-kbps) SHAPE_KBPS="$2"; OWN_NETWORK=1; shift 2 ;;
     --) shift; BENCH_ENV=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# Screened here as well as in the shaper, because this value is interpolated into a docker command
+# carried over ssh, where anything but digits has no business.
+if [ -n "${SHAPE_KBPS}" ]; then
+  case "${SHAPE_KBPS}" in
+    0 | *[!0-9]*)
+      echo "--shape-kbps must be a positive whole number of kbit/s and is '${SHAPE_KBPS}'" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 # Runs as the invoking user so the installed tree and the written reports do not come back owned by
 # root, and joins the host network so the publisher and the gateway are both reached over loopback.
@@ -120,6 +147,14 @@ done
 NETWORK_ARGS="--network host"
 if [ "${OWN_NETWORK}" -eq 1 ]; then
   NETWORK_ARGS="--add-host=${HOST_GATEWAY_ALIAS}:host-gateway"
+fi
+
+# ⚠️ `--cap-add` puts NET_ADMIN in the container's capability sets, and this container runs as the
+# invoking user rather than as root, which on some runc versions leaves it permitted but not
+# effective. The shaper refuses the run with that named as the cause when `tc` is denied, so the
+# arrangement either works or says why it did not, rather than measuring an unshaped link.
+if [ -n "${SHAPE_KBPS}" ]; then
+  NETWORK_ARGS="${NETWORK_ARGS} --cap-add=NET_ADMIN"
 fi
 
 DOCKER_RUN="docker run --rm ${NETWORK_ARGS} \
@@ -170,18 +205,33 @@ RUN_ENV="-e E2E_SSH_TARGET=local -e E2E_PUBLIC_HOST=${HOST_ADDRESS} -e E2E_PROFI
 if [ "${OWN_NETWORK}" -eq 1 ]; then
   RUN_ENV="${RUN_ENV} -e E2E_LOCAL_HOST_ADDRESS=${HOST_ADDRESS}"
 fi
+if [ -n "${SHAPE_KBPS}" ]; then
+  RUN_ENV="${RUN_ENV} -e SHAPE_KBPS=${SHAPE_KBPS} -e SHAPE_ENV_FILE=${SHAPE_ENV_FILE}"
+fi
 # Last wins in docker, so anything after `--` overrides what this script decided.
 for pair in ${BENCH_ENV[@]+"${BENCH_ENV[@]}"}; do
   RUN_ENV="${RUN_ENV} -e ${pair}"
 done
+
+# ⛔ The shaper runs in the same shell as the script it shapes, and `&&` is what makes it a gate: a
+# refusal exits non-zero and the driver never starts, so a shaped arm cannot fall back to measuring
+# an unshaped link. Sourcing the file the shaper wrote is what carries the PROVED rate into the
+# driver's environment, which is the only cap figure a report may print.
+CONTAINER_CMD="pnpm ${SCRIPT}"
+if [ -n "${SHAPE_KBPS}" ]; then
+  CONTAINER_CMD="bash -c 'deploy/scripts/shape-container-ingress.sh && . ${SHAPE_ENV_FILE} && exec pnpm ${SCRIPT}'"
+fi
 
 # The network mode is printed because it decides every address inside the container, and this repo
 # has already paid for a run whose report named a setting the container never read.
 if [ "${OWN_NETWORK}" -eq 1 ]; then
   echo "bench-on-host: own network namespace, the host is ${HOST_ADDRESS}"
 fi
+if [ -n "${SHAPE_KBPS}" ]; then
+  echo "bench-on-host: shaping inbound at ${SHAPE_KBPS} kbit/s, and refusing the run if it cannot be proved"
+fi
 echo "bench-on-host: running ${SCRIPT} on ${TARGET} (profile ${PROFILE}, slot ${PORT_SLOT})"
-ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} pnpm ${SCRIPT}"
+ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} ${CONTAINER_CMD}"
 
 echo "bench-on-host: collecting reports"
 mkdir -p "${REPO_ROOT}/docs/bench"
