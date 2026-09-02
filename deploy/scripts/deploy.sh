@@ -207,6 +207,28 @@ resolve_bee_url() {
   bee_target=$(get_target "$SVC_BEE_UPLOADER")
   uploader_target=$(get_target "$SVC_UPLOADER")
 
+  # This deployment was not asked for a bee-uploader, so it has no local node
+  # and there is no address to compute: whatever BEE_URL .env.<profile> carries
+  # is the only answer available, and it is a deliberate one.
+  #
+  # is_enabled alone was not enough. It reads config.json, which says what this
+  # checkout is *configured* for, not what a given invocation was asked to
+  # bring up — and the manager writes config.json once at bootstrap, never per
+  # profile, listing bee-uploader as "localhost". So for every profile
+  # deploying a stream-uploader this returned http://bee-uploader:<port> and
+  # wrote it into .env.deploy, the second --env-file, which outranks
+  # .env.<profile>. A deployment of `srs + stream-uploader` naming an external
+  # node was pointed at a compose service that is not running: the uploader
+  # died on `getaddrinfo ENOTFOUND bee-uploader` and restarted forever.
+  #
+  # is_in_filter, not the per-target service list: with no filter it passes
+  # everything (so a bare `deploy.sh` behaves exactly as before), and it stays
+  # true when bee-uploader was requested onto a *different* host — which is
+  # the cross-target case the tail of this function exists to handle.
+  if ! is_in_filter "$SVC_BEE_UPLOADER"; then
+    return
+  fi
+
   if ! is_enabled "$bee_target"; then
     # bee-uploader disabled — use whatever BEE_URL is in .env
     return
