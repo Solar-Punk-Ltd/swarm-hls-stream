@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
+import { type Page } from 'playwright-core';
 
 import {
   armBytesCameFromItsSource,
   byteSourceArmIsComparable,
   byteSourceArmOrder,
   GATEWAY_BYTES,
+  retrieveThroughInTabNode,
   type TimedRequest,
   WEEB3_BYTES,
 } from '../src/browser/fetchBackendSweep.js';
@@ -168,5 +170,80 @@ describe('the order of a byte-source sitting', () => {
     const seams = order.filter((arm, index) => index > 0 && arm === order[index - 1]).length;
 
     assert.equal(seams, 1);
+  });
+});
+
+/**
+ * One retrieval driven through the client's own in-tab path.
+ *
+ * ⛔ Every failure comes back as a named sentence rather than a throw, so a probe that meets an older
+ * deployed client loses one row legibly instead of dying part way through a sitting with an artifact
+ * already half written.
+ */
+describe('a retrieval through the node in the tab', () => {
+  const RETRIEVAL_HANDLE = '__swarmFetchBackendSwitch';
+  const REF = 'a'.repeat(64);
+
+  /** Runs the page function against this process's own globals, which is all this call touches. */
+  const fakePage = (): Page =>
+    ({ evaluate: (fn: (arg: unknown) => unknown, arg: unknown) => Promise.resolve(fn(arg)) } as unknown as Page);
+
+  const installSwitch = (retrieveBytes: unknown): void => {
+    (globalThis as Record<string, unknown>)[RETRIEVAL_HANDLE] = { retrieveBytes };
+  };
+
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>)[RETRIEVAL_HANDLE];
+  });
+
+  it('reports what the node returned', async () => {
+    installSwitch(() => Promise.resolve({ byteLength: 224_848, elapsedMs: 2_512 }));
+
+    assert.deepEqual(await retrieveThroughInTabNode(fakePage(), REF), {
+      byteLength: 224_848,
+      elapsedMs: 2_512,
+      failure: null,
+    });
+  });
+
+  /**
+   * ⛔ Passed as an argument rather than closed over. `page.evaluate` serialises its body, so a
+   * reference captured from the harness's scope is simply absent in the page, and a run would either
+   * die or fetch nothing while looking like it asked.
+   */
+  it('hands the reference it was given to the client', async () => {
+    const asked: string[] = [];
+    installSwitch((ref: string) => {
+      asked.push(ref);
+      return Promise.resolve({ byteLength: 1, elapsedMs: 1 });
+    });
+
+    await retrieveThroughInTabNode(fakePage(), REF);
+
+    assert.deepEqual(asked, [REF]);
+  });
+
+  it('names the missing switch rather than throwing when the client exposes no player', async () => {
+    const retrieval = await retrieveThroughInTabNode(fakePage(), REF);
+
+    assert.equal(retrieval.byteLength, null);
+    assert.match(String(retrieval.failure), /VITE_EXPOSE_PLAYER/);
+  });
+
+  /** A client built before this interface landed publishes the switch and not the call on it. */
+  it('names an older client that publishes a switch without the retrieval on it', async () => {
+    installSwitch(undefined);
+
+    assert.match(String((await retrieveThroughInTabNode(fakePage(), REF)).failure), /retrieveBytes/);
+  });
+
+  /** A refusal is a reading. H3 predicts capped retrievals rejecting quickly, so it has to survive. */
+  it("carries the node's own error back when the retrieval is refused", async () => {
+    installSwitch(() => Promise.reject(new Error('all peers over their reserve')));
+
+    const retrieval = await retrieveThroughInTabNode(fakePage(), REF);
+
+    assert.equal(retrieval.byteLength, null);
+    assert.match(String(retrieval.failure), /all peers over their reserve/);
   });
 });

@@ -102,6 +102,70 @@ export async function prewarmByteSource(page: Page): Promise<string | null> {
   );
 }
 
+/** What one retrieval through the in-tab node came back with, or why it did not. */
+export interface InTabRetrieval {
+  byteLength: number | null;
+  /** The client's own measurement of the retrieval, which is the one inside the product path. */
+  elapsedMs: number | null;
+  failure: string | null;
+}
+
+/**
+ * Pull one reference through the client's real in-tab retrieval path, span stripped.
+ *
+ * ## ⛔ Why every failure comes back as a sentence
+ *
+ * A probe that meets a client built before this call existed should lose one row legibly rather than
+ * die part way through a sitting with its artifact already half written. So a missing switch, a
+ * switch without the call on it, and a node that refused are all named failures, and none of them
+ * throws.
+ *
+ * ## ⛔⛔ The caller races this against a budget, and the page keeps going
+ *
+ * There is no cancel to offer. weeb-3 holds a cancel token internally and the exported call takes
+ * none, and an attempt that outlives ten seconds is detached rather than cancelled so the peer is
+ * still paid when its chunk arrives. So a harness that stops waiting has stopped waiting and nothing
+ * more: the retrieval runs on, and its late bytes are what the tail window after a row exists to
+ * count. A caller that abandons one must keep a rejection handler on the promise it walked away
+ * from, because closing the page rejects the outstanding `evaluate`.
+ */
+export async function retrieveThroughInTabNode(page: Page, ref: string): Promise<InTabRetrieval> {
+  return page.evaluate(
+    async ({ handle, reference }: { handle: string; reference: string }) => {
+      const backendSwitch = (globalThis as unknown as Record<string, unknown>)[handle] as
+        | { retrieveBytes?: (ref: string) => Promise<{ byteLength: number; elapsedMs: number }> }
+        | undefined;
+
+      if (!backendSwitch) {
+        return {
+          byteLength: null,
+          elapsedMs: null,
+          failure:
+            `no byte-source switch at globalThis.${handle}. The client must be built with ` +
+            `VITE_EXPOSE_PLAYER for a probe to drive its in-tab retrieval path.`,
+        };
+      }
+      if (typeof backendSwitch.retrieveBytes !== 'function') {
+        return {
+          byteLength: null,
+          elapsedMs: null,
+          failure:
+            `the switch at globalThis.${handle} publishes no retrieveBytes, so this deployed client ` +
+            'predates the call this probe drives and no row here would be the in-tab path.',
+        };
+      }
+
+      try {
+        const retrieved = await backendSwitch.retrieveBytes(reference);
+        return { byteLength: retrieved.byteLength, elapsedMs: retrieved.elapsedMs, failure: null };
+      } catch (error: unknown) {
+        return { byteLength: null, elapsedMs: null, failure: String(error) };
+      }
+    },
+    { handle: FETCH_BACKEND_HANDLE, reference: ref },
+  );
+}
+
 /**
  * Why this arm cannot be read against the others, or null when it can.
  *
