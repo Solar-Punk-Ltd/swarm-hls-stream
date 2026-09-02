@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
 
-import { Host, LOCAL_TARGET } from '../src/harness/host.js';
+import { DEFAULT_LOCAL_HOST_ADDRESS, Host, LOCAL_TARGET } from '../src/harness/host.js';
 
 /**
  * `Host.run` retries, and what it retries is the whole point. ssh answers 255 for its own transport
@@ -67,6 +67,16 @@ function stubSsh(exitCodes: readonly number[], stdout?: string): Sandbox {
         .split('\n')
         .filter((line) => line.length > 0),
   };
+}
+
+/** A stub `curl` that prints the arguments it was handed, so a test can read the URL that was built. */
+function stubCurl(): void {
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-curl-'));
+  sandboxes.push(dir);
+  const path = join(dir, 'curl');
+  writeFileSync(path, ['#!/bin/bash', 'printf \'%s\' "$*"'].join('\n'));
+  chmodSync(path, 0o755);
+  process.env.PATH = `${dir}:${REAL_PATH}`;
 }
 
 beforeEach(() => {
@@ -242,5 +252,48 @@ describe('the local transport', () => {
     const { stdout } = await host.run('echo hello-from-shell');
 
     assert.equal(stdout.trim(), 'ssh-was-used');
+  });
+});
+
+/**
+ * Which address the local transport's curls dial.
+ *
+ * Loopback for as long as the container shared the host's network namespace, which every bench and
+ * every viewer arm did. A container given a namespace of its own reaches nothing on its own
+ * loopback: the uploader, the bee nodes and the client are all on the host, one hop away over the
+ * bridge, and `deploy/scripts/bench-on-host.sh --own-network` names that hop
+ * `host.docker.internal`. Every one of these calls is built into a shell line, so the address is
+ * screened by `loadConfig` before it ever arrives here.
+ */
+describe('the address the local transport curls', () => {
+  it('dials loopback when nothing said otherwise', async () => {
+    stubCurl();
+
+    const built = await new Host(LOCAL_TARGET).localText(10_074, '/health');
+
+    assert.match(built, /http:\/\/localhost:10074\/health/);
+    assert.equal(DEFAULT_LOCAL_HOST_ADDRESS, 'localhost');
+  });
+
+  it('dials the address it was given instead', async () => {
+    stubCurl();
+
+    const built = await new Host(LOCAL_TARGET, undefined, 'host.docker.internal').localText(10_074, '/health');
+
+    assert.match(built, /http:\/\/host\.docker\.internal:10074\/health/);
+    assert.doesNotMatch(built, /localhost/);
+  });
+
+  /**
+   * The half that would break every attach-mode run. Over ssh the command runs ON the deployment
+   * host, where the services genuinely are on loopback, so a bridge address carried across would
+   * name a machine that does not exist from there.
+   */
+  it('keeps loopback for an ssh target whatever the local address is', async () => {
+    const sandbox = stubSsh([0]);
+
+    await new Host('stub-target', undefined, 'host.docker.internal').localText(10_074, '/health');
+
+    assert.match(sandbox.invocations()[0], /http:\/\/localhost:10074\/health/);
   });
 });

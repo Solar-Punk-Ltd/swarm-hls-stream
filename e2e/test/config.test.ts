@@ -306,6 +306,30 @@ describe('refusals', () => {
       '[2001:db8::1]',
     );
   });
+
+  it('reaches the host on loopback unless an address was named', () => {
+    assert.equal(loadConfig({ env: {}, rootDir: rootDir() }).localHostAddress, 'localhost');
+  });
+
+  it('takes the local host address a bridged container was given', () => {
+    const cfg = loadConfig({ env: { E2E_LOCAL_HOST_ADDRESS: 'host.docker.internal' }, rootDir: rootDir() });
+    assert.equal(cfg.localHostAddress, 'host.docker.internal');
+  });
+
+  /**
+   * This one reaches a remote shell as genuine command interpolation, exactly as the ome container
+   * name does: it lands inside `curl -s … http://<address>:<port><path>` and that whole string is
+   * handed to a shell. Screened here so nothing downstream has to.
+   */
+  it('refuses a local host address that would reach the shell as syntax', () => {
+    for (const address of ['host; touch /tmp/pwned', 'host $(id)', 'host`id`', 'host|id', 'a host', 'http://host']) {
+      assert.throws(
+        () => loadConfig({ env: { E2E_LOCAL_HOST_ADDRESS: address }, rootDir: rootDir() }),
+        /E2E_LOCAL_HOST_ADDRESS/,
+        `${JSON.stringify(address)} was accepted as a local host address`,
+      );
+    }
+  });
 });
 
 describe('the two knobs an env file may not set', () => {

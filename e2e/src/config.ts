@@ -15,6 +15,7 @@ import { assertUsablePublishKeySecret } from '@swarm-hls-stream/shared/publishKe
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { DEFAULT_LOCAL_HOST_ADDRESS } from './harness/host.js';
 import { type AbrExpectation, readAbrExpectation } from './abrCoverage.js';
 import { type EnvBag, layerEnv, processEnv, readEnvFile } from './envFile.js';
 import { type OmePortVar, type PortVar, requireValidPortSlot, resolveOmePort, resolvePort } from './ports.js';
@@ -91,6 +92,21 @@ export interface E2EConfig {
   sshTarget: string;
   /** Public host or IP the SRT publisher and viewer reach from wherever the tests run. */
   publicHost: string;
+  /**
+   * Where the deployment's own service ports are, seen from this process, out of
+   * `E2E_LOCAL_HOST_ADDRESS`. `localhost` unless something said otherwise.
+   *
+   * Only the `local` transport uses it: over ssh the command runs on the deployment host, where the
+   * services genuinely are on loopback. See `harness/host.ts` and `--own-network` in
+   * `deploy/scripts/bench-on-host.sh`.
+   *
+   * ⛔ Separate from {@link publicHost}, which is the address a PUBLISHER dials and a VIEWER is
+   * pointed at from wherever the suite runs. This is the address a container uses to reach back out
+   * to the machine it is running on, and the two differ exactly when the container has a network
+   * namespace of its own: `127.0.0.1` still names the deployment host to anything outside the
+   * container, and names the empty inside of the container to anything within it.
+   */
+  localHostAddress: string;
   /** The deploy's `--profile`: the docker compose project, and so the container-name prefix. */
   profile: string;
   /** The deploy's `--portSlot`. 0 means no slot, and env values decide the ports. */
@@ -217,8 +233,13 @@ const DOCKER_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
  */
 const SSH_TARGET_RE = /^[A-Za-z0-9_.][A-Za-z0-9_.@-]*$/;
 
-/** Hostname, IPv4, or bracketed IPv6 — what can sit in the authority of an `srt://` URL. */
-const PUBLIC_HOST_RE = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+)$/;
+/**
+ * Hostname, IPv4, or bracketed IPv6 — what can sit in the authority of an `srt://` or `http://` URL.
+ *
+ * Both address settings are screened by it, and for `E2E_LOCAL_HOST_ADDRESS` the screening is also
+ * what keeps it shell-safe: that value lands inside a `curl` line the harness hands to a shell.
+ */
+const HOST_AUTHORITY_RE = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.-]+)$/;
 
 /** `<app>/<name>`, the only shape either engine's ingest accepts. */
 const STREAM_PATH_RE = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/;
@@ -353,7 +374,13 @@ export function loadConfig({ env: source = process.env, rootDir = ROOT_DIR }: Lo
     publicHost: requireMatch(
       'E2E_PUBLIC_HOST',
       env(resolved, 'E2E_PUBLIC_HOST', '127.0.0.1'),
-      PUBLIC_HOST_RE,
+      HOST_AUTHORITY_RE,
+      'a hostname, IPv4 address, or bracketed IPv6 address',
+    ),
+    localHostAddress: requireMatch(
+      'E2E_LOCAL_HOST_ADDRESS',
+      env(resolved, 'E2E_LOCAL_HOST_ADDRESS', DEFAULT_LOCAL_HOST_ADDRESS),
+      HOST_AUTHORITY_RE,
       'a hostname, IPv4 address, or bracketed IPv6 address',
     ),
     profile,

@@ -1,7 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { type E2EConfig } from '../config.js';
+// `import type` at statement level rather than an inline marker, because `config.ts` now imports
+// DEFAULT_LOCAL_HOST_ADDRESS from here. Only this form is guaranteed to leave no runtime import
+// behind, and `config.ts` applies the run profile at module scope, so a real cycle would decide when
+// that happens by import order.
+import type { E2EConfig } from '../config.js';
 
 import type { PublisherRoute } from './publishers.js';
 import { sleep, waitFor } from './wait.js';
@@ -96,6 +100,16 @@ export interface UploaderHealth {
 export const LOCAL_TARGET = 'local';
 
 /**
+ * Where the deployment's services are, seen from a container that shares the host's network.
+ *
+ * Which is what every bench and every viewer arm has been, so this was a literal until 2026-09-02.
+ * A container given a network namespace of its own has nothing on its own loopback, and the
+ * uploader, the four bee nodes and the client are then one hop away over the docker bridge. See
+ * `E2E_LOCAL_HOST_ADDRESS` in `config.ts` and `--own-network` in `deploy/scripts/bench-on-host.sh`.
+ */
+export const DEFAULT_LOCAL_HOST_ADDRESS = 'localhost';
+
+/**
  * Thin wrapper around a deployed host — the transport for attach-mode tests. Every method funnels
  * through `run`, which shells out to `ssh <target> <cmd>`, so it needs the target in ~/.ssh/config
  * (same as manual use). With `LOCAL_TARGET` it runs the same command line through `bash -c` instead.
@@ -104,6 +118,7 @@ export class Host {
   constructor(
     private readonly sshTarget: string,
     private readonly connectTimeoutS: number = DEFAULT_CONNECT_TIMEOUT_S,
+    private readonly localHostAddress: string = DEFAULT_LOCAL_HOST_ADDRESS,
   ) {}
 
   /**
@@ -247,13 +262,24 @@ export class Host {
     return stdout.trim();
   }
 
-  /** curl a localhost port on the host and parse JSON (uploader /health, bee /stamps, …). */
+  /**
+   * The authority a `local*` call dials, which is the host's own address as this process sees it.
+   *
+   * ⛔ Only the local transport gets the configured address. Over ssh the command runs ON the
+   * deployment host, where the services genuinely are on loopback, so carrying a bridge address
+   * across would name a machine that does not exist from there.
+   */
+  private get serviceAddress(): string {
+    return this.isLocal ? this.localHostAddress : DEFAULT_LOCAL_HOST_ADDRESS;
+  }
+
+  /** curl a service port on the host and parse JSON (uploader /health, bee /stamps, …). */
   async localJson<T>(port: number, path: string, timeoutS: number = 5): Promise<T> {
     return this.curlJson<T>('GET', port, path, timeoutS);
   }
 
   /**
-   * POST to a localhost port and parse the JSON reply. On-chain bee calls (e.g. chequebook deposit)
+   * POST to a service port and parse the JSON reply. On-chain bee calls (e.g. chequebook deposit)
    * can take far longer than a read, hence the generous default timeout. Not idempotent: `run` may
    * retry the underlying ssh on a transport drop, so callers must tolerate at-least-once delivery.
    */
@@ -262,7 +288,7 @@ export class Host {
   }
 
   /**
-   * curl a localhost port and hand back the body as it came.
+   * curl a service port and hand back the body as it came.
    *
    * For the routes that answer something other than JSON. A rung's playlist comes back from
    * `GET /feeds/{owner}/{topic}` as the m3u8 text itself rather than wrapped in an envelope, so
@@ -287,12 +313,13 @@ export class Host {
     const methodFlag = method === 'POST' ? '-X POST ' : '';
     // Keep the ssh run bound above curl's own deadline so --max-time is what fires first on a slow reply.
     const runTimeoutMs = Math.max(DEFAULT_RUN_TIMEOUT_MS, (timeoutS + 5) * 1_000);
-    return this.run(`curl -s ${methodFlag}--max-time ${timeoutS} http://localhost:${port}${path}`, runTimeoutMs);
+    const url = `http://${this.serviceAddress}:${port}${path}`;
+    return this.run(`curl -s ${methodFlag}--max-time ${timeoutS} ${url}`, runTimeoutMs);
   }
 }
 
 export function makeHost(cfg: E2EConfig): Host {
-  return new Host(cfg.sshTarget);
+  return new Host(cfg.sshTarget, undefined, cfg.localHostAddress);
 }
 
 export function uploaderHealth(host: Host, cfg: E2EConfig): Promise<UploaderHealth> {
