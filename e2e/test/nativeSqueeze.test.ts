@@ -6,6 +6,7 @@ import {
   nativeSqueezeConsoleLine,
   type NativeSqueezeResult,
   type NativeSqueezeSample,
+  type NativeSqueezeStartup,
   type NativeSqueezeWindows,
   type PhaseWindow,
   playheadHasMoved,
@@ -81,6 +82,29 @@ function healthyThenCapped(): NativeSqueezeSample[] {
   ];
 }
 
+const STARTED_MOVING_AFTER_S = 26.1;
+const START_WAIT_BUDGET_S = 90;
+
+/**
+ * The wait every squeeze run now spends before its settle window opens.
+ *
+ * 26.1 s is the figure his page actually took on 2026-08-16, so the fixture is the real shape of the
+ * thing: a stationary playhead polled once a second, and then a session.
+ */
+function startup(overrides: Partial<NativeSqueezeStartup> = {}): NativeSqueezeStartup {
+  return {
+    startedMovingAfterS: STARTED_MOVING_AFTER_S,
+    waitBudgetS: START_WAIT_BUDGET_S,
+    samples: series({
+      fromMs: START_MS - STARTED_MOVING_AFTER_S * MS_PER_SECOND,
+      seconds: 26,
+      ratio: 0,
+      currentTime: 0,
+    }),
+    ...overrides,
+  };
+}
+
 const noTraffic: WebSocketTraffic = { connections: [], frames: [] };
 
 function inbound(atMs: number, bytes: number): WebSocketFrame {
@@ -92,7 +116,7 @@ function outbound(atMs: number, bytes: number): WebSocketFrame {
 }
 
 function judged(samples: readonly NativeSqueezeSample[], traffic: WebSocketTraffic = noTraffic): NativeSqueezeResult {
-  return judgeNativeSqueeze(samples, windows(), traffic);
+  return judgeNativeSqueeze(samples, windows(), traffic, startup());
 }
 
 describe('what each phase of a squeeze gained', () => {
@@ -163,6 +187,18 @@ describe('what each phase of a squeeze gained', () => {
     assert.equal(result.windows.kbps, CAP_KBPS);
     assert.equal(result.windows.appliedAtMs, APPLIED_AT_MS);
     assert.equal(result.windows.liftedAtMs, LIFTED_AT_MS);
+  });
+
+  /**
+   * ⛔ The wait travels with the result rather than beside it. A settle ratio is only a baseline if
+   * the playhead was moving when it opened, and the artifact has to carry the evidence of that.
+   */
+  it('carries the startup wait the settle window opened after', () => {
+    const result = judged(healthyThenCapped());
+
+    assert.equal(result.startup.startedMovingAfterS, STARTED_MOVING_AFTER_S);
+    assert.equal(result.startup.waitBudgetS, START_WAIT_BUDGET_S);
+    assert.equal(result.startup.samples.length, 26);
   });
 });
 
@@ -249,7 +285,7 @@ describe('what the tab pulled over its own sockets in each phase', () => {
 
   it('reports no mean at all for a window of no length', () => {
     const empty = windows({ during: { fromMs: APPLIED_AT_MS, toMs: APPLIED_AT_MS } });
-    const result = judgeNativeSqueeze(healthyThenCapped(), empty, traffic);
+    const result = judgeNativeSqueeze(healthyThenCapped(), empty, traffic, startup());
 
     assert.equal(result.during.inboundBytesPerSecondMean, null);
   });
@@ -323,22 +359,41 @@ describe('the refusal when his player never started', () => {
   });
 });
 
-describe('whether the recording is long enough to be squeezed at all', () => {
+describe('whether enough media sits ahead of the playhead to be squeezed at all', () => {
   const enough = SETTLE_S + SQUEEZE_S + RECOVER_S + SQUEEZE_MEDIA_HEADROOM_S;
 
-  it('lets a recording through when it holds the three windows and the headroom', () => {
+  it('lets a playhead through when the media ahead holds the three windows and the headroom', () => {
     assert.equal(shortRecordingRefusal(enough + 1, WINDOW_SECONDS), null);
   });
 
-  it('lets a recording through that holds exactly the three windows and the headroom', () => {
+  it('lets a playhead through with exactly the three windows and the headroom ahead of it', () => {
     assert.equal(shortRecordingRefusal(enough, WINDOW_SECONDS), null);
   });
 
-  it('refuses a recording a second short, and says how much media it needed', () => {
+  it('refuses a second short, and says how much media it needed', () => {
     const refusal = shortRecordingRefusal(enough - 1, WINDOW_SECONDS);
 
     assert.ok(refusal !== null);
     assert.match(refusal, new RegExp(String(enough)));
+  });
+
+  /**
+   * ⛔⛔ The reading is what sits AHEAD of the playhead at the moment the settle opens, not the
+   * recording's length before the seek. Two things happen in between that no up-front figure can
+   * account for: the seek itself, and however long weeb-3's own player takes to start moving. A
+   * 600 s recording opened at its live edge, which is where his page opens one, has nothing ahead.
+   */
+  it('names the media ahead of the playhead rather than a recording length', () => {
+    const refusal = shortRecordingRefusal(12.5, WINDOW_SECONDS);
+
+    assert.ok(refusal !== null);
+    assert.match(refusal, /12\.5 s of media/);
+    assert.match(refusal, /ahead of the playhead/);
+  });
+
+  /** ⛔ Zero ahead is the state a recording arm is in before it seeks, and it must refuse rather than divide. */
+  it('refuses a playhead sitting on the final frame with nothing ahead of it', () => {
+    assert.ok(shortRecordingRefusal(0, WINDOW_SECONDS) !== null);
   });
 
   /**
@@ -382,6 +437,18 @@ describe('the section a squeeze run files beside its report', () => {
     assert.match(rendered(healthyThenCapped()), /350,000 B\/s/);
   });
 
+  /**
+   * ⛔⛔ The line the run of 2026-09-02 17:57 needed and did not have. It read 0.087 uncapped, 0.000
+   * capped and 0.000 after, all of it his startup, and nothing in the artifact could say so.
+   */
+  it('says how long his player took to start moving and that the settle opened then', () => {
+    const section = rendered(healthyThenCapped());
+
+    assert.match(section, /started moving/);
+    assert.match(section, /26\.1/);
+    assert.match(section, /settle window opened then/);
+  });
+
   /** The ratio cell is the bolded one, so a bolded zero could only be a phase claiming a reading. */
   it('prints a missing ratio in words rather than as a number', () => {
     const section = rendered([]);
@@ -404,5 +471,12 @@ describe('the line a squeeze run prints as it finishes', () => {
     const line = nativeSqueezeConsoleLine(judged([]));
 
     assert.doesNotMatch(line, /0\.000/);
+  });
+
+  it('names how long his player took to start moving', () => {
+    const line = nativeSqueezeConsoleLine(judged(healthyThenCapped()));
+
+    assert.match(line, /started moving/);
+    assert.match(line, /26\.1/);
   });
 });

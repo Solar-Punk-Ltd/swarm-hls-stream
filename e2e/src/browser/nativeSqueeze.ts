@@ -40,7 +40,8 @@ const RATIO_DIGITS = 4;
  * ⛔⛔ Without it a run measures the recording ending rather than the delivery of it. The first run
  * of this driver counted 180 seconds with the playhead on the final frame and reported a realtime
  * ratio of 0.068, which reads as a delivery failure and is nothing of the kind. Twenty seconds is
- * the slack for a seek that lands late and for a boot that overruns.
+ * the slack for the three windows overrunning their own lengths by a poll each, and for a playhead
+ * that keeps moving between the reading and the first sample.
  */
 export const SQUEEZE_MEDIA_HEADROOM_S = 20;
 
@@ -79,6 +80,22 @@ export interface NativeSqueezeWindows {
   kbps: number;
 }
 
+/**
+ * The wait between weeb-3's page having decodable media and its own player moving a playhead.
+ *
+ * ⛔⛔ Sampled and carried rather than assumed. His player took 26.1 s to start on 2026-08-16, and a
+ * settle window that opened the moment `readyState` reached 2 spent all of that inside its own
+ * baseline. The series is kept so a reader can see a playhead that genuinely sat still, rather than
+ * having to take the driver's word for how long it waited.
+ */
+export interface NativeSqueezeStartup {
+  /** Wall seconds between the seek and the playhead having advanced past where it landed. */
+  startedMovingAfterS: number;
+  /** The bound the wait was given, so a fast start reads differently from one that nearly timed out. */
+  waitBudgetS: number;
+  samples: readonly NativeSqueezeSample[];
+}
+
 /** How long each window is asked to run for, in seconds, which is what a recording has to hold. */
 interface SqueezeWindowSeconds {
   settleS: number;
@@ -110,6 +127,7 @@ interface NativeSqueezePhase {
 
 export interface NativeSqueezeResult {
   windows: NativeSqueezeWindows;
+  startup: NativeSqueezeStartup;
   before: NativeSqueezePhase;
   during: NativeSqueezePhase;
   after: NativeSqueezePhase;
@@ -172,9 +190,11 @@ export function judgeNativeSqueeze(
   samples: readonly NativeSqueezeSample[],
   windows: NativeSqueezeWindows,
   traffic: WebSocketTraffic,
+  startup: NativeSqueezeStartup,
 ): NativeSqueezeResult {
   return {
     windows,
+    startup,
     before: judgePhase('before', windows.before, samples, traffic),
     during: judgePhase('during', windows.during, samples, traffic),
     after: judgePhase('after', windows.after, samples, traffic),
@@ -229,15 +249,23 @@ export function playheadNeverMovedRefusal(waitedS: number, peers: number | null)
 }
 
 /**
- * Why this recording cannot carry a squeeze run, or null.
+ * Why the media ahead of the playhead cannot carry a squeeze run, or null.
  *
  * ⛔ Its own predicate so the driver can refuse before it spends three windows, and so the reason
  * reaching an operator is a sentence rather than a ratio of 0.068 nobody can explain.
+ *
+ * ⛔⛔ Read at the moment the settle window opens, off `duration - currentTime`, rather than off the
+ * recording's length before the seek. Two things happen between those moments that no up-front
+ * figure can account for: the seek itself, and however long weeb-3's own player takes to start
+ * moving. His page opens a broadcast at its live edge, which on a finished recording is the end of
+ * it, so a 600 s recording can have 600 s of media and nothing at all ahead of the playhead.
+ *
+ * @param mediaAheadS Media seconds between the playhead and the end, or null where none is knowable.
  */
-export function shortRecordingRefusal(durationS: number | null, seconds: SqueezeWindowSeconds): string | null {
+export function shortRecordingRefusal(mediaAheadS: number | null, seconds: SqueezeWindowSeconds): string | null {
   const needed = seconds.settleS + seconds.squeezeS + seconds.recoverS + SQUEEZE_MEDIA_HEADROOM_S;
 
-  if (durationS === null) {
+  if (mediaAheadS === null) {
     return (
       "weeb-3's page reported no finite duration for this broadcast, so there is no way to tell whether " +
       `the ${needed} s a squeeze run consumes exists ahead of the playhead. Squeeze mode is for a ` +
@@ -246,12 +274,14 @@ export function shortRecordingRefusal(durationS: number | null, seconds: Squeeze
     );
   }
 
-  if (durationS < needed) {
+  if (mediaAheadS < needed) {
     return (
-      `this recording is ${durationS.toFixed(1)} s long and a squeeze run needs ${needed} s of media ahead ` +
-      `of the playhead: ${seconds.settleS} s to settle, ${seconds.squeezeS} s capped, ${seconds.recoverS} s ` +
-      `to recover and ${SQUEEZE_MEDIA_HEADROOM_S} s of headroom. A run that outlasts its recording measures ` +
-      'the media running out rather than the delivery of it, and that reads exactly like a delivery failure'
+      `${mediaAheadS.toFixed(1)} s of media sit ahead of the playhead and a squeeze run needs ${needed} s: ` +
+      `${seconds.settleS} s to settle, ${seconds.squeezeS} s capped, ${seconds.recoverS} s to recover and ` +
+      `${SQUEEZE_MEDIA_HEADROOM_S} s of headroom. Read where the settle window would have opened, which is ` +
+      "after the seek and after weeb-3's own player started moving, so it already accounts for both. A run " +
+      'that outlasts its media measures the media running out rather than the delivery of it, and that reads ' +
+      'exactly like a delivery failure'
     );
   }
 
@@ -300,7 +330,7 @@ function phaseRow(phase: NativeSqueezePhase): string {
 
 /** The section a squeeze run's report carries, so nothing has to be reconstructed by hand later. */
 export function renderNativeSqueezeSection(result: NativeSqueezeResult): string[] {
-  const { windows } = result;
+  const { startup, windows } = result;
   const cappedForS = (windows.liftedAtMs - windows.appliedAtMs) / MS_PER_SECOND;
 
   return [
@@ -309,6 +339,12 @@ export function renderNativeSqueezeSection(result: NativeSqueezeResult): string[
     `The tab's download was capped at **${windows.kbps} kbps** for ${cappedForS.toFixed(1)}s, applied over the ` +
       "page's own debug session from inside this process, so the moment the cap landed and the moment a " +
       'sample was taken come off one clock. Nothing below refuses a run.',
+    '',
+    `⭐ **His player started moving ${startup.startedMovingAfterS.toFixed(1)}s after media was ready, and the ` +
+      `settle window opened then**, not at the earlier moment, out of a ${startup.waitBudgetS.toFixed(0)}s budget. ` +
+      'Every row below is therefore a session already in motion, which is the only thing that makes the ' +
+      'uncapped one a baseline. A run that opened at the earlier moment read 0.087 uncapped, 0.000 capped ' +
+      'and 0.000 after, which was one startup measured three times.',
     '',
     '| phase | window | samples | media gained | wall spent | realtime ratio | stalls added | inbound | mean inbound | inbound per media second |',
     '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
@@ -337,6 +373,7 @@ export function nativeSqueezeConsoleLine(result: NativeSqueezeResult): string {
   return (
     `realtime ratio ${ratioLabel(result.before.realtimeRatio)} before, ` +
     `${ratioLabel(result.during.realtimeRatio)} capped at ${result.windows.kbps} kbps, ` +
-    `${ratioLabel(result.after.realtimeRatio)} after`
+    `${ratioLabel(result.after.realtimeRatio)} after. His player started moving ` +
+    `${result.startup.startedMovingAfterS.toFixed(1)}s after media was ready, the settle window opened then`
   );
 }

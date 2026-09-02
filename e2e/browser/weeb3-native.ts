@@ -67,7 +67,10 @@ import {
   judgeNativeSqueeze,
   nativeSqueezeConsoleLine,
   type NativeSqueezeResult,
+  type NativeSqueezeStartup,
   type PhaseWindow,
+  playheadHasMoved,
+  playheadNeverMovedRefusal,
   renderNativeSqueezeSection,
   shortRecordingRefusal,
 } from '../src/browser/nativeSqueeze.js';
@@ -106,9 +109,21 @@ const SAMPLE_INTERVAL_MS = 1_000;
  * How long the squeeze mode watches before capping anything.
  *
  * The baseline the capped phase is read against. weeb-3 boots its node, joins, seeks and fills a
- * buffer, and a cap applied during any of that would be measuring the join.
+ * buffer, and a cap applied during any of that would be measuring the join. The window opens only
+ * once his playhead is actually moving, which is what {@link DEFAULT_START_WAIT_SECONDS} bounds.
  */
 const DEFAULT_SETTLE_SECONDS = 45;
+
+/**
+ * How long a squeeze run waits for weeb-3's own player to move its playhead before refusing.
+ *
+ * ⛔⛔ Generous rather than tight, and deliberately so. His player took 26.1 s on 2026-08-16, and the
+ * two failure costs are not symmetric: waiting too long only makes a refusal slower, while waiting
+ * too little opens the settle window on a stationary playhead and files his startup as the uncapped
+ * baseline a cap is judged against. That is the run of 2026-09-02 17:57, which read 0.087, 0.000 and
+ * 0.000 across three phases of one startup.
+ */
+const DEFAULT_START_WAIT_SECONDS = 90;
 
 /** How long the link stays capped. Long enough for the node to have to live under it. */
 const DEFAULT_SQUEEZE_SECONDS = 60;
@@ -334,6 +349,7 @@ export function offShellTraffic(records: readonly RequestRecord[]): {
 /** How long each of the squeeze mode's three windows runs for, and what the middle one caps at. */
 interface SqueezePlan {
   kbps: number;
+  startWaitMs: number;
   settleMs: number;
   squeezeMs: number;
   recoverMs: number;
@@ -356,7 +372,40 @@ async function sampleWindow(page: Page, forMs: number, into: Sample[]): Promise<
 }
 
 /**
- * Settle, cap the tab's download, let it go, and hand back the three phases.
+ * Poll until weeb-3's own player moves its playhead past where the seek left it, or run out of time.
+ *
+ * ⛔⛔⛔ **The boot wait is not this.** That one ends at `readyState >= 2`, which his page reaches tens
+ * of seconds before its player moves anything: 26.1 s on 2026-08-16. A settle window opened at the
+ * earlier moment measures his startup and then stands in as the uncapped baseline the capped phase is
+ * judged against, and the artifact has no field in which to say so. The run of 2026-09-02 17:57 read
+ * 0.087 uncapped, then 0.000 and 0.000, with 0 segments done: one startup, measured three times.
+ *
+ * @returns The polls of the wait, first at the seek and last once the playhead had moved.
+ * @throws When the playhead never moves, because nothing measurable follows a player that never ran.
+ */
+async function waitForHisPlayheadToMove(page: Page, budgetMs: number): Promise<Sample[]> {
+  const seeked = await readSqueezeSample(page);
+  const polls: Sample[] = [seeked];
+
+  while (Date.now() - seeked.atMs < budgetMs) {
+    await sleep(SAMPLE_INTERVAL_MS);
+    const poll = await readSqueezeSample(page);
+    polls.push(poll);
+    if (playheadHasMoved(seeked, poll)) {
+      return polls;
+    }
+  }
+
+  throw new Error(playheadNeverMovedRefusal((Date.now() - seeked.atMs) / 1_000, polls[polls.length - 1].peers));
+}
+
+/** Media between the playhead and the end of the recording, read at one poll, or null if unknowable. */
+function mediaAheadOfThePlayhead(poll: Sample): number | null {
+  return poll.duration === null ? null : poll.duration - poll.currentTime;
+}
+
+/**
+ * Wait for his player to start, settle, cap the tab's download, let it go, and hand back the phases.
  *
  * ⛔⛔ The release is in a `finally`. A squeeze stretch that threw would otherwise leave the cap on
  * through the recovery window, and the artifact would then carry a recovery phase that had nothing
@@ -368,6 +417,32 @@ async function watchThroughASqueeze(
   plan: SqueezePlan,
   traffic: WebSocketTraffic,
 ): Promise<NativeSqueezeResult> {
+  console.log(`weeb3-native: waiting up to ${plan.startWaitMs / 1_000}s for his playhead to move`);
+  const waited = await waitForHisPlayheadToMove(page, plan.startWaitMs);
+  const settleOpensAt = waited[waited.length - 1];
+  const startup: NativeSqueezeStartup = {
+    startedMovingAfterS: Number(((settleOpensAt.atMs - waited[0].atMs) / 1_000).toFixed(1)),
+    waitBudgetS: plan.startWaitMs / 1_000,
+    samples: waited,
+  };
+  console.log(
+    `weeb3-native: his player started moving ${startup.startedMovingAfterS}s after media was ready, ` +
+      'the settle window opens now',
+  );
+
+  // ⛔⛔ Refused HERE and not off the recording's length before the seek. His page opens a broadcast
+  // at its live edge, which on a finished recording is the end of it, so a 600s recording read before
+  // the seek says 600 and has nothing ahead of the playhead. Read at the moment the settle opens, the
+  // reading already carries the seek and however long his player took to start.
+  const refusal = shortRecordingRefusal(mediaAheadOfThePlayhead(settleOpensAt), {
+    settleS: plan.settleMs / 1_000,
+    squeezeS: plan.squeezeMs / 1_000,
+    recoverS: plan.recoverMs / 1_000,
+  });
+  if (refusal !== null) {
+    throw new Error(refusal);
+  }
+
   console.log(`weeb3-native: settling ${plan.settleMs / 1_000}s before the squeeze`);
   const before = await sampleWindow(page, plan.settleMs, into);
 
@@ -387,7 +462,12 @@ async function watchThroughASqueeze(
 
   const after = await sampleWindow(page, plan.recoverMs, into);
 
-  return judgeNativeSqueeze(into, { before, during, after, appliedAtMs, liftedAtMs, kbps: plan.kbps }, traffic);
+  return judgeNativeSqueeze(
+    into,
+    { before, during, after, appliedAtMs, liftedAtMs, kbps: plan.kbps },
+    traffic,
+    startup,
+  );
 }
 
 async function main(): Promise<void> {
@@ -411,6 +491,7 @@ async function main(): Promise<void> {
       ? null
       : {
           kbps: squeezeKbps,
+          startWaitMs: envNumber('WEEB3_NATIVE_START_WAIT_S', DEFAULT_START_WAIT_SECONDS) * 1_000,
           settleMs: envNumber('WEEB3_NATIVE_SETTLE_S', DEFAULT_SETTLE_SECONDS) * 1_000,
           squeezeMs: envNumber('WEEB3_NATIVE_SQUEEZE_S', DEFAULT_SQUEEZE_SECONDS) * 1_000,
           recoverMs: envNumber('WEEB3_NATIVE_RECOVER_S', DEFAULT_RECOVER_SECONDS) * 1_000,
@@ -463,8 +544,9 @@ async function main(): Promise<void> {
   console.log(
     squeezePlan === null
       ? `weeb3-native: boot budget ${bootSeconds}s, counted window ${watchSeconds}s`
-      : `weeb3-native: boot budget ${bootSeconds}s, then ${squeezePlan.settleMs / 1_000}s settle, ` +
-          `${squeezePlan.squeezeMs / 1_000}s at ${squeezePlan.kbps} kbps, ${squeezePlan.recoverMs / 1_000}s recover`,
+      : `weeb3-native: boot budget ${bootSeconds}s, up to ${squeezePlan.startWaitMs / 1_000}s for his ` +
+          `playhead to move, then ${squeezePlan.settleMs / 1_000}s settle, ${squeezePlan.squeezeMs / 1_000}s ` +
+          `at ${squeezePlan.kbps} kbps, ${squeezePlan.recoverMs / 1_000}s recover`,
   );
 
   if (metricsHost !== '') {
@@ -509,20 +591,6 @@ async function main(): Promise<void> {
     }
     if (!booted) {
       throw new Error(`no decodable media within ${bootSeconds}s. This is a delivery failure, not a playback one.`);
-    }
-
-    // ⛔⛔ Refused BEFORE the seek and before any window is spent. A squeeze run outlasting its
-    // recording reports the media running out, and that reads exactly like the delivery failure
-    // this arm exists to look for. Read after the boot because a duration is not known before it.
-    if (squeezePlan !== null) {
-      const refusal = shortRecordingRefusal((await readSample(page)).duration, {
-        settleS: squeezePlan.settleMs / 1_000,
-        squeezeS: squeezePlan.squeezeMs / 1_000,
-        recoverS: squeezePlan.recoverMs / 1_000,
-      });
-      if (refusal !== null) {
-        throw new Error(refusal);
-      }
     }
 
     // ⛔⛔⛔ weeb-3 opens a broadcast AT ITS LIVE EDGE. On a FINISHED one that edge is the end of the
@@ -614,7 +682,10 @@ async function main(): Promise<void> {
       countedSeconds: Number(wallSpent.toFixed(1)),
       realtimeRatio: Number(realtimeRatio.toFixed(4)),
       steadyRealtimeRatio: Number(steadyRatio.toFixed(4)),
-      startupSeconds: Number(startupSeconds.toFixed(1)),
+      // ⛔ A squeeze run waits its startup out before the first phase opens, so `movedAt` above finds
+      // a playhead that was already moving and reports about one second of startup. The wait's own
+      // series is the honest figure, and two fields of one artifact must not disagree about it.
+      startupSeconds: Number((squeeze === null ? startupSeconds : squeeze.startup.startedMovingAfterS).toFixed(1)),
       mediaGainedS: Number(mediaGained.toFixed(2)),
       stalls,
       segments: tally,
