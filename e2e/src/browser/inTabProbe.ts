@@ -33,11 +33,9 @@
  */
 
 import { costSection, type ResourceCost } from './resources.js';
+import { type RungManifest, type RungName } from './rungManifest.js';
 import { kbpsAsBytesPerSecond } from './throttle.js';
 import { type PerSecondSample } from './webSocketTraffic.js';
-
-/** The two rungs of the recording this probe reads references out of. */
-export type RungName = '360p' | '1080p';
 
 /**
  * Which part of the probe a retrieval belongs to.
@@ -88,17 +86,6 @@ export interface RetrievalRow {
   amplification: number | null;
   roundDegraded: boolean;
   roundIndex: number;
-}
-
-/** What one rung's manifest declared, read through the gateway the way the client reads it. */
-export interface RungManifest {
-  rung: RungName;
-  topicHex: string;
-  segmentCount: number;
-  /** The `#EXT-X-TARGETDURATION` ceiling, or null when the manifest carried none. */
-  targetDurationS: number | null;
-  /** The typical `#EXTINF`, which is the only size a manifest declares. Bytes are measured below. */
-  medianSegmentSeconds: number | null;
 }
 
 export interface InTabProbeRun {
