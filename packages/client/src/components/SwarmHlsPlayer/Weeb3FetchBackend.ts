@@ -8,7 +8,7 @@ export interface Weeb3Node {
 export interface Weeb3Module {
   /** wasm-bindgen's initialiser. The package's own README calls it once before anything else. */
   default: () => Promise<unknown>;
-  Weeb3No103: new () => Weeb3Node;
+  Weeb3No103: new (sharedWorkerUrl?: string | null) => Weeb3Node;
 }
 
 export type Weeb3ModuleLoader = () => Promise<Weeb3Module>;
@@ -24,6 +24,31 @@ export const WEEB3_BOOT_MIN_PEERS = 1;
 
 /** Measured 2026-08-11: a browser node reaches its first peers in seconds and ~200 within a minute. */
 export const WEEB3_BOOT_TIMEOUT_MS = 30_000;
+
+/**
+ * Where this origin serves weeb-3's SharedWorker runtime.
+ *
+ * The same path the package would default to, and it is the one thing standing between a viewer and
+ * a node, so it is stated here rather than inherited from a release. `scripts/copy-weeb3-runtime.mjs`
+ * fills the directory and `deploy/client-nginx.conf.template` serves it.
+ *
+ * ⚠️ Origin-absolute on purpose. nginx answers any unrecognised path with the app's own index, so a
+ * viewer who reached a deep URL would resolve a relative worker path against that path instead and
+ * get a 404. The cost is that a deployment under a sub-path would have to serve `/weeb-3/` at the
+ * domain root as well.
+ */
+const WEEB3_WORKER_PATH = '/weeb-3/worker.js';
+
+/**
+ * The page the shared worker URL is resolved against.
+ *
+ * Read here rather than at the call site because this class is exercised outside a browser, where
+ * touching `document` is a `ReferenceError` rather than `undefined`. A SharedWorker cannot exist
+ * without a document, so the fallback can never reach a viewer.
+ */
+function pageBaseUrl(): string {
+  return typeof document === 'undefined' ? 'http://localhost' : document.baseURI;
+}
 
 /**
  * ⛔⛔ Dynamic, and it has to stay dynamic. The package is 4.5 MB of wasm plus 96 KB of glue, and a
@@ -52,17 +77,26 @@ const importWeeb3: Weeb3ModuleLoader = () => import('@lat-murmeldjur/weeb_3') as
  * second and each node costs 4.5 MB of wasm plus seconds of dialling, so booting one per request
  * would be wasteful whatever the peer tables did.
  *
+ * ## ⛔⛔⛔ The node is not in this tab, and 0.0.341001 left no way to put it there
+ *
+ * `Weeb3No103` owns no node. It is a window-side facade, and every call including `retrieveBytes` is
+ * correlated over one SharedWorker that the package builds from {@link WEEB3_WORKER_PATH}. A
+ * SharedWorker script has to be same-origin, so this client serves weeb-3's own runtime:
+ * `packages/client/scripts/copy-weeb3-runtime.mjs` copies the worker, its glue, the wasm and the
+ * snippets into `public/weeb-3/`, and `deploy/client-nginx.conf.template` answers that prefix off
+ * the filesystem.
+ *
+ * Read from the package rather than assumed, and then measured: on 2026-09-02 the stage served the
+ * app's index under that prefix and every viewer got `SharedWorker request timed out` and no node.
+ * There is no in-page mode to fall back to, so a page that does not host these files has no in-tab
+ * Swarm at all.
+ *
  * ## What this deliberately does not use
  *
  * `attachStream(media, owner, topic, start)` would hand weeb-3 the video element and let it run its
- * own hls.js. That measures weeb-3's player, not ours. It would also drag in the package's service
- * worker requirement: the wasm hardcodes a `/weeb-3/` scope and expects the packaged worker at
- * `/weeb-3/service.js`, which exists to intercept `/bzz/` fetches and answer them from the node.
- * `retrieveBytes` is a direct call that returns bytes, so it should need none of that.
- *
- * ⚠️ **"Should" is doing real work in that sentence.** It is what the package's code says, not
- * something this project has observed. Phase A2 runs it in a real Chrome on recorded content, for
- * free, and that is what settles whether a page outside `/weeb-3/` can boot this at all.
+ * own hls.js. That measures weeb-3's player, not ours. It also wants a service worker at
+ * `/weeb-3/service.js` to intercept `/bzz/` fetches and answer them from the node, which is why that
+ * one file of the package's runtime is not among the ones we serve.
  */
 export class Weeb3FetchBackend {
   private booting: Promise<Weeb3Node> | null = null;
@@ -103,7 +137,7 @@ export class Weeb3FetchBackend {
     const module = await this.loadModule();
     await module.default();
 
-    const node = new module.Weeb3No103();
+    const node = new module.Weeb3No103(new URL(WEEB3_WORKER_PATH, pageBaseUrl()).href);
     node.start();
 
     if (!(await node.ready(WEEB3_BOOT_MIN_PEERS, WEEB3_BOOT_TIMEOUT_MS))) {

@@ -45,16 +45,18 @@ function fakeNode(options: FakeNodeOptions = {}) {
 
 function fakeModule(node: Weeb3Node) {
   const initialised = { count: 0 };
+  const workerUrls: (string | null | undefined)[] = [];
   const module: Weeb3Module = {
     default: () => {
       initialised.count++;
       return Promise.resolve();
     },
-    Weeb3No103: function Weeb3No103(this: unknown) {
+    Weeb3No103: function Weeb3No103(this: unknown, sharedWorkerUrl?: string | null) {
+      workerUrls.push(sharedWorkerUrl);
       return node;
     } as unknown as Weeb3Module['Weeb3No103'],
   };
-  return { module, initialised };
+  return { module, initialised, workerUrls };
 }
 
 describe('Weeb3FetchBackend booting the node', () => {
@@ -74,6 +76,25 @@ describe('Weeb3FetchBackend booting the node', () => {
     assert.equal(initialised.count, 1, 'the wasm module was initialised more than once');
     assert.equal(calls.started, 1, 'more than one weeb-3 node was started in this tab');
     assert.equal(calls.retrieved.length, 3);
+  });
+
+  /**
+   * ⛔⛔ Since 0.0.341001 there is no node in the page: `Weeb3No103` correlates every call over a
+   * SharedWorker it builds from this URL. The package would default to the same path, and it is
+   * passed anyway so the one thing standing between a viewer and a node is stated here rather than
+   * inherited from a release.
+   *
+   * `http://localhost` is the base this class falls back to outside a browser, where reading
+   * `document` throws. What the assertion is really holding is the path, because that is what the
+   * deployed nginx serves and what `scripts/copy-weeb3-runtime.mjs` fills.
+   */
+  it('tells the node where this origin serves the shared worker', async () => {
+    const { node } = fakeNode();
+    const { module, workerUrls } = fakeModule(node);
+
+    await new Weeb3FetchBackend(() => Promise.resolve(module)).retrieveBytes(REF);
+
+    assert.deepEqual(workerUrls, ['http://localhost/weeb-3/worker.js']);
   });
 
   // The wasm has to be instantiated before the constructor exists to call, per the package's own README.
