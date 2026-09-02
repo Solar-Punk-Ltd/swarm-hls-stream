@@ -182,6 +182,53 @@ export function judgeNativeSqueeze(
 }
 
 /**
+ * Media the playhead must gain past the seek before weeb-3's own player counts as having started.
+ *
+ * A whole second rather than a frame. His page reports decodable media and then buffers, and a
+ * playhead that twitches by a fraction during that has not begun a session anything can be read off.
+ */
+const PLAYHEAD_STARTED_ADVANCE_S = 1;
+
+/**
+ * Whether the playhead has advanced far enough past the seek to call his player started.
+ *
+ * ⛔⛔ The judgement a settle window has to wait on. weeb-3's page reaches `readyState >= 2` tens of
+ * seconds before its playhead moves, 26.1 s on 2026-08-16, and a window opened at the earlier moment
+ * reads his startup and then files it as the uncapped baseline the capped phase is judged against.
+ * The run of 2026-09-02 17:57 did exactly that and reported 0.087 before the cap, 0.000 under it and
+ * 0.000 after, which is a startup measured three times rather than a cap measured once.
+ *
+ * @param startSample The poll taken where the seek left the playhead, which advance is measured from.
+ * @see `docs/bench/weeb3-native-arm-2026-08-16.md` for the 26.1 s reading.
+ */
+export function playheadHasMoved(
+  startSample: NativeSqueezeSample,
+  sample: NativeSqueezeSample,
+  minAdvanceS: number = PLAYHEAD_STARTED_ADVANCE_S,
+): boolean {
+  return sample.currentTime - startSample.currentTime >= minAdvanceS;
+}
+
+/**
+ * The sentence a squeeze run stops on when his player never moved its playhead at all.
+ *
+ * ⛔ A refusal rather than three phases of zero. The env var it names belongs to the driver, and it
+ * is named here because this sentence is the only thing an operator sees.
+ *
+ * @param peers The page's own peer count, or null where the page never reported one.
+ */
+export function playheadNeverMovedRefusal(waitedS: number, peers: number | null): string {
+  const peerLabel = peers === null ? 'a peer count the page did not report' : `${peers} peers`;
+
+  return (
+    `weeb-3's page reported decodable media and then held its playhead still for ${waitedS.toFixed(0)} s, ` +
+    `with ${peerLabel}. His player never started, so nothing measured below this point would be a cap ` +
+    'reading: a settle window opened here would have read his startup and then stood in as the uncapped ' +
+    'baseline the capped phase is judged against. Give the wait longer with WEEB3_NATIVE_START_WAIT_S'
+  );
+}
+
+/**
  * Why this recording cannot carry a squeeze run, or null.
  *
  * ⛔ Its own predicate so the driver can refuse before it spends three windows, and so the reason

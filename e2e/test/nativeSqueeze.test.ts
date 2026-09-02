@@ -8,6 +8,8 @@ import {
   type NativeSqueezeSample,
   type NativeSqueezeWindows,
   type PhaseWindow,
+  playheadHasMoved,
+  playheadNeverMovedRefusal,
   renderNativeSqueezeSection,
   shortRecordingRefusal,
   SQUEEZE_MEDIA_HEADROOM_S,
@@ -250,6 +252,74 @@ describe('what the tab pulled over its own sockets in each phase', () => {
     const result = judgeNativeSqueeze(healthyThenCapped(), empty, traffic);
 
     assert.equal(result.during.inboundBytesPerSecondMean, null);
+  });
+});
+
+/**
+ * ⛔⛔ The judgement the settle window now waits on. weeb-3's page reports decodable media tens of
+ * seconds before its own player moves a playhead, 26.1 s on 2026-08-16, and a settle window opened
+ * on that moment reads his startup and files it as a baseline for a cap.
+ */
+describe("whether weeb-3's own player has started moving", () => {
+  const at = (atMs: number, currentTime: number): NativeSqueezeSample => ({ atMs, currentTime });
+  const seeked = at(START_MS, 300);
+
+  it('counts a full second of advance past the seek as started', () => {
+    assert.equal(playheadHasMoved(seeked, at(START_MS + 3 * MS_PER_SECOND, 301)), true);
+  });
+
+  it('counts exactly the minimum as started, so a boundary is not a refusal', () => {
+    assert.equal(playheadHasMoved(seeked, at(START_MS + MS_PER_SECOND, 301)), true);
+  });
+
+  /** Where his player buffers: the playhead twitches without the session having begun. */
+  it('does not count an advance under the minimum', () => {
+    assert.equal(playheadHasMoved(seeked, at(START_MS + 3 * MS_PER_SECOND, 300.4)), false);
+  });
+
+  /**
+   * ⛔ Measured from where the seek left the playhead, never from zero. A recording arm seeks before
+   * it waits, so a playhead parked at 300 has moved nothing at all, and a comparison against zero
+   * would call every seeked arm started before his player had done anything.
+   */
+  it('measures the advance from the seek rather than from zero', () => {
+    assert.equal(playheadHasMoved(seeked, at(START_MS + MS_PER_SECOND, 300)), false);
+  });
+
+  it('does not count a playhead that went backwards', () => {
+    assert.equal(playheadHasMoved(seeked, at(START_MS + MS_PER_SECOND, 290)), false);
+  });
+
+  it('honours a minimum the caller chose', () => {
+    assert.equal(playheadHasMoved(at(START_MS, 0), at(START_MS + MS_PER_SECOND, 0.5), 0.25), true);
+    assert.equal(playheadHasMoved(at(START_MS, 0), at(START_MS + MS_PER_SECOND, 0.5), 2), false);
+  });
+});
+
+describe('the refusal when his player never started', () => {
+  it('names how long the playhead was watched', () => {
+    assert.match(playheadNeverMovedRefusal(90, 4), /90/);
+  });
+
+  it('says his player never started rather than reporting a ratio', () => {
+    assert.match(playheadNeverMovedRefusal(90, 4), /never started/i);
+  });
+
+  /** The whole point of refusing: a reading taken after this would be of his startup, not of a cap. */
+  it('says that nothing measured after it would have been a cap reading', () => {
+    assert.match(playheadNeverMovedRefusal(90, 4), /cap/i);
+  });
+
+  it('names the peers the page had, because a node with none never joined', () => {
+    assert.match(playheadNeverMovedRefusal(90, 4), /4 peers/);
+  });
+
+  /** ⛔ Zero peers is a joined node that found nobody. An unread counter is not that, and must not read as it. */
+  it('says the peer count went unreported rather than printing a zero', () => {
+    const refusal = playheadNeverMovedRefusal(90, null);
+
+    assert.match(refusal, /not report/i);
+    assert.doesNotMatch(refusal, /0 peers/);
   });
 });
 
