@@ -48,8 +48,15 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * ## ⛔⛔ How the bandwidth is chosen, and why it is not chosen from the ladder alone
  *
  * From THE RUNG THE VIEWER IS ACTUALLY ON. The driver reads it off the overlay after the settle and
- * caps the link at the bitrate of the next rung down, so that rung stays exactly affordable and the
- * one being played no longer fits.
+ * caps the link at the bitrate of the next rung down, so the one being played no longer fits.
+ *
+ * ⚠️ That next rung is NOT left affordable, whatever the first version of this comment said. hls.js
+ * takes a rung only when it sits under 95% of the bandwidth it measures (`ABR_BANDWIDTH_FACTOR` in
+ * the shared package), so a cap equal to a rung's bitrate rules that rung out too, and the best
+ * landing rung is the one below it. Measured 2026-09-02: capped at 2800 kbps, 720p's own bitrate,
+ * the viewer landed on 360p and climbed to 480p, and 720p needed a 4000 kbps estimate to be climbed
+ * to. The assertion is a step down to ANY lower rung, so it holds either way. The cap decides only
+ * which rung the report may call reachable.
  *
  * ⛔ The first version took the second lowest rung's bitrate regardless of what was playing, which is
  * right only when the viewer starts at the top. Live on 2026-08-30 the gateway profile settled its

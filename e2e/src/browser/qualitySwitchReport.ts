@@ -7,6 +7,13 @@
  * What it adds is the rung timeline, which is the whole point of the run and appears nowhere else.
  */
 
+import {
+  ABR_BANDWIDTH_FACTOR,
+  ABR_BANDWIDTH_UP_FACTOR,
+  estimateNeededToClimbKbps,
+  isRungAffordable,
+} from '@swarm-hls-stream/shared';
+
 import { type LadderRung } from '../config.js';
 
 import {
@@ -40,20 +47,40 @@ export interface QualityRun extends BrowserRun {
 
 const rung = (height: number | null): string => (height === null ? '—' : `${height}p`);
 
+/**
+ * ⛔ "Within reach" is the player's rule, not plain arithmetic. The first version of this table said
+ * a rung was affordable when its bitrate was at or under the cap, and on 2026-09-02 it called 720p
+ * affordable under a 2800 kbps cap that the player never took: hls.js wants a rung under 95% of the
+ * bandwidth it measures, and 70% of it to climb. Both numbers come from the shared package the client
+ * hands them to hls.js from, so this column cannot describe a player the client no longer ships.
+ */
 function ladderSection(run: QualityRun): string[] {
+  const cap = run.quality.throttledToKbps;
+  const percent = (fraction: number): string => `${Math.round(fraction * 100)}%`;
+
   return [
     '## The ladder this viewer was offered',
     '',
-    '| rung | cut at | affordable at the cap |',
-    '| --- | ---: | :---: |',
+    '| rung | cut at | within reach at the cap | estimate needed to climb to it |',
+    '| --- | ---: | :---: | ---: |',
     ...run.ladder.map(
-      (level) => `| ${level.name} | ${level.kbps} kbps | ${level.kbps <= run.quality.throttledToKbps ? 'yes' : 'no'} |`,
+      (level) =>
+        `| ${level.name} | ${level.kbps} kbps | ${isRungAffordable(level.kbps, cap) ? 'yes' : 'no'} | ` +
+        `${estimateNeededToClimbKbps(level.kbps)} kbps |`,
     ),
     '',
-    `The tab's download was capped at **${run.quality.throttledToKbps} kbps** for ${seconds(
+    `The tab's download was capped at **${cap} kbps** for ${seconds(
       run.throttle.liftedAtMs - run.throttle.appliedAtMs,
-    )}s, which is the second lowest rung's own bitrate. Everything above it asks for more than the ` +
-      'link can carry.',
+    )}s, ` +
+      `the next rung down's own bitrate. The player takes a rung only when it sits under ${percent(
+        ABR_BANDWIDTH_FACTOR,
+      )} ` +
+      `of the bandwidth it measures, and climbs to one only when it sits under ${percent(
+        ABR_BANDWIDTH_UP_FACTOR,
+      )}, so the ` +
+      'rung whose bitrate equals the cap is out of reach as well and the best landing rung is the one below it. ' +
+      '"Within reach" is a necessary condition and never a promise: the player also asks that a fragment arrive ' +
+      'before its buffer runs dry, which is where the byte source decides.',
     '',
   ];
 }

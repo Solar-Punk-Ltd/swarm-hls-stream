@@ -197,11 +197,19 @@ describe('the report a squeezed viewer leaves behind', () => {
     assert.match(renderQualityReport(qualityRunOf(stalled)), /⛔ \*\*The picture stopped while capped\.\*\*/);
   });
 
-  it('names which rungs the cap left affordable, off the deployment own ladder', () => {
+  /**
+   * ⛔ By the player's rule, not by arithmetic. The cap here is 1200 kbps, the 480p rung's own bitrate,
+   * and the first version of this table called 480p affordable because 1200 <= 1200. hls.js takes a
+   * rung only under 95% of the bandwidth it measures, so the rung equal to the cap is out of reach and
+   * the climb column says what estimate each rung waits for (its bitrate over 0.7).
+   */
+  it("names which rungs the cap left within the player's reach, off the deployment's own ladder", () => {
     const report = renderQualityReport(qualityRunOf(adapted));
 
-    assert.match(report, /\| 480p \| 1200 kbps \| yes \|/);
-    assert.match(report, /\| 720p \| 2800 kbps \| no \|/);
+    assert.match(report, /\| 360p \| \d+ kbps \| yes \| 1000 kbps \|/);
+    assert.match(report, /\| 480p \| 1200 kbps \| no \| 1715 kbps \|/);
+    assert.match(report, /\| 720p \| 2800 kbps \| no \| 4000 kbps \|/);
+    assert.match(report, /takes a rung only when it sits under 95%/);
   });
 
   /**

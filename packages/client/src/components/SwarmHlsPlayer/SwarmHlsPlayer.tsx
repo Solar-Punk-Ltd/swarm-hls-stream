@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Topic } from '@ethersphere/bee-js';
+import { ABR_BANDWIDTH_FACTOR, ABR_BANDWIDTH_UP_FACTOR } from '@swarm-hls-stream/shared';
 import Hls, { ErrorDetails, ErrorTypes, Events } from 'hls.js';
 
 import { MEDIA_TYPE_VIDEO, MediaType, Rendition } from '@/types/stream';
@@ -108,10 +109,10 @@ export const DEFAULT_HLS_TUNING: Readonly<HlsTuning> = Object.freeze({
   // reach. See the watch page, which is laid out wide for the same reason.
   capLevelToPlayerSize: false,
 
-  // Restated at hls.js's own defaults rather than changed. They are here to be swept from a caller
-  // during the POC without editing this file; there is no evidence yet for moving them.
-  abrBandWidthFactor: 0.95,
-  abrBandWidthUpFactor: 0.7,
+  // hls.js's own defaults, held in the shared package because the e2e harness reads the same two
+  // numbers to say which rungs a cap left within a player's reach. Sweepable from a caller.
+  abrBandWidthFactor: ABR_BANDWIDTH_FACTOR,
+  abrBandWidthUpFactor: ABR_BANDWIDTH_UP_FACTOR,
   maxStarvationDelay: 4,
 });
 

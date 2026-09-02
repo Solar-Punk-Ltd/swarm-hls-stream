@@ -68,10 +68,15 @@ export const MIN_RUNGS_FOR_A_STEP_DOWN = 2;
  *
  * ## The rule
  *
- * The bitrate of the next rung below the one being played. That rung stays exactly affordable, so
- * the picture keeps moving, and the rung they are on no longer fits, so a player choosing its own
- * quality has to come down. Both halves matter: V2 asserts a step down AND continued playback, and a
+ * The bitrate of the next rung below the one being played. The rung they are on no longer fits, so a
+ * player choosing its own quality has to come down, and the rungs further down stay within reach, so
+ * the picture keeps moving. Both halves matter: V2 asserts a step down AND continued playback, and a
  * cap that starved everything would fail the second half for the harness's reasons.
+ *
+ * ⚠️ The next rung itself is NOT left affordable, whatever an earlier version of this said. hls.js
+ * takes a rung only under 95% of the bandwidth it measures (`ABR_BANDWIDTH_FACTOR`, shared package),
+ * so a cap equal to a rung's bitrate rules that rung out too and the best landing rung is the one
+ * below it. Measured 2026-09-02 at a 2800 kbps cap: 360p landed, 480p on the climb, 720p never.
  *
  * ⛔⛔ **Null where they are already on the bottom rung, and that is not a failure of the product.**
  * Live on 2026-08-30 the gateway profile put its viewer on 360p before anything was capped, which
