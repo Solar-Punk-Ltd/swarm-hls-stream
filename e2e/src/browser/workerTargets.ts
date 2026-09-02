@@ -18,6 +18,16 @@
  *
  * ⛔ Both are our harness's faults. weeb-3 is not to be changed and no change to it may be proposed.
  *
+ * ## ⭐ Both halves measured against a real Chrome, 2026-09-02
+ *
+ * A page creating a SharedWorker that fetches 1,000,000 bytes, under a 2800 kbps cap whose physical
+ * floor is 2857 ms. Uncapped the worker's fetch took 7 ms. **Under the page session alone it took
+ * 2 ms**, so that cap reached nothing at all, which is the arm 3 defect reproduced. With the worker
+ * session capped as well the same fetch took 2866 ms, 1.003x its floor. A 60,000 byte binary frame
+ * over the worker's own socket was counted as 60,000 bytes, so {@link cdpFrameBytes} decodes rather
+ * than counting the 80,000 base64 characters. ⛔ The middle row is the half that makes this evidence:
+ * a guard that cannot fail is not one, and `viewer.ts` records two in this harness that could not.
+ *
  * ## ⛔ Why a raw CDP connection rather than Playwright's own
  *
  * `page.context().newCDPSession(page)` attaches to pages and frames only. Reaching a worker target

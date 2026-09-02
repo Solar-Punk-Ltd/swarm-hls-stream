@@ -382,6 +382,27 @@ Only worker-type sessions get `Network.enable`, so no byte is counted twice: Pla
 page's sockets and this keeps the workers'. Page targets are attached anyway, purely to carry the
 auto-attach down to their own dedicated workers.
 
+#### ⭐ Measured, against a real Chrome, both ways
+
+Chrome 141 on macOS, a local page creating a SharedWorker that fetches a 1,000,000 byte body, under a
+2800 kbps cap which allows 350,000 bytes/s and therefore a floor of 2857 ms:
+
+| what held the link down               | the worker's own fetch |
+| ------------------------------------- | ---------------------: |
+| nothing                               |                   7 ms |
+| **the page session alone**, as before |               **2 ms** |
+| the page and the worker targets       |            **2866 ms** |
+
+**The page-only cap reached nothing at all**, which reproduces the arm 3 defect exactly: 2 ms for a
+megabyte on a link that cannot carry one in under 2.8 s. With the worker session capped as well the
+same fetch lands at 1.003x its physical floor. The frame recorder read 60,000 bytes for a 60,000 byte
+binary frame over the worker's own socket, so the base64 decode is right too: counting the encoded
+characters would have said 80,000. `Target.setAutoAttach` attached `page` and `shared_worker` with an
+empty failures list.
+
+⛔ Both halves of that table matter. A guard that cannot fail is not evidence, and this repo has
+shipped two such guards already (see `viewer.ts` on the visibility sensor).
+
 #### The two refusals, and what each says
 
 A cap that cannot prove itself is the failure this exists to stop repeating, so neither instrument is
