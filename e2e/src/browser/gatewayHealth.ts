@@ -211,8 +211,8 @@ function balancesReduction(): string {
  * `|| true` on each, because a curl that fails must still leave the later lines in place. A sample
  * that lost only its host load is worth more than one that lost everything.
  */
-function sampleCommand(gatewayPort: number): string {
-  const bee = `http://localhost:${gatewayPort}`;
+function sampleCommand(gatewayPort: number, hostAddress: string): string {
+  const bee = `http://${hostAddress}:${gatewayPort}`;
   return [
     `curl -s -o /dev/null -m ${CURL_TIMEOUT_S} -w '%{time_total} %{http_code}' ${bee}/health || true`,
     `echo`,
@@ -330,8 +330,15 @@ function availableBzz(line: string): number | null {
 /** How a sample reaches the host. Injected so the loop above it is testable without one. */
 export type GatewayReader = () => Promise<string>;
 
+/**
+ * ⛔ `cfg.localHostAddress` rather than a loopback literal, because these five reads are one shell
+ * line handed to {@link Host.run} and so never pass through `Host.localJson`, which is where every
+ * other gateway read gets that address applied. In a container with a network namespace of its own
+ * loopback names nothing, and a sampler dialling it records every minute as unanswered, which reads
+ * exactly like a gateway that was asked and said nothing.
+ */
 export function gatewayReader(host: Host, cfg: E2EConfig): GatewayReader {
-  return async () => (await host.run(sampleCommand(cfg.ports.beeGatewayApi))).stdout;
+  return async () => (await host.run(sampleCommand(cfg.ports.beeGatewayApi, cfg.localHostAddress))).stdout;
 }
 
 /** One sample, with every failure recorded rather than raised. */

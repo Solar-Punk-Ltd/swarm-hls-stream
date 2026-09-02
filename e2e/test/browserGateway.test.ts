@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  gatewayReader,
   type GatewaySample,
   gatewaySection,
   parseGatewaySample,
@@ -9,6 +10,14 @@ import {
   startGatewaySampling,
   summarizeGateway,
 } from '../src/browser/gatewayHealth.js';
+import { type E2EConfig } from '../src/config.js';
+import { type Host } from '../src/harness/host.js';
+
+const GATEWAY_PORT = 11_077;
+
+/** The two fields `gatewayReader` reads, and nothing else it has no business in. */
+const cfgWith = (localHostAddress: string): E2EConfig =>
+  ({ localHostAddress, ports: { beeGatewayApi: GATEWAY_PORT } } as unknown as E2EConfig);
 
 const HEALTHY_OUTPUT = [
   '0.031 200',
@@ -647,5 +656,51 @@ describe('summarizing what the gateway did during a run', () => {
     // its guard prints an empty table under a heading and reads as a node that was asked and said
     // nothing, rather than as a node that was never asked.
     assert.doesNotMatch(lines, /\| minute \|/);
+  });
+});
+
+/**
+ * Where the sampler dials the gateway.
+ *
+ * ⛔ Its five curls are one shell line handed to `Host.run`, so they never pass through
+ * `Host.localJson` and were the one gateway read that kept its own loopback literal. In a container
+ * with a network namespace of its own that names nothing, and every sample would come back
+ * unanswered: a gateway starved of a route reads exactly like a gateway that answered nothing.
+ */
+describe('the address the gateway sampler dials', () => {
+  function recordingHost(): { host: Host; commands: string[] } {
+    const commands: string[] = [];
+    return {
+      commands,
+      host: {
+        run: async (command: string) => {
+          commands.push(command);
+          return { stdout: '', stderr: '' };
+        },
+      } as unknown as Host,
+    };
+  }
+
+  it('dials loopback when the config names no other address', async () => {
+    const { host, commands } = recordingHost();
+
+    await gatewayReader(host, cfgWith('localhost'))();
+
+    assert.match(commands[0], /http:\/\/localhost:11077\/health/);
+    assert.equal(commands[0].includes('host.docker.internal'), false);
+  });
+
+  it('dials the configured address for every one of its five reads', async () => {
+    const { host, commands } = recordingHost();
+
+    await gatewayReader(host, cfgWith('host.docker.internal'))();
+
+    const dialled = commands[0].match(/http:\/\/[^/]+/g) ?? [];
+    assert.equal(dialled.length, 4, 'the sampler reads health, chequebook, balances and status');
+    assert.deepEqual(
+      [...new Set(dialled)],
+      ['http://host.docker.internal:11077'],
+      'one read kept loopback, so that reading would be missing rather than wrong',
+    );
   });
 });
