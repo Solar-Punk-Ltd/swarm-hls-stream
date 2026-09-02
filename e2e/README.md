@@ -516,7 +516,7 @@ pnpm bench:latency
 ```
 
 Publishes a real stream, follows it through the feed a viewer reads, and reports how far behind live
-that viewer is — split across segment duration, upload, feed write, propagation and fetch, plus the
+that viewer is and split across segment duration, upload, feed write, propagation and fetch, plus the
 player's own configured buffer. Writes a markdown report and its JSON to `docs/bench/`.
 
 Nothing else in this repository can measure that, which is why `liveSyncDuration` is still 10: every
@@ -544,7 +544,7 @@ viewer takes. It does mean the gateway has to be reachable from wherever you run
 publishing first and failing after.
 
 **It checks itself before it spends anything.** The first thing a run does is publish to a local file,
-probe it, and recover the capture instants — the whole chain, offline, in about fifteen seconds. If
+probe it, and recover the capture instants, the whole chain, offline, in about fifteen seconds. If
 the recipe has stopped carrying the clock, or ffprobe has changed what it prints, that fails there,
 for free, instead of producing a number that becomes a baseline. It also checks the spans against
 something the spans never touched: consecutive segments are contiguous, so each one's measured media

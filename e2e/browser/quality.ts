@@ -1,5 +1,5 @@
 /**
- * `pnpm browser:quality` — squeeze a watching viewer's connection, and report what their player did.
+ * `pnpm browser:quality`: squeeze a watching viewer's connection, and report what their player did.
  *
  * ## What this exists to answer
  *

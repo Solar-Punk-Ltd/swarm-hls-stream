@@ -42,7 +42,7 @@ COPY packages/shared/package.json packages/shared/
 
 RUN pnpm install --frozen-lockfile --filter "@swarm-hls-stream/client..."
 
-# Now the sources — separate layer so manifest-only changes don't bust install. Shared is consumed
+# Now the sources, separate layer so manifest-only changes don't bust install. Shared is consumed
 # as TypeScript, with no build of its own, so vite compiles it as part of the client bundle.
 COPY packages/shared packages/shared
 COPY packages/client packages/client

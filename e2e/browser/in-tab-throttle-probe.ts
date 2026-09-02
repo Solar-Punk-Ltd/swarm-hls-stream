@@ -1,5 +1,5 @@
 /**
- * `pnpm browser:in-tab-throttle-probe` — why a capped in-tab node delivers nothing.
+ * `pnpm browser:in-tab-throttle-probe`: why a capped in-tab node delivers nothing.
  *
  * ## The question
  *

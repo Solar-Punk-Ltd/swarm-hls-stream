@@ -1,5 +1,5 @@
 /**
- * `pnpm browser:vod` — play a finished broadcast back and seek around inside it.
+ * `pnpm browser:vod`: play a finished broadcast back and seek around inside it.
  *
  * Phase 1.2. The VOD path looks correct by construction: `buildVODManifest` emits every segment with
  * `PLAYLIST-TYPE:VOD` and `ENDLIST`, the client resolves the head once and gets that manifest whole,

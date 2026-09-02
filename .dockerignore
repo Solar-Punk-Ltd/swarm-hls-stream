@@ -1,4 +1,4 @@
-# Keep `docker build` context small — both Dockerfile.uploader and Dockerfile.client
+# Keep `docker build` context small, both Dockerfile.uploader and Dockerfile.client
 # use the repo root (`..` from deploy/) as their context.
 
 **/node_modules
@@ -7,7 +7,7 @@
 **/coverage
 **/.cache
 
-# Dockerfile.uploader copies the prebuilt JS in — un-ignore it.
+# Dockerfile.uploader copies the prebuilt JS in, un-ignore it.
 # (Dockerfile.client builds inside the container, so its dist stays excluded.)
 !packages/stream-uploader/dist
 !packages/stream-uploader/dist/**
