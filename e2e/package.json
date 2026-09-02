@@ -14,6 +14,8 @@
     "test:e2e": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/scenarios/*.test.ts' 'suites/service/*.test.ts' 'suites/viewer/*.test.ts'",
     "//test:e2e:quality": "One paid broadcast instead of a sitting's worth: the same gates, then V2 alone. Same && for the same reason. Exists because V2 was the one red left and re-reading it inside the full suite costs every other suite's broadcast too.",
     "test:e2e:quality": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/viewer/quality-switch.test.ts'",
+    "//test:e2e:vod": "The same shape for V4: the gates, then the recorded-playback suite alone. One short broadcast to prove a fix to the suite without buying every other suite's broadcast.",
+    "test:e2e:vod": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/viewer/vod-playback.test.ts'",
     "test:e2e:smoke": "TSX_DISABLE_CACHE=1 tsx --test 'suites/smoke/*.test.ts'",
     "bench:latency": "tsx bench/latency.ts",
     "bench:longrun": "tsx bench/longrun.ts",
