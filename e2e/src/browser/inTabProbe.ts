@@ -35,7 +35,16 @@
 import { costSection, type ResourceCost } from './resources.js';
 import { type RungManifest, type RungName } from './rungManifest.js';
 import { kbpsAsBytesPerSecond } from './throttle.js';
-import { type PerSecondSample } from './webSocketTraffic.js';
+import {
+  amplification,
+  bytesBetween,
+  type FrameDirection,
+  framesBetween,
+  openConnectionsAt,
+  type PerSecondSample,
+  perSecondSeries,
+  type WebSocketTraffic,
+} from './webSocketTraffic.js';
 
 /**
  * Which part of the probe a retrieval belongs to.
@@ -111,6 +120,36 @@ export interface AmplificationSummary {
   max: number;
 }
 
+/** One arm of a Part B round: a rung, under the cap or not. */
+export interface ProbeStep {
+  arm: RungName;
+  capped: boolean;
+}
+
+/** The window bounds a driver hands in, with everything about the traffic still to be counted. */
+export interface IdleWindowInput {
+  label: string;
+  kbpsCap: number | null;
+  startedAtMs: number;
+  endedAtMs: number;
+}
+
+/** What the driver watched happen to one retrieval, before any of it is counted. */
+export interface RetrievalObservation {
+  arm: ProbeArm;
+  kbpsCap: number | null;
+  ref: string;
+  roundIndex: number;
+  roundDegraded: boolean;
+  startedAtMs: number;
+  settledAtMs: number | null;
+  outcome: RetrievalOutcome;
+  byteLength: number | null;
+  elapsedMs: number | null;
+  budgetMs: number;
+  tailMs: number;
+}
+
 /**
  * Where hls.js abandons a fragment.
  *
@@ -144,6 +183,75 @@ function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+/**
+ * The four arms of a Part B round, in the order this round runs them.
+ *
+ * ⛔ Alternated every round rather than fixed. Sustained retrieval degrades a weeb-3 node after two
+ * or three rounds, and both sittings of the concurrency sweep watched it happen, so a fixed order
+ * would hand the last arm every round's worst conditions and the report would read that as a
+ * property of the arm rather than of when it ran.
+ *
+ * ⭐ Not `counterbalancedOrder`, which is the two-condition rule and rotates every four rounds. This
+ * is four conditions alternating every round, which is a different rule and gets its own name rather
+ * than a second reading of that one.
+ */
+export function probeArmOrder(roundIndex: number): readonly ProbeStep[] {
+  const forward: readonly ProbeStep[] = [
+    { arm: '360p', capped: true },
+    { arm: '1080p', capped: true },
+    { arm: '360p', capped: false },
+    { arm: '1080p', capped: false },
+  ];
+  return roundIndex % 2 === 0 ? forward : [...forward].reverse();
+}
+
+/**
+ * One idle window, with every sum taken over the frames the recorder collected.
+ *
+ * ⛔ The mean divides by the whole window rather than by the seconds something arrived in. H2 asks
+ * what share of a capped link the node's background chatter takes, and a mean over only the busy
+ * seconds answers a different question with the same units.
+ */
+export function summarizeIdleWindow(input: IdleWindowInput, traffic: WebSocketTraffic): IdleWindow {
+  const seconds = (input.endedAtMs - input.startedAtMs) / MS_PER_SECOND;
+  const perSecondMean = (direction: FrameDirection): number =>
+    seconds <= 0 ? 0 : bytesBetween(traffic.frames, input.startedAtMs, input.endedAtMs, direction) / seconds;
+
+  return {
+    ...input,
+    perSecond: perSecondSeries(traffic.frames, input.startedAtMs, input.endedAtMs),
+    inBytesPerSecondMean: perSecondMean('in'),
+    outBytesPerSecondMean: perSecondMean('out'),
+    connectionsOpenStart: openConnectionsAt(traffic.connections, input.startedAtMs),
+    connectionsOpenEnd: openConnectionsAt(traffic.connections, input.endedAtMs),
+  };
+}
+
+/**
+ * One retrieval row, with the socket traffic around it counted.
+ *
+ * ⛔⛔ A row the harness stopped waiting for is measured over the **budget**, which is how long the
+ * harness watched, and is given no tail at all. It has no settle to measure a tail from, and the
+ * retrieval it abandoned is still running, so any window after the budget would be counting a
+ * retrieval that had not finished against one that had.
+ */
+export function buildRetrievalRow(observation: RetrievalObservation, traffic: WebSocketTraffic): RetrievalRow {
+  const { startedAtMs, settledAtMs, budgetMs, tailMs } = observation;
+  const watchedUntilMs = settledAtMs ?? startedAtMs + budgetMs;
+
+  return {
+    ...observation,
+    inBytesDuring: bytesBetween(traffic.frames, startedAtMs, watchedUntilMs, 'in'),
+    outFramesDuring: framesBetween(traffic.frames, startedAtMs, watchedUntilMs, 'out'),
+    inBytesTailAfter:
+      settledAtMs === null ? null : bytesBetween(traffic.frames, settledAtMs, settledAtMs + tailMs, 'in'),
+    amplification: amplification(
+      bytesBetween(traffic.frames, startedAtMs, watchedUntilMs, 'in'),
+      observation.byteLength ?? 0,
+    ),
+  };
 }
 
 /**

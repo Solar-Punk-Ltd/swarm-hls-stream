@@ -2,16 +2,20 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  buildRetrievalRow,
   describeRetrieval,
   h0Check,
   type IdleWindow,
   type InTabProbeRun,
   judgeRoundDegraded,
+  probeArmOrder,
   renderInTabProbeReport,
   type RetrievalRow,
   summarizeAmplification,
+  summarizeIdleWindow,
 } from '../src/browser/inTabProbe.js';
 import { judgeCost, type ResourceReading } from '../src/browser/resources.js';
+import { type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
 
 /**
  * The judging and rendering the in-tab throttle probe files its answer through.
@@ -301,5 +305,141 @@ describe('the report the probe leaves behind', () => {
     const markdown = renderInTabProbeReport(probeRun(rows, []));
 
     assert.match(markdown, /observations, none of them asserted/);
+  });
+});
+
+describe('the order the arms of a round run in', () => {
+  /**
+   * ⭐ Alternated so drift over the sitting does not land on one arm. Sustained retrieval degrades a
+   * weeb-3 node after two or three rounds, so a fixed order would hand the last arm every round's
+   * worst conditions and the report would read that as a property of the arm.
+   */
+  it('runs the four arms of a round, capped and free, on both rungs', () => {
+    assert.deepEqual(probeArmOrder(0), [
+      { arm: '360p', capped: true },
+      { arm: '1080p', capped: true },
+      { arm: '360p', capped: false },
+      { arm: '1080p', capped: false },
+    ]);
+  });
+
+  it('reverses the order on the next round', () => {
+    assert.deepEqual(probeArmOrder(1), [...probeArmOrder(0)].reverse());
+  });
+
+  it('comes back to the opening order on the round after that', () => {
+    assert.deepEqual(probeArmOrder(2), probeArmOrder(0));
+  });
+});
+
+describe('an idle window read off the frames around it', () => {
+  const traffic: WebSocketTraffic = {
+    connections: [
+      { url: 'wss://one.invalid', openedAtMs: START_MS - 1_000, closedAtMs: null },
+      { url: 'wss://two.invalid', openedAtMs: START_MS + 1_500, closedAtMs: null },
+    ],
+    frames: [
+      { atMs: START_MS + 100, direction: 'in', bytes: 1_000 },
+      { atMs: START_MS + 1_100, direction: 'in', bytes: 3_000 },
+      { atMs: START_MS + 1_200, direction: 'out', bytes: 500 },
+    ],
+  };
+
+  const window = summarizeIdleWindow(
+    { label: 'capped at 700 kbps', kbpsCap: LOW_CAP_KBPS, startedAtMs: START_MS, endedAtMs: START_MS + 2_000 },
+    traffic,
+  );
+
+  /** H2 asks what share of the link idle chatter takes, so the divisor is the whole window. */
+  it('divides the window bytes by the window seconds rather than by the busy ones', () => {
+    assert.equal(window.inBytesPerSecondMean, 2_000);
+    assert.equal(window.outBytesPerSecondMean, 250);
+  });
+
+  it('keeps the whole per-second series, quiet seconds included', () => {
+    assert.equal(window.perSecond.length, 2);
+  });
+
+  /** A node that shed or gained peers across a window was a different node at either end of it. */
+  it('counts the connections open at each end', () => {
+    assert.equal(window.connectionsOpenStart, 1);
+    assert.equal(window.connectionsOpenEnd, 2);
+  });
+
+  it('reads a window of no length as zero rather than dividing by it', () => {
+    const empty = summarizeIdleWindow(
+      { label: 'none', kbpsCap: null, startedAtMs: START_MS, endedAtMs: START_MS },
+      traffic,
+    );
+
+    assert.equal(empty.inBytesPerSecondMean, 0);
+  });
+});
+
+describe('a retrieval row built from the traffic around it', () => {
+  const traffic: WebSocketTraffic = {
+    connections: [],
+    frames: [
+      { atMs: START_MS - 500, direction: 'in', bytes: 9_999 },
+      { atMs: START_MS + 100, direction: 'in', bytes: 400_000 },
+      { atMs: START_MS + 200, direction: 'out', bytes: 300 },
+      { atMs: START_MS + 300, direction: 'out', bytes: 300 },
+      { atMs: START_MS + 3_000, direction: 'in', bytes: 50_000 },
+      { atMs: START_MS + 89_000, direction: 'in', bytes: 7_777 },
+    ],
+  };
+
+  const observed = {
+    arm: '360p' as const,
+    kbpsCap: CAP_KBPS,
+    ref: 'a'.repeat(64),
+    roundIndex: 0,
+    roundDegraded: false,
+    startedAtMs: START_MS,
+    budgetMs: BUDGET_MS,
+    tailMs: TAIL_MS,
+  };
+
+  const settled = {
+    ...observed,
+    settledAtMs: START_MS + 2_000,
+    outcome: 'resolved' as const,
+    byteLength: 200_000,
+    elapsedMs: 2_000,
+  };
+
+  it('counts only what crossed the link between the start and the settle', () => {
+    const row = buildRetrievalRow(settled, traffic);
+
+    assert.equal(row.inBytesDuring, 400_000);
+    assert.equal(row.outFramesDuring, 2);
+    assert.equal(row.amplification, 2);
+  });
+
+  /** The late answers. weeb-3 detaches a timed-out attempt rather than cancelling it, so they land. */
+  it('counts the tail from the settle forward', () => {
+    assert.equal(buildRetrievalRow(settled, traffic).inBytesTailAfter, 50_000);
+  });
+
+  /**
+   * ⛔⛔ A row the harness stopped waiting for has no settle, so it has no tail either. Its window is
+   * the budget, which is how long the harness watched, and never a duration the node produced.
+   */
+  it('measures a budget row over the budget and gives it no tail at all', () => {
+    const row = buildRetrievalRow(
+      { ...observed, settledAtMs: null, outcome: 'budget', byteLength: null, elapsedMs: null },
+      traffic,
+    );
+
+    assert.equal(row.inBytesDuring, 457_777);
+    assert.equal(row.inBytesTailAfter, null);
+    assert.equal(row.amplification, null);
+  });
+
+  it('carries the round it belongs to and whether that round could be read', () => {
+    const row = buildRetrievalRow({ ...settled, roundIndex: 2, roundDegraded: true }, traffic);
+
+    assert.equal(row.roundIndex, 2);
+    assert.equal(row.roundDegraded, true);
   });
 });

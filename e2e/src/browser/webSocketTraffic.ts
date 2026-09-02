@@ -184,3 +184,26 @@ export function openConnectionsAt(connections: readonly WebSocketConnection[], a
 export function amplification(inboundBytes: number, payloadBytes: number): number | null {
   return payloadBytes === 0 ? null : inboundBytes / payloadBytes;
 }
+
+/**
+ * How many frames a run's artifact keeps.
+ *
+ * A run of Part A's three minutes plus a dozen retrievals makes tens of thousands of frames, which
+ * is a json file of several megabytes committed to git per run.
+ */
+export const MAX_LOGGED_FRAMES = 20_000;
+
+/**
+ * An evenly spread sample of the frame log, so the file beside a report stays a size git can hold.
+ *
+ * ⛔ Every figure in the report is computed over the **untouched** series before this runs, so no
+ * number changes. What is thinned is only the record kept for a question nobody has asked yet, and
+ * it is spread rather than truncated so that record still covers the whole run.
+ */
+export function thinFrames(frames: readonly WebSocketFrame[]): WebSocketFrame[] {
+  if (frames.length <= MAX_LOGGED_FRAMES) {
+    return [...frames];
+  }
+  const everyNth = Math.ceil(frames.length / MAX_LOGGED_FRAMES);
+  return frames.filter((_unused, index) => index % everyNth === 0);
+}

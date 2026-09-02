@@ -6,8 +6,10 @@ import {
   bytesBetween,
   frameBytes,
   framesBetween,
+  MAX_LOGGED_FRAMES,
   openConnectionsAt,
   perSecondSeries,
+  thinFrames,
   type WebSocketConnection,
   type WebSocketFrame,
 } from '../src/browser/webSocketTraffic.js';
@@ -170,5 +172,35 @@ describe('inbound bytes against the payload they delivered', () => {
    */
   it('cannot be taken at all when nothing came back', () => {
     assert.equal(amplification(700_000, 0), null);
+  });
+});
+
+describe('the frame log an artifact keeps', () => {
+  const many = (count: number): WebSocketFrame[] =>
+    Array.from({ length: count }, (_unused, index) => inbound(START_MS + index, index));
+
+  it('keeps every frame of a run that made few enough of them', () => {
+    const frames = many(10);
+
+    assert.deepEqual(thinFrames(frames), frames);
+  });
+
+  /**
+   * ⛔ Every figure in the report is computed over the untouched series before this runs, so nothing
+   * a reader sees changes. What this bounds is the json committed beside it.
+   */
+  it('thins a run that made too many, and keeps it inside the cap', () => {
+    const thinned = thinFrames(many(MAX_LOGGED_FRAMES * 3));
+
+    assert.ok(thinned.length <= MAX_LOGGED_FRAMES);
+    assert.ok(thinned.length > 0);
+  });
+
+  /** Evenly, so the sample still covers the whole run rather than its opening. */
+  it('spreads what it keeps across the run', () => {
+    const thinned = thinFrames(many(MAX_LOGGED_FRAMES * 3));
+
+    assert.equal(thinned[0].atMs, START_MS);
+    assert.ok(thinned[thinned.length - 1].atMs > START_MS + MAX_LOGGED_FRAMES * 2);
   });
 });
