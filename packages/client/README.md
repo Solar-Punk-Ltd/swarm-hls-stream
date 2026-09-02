@@ -116,7 +116,7 @@ to fall back to**, so if the worker cannot start, a viewer on this backend gets 
 only symptom is `the in-tab node did not reach the network: SharedWorker request timed out`.
 
 A SharedWorker script has to come from the page's own origin, so the client serves the package's
-runtime itself. Four things go into one directory, because they resolve relative to each other:
+runtime itself. Five things go into one directory, because they resolve relative to each other:
 
 | Served as                | What it is                                                        |
 | ------------------------ | ----------------------------------------------------------------- |
@@ -124,12 +124,13 @@ runtime itself. Four things go into one directory, because they resolve relative
 | `/weeb-3/weeb_3.js`      | The wasm-bindgen glue, which `worker.js` imports                  |
 | `/weeb-3/weeb_3_bg.wasm` | 3.9 MB of node, which the glue fetches beside itself              |
 | `/weeb-3/snippets/**`    | Two files the glue imports by relative path                       |
+| `/weeb-3/service.js`     | A ServiceWorker the glue registers at boot, scoped to `/weeb-3/`  |
 
 `scripts/copy-weeb3-runtime.mjs` copies them out of `node_modules` into `public/weeb-3/`, which Vite
 copies verbatim into `dist/`. It runs from `prebuild` and `predev`, so a plain `pnpm build` or
 `pnpm dev` is enough. The directory is generated and gitignored: the lockfile is the only thing that
 says which version a deployment serves, and the copy refuses rather than serving a partial runtime if
-a release stops shipping one of the four.
+a release stops shipping one of the five.
 
 In production `deploy/client-nginx.conf.template` answers `/weeb-3/` off the filesystem with
 `try_files $uri =404`. That block is load-bearing. Without it the prefix inherits the SPA fallback,
@@ -140,8 +141,10 @@ for `WebAssembly.instantiateStreaming`.
 The worker URL is origin-absolute, so a deployment under a sub-path has to serve `/weeb-3/` at the
 domain root as well.
 
-`/weeb-3/service.js` is deliberately **not** served. It exists for weeb-3's own player via
-`attachStream`, which would measure weeb-3's hls.js rather than this client's.
+`/weeb-3/service.js` is served even though this client never calls `attachStream`, the only thing
+that uses the `/bzz/` routes it intercepts. The glue registers it the moment the node starts, so a
+site without it logs a failed ServiceWorker registration at 404 on every page load. Its scope is
+`/weeb-3/`, which keeps it away from every request this app makes.
 
 ## Project Structure
 

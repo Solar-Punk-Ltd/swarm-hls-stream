@@ -18,10 +18,11 @@ const SNIPPET_FILES = [
 ];
 
 /**
- * What the shared worker reaches for, in the order it reaches: the worker script, the glue it imports,
- * the wasm the glue fetches beside itself, and the snippets the glue imports by relative path.
+ * What the runtime reaches for, in the order it reaches: the worker script, the glue it imports, the
+ * wasm the glue fetches beside itself, the snippets the glue imports by relative path, and the
+ * ServiceWorker the glue registers at boot.
  */
-const SERVED_FILES = ['worker.js', 'weeb_3.js', 'weeb_3_bg.wasm', ...SNIPPET_FILES];
+const SERVED_FILES = ['worker.js', 'weeb_3.js', 'weeb_3_bg.wasm', ...SNIPPET_FILES, 'service.js'];
 
 describe('copying weeb-3 runtime into the tree the client serves', () => {
   let servedDir: string;

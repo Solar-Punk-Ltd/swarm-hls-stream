@@ -31,11 +31,13 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Everything on the shared worker's import path, and nothing else the package ships. `service.js`
- * intercepts `/bzz/` fetches for weeb-3's own player, which this client does not use, and the `.d.ts`
- * files are for the bundler rather than for a browser.
+ * Everything the runtime reaches for at boot, and nothing else the package ships. `service.js` is a
+ * ServiceWorker the glue registers under `/weeb-3/` as soon as the node starts, whether or not the
+ * page ever uses the `/bzz/` routes it intercepts: left out, every page load logs a failed
+ * registration at 404. Its scope is `/weeb-3/`, so it can never see this client's own requests. The
+ * `.d.ts` files are for the bundler rather than for a browser.
  */
-export const WEEB3_RUNTIME_ENTRIES = ['worker.js', 'weeb_3.js', 'weeb_3_bg.wasm', 'snippets'];
+export const WEEB3_RUNTIME_ENTRIES = ['worker.js', 'weeb_3.js', 'weeb_3_bg.wasm', 'snippets', 'service.js'];
 
 /** Where the package default `/weeb-3/worker.js` lands once vite has copied `public/` into `dist/`. */
 export const WEEB3_SERVED_DIR = resolve(HERE, '..', 'public', 'weeb-3');
