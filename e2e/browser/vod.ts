@@ -716,15 +716,18 @@ function renderVodReport(run: {
     return lines.join('\n');
   }
 
+  // The second reading is taken after the settle on a seek run and after the whole squeeze on a
+  // squeezed one, so the label says which rather than leaving a reader to assume the shorter of the two.
+  const readAgainAfter = squeezed === undefined ? 'settling' : 'the whole run';
   lines.push('## What the player was handed');
   lines.push('');
   lines.push('| | |');
   lines.push('| --- | ---: |');
   lines.push(`| duration at the first frame | ${run.startedPlaying?.duration.toFixed(2)}s |`);
-  lines.push(`| duration after settling | ${run.afterSettle?.duration.toFixed(2)}s |`);
+  lines.push(`| duration after ${readAgainAfter} | ${run.afterSettle?.duration.toFixed(2)}s |`);
   lines.push(`| seekable to | ${run.afterSettle?.seekable.toFixed(2)}s |`);
   lines.push(`| buffered ahead | ${run.afterSettle?.buffered.toFixed(2)}s |`);
-  lines.push(`| position after settling | ${run.afterSettle?.currentTime.toFixed(2)}s |`);
+  lines.push(`| position after ${readAgainAfter} | ${run.afterSettle?.currentTime.toFixed(2)}s |`);
   lines.push('');
   lines.push('A finite duration is the whole point: a live playlist reports `Infinity` here, so this');
   lines.push('is what says the player received a finished playlist rather than a live window. The two');
