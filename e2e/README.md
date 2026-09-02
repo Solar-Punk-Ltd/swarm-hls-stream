@@ -323,6 +323,20 @@ was observed, and it costs **0 BZZ**, so it needs no sitting and no gate. Run it
 `PROBE_TAIL_SECONDS` and `PROBE_GAP_SECONDS` size the run, the last being the quiet time after every
 row, cap already lifted, so a capped row's late hedged chunks are not counted against the row after it.
 
+`browser:weeb3-native` is that probe's control, and it grows a squeeze mode for it. Setting
+`WEEB3_NATIVE_SQUEEZE_KBPS` turns the single counted window into three, settle then capped then
+recovered, sized by `WEEB3_NATIVE_SETTLE_S` (45), `WEEB3_NATIVE_SQUEEZE_S` (60) and
+`WEEB3_NATIVE_RECOVER_S` (60). The report gains a per-phase table of realtime ratio, stalls added and
+the tab's own inbound WebSocket bytes, beside what the cap allows in the same units, and the run json
+gains the phase windows while the frame log replaces the request log beside it. **Nothing in it is
+asserted.** Unset, the driver behaves exactly as it did before the mode existed. It is for a
+**finished recording** only and refuses one too short to hold the three windows plus 20 s of
+headroom, because a run that outlasts its recording measures the media running out and that reads
+exactly like a delivery failure. `WEEB3_NATIVE_HARNESS_BRACKET=1` reads the nodes' own postage and
+chequebook counters through the harness instead of over ssh, which is the only way to satisfy the
+node-metrics gate from inside the browser container on the deployment host, and zero spend there is
+the gateway-less claim proved from the nodes' side.
+
 Paid crash and buffer-sweep sittings run through their gated wrappers on the deployment host,
 `deploy/scripts/crash-arms.sh` and `deploy/scripts/buffer-sweep-sitting.sh`: same afford, capacity
 and spend-ceiling gates as every other sitting, one broadcast per fault (or one sized to the whole
