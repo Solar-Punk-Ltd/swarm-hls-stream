@@ -1074,6 +1074,11 @@ export function browserArmHostSetup(repoDir: string, env: NodeJS.ProcessEnv = pr
  * the host to itself, and `127.0.0.1` is what the client and the gateway are both reached on from a
  * host-networked container.
  *
+ * ⭐ Loopback deliberately, and not an oversight: {@link browserArmCommand} runs this container with
+ * `--network host`, so the deployment genuinely is on its loopback. The container that is NOT is the
+ * one `deploy/scripts/bench-on-host.sh --own-network` starts, which sets `E2E_LOCAL_HOST_ADDRESS`
+ * and moves all three of these to `host.docker.internal`. Nothing here launches that one.
+ *
  * ⛔⛔⛔ **`E2E_RUN_PROFILE` travels with the other two, and it did not until now.** The suite states
  * which deployment the arm points at and never said which RUN it is, so the container resolved
  * `DEFAULT_RUN_PROFILE` for itself: a light-client sitting launched a browser that read the in-browser
