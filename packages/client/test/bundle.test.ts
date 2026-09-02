@@ -160,14 +160,18 @@ describe('the emitted bundle honours the declared browser target (TEST-22)', () 
   });
 
   /**
-   * weeb-3 is 4.5 MB of WebAssembly plus its glue, and only a build that selects it should ever pay
-   * for that. It is reached through an `import()` inside a lazily called method, so the bundler splits
+   * weeb-3 is close to 4 MB of WebAssembly plus its glue, and only a build that selects it should ever
+   * pay for that. It is reached through an `import()` inside a lazily called method, so the bundler splits
    * it into a chunk of its own that the entry merely names. A static import would move all of it into
    * the entry, and nothing else here would notice: the build succeeds, the tests pass, and every
    * viewer on the shipping gateway path silently downloads it.
    *
-   * Measured on this change: the entry went 1,000.54 kB to 1,003.28 kB, and the 4,532.92 kB of weeb-3
-   * landed in `weeb_3-<hash>.js` and `weeb_3_bg-<hash>.wasm` beside it.
+   * Measured when the split landed: the entry went 1,000.54 kB to 1,003.28 kB, and the 4,532.92 kB of
+   * weeb-3 landed in `weeb_3-<hash>.js` and `weeb_3_bg-<hash>.wasm` beside it.
+   *
+   * Re-read on the 0.0.341001 bump: weeb-3 is 3,908.08 kB across those same two files, 624.84 kB
+   * smaller, and the entry chunk did not move at all. The saving is all wasm, so it lands only on the
+   * viewers who select this backend, which is the whole point of the assertion below.
    */
   it('keeps weeb-3 out of the entry chunk, so a gateway viewer never downloads it', () => {
     const entry = emitted.js.filter(({ name }) => name.startsWith('index-'));
