@@ -35,8 +35,10 @@
  * - **A mislabelled cap.** `PROBE_CAP_KBPS` disagreeing with what the external shaper proved.
  * - **A cap that never reached the node.** One capped 360p retrieval is timed through the client's
  *   own path before Part B runs, against how long that payload takes at the cap. Under four fifths
- *   of that floor the emulation went somewhere the bytes do not travel, and since weeb-3 0.0.341001
- *   that means the page rather than the SharedWorker the node lives in. Parts B and C are skipped.
+ *   of that floor the cap went somewhere the bytes do not travel, and since weeb-3 0.0.341001 that
+ *   means the page rather than the SharedWorker the node lives in. Parts B and C are skipped. Under
+ *   an external cap it runs too, judged against the rate the shaper's preflight proved rather than
+ *   the label, because the shaper measured a curl from the container and this measures the node.
  * - **A recorder that saw less than the node delivered.** Those bytes crossed a wire, so a smaller
  *   inbound total means sockets the recorder never had. The arm 3 run of 2026-09-02 printed 0 in
  *   every byte column while its 1.2 MB retrievals succeeded, and its H0 line read that zero as
@@ -52,6 +54,10 @@
  * "free" arm would be a capped arm with the wrong label on it. The uncapped comparison is the CDP
  * run of the same day, and the report says so rather than leaving the absence to be read as a
  * measurement that found nothing.
+ *
+ * ⭐ The timed cap proof runs in BOTH modes. Under a shaper it is judged against the rate the
+ * preflight proved rather than against the label, and it is not redundant with that preflight: the
+ * shaper measured a curl from the container's own namespace, and this measures the node.
  *
  * Usage, on the deployment host. Arm 1, the emulated cap:
  *   deploy/scripts/browser-on-host.sh --script browser:in-tab-throttle-probe
@@ -338,8 +344,18 @@ async function main(): Promise<void> {
   const retrievals: RetrievalRow[] = [];
   const pairs: PairSummary[] = [];
   let joinedInMs = 0;
-  /** Null on an externally shaped run, where the shaper's own preflight is the proof. */
-  let capProof: CapProof | null = null;
+  /**
+   * The rate the timed cap proof is judged against.
+   *
+   * ⛔ The shaper's PROVED rate under an external cap rather than the label the rows carry. The two
+   * cannot disagree by more than the shaper's own band, because `externalCapRefusal` has already
+   * refused the run if they do, and judging a physical floor against a label rather than a
+   * measurement is how a proof comes to be about a number nobody established.
+   */
+  const proofCapBytesPerSecond =
+    external && externalCapMeasuredBps !== null ? externalCapMeasuredBps : kbpsAsBytesPerSecond(capKbps);
+  /** ⛔ `no reading` until the proof runs, which refuses. A cap that proved nothing is not a pass. */
+  let capProof: CapProof = judgeCapProof(null, null, proofCapBytesPerSecond);
   /**
    * Why the cap proof refused this run, or null.
    *
@@ -435,17 +451,20 @@ async function main(): Promise<void> {
 
     // ⛔⛔⛔ THE CAP PROVES ITSELF HERE, BEFORE ANY ARM RUNS. One capped 360p retrieval, timed by the
     // client's own clock, against how long that many bytes take at the cap. Under four fifths of
-    // that floor the emulation was applied somewhere the bytes do not travel, and since weeb-3
-    // 0.0.341001 that means it reached the page and not the SharedWorker the node runs in.
+    // that floor the cap was applied somewhere the bytes do not travel, and since weeb-3 0.0.341001
+    // that means it reached the page and not the SharedWorker the node runs in.
     //
     // ⛔ Before Part B rather than after it, so a run whose cap never landed costs one retrieval
     // instead of twenty minutes of rows that all read as a fast uncapped node. The arm 3 probe of
     // 2026-09-02 spent the whole sitting and published every one of them.
     //
-    // Skipped under an external cap: a `tc` policer's rate was measured against a real download
-    // from the host before the browser opened, and `externalCapRefusal` has already held the run to
-    // it. There is no emulation here to have missed a transport.
-    if (!external) {
+    // ⛔⛔ Under an external cap this runs too, and `squeezeTo` still applies no emulation there. The
+    // rate it is judged against is the one the shaper's preflight PROVED rather than the label, and
+    // the two cannot disagree because `externalCapRefusal` has already held them together. A `tc`
+    // policer sits under every socket the tab opens, so this should pass, and a proof that can only
+    // pass is exactly the guard this whole change exists to stop shipping: the shaper measured a
+    // curl from the container, and this measures the node.
+    {
       const row = await runRetrieval({
         arm: 'proof',
         kbpsCap: capKbps,
@@ -454,7 +473,7 @@ async function main(): Promise<void> {
         roundDegraded: false,
       });
       retrievals.push(row);
-      capProof = judgeCapProof(row.byteLength, row.elapsedMs, kbpsAsBytesPerSecond(capKbps));
+      capProof = judgeCapProof(row.byteLength, row.elapsedMs, proofCapBytesPerSecond);
       capProofFailure = capProofRefusal(capProof, "the client's own in-tab retrieval path");
       console.log(`probe: ${capProofLine(capProof)}`);
     }
@@ -584,9 +603,7 @@ async function main(): Promise<void> {
 
   console.log(`\nprobe: wrote ${stem}.md`);
   console.log('probe: the instrument, proved by effect');
-  console.log(
-    `  ${capProof === null ? 'the cap is a real shaper, so the timed proof does not apply' : capProofLine(capProof)}`,
-  );
+  console.log(`  ${capProofLine(capProof)}`);
   console.log(`  ${recorderProofLine(recorderProof)}`);
   console.log('probe: observations, none of them asserted');
   console.log(`  ${h0}`);

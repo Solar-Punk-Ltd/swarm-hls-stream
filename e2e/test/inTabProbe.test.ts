@@ -518,7 +518,13 @@ describe('the report the probe leaves behind', () => {
  * absence means nothing was found.
  */
 describe('the report an external cap leaves behind', () => {
-  const shaped = { capSource: 'external' as const, lowCapKbps: null, externalCapMeasuredBps: 349_120 };
+  const shaped = {
+    capSource: 'external' as const,
+    lowCapKbps: null,
+    externalCapMeasuredBps: 349_120,
+    // ⛔ Judged against the PROVED rate rather than the label, which is what the driver hands it.
+    capProof: judgeCapProof(224_848, 3_400, 349_120),
+  };
   const windows = [
     idleWindow({
       label: `external ${CAP_KBPS} kbps`,
@@ -548,12 +554,17 @@ describe('the report an external cap leaves behind', () => {
     assert.match(renderInTabProbeReport(shapedRun), /external 2800 kbps/);
   });
 
-  it('says the timed cap proof does not apply, rather than reporting it as unproved', () => {
-    // ⛔ A `tc` policer's rate was measured against a real download before the browser opened. A
-    // report that printed "the cap proved nothing" here would understate its own evidence.
+  /**
+   * ⛔⛔ The timed proof runs under a shaper too, and is judged against the rate the shaper PROVED
+   * rather than the label the rows carry. The two answer different questions: the shaper measured a
+   * curl from the container and this measures the node over the client's own retrieval path, so a
+   * policer that somehow missed the worker's sockets would still be caught here.
+   */
+  it('takes the timed cap proof against the rate the shaper proved, not the label', () => {
     const markdown = renderInTabProbeReport(shapedRun);
 
-    assert.match(markdown, /real `tc` policer, so the timed proof does not apply/);
+    assert.match(markdown, /the rate the shaper PROVED/);
+    assert.match(markdown, /the cap reached the node/);
     assert.doesNotMatch(markdown, /the cap proved nothing/);
   });
 

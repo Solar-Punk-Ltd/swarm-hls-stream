@@ -248,15 +248,15 @@ export interface InTabProbeRun {
   /** The quiet time after each row's cap lifted, before the next row started. */
   gapMs: number;
   /**
-   * What one timed retrieval under the cap said about whether the cap reached the node, or null.
+   * What one timed retrieval under the cap said about whether the cap reached the node.
    *
-   * ⛔⛔⛔ Null on an externally shaped run, where the shaper's own preflight is the proof and there
-   * is no emulation to have missed the transport. On an emulated run it is never null in a published
-   * artifact, because the driver refuses before Part B when this comes back negative. The arm 3
-   * probe of 2026-09-02 had no such field and no such refusal, and every capped figure in it was a
-   * reading of an uncapped link.
+   * ⛔⛔⛔ On both kinds of cap. An emulated one is judged against the rate its label allows and a
+   * shaped one against the rate the shaper's preflight proved, and neither is believed without this:
+   * the shaper measured a curl from the container and this measures the node. The arm 3 probe of
+   * 2026-09-02 had no such field and no such refusal, and every capped figure in it was a reading of
+   * an uncapped link.
    */
-  capProof: CapProof | null;
+  capProof: CapProof;
   /**
    * What the recorder counted against what the node is known to have delivered.
    *
@@ -709,25 +709,24 @@ function h0Line(run: InTabProbeRun): string {
  */
 function proofSection(run: InTabProbeRun): string[] {
   const proofRows = run.retrievals.filter((row) => row.arm === 'proof');
-  const unproved: CapProof = {
-    byteLength: null,
-    elapsedMs: null,
-    minimumMs: null,
-    requiredMs: null,
-    capBytesPerSecond: kbpsAsBytesPerSecond(run.capKbps),
-    verdict: 'no reading',
-  };
 
   return [
     '## The instrument, proved by effect before anything below it means anything',
     '',
-    run.capSource === 'external'
-      ? '⛔ **The cap here is a real `tc` policer, so the timed proof does not apply.** The shaper ' +
-        'measured what it delivers against a real download from the host before the browser opened, ' +
-        'and that reading is the proof. See H0 below.'
-      : `- ${capProofLine(run.capProof ?? unproved)}`,
+    `- ${capProofLine(run.capProof)}`,
     `- ${recorderProofLine(run.recorderProof)}`,
     '',
+    ...(run.capSource === 'external'
+      ? [
+          '⭐ **The cap proof is judged against the rate the shaper PROVED, not the rate the rows are ' +
+            'labelled with.** `deploy/scripts/shape-container-ingress.sh` measured its policer against a ' +
+            'real download from the host before the browser opened, and `externalCapRefusal` has already ' +
+            'refused this run if the label and that measurement disagree. The two readings answer ' +
+            'different questions: the shaper measured a curl from the container, and this measures the ' +
+            "node, over the client's own retrieval path.",
+          '',
+        ]
+      : []),
     "⛔⛔ Both are readings of OUR HARNESS, not of the node. Since weeb-3 0.0.341001 the node's " +
       'WebSockets belong to a SharedWorker target, so a page-scoped cap reaches nothing it does and a ' +
       'page-scoped recorder counts nothing it moves. The cap proof times a known-size payload through ' +
