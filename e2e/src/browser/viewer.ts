@@ -64,6 +64,7 @@ import {
 } from './instrument.js';
 import { type RequestRecord } from './network.js';
 import { type OverlayRow, readOverlayMetrics } from './overlay.js';
+import { secureContextArgs } from './secureContext.js';
 import { type ViewerSample } from './session.js';
 
 /** Where the image puts Google Chrome. Overridable so a workstation with Chrome elsewhere can run this. */
@@ -117,7 +118,13 @@ export async function launchViewer(): Promise<Browser> {
   return chromium.launch({
     executablePath: CHROME_PATH,
     headless: false,
-    args: ['--autoplay-policy=no-user-gesture-required', ...(CDP_PORT ? [`--remote-debugging-port=${CDP_PORT}`] : [])],
+    args: [
+      '--autoplay-policy=no-user-gesture-required',
+      ...(CDP_PORT ? [`--remote-debugging-port=${CDP_PORT}`] : []),
+      // The in-tab node needs a secure context, and an --own-network run reaches the client over
+      // plain http on a non-loopback name. See secureContext.ts for the failure this prevents.
+      ...secureContextArgs(process.env.BROWSER_CLIENT_URL),
+    ],
   });
 }
 
