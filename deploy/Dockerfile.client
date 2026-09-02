@@ -47,6 +47,10 @@ RUN pnpm install --frozen-lockfile --filter "@swarm-hls-stream/client..."
 COPY packages/shared packages/shared
 COPY packages/client packages/client
 
+# The client's `prebuild` copies weeb-3's worker, glue, wasm and snippets out of node_modules into
+# `public/weeb-3/`, which vite then copies into `dist/`. That directory is gitignored, so the build
+# context carries none of it and this install layer is where the bytes come from. pnpm runs `pre`
+# scripts by default, which is what makes `build` alone enough.
 RUN pnpm --filter @swarm-hls-stream/client build
 
 # --- Runtime stage ------------------------------------------------------

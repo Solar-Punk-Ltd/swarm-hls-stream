@@ -12,6 +12,11 @@
 !packages/stream-uploader/dist
 !packages/stream-uploader/dist/**
 
+# weeb-3's runtime, copied out of node_modules by the client's `prebuild`. Excluded so the image
+# serves the version its own install resolved rather than whatever a developer's tree happened to
+# hold, and so 4 MB of wasm stays out of the context.
+packages/client/public/weeb-3
+
 # Ignore everything bee/srs persists on the host
 deploy/data
 nodes/data

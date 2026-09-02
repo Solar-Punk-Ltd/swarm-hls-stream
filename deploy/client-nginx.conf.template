@@ -14,6 +14,21 @@ server {
     try_files $uri $uri/ /index.html;
   }
 
+  # weeb-3's SharedWorker runtime, copied into dist/ by the client's `prebuild`. From 0.0.341001 the
+  # in-tab node lives entirely in a SharedWorker the package loads from /weeb-3/worker.js, and a
+  # SharedWorker script has to be same-origin, so these bytes are ours to serve.
+  #
+  # ⛔ `=404` rather than the fallback above, which this prefix would otherwise inherit. index.html
+  # served as worker.js is a 200, so the browser rejects it on its MIME type minutes after
+  # `new SharedWorker(...)` stopped answering, and the only thing the page ever reports is
+  # "SharedWorker request timed out".
+  #
+  # Not cached hard the way /assets/ is: these names carry no content hash, so a version bump
+  # reuses every one of them.
+  location /weeb-3/ {
+    try_files $uri =404;
+  }
+
   # Reverse-proxy the read-only bee-gateway. The client bundle was built with
   # VITE_READER_BEE_URL=/bee so it calls back to this same origin.
   location /bee/ {
