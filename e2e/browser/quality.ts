@@ -28,6 +28,7 @@ import {
 } from '../src/browser/byteSourceArm.js';
 import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
 import {
+  abandonedAnswerVerdict,
   describeElapsed,
   describeLevelRequests,
   describeSettleOutcomes,
@@ -107,7 +108,7 @@ async function main(): Promise<void> {
 
   const requests: RequestRecord[] = [];
   /** ⛔ An observation. Nothing below branches on it and no gate reads it. */
-  const fragmentLog: FragmentLog = { requests: [], settles: [] };
+  const fragmentLog: FragmentLog = { requests: [], settles: [], abandonedAnswers: [] };
   let byteSourceArm: ByteSourceArmSession | undefined;
   let throttle: ThrottleHandle | undefined;
   const stretches: SampledStretch[] = [];
@@ -260,6 +261,9 @@ async function main(): Promise<void> {
         `${describeElapsed(during)}`,
     );
   }
+  // ⛔ An observation, and the one bit `aborted` cannot carry: whether the node ever produced the bytes
+  // of a fragment the player had already walked away from. The per-phase counts are in the state file.
+  console.log(`browser: ${abandonedAnswerVerdict(asked.abandonedAnswers)}`);
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 
   byteSourceArm?.proveBytesCameFromIt(requests);

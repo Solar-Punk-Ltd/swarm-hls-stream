@@ -1,9 +1,13 @@
 import {
   CLIENT_LOG_UNKNOWN,
   FRAGMENT_ABORTED,
+  FRAGMENT_ANSWER_REJECTED,
+  FRAGMENT_ANSWER_RESOLVED,
   FRAGMENT_ERRORED,
   FRAGMENT_LOADED,
   FRAGMENT_TIMED_OUT,
+  fragmentAbandonedAnswered,
+  type FragmentAnswer,
   type FragmentOutcome,
   fragmentRequested,
   fragmentSettled,
@@ -287,8 +291,34 @@ export class CustomFragmentLoader extends FragmentLoader {
     this.attempt = null;
 
     try {
-      const elapsedMs = Math.round(performance.now() - attempt.askedAtMs);
-      console.debug(fragmentSettled(attempt.level, attempt.sn, outcome, elapsedMs));
+      console.debug(fragmentSettled(attempt.level, attempt.sn, outcome, elapsedMsSince(attempt)));
+    } catch {
+      // Silent by design. A viewer whose console throws still has to get their video.
+    }
+  }
+
+  /**
+   * Say which way a retrieval went that answered a player who had already walked away.
+   *
+   * ⛔ **An instrument, and only an instrument**, exactly as {@link recordSettle} is. ⭐ Written IN
+   * ADDITION to the `aborted` settle rather than instead of it, so everything that pairs the two halves
+   * of that instrument is untouched and every artifact already on disk still reads the same.
+   *
+   * ⛔ Called BEFORE the settle, because {@link recordSettle} clears the attempt this reads the level,
+   * the segment number and the elapsed off. Guarded on the same field for the same reason, so the two
+   * lines are written together or not at all.
+   *
+   * ⛔ The in-tab path only. hls.js's own loader owns a gateway transfer and cancels it, so there is no
+   * late answer there to describe.
+   */
+  private recordAbandonedAnswer(answer: FragmentAnswer, byteLength: number | typeof CLIENT_LOG_UNKNOWN): void {
+    const attempt = this.attempt;
+    if (attempt === null) {
+      return;
+    }
+
+    try {
+      console.debug(fragmentAbandonedAnswered(attempt.level, attempt.sn, answer, byteLength, elapsedMsSince(attempt)));
     } catch {
       // Silent by design. A viewer whose console throws still has to get their video.
     }
@@ -338,6 +368,10 @@ export class CustomFragmentLoader extends FragmentLoader {
           // finished. `retrieveBytes` takes no abort signal, so an abandoned fragment keeps costing the
           // node until it answers, and an arm that stamped the ending at the abort would report that
           // work as free.
+          //
+          // ⭐⭐ The extra line says WHICH way it went, which `aborted` alone cannot: bytes that arrived
+          // too late and bytes that never arrived reach the settle line as the same word.
+          this.recordAbandonedAnswer(FRAGMENT_ANSWER_RESOLVED, bytes.byteLength);
           this.recordSettle(FRAGMENT_ABORTED);
           return;
         }
@@ -365,6 +399,9 @@ export class CustomFragmentLoader extends FragmentLoader {
       },
       (error: unknown) => {
         if (this.abandoned) {
+          // ⛔ No byte count rather than a count of zero. Zero is a legal answer, so folding a refusal in
+          // as one would put a segment nobody produced into a total of what late retrievals delivered.
+          this.recordAbandonedAnswer(FRAGMENT_ANSWER_REJECTED, CLIENT_LOG_UNKNOWN);
           this.recordSettle(FRAGMENT_ABORTED);
           return;
         }
@@ -395,6 +432,11 @@ interface FragmentAttempt {
    * the same, because losing an outcome to an unreadable number is the one thing it must never do.
    */
   askedAtMs: number;
+}
+
+/** What this attempt has cost so far, as every line about it reports it. */
+function elapsedMsSince(attempt: FragmentAttempt): number {
+  return Math.round(performance.now() - attempt.askedAtMs);
 }
 
 /**

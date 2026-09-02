@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { type FragmentRequest, type FragmentSettle, judgeFragmentRequests } from '../src/browser/fragmentRequests.js';
+import {
+  type FragmentAbandonedAnswer,
+  type FragmentRequest,
+  type FragmentSettle,
+  judgeFragmentRequests,
+} from '../src/browser/fragmentRequests.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { judgeQualitySwitch, judgeRungTimeline } from '../src/browser/qualitySwitch.js';
 import { type QualityRun, renderQualityReport } from '../src/browser/qualitySwitchReport.js';
@@ -96,10 +101,17 @@ const HOW_THEY_ENDED: FragmentSettle[] = [
   { atMs: LIFTED_AT + 1_200, level: '3', sn: '4', outcome: 'loaded', elapsedMs: 180 },
 ];
 
+/** Two retrievals this viewer walked away from under the cap, one of which the node still produced. */
+const ANSWERED_TOO_LATE: FragmentAbandonedAnswer[] = [
+  { atMs: APPLIED_AT + 3_000, level: '3', sn: '2', answer: 'resolved', byteLength: 224_848, elapsedMs: 28_930 },
+  { atMs: APPLIED_AT + 4_000, level: '3', sn: '2', answer: 'rejected', byteLength: null, elapsedMs: 30_100 },
+];
+
 function qualityRunOf(
   samples: ViewerSample[],
   asked: FragmentRequest[] = ASKED_AND_CAME_DOWN,
   ended: FragmentSettle[] = HOW_THEY_ENDED,
+  answeredLate: FragmentAbandonedAnswer[] = ANSWERED_TOO_LATE,
 ): QualityRun {
   const throttle = { appliedAtMs: APPLIED_AT, liftedAtMs: LIFTED_AT, kbps: 1200 };
   const summary = summarize(samples);
@@ -113,7 +125,7 @@ function qualityRunOf(
     summary,
     quality: judgeQualitySwitch(samples, throttle),
     fragmentRequests: judgeFragmentRequests(
-      { requests: asked, settles: ended },
+      { requests: asked, settles: ended, abandonedAnswers: answeredLate },
       throttle,
       summary.overallAdvanceRatio > 0,
     ),
@@ -267,6 +279,28 @@ describe('the report a squeezed viewer leaves behind', () => {
     const report = renderQualityReport(qualityRunOf(adapted, many, []));
 
     assert.match(report, /The first 200 of 250\. The state file beside this report carries them all\./);
+  });
+
+  /**
+   * ⭐⭐ The bit the settle table cannot carry. Both a segment that arrived far too late and one that
+   * never arrived reach it as `aborted`, and under a cap those are opposite findings about the viewer.
+   */
+  it('says whether the retrievals this viewer abandoned ever answered, and with how many bytes', () => {
+    const report = renderQualityReport(qualityRunOf(adapted));
+
+    assert.match(report, /abandoned attempts the node later answered: 1 resolved \(224848 bytes\), 1 rejected/);
+  });
+
+  /**
+   * ⛔ A run that heard none must not read as a fault. The gateway path writes no such line at all and an
+   * in-tab run that abandoned nothing late writes none either, so the silence is about neither the client
+   * nor the node.
+   */
+  it('never reads a run that abandoned nothing late as an instrument that is missing', () => {
+    const report = renderQualityReport(qualityRunOf(adapted, ASKED_AND_CAME_DOWN, HOW_THEY_ENDED, []));
+
+    assert.match(report, /abandoned attempts the node later answered: none/);
+    assert.match(report, /evidence about neither the client nor the node/);
   });
 });
 

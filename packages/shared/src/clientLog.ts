@@ -24,6 +24,8 @@ const SN_SLOT = 'SNSLOT';
 const RUNG_SLOT = 'RUNGSLOT';
 const OUTCOME_SLOT = 'OUTCOMESLOT';
 const ELAPSED_SLOT = 'ELAPSEDSLOT';
+const ANSWER_SLOT = 'ANSWERSLOT';
+const BYTES_SLOT = 'BYTESSLOT';
 
 /**
  * What a composer writes where the client could not read the value.
@@ -153,6 +155,79 @@ export function fragmentSettledPattern(flags = ''): RegExp {
       .replace(LEVEL_SLOT, '(\\S+)')
       .replace(SN_SLOT, '(\\S+)')
       .replace(OUTCOME_SLOT, '(\\S+)')
+      .replace(ELAPSED_SLOT, '(\\S+)'),
+    flags,
+  );
+}
+
+/** The node produced the segment, after the player had already walked away from it. */
+export const FRAGMENT_ANSWER_RESOLVED = 'resolved';
+/** The node gave up on the segment, after the player had already walked away from it. */
+export const FRAGMENT_ANSWER_REJECTED = 'rejected';
+
+/**
+ * Which way a retrieval nobody was waiting for finally went.
+ *
+ * A closed set on the CLIENT's side, exactly as {@link FragmentOutcome} is and for the same reason:
+ * each one is a different callback, so the client always knows which it is. A reader stays tolerant.
+ */
+export type FragmentAnswer = typeof FRAGMENT_ANSWER_RESOLVED | typeof FRAGMENT_ANSWER_REJECTED;
+
+/**
+ * Written beside the settle line when an in-tab retrieval answers a player that stopped waiting.
+ *
+ * ## What this says that `aborted` cannot
+ *
+ * On the in-tab path `retrieveBytes` takes no abort signal, so a fragment hls.js abandoned keeps
+ * costing the node until it answers, and the settle line records that answer as `aborted` whichever way
+ * it went. Whether the bytes eventually ARRIVED or the node gave up is the difference between a viewer
+ * whose retrieval was merely too slow and one whose retrieval was never going to complete, and V2's
+ * open question is exactly that: did the bytes ever arrive under the cap.
+ *
+ * `byteLength` is the payload as a gateway would have served it, span already stripped, or
+ * {@link CLIENT_LOG_UNKNOWN} where there were no bytes to count. ⛔ A word rather than a zero, because
+ * zero is a legal byte count and a reader totalling a run's late bytes would fold rejections in.
+ *
+ * ⛔ **Additive, and it must stay additive.** The settle line for the same attempt is written unchanged
+ * beside this one, so everything that pairs the two halves of the instrument, and every artifact
+ * already on disk, reads exactly as it did.
+ *
+ * ⛔⛔ **The words `master`, `ladder`, `rung` and `Restarting` must stay out of this line**, for the
+ * reason spelled out on {@link fragmentRequested}. This one is rarer than the other two and the hazard
+ * is the same: `openViewer` forwards any page line carrying one of them to the arm's stdout.
+ */
+export function fragmentAbandonedAnswered(
+  level: number | string,
+  sn: number | string,
+  // ⭐ The stand-ins are in the signature rather than cast in at the pattern builder, so a caller can
+  // pass one of the two answers and nothing else, exactly as {@link fragmentSettled} does with outcomes.
+  answer: FragmentAnswer | typeof ANSWER_SLOT,
+  byteLength: number | typeof CLIENT_LOG_UNKNOWN | typeof BYTES_SLOT,
+  elapsedMs: number | typeof ELAPSED_SLOT,
+): string {
+  // ⚠️ Both units are spaced off their numbers, for the reason {@link fragmentSettled} records: written
+  // closed up, a value that was not a number would read as `unknownbytes`.
+  return `Fragment abandoned answer: level ${level} sn ${sn} ${answer} ${byteLength} bytes after ${elapsedMs} ms`;
+}
+
+/**
+ * {@link fragmentAbandonedAnswered} as a matcher: the level, the segment number, the answer, the byte
+ * count and the elapsed as capture groups 1 to 5.
+ *
+ * Built the same way the other two patterns are, and every group is `\S+` for the same reason. That
+ * includes the byte count, which is legally {@link CLIENT_LOG_UNKNOWN}, and the elapsed.
+ */
+export function fragmentAbandonedAnsweredPattern(flags = ''): RegExp {
+  const escaped = fragmentAbandonedAnswered(LEVEL_SLOT, SN_SLOT, ANSWER_SLOT, BYTES_SLOT, ELAPSED_SLOT).replace(
+    REGEX_SPECIAL,
+    '\\$&',
+  );
+  return new RegExp(
+    escaped
+      .replace(LEVEL_SLOT, '(\\S+)')
+      .replace(SN_SLOT, '(\\S+)')
+      .replace(ANSWER_SLOT, '(\\S+)')
+      .replace(BYTES_SLOT, '(\\S+)')
       .replace(ELAPSED_SLOT, '(\\S+)'),
     flags,
   );

@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { fragmentSettleVerdict } from '../src/browser/fragmentRequests.js';
+import { abandonedAnswerVerdict, fragmentSettleVerdict } from '../src/browser/fragmentRequests.js';
 import { type QualitySwitchVerdict } from '../src/browser/qualitySwitch.js';
 import { parseBrowserArmState } from '../src/harness/browser.js';
 import {
@@ -500,6 +500,114 @@ describe('the raw lists an artifact carries, and the artifact that predates them
 
     assert.equal(asked?.settled?.during.elapsed, null);
     assert.equal(asked?.settled?.during.settled, 40, 'the attempts went with the durations');
+  });
+});
+
+/**
+ * ⭐⭐ What the node did with the retrievals the player had already walked away from.
+ *
+ * A settle of `aborted` covers both a retrieval whose bytes arrived far too late and one whose bytes
+ * never arrived, and under a cap those are opposite findings. This section is the only place the two are
+ * separated, and it carries the byte counts that say what the node did for work nobody wanted.
+ */
+describe('what became of the attempts the player abandoned', () => {
+  const parsed = () => parseBrowserArmState(qualityArmState()).fragmentRequests;
+
+  it('reads back each phase, and every late answer in order', () => {
+    const answers = parsed()?.abandonedAnswers;
+
+    assert.equal(answers?.state, 'recorded');
+    assert.deepEqual(
+      [answers?.during.answered, answers?.during.resolved, answers?.during.rejected, answers?.during.bytes],
+      [3, 2, 1, 424_848],
+    );
+    assert.equal(answers?.answers.length, 4);
+    assert.equal(answers?.answers[2].byteLength, null, 'a refusal came back carrying a byte count');
+  });
+
+  /**
+   * ⛔ The silence about the FILE, and it is the only silence this half has. A run that heard none of
+   * these lines is written as `silent` by the driver, so a null here can only be an artifact older than
+   * the reading.
+   */
+  it('reads an artifact that carries no such section as predating it, not as a run that answered none', () => {
+    const older = { ...ASKED_FOR_A_CHEAPER_RUNG };
+    delete (older as Record<string, unknown>).abandonedAnswers;
+
+    const asked = parseBrowserArmState(qualityArmState({ fragmentRequests: older })).fragmentRequests;
+
+    assert.equal(asked?.abandonedAnswers, null);
+    assert.match(abandonedAnswerVerdict(asked?.abandonedAnswers ?? null), /written before/);
+    assert.equal(asked?.during.requests, 40, 'the rest of the section went with it');
+  });
+
+  /** ⛔ Checked against the states this harness knows, never cast to them, exactly as a feed state is. */
+  it('refuses a state it does not recognise', () => {
+    const answers = ASKED_FOR_A_CHEAPER_RUNG.abandonedAnswers as Record<string, unknown>;
+    const damaged = { ...ASKED_FOR_A_CHEAPER_RUNG, abandonedAnswers: { ...answers, state: 'probably' } };
+
+    assert.throws(
+      () => parseBrowserArmState(qualityArmState({ fragmentRequests: damaged })),
+      /run\.fragmentRequests\.abandonedAnswers\.state/,
+    );
+  });
+
+  it('refuses a section missing a phase, rather than counting the ones it has', () => {
+    const answers = { ...(ASKED_FOR_A_CHEAPER_RUNG.abandonedAnswers as Record<string, unknown>) };
+    delete answers.during;
+
+    assert.throws(
+      () =>
+        parseBrowserArmState(
+          qualityArmState({ fragmentRequests: { ...ASKED_FOR_A_CHEAPER_RUNG, abandonedAnswers: answers } }),
+        ),
+      /run\.fragmentRequests\.abandonedAnswers\.during/,
+    );
+  });
+
+  it('refuses a late answer missing the word that says which way it went', () => {
+    const answers = { ...(ASKED_FOR_A_CHEAPER_RUNG.abandonedAnswers as Record<string, unknown>) };
+    answers.answers = [{ atMs: 1, level: '3', sn: '145', byteLength: 10, elapsedMs: 20 }];
+
+    assert.throws(
+      () =>
+        parseBrowserArmState(
+          qualityArmState({ fragmentRequests: { ...ASKED_FOR_A_CHEAPER_RUNG, abandonedAnswers: answers } }),
+        ),
+      /run\.fragmentRequests\.abandonedAnswers\.answers\[0\]\.answer/,
+    );
+  });
+
+  /** The counterpart: a stretch that produced no bytes is a READING, and reads as null rather than zero. */
+  it('reads a stretch whose late answers produced nothing as having no byte count', () => {
+    const answers = { ...(ASKED_FOR_A_CHEAPER_RUNG.abandonedAnswers as Record<string, unknown>) };
+    answers.during = { answered: 1, resolved: 0, rejected: 1, bytes: null };
+
+    const asked = parseBrowserArmState(
+      qualityArmState({ fragmentRequests: { ...ASKED_FOR_A_CHEAPER_RUNG, abandonedAnswers: answers } }),
+    ).fragmentRequests;
+
+    assert.equal(asked?.abandonedAnswers?.during.bytes, null);
+    assert.equal(asked?.abandonedAnswers?.during.answered, 1, 'the answer went with its missing byte count');
+  });
+});
+
+/**
+ * ⛔⛔ Re-reading an artifact from a previous sitting is how this project works, so the reader has to
+ * keep working on the files already on disk. This one was written on 2026-08-28, before the fragment
+ * instrument existed at all, and every reading in it is still good.
+ *
+ * ⭐ A real file rather than a fixture, because a fixture is written by whoever changes the reader and a
+ * file on disk is not.
+ */
+describe('an artifact from before any of these readings existed', () => {
+  const ARCHIVED = join(dirname(E2E_DIR), 'docs', 'bench', 'browser-watch-2026-08-28T15-35-20-729Z.json');
+
+  it('still parses, with the sections it predates reading as absent rather than as empty readings', () => {
+    const result = parseBrowserArmState(JSON.parse(readFileSync(ARCHIVED, 'utf8')));
+
+    assert.equal(result.fragmentRequests, null, 'a file that predates the instrument read as one carrying it');
+    assert.ok(result.samples > 0, 'the readings that file does carry were lost');
   });
 });
 

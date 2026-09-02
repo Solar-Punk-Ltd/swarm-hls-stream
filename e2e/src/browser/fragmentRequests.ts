@@ -23,6 +23,16 @@
  * line when an attempt ends, `fragmentSettled`, and both raw lists are carried into the artifact whole
  * rather than only as the buckets. ⛔ An aggregate is a convenience. The list is the evidence.
  *
+ * ## The third question, and the third line
+ *
+ * A settle of `aborted` covers two very different things on the in-tab path. `retrieveBytes` takes no
+ * abort signal, so a fragment hls.js walked away from keeps costing the node until it answers, and that
+ * answer is stamped `aborted` whether the bytes arrived far too late or never arrived at all. Under a
+ * cap those are opposite findings: a retrieval that was merely slow against one that was never going to
+ * finish, which is the bit V2 still needs. So the client writes a third line where that happens, and
+ * {@link judgeAbandonedAnswers} counts it. ⛔ It is written BESIDE the settle rather than instead of it,
+ * so the pairing above and every artifact already on disk read exactly as they did.
+ *
  * ## ⛔ It records and it refuses nothing
  *
  * Owner ruling of 2026-08-29: an e2e suite checks that a feature works and is stable, never how fast
@@ -37,7 +47,13 @@
  * often. {@link judgeFragmentRequests} tells the two apart and {@link fragmentLogVerdict} says which.
  */
 
-import { fragmentRequestedPattern, fragmentSettledPattern } from '@swarm-hls-stream/shared';
+import {
+  FRAGMENT_ANSWER_REJECTED,
+  FRAGMENT_ANSWER_RESOLVED,
+  fragmentAbandonedAnsweredPattern,
+  fragmentRequestedPattern,
+  fragmentSettledPattern,
+} from '@swarm-hls-stream/shared';
 import type { Page } from 'playwright-core';
 
 /** One fragment request the page announced, stamped when the harness heard it. */
@@ -104,20 +120,82 @@ export function readFragmentSettle(text: string, atMs: number): FragmentSettle |
   if (match === null) {
     return null;
   }
-  const elapsedMs = Number(match[4]);
   return {
     atMs,
     level: match[1],
     sn: match[2],
     outcome: match[3],
-    elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : null,
+    elapsedMs: finiteOrNull(match[4]),
   };
 }
 
-/** What one viewer's console said about its fragments: every attempt, and how each one ended. */
+/**
+ * One in-tab retrieval that answered a player which had already walked away, as the harness heard it.
+ *
+ * ⭐ The reading a settle of `aborted` cannot give. On the in-tab path a retrieval takes no abort signal,
+ * so an abandoned fragment keeps costing the node until it answers, and that answer reaches the settle
+ * line as `aborted` whether the bytes arrived far too late or never arrived at all. Those are opposite
+ * findings about a squeezed viewer, and which of the two happened under the cap is V2's open question.
+ */
+export interface FragmentAbandonedAnswer {
+  /** Wall clock in the harness, on the same clock as {@link FragmentRequest.atMs}. */
+  atMs: number;
+  /** The level index hls.js named, as written, so it pairs against a request's without conversion. */
+  level: string;
+  /** The segment number, as written. Legally the word `initSegment`. */
+  sn: string;
+  /**
+   * Which way it went, as the client wrote it.
+   *
+   * ⛔ Kept as the written word and checked against nothing, exactly as {@link FragmentSettle.outcome}
+   * is. The client's set is closed and this reader's is not, so a word the client gains reaches the
+   * report as itself rather than being dropped by a reader built before it.
+   */
+  answer: string;
+  /**
+   * What the node produced, in bytes, or null where the client had no count to write.
+   *
+   * ⛔⛔ Null is not zero, and here it matters most. A refusal produced nothing, and folding a run of
+   * them in as real answers of zero bytes would say the node was answering when it was giving up.
+   */
+  byteLength: number | null;
+  /** What the retrieval took, in milliseconds, or null where the client wrote something unreadable. */
+  elapsedMs: number | null;
+}
+
+/**
+ * One page console line read as a late answer, or null where it is not one.
+ *
+ * Matched through the shared pattern for the same reason {@link readFragmentRequest} is. ⚠️ Both numbers
+ * are parsed here rather than by the pattern, which accepts any non-space so that an unreadable value
+ * cannot silence the whole line and take the answer with it.
+ */
+export function readFragmentAbandonedAnswer(text: string, atMs: number): FragmentAbandonedAnswer | null {
+  const match = fragmentAbandonedAnsweredPattern().exec(text);
+  if (match === null) {
+    return null;
+  }
+
+  return {
+    atMs,
+    level: match[1],
+    sn: match[2],
+    answer: match[3],
+    byteLength: finiteOrNull(match[4]),
+    elapsedMs: finiteOrNull(match[5]),
+  };
+}
+
+function finiteOrNull(written: string): number | null {
+  const value = Number(written);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** What one viewer's console said about its fragments: every attempt, how it ended, and what came late. */
 export interface FragmentLog {
   requests: FragmentRequest[];
   settles: FragmentSettle[];
+  abandonedAnswers: FragmentAbandonedAnswer[];
 }
 
 /**
@@ -129,8 +207,8 @@ export interface FragmentLog {
  * of them would push everything else the client said out of the arm log. Listening separately also
  * leaves the four other browser drivers untouched.
  *
- * ⭐ One listener for both halves rather than two. The pair is only worth having joined, and a second
- * subscription installed at a different moment would give the two lists different starts.
+ * ⭐ One listener for all three kinds rather than one each. They are only worth having joined, and a
+ * second subscription installed at a different moment would give the lists different starts.
  *
  * ⭐ Install before navigating, beside `recordRequests`. A listener added afterwards misses whatever
  * the player asked for while the harness was still setting up, and a phase count short at one end is
@@ -154,6 +232,12 @@ export function recordFragmentLog(page: Page, into: FragmentLog): void {
     const settle = readFragmentSettle(text, heardAtMs);
     if (settle !== null) {
       into.settles.push(settle);
+      return;
+    }
+
+    const answer = readFragmentAbandonedAnswer(text, heardAtMs);
+    if (answer !== null) {
+      into.abandonedAnswers.push(answer);
     }
   });
 }
@@ -261,6 +345,48 @@ export interface FragmentSettleReading {
   settles: readonly FragmentSettle[];
 }
 
+/** What the node did in one stretch with attempts nobody was waiting for. ⛔ Observations, all of them. */
+export interface FragmentAbandonedAnswerPhase {
+  answered: number;
+  resolved: number;
+  rejected: number;
+  /**
+   * What the node produced for that work, in bytes.
+   *
+   * ⛔ Null where no answer in the stretch carried a count, which is not the same as zero. A stretch of
+   * refusals produced nothing, and a zero there reads as empty segments the node genuinely served.
+   */
+  bytes: number | null;
+}
+
+/**
+ * Whether the late-answer half is a reading at all.
+ *
+ * ⛔⛔⛔ Two states rather than three, and the silence here means something very different from the
+ * silence the other two halves have. A run that heard no request over a moving picture is a client
+ * without the instrument. A run that heard no LATE ANSWER is the ordinary case: the gateway path writes
+ * none by construction, and an in-tab run that abandoned nothing late writes none either. There is no
+ * `absent` because nothing in this reading can tell a client that cannot say from a node with nothing
+ * to say.
+ */
+export type FragmentAbandonedAnswerState =
+  /** At least one was heard, so the counts are what the node did after the player walked away. */
+  | 'recorded'
+  /** None was heard, which is evidence about neither the client nor the node. */
+  | 'silent';
+
+/** What became of the abandoned retrievals, either side of the treatment. */
+export interface FragmentAbandonedAnswerReading {
+  before: FragmentAbandonedAnswerPhase;
+  during: FragmentAbandonedAnswerPhase;
+  after: FragmentAbandonedAnswerPhase;
+  /** Every late answer captured across the whole run, phases included and excluded alike. */
+  captured: number;
+  state: FragmentAbandonedAnswerState;
+  /** Every one the run heard, in the order it heard them, aggregated away nowhere. */
+  answers: readonly FragmentAbandonedAnswer[];
+}
+
 /** What the player asked for either side of a treatment, and whether that can be believed. */
 export interface FragmentRequestTimeline {
   before: FragmentRequestPhase;
@@ -283,6 +409,12 @@ export interface FragmentRequestTimeline {
    * artifact predates the reading rather than the run lacking one.
    */
   settled: FragmentSettleReading | null;
+  /**
+   * Which way the retrievals went that answered after the player had walked away. ⚠️ Null on the same
+   * terms as {@link settled}: the artifact predates the reading. A run that heard none reads as `silent`
+   * rather than as null.
+   */
+  abandonedAnswers: FragmentAbandonedAnswerReading | null;
 }
 
 /**
@@ -343,6 +475,7 @@ export function judgeFragmentRequests(
     state,
     requests: [...requests],
     settled: judgeFragmentSettles(log, window),
+    abandonedAnswers: judgeAbandonedAnswers(log, window),
   };
 }
 
@@ -410,6 +543,42 @@ function judgeFragmentSettles(log: FragmentLog, window: TreatmentWindow): Fragme
     captured: settles.length,
     state,
     settles: [...settles],
+  };
+}
+
+function abandonedAnswerPhaseOf(
+  answers: readonly FragmentAbandonedAnswer[],
+  from: number,
+  to: number,
+): FragmentAbandonedAnswerPhase {
+  const within = answers.filter((answer) => answer.atMs >= from && answer.atMs < to);
+  const counted = within.map((answer) => answer.byteLength).filter((bytes): bytes is number => bytes !== null);
+
+  return {
+    answered: within.length,
+    resolved: within.filter((answer) => answer.answer === FRAGMENT_ANSWER_RESOLVED).length,
+    rejected: within.filter((answer) => answer.answer === FRAGMENT_ANSWER_REJECTED).length,
+    bytes: counted.length === 0 ? null : counted.reduce((total, bytes) => total + bytes, 0),
+  };
+}
+
+/**
+ * What the node did with the retrievals the player had already walked away from, phase by phase.
+ *
+ * ⛔ The state is decided on this half alone, and it has only two values. A run that heard none of these
+ * lines is not a client missing an instrument: the gateway path never writes one, and an in-tab run that
+ * abandoned nothing late writes none either. See {@link FragmentAbandonedAnswerState}.
+ */
+function judgeAbandonedAnswers(log: FragmentLog, window: TreatmentWindow): FragmentAbandonedAnswerReading {
+  const { abandonedAnswers } = log;
+
+  return {
+    before: abandonedAnswerPhaseOf(abandonedAnswers, Number.NEGATIVE_INFINITY, window.appliedAtMs),
+    during: abandonedAnswerPhaseOf(abandonedAnswers, window.appliedAtMs, window.liftedAtMs),
+    after: abandonedAnswerPhaseOf(abandonedAnswers, window.liftedAtMs, Number.POSITIVE_INFINITY),
+    captured: abandonedAnswers.length,
+    state: abandonedAnswers.length > 0 ? 'recorded' : 'silent',
+    answers: [...abandonedAnswers],
   };
 }
 
@@ -493,4 +662,53 @@ export function describeElapsed(phase: FragmentSettlePhase): string {
     return 'no attempt carried a duration';
   }
   return `${elapsed.minMs} / ${elapsed.medianMs} / ${elapsed.maxMs} ms over ${elapsed.samples}`;
+}
+
+/**
+ * One stretch's late answers as a reader sees them.
+ *
+ * ⛔ An answer word this reader does not know is named rather than dropped, because the total above it
+ * counts it and a reader who could not see where the difference went would take the two named counts for
+ * the whole of it.
+ */
+export function describeAbandonedAnswers(phase: FragmentAbandonedAnswerPhase): string {
+  if (phase.answered === 0) {
+    return 'none';
+  }
+
+  const produced = phase.bytes === null ? '' : ` (${phase.bytes} bytes)`;
+  const unclassified = phase.answered - phase.resolved - phase.rejected;
+  const parts = [`${phase.resolved} resolved${produced}`, `${phase.rejected} rejected`];
+  if (unclassified > 0) {
+    parts.push(`${unclassified} the reader could not classify`);
+  }
+
+  return parts.join(', ');
+}
+
+/**
+ * What the node did with work nobody was waiting for, over the whole run, as one line.
+ *
+ * ⛔⛔ The `silent` wording says why the silence proves nothing, and it has to. Every other verdict in
+ * this module names a thing to go and fix, so a reader arriving here expects one, and there is none: a
+ * gateway arm writes no such line at all, and an in-tab run that abandoned nothing late writes none
+ * either.
+ */
+export function abandonedAnswerVerdict(answers: FragmentAbandonedAnswerReading | null): string {
+  if (answers === null) {
+    return (
+      'whether an abandoned retrieval ever answered is not in this artifact: it was written before that ' +
+      'line existed, so this run can say an attempt was aborted and not what became of it'
+    );
+  }
+  if (answers.state === 'silent') {
+    return (
+      'abandoned attempts the node later answered: none. That is evidence about neither the client nor ' +
+      'the node, because the gateway path writes no such line and a run that abandoned nothing late ' +
+      'writes none either'
+    );
+  }
+
+  const whole = abandonedAnswerPhaseOf(answers.answers, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY);
+  return `abandoned attempts the node later answered: ${describeAbandonedAnswers(whole)}`;
 }

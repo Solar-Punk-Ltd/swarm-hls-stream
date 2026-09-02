@@ -1,4 +1,9 @@
-import { CLIENT_LOG_UNKNOWN, fragmentRequestedPattern, fragmentSettledPattern } from '@swarm-hls-stream/shared';
+import {
+  CLIENT_LOG_UNKNOWN,
+  fragmentAbandonedAnsweredPattern,
+  fragmentRequestedPattern,
+  fragmentSettledPattern,
+} from '@swarm-hls-stream/shared';
 import type { FragmentLoaderContext, HlsConfig, LoaderCallbacks, LoaderConfiguration, LoaderContext } from 'hls.js';
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, vi } from 'vitest';
@@ -65,6 +70,18 @@ function runStaggerInline(): void {
 }
 
 const arrived = () => ({ url: FRAGMENT_URL, data: new ArrayBuffer(8), code: 200 });
+
+/**
+ * Every abandoned-answer line written so far, as level, segment number, answer, byte count and elapsed.
+ *
+ * Module level rather than inside one block because both byte sources are asked about it, and what the
+ * gateway path has to show is that it writes NONE.
+ */
+const abandonedAnswersIn = (announced: readonly string[]): string[][] =>
+  announced
+    .map((line) => fragmentAbandonedAnsweredPattern().exec(line))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => match.slice(1, 6));
 
 describe('CustomFragmentLoader reporting the gateway it just reached', () => {
   beforeEach(() => {
@@ -910,6 +927,19 @@ describe('CustomFragmentLoader announcing how each attempt ended', () => {
     assert.deepEqual(settles()[0].slice(0, 3), ['3', '412', 'aborted']);
   });
 
+  /**
+   * ⛔ The abandoned-answer line belongs to the in-tab path alone, and this is the one place that can
+   * say so. hls.js's own loader owns the gateway transfer and cancels it, so there is no late answer to
+   * describe, and writing one anyway would put work the gateway never did into an arm's totals.
+   */
+  it('writes no abandoned answer for a gateway segment, which has no late answer to describe', () => {
+    const { transport: toTransport } = drive();
+
+    toTransport?.onAbort?.({} as never, {} as LoaderContext, undefined);
+
+    assert.deepEqual(abandonedAnswersIn(announced), []);
+  });
+
   /** hls.js declares `onAbort` optional and this loader supplies one regardless, so a caller that had
    * none must not be handed anything. */
   it('reports an abort without inventing a callback hls.js never gave it', () => {
@@ -1149,6 +1179,69 @@ describe('CustomFragmentLoader announcing how an in-tab attempt ended', () => {
     assert.equal(errors().length, 1);
     assert.equal(settles().length, 1, 'the re-entrant teardown wrote an ending of its own');
     assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'errored']);
+  });
+
+  /**
+   * ⭐⭐ The bit `aborted` cannot carry: whether the late answer was bytes or a refusal.
+   *
+   * V2's open question is whether the bytes ever arrived under the cap. A settle of `aborted` is written
+   * both when the node produced the segment far too late and when it produced nothing at all, and those
+   * are opposite findings: a retrieval that was merely slow against one that was never going to finish.
+   *
+   * ⛔ The settle line is written unchanged beside this one, so nothing that pairs the two halves of the
+   * instrument sees any difference.
+   */
+  it('says the bytes did arrive, beside the aborted settle rather than instead of it', async () => {
+    let deliver = (_bytes: Uint8Array) => {};
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockReturnValue(
+      new Promise<Uint8Array>((resolve) => {
+        deliver = resolve;
+      }),
+    );
+
+    const { loader } = driveThroughWeeb3();
+    loader.abort();
+    deliver(new Uint8Array(224_848));
+    await vi.waitFor(() => assert.equal(abandonedAnswersIn(announced).length, 1));
+
+    assert.deepEqual(abandonedAnswersIn(announced)[0].slice(0, 4), ['0', '7', 'resolved', '224848']);
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'aborted'], 'the settle line stopped saying what it did');
+  });
+
+  /**
+   * ⛔ The byte count is the WORD rather than a zero, because zero is a legal byte count and a reader
+   * totalling what a run's abandoned retrievals produced would fold every refusal in as a real answer of
+   * nothing.
+   */
+  it('says the node gave up, and names no byte count it never had', async () => {
+    let refuse = (_error: Error) => {};
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockReturnValue(
+      new Promise<Uint8Array>((_resolve, reject) => {
+        refuse = reject;
+      }),
+    );
+
+    const { loader } = driveThroughWeeb3();
+    loader.abort();
+    refuse(new Error('no peer had the chunk'));
+    await vi.waitFor(() => assert.equal(abandonedAnswersIn(announced).length, 1));
+
+    assert.deepEqual(abandonedAnswersIn(announced)[0].slice(0, 4), ['0', '7', 'rejected', CLIENT_LOG_UNKNOWN]);
+    assert.deepEqual(settles()[0].slice(0, 3), ['0', '7', 'aborted']);
+  });
+
+  /**
+   * The control, and without it every case above passes on a client that writes the line for every
+   * retrieval. An attempt the player was still waiting for is an ordinary one, and this line is only
+   * ever about work nobody was waiting for.
+   */
+  it('says nothing extra about a retrieval the player was still waiting for', async () => {
+    vi.spyOn(weeb3FetchBackend, 'retrieveBytes').mockResolvedValue(new Uint8Array([1, 2, 3]));
+
+    const { successes } = driveThroughWeeb3();
+    await vi.waitFor(() => assert.equal(successes().length, 1));
+
+    assert.deepEqual(abandonedAnswersIn(announced), []);
   });
 });
 

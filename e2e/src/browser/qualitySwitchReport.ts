@@ -10,6 +10,7 @@
 import { type LadderRung } from '../config.js';
 
 import {
+  abandonedAnswerVerdict,
   describeElapsed,
   describeSettleOutcomes,
   fragmentLogVerdict,
@@ -177,7 +178,7 @@ function settleSection(asked: FragmentRequestTimeline): string[] {
   const heading = ['## How each of those attempts ended', '', `**${fragmentSettleVerdict(settled)}.**`, ''];
 
   if (settled === null) {
-    return heading;
+    return [...heading, ...abandonedAnswerLine(asked)];
   }
 
   return [
@@ -193,7 +194,23 @@ function settleSection(asked: FragmentRequestTimeline): string[] {
     'the join rather than a finding: a phase pairing with nothing means the two halves are describing',
     `different fragments. The whole list of ${settled.captured} settled attempt(s) is in the state file.`,
     '',
+    ...abandonedAnswerLine(asked),
   ];
+}
+
+/**
+ * ⭐⭐ The one bit an `aborted` cannot carry: whether the node ever produced the bytes.
+ *
+ * On the in-tab path a retrieval takes no abort signal, so a fragment the player walked away from keeps
+ * costing the node until it answers, and both a segment that arrived far too late and one that never
+ * arrived reach the settle table above as `aborted`. Under a cap those are opposite findings, and V2's
+ * open question is which of the two happened.
+ *
+ * ⛔ One line, and an observation. The per-phase counts and every entry are in the state file beside
+ * this report.
+ */
+function abandonedAnswerLine(asked: FragmentRequestTimeline): string[] {
+  return [`⭐ ${abandonedAnswerVerdict(asked.abandonedAnswers)}.`, ''];
 }
 
 /**

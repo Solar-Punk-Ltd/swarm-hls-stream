@@ -1,7 +1,11 @@
 import {
+  CLIENT_LOG_UNKNOWN,
   FRAGMENT_ABORTED,
+  FRAGMENT_ANSWER_REJECTED,
+  FRAGMENT_ANSWER_RESOLVED,
   FRAGMENT_ERRORED,
   FRAGMENT_LOADED,
+  fragmentAbandonedAnswered,
   fragmentRequested,
   fragmentSettled,
 } from '@swarm-hls-stream/shared';
@@ -10,15 +14,19 @@ import { describe, it } from 'node:test';
 import type { Page } from 'playwright-core';
 
 import {
+  abandonedAnswerVerdict,
+  describeAbandonedAnswers,
   describeElapsed,
   describeLevelRequests,
   describeSettleOutcomes,
+  type FragmentAbandonedAnswer,
   type FragmentLog,
   fragmentLogVerdict,
   type FragmentRequest,
   type FragmentSettle,
   fragmentSettleVerdict,
   judgeFragmentRequests,
+  readFragmentAbandonedAnswer,
   readFragmentRequest,
   readFragmentSettle,
   recordFragmentLog,
@@ -57,10 +65,25 @@ const ended = (
   elapsedMs,
 });
 
+/** One late answer, as the harness would have heard it. */
+const answered = (
+  atMs: number,
+  level: string,
+  answer: string,
+  byteLength: number | null = 224_848,
+  elapsedMs: number | null = 28_930,
+  sn = '1',
+): FragmentAbandonedAnswer => ({ atMs, level, sn, answer, byteLength, elapsedMs });
+
 /** What one console listener collected, which is what the judge is given. */
-const fragmentLog = (requests: FragmentRequest[], settles: FragmentSettle[] = []): FragmentLog => ({
+const fragmentLog = (
+  requests: FragmentRequest[],
+  settles: FragmentSettle[] = [],
+  abandonedAnswers: FragmentAbandonedAnswer[] = [],
+): FragmentLog => ({
   requests,
   settles,
+  abandonedAnswers,
 });
 
 describe('reading a fragment request off a page console line', () => {
@@ -507,5 +530,212 @@ describe('telling a client with half the instrument from a run with no attempts'
   /** ⛔ The fourth silence, about the FILE rather than the run: an artifact older than this reading. */
   it('says the artifact predates the reading when there is no settle section at all', () => {
     assert.match(fragmentSettleVerdict(null), /written before the settle line existed/);
+  });
+});
+
+/**
+ * ⭐⭐ Whether an abandoned in-tab retrieval ever answered, which `aborted` alone cannot say.
+ *
+ * On the in-tab path a retrieval takes no abort signal, so a fragment the player walked away from keeps
+ * costing the node until it answers, and the settle line stamps that answer `aborted` either way. Bytes
+ * that arrived far too late and bytes that never arrived are opposite findings about a squeezed viewer,
+ * and V2's open question is exactly which of the two happened under the cap.
+ */
+describe('reading a late answer off a page console line', () => {
+  it('takes the level, the number, the answer, the bytes and the elapsed out of the line', () => {
+    const heard = readFragmentAbandonedAnswer(
+      fragmentAbandonedAnswered(0, 642, FRAGMENT_ANSWER_RESOLVED, 224_848, 28_930),
+      START_MS,
+    );
+
+    assert.deepEqual(heard, {
+      atMs: START_MS,
+      level: '0',
+      sn: '642',
+      answer: 'resolved',
+      byteLength: 224_848,
+      elapsedMs: 28_930,
+    });
+  });
+
+  // The control, and it has to cover both of the other lines: all three are written in one run.
+  it('ignores a line that is not one', () => {
+    assert.equal(readFragmentAbandonedAnswer('[SwarmHls] master playlist for swarm://0xowner/top', START_MS), null);
+    assert.equal(
+      readFragmentAbandonedAnswer(fragmentSettled(0, 642, FRAGMENT_ABORTED, 28_930), START_MS),
+      null,
+      'a settle read as a late answer',
+    );
+    assert.equal(readFragmentAbandonedAnswer(fragmentRequested(0, 642, TOP), START_MS), null);
+  });
+
+  /**
+   * ⛔⛔ Null is not zero, and here that matters more than anywhere else in this module. A rejection
+   * produced no bytes, and totalling it in as zero is harmless while totalling a run of them as real
+   * answers of nothing would say the node was answering when it was refusing.
+   */
+  it('reads a byte count the client had none of as missing, rather than as zero', () => {
+    const heard = readFragmentAbandonedAnswer(
+      fragmentAbandonedAnswered(2, 9, FRAGMENT_ANSWER_REJECTED, CLIENT_LOG_UNKNOWN, 8_400),
+      START_MS,
+    );
+
+    assert.equal(heard?.answer, 'rejected');
+    assert.equal(heard?.byteLength, null);
+    assert.equal(heard?.elapsedMs, 8_400);
+  });
+
+  /**
+   * ⛔ The client's set of answers is closed and this reader's is not, exactly as with an outcome. A word
+   * the client gains has to reach the report as itself rather than being dropped by a reader built before
+   * it.
+   */
+  it('reads an answer word it has never seen as itself, rather than dropping the line', () => {
+    const heard = readFragmentAbandonedAnswer(
+      'Fragment abandoned answer: level 2 sn 9 recycled 40 bytes after 900 ms',
+      START_MS,
+    );
+
+    assert.equal(heard?.answer, 'recycled');
+  });
+
+  /** ⭐ One listener, three kinds, and each line goes to exactly one list. */
+  it('sorts a late answer into its own list, keeping the other two whole', () => {
+    const into = fragmentLog([]);
+    const say = subscribed(into);
+
+    say(fragmentRequested(0, 642, TOP));
+    say(fragmentAbandonedAnswered(0, 642, FRAGMENT_ANSWER_RESOLVED, 224_848, 28_930));
+    say(fragmentSettled(0, 642, FRAGMENT_ABORTED, 28_930));
+
+    assert.equal(into.requests.length, 1, 'a late answer was kept as a request');
+    assert.equal(into.settles.length, 1, 'a late answer was kept as a settle');
+    assert.deepEqual(
+      into.abandonedAnswers.map((entry) => [entry.answer, entry.byteLength]),
+      [['resolved', 224_848]],
+    );
+  });
+});
+
+describe('what the node did with attempts the player had walked away from', () => {
+  const CAP_ANSWERED_LATE = [
+    answered(START_MS + 2_000, '3', FRAGMENT_ANSWER_RESOLVED, 810_000),
+    answered(CAPPED_AT + 20_000, '3', FRAGMENT_ANSWER_RESOLVED, 224_848),
+    answered(CAPPED_AT + 30_000, '3', FRAGMENT_ANSWER_RESOLVED, 200_000),
+    answered(CAPPED_AT + 40_000, '3', FRAGMENT_ANSWER_REJECTED, null),
+    answered(RELEASED_AT + 5_000, '0', FRAGMENT_ANSWER_RESOLVED, 90_000),
+  ];
+  const reading = () =>
+    judgeFragmentRequests(fragmentLog([asked(START_MS, '3')], [], CAP_ANSWERED_LATE), WINDOW, true).abandonedAnswers;
+
+  it('counts each phase against the same window the requests are cut on', () => {
+    const answers = reading();
+
+    assert.deepEqual([answers?.before.answered, answers?.during.answered, answers?.after.answered], [1, 3, 1]);
+    assert.equal(answers?.captured, 5);
+  });
+
+  /** ⭐ The bit the settle line cannot give: which way each of those late answers went. */
+  it('separates the ones that produced bytes from the ones that produced nothing', () => {
+    const { during } = reading()!;
+
+    assert.equal(during.resolved, 2);
+    assert.equal(during.rejected, 1);
+  });
+
+  it('totals what the node produced for work nobody was waiting for', () => {
+    assert.equal(reading()?.during.bytes, 424_848);
+  });
+
+  /**
+   * ⛔ Null rather than zero, for the same reason the elapsed spread is null rather than three zeroes. A
+   * stretch whose late answers were all refusals produced nothing, and a zero there reads as a stretch of
+   * empty segments the node genuinely served.
+   */
+  it('says a stretch that produced no bytes at all carried no count, rather than a count of zero', () => {
+    const refusedOnly = [answered(CAPPED_AT + 1_000, '3', FRAGMENT_ANSWER_REJECTED, null)];
+
+    const { during } = judgeFragmentRequests(fragmentLog([], [], refusedOnly), WINDOW, true).abandonedAnswers!;
+
+    assert.equal(during.answered, 1, 'the refusal was dropped along with its missing byte count');
+    assert.equal(during.bytes, null);
+  });
+
+  /** ⛔ An answer word this reader does not know is still an answer, and must not vanish from the total. */
+  it('keeps an answer it cannot classify in the count of what was answered', () => {
+    const strange = [answered(CAPPED_AT + 1_000, '3', 'recycled', 40)];
+
+    const { during } = judgeFragmentRequests(fragmentLog([], [], strange), WINDOW, true).abandonedAnswers!;
+
+    assert.equal(during.answered, 1);
+    assert.equal(during.resolved, 0);
+    assert.equal(during.rejected, 0);
+    assert.match(describeAbandonedAnswers(during), /could not classify/);
+  });
+
+  it('carries every late answer in the order it was heard', () => {
+    assert.deepEqual(
+      reading()?.answers.map((entry) => entry.atMs),
+      CAP_ANSWERED_LATE.map((entry) => entry.atMs),
+    );
+  });
+
+  /** ⛔ A copy, so a driver still collecting cannot rewrite what it filed. */
+  it('files a copy rather than the list the harness is still filling', () => {
+    const collecting = fragmentLog([], [], [answered(CAPPED_AT + 1_000, '3', FRAGMENT_ANSWER_RESOLVED)]);
+
+    const answers = judgeFragmentRequests(collecting, WINDOW, true).abandonedAnswers;
+    collecting.abandonedAnswers.push(answered(RELEASED_AT + 1_000, '0', FRAGMENT_ANSWER_REJECTED, null));
+
+    assert.equal(answers?.answers.length, 1, 'the filed list moved after it was filed');
+  });
+
+  it('says which way a phase went, for a reader', () => {
+    assert.equal(describeAbandonedAnswers(reading()!.during), '2 resolved (424848 bytes), 1 rejected');
+    assert.equal(
+      describeAbandonedAnswers(judgeFragmentRequests(fragmentLog([]), WINDOW, true).abandonedAnswers!.during),
+      'none',
+    );
+  });
+});
+
+/**
+ * ⛔⛔⛔ Silence here is NOT the silence the other two halves have, and the difference is the whole
+ * reason this reading gets a state of its own.
+ *
+ * A run with no request line over a moving picture is a client without the instrument. A run with no
+ * LATE ANSWER is the ordinary case: the gateway path writes none by construction, and an in-tab run
+ * that abandoned nothing late writes none either. Printing that as an absent instrument would send
+ * someone to rebuild a client that is exactly right.
+ */
+describe('telling a quiet node from a client that cannot say', () => {
+  it('calls a run that heard one a reading', () => {
+    const answers = judgeFragmentRequests(
+      fragmentLog([], [], [answered(CAPPED_AT + 1_000, '3', FRAGMENT_ANSWER_RESOLVED, 224_848)]),
+      WINDOW,
+      true,
+    ).abandonedAnswers;
+
+    assert.equal(answers?.state, 'recorded');
+    assert.match(abandonedAnswerVerdict(answers), /1 resolved \(224848 bytes\), 0 rejected/);
+  });
+
+  it('calls a run that heard none silent, and never an absent instrument', () => {
+    const answers = judgeFragmentRequests(fragmentLog([asked(START_MS, '3')]), WINDOW, true).abandonedAnswers;
+
+    assert.equal(answers?.state, 'silent');
+    assert.doesNotMatch(abandonedAnswerVerdict(answers), /absent/);
+  });
+
+  /** ⛔ And it has to say WHY the silence proves nothing, or a reader will draw the conclusion anyway. */
+  it('says a silence is not evidence about the client, naming the gateway path as one reason', () => {
+    const answers = judgeFragmentRequests(fragmentLog([asked(START_MS, '3')]), WINDOW, true).abandonedAnswers;
+
+    assert.match(abandonedAnswerVerdict(answers), /gateway path/);
+  });
+
+  /** ⛔ The silence about the FILE, which is the one this reading shares with the settle half. */
+  it('says the artifact predates the reading when there is no such section at all', () => {
+    assert.match(abandonedAnswerVerdict(null), /written before/);
   });
 });

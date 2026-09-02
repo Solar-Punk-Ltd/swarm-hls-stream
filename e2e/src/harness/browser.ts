@@ -33,6 +33,10 @@
 import { FEED_STATE_ENDED, isViewerFeedState, type ViewerFeedState } from '../browser/feedState.js';
 import { type ByteSource } from '../browser/fetchBackendSweep.js';
 import {
+  type FragmentAbandonedAnswer,
+  type FragmentAbandonedAnswerPhase,
+  type FragmentAbandonedAnswerReading,
+  type FragmentAbandonedAnswerState,
   type FragmentLogState,
   type FragmentRequest,
   type FragmentRequestPhase,
@@ -380,9 +384,9 @@ export interface BrowserArmResult {
    * nothing. Printing any of the three as another would be a wrong answer wearing a measurement's
    * clothes.
    *
-   * ⛔ Its `requests` and `settled` fields carry a fourth silence of their own, about the FILE rather
-   * than about any of the three above: an artifact written before the raw list and the settle line
-   * existed reads with both null, and every phase count beside them is still good.
+   * ⛔ Its `requests`, `settled` and `abandonedAnswers` fields carry a fourth silence of their own,
+   * about the FILE rather than about any of the three above: an artifact written before one of those
+   * readings existed reads with it null, and every phase count beside it is still good.
    *
    * ⛔ An observation. Nothing asserts on it, per the owner ruling of 2026-08-29.
    */
@@ -642,6 +646,7 @@ function readFragmentRequests(run: Record<string, unknown>): FragmentRequestTime
     state: state as FragmentLogState,
     requests: readRequestList(asked.requests, 'run.fragmentRequests.requests'),
     settled: readFragmentSettled(asked.settled, 'run.fragmentRequests.settled'),
+    abandonedAnswers: readAbandonedAnswers(asked.abandonedAnswers, 'run.fragmentRequests.abandonedAnswers'),
   };
 }
 
@@ -739,6 +744,72 @@ function readElapsedSpread(value: unknown, at: string): FragmentSettlePhase['ela
     maxMs: asNumber(spread.maxMs, `${at}.maxMs`),
     samples: asNumber(spread.samples, `${at}.samples`),
   };
+}
+
+/** The states `judgeAbandonedAnswers` writes, checked rather than cast, exactly as a feed state is. */
+const FRAGMENT_ABANDONED_ANSWER_STATES: readonly FragmentAbandonedAnswerState[] = ['recorded', 'silent'];
+
+/**
+ * What the node did with the retrievals the player abandoned, or the absence of the whole reading.
+ *
+ * ⛔ Absent means one thing only: the artifact predates this line. It is the same silence
+ * {@link readFragmentSettled} has, about the FILE rather than about any deployment, and it is the ONLY
+ * one this reading can hold. A run that heard none of these lines is written as `silent` by the driver,
+ * because there is nothing here that could tell a client which cannot say from a node with nothing to
+ * say: the gateway path writes no such line at all.
+ */
+function readAbandonedAnswers(value: unknown, at: string): FragmentAbandonedAnswerReading | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const answers = asObject(value, at);
+  const state = asString(answers.state, `${at}.state`);
+  if (!FRAGMENT_ABANDONED_ANSWER_STATES.includes(state as FragmentAbandonedAnswerState)) {
+    throw new Error(
+      `the arm's state has no abandoned answer state this harness knows at ${at}.state, got ${shownValue(state)}. ` +
+        'The driver gained a state, or the file was written by one this reader does not match.',
+    );
+  }
+
+  return {
+    before: readAbandonedAnswerPhase(answers.before, `${at}.before`),
+    during: readAbandonedAnswerPhase(answers.during, `${at}.during`),
+    after: readAbandonedAnswerPhase(answers.after, `${at}.after`),
+    captured: asNumber(answers.captured, `${at}.captured`),
+    state: state as FragmentAbandonedAnswerState,
+    answers: readAbandonedAnswerList(answers.answers, `${at}.answers`),
+  };
+}
+
+/**
+ * ⛔ `bytes` is the one nullable field, and null is a READING rather than a gap: that stretch's late
+ * answers produced nothing. Everything beside it arrives whole or the file is refused, because a count
+ * of what was answered with the split between resolved and rejected quietly missing is the shape someone
+ * would read the two remaining numbers as the whole of.
+ */
+function readAbandonedAnswerPhase(value: unknown, at: string): FragmentAbandonedAnswerPhase {
+  const phase = asObject(value, at);
+
+  return {
+    answered: asNumber(phase.answered, `${at}.answered`),
+    resolved: asNumber(phase.resolved, `${at}.resolved`),
+    rejected: asNumber(phase.rejected, `${at}.rejected`),
+    bytes: asNumberOrNull(phase.bytes, `${at}.bytes`),
+  };
+}
+
+function readAbandonedAnswerList(value: unknown, at: string): readonly FragmentAbandonedAnswer[] {
+  return asArray(value, at).map((entry, i) => {
+    const answer = asObject(entry, `${at}[${i}]`);
+    return {
+      atMs: asNumber(answer.atMs, `${at}[${i}].atMs`),
+      level: asString(answer.level, `${at}[${i}].level`),
+      sn: asString(answer.sn, `${at}[${i}].sn`),
+      answer: asString(answer.answer, `${at}[${i}].answer`),
+      byteLength: asNumberOrNull(answer.byteLength, `${at}[${i}].byteLength`),
+      elapsedMs: asNumberOrNull(answer.elapsedMs, `${at}[${i}].elapsedMs`),
+    };
+  });
 }
 
 function readSettleList(value: unknown, at: string): readonly FragmentSettle[] {

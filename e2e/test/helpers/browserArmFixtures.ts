@@ -287,6 +287,31 @@ const RAW_SETTLES = RAW_REQUESTS.map((request, i) => ({
   elapsedMs: i >= 45 && i < 49 ? 8_000 : 140,
 }));
 
+/**
+ * The retrievals this viewer walked away from and the node answered anyway, in the shape the driver
+ * writes them.
+ *
+ * ⭐ Under the cap and not outside it, which is the shape the reading exists for: a squeezed in-tab
+ * viewer abandons fragments the node is still fetching, and two of these arrive long after nobody wants
+ * them while one never arrives at all.
+ */
+const RAW_ABANDONED_ANSWERS = [
+  { atMs: CAPPED_AT_MS + 20_000, level: '3', sn: '145', answer: 'resolved', byteLength: 224_848, elapsedMs: 28_930 },
+  { atMs: CAPPED_AT_MS + 30_000, level: '3', sn: '146', answer: 'resolved', byteLength: 200_000, elapsedMs: 30_100 },
+  { atMs: CAPPED_AT_MS + 40_000, level: '3', sn: '147', answer: 'rejected', byteLength: null, elapsedMs: 31_400 },
+  { atMs: LIFTED_AT_MS + 5_000, level: '0', sn: '184', answer: 'resolved', byteLength: 90_000, elapsedMs: 9_200 },
+];
+
+/** One stretch's late answers, in the shape `judgeAbandonedAnswers` writes it. */
+function abandonedAnswerPhase(
+  answered: number,
+  resolved: number,
+  rejected: number,
+  bytes: number | null,
+): Record<string, unknown> {
+  return { answered, resolved, rejected, bytes };
+}
+
 /** One stretch's endings, in the shape `judgeFragmentSettles` writes it. */
 function settlePhase(
   settled: number,
@@ -339,6 +364,14 @@ export const ASKED_FOR_A_CHEAPER_RUNG: Record<string, unknown> = {
     captured: 140,
     state: 'recorded',
     settles: RAW_SETTLES,
+  },
+  abandonedAnswers: {
+    before: abandonedAnswerPhase(0, 0, 0, null),
+    during: abandonedAnswerPhase(3, 2, 1, 424_848),
+    after: abandonedAnswerPhase(1, 1, 0, 90_000),
+    captured: 4,
+    state: 'recorded',
+    answers: RAW_ABANDONED_ANSWERS,
   },
 };
 
