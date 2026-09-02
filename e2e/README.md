@@ -292,21 +292,35 @@ gateway-less is weeb-3's own page, run by `pnpm browser:weeb3-native` and swept 
 
 Which command supports which:
 
-| command                       | in-tab node  | notes                                                                                  |
-| ----------------------------- | ------------ | -------------------------------------------------------------------------------------- |
-| `browser:watch`               | yes          | the long-run watcher, the workhorse                                                    |
-| `browser:crash`               | yes          | all five fault scenarios                                                               |
-| `browser:buffer-sweep`        | yes          | one byte source for the whole sweep                                                    |
-| `browser:fetch-backend-check` | yes          | the A/B itself                                                                         |
-| `browser:weeb3-native`        | gateway-less | weeb-3's own page                                                                      |
-| `browser:viewer-order`        | both         | native against hybrid, counterbalanced                                                 |
-| `browser:vod`                 | **no**       | recorded playback, still gateway only                                                  |
-| `browser:selfcheck`           | **no**       | proves the instrument, not a viewer condition                                          |
-| `browser:gateway-check`       | n/a          | gateway by definition                                                                  |
-| `e2e:run`                     | yes          | uploader-side throughout, plus `suites/viewer/`, which launches `browser:watch` itself |
+| command                         | in-tab node  | notes                                                                                  |
+| ------------------------------- | ------------ | -------------------------------------------------------------------------------------- |
+| `browser:watch`                 | yes          | the long-run watcher, the workhorse                                                    |
+| `browser:crash`                 | yes          | all five fault scenarios                                                               |
+| `browser:buffer-sweep`          | yes          | one byte source for the whole sweep                                                    |
+| `browser:fetch-backend-check`   | yes          | the A/B itself                                                                         |
+| `browser:weeb3-native`          | gateway-less | weeb-3's own page                                                                      |
+| `browser:viewer-order`          | both         | native against hybrid, counterbalanced                                                 |
+| `browser:vod`                   | **no**       | recorded playback, still gateway only                                                  |
+| `browser:selfcheck`             | **no**       | proves the instrument, not a viewer condition                                          |
+| `browser:gateway-check`         | n/a          | gateway by definition                                                                  |
+| `browser:in-tab-throttle-probe` | in-tab only  | no player at all, it drives the node's retrieval path directly                         |
+| `e2e:run`                       | yes          | uploader-side throughout, plus `suites/viewer/`, which launches `browser:watch` itself |
 
 `browser:arm-order` and `browser:byte-source-order` open no viewer: they print the counterbalanced
 order a sitting's arms must run in, so the shell driver reads the rule instead of deriving its own.
+
+`browser:in-tab-throttle-probe` asks why a capped in-tab viewer gets nothing. It opens no player and
+watches no broadcast: it boots the node through the client's own switch, then pulls fresh segment
+references from an existing recording straight through the client's retrieval path, unthrottled and
+under a cap, counting the tab's WebSocket frames either side of each one. Three idle windows come
+first, which is where the cap is shown to reach the transport at all, and every capped figure is void
+if it does not. Nothing is asserted, the pre-registered predictions in
+`docs/bench/in-tab-throttle-probe-prediction-2026-09-02.md` are restated in the report beside what
+was observed, and it costs **0 BZZ**, so it needs no sitting and no gate. Run it on the host with
+`deploy/scripts/browser-on-host.sh --script browser:in-tab-throttle-probe`. `PROBE_OWNER`,
+`PROBE_TOPIC_360_HEX` and `PROBE_TOPIC_1080_HEX` choose the recording, and `PROBE_CAP_KBPS`,
+`PROBE_LOW_CAP_KBPS`, `PROBE_IDLE_SECONDS`, `PROBE_RETRIEVALS_PER_ARM`, `PROBE_BUDGET_SECONDS` and
+`PROBE_TAIL_SECONDS` size the run.
 
 Paid crash and buffer-sweep sittings run through their gated wrappers on the deployment host,
 `deploy/scripts/crash-arms.sh` and `deploy/scripts/buffer-sweep-sitting.sh`: same afford, capacity
