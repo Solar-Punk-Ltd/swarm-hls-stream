@@ -186,7 +186,12 @@ interface WorkerAwareViewer {
  * @param into The traffic object the page recorder also appends to, so one reader sums both.
  */
 export async function launchViewerWatchingWorkers(into: WebSocketTraffic): Promise<WorkerAwareViewer> {
-  const port = await pickDebuggingPort();
+  // ⛔ `VIEWER_CDP_PORT` where it is set, rather than a second port beside it. That variable is what
+  // the outside main-thread sampler reads through (`deploy/scripts/main-thread.mjs`), and Chrome
+  // opens one debugging endpoint: picking our own would move the endpoint out from under a sampler
+  // that was told where to look, and it would fail with nothing to say why.
+  const named = Number(CDP_PORT);
+  const port = CDP_PORT !== '' && Number.isInteger(named) ? named : await pickDebuggingPort();
   const browser = await launchViewer(port);
   try {
     return { browser, workers: await watchWorkerTargets(await openBrowserCdp(port), into) };

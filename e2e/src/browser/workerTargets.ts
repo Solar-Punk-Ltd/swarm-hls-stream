@@ -297,12 +297,16 @@ export async function watchWorkerTargets(transport: CdpTransport, into: WebSocke
     attached.set(info.sessionId, target);
     order.push(target);
 
-    // A carrier is attached only to reach its own children, so it gets the auto-attach and nothing
-    // else. Enabling Network here would double every byte Playwright's page recorder already has.
-    void record('Target.setAutoAttach', autoAttach(), info.sessionId);
     if (!worker) {
+      // ⛔ A carrier is attached for one reason and gets one command: pass the auto-attach down to
+      // its own dedicated workers, which are children of the page rather than of the browser.
+      // Enabling Network here would double every byte Playwright's page recorder already has.
+      void record('Target.setAutoAttach', autoAttach(), info.sessionId);
       return;
     }
+    // ⛔ No auto-attach on a worker session. A shared worker has no child targets to reach, so the
+    // command is at best a no-op and at worst a refusal, and a `failures` list that fills up on
+    // every healthy run is one nobody reads when it matters.
     void record('Network.enable', undefined, info.sessionId);
     if (activeCapBytesPerSecond !== null) {
       void record('Network.emulateNetworkConditions', emulationParams(activeCapBytesPerSecond), info.sessionId);

@@ -205,25 +205,34 @@ const CAP_PROOF_TAIL_MS = 5_000;
  */
 const CAP_PROOF_BUDGET_MS = 120_000;
 
+/** A Swarm reference and a feed address are both bare lowercase hex, 64 characters of it. */
+const HEX_64 = /^[0-9a-f]{64}$/;
+
+/** An owner is 40. Checked because the pair is interpolated into a url read over the network. */
+const HEX_40 = /^[0-9a-f]{40}$/;
+
 /**
- * A fresh segment reference from the recording the player is actually watching.
+ * A segment reference the cap proof can be timed against, on a weeb3 arm.
  *
  * ⛔ Off the rung address the client's own fragment log names, which is `swarm://<owner>/<topic>` and
  * is exactly what `/feeds/{owner}/{topic}` takes. So the reference comes from the recording under
- * measurement rather than from a constant a driver was handed, and a run pointed at a different
- * recording cannot proof itself against the wrong one.
+ * measurement rather than from a constant a driver was handed, and a run pointed elsewhere cannot
+ * proof itself against the wrong recording.
  *
  * ⛔ The LAST reference in the playlist, because the player opened the recording at its start and has
- * not reached the end. A reference the player already fetched is answered out of a cache in single
- * digit milliseconds and would score as a cap that never landed.
+ * not reached the end. A reference the player already fetched is answered out of the node's own cache
+ * in single digit milliseconds and would score as a cap that never landed.
+ *
+ * ⛔ Null rather than a guess where the address is not a feed. A preview playlist's address is a blob
+ * url carrying a UUID, and reading one as an owner and a topic would fetch a feed nobody published.
  */
-async function capProofReference(host: Host, cfg: E2EConfig, fragmentLog: FragmentLog): Promise<string | null> {
+async function refFromTheRecording(host: Host, cfg: E2EConfig, fragmentLog: FragmentLog): Promise<string | null> {
   const asked = fragmentLog.requests[fragmentLog.requests.length - 1];
   if (asked === undefined) {
     return null;
   }
   const { owner, topic } = parseSwarmUri(asked.rung);
-  if (!owner || !topic) {
+  if (!HEX_40.test(owner ?? '') || !HEX_64.test(topic ?? '')) {
     return null;
   }
   const text = await host
@@ -231,6 +240,22 @@ async function capProofReference(host: Host, cfg: E2EConfig, fragmentLog: Fragme
     .catch(() => '');
   const refs = segmentRefsOf(text);
   return refs[refs.length - 1] ?? null;
+}
+
+/**
+ * A segment reference off this run's own request log, which is what a gateway arm always has.
+ *
+ * ⭐ A gateway arm fetches every segment over `<gateway>/bytes/<ref>`, so its log holds nothing but
+ * references to real segments of the recording under measurement. Refetching one the player already
+ * had is fine here and is not fine on a weeb3 arm: `cache: 'no-store'` keeps the browser out of it,
+ * the bytes still cross the capped link, and the gateway holding it warm is not the link.
+ */
+function refFromTheRequestLog(requests: readonly RequestRecord[]): string | null {
+  const served = [...requests].reverse().find((request) => {
+    const ref = request.url.split(SEGMENT_ROUTE)[1]?.split(/[?#/]/, 1)[0];
+    return ref !== undefined && HEX_64.test(ref) && request.bytes > 0;
+  });
+  return served === undefined ? null : served.url.split(SEGMENT_ROUTE)[1].split(/[?#/]/, 1)[0] ?? null;
 }
 
 /** What one timed retrieval came back with, in the two fields the cap proof is judged on. */
@@ -626,8 +651,15 @@ async function main(): Promise<void> {
         // ⛔ Inside the capped window on purpose, so the retrieval really is under the cap. Its bytes
         // are therefore part of the capped stretch's byte column, and the recorder proof reads the
         // proof's own window instead so its comparison stays exact.
-        const proofRef = await capProofReference(host, cfg, fragmentLog);
+        //
+        // ⭐ A weeb3 arm needs a reference the node has NOT served, because its own cache would
+        // answer a repeat instantly. A gateway arm can reuse one out of its own request log, since
+        // `cache: 'no-store'` keeps the browser's cache out and the bytes still cross the capped
+        // link. Falling back the other way round would be wrong in the direction that hides a fault.
         const segmentBase = segmentBaseOf(requests);
+        const proofRef = throughTheNode
+          ? await refFromTheRecording(host, cfg, fragmentLog)
+          : refFromTheRequestLog(requests) ?? (await refFromTheRecording(host, cfg, fragmentLog));
         const proofFromMs = Date.now();
         const timed: TimedRetrieval =
           proofRef === null

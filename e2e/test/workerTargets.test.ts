@@ -176,6 +176,17 @@ describe('watchWorkerTargets, attaching', () => {
     assert.equal(targetOf(watch.targets(), 'worker-1').recorded, true);
   });
 
+  it('sends no auto-attach to a worker session, which has no children and may refuse it', async () => {
+    // ⛔ A failures list that fills up on every healthy run is one nobody reads when it matters.
+    const transport = fakeTransport();
+    const watch = await watchWorkerTargets(transport, emptyTraffic());
+    transport.emit(attachedToTarget('worker-1', 'shared_worker'));
+    await Promise.resolve();
+
+    assert.equal(sentOn(transport.sent, 'worker-1', 'Target.setAutoAttach').length, 0);
+    assert.deepEqual(watch.failures(), []);
+  });
+
   it('carries the auto-attach down to a page but never enables Network on it', async () => {
     // ⛔ A page enabled here would double every byte Playwright's own page recorder already has, and
     // the auto-attach is still needed so the page's own dedicated workers are reached.
