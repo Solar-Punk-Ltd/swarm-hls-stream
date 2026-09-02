@@ -343,10 +343,15 @@ recovered, sized by `WEEB3_NATIVE_SETTLE_S` (45), `WEEB3_NATIVE_SQUEEZE_S` (60) 
 `WEEB3_NATIVE_RECOVER_S` (60). The report gains a per-phase table of realtime ratio, stalls added and
 the tab's own inbound WebSocket bytes, beside what the cap allows in the same units, and the run json
 gains the phase windows while the frame log replaces the request log beside it. **Nothing in it is
-asserted.** Unset, the driver behaves exactly as it did before the mode existed. It is for a
-**finished recording** only and refuses one too short to hold the three windows plus 20 s of
-headroom, because a run that outlasts its recording measures the media running out and that reads
-exactly like a delivery failure. `WEEB3_NATIVE_HARNESS_BRACKET=1` reads the nodes' own postage and
+asserted.** Unset, the driver behaves exactly as it did before the mode existed. Before the settle
+window opens it waits for weeb-3's own player to actually move its playhead, which took 26.1 s on
+2026-08-16 and is tens of seconds after the page reports decodable media, bounded by
+`WEEB3_NATIVE_START_WAIT_S` (90) and filed with its own sample series under `squeeze.startup`, because
+a window opened at the earlier moment reads his startup and then stands in as the uncapped baseline
+the cap is judged against. It is for a **finished recording** only and refuses when the media ahead of
+the playhead at that moment is too short to hold the three windows plus 20 s of headroom, because a
+run that outlasts its media measures the media running out and that reads exactly like a delivery
+failure. `WEEB3_NATIVE_HARNESS_BRACKET=1` reads the nodes' own postage and
 chequebook counters through the harness instead of over ssh, which is the only way to satisfy the
 node-metrics gate from inside the browser container on the deployment host, and zero spend there is
 the gateway-less claim proved from the nodes' side.
