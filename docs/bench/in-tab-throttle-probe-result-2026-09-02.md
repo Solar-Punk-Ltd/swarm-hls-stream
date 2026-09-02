@@ -1,4 +1,12 @@
-# Under a cap the in-tab node doubles its own traffic and still leaves the link half idle
+# The capped in-tab probe: a morning reading that was the instrument, and the evening that showed it
+
+> ⛔⛔⛔ **Retracted the same day.** Everything from here down to "The arms, run the same evening" is
+> the morning's reading of our client on weeb-3 `0.0.329001` under Chrome's
+> `Network.emulateNetworkConditions`. The same release, client, recording and driver under a real `tc`
+> link reads 360p in 1.0 s at 1.1 bytes per payload byte with the link 70% full, against the 3.4 to
+> 4.2 s, 2x and half-idle link below. The headline was the emulation, not the node. The morning's
+> sections are kept as written, for the record of what that instrument produced. The evening's
+> sections carry the readings that stand.
 
 > **Owner's correction, the same afternoon.** This run measured **our client**, driving **our pinned
 > weeb-3 `0.0.329001` of 10 August** (twelve releases behind Abel's `0.0.341001`), under **Chrome's
@@ -167,13 +175,11 @@ bandwidth-limited link would test both at once, and the test is this probe run a
   viewer's overlap and does not reproduce hls.js's abandon-and-retry loop on top of it.
 - **n=1 run.** Three rows per arm inside it replicate tightly, but one afternoon on one host.
 
-## What it means for V2
+## What it means for V2, as written that morning
 
-V2 is red because, in this combination, a capped in-tab node cannot supply the cheapest rung: a
-350 KB/s link became 54 to 71 KB/s of usable segment and each new request landed under the
-duplicates of the last one. Which part of our side produces that, the pin, the client's use of the
-node or Chrome's emulation, is what the three arms above decide. weeb-3 itself is not to be changed,
-per the owner.
+The morning's conclusion was that a capped in-tab node cannot supply the cheapest rung. The evening's
+arms below showed that conclusion to be a property of the cap instrument. The verdict that stands is
+under "What this means for V2" at the end of this document.
 
 ## The arms, run the same evening: three contracts of ours, and two void readings
 
@@ -212,7 +218,7 @@ resolved in **0.1 s** for about 225 KB and every capped 1080p row in **0.3 to 0.
 CDP session, and on this build the node's sockets belong to the worker target, which the page session
 does not throttle. Two more instrument facts from the same report:
 
-- every byte and frame column reads **0**, because the recorder listens to page sockets only;
+- every byte and frame column reads **0**, because the recorder listens to page sockets only.
 - the report's H0 check declared "holds" on that zero. A blind instrument passed as a healthy one.
   The check has to refuse a zero, and the harness fix in progress makes both the cap and the recorder
   attach to worker targets and prove themselves by effect on every run.
