@@ -34,10 +34,25 @@ function readPublisherSpecs(): PublisherSpec[] {
   return parsePublisherSpecs(optional('BEE_PUBLISHERS', ''));
 }
 
+/**
+ * Read before `config` so `stamp` below can ask whether there are any.
+ */
+const publishers = readPublisherSpecs();
+
 export const config = {
   beeUrl: required('BEE_URL'),
-  stamp: required('STAMP'),
-  publishers: readPublisherSpecs(),
+  /**
+   * The postage batch the single-node deployment pays with.
+   *
+   * Required only when there are no publishers. With BEE_PUBLISHERS set every rung carries its
+   * own batch and this is never read — `BeePublisherPool.single()` is its only reader, and pool
+   * mode does not call it. Requiring it unconditionally meant a pool-backed uploader refused to
+   * start unless the root `.env` happened to hold a batch id left over from something else, and
+   * `.env.sample` ships `STAMP=` empty, so on a fresh checkout it could not start at all. The
+   * error named STAMP, which is the one thing such a deployment legitimately does not have.
+   */
+  stamp: publishers.length > 0 ? optional('STAMP', '') : required('STAMP'),
+  publishers,
   streamKey: required('STREAM_KEY'),
   streamListTopic: required('STREAM_LIST_TOPIC'),
   manifestAccessUrl: optional('MANIFEST_ACCESS_URL', ''),
