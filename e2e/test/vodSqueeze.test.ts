@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { judgeCapProof } from '../src/browser/capProof.js';
 import { judgeQualitySwitch, type ThrottleWindow } from '../src/browser/qualitySwitch.js';
 import { type ViewerSample } from '../src/browser/session.js';
 import {
+  judgeVodRecorder,
   judgeVodSqueeze,
   vodSqueezeObservations,
   type VodSqueezeReport,
@@ -162,11 +164,39 @@ describe('what the tab pulled over its own sockets in each stretch', () => {
   });
 });
 
+/** A 2800 kbps cap allows 350,000 bytes/s, which is the floor every proof below is judged against. */
+const CAP_BYTES_PER_SECOND = 350_000;
+const SEGMENT_BYTES = 224_848;
+
+/** A 225 KB segment that took 3.4 s at that cap, which is above its 0.64 s floor. */
+const CAP_LANDED = judgeCapProof(SEGMENT_BYTES, 3_400, CAP_BYTES_PER_SECOND);
+
+/** The same segment in 0.1 s, which is the arm 3 reading and six times faster than possible. */
+const CAP_MISSED = judgeCapProof(SEGMENT_BYTES, 100, CAP_BYTES_PER_SECOND);
+
+describe('the recorder proof a squeezed recording takes', () => {
+  it('accepts a recorder that counted at least the proof retrieval delivered', () => {
+    assert.equal(judgeVodRecorder(CAP_LANDED, 250_192).verdict, 'saw the delivery');
+  });
+
+  /** ⛔ The 2026-09-02 shape: the node returned a segment and the page-scoped recorder saw nothing. */
+  it('calls a recorder that counted nothing blind, however the phases read', () => {
+    assert.equal(judgeVodRecorder(CAP_LANDED, 0).verdict, 'blind');
+  });
+
+  it('has no reading where the proof itself returned nothing, rather than calling that a pass', () => {
+    assert.equal(judgeVodRecorder(judgeCapProof(null, null, CAP_BYTES_PER_SECOND), 0).verdict, 'no reading');
+  });
+});
+
 describe('the squeeze sections a report carries', () => {
   const REPORT: VodSqueezeReport = {
     throttle: WINDOW,
     quality: judgeQualitySwitch(SLOWED_UNDER_THE_CAP, WINDOW),
     phases: judgeVodSqueeze(SLOWED_UNDER_THE_CAP, socketed([inbound(START_MS + 500, 64)]), WINDOW),
+    capProof: CAP_LANDED,
+    recorderProof: judgeVodRecorder(CAP_LANDED, 250_192),
+    throughTheNode: true,
   };
 
   it('names all three stretches and the cap they were measured either side of', () => {
@@ -196,5 +226,51 @@ describe('the squeeze sections a report carries', () => {
     assert.match(printed, /observations, none of them asserted/);
     assert.match(printed, /1\.000/);
     assert.match(printed, /0\.400/);
+  });
+
+  /**
+   * ⛔⛔ The section a reader meets before the ratios. Every squeeze reading of 2026-09-02 was taken
+   * with a page-scoped cap and a page-scoped recorder and had nothing in this position.
+   */
+  it('leads with both instrument proofs, above the stretch table', () => {
+    const section = vodSqueezeSection(REPORT).join('\n');
+
+    assert.ok(
+      section.indexOf('### The instrument, proved by effect') < section.indexOf('media seconds per wall second'),
+    );
+    assert.match(section, /the cap reached the node/);
+    assert.match(section, /the recorder saw the delivery/);
+    assert.match(section, /in-tab retrieval path/);
+  });
+
+  it('says the cap never reached the node where the proof says so', () => {
+    const section = vodSqueezeSection({ ...REPORT, capProof: CAP_MISSED }).join('\n');
+
+    assert.match(section, /the cap never reached the node/);
+  });
+
+  /**
+   * ⛔ A gateway arm has no in-tab node, so its WebSocket zero is CORRECT rather than blind. A run
+   * refused for the absence of a node it never had is a gate nobody would keep.
+   */
+  it('says a gateway arm has no recorder to have been blind, rather than reporting it blind', () => {
+    const gateway: VodSqueezeReport = {
+      ...REPORT,
+      throughTheNode: false,
+      recorderProof: judgeVodRecorder(CAP_LANDED, 0),
+    };
+    const section = vodSqueezeSection(gateway).join('\n');
+
+    assert.match(section, /not the instrument on a gateway arm/);
+    assert.doesNotMatch(section, /the recorder is blind/);
+    assert.match(section, /plain fetch of a segment/);
+  });
+
+  it('leaves the recorder line out of the printed observations on a gateway arm', () => {
+    const gateway: VodSqueezeReport = { ...REPORT, throughTheNode: false };
+    const printed = vodSqueezeObservations(gateway).join('\n');
+
+    assert.match(printed, /the instrument: /);
+    assert.doesNotMatch(printed, /the recorder/);
   });
 });

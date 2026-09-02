@@ -20,13 +20,21 @@
  * second is the only vantage point on an in-tab node's traffic, for the reason `webSocketTraffic.ts`
  * gives, and the sums come from that module's pure functions rather than from a second copy here.
  *
- * ## ⛔ It records and it refuses nothing
+ * ## ⛔ It records and it refuses nothing ABOUT THE PRODUCT
  *
  * Owner ruling of 2026-08-29: an e2e suite checks that a feature works and stays stable, never how
  * fast it is. No ratio, no byte count and no stall count below is a threshold, and no suite may key a
  * refusal to one.
+ *
+ * ⛔⛔⛔ **The two INSTRUMENT proofs are the exception, and they are not about the product at all.**
+ * Since weeb-3 0.0.341001 the node runs in a SharedWorker, so the page-scoped cap this driver used
+ * reached nothing the node does and the page-scoped recorder counted nothing it moved. Every ratio
+ * under an unapplied cap is a reading of a fast unconstrained link with a cap written beside it, and
+ * that is not a weak reading but a false one. {@link judgeVodRecorder} and `capProof.ts` are the
+ * refusals, and neither is a timing.
  */
 
+import { type CapProof, capProofLine, judgeRecorderProof, type RecorderProof, recorderProofLine } from './capProof.js';
 import { type RungTimeline, type ThrottleWindow } from './qualitySwitch.js';
 import { phaseOf, STALLED_ADVANCE_RATIO, type ViewerSample } from './session.js';
 import { bytesBetween, type WebSocketTraffic } from './webSocketTraffic.js';
@@ -118,6 +126,24 @@ export function judgeVodSqueeze(
 }
 
 /**
+ * Whether the recorder saw the delivery the cap proof is known to have pulled.
+ *
+ * ⛔⛔ Only a weeb3 arm has an in-tab node, so only a weeb3 arm has WebSocket bytes to have counted.
+ * On a gateway arm the segment bytes come over the page's own HTTP and a zero here is CORRECT, so
+ * the driver reads the verdict and refuses on nothing. Handing this a gateway arm's numbers would
+ * refuse a run for the absence of a node it never had.
+ *
+ * @param inboundBytes What the recorder counted over the proof retrieval's own window, tail included.
+ *   ⛔ The proof's window rather than the whole capped phase, so the comparison is exact: the phase
+ *   also carries whatever the player was fetching, which would pad the inbound side and let a
+ *   partly blind recorder pass.
+ */
+export function judgeVodRecorder(capProof: CapProof, inboundBytes: number): RecorderProof {
+  const payloadBytes = capProof.byteLength ?? 0;
+  return judgeRecorderProof(payloadBytes, inboundBytes, payloadBytes > 0 ? 1 : 0);
+}
+
+/**
  * What a squeeze report is rendered from.
  *
  * The rung timeline and these phases are separate readings of one stretch, so they are passed
@@ -129,6 +155,19 @@ export interface VodSqueezeReport {
   /** ⛔ `RungTimeline` rather than the full verdict, so this asks for only the fields it reads. */
   quality: RungTimeline;
   phases: VodSqueezeReading;
+  /**
+   * One retrieval under the cap, timed against the physical floor at that cap.
+   *
+   * ⛔⛔⛔ Through the in-tab node on a weeb3 arm and through a plain segment fetch on a gateway one,
+   * because the proof has to travel the path the segment bytes travel. A page-scoped cap has reached
+   * nothing the node does since weeb-3 0.0.341001, and the "1.000x under the cap" readings of
+   * 2026-09-02 were taken with no such proof at all.
+   */
+  capProof: CapProof;
+  /** ⛔ Meaningful on a weeb3 arm only. See {@link judgeVodRecorder}. */
+  recorderProof: RecorderProof;
+  /** Whether the segment bytes came from the in-tab node, which decides what the proofs can say. */
+  throughTheNode: boolean;
 }
 
 const stalls = (phase: VodSqueezePhase): string => `${phase.stalledSamples} of ${phase.sampledIntervals}`;
@@ -154,6 +193,23 @@ export function vodSqueezeSection(report: VodSqueezeReport): string[] {
       'through a finished recording rather than a live broadcast. Nothing here is a live edge to fall ' +
       'behind, and every byte the player wanted already existed, so a picture that stopped under the ' +
       'cap stopped on the byte source rather than on running out of runway.',
+    '',
+    '### The instrument, proved by effect',
+    '',
+    `- ${capProofLine(report.capProof)}, timed through ` +
+      `${report.throughTheNode ? "the client's own in-tab retrieval path" : 'a plain fetch of a segment'}`,
+    `- ${
+      report.throughTheNode
+        ? recorderProofLine(report.recorderProof)
+        : '✅ **the recorder is not the instrument on a gateway arm**: the segment bytes come over the ' +
+          "page's own HTTP, so there is no in-tab node for the WebSocket recorder to have counted and " +
+          'a zero in the byte column below is correct rather than blind'
+    }`,
+    '',
+    "⛔⛔ Both are readings of OUR HARNESS. Since weeb-3 0.0.341001 the node's WebSockets belong to a " +
+      'SharedWorker target, so a page-scoped cap reaches nothing it does and a page-scoped recorder ' +
+      'counts nothing it moves, and the squeeze readings of 2026-09-02 were taken under exactly that. ' +
+      '**A run that fails either proof is refused by the driver.**',
     '',
     '| | media seconds per wall second | stalled intervals | WebSocket bytes in |',
     '| --- | ---: | ---: | ---: |',
@@ -181,6 +237,10 @@ export function vodSqueezeObservations(report: VodSqueezeReport): string[] {
   const { quality } = report;
 
   return [
+    // ⛔ The proofs first and above the heading that says nothing below them is asserted, because
+    // they are the exception: an unproved cap makes every ratio under it a reading of a fast link.
+    `the instrument: ${capProofLine(report.capProof)}`,
+    ...(report.throughTheNode ? [`the instrument: ${recorderProofLine(report.recorderProof)}`] : []),
     'observations, none of them asserted',
     `  the picture advanced ${quality.before.advance.ratio.toFixed(3)}x ${BEFORE}, ` +
       `${quality.during.advance.ratio.toFixed(3)}x ${DURING}, and ` +

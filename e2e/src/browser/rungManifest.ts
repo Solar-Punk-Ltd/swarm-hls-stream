@@ -75,9 +75,23 @@ function taggedNumber(lines: readonly string[], tag: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Every bare segment reference an m3u8 names, in playlist order.
+ *
+ * Its own function because a caller can hold a playlist without knowing which rung of a ladder it
+ * belongs to: `browser:vod` reads one off the address the player's own fragment log names, and a
+ * rung name it invented would put a label nobody chose on a reference.
+ */
+export function segmentRefsOf(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => SEGMENT_REF.test(line));
+}
+
 export function parseRungManifest(rung: RungName, topicHex: string, text: string): ParsedRungManifest {
   const lines = text.split('\n').map((line) => line.trim());
-  const refs = lines.filter((line) => SEGMENT_REF.test(line));
+  const refs = segmentRefsOf(text);
   const durations = lines
     .filter((line) => line.startsWith(SEGMENT_DURATION_TAG))
     .map((line) => taggedNumber([line], SEGMENT_DURATION_TAG))

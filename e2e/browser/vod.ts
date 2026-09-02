@@ -41,6 +41,19 @@
  * ⛔ Nothing here is asserted. Every ratio, byte count and stall count is measured, printed under a
  * heading that says so, and filed. Owner ruling of 2026-08-29.
  *
+ * ## ⛔⛔⛔ The two INSTRUMENT refusals, which are not timings
+ *
+ * A squeeze run proves its own cap before its readings mean anything. One segment is pulled under
+ * the cap over the path this arm's video travels, the in-tab node on a `weeb3` arm and a plain fetch
+ * on a `gateway` one, and timed against how long that payload takes at the cap. Under four fifths of
+ * that floor the emulation went somewhere the bytes do not travel, and since weeb-3 0.0.341001 that
+ * means the page rather than the SharedWorker the node runs in. The recorder is proved the same way,
+ * against the payload that retrieval returned, on a `weeb3` arm only: a gateway arm has no in-tab
+ * node, so its WebSocket zero is correct rather than blind.
+ *
+ * Both refuse **after** the artifact is written, so a refused run keeps the reading that refused it.
+ * See `src/browser/capProof.ts`.
+ *
  * Usage, on the deployment host, against a stream that has already finished:
  *   deploy/scripts/browser-on-host.sh --script browser:vod -- \
  *     BROWSER_VOD_OWNER=<owner> BROWSER_VOD_TOPIC=<rawTopic>
@@ -50,6 +63,7 @@
  *     BROWSER_VOD_OWNER=<owner> BROWSER_VOD_TOPIC=<rawTopic> BROWSER_VOD_SQUEEZE_KBPS=2800
  */
 
+import { parseSwarmUri } from '@swarm-hls-stream/shared';
 import { type Page } from 'playwright-core';
 
 import {
@@ -57,7 +71,8 @@ import {
   DEFAULT_BYTE_SOURCE_SETTLE_SECONDS,
   openByteSourceArmSession,
 } from '../src/browser/byteSourceArm.js';
-import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
+import { capProofLine, capProofRefusal, judgeCapProof, recorderBlindRefusal } from '../src/browser/capProof.js';
+import { byteSourceFromEnv, retrieveThroughInTabNode, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
 import {
   abandonedAnswerVerdict,
   type FragmentLog,
@@ -83,8 +98,9 @@ import {
   thinRequestLog,
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
+import { segmentRefsOf } from '../src/browser/rungManifest.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
-import { squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
+import { kbpsAsBytesPerSecond, squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
 import {
   installClockOverlay,
   installTimerProbe,
@@ -96,15 +112,16 @@ import {
   VIEWPORT,
 } from '../src/browser/viewer.js';
 import {
+  judgeVodRecorder,
   judgeVodSqueeze,
   vodSqueezeObservations,
   type VodSqueezeReport,
   vodSqueezeSection,
 } from '../src/browser/vodSqueeze.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, sampleFor } from '../src/browser/watchLoop.js';
-import { recordWebSocketTraffic, type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
-import { loadConfig } from '../src/config.js';
-import { makeHost } from '../src/harness/host.js';
+import { bytesBetween, recordWebSocketTraffic, type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
+import { type E2EConfig, loadConfig } from '../src/config.js';
+import { type Host, makeHost } from '../src/harness/host.js';
 
 /** How long to watch from the start before seeking, so ordinary playback is established first. */
 const SETTLE_SECONDS = 8;
@@ -156,6 +173,101 @@ interface SqueezePlan {
   squeezeMs: number;
   recoverMs: number;
   intervalMs: number;
+}
+
+/**
+ * The route a gateway serves segment bodies on.
+ *
+ * Mirrored rather than imported, exactly as `fetchBackendSweep.ts` mirrors it: this is the shape of
+ * a url the browser produced rather than a value either side computes.
+ */
+const SEGMENT_ROUTE = '/bytes/';
+
+/** A feed read can take seconds on a busy gateway, and a rung playlist is one of them. */
+const CAP_PROOF_MANIFEST_TIMEOUT_S = 30;
+
+/**
+ * Quiet time counted into the cap proof's own window after its retrieval settled.
+ *
+ * ⛔ The frames are stamped by the harness on receipt and the settle instant comes off the page's
+ * own clock, so a chunk that arrived just before the retrieval resolved can be stamped just after
+ * it. Five seconds is far more slack than that skew and the payload's bytes are inside the union
+ * either way, which is what keeps the recorder proof from refusing a sighted recorder.
+ */
+const CAP_PROOF_TAIL_MS = 5_000;
+
+/**
+ * How long the cap proof is given before it counts as having returned nothing.
+ *
+ * A capped 1 MB segment through an in-tab node is tens of seconds when the node is struggling, which
+ * is the condition this whole driver exists to watch. Nothing timed out here is read as a fast link:
+ * `judgeCapProof` reads a missing reading as `no reading`, which refuses.
+ */
+const CAP_PROOF_BUDGET_MS = 120_000;
+
+/**
+ * A fresh segment reference from the recording the player is actually watching.
+ *
+ * ⛔ Off the rung address the client's own fragment log names, which is `swarm://<owner>/<topic>` and
+ * is exactly what `/feeds/{owner}/{topic}` takes. So the reference comes from the recording under
+ * measurement rather than from a constant a driver was handed, and a run pointed at a different
+ * recording cannot proof itself against the wrong one.
+ *
+ * ⛔ The LAST reference in the playlist, because the player opened the recording at its start and has
+ * not reached the end. A reference the player already fetched is answered out of a cache in single
+ * digit milliseconds and would score as a cap that never landed.
+ */
+async function capProofReference(host: Host, cfg: E2EConfig, fragmentLog: FragmentLog): Promise<string | null> {
+  const asked = fragmentLog.requests[fragmentLog.requests.length - 1];
+  if (asked === undefined) {
+    return null;
+  }
+  const { owner, topic } = parseSwarmUri(asked.rung);
+  if (!owner || !topic) {
+    return null;
+  }
+  const text = await host
+    .localText(cfg.ports.beeGatewayApi, `/feeds/${owner}/${topic}`, CAP_PROOF_MANIFEST_TIMEOUT_S)
+    .catch(() => '');
+  const refs = segmentRefsOf(text);
+  return refs[refs.length - 1] ?? null;
+}
+
+/** What one timed retrieval came back with, in the two fields the cap proof is judged on. */
+interface TimedRetrieval {
+  byteLength: number | null;
+  elapsedMs: number | null;
+}
+
+/**
+ * Time one plain fetch of a segment from inside the page, which is the gateway's own byte path.
+ *
+ * ⛔ From inside the page rather than from the harness, because the cap lives in the browser. A fetch
+ * the harness made would cross an unthrottled link and prove nothing at all.
+ */
+async function fetchSegmentThroughThePage(page: Page, url: string): Promise<TimedRetrieval> {
+  return page.evaluate(async (target: string) => {
+    const startedAtMs = performance.now();
+    try {
+      const response = await fetch(target, { cache: 'no-store' });
+      const body = await response.arrayBuffer();
+      return { byteLength: body.byteLength, elapsedMs: performance.now() - startedAtMs };
+    } catch {
+      return { byteLength: null, elapsedMs: null };
+    }
+  }, url);
+}
+
+/**
+ * Where the gateway serves segment bytes, read off a request this run has already made.
+ *
+ * ⛔ Off the log rather than composed from config. Every segment url this client builds is
+ * `<gateway>/bytes/<ref>`, and a base composed here could name a host the page was never pointed at,
+ * which would time a fetch against a gateway that is not the one serving the run.
+ */
+function segmentBaseOf(requests: readonly RequestRecord[]): string | null {
+  const served = requests.find((request) => request.url.includes(SEGMENT_ROUTE));
+  return served === undefined ? null : served.url.slice(0, served.url.indexOf(SEGMENT_ROUTE) + SEGMENT_ROUTE.length);
 }
 
 /**
@@ -384,6 +496,12 @@ async function main(): Promise<void> {
   let throttle: ThrottleHandle | undefined;
   let throttledAtMs = 0;
   let releasedAtMs = 0;
+  /** Whether this arm's segment bytes come from the in-tab node, which decides both proofs' shape. */
+  const throughTheNode = armByteSource === WEEB3_BYTES;
+  /** ⛔ `no reading` until the proof runs, which refuses. A cap that proved nothing is not a pass. */
+  let capProof = judgeCapProof(null, null, kbpsAsBytesPerSecond(squeeze?.kbps ?? 0));
+  /** What the recorder counted over the cap proof's own window, tail included. */
+  let proofInboundBytes = 0;
 
   try {
     const context = await browser.newContext({ viewport: VIEWPORT });
@@ -500,6 +618,35 @@ async function main(): Promise<void> {
         throttle = await squeezeDownload(page, squeeze.kbps, workers);
         throttledAtMs = Date.now();
 
+        // ⛔⛔⛔ THE CAP PROVES ITSELF HERE, and until 2026-09-02 nothing did. One segment is pulled
+        // over the path this arm's video travels and timed against how long that payload takes at the
+        // cap. Under four fifths of that floor the emulation went somewhere the bytes do not travel,
+        // which since weeb-3 0.0.341001 means the page rather than the SharedWorker the node lives in.
+        //
+        // ⛔ Inside the capped window on purpose, so the retrieval really is under the cap. Its bytes
+        // are therefore part of the capped stretch's byte column, and the recorder proof reads the
+        // proof's own window instead so its comparison stays exact.
+        const proofRef = await capProofReference(host, cfg, fragmentLog);
+        const segmentBase = segmentBaseOf(requests);
+        const proofFromMs = Date.now();
+        const timed: TimedRetrieval =
+          proofRef === null
+            ? { byteLength: null, elapsedMs: null }
+            : throughTheNode
+            ? await Promise.race([
+                retrieveThroughInTabNode(page, proofRef),
+                new Promise<TimedRetrieval>((resolve) =>
+                  setTimeout(() => resolve({ byteLength: null, elapsedMs: null }), CAP_PROOF_BUDGET_MS),
+                ),
+              ])
+            : segmentBase === null
+            ? { byteLength: null, elapsedMs: null }
+            : await fetchSegmentThroughThePage(page, `${segmentBase}${proofRef}`);
+        await page.waitForTimeout(CAP_PROOF_TAIL_MS);
+        capProof = judgeCapProof(timed.byteLength, timed.elapsedMs, kbpsAsBytesPerSecond(squeeze.kbps));
+        proofInboundBytes = bytesBetween(traffic.frames, proofFromMs, Date.now(), 'in');
+        console.log(`browser: ${capProofLine(capProof)}`);
+
         try {
           await watch(squeeze.squeezeMs);
         } finally {
@@ -569,6 +716,9 @@ async function main(): Promise<void> {
             throttle: throttleWindow,
             quality: judgeQualitySwitch(watched, throttleWindow),
             phases: judgeVodSqueeze(watched, traffic, throttleWindow),
+            capProof,
+            recorderProof: judgeVodRecorder(capProof, proofInboundBytes),
+            throughTheNode,
           };
     // ⛔ Which level the player ASKED for and what became of each attempt, neither of which any other
     // reading here carries. `pictureMoved` is what lets an empty capture read as a client without the
@@ -609,6 +759,14 @@ async function main(): Promise<void> {
       throttle: squeezed?.throttle,
       quality: squeezed?.quality,
       vodSqueeze: squeezed?.phases,
+      // ⛔⛔ Under their own keys, so a reader of the json meets them before any ratio. A squeeze
+      // artifact without them is one taken before 2026-09-02, when a page-scoped cap was believed.
+      capProof: squeezed?.capProof,
+      recorderProof: squeezed?.recorderProof,
+      // ⛔ Which path the proofs travelled, because the same two fields mean different things on the
+      // two byte sources: a gateway arm's WebSocket zero is correct and a weeb3 arm's is a blind
+      // instrument, and a reader cannot tell them apart without this.
+      throughTheNode: squeezed?.throughTheNode,
       fragmentRequests: askedFragments,
       // What the run was asked to do, so a report states the plan rather than inferring it from the
       // stretch lengths it happened to get.
@@ -655,6 +813,24 @@ async function main(): Promise<void> {
     // client that never loaded the node produces just as well. The artifact is the thing worth
     // keeping either way.
     byteSourceArm?.proveBytesCameFromIt(requests);
+
+    // ⛔⛔⛔ And then the instrument, on the same rule: after the artifact, before the run is called a
+    // reading. An unproved cap makes every ratio above a measurement of a fast unconstrained link
+    // with a cap written beside it, and the recorder proof is skipped on a gateway arm because there
+    // is no in-tab node there for the WebSocket recorder to have missed.
+    if (squeezed !== undefined) {
+      const refusal =
+        capProofRefusal(
+          squeezed.capProof,
+          throughTheNode ? "the client's own in-tab retrieval path" : 'a plain fetch of a segment',
+        ) ??
+        (throughTheNode ? recorderBlindRefusal(squeezed.recorderProof, "this run's WebSocket frame recorder") : null);
+      if (refusal !== null) {
+        throw new Error(
+          `⛔ REFUSED, and no figure under the cap in ${stem}.md is a reading of a capped link: ${refusal}`,
+        );
+      }
+    }
   } finally {
     // The cap lives in the browser, so closing it lifts everything. Released here anyway for the path
     // where the squeeze stretch threw before its own finally ran.
@@ -683,6 +859,9 @@ function renderVodReport(run: {
   quality?: VodSqueezeReport['quality'];
   throttle?: VodSqueezeReport['throttle'];
   vodSqueeze?: VodSqueezeReport['phases'];
+  capProof?: VodSqueezeReport['capProof'];
+  recorderProof?: VodSqueezeReport['recorderProof'];
+  throughTheNode?: boolean;
   fragmentRequests?: FragmentRequestTimeline;
 }): string {
   const squeezed = squeezeReportOf(run);
@@ -800,20 +979,34 @@ function renderVodReport(run: {
 /**
  * The squeeze readings as one report, or undefined where this run did not squeeze anything.
  *
- * ⛔ All three or none. The three are written together by a squeeze run and by nothing else, so a
- * file carrying some of them is malformed rather than a plain playback, and rendering half a squeeze
+ * ⛔ All of them or none. They are written together by a squeeze run and by nothing else, so a file
+ * carrying some of them is malformed rather than a plain playback, and rendering half a squeeze
  * beside a seek battery's headline is exactly the mislabelled artifact this driver has already met.
+ *
+ * ⛔⛔ The two instrument proofs are in that set. A squeeze artifact that carries phases and no proof
+ * is one written before 2026-09-02, when a page-scoped cap and a page-scoped recorder were believed,
+ * and rendering it as though its ratios meant something is how those readings came to be quoted.
  */
 function squeezeReportOf(run: {
   quality?: VodSqueezeReport['quality'];
   throttle?: VodSqueezeReport['throttle'];
   vodSqueeze?: VodSqueezeReport['phases'];
+  capProof?: VodSqueezeReport['capProof'];
+  recorderProof?: VodSqueezeReport['recorderProof'];
+  throughTheNode?: boolean;
 }): VodSqueezeReport | undefined {
-  const { quality, throttle, vodSqueeze } = run;
-  if (quality === undefined || throttle === undefined || vodSqueeze === undefined) {
+  const { quality, throttle, vodSqueeze, capProof, recorderProof, throughTheNode } = run;
+  if (
+    quality === undefined ||
+    throttle === undefined ||
+    vodSqueeze === undefined ||
+    capProof === undefined ||
+    recorderProof === undefined ||
+    throughTheNode === undefined
+  ) {
     return undefined;
   }
-  return { quality, throttle, phases: vodSqueeze };
+  return { quality, throttle, phases: vodSqueeze, capProof, recorderProof, throughTheNode };
 }
 
 /**
