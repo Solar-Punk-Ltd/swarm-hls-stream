@@ -120,6 +120,17 @@ check_stamp() {
   done
 
   if [ "$needs_stamp" = "true" ]; then
+    # A publisher pool carries a batch per rung inside BEE_PUBLISHERS and the
+    # uploader ignores STAMP entirely, so an empty STAMP is the *expected*
+    # configuration there, not a missing one. Prompting anyway also breaks any
+    # non-interactive caller (the deployment manager runs this without a stdin),
+    # which turns a correct config into a hung deploy.
+    local publishers_val
+    publishers_val=$(grep -E '^BEE_PUBLISHERS=' "$ENV_FILE" | cut -d= -f2-)
+    if [ -n "$publishers_val" ]; then
+      return
+    fi
+
     local stamp_val
     stamp_val=$(grep -E '^STAMP=' "$ENV_FILE" | cut -d= -f2-)
     if [ -z "$stamp_val" ]; then
