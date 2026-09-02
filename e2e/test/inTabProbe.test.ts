@@ -8,11 +8,13 @@ import {
   type IdleWindow,
   type InTabProbeRun,
   judgeRoundDegraded,
+  linkOccupancy,
   probeArmOrder,
   renderInTabProbeReport,
   type RetrievalRow,
   summarizeAmplification,
   summarizeIdleWindow,
+  summarizePair,
 } from '../src/browser/inTabProbe.js';
 import { judgeCost, type ResourceReading } from '../src/browser/resources.js';
 import { type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
@@ -210,10 +212,12 @@ function probeRun(retrievals: readonly RetrievalRow[], idleWindows: readonly Idl
     joinedInMs: 10_400,
     budgetMs: BUDGET_MS,
     tailMs: TAIL_MS,
+    gapMs: 15_000,
     capKbps: CAP_KBPS,
     lowCapKbps: LOW_CAP_KBPS,
     idleWindows,
     retrievals,
+    pairs: [],
     cost: judgeCost(reading(START_MS, 4.2), reading(START_MS + 600_000, 4.2), 0),
   };
 }
@@ -257,6 +261,7 @@ describe('the report the probe leaves behind', () => {
     assert.match(markdown, /H2/);
     assert.match(markdown, /105,000 bytes\/s/);
     assert.match(markdown, /H3/);
+    assert.match(markdown, /of the cap while capped rows ran/);
   });
 
   it('prints a budget row as not completing rather than as a duration', () => {
@@ -305,6 +310,101 @@ describe('the report the probe leaves behind', () => {
     const markdown = renderInTabProbeReport(probeRun(rows, []));
 
     assert.match(markdown, /observations, none of them asserted/);
+  });
+});
+
+describe('how full the capped link was while a row ran', () => {
+  // 2800 kbps allows 350,000 bytes a second.
+  it('reads inbound bytes against what the cap allowed over the watched time', () => {
+    const row = retrieval({ kbpsCap: CAP_KBPS, inBytesDuring: 262_500, settledAtMs: START_MS + 2_500 });
+
+    // 262,500 over 2.5 s is 105,000 a second, which is 30% of the cap.
+    assert.ok(Math.abs((linkOccupancy(row) ?? 0) - 0.3) < 1e-9);
+  });
+
+  it('has nothing to say about an uncapped row', () => {
+    assert.equal(linkOccupancy(retrieval()), null);
+  });
+
+  it('reads a budget row over the budget, which is how long the harness watched', () => {
+    const row = retrieval({
+      kbpsCap: CAP_KBPS,
+      outcome: 'budget',
+      settledAtMs: null,
+      elapsedMs: null,
+      byteLength: null,
+      amplification: null,
+      inBytesTailAfter: null,
+      inBytesDuring: 3_150_000,
+    });
+
+    // 3,150,000 over 90 s is a tenth of what the cap allows.
+    assert.ok(Math.abs((linkOccupancy(row) ?? 0) - 0.1) < 1e-9);
+  });
+
+  it('prints the spread over the capped rows beside H3', () => {
+    const rows = [retrieval({ arm: '360p', kbpsCap: CAP_KBPS, inBytesDuring: 262_500 })];
+    const markdown = renderInTabProbeReport(probeRun(rows, []));
+
+    assert.match(markdown, /Link at 30% \/ 30% \/ 30% \(n=1\) of the cap while capped rows ran/);
+  });
+});
+
+describe('a Part C pair read together', () => {
+  const traffic: WebSocketTraffic = {
+    connections: [],
+    frames: [
+      { atMs: START_MS + 100, direction: 'in', bytes: 100_000 },
+      { atMs: START_MS + 3_000, direction: 'in', bytes: 200_000 },
+      // After the union window, so it belongs to neither row and not to the pair.
+      { atMs: START_MS + 9_000, direction: 'in', bytes: 50_000 },
+    ],
+  };
+  const rows = [
+    retrieval({
+      arm: 'pair',
+      kbpsCap: CAP_KBPS,
+      startedAtMs: START_MS,
+      settledAtMs: START_MS + 2_500,
+      byteLength: 100_000,
+    }),
+    retrieval({
+      arm: 'pair',
+      kbpsCap: CAP_KBPS,
+      startedAtMs: START_MS + 50,
+      settledAtMs: START_MS + 5_000,
+      byteLength: 120_000,
+    }),
+  ];
+
+  it('spans from the first start to the last settle and sums both payloads', () => {
+    const pair = summarizePair(rows, traffic);
+
+    assert.equal(pair.startedAtMs, START_MS);
+    assert.equal(pair.watchedUntilMs, START_MS + 5_000);
+    assert.equal(pair.inBytes, 300_000);
+    assert.equal(pair.payloadBytes, 220_000);
+    assert.ok(Math.abs((pair.amplification ?? 0) - 300_000 / 220_000) < 1e-9);
+    // 300,000 over 5 s against the 350,000 a second the cap allows.
+    assert.ok(Math.abs((pair.occupancy ?? 0) - 300_000 / 1_750_000) < 1e-9);
+  });
+
+  it('carries no payload figure when neither row returned one', () => {
+    const empty = rows.map((row) => ({ ...row, byteLength: null, amplification: null }));
+
+    const pair = summarizePair(empty, traffic);
+
+    assert.equal(pair.payloadBytes, null);
+    assert.equal(pair.amplification, null);
+  });
+
+  it('reaches the report as one line about both rows', () => {
+    const run = { ...probeRun(rows, []), pairs: [summarizePair(rows, traffic)] };
+
+    assert.match(
+      renderInTabProbeReport(run),
+      /Pair 0 together: 300,000 bytes inbound over 5 s against 220,000 payload bytes, ×1\.36, link at 17% of the cap/,
+    );
   });
 });
 

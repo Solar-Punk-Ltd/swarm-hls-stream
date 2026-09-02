@@ -19,8 +19,13 @@
  * material share of the capped link before anything is asked for. Predicted at 30% of the cap or
  * more if it is the cause.
  *
- * H3, accounting refusals: peers refuse reservations and the node cycles its overdraft list.
- * Predicted as capped retrievals rejecting quickly.
+ * H3, accounting exhaustion: every attempt reserves the chunk's price at its peer first, the closest
+ * peer is asked first, and a peer whose balance plus reserve would pass its threshold refuses, so
+ * hedges piling up under a cap can exhaust the closest peers and leave the node cycling its overdraft
+ * list waiting for allowance that refreshes once a second per peer. Predicted, if it dominates, as a
+ * capped retrieval that hangs with the link mostly idle and rejects when it answers. Under H1 the
+ * link is full while goodput is low, so {@link linkOccupancy} is what tells the two apart, and H1 can
+ * cause H3.
  *
  * H0, the instrument: the cap must reach the WebSocket transport as one aggregate budget or none of
  * the capped figures mean anything. {@link h0Check} is that reading, and it is a sentence in the
@@ -108,9 +113,32 @@ export interface InTabProbeRun {
   tailMs: number;
   capKbps: number;
   lowCapKbps: number;
+  /** The quiet time after each row's cap lifted, before the next row started. */
+  gapMs: number;
   idleWindows: readonly IdleWindow[];
   retrievals: readonly RetrievalRow[];
+  /** Part C's pairs, each read as one thing. See {@link summarizePair}. */
+  pairs: readonly PairSummary[];
   cost: ResourceCost;
+}
+
+/**
+ * What a Part C pair did together.
+ *
+ * ⛔ Two retrievals on one link each count the other's bytes, so a per row ratio for either is a
+ * number about both. The pair is read over the union of their windows against the sum of what they
+ * returned, and that is the figure Part C is judged on.
+ */
+export interface PairSummary {
+  roundIndex: number;
+  startedAtMs: number;
+  watchedUntilMs: number;
+  inBytes: number;
+  /** Null when neither row returned a payload. */
+  payloadBytes: number | null;
+  amplification: number | null;
+  /** Inbound over the union window as a share of what the cap allowed, or null for an uncapped pair. */
+  occupancy: number | null;
 }
 
 interface AmplificationSummary {
@@ -254,6 +282,49 @@ export function buildRetrievalRow(observation: RetrievalObservation, traffic: We
   };
 }
 
+/** Inbound bytes as a share of what a cap allowed over a stretch, or null where there was no cap. */
+function shareOfCap(inBytes: number, kbpsCap: number | null, watchedMs: number): number | null {
+  if (kbpsCap === null || watchedMs <= 0) {
+    return null;
+  }
+  return inBytes / (kbpsAsBytesPerSecond(kbpsCap) * (watchedMs / MS_PER_SECOND));
+}
+
+/**
+ * How full the capped link was while this row ran.
+ *
+ * ⛔ The reading that separates H1 from H3. Both leave a capped retrieval unanswered for tens of
+ * seconds, and they differ in what the link was doing meanwhile: full of hedged chunks under H1,
+ * mostly idle under H3 while the node waits on allowance. A budget row is read over the budget, which
+ * is how long the harness watched.
+ */
+export function linkOccupancy(row: RetrievalRow): number | null {
+  const watchedUntilMs = row.settledAtMs ?? row.startedAtMs + row.budgetMs;
+  return shareOfCap(row.inBytesDuring, row.kbpsCap, watchedUntilMs - row.startedAtMs);
+}
+
+export function summarizePair(rows: readonly RetrievalRow[], traffic: WebSocketTraffic): PairSummary {
+  const [first] = rows;
+  if (first === undefined) {
+    throw new Error('a pair summary needs at least one row, and none was handed in');
+  }
+  const startedAtMs = Math.min(...rows.map((row) => row.startedAtMs));
+  const watchedUntilMs = Math.max(...rows.map((row) => row.settledAtMs ?? row.startedAtMs + row.budgetMs));
+  const returned = rows.map((row) => row.byteLength).filter((bytes): bytes is number => bytes !== null);
+  const payloadBytes = returned.length === 0 ? null : returned.reduce((total, bytes) => total + bytes, 0);
+  const inBytes = bytesBetween(traffic.frames, startedAtMs, watchedUntilMs, 'in');
+
+  return {
+    roundIndex: first.roundIndex,
+    startedAtMs,
+    watchedUntilMs,
+    inBytes,
+    payloadBytes,
+    amplification: amplification(inBytes, payloadBytes ?? 0),
+    occupancy: shareOfCap(inBytes, first.kbpsCap, watchedUntilMs - startedAtMs),
+  };
+}
+
 /**
  * Whether the round this canary opened can be read.
  *
@@ -290,14 +361,31 @@ export function describeRetrieval(row: RetrievalRow): string {
 
 /** The spread of inbound bytes per payload byte across rows, over those that carry a ratio. */
 export function summarizeAmplification(rows: readonly RetrievalRow[]): AmplificationSummary | null {
-  const ratios = rows
-    .map((row) => row.amplification)
-    .filter((ratio): ratio is number => ratio !== null && Number.isFinite(ratio));
+  return summarizeValues(rows.map((row) => row.amplification));
+}
 
-  if (ratios.length === 0) {
+/** The spread of {@link linkOccupancy} across rows, over those that ran under a cap. */
+function summarizeOccupancy(rows: readonly RetrievalRow[]): AmplificationSummary | null {
+  return summarizeValues(rows.map(linkOccupancy));
+}
+
+function summarizeValues(values: readonly (number | null)[]): AmplificationSummary | null {
+  const finite = values.filter((value): value is number => value !== null && Number.isFinite(value));
+  if (finite.length === 0) {
     return null;
   }
-  return { n: ratios.length, min: Math.min(...ratios), median: median(ratios), max: Math.max(...ratios) };
+  return { n: finite.length, min: Math.min(...finite), median: median(finite), max: Math.max(...finite) };
+}
+
+function percent(share: number): string {
+  return `${Math.round(share * 100)}%`;
+}
+
+function describeShare(summary: AmplificationSummary | null): string {
+  if (summary === null) {
+    return 'no capped row to read';
+  }
+  return `${percent(summary.min)} / ${percent(summary.median)} / ${percent(summary.max)} (n=${summary.n})`;
 }
 
 /**
@@ -355,6 +443,7 @@ function describeAmplification(summary: AmplificationSummary | null): string {
 
 function retrievalRow(row: RetrievalRow): string {
   const past20s = row.elapsedMs !== null && row.elapsedMs > HLSJS_ABANDONS_AT_MS;
+  const occupancy = linkOccupancy(row);
   return [
     `| ${row.roundIndex}`,
     row.arm,
@@ -364,13 +453,14 @@ function retrievalRow(row: RetrievalRow): string {
     grouped(row.inBytesDuring),
     String(row.outFramesDuring),
     row.inBytesTailAfter === null ? '—' : grouped(row.inBytesTailAfter),
-    `${row.amplification === null ? '—' : row.amplification.toFixed(2)} |`,
+    row.amplification === null ? '—' : row.amplification.toFixed(2),
+    `${occupancy === null ? '—' : percent(occupancy)} |`,
   ].join(' | ');
 }
 
 const RETRIEVAL_HEADER = [
-  '| round | arm | cap | reference | outcome | inbound during | out frames | inbound in the tail | ×payload |',
-  '| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: |',
+  '| round | arm | cap | reference | outcome | inbound during | out frames | inbound in the tail | ×payload | of the cap |',
+  '| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |',
 ];
 
 function whatRanSection(run: InTabProbeRun): string[] {
@@ -508,6 +598,18 @@ function partCSection(run: InTabProbeRun): string[] {
     ...RETRIEVAL_HEADER,
     ...pairs.map(retrievalRow),
     '',
+    "⛔ Two rows on one link each count the other's bytes, so a per row ratio above is a number about " +
+      'both. Read each pair together:',
+    '',
+    ...run.pairs.map(
+      (pair) =>
+        `- Pair ${pair.roundIndex} together: ${grouped(pair.inBytes)} bytes inbound over ` +
+        `${secondsLabel(pair.watchedUntilMs - pair.startedAtMs)} s against ` +
+        `${pair.payloadBytes === null ? 'no' : grouped(pair.payloadBytes)} payload bytes, ` +
+        `${pair.amplification === null ? 'no ratio' : `×${pair.amplification.toFixed(2)}`}, link at ` +
+        `${pair.occupancy === null ? '—' : percent(pair.occupancy)} of the cap.`,
+    ),
+    '',
   ];
 }
 
@@ -535,9 +637,11 @@ function predictionsSection(run: InTabProbeRun): string[] {
     `| **H2** idle background load | idle inbound at **${grouped(h2Predicted)} bytes/s** or more, which is ` +
       `${(H2_PREDICTED_IDLE_SHARE * 100).toFixed(0)}% of the ${run.capKbps} kbps cap | ` +
       `${idleCapped === undefined ? 'not measured' : `${grouped(idleCapped.inBytesPerSecondMean)} bytes/s`} |`,
-    `| **H3** accounting refusals | capped retrievals reject quickly, with few inbound bytes | ` +
+    `| **H3** accounting exhaustion | a capped retrieval hangs with the link mostly idle, well under the cap, ` +
+      'and rejects when it answers. Under H1 the link is full while goodput is low | ' +
       `${rejected.length} of ${cappedRows.length} capped rows rejected, ` +
-      `${rejectedQuickly.length} of them inside ${secondsLabel(HLSJS_ABANDONS_AT_MS)} s |`,
+      `${rejectedQuickly.length} of them inside ${secondsLabel(HLSJS_ABANDONS_AT_MS)} s. Link at ` +
+      `${describeShare(summarizeOccupancy(cappedRows))} of the cap while capped rows ran |`,
     '',
   ];
 }

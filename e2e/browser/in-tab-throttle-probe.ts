@@ -46,12 +46,14 @@ import {
   h0Check,
   type IdleWindow,
   judgeRoundDegraded,
+  type PairSummary,
   type ProbeArm,
   probeArmOrder,
   renderInTabProbeReport,
   type RetrievalOutcome,
   type RetrievalRow,
   summarizeIdleWindow,
+  summarizePair,
 } from '../src/browser/inTabProbe.js';
 import { judgeCost, readResources } from '../src/browser/resources.js';
 import { envNumber, requireEnv, runIdFrom, writeRunArtifacts } from '../src/browser/runFiles.js';
@@ -233,6 +235,10 @@ async function main(): Promise<void> {
   const rounds = envNumber('PROBE_RETRIEVALS_PER_ARM', 3);
   const budgetMs = envNumber('PROBE_BUDGET_SECONDS', 90) * 1_000;
   const tailMs = envNumber('PROBE_TAIL_SECONDS', 10) * 1_000;
+  // ⛔ Quiet time after every row, with the cap already lifted. A capped retrieval's late hedged
+  // chunks keep arriving after its tail, and without this they would land inside the next row's
+  // window and be counted against a fragment that never asked for them.
+  const gapMs = envNumber('PROBE_GAP_SECONDS', 15) * 1_000;
 
   const cfg = loadConfig();
   const host = makeHost(cfg);
@@ -269,6 +275,7 @@ async function main(): Promise<void> {
   const traffic: WebSocketTraffic = { connections: [], frames: [] };
   const idleWindows: IdleWindow[] = [];
   const retrievals: RetrievalRow[] = [];
+  const pairs: PairSummary[] = [];
   let joinedInMs = 0;
 
   console.log(`probe: ${chromeVersion}, ${parsed['360p'].manifest.segmentCount} segments on 360p, 0 BZZ`);
@@ -331,6 +338,7 @@ async function main(): Promise<void> {
         return buildRetrievalRow({ ...plan, ...settled, budgetMs, tailMs }, traffic);
       } finally {
         await throttle?.release().catch((error) => console.error('could not lift the cap:', error));
+        await sleep(gapMs);
       }
     };
 
@@ -368,8 +376,8 @@ async function main(): Promise<void> {
         const settled = await Promise.all(refs.map((ref) => retrieveWithBudget(page, ref, budgetMs)));
         // One tail after the last of them settles covers every one of their own tail windows.
         await sleep(tailMs);
-        settled.forEach((row, index) => {
-          const built = buildRetrievalRow(
+        const built = settled.map((row, index) =>
+          buildRetrievalRow(
             {
               ...row,
               arm: 'pair',
@@ -381,12 +389,16 @@ async function main(): Promise<void> {
               tailMs,
             },
             traffic,
-          );
-          retrievals.push(built);
-          console.log(`  pair ${roundIndex}.${index}: ${describeRetrieval(built)}`);
+          ),
+        );
+        built.forEach((row, index) => {
+          retrievals.push(row);
+          console.log(`  pair ${roundIndex}.${index}: ${describeRetrieval(row)}`);
         });
+        pairs.push(summarizePair(built, traffic));
       } finally {
         await throttle.release().catch((error) => console.error('could not lift the cap:', error));
+        await sleep(gapMs);
       }
     }
   } finally {
@@ -406,10 +418,12 @@ async function main(): Promise<void> {
     joinedInMs,
     budgetMs,
     tailMs,
+    gapMs,
     capKbps,
     lowCapKbps,
     idleWindows,
     retrievals,
+    pairs,
     cost,
   };
 

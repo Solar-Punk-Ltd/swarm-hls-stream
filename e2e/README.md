@@ -319,8 +319,9 @@ if it does not. Nothing is asserted, the pre-registered predictions in
 was observed, and it costs **0 BZZ**, so it needs no sitting and no gate. Run it on the host with
 `deploy/scripts/browser-on-host.sh --script browser:in-tab-throttle-probe`. `PROBE_OWNER`,
 `PROBE_TOPIC_360_HEX` and `PROBE_TOPIC_1080_HEX` choose the recording, and `PROBE_CAP_KBPS`,
-`PROBE_LOW_CAP_KBPS`, `PROBE_IDLE_SECONDS`, `PROBE_RETRIEVALS_PER_ARM`, `PROBE_BUDGET_SECONDS` and
-`PROBE_TAIL_SECONDS` size the run.
+`PROBE_LOW_CAP_KBPS`, `PROBE_IDLE_SECONDS`, `PROBE_RETRIEVALS_PER_ARM`, `PROBE_BUDGET_SECONDS`,
+`PROBE_TAIL_SECONDS` and `PROBE_GAP_SECONDS` size the run, the last being the quiet time after every
+row, cap already lifted, so a capped row's late hedged chunks are not counted against the row after it.
 
 Paid crash and buffer-sweep sittings run through their gated wrappers on the deployment host,
 `deploy/scripts/crash-arms.sh` and `deploy/scripts/buffer-sweep-sitting.sh`: same afford, capacity
