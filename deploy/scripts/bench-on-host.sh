@@ -231,9 +231,17 @@ if [ -n "${SHAPE_KBPS}" ]; then
   echo "bench-on-host: shaping inbound at ${SHAPE_KBPS} kbit/s, and refusing the run if it cannot be proved"
 fi
 echo "bench-on-host: running ${SCRIPT} on ${TARGET} (profile ${PROFILE}, slot ${PORT_SLOT})"
+# ⛔ The run's exit code is kept, not obeyed. Under `set -e` a red suite used to end this script here,
+# and the reports of exactly the runs that need reading stayed on the host: both proving sittings of
+# 2026-09-02 left their V4 artifacts there. Collect first, then exit with the run's own code, so a
+# caller chaining on the exit code still sees the red.
+set +e
 ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} ${CONTAINER_CMD}"
+RUN_RC=$?
+set -e
 
-echo "bench-on-host: collecting reports"
+echo "bench-on-host: collecting reports (run exited ${RUN_RC})"
 mkdir -p "${REPO_ROOT}/docs/bench"
 rsync -az "${TARGET}:${REMOTE_DIR}/docs/bench/" "${REPO_ROOT}/docs/bench/"
 echo "bench-on-host: done"
+exit "${RUN_RC}"
