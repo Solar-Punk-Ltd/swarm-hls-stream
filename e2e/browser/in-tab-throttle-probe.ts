@@ -28,12 +28,31 @@
  * figure this project retracted before 2026-08-11 was retracted for the arithmetic applied
  * afterwards rather than for a mistimed fetch.
  *
- * ⛔ Nothing here is asserted. This is a measurement, not a suite.
+ * ⛔ Nothing here is asserted. This is a measurement, not a suite. The one thing it REFUSES is a
+ * mislabelled cap, because a row that names a condition the link was never under is not a weak
+ * reading, it is a false one.
  *
- * Usage, on the deployment host:
+ * ## Which cap held the link down, and why the run has to say
+ *
+ * `PROBE_CAP_MODE=cdp` (the default) is Chrome's `Network.emulateNetworkConditions`, which is what
+ * every capped reading this project has taken. `PROBE_CAP_MODE=external` is arm 2: a real `tc`
+ * ingress policer on the container's own interface, installed and proved before the browser opens.
+ * In that mode nothing here calls `squeezeDownload`, there is ONE idle window rather than three, and
+ * Part B runs the capped arms only, because a policer holds for the life of the container and a
+ * "free" arm would be a capped arm with the wrong label on it. The uncapped comparison is the CDP
+ * run of the same day, and the report says so rather than leaving the absence to be read as a
+ * measurement that found nothing.
+ *
+ * Usage, on the deployment host. Arm 1, the emulated cap:
  *   deploy/scripts/browser-on-host.sh --script browser:in-tab-throttle-probe
  *
+ * Arm 2, a real shaped link at the same rate:
+ *   deploy/scripts/browser-on-host.sh --own-network --shape-kbps 2800 \
+ *     --script browser:in-tab-throttle-probe -- PROBE_CAP_MODE=external PROBE_CAP_KBPS=2800
+ *
  * @see `docs/bench/in-tab-throttle-probe-prediction-2026-09-02.md`, written before this existed.
+ * @see `docs/bench/in-tab-throttle-probe-result-2026-09-02.md`, and its owner's correction, which is
+ *   why arm 2 exists.
  */
 
 import { Topic } from '@ethersphere/bee-js';
@@ -42,13 +61,18 @@ import { type Page } from 'playwright-core';
 import { prewarmByteSource, retrieveThroughInTabNode } from '../src/browser/fetchBackendSweep.js';
 import {
   buildRetrievalRow,
+  type CapSource,
+  describeCap,
   describeRetrieval,
+  externalCapRefusal,
   h0Check,
   type IdleWindow,
   judgeRoundDegraded,
   type PairSummary,
   type ProbeArm,
   probeArmOrder,
+  readCapSource,
+  refsNeededPerRound,
   renderInTabProbeReport,
   type RetrievalOutcome,
   type RetrievalRow,
@@ -56,7 +80,7 @@ import {
   summarizePair,
 } from '../src/browser/inTabProbe.js';
 import { judgeCost, readResources } from '../src/browser/resources.js';
-import { envNumber, requireEnv, runIdFrom, writeRunArtifacts } from '../src/browser/runFiles.js';
+import { envNumber, envNumberOrNull, requireEnv, runIdFrom, writeRunArtifacts } from '../src/browser/runFiles.js';
 import {
   makeRefPool,
   manifestRefusal,
@@ -103,10 +127,6 @@ const MANIFEST_TIMEOUT_S = 30;
 /** Part C: two references started together, twice. Sitting five had up to three overlapping. */
 const PART_C_ROUNDS = 2;
 const PART_C_CONCURRENCY = 2;
-
-/** Part B asks the 360p rung for a canary, a capped row and a free row per round. */
-const REFS_PER_360P_ROUND = 3;
-const REFS_PER_1080P_ROUND = 2;
 
 const RUNGS: readonly RungName[] = ['360p', '1080p'];
 
@@ -230,7 +250,14 @@ async function main(): Promise<void> {
     '1080p': topicHexEnv('PROBE_TOPIC_1080_HEX', RAW_TOPIC_1080),
   };
   const capKbps = envNumber('PROBE_CAP_KBPS', 2_800);
-  const lowCapKbps = envNumber('PROBE_LOW_CAP_KBPS', 700);
+  // ⛔ Read before anything else that depends on it, and never inferred. Which cap held the link
+  // down is the difference between arm 1 and arm 2 of this investigation, so a run that could not
+  // say which it was under would answer neither.
+  const capSource: CapSource = readCapSource(process.env.PROBE_CAP_MODE ?? '');
+  const external = capSource === 'external';
+  // No second cap under a shaper: it is installed once for the life of the container.
+  const lowCapKbps = external ? null : envNumber('PROBE_LOW_CAP_KBPS', 700);
+  const externalCapMeasuredBps = external ? envNumberOrNull('PROBE_EXTERNAL_CAP_MEASURED_BPS') : null;
   const idleMs = envNumber('PROBE_IDLE_SECONDS', 60) * 1_000;
   const rounds = envNumber('PROBE_RETRIEVALS_PER_ARM', 3);
   const budgetMs = envNumber('PROBE_BUDGET_SECONDS', 90) * 1_000;
@@ -239,6 +266,16 @@ async function main(): Promise<void> {
   // chunks keep arriving after its tail, and without this they would land inside the next row's
   // window and be counted against a fragment that never asked for them.
   const gapMs = envNumber('PROBE_GAP_SECONDS', 15) * 1_000;
+
+  // ⛔ Before the gateway is touched and long before the browser opens. Everything after this
+  // stamps `external <capKbps> kbps` on every row, and a label that disagrees with what the shaper
+  // proved is an artifact naming a cap the link was never under.
+  if (external) {
+    const refusal = externalCapRefusal(capKbps, externalCapMeasuredBps);
+    if (refusal !== null) {
+      throw new Error(refusal);
+    }
+  }
 
   const cfg = loadConfig();
   const host = makeHost(cfg);
@@ -250,9 +287,10 @@ async function main(): Promise<void> {
     '360p': await readRung(host, cfg, '360p', owner, topics['360p']),
     '1080p': await readRung(host, cfg, '1080p', owner, topics['1080p']),
   };
+  const perRound = refsNeededPerRound(capSource);
   const needed: Record<RungName, number> = {
-    '360p': rounds * REFS_PER_360P_ROUND + PART_C_ROUNDS * PART_C_CONCURRENCY,
-    '1080p': rounds * REFS_PER_1080P_ROUND,
+    '360p': rounds * perRound['360p'] + PART_C_ROUNDS * PART_C_CONCURRENCY,
+    '1080p': rounds * perRound['1080p'],
   };
 
   // ⛔ Before the browser opens. A run that discovered mid-sitting that it was out of fresh
@@ -302,22 +340,43 @@ async function main(): Promise<void> {
     joinedInMs = Date.now() - joinStartedAtMs;
     console.log(`probe: the node joined in ${joinedInMs}ms`);
 
+    /**
+     * Squeeze the tab to a cap, or hand back nothing because the link is already held there.
+     *
+     * ⛔⛔ Under an external cap this NEVER calls `squeezeDownload`, and that is the whole arm. The
+     * `tc` policer is already under every socket the tab opens, and applying Chrome's emulation on
+     * top would put both mechanisms in one reading, so a figure could be attributed to neither.
+     */
+    const squeezeTo = async (kbpsCap: number | null): Promise<ThrottleHandle | undefined> => {
+      if (external || kbpsCap === null) {
+        return undefined;
+      }
+      return squeezeDownload(page, kbpsCap);
+    };
+
     /** Hold the link at a cap for a window, and record what arrived while nothing was asked for. */
-    const idleFor = async (label: string, kbpsCap: number | null): Promise<void> => {
-      const throttle = kbpsCap === null ? undefined : await squeezeDownload(page, kbpsCap);
+    const idleFor = async (kbpsCap: number | null): Promise<void> => {
+      const label = kbpsCap === null ? 'unthrottled' : describeCap(kbpsCap, capSource);
+      const throttle = await squeezeTo(kbpsCap);
       const startedAtMs = Date.now();
       try {
         await sleep(idleMs);
       } finally {
-        idleWindows.push(summarizeIdleWindow({ label, kbpsCap, startedAtMs, endedAtMs: Date.now() }, traffic));
+        idleWindows.push(
+          summarizeIdleWindow({ label, kbpsCap, capSource, startedAtMs, endedAtMs: Date.now() }, traffic),
+        );
         await throttle?.release().catch((error) => console.error('could not lift the cap:', error));
       }
     };
 
-    console.log(`probe: Part A, three idle windows of ${idleMs / 1_000}s`);
-    await idleFor('unthrottled', null);
-    await idleFor(`capped at ${capKbps} kbps`, capKbps);
-    await idleFor(`capped at ${lowCapKbps} kbps`, lowCapKbps);
+    // ⛔ One window under an external cap, not three. The policer cannot be lifted for a window, so
+    // an "unthrottled" window would be a capped window with the wrong label, and there is no second
+    // cap to hold. The uncapped comparison is the CDP run, and the report says so.
+    const idleCaps: readonly (number | null)[] = external ? [capKbps] : [null, capKbps, lowCapKbps];
+    console.log(`probe: Part A, ${idleCaps.length} idle window(s) of ${idleMs / 1_000}s`);
+    for (const kbpsCap of idleCaps) {
+      await idleFor(kbpsCap);
+    }
     for (const window of idleWindows) {
       console.log(`  ${window.label}: ${Math.round(window.inBytesPerSecondMean)} B/s inbound`);
     }
@@ -332,21 +391,25 @@ async function main(): Promise<void> {
     }): Promise<RetrievalRow> => {
       let throttle: ThrottleHandle | undefined;
       try {
-        throttle = plan.kbpsCap === null ? undefined : await squeezeDownload(page, plan.kbpsCap);
+        throttle = await squeezeTo(plan.kbpsCap);
         const settled = await retrieveWithBudget(page, plan.ref, budgetMs);
         await sleep(tailMs);
-        return buildRetrievalRow({ ...plan, ...settled, budgetMs, tailMs }, traffic);
+        return buildRetrievalRow({ ...plan, capSource, ...settled, budgetMs, tailMs }, traffic);
       } finally {
         await throttle?.release().catch((error) => console.error('could not lift the cap:', error));
         await sleep(gapMs);
       }
     };
 
-    console.log(`probe: Part B, ${rounds} rounds of a canary and four arms`);
+    // ⛔ The canary runs under the external cap too, because there is nowhere uncapped for it to
+    // run. So a degraded round there means the node could not answer UNDER THE CAP rather than at
+    // all, which is a weaker exclusion than the emulated run's and the report says which it was.
+    const armsPerRound = probeArmOrder(0, capSource).length;
+    console.log(`probe: Part B, ${rounds} rounds of a canary and ${armsPerRound} arms`);
     for (let roundIndex = 0; roundIndex < rounds; roundIndex += 1) {
       const provisional = await runRetrieval({
         arm: 'canary',
-        kbpsCap: null,
+        kbpsCap: external ? capKbps : null,
         ref: pools['360p'].take(),
         roundIndex,
         roundDegraded: false,
@@ -355,7 +418,7 @@ async function main(): Promise<void> {
       retrievals.push({ ...provisional, roundDegraded });
       console.log(`  round ${roundIndex} canary: ${describeRetrieval(provisional)}${roundDegraded ? ' ⛔' : ''}`);
 
-      for (const step of probeArmOrder(roundIndex)) {
+      for (const step of probeArmOrder(roundIndex, capSource)) {
         const row = await runRetrieval({
           arm: step.arm,
           kbpsCap: step.capped ? capKbps : null,
@@ -364,14 +427,16 @@ async function main(): Promise<void> {
           roundDegraded,
         });
         retrievals.push(row);
-        console.log(`  round ${roundIndex} ${step.arm} ${step.capped ? 'capped' : 'free'}: ${describeRetrieval(row)}`);
+        console.log(
+          `  round ${roundIndex} ${step.arm} ${describeCap(row.kbpsCap, capSource)}: ${describeRetrieval(row)}`,
+        );
       }
     }
 
-    console.log(`probe: Part C, ${PART_C_ROUNDS} pairs started together under the ${capKbps} kbps cap`);
+    console.log(`probe: Part C, ${PART_C_ROUNDS} pairs started together under ${describeCap(capKbps, capSource)}`);
     for (let roundIndex = 0; roundIndex < PART_C_ROUNDS; roundIndex += 1) {
       const refs = Array.from({ length: PART_C_CONCURRENCY }, () => pools['360p'].take());
-      const throttle = await squeezeDownload(page, capKbps);
+      const throttle = await squeezeTo(capKbps);
       try {
         const settled = await Promise.all(refs.map((ref) => retrieveWithBudget(page, ref, budgetMs)));
         // One tail after the last of them settles covers every one of their own tail windows.
@@ -382,6 +447,7 @@ async function main(): Promise<void> {
               ...row,
               arm: 'pair',
               kbpsCap: capKbps,
+              capSource,
               ref: refs[index],
               roundIndex,
               roundDegraded: false,
@@ -397,7 +463,7 @@ async function main(): Promise<void> {
         });
         pairs.push(summarizePair(built, traffic));
       } finally {
-        await throttle.release().catch((error) => console.error('could not lift the cap:', error));
+        await throttle?.release().catch((error) => console.error('could not lift the cap:', error));
         await sleep(gapMs);
       }
     }
@@ -421,6 +487,8 @@ async function main(): Promise<void> {
     gapMs,
     capKbps,
     lowCapKbps,
+    capSource,
+    externalCapMeasuredBps,
     idleWindows,
     retrievals,
     pairs,
@@ -436,10 +504,15 @@ async function main(): Promise<void> {
   const lowIdle = idleWindows.find((window) => window.kbpsCap === lowCapKbps);
   const missed = retrievals.filter((row) => row.outcome === 'budget').length;
   const degraded = retrievals.filter((row) => row.roundDegraded).length;
+  const h0 = external
+    ? `H0 does not apply, the cap is a real shaper proved by the preflight at ${externalCapMeasuredBps} B/s`
+    : lowIdle === undefined
+    ? 'H0 was not checked, no low-capped idle window'
+    : h0Check(lowIdle);
 
   console.log(`\nprobe: wrote ${stem}.md`);
   console.log('probe: observations, none of them asserted');
-  console.log(`  ${lowIdle === undefined ? 'H0 was not checked, no low-capped idle window' : h0Check(lowIdle)}`);
+  console.log(`  ${h0}`);
   console.log(`  ${missed} of ${retrievals.length} rows did not complete inside their budget`);
   console.log(`  ${degraded} rows come from a degraded round and are in no ratio`);
   cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));

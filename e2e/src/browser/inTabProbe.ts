@@ -31,10 +31,21 @@
  * the capped figures mean anything. {@link h0Check} is that reading, and it is a sentence in the
  * report rather than a gate: a run that voids itself still has to say so in the artifact.
  *
- * ⛔ Nothing here asserts. The pre-registration is restated beside what was observed so a reader
- * compares them, and no figure refuses a run.
+ * ## ⛔ The cap itself became the suspect
+ *
+ * The owner's correction of 2026-09-02 was that Chrome's `Network.emulateNetworkConditions` is a
+ * prime suspect for what the probe found, rather than the node: it is one aggregate budget the
+ * browser schedules across every transport itself, and how it divides one across an in-tab node's
+ * ~200 WebSockets is not a fact about a link of that speed. So {@link CapSource} rides on every row,
+ * every window and the run, an externally shaped run has no uncapped condition inside it at all, and
+ * H0 is replaced rather than answered where the cap is a real shaper. See {@link externalCapRefusal}
+ * for the one thing this module does refuse.
+ *
+ * ⛔ Nothing else here asserts. The pre-registration is restated beside what was observed so a
+ * reader compares them, and no figure refuses a run.
  *
  * @see `docs/bench/in-tab-throttle-probe-prediction-2026-09-02.md`
+ * @see `docs/bench/in-tab-throttle-probe-result-2026-09-02.md`, and its owner's correction.
  */
 
 import { costSection, type ResourceCost } from './resources.js';
@@ -54,10 +65,89 @@ import {
 /**
  * Which part of the probe a retrieval belongs to.
  *
- * `canary` is the unthrottled 360p reference every round opens with, and `pair` is Part C, where two
+ * `canary` is the 360p reference every round opens with, unthrottled under an emulated cap and under
+ * the cap like everything else where the cap is a real shaper. `pair` is Part C, where two
  * references are started together under the cap because that is the shape a live viewer produced.
  */
 export type ProbeArm = RungName | 'canary' | 'pair';
+
+const CAP_SOURCES = ['cdp', 'external'] as const;
+
+/**
+ * What was holding the link down.
+ *
+ * `cdp` is Chrome's `Network.emulateNetworkConditions`, which is what every capped reading this
+ * project has ever taken was made under. `external` is a real `tc` ingress policer on the
+ * container's own interface, installed and proved by `deploy/scripts/shape-container-ingress.sh`
+ * before the browser opens.
+ *
+ * ⛔⛔ On every row, every idle window and the run, and not as a footnote. The owner's correction of
+ * 2026-09-02 was that the emulation is a prime suspect for what the probe found, so which cap a
+ * figure was taken under is part of the figure. A report that did not carry it would be one more
+ * artifact whose conditions have to be reconstructed from the command line that produced it.
+ */
+export type CapSource = (typeof CAP_SOURCES)[number];
+
+/**
+ * `PROBE_CAP_MODE` read strictly, and empty read as the emulation.
+ *
+ * ⛔ A spelling it does not know is refused rather than read as the default. `PROBE_CAP_MODE=extenal`
+ * silently falling back to CDP would run the emulated arm, call every row externally capped in the
+ * command line the operator remembers giving, and there would be nothing in the artifact to
+ * disagree with them.
+ */
+export function readCapSource(raw: string): CapSource {
+  const value = raw.trim();
+  if (value === '') {
+    return 'cdp';
+  }
+  if ((CAP_SOURCES as readonly string[]).includes(value)) {
+    return value as CapSource;
+  }
+  throw new Error(
+    `PROBE_CAP_MODE must be one of ${CAP_SOURCES.join(', ')} and is ${JSON.stringify(raw)}. Read as ` +
+      'the default it would run the emulated cap while the operator believed a real shaper was in place.',
+  );
+}
+
+/** The cap a row or a window ran under, spelled so the kind of cap is never left to be assumed. */
+export function describeCap(kbpsCap: number | null, capSource: CapSource): string {
+  if (kbpsCap === null) {
+    return 'uncapped';
+  }
+  return capSource === 'external' ? `external ${kbpsCap} kbps` : `${kbpsCap} kbps`;
+}
+
+/**
+ * Why an externally capped run must not be labelled with the cap it was told, or null.
+ *
+ * ⛔⛔ The label and the shaper have to agree. A run given `PROBE_CAP_KBPS=700` while the preflight
+ * proved 350,000 bytes/s would stamp "external 700 kbps" on every row of an artifact measured at
+ * 2800, and no reader and nothing downstream could ever catch it. The band is the shaper's own, so
+ * the two gates cannot drift apart.
+ */
+export function externalCapRefusal(capKbps: number, measuredBps: number | null): string | null {
+  if (measuredBps === null) {
+    return (
+      'this run says PROBE_CAP_MODE=external and carries no PROBE_EXTERNAL_CAP_MEASURED_BPS, so ' +
+      'nothing establishes that a shaper was installed at all, let alone at what rate. ' +
+      'deploy/scripts/shape-container-ingress.sh writes it, and bench-on-host.sh --shape-kbps is ' +
+      'what runs the shaper before the driver.'
+    );
+  }
+  const allowed = kbpsAsBytesPerSecond(capKbps);
+  const floor = allowed * (1 - EXTERNAL_CAP_TOLERANCE_UNDER);
+  const ceiling = allowed * (1 + EXTERNAL_CAP_TOLERANCE_OVER);
+  if (measuredBps < floor || measuredBps > ceiling) {
+    return (
+      `this run would label every row "external ${capKbps} kbps", which allows ${grouped(allowed)} ` +
+      `bytes/s, and the preflight proved ${grouped(measuredBps)} bytes/s. That disagrees by more than ` +
+      `the ${grouped(floor)} to ${grouped(ceiling)} band, so PROBE_CAP_KBPS and --shape-kbps are not ` +
+      'the same number and the artifact would name a cap the link was never under.'
+    );
+  }
+  return null;
+}
 
 /**
  * How a retrieval ended.
@@ -67,11 +157,17 @@ export type ProbeArm = RungName | 'canary' | 'pair';
  */
 export type RetrievalOutcome = 'resolved' | 'rejected' | 'budget';
 
-/** One of Part A's three windows, in which the node was booted and nothing was requested. */
+/**
+ * One of Part A's windows, in which the node was booted and nothing was requested.
+ *
+ * Three of them under an emulated cap, which can be lifted between them. One under an external
+ * shaper, which cannot.
+ */
 export interface IdleWindow {
   label: string;
-  /** Null for the unthrottled window. */
+  /** Null for the unthrottled window, which only an emulated run has. */
   kbpsCap: number | null;
+  capSource: CapSource;
   startedAtMs: number;
   endedAtMs: number;
   perSecond: readonly PerSecondSample[];
@@ -85,6 +181,7 @@ export interface IdleWindow {
 export interface RetrievalRow {
   arm: ProbeArm;
   kbpsCap: number | null;
+  capSource: CapSource;
   ref: string;
   startedAtMs: number;
   /** Null on a budget row, because the harness stopped waiting rather than the retrieval settling. */
@@ -112,7 +209,23 @@ export interface InTabProbeRun {
   budgetMs: number;
   tailMs: number;
   capKbps: number;
-  lowCapKbps: number;
+  /**
+   * The second, lower cap Part A holds an idle window at, or null where there is no second cap.
+   *
+   * Null on an external run and that is the honest type: a `tc` policer is installed once for the
+   * life of the container, so there is one cap and one idle window. {@link h0Line} branches on
+   * {@link InTabProbeRun.capSource} rather than going looking for a window that cannot exist.
+   */
+  lowCapKbps: number | null;
+  capSource: CapSource;
+  /**
+   * What the shaper's preflight proved the external cap delivers, in bytes per second, or null.
+   *
+   * Null on an emulated run, where there is no shaper to have proved anything. On an external run
+   * the driver refuses before the browser opens if this is absent or disagrees with `capKbps`. See
+   * {@link externalCapRefusal}.
+   */
+  externalCapMeasuredBps: number | null;
   /** The quiet time after each row's cap lifted, before the next row started. */
   gapMs: number;
   idleWindows: readonly IdleWindow[];
@@ -158,6 +271,7 @@ interface ProbeStep {
 interface IdleWindowInput {
   label: string;
   kbpsCap: number | null;
+  capSource: CapSource;
   startedAtMs: number;
   endedAtMs: number;
 }
@@ -166,6 +280,7 @@ interface IdleWindowInput {
 interface RetrievalObservation {
   arm: ProbeArm;
   kbpsCap: number | null;
+  capSource: CapSource;
   ref: string;
   roundIndex: number;
   roundDegraded: boolean;
@@ -192,6 +307,31 @@ const H1_PREDICTED_AMPLIFICATION = 3.0;
 /** H2's pre-registered share of the cap that idle traffic would have to take to be the cause. */
 const H2_PREDICTED_IDLE_SHARE = 0.3;
 
+/**
+ * How far a proved external rate may sit from the cap the rows are labelled with.
+ *
+ * The shaper's own band, so a reading it accepted cannot be refused here and the two gates cannot
+ * drift apart. Asymmetric for the shaper's reason: an ingress policer drops rather than queues and
+ * TCP answers a drop by backing off, while coming in over the cap has no benign explanation.
+ */
+const EXTERNAL_CAP_TOLERANCE_UNDER = 0.25;
+const EXTERNAL_CAP_TOLERANCE_OVER = 0.15;
+
+/**
+ * Where the uncapped comparison for an externally shaped run lives, which is not in the run.
+ *
+ * ⛔ Said in the artifact rather than left to a reader. An external policer holds for the life of
+ * the container, so such a run has no unthrottled idle window and no free arm, and an absence that
+ * goes unexplained reads as a measurement that came back empty.
+ */
+const UNCAPPED_LIVES_ELSEWHERE =
+  '⛔ **There is no uncapped condition inside an externally capped run.** The `tc` policer is ' +
+  'installed for the life of the container and cannot be lifted for one window or one row, so ' +
+  'this run carries one idle window and no free arm. **The uncapped comparison is the CDP run of ' +
+  'the same day**, which measured the same client against the same references with the cap applied ' +
+  "by Chrome instead. Read the two side by side, and read nothing here as this node's unconstrained " +
+  'behaviour.';
+
 const MS_PER_SECOND = 1_000;
 
 /** Digits grouped without going through a locale, so an artifact reads the same on every machine. */
@@ -214,25 +354,47 @@ function median(values: readonly number[]): number {
 }
 
 /**
- * The four arms of a Part B round, in the order this round runs them.
+ * The arms of a Part B round, in the order this round runs them.
  *
  * ⛔ Alternated every round rather than fixed. Sustained retrieval degrades a weeb-3 node after two
  * or three rounds, and both sittings of the concurrency sweep watched it happen, so a fixed order
  * would hand the last arm every round's worst conditions and the report would read that as a
  * property of the arm rather than of when it ran.
  *
+ * ⛔ Two arms under an external cap, not four. A `tc` policer is installed once for the life of the
+ * container, so there is no free condition to alternate against: a "free" arm would be a capped arm
+ * with the wrong label on it. The uncapped comparison is the emulated run, which is a different run.
+ *
  * ⭐ Not `counterbalancedOrder`, which is the two-condition rule and rotates every four rounds. This
- * is four conditions alternating every round, which is a different rule and gets its own name rather
+ * is conditions alternating every round, which is a different rule and gets its own name rather
  * than a second reading of that one.
  */
-export function probeArmOrder(roundIndex: number): readonly ProbeStep[] {
-  const forward: readonly ProbeStep[] = [
+export function probeArmOrder(roundIndex: number, capSource: CapSource): readonly ProbeStep[] {
+  const capped: readonly ProbeStep[] = [
     { arm: '360p', capped: true },
     { arm: '1080p', capped: true },
+  ];
+  const free: readonly ProbeStep[] = [
     { arm: '360p', capped: false },
     { arm: '1080p', capped: false },
   ];
+  const forward = capSource === 'external' ? capped : [...capped, ...free];
   return roundIndex % 2 === 0 ? forward : [...forward].reverse();
+}
+
+/**
+ * How many fresh references one round of Part B needs, per rung.
+ *
+ * ⭐ Counted off {@link probeArmOrder} rather than written down beside it. The pool is sized before
+ * the browser opens and no reference is fetched twice, so a count that drifted from the arms would
+ * either run the pool dry mid-sitting or leave the last arms unrun, and either way the artifact is
+ * already half written by the time anyone notices.
+ */
+export function refsNeededPerRound(capSource: CapSource): Record<RungName, number> {
+  const steps = probeArmOrder(0, capSource);
+  const perArm = (arm: RungName): number => steps.filter((step) => step.arm === arm).length;
+  // The canary is always 360p, and always one more than the arms need.
+  return { '360p': 1 + perArm('360p'), '1080p': perArm('1080p') };
 }
 
 /**
@@ -426,6 +588,44 @@ export function h0Check(idle: IdleWindow): string {
   );
 }
 
+/**
+ * The H0 line for a run, whichever kind of cap it was under.
+ *
+ * ⛔⛔ H0 exists because Chromium applies its own emulation and a harness cannot assert from outside
+ * that it reached a given transport. A `tc` policer on the container's interface is not that: it
+ * sits under every socket the tab opens and the shaper measured what it delivers before the browser
+ * opened. So the question does not apply, and the honest line says that and names the proved rate
+ * rather than answering a question about the emulation with a reading of a shaper.
+ */
+function h0Line(run: InTabProbeRun): string {
+  if (run.capSource === 'external') {
+    if (run.externalCapMeasuredBps === null) {
+      return (
+        '⛔ **H0 cannot be answered and this run should not exist.** It says its cap was external and ' +
+        'carries no preflight reading, so nothing establishes that a shaper was installed at all. The ' +
+        'driver refuses this before the browser opens, so an artifact reaching here has bypassed it.'
+      );
+    }
+    return (
+      `✅ **H0 does not apply, the cap is a real shaper proved by the preflight at ` +
+      `${grouped(run.externalCapMeasuredBps)} B/s.** H0 asks whether Chromium's emulation reached the ` +
+      'WebSocket transport, and there is no emulation here: the cap is a `tc` ingress policer on the ' +
+      "container's own interface, under every socket the tab opens, and " +
+      '`deploy/scripts/shape-container-ingress.sh` measured what it delivers against a real download ' +
+      'from the host before this run was allowed to start.'
+    );
+  }
+
+  const low = idleAt(run, run.lowCapKbps);
+  if (low === undefined) {
+    return (
+      `⛔ **H0 was not checked.** This run recorded no idle window at the ${run.lowCapKbps} kbps cap, so ` +
+      'nothing establishes that the cap reached the transport, and no capped figure below can be relied on.'
+    );
+  }
+  return h0Check(low);
+}
+
 function idleAt(run: InTabProbeRun, kbpsCap: number | null): IdleWindow | undefined {
   return run.idleWindows.find((window) => window.kbpsCap === kbpsCap);
 }
@@ -447,7 +647,7 @@ function retrievalRow(row: RetrievalRow): string {
   return [
     `| ${row.roundIndex}`,
     row.arm,
-    row.kbpsCap === null ? 'uncapped' : `${row.kbpsCap} kbps`,
+    describeCap(row.kbpsCap, row.capSource),
     `\`${row.ref.slice(0, 12)}\``,
     `${describeRetrieval(row)}${past20s || row.outcome === 'budget' ? ' ⛔' : ''}`,
     grouped(row.inBytesDuring),
@@ -474,6 +674,19 @@ function whatRanSection(run: InTabProbeRun): string[] {
     '',
     `The node joined the network in ${secondsLabel(run.joinedInMs)} s. Owner \`${run.owner}\`.`,
     '',
+    // Which cap held the link down leads, because the owner's correction of 2026-09-02 made the
+    // emulation itself a suspect. A figure here means something different depending on this line.
+    run.capSource === 'external'
+      ? `**The cap is a real shaped link, not Chrome's emulation.** A \`tc\` ingress policer at ` +
+        `${run.capKbps} kbit/s on the container's own interface, under every socket the tab opens, ` +
+        `proved by \`deploy/scripts/shape-container-ingress.sh\` at ` +
+        `${run.externalCapMeasuredBps === null ? 'no measured rate' : `${grouped(run.externalCapMeasuredBps)} B/s`} ` +
+        'against a real download from the host before the browser opened.'
+      : `**The cap is Chrome's \`Network.emulateNetworkConditions\`**, applied over CDP at ` +
+        `${run.capKbps} kbit/s. ⚠️ That is one aggregate budget the browser schedules across every ` +
+        "transport itself, and how it divides one across an in-tab node's ~200 WebSockets is not a " +
+        'fact about a link of that speed. H0 below is what this report can say about it.',
+    '',
     '| rung | topic | segments | `EXT-X-TARGETDURATION` | typical `#EXTINF` |',
     '| --- | --- | ---: | ---: | ---: |',
     ...run.manifests.map(
@@ -498,12 +711,14 @@ function partASection(run: InTabProbeRun): string[] {
     return ['## Part A, idle', '', '⛔ This run recorded no idle window, so H2 and H0 are both unanswered.', ''];
   }
 
+  const perWindow = secondsLabel(run.idleWindows[0].endedAtMs - run.idleWindows[0].startedAtMs);
   return [
     '## Part A, idle',
     '',
-    `The node booted and nothing requested, for ${secondsLabel(
-      run.idleWindows[0].endedAtMs - run.idleWindows[0].startedAtMs,
-    )} s ` + 'per window. This is H2, and the last row is H0.',
+    run.capSource === 'external'
+      ? `The node booted and nothing requested, for ${perWindow} s under the shaped link. This is H2.`
+      : `The node booted and nothing requested, for ${perWindow} s per window. This is H2, and the last ` +
+        'row is H0.',
     '',
     '| window | mean inbound | mean outbound | connections, start → end |',
     '| --- | ---: | ---: | ---: |',
@@ -514,20 +729,12 @@ function partASection(run: InTabProbeRun): string[] {
         `${window.connectionsOpenStart} → ${window.connectionsOpenEnd} |`,
     ),
     '',
+    ...(run.capSource === 'external' ? [UNCAPPED_LIVES_ELSEWHERE, ''] : []),
   ];
 }
 
 function h0Section(run: InTabProbeRun): string[] {
-  const low = idleAt(run, run.lowCapKbps);
-  return [
-    '### H0, the instrument',
-    '',
-    low === undefined
-      ? `⛔ **H0 was not checked.** This run recorded no idle window at the ${run.lowCapKbps} kbps cap, so ` +
-        'nothing establishes that the cap reached the transport, and no capped figure below can be relied on.'
-      : h0Check(low),
-    '',
-  ];
+  return ['### H0, the instrument', '', h0Line(run), ''];
 }
 
 /** Part B's arms in the order the report reads them, capped first because that is the condition. */
@@ -538,17 +745,31 @@ function partBSection(run: InTabProbeRun): string[] {
   const degraded = run.retrievals.filter((row) => row.roundDegraded);
   const partB = clean.filter((row) => row.arm !== 'pair');
 
+  // No uncapped column under an external cap, because no row could have filled one and a column of
+  // dashes reads as a measurement that came back empty.
+  const caps: readonly (number | null)[] = run.capSource === 'external' ? [run.capKbps] : [run.capKbps, null];
   const ratios = PART_B_ARMS.flatMap((arm) =>
-    [run.capKbps, null].map((cap) => {
+    caps.map((cap) => {
       const summary = summarizeAmplification(armRows(run, arm, cap).filter((row) => !row.roundDegraded));
-      return `| ${arm} | ${cap === null ? 'uncapped' : `${cap} kbps`} | ${describeAmplification(summary)} |`;
+      return `| ${arm} | ${describeCap(cap, run.capSource)} | ${describeAmplification(summary)} |`;
     }),
   );
+
+  // ⛔ The canary is unthrottled only where the cap can be lifted for one row. Under an external
+  // policer it runs capped like everything else, so a degraded round there means the node could not
+  // answer UNDER THE CAP rather than at all, which is a weaker exclusion and has to say so.
+  const canaryLine =
+    run.capSource === 'external'
+      ? 'Every round opens with a 360p canary, which runs **under the same cap as every other row**: ' +
+        'the policer cannot be lifted for one retrieval. So a degraded round here means the node ' +
+        "could not answer under the cap rather than at all, which excludes less than the CDP run's " +
+        'unthrottled canary does.'
+      : 'Every round opens with an unthrottled 360p canary.';
 
   return [
     '## Part B, one fragment at a time',
     '',
-    `Every round opens with an unthrottled 360p canary. The budget is ${secondsLabel(run.budgetMs)} s, and a ` +
+    `${canaryLine} The budget is ${secondsLabel(run.budgetMs)} s, and a ` +
       'row that hit it is reported as not completing rather than as a duration: the harness stopped ' +
       'waiting, the retrieval did not stop. The tail column is inbound bytes in the ' +
       `${secondsLabel(run.tailMs)} s after a row settled, which is where the late answers land.`,
@@ -592,8 +813,9 @@ function partCSection(run: InTabProbeRun): string[] {
   return [
     '## Part C, two at once',
     '',
-    `Two fresh 360p references started together under the ${run.capKbps} kbps cap. Sitting five had up to ` +
-      'three 360p retrievals overlapping, so this is the shape the viewer actually produced.',
+    `Two fresh 360p references started together under the ${describeCap(run.capKbps, run.capSource)} cap. ` +
+      'Sitting five had up to three 360p retrievals overlapping, so this is the shape the viewer actually ' +
+      'produced.',
     '',
     ...RETRIEVAL_HEADER,
     ...pairs.map(retrievalRow),
@@ -633,7 +855,11 @@ function predictionsSection(run: InTabProbeRun): string[] {
     '| --- | --- | --- |',
     `| **H1** hedge amplification | capped 360p at **${H1_PREDICTED_AMPLIFICATION.toFixed(1)}** or more, ` +
       `uncapped near 1.0 to 1.3 | capped ${describeAmplification(capped360)}, uncapped ` +
-      `${describeAmplification(free360)} |`,
+      `${
+        run.capSource === 'external'
+          ? 'NOT RUN, see the uncapped comparison in the CDP run of the same day'
+          : describeAmplification(free360)
+      } |`,
     `| **H2** idle background load | idle inbound at **${grouped(h2Predicted)} bytes/s** or more, which is ` +
       `${(H2_PREDICTED_IDLE_SHARE * 100).toFixed(0)}% of the ${run.capKbps} kbps cap | ` +
       `${idleCapped === undefined ? 'not measured' : `${grouped(idleCapped.inBytesPerSecondMean)} bytes/s`} |`,

@@ -3,13 +3,17 @@ import { describe, it } from 'node:test';
 
 import {
   buildRetrievalRow,
+  describeCap,
   describeRetrieval,
+  externalCapRefusal,
   h0Check,
   type IdleWindow,
   type InTabProbeRun,
   judgeRoundDegraded,
   linkOccupancy,
   probeArmOrder,
+  readCapSource,
+  refsNeededPerRound,
   renderInTabProbeReport,
   type RetrievalRow,
   summarizeAmplification,
@@ -38,6 +42,7 @@ function retrieval(overrides: Partial<RetrievalRow> = {}): RetrievalRow {
   return {
     arm: '360p',
     kbpsCap: null,
+    capSource: 'cdp',
     ref: 'a'.repeat(64),
     startedAtMs: START_MS,
     settledAtMs: START_MS + 2_500,
@@ -59,6 +64,7 @@ function idleWindow(overrides: Partial<IdleWindow> = {}): IdleWindow {
   return {
     label: 'unthrottled',
     kbpsCap: null,
+    capSource: 'cdp',
     startedAtMs: START_MS,
     endedAtMs: START_MS + 60_000,
     perSecond: [],
@@ -181,6 +187,67 @@ describe('the instrument check the capped figures depend on', () => {
   });
 });
 
+/**
+ * The cap that is not Chrome's.
+ *
+ * ⛔ H0 exists because `Network.emulateNetworkConditions` is applied by the browser and a harness
+ * cannot assert from outside that it reached a given transport. A `tc` policer on the container's
+ * interface is not that: it sits under every socket the tab opens, and the shaper has already
+ * measured what it delivers. So the H0 line has to change rather than be answered again with a
+ * reading that no longer means anything, and it has to name the proved rate.
+ */
+describe('the cap a run was actually under', () => {
+  it('reads the two modes and refuses any other spelling', () => {
+    assert.equal(readCapSource('cdp'), 'cdp');
+    assert.equal(readCapSource('external'), 'external');
+    assert.equal(readCapSource(''), 'cdp', 'the emulated cap is what every earlier run used');
+    for (const raw of ['CDP', 'shaper', 'tc', 'externa']) {
+      assert.throws(() => readCapSource(raw), /PROBE_CAP_MODE/, `${JSON.stringify(raw)} was accepted`);
+    }
+  });
+
+  it('says which kind of cap a row ran under, so no reader has to assume', () => {
+    assert.equal(describeCap(null, 'cdp'), 'uncapped');
+    assert.equal(describeCap(CAP_KBPS, 'cdp'), '2800 kbps');
+    assert.equal(describeCap(CAP_KBPS, 'external'), 'external 2800 kbps');
+  });
+
+  /**
+   * ⛔ The label and the shaper have to agree. A run told `PROBE_CAP_KBPS=700` while the shaper
+   * proved 350,000 bytes/s would put "external 700 kbps" on every row of an artifact measured at
+   * 2800, and nothing downstream could ever catch it.
+   */
+  it('refuses an external run whose label disagrees with the proved rate', () => {
+    assert.equal(externalCapRefusal(CAP_KBPS, 350_000), null);
+    assert.equal(externalCapRefusal(CAP_KBPS, 300_000), null, 'a policer delivering under its rate is ordinary');
+    assert.match(externalCapRefusal(700, 350_000) ?? '', /disagrees/);
+    assert.match(externalCapRefusal(CAP_KBPS, 900_000) ?? '', /disagrees/);
+  });
+
+  it('refuses an external run that carries no preflight reading at all', () => {
+    assert.match(externalCapRefusal(CAP_KBPS, null) ?? '', /PROBE_EXTERNAL_CAP_MEASURED_BPS/);
+  });
+
+  it('drops the free arms, because an external cap cannot be lifted for one row', () => {
+    assert.deepEqual(probeArmOrder(0, 'external'), [
+      { arm: '360p', capped: true },
+      { arm: '1080p', capped: true },
+    ]);
+    assert.deepEqual(probeArmOrder(1, 'external'), [...probeArmOrder(0, 'external')].reverse());
+  });
+
+  /**
+   * ⭐ Derived from the arm order rather than written down beside it. The reference pool is sized
+   * before the browser opens and no reference is fetched twice, so a count that drifted from the
+   * arms would either run the pool dry mid-sitting or leave the last arms unrun, with the artifact
+   * already half written either way.
+   */
+  it('needs one reference per arm plus the canary, counted off the arms themselves', () => {
+    assert.deepEqual(refsNeededPerRound('cdp'), { '360p': 3, '1080p': 2 });
+    assert.deepEqual(refsNeededPerRound('external'), { '360p': 2, '1080p': 1 });
+  });
+});
+
 function reading(atMs: number, bzz: number): ResourceReading {
   return {
     atMs,
@@ -199,7 +266,11 @@ function reading(atMs: number, bzz: number): ResourceReading {
   };
 }
 
-function probeRun(retrievals: readonly RetrievalRow[], idleWindows: readonly IdleWindow[]): InTabProbeRun {
+function probeRun(
+  retrievals: readonly RetrievalRow[],
+  idleWindows: readonly IdleWindow[],
+  overrides: Partial<InTabProbeRun> = {},
+): InTabProbeRun {
   return {
     measuredAt: '2026-09-02T20:00:00.000Z',
     clientUrl: 'http://stage.invalid:8080',
@@ -215,10 +286,13 @@ function probeRun(retrievals: readonly RetrievalRow[], idleWindows: readonly Idl
     gapMs: 15_000,
     capKbps: CAP_KBPS,
     lowCapKbps: LOW_CAP_KBPS,
+    capSource: 'cdp',
+    externalCapMeasuredBps: null,
     idleWindows,
     retrievals,
     pairs: [],
     cost: judgeCost(reading(START_MS, 4.2), reading(START_MS + 600_000, 4.2), 0),
+    ...overrides,
   };
 }
 
@@ -310,6 +384,99 @@ describe('the report the probe leaves behind', () => {
     const markdown = renderInTabProbeReport(probeRun(rows, []));
 
     assert.match(markdown, /observations, none of them asserted/);
+  });
+});
+
+/**
+ * The report an externally shaped run leaves behind.
+ *
+ * ⛔ What separates it from a CDP run is not the numbers, it is what the numbers can be compared
+ * against. A `tc` policer sits on the container's interface for the life of the container, so there
+ * is no uncapped condition inside the run at all: no unthrottled idle window and no free arm. The
+ * report has to say where the uncapped comparison lives rather than leave a reader to assume the
+ * absence means nothing was found.
+ */
+describe('the report an external cap leaves behind', () => {
+  const shaped = { capSource: 'external' as const, lowCapKbps: null, externalCapMeasuredBps: 349_120 };
+  const windows = [
+    idleWindow({
+      label: `external ${CAP_KBPS} kbps`,
+      kbpsCap: CAP_KBPS,
+      capSource: 'external',
+      inBytesPerSecondMean: 2_064,
+    }),
+  ];
+  const shapedRows = [
+    retrieval({ arm: 'canary', kbpsCap: CAP_KBPS, capSource: 'external', roundIndex: 0 }),
+    retrieval({ arm: '360p', kbpsCap: CAP_KBPS, capSource: 'external', amplification: 1.96, roundIndex: 0 }),
+    retrieval({ arm: '1080p', kbpsCap: CAP_KBPS, capSource: 'external', amplification: 2.41, roundIndex: 0 }),
+    retrieval({ arm: 'pair', kbpsCap: CAP_KBPS, capSource: 'external', amplification: 2.02, roundIndex: 0 }),
+  ];
+  const shapedRun = probeRun(shapedRows, windows, shaped);
+
+  it('replaces the H0 reading with the rate the preflight proved', () => {
+    const markdown = renderInTabProbeReport(shapedRun);
+
+    assert.match(markdown, /H0 does not apply/);
+    assert.match(markdown, /349,120 B\/s/);
+    assert.doesNotMatch(markdown, /H0 holds/, 'an emulated cap is not what this run was under');
+    assert.doesNotMatch(markdown, /H0 fails/);
+  });
+
+  it('names every row as externally capped rather than leaving the kind unsaid', () => {
+    assert.match(renderInTabProbeReport(shapedRun), /external 2800 kbps/);
+  });
+
+  /**
+   * One window, because there is no second cap to hold and no uncapped state to compare with.
+   *
+   * ⛔ Asserted on the sentence that only Part A carries. The first version of this matched
+   * "uncapped comparison" and "CDP run of the same day", both of which the predictions table also
+   * says, so deleting the Part A note left the test green: a mutation run is what found that.
+   */
+  it('sends the reader to the CDP run of the same day for the uncapped comparison', () => {
+    const markdown = renderInTabProbeReport(shapedRun);
+
+    assert.match(markdown, /There is no uncapped condition inside an externally capped run/);
+    assert.match(markdown, /one idle window and no free arm/);
+    assert.match(markdown, /uncapped comparison is the CDP run of the same day/);
+  });
+
+  it('shows no uncapped column in the ratios, since no row could have filled one', () => {
+    const markdown = renderInTabProbeReport(shapedRun);
+
+    assert.match(markdown, /\| 360p \| external 2800 kbps \| 1\.96 \/ 1\.96 \/ 1\.96 \(n=1\) \|/);
+    assert.doesNotMatch(markdown, /\| 360p \| uncapped \|/);
+  });
+
+  it('still answers H2 off its one idle window', () => {
+    assert.match(renderInTabProbeReport(shapedRun), /2,064 bytes\/s/);
+  });
+
+  /**
+   * ⛔ Two sentences that were simply false under an external cap, found by reading a rendered
+   * report end to end rather than by any assertion. Part B claimed "an unthrottled 360p canary"
+   * when the policer cannot be lifted for one row, and Part C named a bare "2800 kbps cap".
+   */
+  it('never claims an unthrottled canary or a bare cap it did not have', () => {
+    const markdown = renderInTabProbeReport(shapedRun);
+
+    assert.doesNotMatch(markdown, /unthrottled 360p canary/);
+    assert.match(markdown, /under the same cap as every other row/);
+    assert.doesNotMatch(markdown, /together under the 2800 kbps cap/);
+    assert.match(markdown, /together under the external 2800 kbps cap/);
+  });
+
+  it('keeps saying the canary is unthrottled where it really is', () => {
+    const emulated = probeRun(
+      [retrieval({ arm: 'canary' }), retrieval({ arm: 'pair', kbpsCap: CAP_KBPS })],
+      [idleWindow(), idleWindow({ kbpsCap: LOW_CAP_KBPS })],
+    );
+    const markdown = renderInTabProbeReport(emulated);
+
+    assert.match(markdown, /unthrottled 360p canary/);
+    assert.doesNotMatch(markdown, /under the same cap as every other row/);
+    assert.match(markdown, /together under the 2800 kbps cap/);
   });
 });
 
@@ -415,7 +582,7 @@ describe('the order the arms of a round run in', () => {
    * worst conditions and the report would read that as a property of the arm.
    */
   it('runs the four arms of a round, capped and free, on both rungs', () => {
-    assert.deepEqual(probeArmOrder(0), [
+    assert.deepEqual(probeArmOrder(0, 'cdp'), [
       { arm: '360p', capped: true },
       { arm: '1080p', capped: true },
       { arm: '360p', capped: false },
@@ -424,11 +591,11 @@ describe('the order the arms of a round run in', () => {
   });
 
   it('reverses the order on the next round', () => {
-    assert.deepEqual(probeArmOrder(1), [...probeArmOrder(0)].reverse());
+    assert.deepEqual(probeArmOrder(1, 'cdp'), [...probeArmOrder(0, 'cdp')].reverse());
   });
 
   it('comes back to the opening order on the round after that', () => {
-    assert.deepEqual(probeArmOrder(2), probeArmOrder(0));
+    assert.deepEqual(probeArmOrder(2, 'cdp'), probeArmOrder(0, 'cdp'));
   });
 });
 
@@ -446,7 +613,13 @@ describe('an idle window read off the frames around it', () => {
   };
 
   const window = summarizeIdleWindow(
-    { label: 'capped at 700 kbps', kbpsCap: LOW_CAP_KBPS, startedAtMs: START_MS, endedAtMs: START_MS + 2_000 },
+    {
+      label: 'capped at 700 kbps',
+      kbpsCap: LOW_CAP_KBPS,
+      capSource: 'cdp',
+      startedAtMs: START_MS,
+      endedAtMs: START_MS + 2_000,
+    },
     traffic,
   );
 
@@ -468,7 +641,7 @@ describe('an idle window read off the frames around it', () => {
 
   it('reads a window of no length as zero rather than dividing by it', () => {
     const empty = summarizeIdleWindow(
-      { label: 'none', kbpsCap: null, startedAtMs: START_MS, endedAtMs: START_MS },
+      { label: 'none', kbpsCap: null, capSource: 'cdp', startedAtMs: START_MS, endedAtMs: START_MS },
       traffic,
     );
 
@@ -492,6 +665,7 @@ describe('a retrieval row built from the traffic around it', () => {
   const observed = {
     arm: '360p' as const,
     kbpsCap: CAP_KBPS,
+    capSource: 'cdp' as const,
     ref: 'a'.repeat(64),
     roundIndex: 0,
     roundDegraded: false,
