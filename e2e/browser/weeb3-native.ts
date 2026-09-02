@@ -48,6 +48,7 @@ import {
   isExhausted,
 } from '../src/browser/liveEdge.js';
 import { type RequestRecord } from '../src/browser/network.js';
+import { costSection, judgeCost, readResources, type ResourceCost } from '../src/browser/resources.js';
 import {
   envFiniteNumber,
   envNumber,
@@ -58,6 +59,8 @@ import {
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
 import { installTimerProbe, launchViewer, readInstrument, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import { loadConfig } from '../src/config.js';
+import { makeHost } from '../src/harness/host.js';
 
 /** weeb-3's published deployment. Overridable so a pinned build can be measured against this one. */
 const DEFAULT_PAGE = 'https://lat-murmeldjur.github.io/weeb-3/';
@@ -86,8 +89,9 @@ const SAMPLE_INTERVAL_MS = 1_000;
  * returned `retrieval requests 0` on the gateway across 843 seconds, which is the claim proved from
  * the other side of the wire.
  *
- * Set `WEEB3_NATIVE_METRICS_SSH` to the host running the nodes, or `ALLOW_NO_NODE_METRICS=1` to say
- * out loud that this run has no node-side evidence.
+ * Set `WEEB3_NATIVE_METRICS_SSH` to the host running the nodes, `WEEB3_NATIVE_HARNESS_BRACKET=1` to
+ * read the same counters through the harness instead of over ssh (see {@link openHarnessBracket}),
+ * or `ALLOW_NO_NODE_METRICS=1` to say out loud that this run has no node-side evidence.
  */
 function bracketNodeMetrics(host: string, dir: string, phase: 'before' | 'after'): void {
   execFileSync(
@@ -106,6 +110,39 @@ function diffNodeMetrics(host: string, dir: string): string {
     [host, `cd ~/swarm-hls-bench && bash deploy/scripts/node-metrics.sh diff ${dir}/before.json ${dir}/after.json`],
     { encoding: 'utf8' },
   );
+}
+
+/**
+ * What our gateway is expected to have delivered, which on a gateway-less arm is nothing.
+ *
+ * ⭐ Named rather than a bare zero at the call site. A per-megabyte figure divided by a numerator
+ * that is zero by design reads very differently from one divided by a numerator nobody counted, and
+ * this project has already published a cost whose denominator had quietly shrunk to one node.
+ */
+const NO_SEGMENT_BYTES_FROM_OUR_GATEWAY = 0;
+
+/**
+ * Read the deployment's own postage and chequebook counters either side of the run.
+ *
+ * ⭐ The way that works from inside the browser container on the deployment host, which has no ssh
+ * out and therefore cannot satisfy {@link bracketNodeMetrics}. It reads exactly what `quality.ts`
+ * reads, off the routing the uploader reports, so every node the stage publishes through is counted
+ * rather than whichever one a port happened to name.
+ *
+ * ⭐ Zero segment bytes are the expectation, not a gap. weeb-3's page pulls its feed, its manifests
+ * and its segments from the node in the tab, so a gateway that spent nothing over the window is the
+ * gateway-less claim proved from the nodes' side. The browser's own request log makes the same claim
+ * from the tab's side, and this project has already paid for believing only that half.
+ *
+ * @returns The way to close the bracket, which reads the counters again and diffs them.
+ */
+async function openHarnessBracket(): Promise<() => Promise<ResourceCost>> {
+  const cfg = loadConfig();
+  const host = makeHost(cfg);
+  const before = await readResources(host, cfg);
+
+  return async (): Promise<ResourceCost> =>
+    judgeCost(before, await readResources(host, cfg), NO_SEGMENT_BYTES_FROM_OUR_GATEWAY);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -249,12 +286,16 @@ async function main(): Promise<void> {
   // would then carry "this run has no node-side evidence" while its wrapper was holding exactly that
   // evidence one directory up. A gate that can only be satisfied by lying about it teaches lying.
   const metricsBracketedBy = process.env.WEEB3_NATIVE_METRICS_BRACKETED_BY ?? '';
-  if (metricsHost === '' && metricsBracketedBy === '' && process.env.ALLOW_NO_NODE_METRICS !== '1') {
+  /** Read the counters through the harness rather than over ssh. See {@link openHarnessBracket}. */
+  const bracketedHere = process.env.WEEB3_NATIVE_HARNESS_BRACKET === '1';
+  if (metricsHost === '' && metricsBracketedBy === '' && !bracketedHere && process.env.ALLOW_NO_NODE_METRICS !== '1') {
     throw new Error(
       'refusing to run without node metrics. Set WEEB3_NATIVE_METRICS_SSH=<host> to bracket the run ' +
-        'with the bee nodes own counters, WEEB3_NATIVE_METRICS_BRACKETED_BY=<caller> if the caller ' +
-        'already brackets this arm, or ALLOW_NO_NODE_METRICS=1 to record that this run has no ' +
-        'node-side evidence for its gateway-less claim.',
+        'with the bee nodes own counters over ssh, WEEB3_NATIVE_HARNESS_BRACKET=1 to read the same ' +
+        'counters through the harness, which is what works from inside the browser container on the ' +
+        'deployment host, WEEB3_NATIVE_METRICS_BRACKETED_BY=<caller> if the caller already brackets ' +
+        'this arm, or ALLOW_NO_NODE_METRICS=1 to record that this run has no node-side evidence for ' +
+        'its gateway-less claim.',
     );
   }
 
@@ -283,6 +324,7 @@ async function main(): Promise<void> {
   if (metricsHost !== '') {
     bracketNodeMetrics(metricsHost, metricsDir, 'before');
   }
+  const closeHarnessBracket = bracketedHere ? await openHarnessBracket() : null;
 
   const browser = await launchViewer();
   const requests: RequestRecord[] = [];
@@ -430,16 +472,26 @@ async function main(): Promise<void> {
       samples,
     };
 
-    let nodeMetricsDiff =
-      metricsBracketedBy === ''
-        ? 'not collected, ALLOW_NO_NODE_METRICS=1'
-        : `not collected here: ${metricsBracketedBy} brackets this arm`;
+    // ⛔ Three ways to be satisfied and each says which one it was. The first version of this had
+    // two branches, so a run bracketed through the harness would have carried "ALLOW_NO_NODE_
+    // METRICS=1" in its own artifact while holding a full set of readings, and an artifact that
+    // understates its own evidence gets quoted as weakly as it describes itself.
+    let nodeMetricsDiff = 'not collected, ALLOW_NO_NODE_METRICS=1';
+    if (metricsBracketedBy !== '') {
+      nodeMetricsDiff = `not collected here: ${metricsBracketedBy} brackets this arm`;
+    } else if (bracketedHere) {
+      nodeMetricsDiff = 'not snapshotted over ssh: this run read the nodes itself, see the cost section below';
+    }
     if (metricsHost !== '') {
       bracketNodeMetrics(metricsHost, metricsDir, 'after');
       nodeMetricsDiff = diffNodeMetrics(metricsHost, metricsDir);
       console.log(nodeMetricsDiff);
     }
+    const cost = closeHarnessBracket === null ? null : await closeHarnessBracket();
     Object.assign(report, { nodeMetricsDiff });
+    if (cost !== null) {
+      Object.assign(report, { cost });
+    }
 
     const markdown = [
       `# weeb-3's own page, our broadcast, no gateway`,
@@ -488,6 +540,7 @@ async function main(): Promise<void> {
       nodeMetricsDiff.trimEnd(),
       '```',
       ``,
+      ...(cost === null ? [] : costSection(cost)),
       `⛔⛔ **The appended-edge distance is NOT hls.js's \`latency\` and cannot be compared with one.**`,
       `weeb-3's page exposes no player handle, so that figure is unreachable from outside it. An edge`,
       `only moves once a segment has been fetched and appended, so a SLOWER node reports a SMALLER`,
@@ -510,6 +563,10 @@ async function main(): Promise<void> {
     );
     console.log(`weeb3-native: segments done ${tally.done}, failed ${tally.failed}, mean ${tally.meanMB ?? '?'} MB`);
     console.log(`weeb3-native: ${requests.length} requests, off-shell hosts ${JSON.stringify(offShell)}`);
+    // ⭐ Zero BZZ is the expectation on a gateway-less arm, so the interesting line here is a
+    // warning: a batch filling or a chequebook draining means the stage spent on something, and
+    // this run is meant to have spent on nothing.
+    cost?.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 
     if (!gatewayLess) {
       console.error(
