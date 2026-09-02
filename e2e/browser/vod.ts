@@ -19,9 +19,35 @@
  * `BROWSER_FETCH_BACKEND` chooses where the segment bytes come from, `weeb3` being the in-tab node
  * and `gateway` the control, and the run proves the bytes came from where it says before it ends.
  *
+ * ## The squeeze mode, `BROWSER_VOD_SQUEEZE_KBPS`
+ *
+ * Set it and the run stops seeking and squeezes instead: play from the start, cap the tab's download
+ * part way through, lift it, and read the three stretches either side. Unset, everything below is
+ * exactly the seek battery it has always been.
+ *
+ * What the squeeze answers:
+ *   - does the picture keep moving under the cap, and how often does it stop in each stretch
+ *   - which rung the player chose, asked for and decoded across each stretch
+ *   - which level each fragment belonged to, how each attempt ended, and what answered too late
+ *   - how many bytes the tab's own sockets pulled in each stretch, which is the in-tab node's traffic
+ *
+ * ⭐ **A recording is the control a squeezed live watch never had.** A capped live viewer has two
+ * things going wrong at once, the link and the edge moving away from them, and a recording removes
+ * the second: there is no edge, and every byte the player wants already exists. On 2026-09-02 the
+ * in-tab node's raw retrievals were measured under Chrome's emulated cap and our own PLAYER under
+ * the same cap was not, which is the gap this closes. `browser/weeb3-native.ts` squeezes weeb-3's own
+ * page at the same cap, so the two sit side by side.
+ *
+ * ⛔ Nothing here is asserted. Every ratio, byte count and stall count is measured, printed under a
+ * heading that says so, and filed. Owner ruling of 2026-08-29.
+ *
  * Usage, on the deployment host, against a stream that has already finished:
  *   deploy/scripts/browser-on-host.sh --script browser:vod -- \
  *     BROWSER_VOD_OWNER=<owner> BROWSER_VOD_TOPIC=<rawTopic>
+ *
+ * And the same recording with its link squeezed to 2800 kbps:
+ *   deploy/scripts/browser-on-host.sh --script browser:vod -- \
+ *     BROWSER_VOD_OWNER=<owner> BROWSER_VOD_TOPIC=<rawTopic> BROWSER_VOD_SQUEEZE_KBPS=2800
  */
 
 import { type Page } from 'playwright-core';
@@ -32,14 +58,35 @@ import {
   openByteSourceArmSession,
 } from '../src/browser/byteSourceArm.js';
 import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
-import { judgeRun } from '../src/browser/instrument.js';
+import {
+  abandonedAnswerVerdict,
+  type FragmentLog,
+  fragmentLogVerdict,
+  type FragmentRequestTimeline,
+  fragmentSettleVerdict,
+  judgeFragmentRequests,
+  recordFragmentLog,
+} from '../src/browser/fragmentRequests.js';
+import { type InstrumentReading, judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { installPlayerProbe, type PlayerProbe, readPlayerProbe } from '../src/browser/playerProbe.js';
-import { type ByteSourceCondition } from '../src/browser/report.js';
+import { judgeQualitySwitch } from '../src/browser/qualitySwitch.js';
+import { fragmentRequestSection } from '../src/browser/qualitySwitchReport.js';
+import { type ByteSourceCondition, seconds } from '../src/browser/report.js';
 import { costSection, judgeCost, readResources, type ResourceCost } from '../src/browser/resources.js';
-import { envNumber, requireEnv, runIdFrom, thinRequestLog, writeRunArtifacts } from '../src/browser/runFiles.js';
-import { summarize, type ViewerSample } from '../src/browser/session.js';
 import {
+  envNumber,
+  envNumberOrNull,
+  requireEnv,
+  runIdFrom,
+  screenshotDirFor,
+  thinRequestLog,
+  writeRunArtifacts,
+} from '../src/browser/runFiles.js';
+import { summarize, type ViewerSample } from '../src/browser/session.js';
+import { squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
+import {
+  installClockOverlay,
   installTimerProbe,
   launchViewer,
   proveInstrumentCanFail,
@@ -48,6 +95,14 @@ import {
   recordRequests,
   VIEWPORT,
 } from '../src/browser/viewer.js';
+import {
+  judgeVodSqueeze,
+  vodSqueezeObservations,
+  type VodSqueezeReport,
+  vodSqueezeSection,
+} from '../src/browser/vodSqueeze.js';
+import { DEFAULT_SAMPLE_INTERVAL_MS, sampleFor } from '../src/browser/watchLoop.js';
+import { recordWebSocketTraffic, type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
 import { loadConfig } from '../src/config.js';
 import { makeHost } from '../src/harness/host.js';
 
@@ -71,6 +126,90 @@ const SEEK_TOLERANCE_S = 1.5;
 
 /** Where in the recording to seek, as a fraction of its duration. Ends backwards on purpose. */
 const SEEK_FRACTIONS = [0.5, 0.9, 0.2] as const;
+
+/**
+ * How long a squeeze run watches the recording play before capping the link.
+ *
+ * ⛔ Its own variable, `BROWSER_VOD_SETTLE_S`, and not `BROWSER_VOD_SETTLE_SECONDS`. That one is the
+ * seek battery's eight-second warm-up and every recipe in the existing corpus was run with it, so
+ * folding a second meaning into it would move a window nobody asked to move. Forty-five matches
+ * `browser:quality`, which is the live arm this run is the control for, and two windows of different
+ * lengths would not be comparable.
+ */
+const DEFAULT_SQUEEZE_SETTLE_SECONDS = 45;
+
+/**
+ * How long the link stays capped.
+ *
+ * hls.js re-estimates bandwidth from its own fragment loads, so the cap has to outlast enough
+ * fragment loads for the estimate to move. Nothing here is asserted on how quickly it does.
+ */
+const DEFAULT_SQUEEZE_SECONDS = 60;
+
+/** How long to keep watching after the cap comes off, which is where the climb back is seen. */
+const DEFAULT_RECOVER_SECONDS = 60;
+
+/** What a squeeze run was asked to do, so the report states the plan rather than inferring it. */
+interface SqueezePlan {
+  kbps: number;
+  settleMs: number;
+  squeezeMs: number;
+  recoverMs: number;
+  intervalMs: number;
+}
+
+/**
+ * Whether the player holds a finished playlist rather than a live window.
+ *
+ * A live playlist reports `Infinity` for its duration, which is the whole point of the reading: it
+ * says a recording was expected and a broadcast arrived.
+ */
+function isFinishedTimeline(playback: PlaybackReading | undefined): boolean {
+  return playback !== undefined && Number.isFinite(playback.duration) && playback.duration > 0;
+}
+
+/**
+ * Say so where the recording is shorter than the plan needs to play through.
+ *
+ * ⛔ A warning and never a refusal. Sizing a run is the operator's call. What it buys is the one
+ * reading nothing else gives: a recording that ends part way through leaves every stretch after that
+ * point describing a finished element rather than a viewer, which looks exactly like a picture that
+ * stopped under the cap.
+ */
+function warnIfShorterThanThePlan(recordingS: number | undefined, plan: SqueezePlan, settledForMs: number): void {
+  const needsS = (settledForMs + plan.settleMs + plan.squeezeMs + plan.recoverMs) / 1000;
+  if (recordingS === undefined || !Number.isFinite(recordingS) || recordingS >= needsS) {
+    return;
+  }
+
+  console.log(
+    `browser: ⚠️ this recording is ${recordingS.toFixed(1)}s and the plan needs ${needsS.toFixed(1)}s of ` +
+      'playback, so it ends mid-run and every stretch after that point describes a finished element ' +
+      'rather than a viewer. Record for longer, or shorten BROWSER_VOD_SETTLE_S, BROWSER_VOD_SQUEEZE_S, ' +
+      'BROWSER_VOD_RECOVER_S and BROWSER_BYTE_SOURCE_SETTLE_SECONDS.',
+  );
+}
+
+/**
+ * The plan, or null for the seek battery this driver has always run.
+ *
+ * ⛔ `envNumberOrNull` rather than a default, because the presence of the cap is what chooses the
+ * mode. A default would make every existing recipe a squeeze run.
+ */
+function squeezePlanFromEnv(): SqueezePlan | null {
+  const kbps = envNumberOrNull('BROWSER_VOD_SQUEEZE_KBPS');
+  if (kbps === null) {
+    return null;
+  }
+
+  return {
+    kbps,
+    settleMs: envNumber('BROWSER_VOD_SETTLE_S', DEFAULT_SQUEEZE_SETTLE_SECONDS) * 1000,
+    squeezeMs: envNumber('BROWSER_VOD_SQUEEZE_S', DEFAULT_SQUEEZE_SECONDS) * 1000,
+    recoverMs: envNumber('BROWSER_VOD_RECOVER_S', DEFAULT_RECOVER_SECONDS) * 1000,
+    intervalMs: envNumber('BROWSER_SAMPLE_INTERVAL_MS', DEFAULT_SAMPLE_INTERVAL_MS),
+  };
+}
 
 interface PlaybackReading {
   currentTime: number;
@@ -200,9 +339,11 @@ async function main(): Promise<void> {
   // byte source should cost a startup and not a whole recording's playback.
   const armByteSource = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
   const byteSourceSettleMs = envNumber('BROWSER_BYTE_SOURCE_SETTLE_SECONDS', DEFAULT_BYTE_SOURCE_SETTLE_SECONDS) * 1000;
+  const squeeze = squeezePlanFromEnv();
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
+  const screenshotDir = screenshotDirFor(runId);
   // The route goes in the **fragment**. The client mounts its routes under a `HashRouter`, so the
   // path form of this URL matches no route at all and renders the catalog instead, silently: the
   // page loads, the catalog renders a thumbnail player per card, one of those loads one segment, and
@@ -230,13 +371,28 @@ async function main(): Promise<void> {
   let afterSettle: PlaybackReading | undefined;
   const seeks: SeekResult[] = [];
   const samples: (ViewerSample | null)[] = [];
+  const readings: InstrumentReading[] = [];
+  const screenshots: string[] = [];
+  /** ⛔ Observations, both of them. Nothing below branches on either and no gate reads them. */
+  const fragmentLog: FragmentLog = { requests: [], settles: [], abandonedAnswers: [] };
+  const traffic: WebSocketTraffic = { connections: [], frames: [] };
   let openError: string | null = null;
   let byteSourceArm: ByteSourceArmSession | undefined;
+  let throttle: ThrottleHandle | undefined;
+  let throttledAtMs = 0;
+  let releasedAtMs = 0;
 
   try {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     recordRequests(page, requests);
+    if (squeeze !== null) {
+      // Before the navigation, for the reason `recordRequests` is: a listener added afterwards misses
+      // whatever the player asked for and whatever its node dialled while the page was still opening,
+      // and a phase short at one end is indistinguishable from a player that was quiet.
+      recordFragmentLog(page, fragmentLog);
+      recordWebSocketTraffic(page, traffic);
+    }
     await installTimerProbe(page);
     await installPlayerProbe(page);
 
@@ -281,6 +437,15 @@ async function main(): Promise<void> {
       afterSettle = await readPlayback(page);
     }
 
+    // ⛔ A squeeze run checks the timeline HERE rather than after a settle. A live playlist reports
+    // Infinity, and capping one for three minutes would spend the whole plan filing a broadcast under
+    // a recording's name. The seek battery keeps its own check after its own settle, because
+    // `duration` has been seen to move across those eight seconds and every seek target comes off it.
+    if (openError === null && squeeze !== null && !isFinishedTimeline(startedPlaying)) {
+      openError = `duration is ${startedPlaying?.duration}, so the player was not handed a finished playlist`;
+      afterSettle = await readPlayback(page);
+    }
+
     if (!openError) {
       // ⛔⛔ The recording was opened on whatever the build defaults to, and this is where the run
       // becomes the byte source it is filed under. `browser:vod` was handed `BROWSER_FETCH_BACKEND`
@@ -300,31 +465,76 @@ async function main(): Promise<void> {
         settleMs: byteSourceSettleMs,
       });
 
-      // ⛔ Sampled rather than slept through. The settle is the only stretch of this run that is
-      // ordinary playback, so it is the only one whose rung list and advance describe the recording
-      // rather than a seek.
-      for (let taken = 0; taken < Math.round((settleSeconds * 1000) / SAMPLE_INTERVAL_MS); taken++) {
-        await page.waitForTimeout(SAMPLE_INTERVAL_MS);
-        samples.push(await readSample(page).catch(() => null));
-      }
-      afterSettle = await readPlayback(page);
+      if (squeeze !== null) {
+        // Sampled through `sampleFor`, the same loop every live arm uses, so a squeezed recording's
+        // advance and rung readings mean exactly what a squeezed broadcast's do. It screenshots both
+        // clocks and refuses without the overlay, hence the install.
+        await installClockOverlay(page);
+        warnIfShorterThanThePlan(startedPlaying?.duration, squeeze, byteSourceArm.arm?.settledForMs ?? 0);
 
-      const duration = afterSettle.duration;
-      if (!Number.isFinite(duration) || duration <= 0) {
-        openError = `duration is ${duration}, so the player was not handed a finished playlist`;
+        const totalSamples = Math.ceil((squeeze.settleMs + squeeze.squeezeMs + squeeze.recoverMs) / squeeze.intervalMs);
+        const watch = async (forMs: number): Promise<void> => {
+          const stretch = await sampleFor({
+            page,
+            forMs,
+            intervalMs: squeeze.intervalMs,
+            screenshotDir,
+            startIndex: samples.length,
+            totalSamples,
+          });
+          samples.push(...stretch.samples);
+          readings.push(...stretch.readings);
+          screenshots.push(...stretch.screenshots);
+        };
+
+        console.log(`browser: settling for ${squeeze.settleMs / 1000}s before the squeeze`);
+        await watch(squeeze.settleMs);
+
+        // ⛔ The cap comes from the environment rather than from the ladder, unlike `browser:quality`.
+        // The question here is what OUR player does at the same bandwidth weeb-3's own page was
+        // measured at, so the two runs have to be capped at one number rather than each at its own.
+        console.log(`browser: capping the tab's download at ${squeeze.kbps} kbps`);
+        throttle = await squeezeDownload(page, squeeze.kbps);
+        throttledAtMs = Date.now();
+
+        try {
+          await watch(squeeze.squeezeMs);
+        } finally {
+          await throttle?.release().catch((error) => console.error('could not lift the cap:', error));
+          throttle = undefined;
+          releasedAtMs = Date.now();
+          console.log(`browser: cap lifted, watching ${squeeze.recoverMs / 1000}s for the climb back`);
+        }
+
+        await watch(squeeze.recoverMs);
+        afterSettle = await readPlayback(page);
       } else {
-        // Off `seekable`, not off `duration`. Seeking past the seekable end is not a product failure,
-        // it is an invalid request, and the two are not the same number here: `duration` was read as
-        // 27.10s at the start of one run and 22.59s eight seconds later, which silently moved every
-        // target and turned a run that reached nothing new into a clean pass.
-        const reachable = Math.min(duration, afterSettle.seekable);
-        for (const fraction of SEEK_FRACTIONS) {
-          const seek = await seekTo(page, reachable * fraction, fraction);
-          seeks.push(seek);
-          console.log(
-            `browser: seek to ${(fraction * 100).toFixed(0)}% (${seek.targetS.toFixed(2)}s) ` +
-              (seek.error ? `⛔ ${seek.error}` : `landed in ${seek.landedInMs}ms, resumed in ${seek.resumedInMs}ms`),
-          );
+        // ⛔ Sampled rather than slept through. The settle is the only stretch of this run that is
+        // ordinary playback, so it is the only one whose rung list and advance describe the recording
+        // rather than a seek.
+        for (let taken = 0; taken < Math.round((settleSeconds * 1000) / SAMPLE_INTERVAL_MS); taken++) {
+          await page.waitForTimeout(SAMPLE_INTERVAL_MS);
+          samples.push(await readSample(page).catch(() => null));
+        }
+        afterSettle = await readPlayback(page);
+
+        const duration = afterSettle.duration;
+        if (!Number.isFinite(duration) || duration <= 0) {
+          openError = `duration is ${duration}, so the player was not handed a finished playlist`;
+        } else {
+          // Off `seekable`, not off `duration`. Seeking past the seekable end is not a product
+          // failure, it is an invalid request, and the two are not the same number here: `duration`
+          // was read as 27.10s at the start of one run and 22.59s eight seconds later, which silently
+          // moved every target and turned a run that reached nothing new into a clean pass.
+          const reachable = Math.min(duration, afterSettle.seekable);
+          for (const fraction of SEEK_FRACTIONS) {
+            const seek = await seekTo(page, reachable * fraction, fraction);
+            seeks.push(seek);
+            console.log(
+              `browser: seek to ${(fraction * 100).toFixed(0)}% (${seek.targetS.toFixed(2)}s) ` +
+                (seek.error ? `⛔ ${seek.error}` : `landed in ${seek.landedInMs}ms, resumed in ${seek.resumedInMs}ms`),
+            );
+          }
         }
       }
     }
@@ -339,6 +549,31 @@ async function main(): Promise<void> {
     // the bracket is for is the pair of health readings either side: every figure this project has
     // retracted for a starved instrument was taken on a run whose postage and funding were never read.
     const cost = judgeCost(resourcesBefore, await readResources(host, cfg), network.segmentBytesDelivered);
+    const summary = summarize(watched);
+
+    // One reading per sample in a squeeze run, because the degradation the guard screens for is a
+    // consequence of the first stall rather than a property of the page at load. The seek battery
+    // takes the one reading at the end it has always taken.
+    if (readings.length === 0) {
+      readings.push(await readInstrument(page));
+    }
+
+    const throttleWindow = { appliedAtMs: throttledAtMs, liftedAtMs: releasedAtMs, kbps: squeeze?.kbps ?? 0 };
+    const squeezed: VodSqueezeReport | undefined =
+      squeeze === null || openError !== null
+        ? undefined
+        : {
+            throttle: throttleWindow,
+            quality: judgeQualitySwitch(watched, throttleWindow),
+            phases: judgeVodSqueeze(watched, traffic, throttleWindow),
+          };
+    // ⛔ Which level the player ASKED for and what became of each attempt, neither of which any other
+    // reading here carries. `pictureMoved` is what lets an empty capture read as a client without the
+    // instrument rather than as a player that requested nothing.
+    const askedFragments: FragmentRequestTimeline | undefined =
+      squeezed === undefined
+        ? undefined
+        : judgeFragmentRequests(fragmentLog, throttleWindow, summary.overallAdvanceRatio > 0);
 
     const run = {
       measuredAt,
@@ -364,15 +599,27 @@ async function main(): Promise<void> {
         reported: byteSourceArm.arm.reported,
         settledForMs: byteSourceArm.arm.settledForMs,
       },
+      // ⛔ Undefined outside squeeze mode, and `JSON.stringify` drops an undefined key, so a seek
+      // battery's artifact is the shape it has always been. `throttle`, `quality` and
+      // `fragmentRequests` are the names `browser:quality` writes, so `parseBrowserArmState` reads a
+      // squeezed recording exactly as it reads a squeezed broadcast.
+      throttle: squeezed?.throttle,
+      quality: squeezed?.quality,
+      vodSqueeze: squeezed?.phases,
+      fragmentRequests: askedFragments,
+      // What the run was asked to do, so a report states the plan rather than inferring it from the
+      // stretch lengths it happened to get.
+      squeeze: squeeze === null ? undefined : { ...squeeze, byteSourceSettleMs },
       // ⛔ Written under the same names every other driver uses, so `parseBrowserArmState` reads a
       // recording the way it reads a live watch. A second shape here would mean a VOD suite could
       // never assert on the same fields as a live one, which is the whole reason to have both.
-      summary: summarize(watched),
+      summary,
       samples: watched,
+      screenshots,
       player: await readPlayerProbe(page),
       messages,
       instrumentProofs,
-      instrument: judgeRun([await readInstrument(page)]),
+      instrument: judgeRun(readings),
       network,
       cost,
     };
@@ -386,6 +633,18 @@ async function main(): Promise<void> {
     console.log(`\nbrowser: wrote ${stem}.md`);
     const failed = openError !== null || seeks.some((seek) => seek.error !== null);
     console.log(`browser: playback ${openError ?? 'started'}, seeks ${failed ? 'FAILED' : 'all landed and resumed'}`);
+
+    if (squeezed !== undefined) {
+      vodSqueezeObservations(squeezed).forEach((line) => console.log(`browser: ${line}`));
+    }
+    if (askedFragments !== undefined) {
+      // ⛔ The three verdicts before any count, and they have to be here rather than only in the
+      // artifact: a phase of zero and an instrument the deployed client does not carry print the same
+      // digits, and these are the lines that say which.
+      console.log(`browser: ${fragmentLogVerdict(askedFragments)}`);
+      console.log(`browser: ${fragmentSettleVerdict(askedFragments.settled)}`);
+      console.log(`browser: ${abandonedAnswerVerdict(askedFragments.abandonedAnswers)}`);
+    }
     cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 
     // ⛔ Last, and after the artifact is on disk. It throws where the segment bytes did not come from
@@ -394,6 +653,9 @@ async function main(): Promise<void> {
     // keeping either way.
     byteSourceArm?.proveBytesCameFromIt(requests);
   } finally {
+    // The cap lives in the browser, so closing it lifts everything. Released here anyway for the path
+    // where the squeeze stretch threw before its own finally ran.
+    await throttle?.release().catch(() => undefined);
     await browser.close();
   }
 }
@@ -413,9 +675,19 @@ function renderVodReport(run: {
   network: unknown;
   byteSource?: ByteSourceCondition;
   cost: ResourceCost;
+  /** The squeeze readings, or absent on the seek battery this driver runs by default. */
+  quality?: VodSqueezeReport['quality'];
+  throttle?: VodSqueezeReport['throttle'];
+  vodSqueeze?: VodSqueezeReport['phases'];
+  fragmentRequests?: FragmentRequestTimeline;
 }): string {
+  const squeezed = squeezeReportOf(run);
   const lines: string[] = [];
-  lines.push('# Playing a recording back, and seeking inside it');
+  lines.push(
+    squeezed === undefined
+      ? '# Playing a recording back, and seeking inside it'
+      : '# Playing a recording back with the link squeezed',
+  );
   lines.push('');
   lines.push(`**${run.measuredAt}.** ${run.chromeVersion}, \`${run.watchUrl}\`.`);
   lines.push('');
@@ -456,8 +728,8 @@ function renderVodReport(run: {
   lines.push('');
   lines.push('A finite duration is the whole point: a live playlist reports `Infinity` here, so this');
   lines.push('is what says the player received a finished playlist rather than a live window. The two');
-  lines.push('duration rows are separate because they have been seen to disagree, and the seek targets');
-  lines.push('below come off `seekable`, which is what a seek can actually reach.');
+  lines.push('duration rows are separate because they have been seen to disagree, and a seek target');
+  lines.push('comes off `seekable`, which is what a seek can actually reach.');
   lines.push('');
   lines.push('## The ladder this recording offered');
   lines.push('');
@@ -473,7 +745,7 @@ function renderVodReport(run: {
   lines.push(
     rode.length === 0
       ? '⛔ **It selected none of them**, so nothing above was ever played.'
-      : `It rode ${rode.map((height) => `${height}p`).join(', ')} across the settle.`,
+      : `It rode ${rode.map((height) => `${height}p`).join(', ')} across the run.`,
   );
   lines.push('');
   lines.push('⛔ A recording whose master resolved and whose upper rung playlists did not plays');
@@ -481,27 +753,60 @@ function renderVodReport(run: {
   lines.push('which is why the rung list is here and is read from the shipped overlay rather than from');
   lines.push('the media element.');
   lines.push('');
-  lines.push('## Seeking');
-  lines.push('');
-  lines.push('| target | asked | landed | landed in | resumed in | |');
-  lines.push('| --- | ---: | ---: | ---: | ---: | --- |');
-  for (const seek of run.seeks) {
-    lines.push(
-      `| ${(seek.fraction * 100).toFixed(0)}% | ${seek.targetS.toFixed(2)}s | ` +
-        `${seek.landedAtS?.toFixed(2) ?? '—'}s | ${seek.landedInMs ?? '—'}ms | ` +
-        `${seek.resumedInMs ?? '—'}ms | ${seek.error ? `⛔ ${seek.error}` : '✅'} |`,
-    );
+
+  if (squeezed !== undefined) {
+    lines.push(...vodSqueezeSection(squeezed));
+    if (run.fragmentRequests !== undefined && run.samples.length > 0) {
+      // On the report's own axis, seconds from its first sample, so this table reads straight against
+      // the stretch table above it. The state file keeps the wall clock the boundaries were cut on.
+      const firstSampleAtMs = run.samples[0].atMs;
+      lines.push(...fragmentRequestSection(run.fragmentRequests, (atMs) => seconds(atMs - firstSampleAtMs)));
+    }
   }
-  lines.push('');
-  lines.push('The last target is backwards on purpose: a forward seek can be served by what the player');
-  lines.push('already buffered, and a backward one into a discarded region cannot.');
-  lines.push('');
+
+  if (run.seeks.length > 0) {
+    lines.push('## Seeking');
+    lines.push('');
+    lines.push('| target | asked | landed | landed in | resumed in | |');
+    lines.push('| --- | ---: | ---: | ---: | ---: | --- |');
+    for (const seek of run.seeks) {
+      lines.push(
+        `| ${(seek.fraction * 100).toFixed(0)}% | ${seek.targetS.toFixed(2)}s | ` +
+          `${seek.landedAtS?.toFixed(2) ?? '—'}s | ${seek.landedInMs ?? '—'}ms | ` +
+          `${seek.resumedInMs ?? '—'}ms | ${seek.error ? `⛔ ${seek.error}` : '✅'} |`,
+      );
+    }
+    lines.push('');
+    lines.push('The last target is backwards on purpose: a forward seek can be served by what the player');
+    lines.push('already buffered, and a backward one into a discarded region cannot.');
+    lines.push('');
+  }
+
   // On the success path as well, because a seek that fails leaves its evidence on the element rather
   // than in the seek row: a target inside a buffered range with the element paused is a different
   // fault from one that ran out of media, and the row above cannot tell them apart.
   lines.push(...renderWhatThePlayerDid(run));
   lines.push(...costSection(run.cost));
   return lines.join('\n');
+}
+
+/**
+ * The squeeze readings as one report, or undefined where this run did not squeeze anything.
+ *
+ * ⛔ All three or none. The three are written together by a squeeze run and by nothing else, so a
+ * file carrying some of them is malformed rather than a plain playback, and rendering half a squeeze
+ * beside a seek battery's headline is exactly the mislabelled artifact this driver has already met.
+ */
+function squeezeReportOf(run: {
+  quality?: VodSqueezeReport['quality'];
+  throttle?: VodSqueezeReport['throttle'];
+  vodSqueeze?: VodSqueezeReport['phases'];
+}): VodSqueezeReport | undefined {
+  const { quality, throttle, vodSqueeze } = run;
+  if (quality === undefined || throttle === undefined || vodSqueeze === undefined) {
+    return undefined;
+  }
+  return { quality, throttle, phases: vodSqueeze };
 }
 
 /**
