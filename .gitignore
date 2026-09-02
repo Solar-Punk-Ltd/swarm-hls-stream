@@ -59,8 +59,10 @@ docs/bench/browser-rung-outage-*.json
 docs/bench/browser-rung-outage-*.md
 docs/bench/in-tab-throttle-probe-*.json
 docs/bench/in-tab-throttle-probe-*.md
-# The pre-registration shares the driver's prefix and is hand written, so it is kept.
+# The pre-registration and the written-up result share the driver's prefix and are hand written, so
+# they are kept. A run's own report is force-added when it is the evidence behind a result.
 !docs/bench/in-tab-throttle-probe-prediction-*.md
+!docs/bench/in-tab-throttle-probe-result-*.md
 
 # Stryker drains the command runner's stdout slowly, and the uploader suite times out against
 # that backpressure. Redirecting it to a file is what makes the dry run pass.

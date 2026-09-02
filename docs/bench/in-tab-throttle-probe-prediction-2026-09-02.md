@@ -1,5 +1,11 @@
 # Why a capped in-tab node delivers nothing: the probe, pre-registered
 
+> **Run on 2026-09-02, result in
+> [`in-tab-throttle-probe-result-2026-09-02.md`](in-tab-throttle-probe-result-2026-09-02.md).** H2
+> refuted, H0 held, H1 confirmed in kind at 1.9 to 2.9x during a retrieval plus about one segment's
+> worth afterwards, which is below the 3.0 in-window figure written below, and the link ran at 31% to
+> 51% while doing it. This file is left as written so the prediction can be read against the result.
+
 **2026-09-02, plan. Costs 0 BZZ.** Written before the driver exists and before anything ran, so the
 predictions below cannot have been fitted to the result. The result file will be
 `in-tab-throttle-probe-<runId>.md` beside this one.

@@ -1,0 +1,1920 @@
+{
+  "measuredAt": "2026-09-02T07:30:38.148Z",
+  "clientUrl": "http://127.0.0.1:10074",
+  "chromeVersion": "Chrome 151.0.7922.75",
+  "owner": "8d8a30ff4cbcf8ad0e0773547686295f8157feb0",
+  "manifests": [
+    {
+      "rung": "360p",
+      "topicHex": "906fe47f1d5c4e1c2a2bb0718aa0e55477a23b9a6d6c7229550c8b6ce0b1af10",
+      "segmentCount": 127,
+      "targetDurationS": 2,
+      "medianSegmentSeconds": 2
+    },
+    {
+      "rung": "1080p",
+      "topicHex": "fbb12dbb0037cce1db284d7c751f7762ac75bf9bf371ec01f6aaa99156d4830b",
+      "segmentCount": 127,
+      "targetDurationS": 2,
+      "medianSegmentSeconds": 2
+    }
+  ],
+  "joinedInMs": 965,
+  "budgetMs": 90000,
+  "tailMs": 10000,
+  "gapMs": 15000,
+  "capKbps": 2800,
+  "lowCapKbps": 700,
+  "idleWindows": [
+    {
+      "label": "unthrottled",
+      "kbpsCap": null,
+      "startedAtMs": 1788334242558,
+      "endedAtMs": 1788334302558,
+      "perSecond": [
+        {
+          "secondIndex": 0,
+          "inBytes": 121176,
+          "outBytes": 19722,
+          "inFrames": 304,
+          "outFrames": 229
+        },
+        {
+          "secondIndex": 1,
+          "inBytes": 597352,
+          "outBytes": 103637,
+          "inFrames": 1540,
+          "outFrames": 1166
+        },
+        {
+          "secondIndex": 2,
+          "inBytes": 783702,
+          "outBytes": 126587,
+          "inFrames": 1900,
+          "outFrames": 1435
+        },
+        {
+          "secondIndex": 3,
+          "inBytes": 546423,
+          "outBytes": 95258,
+          "inFrames": 1388,
+          "outFrames": 1070
+        },
+        {
+          "secondIndex": 4,
+          "inBytes": 519452,
+          "outBytes": 78122,
+          "inFrames": 1202,
+          "outFrames": 893
+        },
+        {
+          "secondIndex": 5,
+          "inBytes": 146557,
+          "outBytes": 23777,
+          "inFrames": 355,
+          "outFrames": 269
+        },
+        {
+          "secondIndex": 6,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 7,
+          "inBytes": 120622,
+          "outBytes": 19808,
+          "inFrames": 296,
+          "outFrames": 224
+        },
+        {
+          "secondIndex": 8,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 9,
+          "inBytes": 420,
+          "outBytes": 90,
+          "inFrames": 14,
+          "outFrames": 3
+        },
+        {
+          "secondIndex": 10,
+          "inBytes": 450,
+          "outBytes": 210,
+          "inFrames": 15,
+          "outFrames": 7
+        },
+        {
+          "secondIndex": 11,
+          "inBytes": 1980,
+          "outBytes": 750,
+          "inFrames": 66,
+          "outFrames": 25
+        },
+        {
+          "secondIndex": 12,
+          "inBytes": 3030,
+          "outBytes": 1470,
+          "inFrames": 101,
+          "outFrames": 49
+        },
+        {
+          "secondIndex": 13,
+          "inBytes": 2220,
+          "outBytes": 990,
+          "inFrames": 74,
+          "outFrames": 33
+        },
+        {
+          "secondIndex": 14,
+          "inBytes": 1920,
+          "outBytes": 2062,
+          "inFrames": 64,
+          "outFrames": 57
+        },
+        {
+          "secondIndex": 15,
+          "inBytes": 570,
+          "outBytes": 1006,
+          "inFrames": 19,
+          "outFrames": 25
+        },
+        {
+          "secondIndex": 16,
+          "inBytes": 480,
+          "outBytes": 4252,
+          "inFrames": 16,
+          "outFrames": 98
+        },
+        {
+          "secondIndex": 17,
+          "inBytes": 510,
+          "outBytes": 5054,
+          "inFrames": 17,
+          "outFrames": 113
+        },
+        {
+          "secondIndex": 18,
+          "inBytes": 120,
+          "outBytes": 3524,
+          "inFrames": 4,
+          "outFrames": 78
+        },
+        {
+          "secondIndex": 19,
+          "inBytes": 180,
+          "outBytes": 3216,
+          "inFrames": 6,
+          "outFrames": 72
+        },
+        {
+          "secondIndex": 20,
+          "inBytes": 60,
+          "outBytes": 980,
+          "inFrames": 2,
+          "outFrames": 22
+        },
+        {
+          "secondIndex": 21,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 22,
+          "inBytes": 60,
+          "outBytes": 796,
+          "inFrames": 2,
+          "outFrames": 18
+        },
+        {
+          "secondIndex": 23,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 24,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 25,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 26,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 27,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 28,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 29,
+          "inBytes": 2750,
+          "outBytes": 2090,
+          "inFrames": 66,
+          "outFrames": 44
+        },
+        {
+          "secondIndex": 30,
+          "inBytes": 2000,
+          "outBytes": 1520,
+          "inFrames": 48,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 31,
+          "inBytes": 10250,
+          "outBytes": 7790,
+          "inFrames": 246,
+          "outFrames": 164
+        },
+        {
+          "secondIndex": 32,
+          "inBytes": 12938,
+          "outBytes": 9880,
+          "inFrames": 311,
+          "outFrames": 208
+        },
+        {
+          "secondIndex": 33,
+          "inBytes": 9552,
+          "outBytes": 7270,
+          "inFrames": 231,
+          "outFrames": 156
+        },
+        {
+          "secondIndex": 34,
+          "inBytes": 8010,
+          "outBytes": 6030,
+          "inFrames": 190,
+          "outFrames": 124
+        },
+        {
+          "secondIndex": 35,
+          "inBytes": 2500,
+          "outBytes": 1900,
+          "inFrames": 60,
+          "outFrames": 40
+        },
+        {
+          "secondIndex": 36,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 37,
+          "inBytes": 2000,
+          "outBytes": 1520,
+          "inFrames": 48,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 38,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 39,
+          "inBytes": 660,
+          "outBytes": 330,
+          "inFrames": 22,
+          "outFrames": 11
+        },
+        {
+          "secondIndex": 40,
+          "inBytes": 480,
+          "outBytes": 240,
+          "inFrames": 16,
+          "outFrames": 8
+        },
+        {
+          "secondIndex": 41,
+          "inBytes": 2460,
+          "outBytes": 1230,
+          "inFrames": 82,
+          "outFrames": 41
+        },
+        {
+          "secondIndex": 42,
+          "inBytes": 3060,
+          "outBytes": 1530,
+          "inFrames": 102,
+          "outFrames": 51
+        },
+        {
+          "secondIndex": 43,
+          "inBytes": 2280,
+          "outBytes": 1140,
+          "inFrames": 76,
+          "outFrames": 38
+        },
+        {
+          "secondIndex": 44,
+          "inBytes": 1980,
+          "outBytes": 2002,
+          "inFrames": 66,
+          "outFrames": 55
+        },
+        {
+          "secondIndex": 45,
+          "inBytes": 600,
+          "outBytes": 1036,
+          "inFrames": 20,
+          "outFrames": 26
+        },
+        {
+          "secondIndex": 46,
+          "inBytes": 0,
+          "outBytes": 3680,
+          "inFrames": 0,
+          "outFrames": 80
+        },
+        {
+          "secondIndex": 47,
+          "inBytes": 480,
+          "outBytes": 5024,
+          "inFrames": 16,
+          "outFrames": 112
+        },
+        {
+          "secondIndex": 48,
+          "inBytes": 0,
+          "outBytes": 3496,
+          "inFrames": 0,
+          "outFrames": 76
+        },
+        {
+          "secondIndex": 49,
+          "inBytes": 0,
+          "outBytes": 3036,
+          "inFrames": 0,
+          "outFrames": 66
+        },
+        {
+          "secondIndex": 50,
+          "inBytes": 0,
+          "outBytes": 920,
+          "inFrames": 0,
+          "outFrames": 20
+        },
+        {
+          "secondIndex": 51,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 52,
+          "inBytes": 0,
+          "outBytes": 736,
+          "inFrames": 0,
+          "outFrames": 16
+        },
+        {
+          "secondIndex": 53,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 54,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 55,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 56,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 57,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 58,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 59,
+          "inBytes": 2750,
+          "outBytes": 2090,
+          "inFrames": 66,
+          "outFrames": 44
+        }
+      ],
+      "inBytesPerSecondMean": 48533.9,
+      "outBytesPerSecondMean": 9263.35,
+      "connectionsOpenStart": 13,
+      "connectionsOpenEnd": 200
+    },
+    {
+      "label": "capped at 2800 kbps",
+      "kbpsCap": 2800,
+      "startedAtMs": 1788334302590,
+      "endedAtMs": 1788334362589,
+      "perSecond": [
+        {
+          "secondIndex": 0,
+          "inBytes": 1690,
+          "outBytes": 1270,
+          "inFrames": 40,
+          "outFrames": 26
+        },
+        {
+          "secondIndex": 1,
+          "inBytes": 10340,
+          "outBytes": 8360,
+          "inFrames": 249,
+          "outFrames": 176
+        },
+        {
+          "secondIndex": 2,
+          "inBytes": 13190,
+          "outBytes": 9560,
+          "inFrames": 316,
+          "outFrames": 202
+        },
+        {
+          "secondIndex": 3,
+          "inBytes": 9180,
+          "outBytes": 7540,
+          "inFrames": 222,
+          "outFrames": 158
+        },
+        {
+          "secondIndex": 4,
+          "inBytes": 8130,
+          "outBytes": 5630,
+          "inFrames": 194,
+          "outFrames": 120
+        },
+        {
+          "secondIndex": 5,
+          "inBytes": 2410,
+          "outBytes": 1780,
+          "inFrames": 57,
+          "outFrames": 36
+        },
+        {
+          "secondIndex": 6,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 7,
+          "inBytes": 2000,
+          "outBytes": 1520,
+          "inFrames": 48,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 8,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 9,
+          "inBytes": 720,
+          "outBytes": 360,
+          "inFrames": 24,
+          "outFrames": 12
+        },
+        {
+          "secondIndex": 10,
+          "inBytes": 420,
+          "outBytes": 210,
+          "inFrames": 14,
+          "outFrames": 7
+        },
+        {
+          "secondIndex": 11,
+          "inBytes": 1980,
+          "outBytes": 720,
+          "inFrames": 66,
+          "outFrames": 24
+        },
+        {
+          "secondIndex": 12,
+          "inBytes": 2430,
+          "outBytes": 870,
+          "inFrames": 81,
+          "outFrames": 29
+        },
+        {
+          "secondIndex": 13,
+          "inBytes": 1890,
+          "outBytes": 780,
+          "inFrames": 63,
+          "outFrames": 26
+        },
+        {
+          "secondIndex": 14,
+          "inBytes": 1620,
+          "outBytes": 1764,
+          "inFrames": 54,
+          "outFrames": 46
+        },
+        {
+          "secondIndex": 15,
+          "inBytes": 600,
+          "outBytes": 944,
+          "inFrames": 20,
+          "outFrames": 24
+        },
+        {
+          "secondIndex": 16,
+          "inBytes": 510,
+          "outBytes": 4282,
+          "inFrames": 17,
+          "outFrames": 99
+        },
+        {
+          "secondIndex": 17,
+          "inBytes": 1140,
+          "outBytes": 5806,
+          "inFrames": 38,
+          "outFrames": 137
+        },
+        {
+          "secondIndex": 18,
+          "inBytes": 420,
+          "outBytes": 3702,
+          "inFrames": 14,
+          "outFrames": 85
+        },
+        {
+          "secondIndex": 19,
+          "inBytes": 240,
+          "outBytes": 3276,
+          "inFrames": 8,
+          "outFrames": 74
+        },
+        {
+          "secondIndex": 20,
+          "inBytes": 0,
+          "outBytes": 920,
+          "inFrames": 0,
+          "outFrames": 20
+        },
+        {
+          "secondIndex": 21,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 22,
+          "inBytes": 30,
+          "outBytes": 766,
+          "inFrames": 1,
+          "outFrames": 17
+        },
+        {
+          "secondIndex": 23,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 24,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 25,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 26,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 27,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 28,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 29,
+          "inBytes": 2870,
+          "outBytes": 2340,
+          "inFrames": 70,
+          "outFrames": 50
+        },
+        {
+          "secondIndex": 30,
+          "inBytes": 1910,
+          "outBytes": 1330,
+          "inFrames": 45,
+          "outFrames": 28
+        },
+        {
+          "secondIndex": 31,
+          "inBytes": 9190,
+          "outBytes": 7730,
+          "inFrames": 224,
+          "outFrames": 162
+        },
+        {
+          "secondIndex": 32,
+          "inBytes": 13870,
+          "outBytes": 9940,
+          "inFrames": 330,
+          "outFrames": 210
+        },
+        {
+          "secondIndex": 33,
+          "inBytes": 9460,
+          "outBytes": 7210,
+          "inFrames": 229,
+          "outFrames": 154
+        },
+        {
+          "secondIndex": 34,
+          "inBytes": 8290,
+          "outBytes": 6150,
+          "inFrames": 197,
+          "outFrames": 128
+        },
+        {
+          "secondIndex": 35,
+          "inBytes": 2410,
+          "outBytes": 1780,
+          "inFrames": 57,
+          "outFrames": 36
+        },
+        {
+          "secondIndex": 36,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 37,
+          "inBytes": 2000,
+          "outBytes": 1520,
+          "inFrames": 48,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 38,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 39,
+          "inBytes": 570,
+          "outBytes": 240,
+          "inFrames": 19,
+          "outFrames": 8
+        },
+        {
+          "secondIndex": 40,
+          "inBytes": 480,
+          "outBytes": 240,
+          "inFrames": 16,
+          "outFrames": 8
+        },
+        {
+          "secondIndex": 41,
+          "inBytes": 2340,
+          "outBytes": 1170,
+          "inFrames": 78,
+          "outFrames": 39
+        },
+        {
+          "secondIndex": 42,
+          "inBytes": 2550,
+          "outBytes": 930,
+          "inFrames": 85,
+          "outFrames": 31
+        },
+        {
+          "secondIndex": 43,
+          "inBytes": 1980,
+          "outBytes": 900,
+          "inFrames": 66,
+          "outFrames": 30
+        },
+        {
+          "secondIndex": 44,
+          "inBytes": 2010,
+          "outBytes": 2002,
+          "inFrames": 67,
+          "outFrames": 55
+        },
+        {
+          "secondIndex": 45,
+          "inBytes": 600,
+          "outBytes": 1036,
+          "inFrames": 20,
+          "outFrames": 26
+        },
+        {
+          "secondIndex": 46,
+          "inBytes": 30,
+          "outBytes": 3250,
+          "inFrames": 1,
+          "outFrames": 71
+        },
+        {
+          "secondIndex": 47,
+          "inBytes": 1080,
+          "outBytes": 6114,
+          "inFrames": 36,
+          "outFrames": 143
+        },
+        {
+          "secondIndex": 48,
+          "inBytes": 240,
+          "outBytes": 3614,
+          "inFrames": 8,
+          "outFrames": 81
+        },
+        {
+          "secondIndex": 49,
+          "inBytes": 120,
+          "outBytes": 3248,
+          "inFrames": 4,
+          "outFrames": 72
+        },
+        {
+          "secondIndex": 50,
+          "inBytes": 0,
+          "outBytes": 920,
+          "inFrames": 0,
+          "outFrames": 20
+        },
+        {
+          "secondIndex": 51,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 52,
+          "inBytes": 0,
+          "outBytes": 736,
+          "inFrames": 0,
+          "outFrames": 16
+        },
+        {
+          "secondIndex": 53,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 54,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 55,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 56,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 57,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 58,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 59,
+          "inBytes": 2870,
+          "outBytes": 2210,
+          "inFrames": 70,
+          "outFrames": 48
+        }
+      ],
+      "inBytesPerSecondMean": 2063.5343922398706,
+      "outBytesPerSecondMean": 2077.867964466074,
+      "connectionsOpenStart": 200,
+      "connectionsOpenEnd": 200
+    },
+    {
+      "label": "capped at 700 kbps",
+      "kbpsCap": 700,
+      "startedAtMs": 1788334362629,
+      "endedAtMs": 1788334422630,
+      "perSecond": [
+        {
+          "secondIndex": 0,
+          "inBytes": 1720,
+          "outBytes": 1460,
+          "inFrames": 41,
+          "outFrames": 30
+        },
+        {
+          "secondIndex": 1,
+          "inBytes": 5460,
+          "outBytes": 6920,
+          "inFrames": 133,
+          "outFrames": 142
+        },
+        {
+          "secondIndex": 2,
+          "inBytes": 6110,
+          "outBytes": 10010,
+          "inFrames": 150,
+          "outFrames": 203
+        },
+        {
+          "secondIndex": 3,
+          "inBytes": 6140,
+          "outBytes": 7000,
+          "inFrames": 151,
+          "outFrames": 147
+        },
+        {
+          "secondIndex": 4,
+          "inBytes": 7030,
+          "outBytes": 5830,
+          "inFrames": 169,
+          "outFrames": 122
+        },
+        {
+          "secondIndex": 5,
+          "inBytes": 7280,
+          "outBytes": 2500,
+          "inFrames": 175,
+          "outFrames": 60
+        },
+        {
+          "secondIndex": 6,
+          "inBytes": 10100,
+          "outBytes": 420,
+          "inFrames": 234,
+          "outFrames": 14
+        },
+        {
+          "secondIndex": 7,
+          "inBytes": 2910,
+          "outBytes": 1520,
+          "inFrames": 69,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 8,
+          "inBytes": 190,
+          "outBytes": 0,
+          "inFrames": 4,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 9,
+          "inBytes": 390,
+          "outBytes": 270,
+          "inFrames": 13,
+          "outFrames": 9
+        },
+        {
+          "secondIndex": 10,
+          "inBytes": 600,
+          "outBytes": 150,
+          "inFrames": 20,
+          "outFrames": 5
+        },
+        {
+          "secondIndex": 11,
+          "inBytes": 1110,
+          "outBytes": 0,
+          "inFrames": 37,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 12,
+          "inBytes": 1530,
+          "outBytes": 0,
+          "inFrames": 51,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 13,
+          "inBytes": 1260,
+          "outBytes": 0,
+          "inFrames": 42,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 14,
+          "inBytes": 990,
+          "outBytes": 1104,
+          "inFrames": 33,
+          "outFrames": 24
+        },
+        {
+          "secondIndex": 15,
+          "inBytes": 420,
+          "outBytes": 794,
+          "inFrames": 14,
+          "outFrames": 19
+        },
+        {
+          "secondIndex": 16,
+          "inBytes": 660,
+          "outBytes": 2562,
+          "inFrames": 22,
+          "outFrames": 63
+        },
+        {
+          "secondIndex": 17,
+          "inBytes": 960,
+          "outBytes": 2926,
+          "inFrames": 32,
+          "outFrames": 73
+        },
+        {
+          "secondIndex": 18,
+          "inBytes": 780,
+          "outBytes": 2806,
+          "inFrames": 26,
+          "outFrames": 69
+        },
+        {
+          "secondIndex": 19,
+          "inBytes": 840,
+          "outBytes": 3416,
+          "inFrames": 28,
+          "outFrames": 84
+        },
+        {
+          "secondIndex": 20,
+          "inBytes": 810,
+          "outBytes": 3416,
+          "inFrames": 27,
+          "outFrames": 84
+        },
+        {
+          "secondIndex": 21,
+          "inBytes": 1350,
+          "outBytes": 5490,
+          "inFrames": 45,
+          "outFrames": 135
+        },
+        {
+          "secondIndex": 22,
+          "inBytes": 270,
+          "outBytes": 1374,
+          "inFrames": 9,
+          "outFrames": 33
+        },
+        {
+          "secondIndex": 23,
+          "inBytes": 30,
+          "outBytes": 92,
+          "inFrames": 1,
+          "outFrames": 2
+        },
+        {
+          "secondIndex": 24,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 25,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 26,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 27,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 28,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 29,
+          "inBytes": 1150,
+          "outBytes": 2190,
+          "inFrames": 29,
+          "outFrames": 45
+        },
+        {
+          "secondIndex": 30,
+          "inBytes": 2870,
+          "outBytes": 1420,
+          "inFrames": 70,
+          "outFrames": 31
+        },
+        {
+          "secondIndex": 31,
+          "inBytes": 3540,
+          "outBytes": 4290,
+          "inFrames": 90,
+          "outFrames": 94
+        },
+        {
+          "secondIndex": 32,
+          "inBytes": 3690,
+          "outBytes": 4790,
+          "inFrames": 95,
+          "outFrames": 106
+        },
+        {
+          "secondIndex": 33,
+          "inBytes": 2960,
+          "outBytes": 4790,
+          "inFrames": 80,
+          "outFrames": 106
+        },
+        {
+          "secondIndex": 34,
+          "inBytes": 3820,
+          "outBytes": 5320,
+          "inFrames": 97,
+          "outFrames": 112
+        },
+        {
+          "secondIndex": 35,
+          "inBytes": 3820,
+          "outBytes": 5020,
+          "inFrames": 97,
+          "outFrames": 102
+        },
+        {
+          "secondIndex": 36,
+          "inBytes": 3500,
+          "outBytes": 7560,
+          "inFrames": 91,
+          "outFrames": 147
+        },
+        {
+          "secondIndex": 37,
+          "inBytes": 5420,
+          "outBytes": 2060,
+          "inFrames": 127,
+          "outFrames": 43
+        },
+        {
+          "secondIndex": 38,
+          "inBytes": 7930,
+          "outBytes": 320,
+          "inFrames": 178,
+          "outFrames": 6
+        },
+        {
+          "secondIndex": 39,
+          "inBytes": 9980,
+          "outBytes": 240,
+          "inFrames": 216,
+          "outFrames": 8
+        },
+        {
+          "secondIndex": 40,
+          "inBytes": 2370,
+          "outBytes": 540,
+          "inFrames": 65,
+          "outFrames": 18
+        },
+        {
+          "secondIndex": 41,
+          "inBytes": 810,
+          "outBytes": 120,
+          "inFrames": 27,
+          "outFrames": 4
+        },
+        {
+          "secondIndex": 42,
+          "inBytes": 690,
+          "outBytes": 0,
+          "inFrames": 23,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 43,
+          "inBytes": 690,
+          "outBytes": 0,
+          "inFrames": 23,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 44,
+          "inBytes": 840,
+          "outBytes": 276,
+          "inFrames": 28,
+          "outFrames": 6
+        },
+        {
+          "secondIndex": 45,
+          "inBytes": 840,
+          "outBytes": 1104,
+          "inFrames": 28,
+          "outFrames": 24
+        },
+        {
+          "secondIndex": 46,
+          "inBytes": 1470,
+          "outBytes": 1344,
+          "inFrames": 49,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 47,
+          "inBytes": 720,
+          "outBytes": 1434,
+          "inFrames": 24,
+          "outFrames": 35
+        },
+        {
+          "secondIndex": 48,
+          "inBytes": 300,
+          "outBytes": 916,
+          "inFrames": 10,
+          "outFrames": 22
+        },
+        {
+          "secondIndex": 49,
+          "inBytes": 390,
+          "outBytes": 1586,
+          "inFrames": 13,
+          "outFrames": 39
+        },
+        {
+          "secondIndex": 50,
+          "inBytes": 390,
+          "outBytes": 1586,
+          "inFrames": 13,
+          "outFrames": 39
+        },
+        {
+          "secondIndex": 51,
+          "inBytes": 330,
+          "outBytes": 1342,
+          "inFrames": 11,
+          "outFrames": 33
+        },
+        {
+          "secondIndex": 52,
+          "inBytes": 660,
+          "outBytes": 2806,
+          "inFrames": 22,
+          "outFrames": 69
+        },
+        {
+          "secondIndex": 53,
+          "inBytes": 1110,
+          "outBytes": 4514,
+          "inFrames": 37,
+          "outFrames": 111
+        },
+        {
+          "secondIndex": 54,
+          "inBytes": 1500,
+          "outBytes": 5978,
+          "inFrames": 50,
+          "outFrames": 147
+        },
+        {
+          "secondIndex": 55,
+          "inBytes": 210,
+          "outBytes": 854,
+          "inFrames": 7,
+          "outFrames": 21
+        },
+        {
+          "secondIndex": 56,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 57,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 58,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        },
+        {
+          "secondIndex": 59,
+          "inBytes": 480,
+          "outBytes": 990,
+          "inFrames": 16,
+          "outFrames": 26
+        },
+        {
+          "secondIndex": 60,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        }
+      ],
+      "inBytesPerSecondMean": 2023.6329394510092,
+      "outBytesPerSecondMean": 2057.4657089048515,
+      "connectionsOpenStart": 200,
+      "connectionsOpenEnd": 200
+    }
+  ],
+  "retrievals": [
+    {
+      "arm": "canary",
+      "kbpsCap": null,
+      "ref": "afd0706d9000cc7cd0f876e5fcd94f75b485311a77947569bffc545bbb3c2901",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "startedAtMs": 1788334422653,
+      "settledAtMs": 1788334422774,
+      "outcome": "resolved",
+      "byteLength": 224848,
+      "elapsedMs": 113.60000228881836,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 250192,
+      "outFramesDuring": 251,
+      "inBytesTailAfter": 48290,
+      "amplification": 1.1127161460186437
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": 2800,
+      "ref": "f514ccaeb1d934887a2e02b898037cf058f8e8d882c9f37348c3319ee31024c8",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "startedAtMs": 1788334447793,
+      "settledAtMs": 1788334451152,
+      "outcome": "resolved",
+      "byteLength": 222968,
+      "elapsedMs": 3352.400001525879,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 427272,
+      "outFramesDuring": 612,
+      "inBytesTailAfter": 203085,
+      "amplification": 1.9162929209572674
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": 2800,
+      "ref": "ce4a28d1c4c5d7f524ec377d63ff5404eefde8301ffb5b104e1c3204ef00b2be",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "startedAtMs": 1788334476173,
+      "settledAtMs": 1788334492637,
+      "outcome": "resolved",
+      "byteLength": 1163720,
+      "elapsedMs": 16457,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 2705805,
+      "outFramesDuring": 4879,
+      "inBytesTailAfter": 1350367,
+      "amplification": 2.3251340528649505
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": null,
+      "ref": "74aacae461fc095fc252c4465e0033d541c4e1058208ea398bd347eb90d6e7d4",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "startedAtMs": 1788334517655,
+      "settledAtMs": 1788334517776,
+      "outcome": "resolved",
+      "byteLength": 224096,
+      "elapsedMs": 112.20000076293945,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 250176,
+      "outFramesDuring": 271,
+      "inBytesTailAfter": 40644,
+      "amplification": 1.1163786948450665
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": null,
+      "ref": "0aa9d944e27cc1a3912bf32ae0db09597111d5e183930d5be2eb10e7cd1d987f",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "startedAtMs": 1788334542792,
+      "settledAtMs": 1788334543208,
+      "outcome": "resolved",
+      "byteLength": 1148492,
+      "elapsedMs": 410.29999923706055,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 1255054,
+      "outFramesDuring": 1521,
+      "inBytesTailAfter": 348446,
+      "amplification": 1.0927842771216516
+    },
+    {
+      "arm": "canary",
+      "kbpsCap": null,
+      "ref": "541a26c78e47fe325ca3f8b3b6c2a7b0b8316b78185ad45f25f043c1601056fd",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "startedAtMs": 1788334568226,
+      "settledAtMs": 1788334568334,
+      "outcome": "resolved",
+      "byteLength": 223720,
+      "elapsedMs": 102.39999771118164,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 249588,
+      "outFramesDuring": 280,
+      "inBytesTailAfter": 14627,
+      "amplification": 1.1156266762023959
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": null,
+      "ref": "ab920cf224fb135c3df6c772ca950f200f28ff6fe2e27c485458a08cb5c8365f",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "startedAtMs": 1788334593351,
+      "settledAtMs": 1788334593762,
+      "outcome": "resolved",
+      "byteLength": 1209780,
+      "elapsedMs": 406.9000015258789,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 1322126,
+      "outFramesDuring": 1589,
+      "inBytesTailAfter": 12785,
+      "amplification": 1.0928648183967333
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": null,
+      "ref": "acf08892b19a04ce4c960ab09e933622c35903288c48cb2dcf4bc6be1f1df700",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "startedAtMs": 1788334618784,
+      "settledAtMs": 1788334618913,
+      "outcome": "resolved",
+      "byteLength": 215260,
+      "elapsedMs": 122.89999771118164,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 242237,
+      "outFramesDuring": 305,
+      "inBytesTailAfter": 13398,
+      "amplification": 1.1253228653721081
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": 2800,
+      "ref": "fb49651e6e902fea439853a982daaebf77d1ec44a9424716013f5b0b791867a7",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "startedAtMs": 1788334643934,
+      "settledAtMs": 1788334662073,
+      "outcome": "resolved",
+      "byteLength": 1154508,
+      "elapsedMs": 18135,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 3088715,
+      "outFramesDuring": 5100,
+      "inBytesTailAfter": 1051198,
+      "amplification": 2.6753517515686336
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": 2800,
+      "ref": "43a62f43b0440a771380b72d1d194ca8e6960d90111d4b65c514bbe3af1513b8",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "startedAtMs": 1788334687124,
+      "settledAtMs": 1788334691310,
+      "outcome": "resolved",
+      "byteLength": 225224,
+      "elapsedMs": 4181.699996948242,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 449785,
+      "outFramesDuring": 866,
+      "inBytesTailAfter": 252957,
+      "amplification": 1.997056263986076
+    },
+    {
+      "arm": "canary",
+      "kbpsCap": null,
+      "ref": "f4c715d1fab7a79d024317535282b117976081a007ba464d2e4c8824c00c2e99",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "startedAtMs": 1788334716342,
+      "settledAtMs": 1788334716598,
+      "outcome": "resolved",
+      "byteLength": 225224,
+      "elapsedMs": 250,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 250633,
+      "outFramesDuring": 311,
+      "inBytesTailAfter": 23119,
+      "amplification": 1.1128165737221611
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": 2800,
+      "ref": "e60adaf73f9ecbb935d3983d0bd84569f52e90624e26d626df2628b82d0faa8e",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "startedAtMs": 1788334741638,
+      "settledAtMs": 1788334745659,
+      "outcome": "resolved",
+      "byteLength": 233308,
+      "elapsedMs": 4016.7999992370605,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 463747,
+      "outFramesDuring": 812,
+      "inBytesTailAfter": 209639,
+      "amplification": 1.9877029506060657
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": 2800,
+      "ref": "afab98c64ac2c9c6ee3fc58e024589c8e0e0ae5c1d93638eef3007741b5889a4",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "startedAtMs": 1788334770701,
+      "settledAtMs": 1788334790260,
+      "outcome": "resolved",
+      "byteLength": 1210908,
+      "elapsedMs": 19555.29999923706,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 3476433,
+      "outFramesDuring": 5264,
+      "inBytesTailAfter": 786844,
+      "amplification": 2.870930739577243
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": null,
+      "ref": "47aae5636d0e34be01ebfada2cc847ae916d04ab31b66bcb653caeda5ca9cc3b",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "startedAtMs": 1788334815320,
+      "settledAtMs": 1788334815434,
+      "outcome": "resolved",
+      "byteLength": 229360,
+      "elapsedMs": 101.60000228881836,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 255395,
+      "outFramesDuring": 276,
+      "inBytesTailAfter": 18246,
+      "amplification": 1.1135115102895012
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": null,
+      "ref": "dea4074580dede3258b2914057bd7bcb9d3b3ae434972473cb317e0aa062cf2e",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "startedAtMs": 1788334840476,
+      "settledAtMs": 1788334840863,
+      "outcome": "resolved",
+      "byteLength": 1185152,
+      "elapsedMs": 383.0999984741211,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 1292446,
+      "outFramesDuring": 1463,
+      "inBytesTailAfter": 377432,
+      "amplification": 1.090531847391727
+    },
+    {
+      "startedAtMs": 1788334865905,
+      "settledAtMs": 1788334874970,
+      "outcome": "resolved",
+      "byteLength": 210560,
+      "elapsedMs": 9060.399997711182,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "ref": "952d6b84df542a03382a7e0f8716806322a5bb2255fc7f940fe0551397dbed11",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 1145011,
+      "outFramesDuring": 2787,
+      "inBytesTailAfter": 1283979,
+      "amplification": 5.437932180851064
+    },
+    {
+      "startedAtMs": 1788334865906,
+      "settledAtMs": 1788334872349,
+      "outcome": "resolved",
+      "byteLength": 230676,
+      "elapsedMs": 6436.699996948242,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "ref": "bcb3a1a07347259d7adc7f20fa6c87eaa0b6cea92686f7ee258ad90aaba8dfc6",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 714048,
+      "outFramesDuring": 2274,
+      "inBytesTailAfter": 1712002,
+      "amplification": 3.095458565260365
+    },
+    {
+      "startedAtMs": 1788334900045,
+      "settledAtMs": 1788334906460,
+      "outcome": "resolved",
+      "byteLength": 214884,
+      "elapsedMs": 6411.799999237061,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "ref": "d2c2b00e3c7ca69ed6ba84acef695263badcb5b2e4ca66acd0fed2c26fdfb56d",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 685548,
+      "outFramesDuring": 2247,
+      "inBytesTailAfter": 1710544,
+      "amplification": 3.1903166359524207
+    },
+    {
+      "startedAtMs": 1788334900046,
+      "settledAtMs": 1788334908866,
+      "outcome": "resolved",
+      "byteLength": 230112,
+      "elapsedMs": 8815.400001525879,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "ref": "0945a3db5ac3cc2e2df10a046e827cc7eaeebd6c8e52e729a62654dba77fc03b",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 1086169,
+      "outFramesDuring": 2724,
+      "inBytesTailAfter": 1311973,
+      "amplification": 4.720175392852176
+    }
+  ],
+  "pairs": [
+    {
+      "roundIndex": 0,
+      "startedAtMs": 1788334865905,
+      "watchedUntilMs": 1788334874970,
+      "inBytes": 1145011,
+      "payloadBytes": 441236,
+      "amplification": 2.5950081135718754,
+      "occupancy": 0.3608891340319912
+    },
+    {
+      "roundIndex": 1,
+      "startedAtMs": 1788334900045,
+      "watchedUntilMs": 1788334908866,
+      "inBytes": 1086169,
+      "payloadBytes": 444996,
+      "amplification": 2.440851153718236,
+      "occupancy": 0.3518127196462986
+    }
+  ],
+  "cost": {
+    "before": {
+      "atMs": 1788334238446,
+      "nodes": [
+        {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 26,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.111655092592593,
+          "postageImmutable": true,
+          "bzz": 7.79090599999428
+        },
+        {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.108715277777778,
+          "postageImmutable": true,
+          "bzz": 3.53596669999824
+        },
+        {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 56,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.108831018518519,
+          "postageImmutable": true,
+          "bzz": 4.02703499999827
+        },
+        {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 71,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.108935185185185,
+          "postageImmutable": true,
+          "bzz": 4.74734669999829
+        }
+      ]
+    },
+    "after": {
+      "atMs": 1788334934564,
+      "nodes": [
+        {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 26,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.102303240740741,
+          "postageImmutable": true,
+          "bzz": 7.79090599999428
+        },
+        {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.099363425925926,
+          "postageImmutable": true,
+          "bzz": 3.53596669999824
+        },
+        {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 56,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.099479166666667,
+          "postageImmutable": true,
+          "bzz": 4.02703499999827
+        },
+        {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 71,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.099583333333333,
+          "postageImmutable": true,
+          "bzz": 4.74734669999829
+        }
+      ]
+    },
+    "minutes": 11.601966666666666,
+    "bucketsUsed": 0,
+    "bzzSpent": 0,
+    "bucketsPerMinute": 0,
+    "bzzPerMinute": 0,
+    "bzzPerMegabyte": null,
+    "minutesOfPostageLeft": null,
+    "minutesOfBzzLeft": null,
+    "perNode": [
+      {
+        "rung": "360p",
+        "port": 10075,
+        "before": {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 26,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.111655092592593,
+          "postageImmutable": true,
+          "bzz": 7.79090599999428
+        },
+        "after": {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 26,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.102303240740741,
+          "postageImmutable": true,
+          "bzz": 7.79090599999428
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "480p",
+        "port": 11071,
+        "before": {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.108715277777778,
+          "postageImmutable": true,
+          "bzz": 3.53596669999824
+        },
+        "after": {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.099363425925926,
+          "postageImmutable": true,
+          "bzz": 3.53596669999824
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "720p",
+        "port": 11073,
+        "before": {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 56,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.108831018518519,
+          "postageImmutable": true,
+          "bzz": 4.02703499999827
+        },
+        "after": {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 56,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.099479166666667,
+          "postageImmutable": true,
+          "bzz": 4.02703499999827
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "1080p",
+        "port": 11075,
+        "before": {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 71,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.108935185185185,
+          "postageImmutable": true,
+          "bzz": 4.74734669999829
+        },
+        "after": {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 71,
+          "postageCapacity": 256,
+          "postageTtlDays": 6.099583333333333,
+          "postageImmutable": true,
+          "bzz": 4.74734669999829
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      }
+    ],
+    "warnings": []
+  }
+}
