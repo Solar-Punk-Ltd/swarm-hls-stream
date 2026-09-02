@@ -36,6 +36,7 @@ import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { installPlayerProbe, type PlayerProbe, readPlayerProbe } from '../src/browser/playerProbe.js';
 import { type ByteSourceCondition } from '../src/browser/report.js';
+import { costSection, judgeCost, readResources, type ResourceCost } from '../src/browser/resources.js';
 import { envNumber, requireEnv, runIdFrom, thinRequestLog, writeRunArtifacts } from '../src/browser/runFiles.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import {
@@ -47,6 +48,8 @@ import {
   recordRequests,
   VIEWPORT,
 } from '../src/browser/viewer.js';
+import { loadConfig } from '../src/config.js';
+import { makeHost } from '../src/harness/host.js';
 
 /** How long to watch from the start before seeking, so ordinary playback is established first. */
 const SETTLE_SECONDS = 8;
@@ -208,6 +211,12 @@ async function main(): Promise<void> {
   // catalog card, which is why it is the only one that could meet this.
   const watchUrl = `${clientUrl}/#/watch/${mediatype}/${owner}/${topic}?qoe=1`;
 
+  const cfg = loadConfig();
+  const host = makeHost(cfg);
+  // ⛔ Before the browser, so the stage's postage and funding are read on a deployment nothing has
+  // touched yet, and so a routing this run cannot read refuses here rather than after a playback.
+  const resourcesBefore = await readResources(host, cfg);
+
   const browser = await launchViewer();
   const chromeVersion = `Chrome ${browser.version()}`;
   // Taken before the measurement so an early failure downstream cannot leave the run reporting a
@@ -324,6 +333,13 @@ async function main(): Promise<void> {
     // sample would be read as a frozen picture.
     const watched = samples.filter((sample): sample is ViewerSample => sample !== null);
 
+    const network = summarizeNetwork(requests);
+    // ⛔ A playback run publishes nothing, so the per-minute rates here come out at zero and the
+    // runways read "not measurable from this run", which is the honest answer rather than a gap. What
+    // the bracket is for is the pair of health readings either side: every figure this project has
+    // retracted for a starved instrument was taken on a run whose postage and funding were never read.
+    const cost = judgeCost(resourcesBefore, await readResources(host, cfg), network.segmentBytesDelivered);
+
     const run = {
       measuredAt,
       watchUrl,
@@ -357,7 +373,8 @@ async function main(): Promise<void> {
       messages,
       instrumentProofs,
       instrument: judgeRun([await readInstrument(page)]),
-      network: summarizeNetwork(requests),
+      network,
+      cost,
     };
 
     const stem = await writeRunArtifacts('browser-vod', runId, {
@@ -369,6 +386,7 @@ async function main(): Promise<void> {
     console.log(`\nbrowser: wrote ${stem}.md`);
     const failed = openError !== null || seeks.some((seek) => seek.error !== null);
     console.log(`browser: playback ${openError ?? 'started'}, seeks ${failed ? 'FAILED' : 'all landed and resumed'}`);
+    cost.warnings.forEach((warning) => console.log(`  ⚠️ ${warning}`));
 
     // ⛔ Last, and after the artifact is on disk. It throws where the segment bytes did not come from
     // the source this run is filed under, and a weeb-3 arm's headline is a ZERO gateway read, which a
@@ -394,6 +412,7 @@ function renderVodReport(run: {
   instrument: { sound: boolean; failures: string[] };
   network: unknown;
   byteSource?: ByteSourceCondition;
+  cost: ResourceCost;
 }): string {
   const lines: string[] = [];
   lines.push('# Playing a recording back, and seeking inside it');
@@ -419,6 +438,9 @@ function renderVodReport(run: {
     lines.push(`## ⛔ ${run.openError}`);
     lines.push('');
     lines.push(...renderWhatThePlayerDid(run));
+    // On the failing path too. A recording that would not play is exactly the run whose postage and
+    // funding a reader wants, because a starved stage is one of the reasons it would not.
+    lines.push(...costSection(run.cost));
     return lines.join('\n');
   }
 
@@ -478,6 +500,7 @@ function renderVodReport(run: {
   // than in the seek row: a target inside a buffered range with the element paused is a different
   // fault from one that ran out of media, and the row above cannot tell them apart.
   lines.push(...renderWhatThePlayerDid(run));
+  lines.push(...costSection(run.cost));
   return lines.join('\n');
 }
 
