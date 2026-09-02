@@ -86,8 +86,15 @@ import {
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
 import { squeezeDownload } from '../src/browser/throttle.js';
-import { installTimerProbe, launchViewer, readInstrument, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import {
+  installTimerProbe,
+  launchViewerWatchingWorkers,
+  readInstrument,
+  recordRequests,
+  VIEWPORT,
+} from '../src/browser/viewer.js';
 import { recordWebSocketTraffic, thinFrames, type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
+import { type WorkerTargetWatch } from '../src/browser/workerTargets.js';
 import { loadConfig } from '../src/config.js';
 import { makeHost } from '../src/harness/host.js';
 
@@ -416,6 +423,7 @@ async function watchThroughASqueeze(
   into: Sample[],
   plan: SqueezePlan,
   traffic: WebSocketTraffic,
+  workers: WorkerTargetWatch,
 ): Promise<NativeSqueezeResult> {
   console.log(`weeb3-native: waiting up to ${plan.startWaitMs / 1_000}s for his playhead to move`);
   const waited = await waitForHisPlayheadToMove(page, plan.startWaitMs);
@@ -447,7 +455,7 @@ async function watchThroughASqueeze(
   const before = await sampleWindow(page, plan.settleMs, into);
 
   console.log(`weeb3-native: capping the tab at ${plan.kbps} kbps`);
-  const throttle = await squeezeDownload(page, plan.kbps);
+  const throttle = await squeezeDownload(page, plan.kbps, workers);
   const appliedAtMs = Date.now();
   let liftedAtMs = appliedAtMs;
   let during: PhaseWindow;
@@ -554,9 +562,13 @@ async function main(): Promise<void> {
   }
   const closeHarnessBracket = bracketedHere ? await openHarnessBracket() : null;
 
-  const browser = await launchViewer();
-  const requests: RequestRecord[] = [];
+  // ⛔⛔⛔ Before the browser, because the worker-target watch appends into it. weeb-3's own page runs
+  // the node in a SharedWorker exactly as our client does, so the "1.000x under the cap" reading of
+  // 2026-09-02 was taken with the cap on the page and the recorder on the page, and the node's own
+  // sockets were neither capped nor counted.
   const traffic: WebSocketTraffic = { connections: [], frames: [] };
+  const { browser, workers } = await launchViewerWatchingWorkers(traffic);
+  const requests: RequestRecord[] = [];
   let exitCode = 0;
 
   try {
@@ -630,7 +642,7 @@ async function main(): Promise<void> {
       // across the treatment on purpose: a run whose recording ran out mid-squeeze must void itself
       // by the same rule as any other, and the per-phase figures sit beside them rather than
       // instead of them.
-      squeeze = await watchThroughASqueeze(page, samples, squeezePlan, traffic);
+      squeeze = await watchThroughASqueeze(page, samples, squeezePlan, traffic, workers);
     }
 
     const first = samples[0];
@@ -833,6 +845,7 @@ async function main(): Promise<void> {
       exitCode = 1;
     }
   } finally {
+    await workers.close().catch((error) => console.error('could not close the worker CDP client:', error));
     await browser.close();
   }
 

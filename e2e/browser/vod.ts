@@ -88,7 +88,7 @@ import { squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js
 import {
   installClockOverlay,
   installTimerProbe,
-  launchViewer,
+  launchViewerWatchingWorkers,
   proveInstrumentCanFail,
   readInstrument,
   readSample,
@@ -358,7 +358,11 @@ async function main(): Promise<void> {
   // touched yet, and so a routing this run cannot read refuses here rather than after a playback.
   const resourcesBefore = await readResources(host, cfg);
 
-  const browser = await launchViewer();
+  // ⛔⛔⛔ Declared before the browser, because the worker-target watch appends into it. The node has
+  // run in a SharedWorker since weeb-3 0.0.341001, so a page-scoped recorder counts none of its
+  // bytes and a page-scoped cap reaches none of its sockets.
+  const traffic: WebSocketTraffic = { connections: [], frames: [] };
+  const { browser, workers } = await launchViewerWatchingWorkers(traffic);
   const chromeVersion = `Chrome ${browser.version()}`;
   // Taken before the measurement so an early failure downstream cannot leave the run reporting a
   // soundness verdict nothing ever tried to break.
@@ -375,7 +379,6 @@ async function main(): Promise<void> {
   const screenshots: string[] = [];
   /** ⛔ Observations, both of them. Nothing below branches on either and no gate reads them. */
   const fragmentLog: FragmentLog = { requests: [], settles: [], abandonedAnswers: [] };
-  const traffic: WebSocketTraffic = { connections: [], frames: [] };
   let openError: string | null = null;
   let byteSourceArm: ByteSourceArmSession | undefined;
   let throttle: ThrottleHandle | undefined;
@@ -494,7 +497,7 @@ async function main(): Promise<void> {
         // The question here is what OUR player does at the same bandwidth weeb-3's own page was
         // measured at, so the two runs have to be capped at one number rather than each at its own.
         console.log(`browser: capping the tab's download at ${squeeze.kbps} kbps`);
-        throttle = await squeezeDownload(page, squeeze.kbps);
+        throttle = await squeezeDownload(page, squeeze.kbps, workers);
         throttledAtMs = Date.now();
 
         try {
@@ -656,6 +659,7 @@ async function main(): Promise<void> {
     // The cap lives in the browser, so closing it lifts everything. Released here anyway for the path
     // where the squeeze stretch threw before its own finally ran.
     await throttle?.release().catch(() => undefined);
+    await workers.close().catch((error) => console.error('could not close the worker CDP client:', error));
     await browser.close();
   }
 }

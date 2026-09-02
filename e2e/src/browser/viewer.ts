@@ -52,6 +52,7 @@
  * property that made it safe to re-examine at all. See `instrument.ts`.
  */
 
+import { createServer } from 'node:net';
 import { type Browser, chromium, type Page, type Request } from 'playwright-core';
 
 import { readFeedState } from './feedState.js';
@@ -66,6 +67,8 @@ import { type RequestRecord } from './network.js';
 import { type OverlayRow, readOverlayMetrics } from './overlay.js';
 import { secureContextArgs } from './secureContext.js';
 import { type ViewerSample } from './session.js';
+import { type WebSocketTraffic } from './webSocketTraffic.js';
+import { openBrowserCdp, watchWorkerTargets, type WorkerTargetWatch } from './workerTargets.js';
 
 /** Where the image puts Google Chrome. Overridable so a workstation with Chrome elsewhere can run this. */
 export const CHROME_PATH = process.env.BROWSER_CHROME_PATH ?? '/opt/google/chrome/chrome';
@@ -114,18 +117,83 @@ export async function discoverWatchUrl(page: Page, clientUrl: string): Promise<s
  */
 const CDP_PORT = process.env.VIEWER_CDP_PORT ?? '';
 
-export async function launchViewer(): Promise<Browser> {
+/**
+ * @param remoteDebuggingPort A port to open Chrome's own debugging endpoint on, for a run that needs
+ *   a raw CDP client of its own. ⛔ Only a worker-target watch needs this: Playwright's sessions
+ *   reach pages and frames, and the node has run in a SharedWorker since weeb-3 0.0.341001. It beats
+ *   `VIEWER_CDP_PORT`, which stays what the outside main-thread sampler reads through.
+ */
+export async function launchViewer(remoteDebuggingPort?: number): Promise<Browser> {
+  const port = remoteDebuggingPort === undefined ? CDP_PORT : String(remoteDebuggingPort);
   return chromium.launch({
     executablePath: CHROME_PATH,
     headless: false,
     args: [
       '--autoplay-policy=no-user-gesture-required',
-      ...(CDP_PORT ? [`--remote-debugging-port=${CDP_PORT}`] : []),
+      ...(port ? [`--remote-debugging-port=${port}`] : []),
       // The in-tab node needs a secure context, and an --own-network run reaches the client over
       // plain http on a non-loopback name. See secureContext.ts for the failure this prevents.
       ...secureContextArgs(process.env.BROWSER_CLIENT_URL),
     ],
   });
+}
+
+/**
+ * A port nothing is listening on, taken by binding one and letting it go.
+ *
+ * ⛔ Not `--remote-debugging-port=0`. Chrome writes the port it chose into `DevToolsActivePort` in
+ * its user data directory, and Playwright owns that directory and does not say where it put it, so
+ * the number would be unreadable. Binding first has a race with anything else on the machine that
+ * grabs the same port in the intervening milliseconds, which is why the endpoint read that follows
+ * refuses loudly rather than degrading.
+ */
+async function pickDebuggingPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        server.close(() => reject(new Error('the kernel gave a bound socket no numeric port')));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * A browser and the raw CDP client watching every worker target it makes.
+ *
+ * Not exported: it is reachable as the return type of {@link launchViewerWatchingWorkers}, and an
+ * exported name with no importer is what the repo's unused-export ratchet exists to catch.
+ */
+interface WorkerAwareViewer {
+  browser: Browser;
+  workers: WorkerTargetWatch;
+}
+
+/**
+ * Launch Chrome with its own debugging endpoint open, and attach to every worker target it makes.
+ *
+ * ⛔⛔⛔ **Every squeeze run has to open the browser this way.** The cap and the WebSocket recorder
+ * were both page scoped until 2026-09-02, and the node has lived in a SharedWorker since weeb-3
+ * 0.0.341001, so the cap reached nothing and the recorder saw nothing while both reported success.
+ * See `workerTargets.ts` for the mechanism and `capProof.ts` for the two refusals that mean a run
+ * can no longer publish under an unproved cap or an unproved recorder.
+ *
+ * @param into The traffic object the page recorder also appends to, so one reader sums both.
+ */
+export async function launchViewerWatchingWorkers(into: WebSocketTraffic): Promise<WorkerAwareViewer> {
+  const port = await pickDebuggingPort();
+  const browser = await launchViewer(port);
+  try {
+    return { browser, workers: await watchWorkerTargets(await openBrowserCdp(port), into) };
+  } catch (error: unknown) {
+    await browser.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

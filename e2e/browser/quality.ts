@@ -59,8 +59,15 @@ import {
   type ThrottleHandle,
   throttleKbpsBelow,
 } from '../src/browser/throttle.js';
-import { launchViewer, proveInstrumentCanFail, readSample, recordRequests, VIEWPORT } from '../src/browser/viewer.js';
+import {
+  launchViewerWatchingWorkers,
+  proveInstrumentCanFail,
+  readSample,
+  recordRequests,
+  VIEWPORT,
+} from '../src/browser/viewer.js';
 import { DEFAULT_SAMPLE_INTERVAL_MS, openViewer, type SampledStretch, sampleFor } from '../src/browser/watchLoop.js';
+import { type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
 import { loadConfig } from '../src/config.js';
 import { makeHost } from '../src/harness/host.js';
 
@@ -101,7 +108,17 @@ async function main(): Promise<void> {
   const screenshotDir = screenshotDirFor(runId);
   const resourcesBefore = await readResources(host, cfg);
 
-  const browser = await launchViewer();
+  // ⛔⛔ V2's cap has to reach the SharedWorker the node runs in, and until 2026-09-02 it reached the
+  // page and stopped there. The traffic object is what the worker watch appends into: this arm files
+  // no frame log, so nothing reads it, and `Network.emulateNetworkConditions` needs the domain
+  // enabled on a session before it will hold one, which is what produces the frames.
+  //
+  // ⭐ V2's own proof that the cap landed is unchanged and is `throttleRefusal`, which asks whether
+  // anything a viewer could feel changed. It never was the player's bandwidth estimate: measured
+  // 2026-08-30 that estimate read 74221 kbps under a 2800 kbps cap, because hls.js times the handover
+  // from a local node and never the node's own retrieval.
+  const traffic: WebSocketTraffic = { connections: [], frames: [] };
+  const { browser, workers } = await launchViewerWatchingWorkers(traffic);
   const chromeVersion = `Chrome ${browser.version()}`;
   const instrumentProofs = await proveInstrumentCanFail(browser);
   console.log(`browser: ${chromeVersion}, ladder ${cfg.abrLadder.map((r) => `${r.name}@${r.kbps}`).join(' ')}`);
@@ -161,7 +178,7 @@ async function main(): Promise<void> {
     if (cannotAsk === null && ridingHeight !== null) {
       throttleKbps = throttleKbpsBelow(cfg.abrLadder, ridingHeight) as number;
       console.log(`browser: this viewer is riding ${ridingHeight}p, capping the tab at ${throttleKbps} kbps`);
-      throttle = await squeezeDownload(page, throttleKbps);
+      throttle = await squeezeDownload(page, throttleKbps, workers);
     } else {
       console.log(`browser: NOT squeezing, ${cannotAsk}`);
     }
@@ -181,6 +198,7 @@ async function main(): Promise<void> {
     // The cap lives in the browser, so closing it lifts everything. Released here anyway for the path
     // where the squeeze stretch threw before its own finally ran.
     await throttle?.release().catch(() => undefined);
+    await workers.close().catch((error) => console.error('could not close the worker CDP client:', error));
     await browser.close();
   }
 

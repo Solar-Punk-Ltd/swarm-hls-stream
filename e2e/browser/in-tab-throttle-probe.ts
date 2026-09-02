@@ -91,7 +91,7 @@ import {
   spacedRefs,
 } from '../src/browser/rungManifest.js';
 import { squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
-import { launchViewer, VIEWPORT } from '../src/browser/viewer.js';
+import { launchViewerWatchingWorkers, VIEWPORT } from '../src/browser/viewer.js';
 import { recordWebSocketTraffic, thinFrames, type WebSocketTraffic } from '../src/browser/webSocketTraffic.js';
 import { type E2EConfig, loadConfig } from '../src/config.js';
 import { type Host, makeHost } from '../src/harness/host.js';
@@ -308,9 +308,12 @@ async function main(): Promise<void> {
     '1080p': makeRefPool(spacedRefs(parsed['1080p'].refs, needed['1080p']), '1080p'),
   };
 
-  const browser = await launchViewer();
-  const chromeVersion = `Chrome ${browser.version()}`;
+  // ⛔⛔⛔ Before the browser, because the worker-target watch appends into it and the node lives in
+  // a SharedWorker. Until 2026-09-02 this recorder was Playwright's page listener alone, and every
+  // byte column of the arm 3 report read 0 while 1.2 MB retrievals succeeded.
   const traffic: WebSocketTraffic = { connections: [], frames: [] };
+  const { browser, workers } = await launchViewerWatchingWorkers(traffic);
+  const chromeVersion = `Chrome ${browser.version()}`;
   const idleWindows: IdleWindow[] = [];
   const retrievals: RetrievalRow[] = [];
   const pairs: PairSummary[] = [];
@@ -351,7 +354,7 @@ async function main(): Promise<void> {
       if (external || kbpsCap === null) {
         return undefined;
       }
-      return squeezeDownload(page, kbpsCap);
+      return squeezeDownload(page, kbpsCap, workers);
     };
 
     /** Hold the link at a cap for a window, and record what arrived while nothing was asked for. */
@@ -468,6 +471,7 @@ async function main(): Promise<void> {
       }
     }
   } finally {
+    await workers.close().catch((error) => console.error('could not close the worker CDP client:', error));
     await browser.close();
   }
 

@@ -22,11 +22,22 @@
  * carries segment bytes over its own peer connections, so a run must PROVE the player's own bandwidth
  * estimate moved before any conclusion is drawn from what the player did next. See
  * `harness/qualityArm.ts`, where that is the first refusal and comes before every other reading.
+ *
+ * ## ⛔⛔⛔ A PAGE SESSION HAS NOT REACHED THE NODE SINCE weeb-3 0.0.341001
+ *
+ * The node now runs entirely inside a SharedWorker, whose sockets belong to the worker target and
+ * not to the page. Applied on the page's own session alone, this capped nothing the node does: the
+ * arm 3 probe of 2026-09-02 pulled 1.2 MB in 0.3 s under a cap whose physical floor is 3.3 s. So
+ * {@link squeezeDownload} takes the worker-target watch as well and the parameter is **required**,
+ * because an omitted one would look exactly like the page-only cap that produced that run. See
+ * `workerTargets.ts` for the attachment and `capProof.ts` for the refusal that proves it landed.
  */
 
 import type { CDPSession, Page } from 'playwright-core';
 
 import { type LadderRung } from '../config.js';
+
+import { type WorkerTargetWatch } from './workerTargets.js';
 
 /** Bits per byte, for turning a declared kbps into the bytes per second CDP wants. */
 const BITS_PER_BYTE = 8;
@@ -136,24 +147,39 @@ export interface ThrottleHandle {
 }
 
 /**
- * Cap what the tab can download, and hand back the way to lift it.
+ * Cap what the tab can download, page and worker targets alike, and hand back the way to lift it.
  *
  * The upload direction is left alone: a viewer sends nothing, and capping it would only add a way for
  * the run to differ from what it says it did.
+ *
+ * @param workers The worker-target watch, or null for a page with no in-tab node in it at all.
+ *   ⛔⛔ **Required and never defaulted.** The node lives in a SharedWorker, so a cap that reaches
+ *   only the page reaches nothing it does, and an optional parameter that a driver forgot would be
+ *   indistinguishable from the page-only cap that voided the arm 3 probe of 2026-09-02. Passing null
+ *   is a statement, not a shortcut, and the cap proof in `capProof.ts` is what tests either way.
  */
-export async function squeezeDownload(page: Page, kbps: number): Promise<ThrottleHandle> {
+export async function squeezeDownload(
+  page: Page,
+  kbps: number,
+  workers: WorkerTargetWatch | null,
+): Promise<ThrottleHandle> {
+  const bytesPerSecond = kbpsAsBytesPerSecond(kbps);
   const session: CDPSession = await page.context().newCDPSession(page);
   await session.send('Network.enable');
   await session.send('Network.emulateNetworkConditions', {
     offline: false,
     latency: THROTTLE_LATENCY_MS,
-    downloadThroughput: kbpsAsBytesPerSecond(kbps),
+    downloadThroughput: bytesPerSecond,
     uploadThroughput: UNTHROTTLED,
   });
+  // After the page, so a worker attached while the page cap was being applied still gets it: the
+  // watch holds the active cap and applies it to every session that attaches from here on.
+  await workers?.squeeze(bytesPerSecond);
 
   return {
     kbps,
     release: async (): Promise<void> => {
+      await workers?.release();
       await session.send('Network.emulateNetworkConditions', {
         offline: false,
         latency: THROTTLE_LATENCY_MS,
