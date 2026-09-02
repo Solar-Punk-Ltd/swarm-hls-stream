@@ -16,6 +16,9 @@
  *   - does seeking land where it was asked, forwards and backwards
  *   - does playback resume after each seek, or does the player stall on a fresh retrieval
  *
+ * `BROWSER_FETCH_BACKEND` chooses where the segment bytes come from, `weeb3` being the in-tab node
+ * and `gateway` the control, and the run proves the bytes came from where it says before it ends.
+ *
  * Usage, on the deployment host, against a stream that has already finished:
  *   deploy/scripts/browser-on-host.sh --script browser:vod -- \
  *     BROWSER_VOD_OWNER=<owner> BROWSER_VOD_TOPIC=<rawTopic>
@@ -23,9 +26,16 @@
 
 import { type Page } from 'playwright-core';
 
+import {
+  type ByteSourceArmSession,
+  DEFAULT_BYTE_SOURCE_SETTLE_SECONDS,
+  openByteSourceArmSession,
+} from '../src/browser/byteSourceArm.js';
+import { byteSourceFromEnv } from '../src/browser/fetchBackendSweep.js';
 import { judgeRun } from '../src/browser/instrument.js';
 import { type RequestRecord, summarizeNetwork } from '../src/browser/network.js';
 import { installPlayerProbe, type PlayerProbe, readPlayerProbe } from '../src/browser/playerProbe.js';
+import { type ByteSourceCondition } from '../src/browser/report.js';
 import { envNumber, requireEnv, runIdFrom, thinRequestLog, writeRunArtifacts } from '../src/browser/runFiles.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import {
@@ -183,6 +193,10 @@ async function main(): Promise<void> {
   const topic = requireEnv('BROWSER_VOD_TOPIC');
   const mediatype = process.env.BROWSER_VOD_MEDIATYPE ?? 'video';
   const settleSeconds = envNumber('BROWSER_VOD_SETTLE_SECONDS', SETTLE_SECONDS);
+  // ⛔ Read here rather than where the arm opens, exactly as every other driver reads it: a typo in a
+  // byte source should cost a startup and not a whole recording's playback.
+  const armByteSource = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
+  const byteSourceSettleMs = envNumber('BROWSER_BYTE_SOURCE_SETTLE_SECONDS', DEFAULT_BYTE_SOURCE_SETTLE_SECONDS) * 1000;
 
   const measuredAt = new Date().toISOString();
   const runId = runIdFrom(measuredAt);
@@ -208,6 +222,7 @@ async function main(): Promise<void> {
   const seeks: SeekResult[] = [];
   const samples: (ViewerSample | null)[] = [];
   let openError: string | null = null;
+  let byteSourceArm: ByteSourceArmSession | undefined;
 
   try {
     const context = await browser.newContext({ viewport: VIEWPORT });
@@ -231,6 +246,7 @@ async function main(): Promise<void> {
     await page.goto(watchUrl, { waitUntil: 'domcontentloaded' });
 
     // A recording that never starts is the headline result, not an exception, so the wait is caught.
+    let playbackStartedAtMs = 0;
     try {
       await page.waitForFunction(
         () => {
@@ -240,6 +256,9 @@ async function main(): Promise<void> {
         undefined,
         { timeout: 60_000 },
       );
+      // Stamped before the readback, which is a round trip: the byte-source settle is measured from
+      // this instant and both conditions have to open their window with a player of the same age.
+      playbackStartedAtMs = Date.now();
       startedPlaying = await readPlayback(page);
       console.log(
         `browser: playing, duration ${startedPlaying.duration.toFixed(2)}s, ` +
@@ -254,6 +273,24 @@ async function main(): Promise<void> {
     }
 
     if (!openError) {
+      // ⛔⛔ The recording was opened on whatever the build defaults to, and this is where the run
+      // becomes the byte source it is filed under. `browser:vod` was handed `BROWSER_FETCH_BACKEND`
+      // by every suite that launched it and read it nowhere, which is this repo's oldest defect: an
+      // unread variable looks exactly like one set to its default, and `crash.ts` and
+      // `buffer-sweep.ts` published gateway readings under the in-tab node's name that way.
+      //
+      // ⚠️ A weeb-3 arm holds the player for `BROWSER_BYTE_SOURCE_SETTLE_SECONDS` (60 by default)
+      // while its node boots, and that time is spent PLAYING the recording. A recording shorter than
+      // the settle has finished before the settle ends, which does not break a seek (the whole
+      // timeline is buffered) and does mean the settle was not a settle. Size the recording, or
+      // shorten the window with that variable.
+      byteSourceArm = await openByteSourceArmSession({
+        page,
+        source: armByteSource,
+        playbackStartedAtMs,
+        settleMs: byteSourceSettleMs,
+      });
+
       // ⛔ Sampled rather than slept through. The settle is the only stretch of this run that is
       // ordinary playback, so it is the only one whose rung list and advance describe the recording
       // rather than a seek.
@@ -304,6 +341,13 @@ async function main(): Promise<void> {
         seekableToS: afterSettle?.seekable ?? null,
         ladderHeights: ladderOfRecording(watched),
       },
+      // Undefined on a run that named no byte source, which is a run on whatever the build defaults
+      // to rather than a malformed one. `readProof` in `harness/browser.ts` reads it that way.
+      byteSource: byteSourceArm?.arm && {
+        requested: byteSourceArm.arm.requested,
+        reported: byteSourceArm.arm.reported,
+        settledForMs: byteSourceArm.arm.settledForMs,
+      },
       // ⛔ Written under the same names every other driver uses, so `parseBrowserArmState` reads a
       // recording the way it reads a live watch. A second shape here would mean a VOD suite could
       // never assert on the same fields as a live one, which is the whole reason to have both.
@@ -325,6 +369,12 @@ async function main(): Promise<void> {
     console.log(`\nbrowser: wrote ${stem}.md`);
     const failed = openError !== null || seeks.some((seek) => seek.error !== null);
     console.log(`browser: playback ${openError ?? 'started'}, seeks ${failed ? 'FAILED' : 'all landed and resumed'}`);
+
+    // ⛔ Last, and after the artifact is on disk. It throws where the segment bytes did not come from
+    // the source this run is filed under, and a weeb-3 arm's headline is a ZERO gateway read, which a
+    // client that never loaded the node produces just as well. The artifact is the thing worth
+    // keeping either way.
+    byteSourceArm?.proveBytesCameFromIt(requests);
   } finally {
     await browser.close();
   }
@@ -343,12 +393,24 @@ function renderVodReport(run: {
   messages: PageMessage[];
   instrument: { sound: boolean; failures: string[] };
   network: unknown;
+  byteSource?: ByteSourceCondition;
 }): string {
   const lines: string[] = [];
   lines.push('# Playing a recording back, and seeking inside it');
   lines.push('');
   lines.push(`**${run.measuredAt}.** ${run.chromeVersion}, \`${run.watchUrl}\`.`);
   lines.push('');
+  if (run.byteSource) {
+    // The readback, not the request. A switch that silently did nothing would put a gateway reading
+    // under the in-tab node's name, which is the whole reason the arm reads itself back.
+    lines.push(
+      `Segment bytes came from **${run.byteSource.reported}**, which is what the client reports rather ` +
+        `than what was asked for. The window opened ${(run.byteSource.settledForMs / 1000).toFixed(1)}s ` +
+        'after playback started, and only requests from that instant on decide whether this run is the ' +
+        'condition it is filed under.',
+    );
+    lines.push('');
+  }
   lines.push(`Instrument: **${run.instrument.sound ? 'SOUND' : 'VOID'}**`);
   run.instrument.failures.forEach((failure) => lines.push(`- ⛔ ${failure}`));
   lines.push('');
