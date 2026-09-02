@@ -28,6 +28,9 @@
 #   deploy/scripts/browser-on-host.sh -- BROWSER_WATCH_SECONDS=300
 #
 # Anything after `--` is passed to the container as environment, exactly as `bench-on-host.sh` does.
+#
+# `--own-network` is forwarded, and it moves the client from loopback to `host.docker.internal`
+# along with every other address the container dials. See `bench-on-host.sh` for what it is for.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -44,6 +47,10 @@ FORWARDED=()
 # it is the cheap first call whenever anything about the image or the host has changed.
 SCRIPT="browser:watch"
 
+# Where the client is, from inside the container. Loopback while the container shares the host's
+# network namespace, which is every run that does not ask for one of its own.
+CLIENT_HOST="127.0.0.1"
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --script) SCRIPT="$2"; shift 2 ;;
@@ -51,6 +58,7 @@ while [ $# -gt 0 ]; do
     --portSlot) WANT_PORT_SLOT="$2"; FORWARDED+=(--portSlot "$2"); shift 2 ;;
     --target) TARGET="$2"; FORWARDED+=(--target "$2"); shift 2 ;;
     --no-setup) FORWARDED+=(--no-setup); shift ;;
+    --own-network) CLIENT_HOST="host.docker.internal"; FORWARDED+=(--own-network); shift ;;
     --) shift; PASSTHROUGH=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -66,12 +74,15 @@ apply_port_slot
 CLIENT_PORT="${CLIENT_PORT:?CLIENT_PORT is unset after apply_port_slot}"
 
 # Reached over loopback from inside the host-networked container, which is the same origin a viewer
-# on this machine would use and keeps the operator's uplink out of the reading.
-echo "browser-on-host: client at 127.0.0.1:${CLIENT_PORT} on ${TARGET}"
+# on this machine would use and keeps the operator's uplink out of the reading. With `--own-network`
+# the container's loopback holds nothing, so the client is one hop away on the docker bridge and the
+# reading gains that hop. That is the price of shaping this container's link without shaping every
+# bee node and co-tenant on the machine.
+echo "browser-on-host: client at ${CLIENT_HOST}:${CLIENT_PORT} on ${TARGET}"
 
 exec "${REPO_ROOT}/deploy/scripts/bench-on-host.sh" \
   ${FORWARDED[@]+"${FORWARDED[@]}"} \
   --image swarm-hls-browser \
   --dockerfile e2e/Dockerfile.browser \
   --script "${SCRIPT}" \
-  -- "BROWSER_CLIENT_URL=http://127.0.0.1:${CLIENT_PORT}" ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}
+  -- "BROWSER_CLIENT_URL=http://${CLIENT_HOST}:${CLIENT_PORT}" ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}

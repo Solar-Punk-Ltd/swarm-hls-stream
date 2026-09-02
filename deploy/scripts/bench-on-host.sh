@@ -33,6 +33,12 @@
 #
 # `--script` chooses which bench runs, so `bench:longrun` reuses the sync, the image and the container
 # arguments rather than copying them into a second script that could drift from this one.
+#
+# `--own-network` gives the container a network namespace of its own instead of the host's, and
+# points every address the harness dials at `host.docker.internal`. Needed by anything that shapes
+# its own link: with `--network host` a shaper would throttle the bee nodes, the uploader and every
+# co-tenant on the machine, because they are all in the same namespace. Nothing else wants it, since
+# sharing the host's namespace is what keeps the operator's uplink out of every reading.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -70,6 +76,13 @@ SCRIPT="bench:latency"
 # connection at the twenty-ninth minute and take the report with it, after the postage is spent.
 SSH_OPTS=(-o ServerAliveInterval=30 -o ServerAliveCountMax=20)
 
+# Docker's own name for the host as seen from a bridge network, published into the container with
+# `--add-host=…:host-gateway`. Not resolvable by default on Linux, which is why the flag is there.
+HOST_GATEWAY_ALIAS="host.docker.internal"
+
+# Off by default, so a run without the flag builds the same container arguments byte for byte.
+OWN_NETWORK=0
+
 BENCH_ENV=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -81,6 +94,7 @@ while [ $# -gt 0 ]; do
     --dockerfile) DOCKERFILE="$2"; shift 2 ;;
     --no-setup) SETUP=0; shift ;;
     --setup-only) SETUP_ONLY=1; shift ;;
+    --own-network) OWN_NETWORK=1; shift ;;
     --) shift; BENCH_ENV=("$@"); break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -96,7 +110,19 @@ done
 # `--shm-size` is for the browser image: Chrome puts its renderer's shared buffers in /dev/shm and
 # docker's 64MB default makes it crash partway through a video session rather than at startup, which
 # reads as the stream failing. Costs the bench nothing, since shared memory is charged on use.
-DOCKER_RUN="docker run --rm --network host \
+# ⛔ `--own-network` swaps the host's namespace for one of the container's own, and that is the ONLY
+# thing it swaps: the docker socket, the invoking user, the docker group, the shared memory and the
+# repo mount are all the same problem either way. What it costs is loopback. Nothing the deployment
+# runs is on the container's own loopback any more, so `E2E_LOCAL_HOST_ADDRESS` and
+# `E2E_PUBLIC_HOST` both move to the host as docker publishes it, and `browser-on-host.sh` moves
+# `BROWSER_CLIENT_URL` with them. An address left behind would name the empty inside of the
+# container, which answers nothing at all.
+NETWORK_ARGS="--network host"
+if [ "${OWN_NETWORK}" -eq 1 ]; then
+  NETWORK_ARGS="--add-host=${HOST_GATEWAY_ALIAS}:host-gateway"
+fi
+
+DOCKER_RUN="docker run --rm ${NETWORK_ARGS} \
   -u \$(id -u):\$(id -g) \
   --group-add \$(getent group docker | cut -d: -f3) \
   --shm-size=2g \
@@ -133,12 +159,27 @@ if [ "${SETUP_ONLY}" -eq 1 ]; then
 fi
 
 # `local` is the sentinel that makes the harness shell out instead of ssh, which the host cannot do to
-# itself. `127.0.0.1` is what the publisher dials and what the viewer gateway is fetched on.
-RUN_ENV="-e E2E_SSH_TARGET=local -e E2E_PUBLIC_HOST=127.0.0.1 -e E2E_PROFILE=${PROFILE} -e E2E_PORT_SLOT=${PORT_SLOT}"
+# itself. `127.0.0.1` is what the publisher dials and what the viewer gateway is fetched on, until
+# the container has a namespace of its own and neither is on its loopback.
+HOST_ADDRESS="127.0.0.1"
+if [ "${OWN_NETWORK}" -eq 1 ]; then
+  HOST_ADDRESS="${HOST_GATEWAY_ALIAS}"
+fi
+
+RUN_ENV="-e E2E_SSH_TARGET=local -e E2E_PUBLIC_HOST=${HOST_ADDRESS} -e E2E_PROFILE=${PROFILE} -e E2E_PORT_SLOT=${PORT_SLOT}"
+if [ "${OWN_NETWORK}" -eq 1 ]; then
+  RUN_ENV="${RUN_ENV} -e E2E_LOCAL_HOST_ADDRESS=${HOST_ADDRESS}"
+fi
+# Last wins in docker, so anything after `--` overrides what this script decided.
 for pair in ${BENCH_ENV[@]+"${BENCH_ENV[@]}"}; do
   RUN_ENV="${RUN_ENV} -e ${pair}"
 done
 
+# The network mode is printed because it decides every address inside the container, and this repo
+# has already paid for a run whose report named a setting the container never read.
+if [ "${OWN_NETWORK}" -eq 1 ]; then
+  echo "bench-on-host: own network namespace, the host is ${HOST_ADDRESS}"
+fi
 echo "bench-on-host: running ${SCRIPT} on ${TARGET} (profile ${PROFILE}, slot ${PORT_SLOT})"
 ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} pnpm ${SCRIPT}"
 
