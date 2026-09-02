@@ -174,3 +174,144 @@ V2 is red because, in this combination, a capped in-tab node cannot supply the c
 duplicates of the last one. Which part of our side produces that, the pin, the client's use of the
 node or Chrome's emulation, is what the three arms above decide. weeb-3 itself is not to be changed,
 per the owner.
+
+## The arms, run the same evening: three contracts of ours, and two void readings
+
+Every arm below cost 0 BZZ. The client under test moved from weeb-3 `0.0.329001` (the morning's pin)
+to `0.0.341001` (the latest release) during the evening, and the harness that measures it turned out
+to have mistakes of exactly the kind the owner named.
+
+### Three things the latest weeb-3 expects that our side did not provide
+
+1. **A broadcast whose first segment is number 0.** Abel's player rebuilds a recording from the whole
+   feed history and refuses unless the oldest update starts at `#EXT-X-MEDIA-SEQUENCE:0`. SRS keeps
+   its segment counter across broadcasts of the same stream name while it runs, and our uploader
+   publishes those numbers as they are, so the six ladder recordings of sitting five start at 210,
+   317, 416, 580, 707 and 850, and his page opened none of them. After `docker restart
+   latbench-srs-1` the next recording started at 0 and his page opened it in 4 to 5 s. A product
+   decision for the owner: renumber each broadcast from 0 in the uploader, or leave it.
+2. **The runtime served from our own origin.** From `0.0.341001` the node lives in a SharedWorker
+   the package loads from `/weeb-3/worker.js`, and a SharedWorker script must be same-origin. Our
+   nginx answered that path with the app's index, so the node never booted ("SharedWorker request
+   timed out"). Fixed the same evening: the client now copies and serves `worker.js`, `weeb_3.js`,
+   `weeb_3_bg.wasm`, `snippets/` and `service.js` under `/weeb-3/`, and on the stage the node joined
+   the network in 833 ms.
+3. **A secure context.** The glue registers a ServiceWorker at boot, and `navigator.serviceWorker`
+   does not exist on a plain-http page reached by IP or hostname. The stage client is plain http on
+   port 10074. Loopback counts as secure, which is why the boot check at `127.0.0.1` passed and the
+   own-network probe at `host.docker.internal` died with "could not install ServiceWorker relay
+   listener". A production deployment serves the client over https. The harness launches Chrome with
+   `--unsafely-treat-insecure-origin-as-secure` for the one client origin.
+
+### Arm 3 as run is void, and the reason is a harness fault: Chrome's emulated cap never reaches a SharedWorker
+
+`in-tab-throttle-probe-2026-09-02T10-53-22-247Z.md`, our client on `0.0.341001`, the same recording,
+the same `Network.emulateNetworkConditions` cap of 2800 kbps (350,000 bytes/s). Every capped 360p row
+resolved in **0.1 s** for about 225 KB and every capped 1080p row in **0.3 to 0.4 s** for about
+1.2 MB. At that cap the physical minimum is **0.64 s and 3.3 s**. The cap was applied to the page's
+CDP session, and on this build the node's sockets belong to the worker target, which the page session
+does not throttle. Two more instrument facts from the same report:
+
+- every byte and frame column reads **0**, because the recorder listens to page sockets only;
+- the report's H0 check declared "holds" on that zero. A blind instrument passed as a healthy one.
+  The check has to refuse a zero, and the harness fix in progress makes both the cap and the recorder
+  attach to worker targets and prove themselves by effect on every run.
+
+So the pre-registered reading for arm 3, "a capped 360p in 1.5 s or less means the pin was our
+mistake", was **not met and not refuted**: the cap did not bind. The pin question stays open.
+
+### Two more readings the same fault voids
+
+- **Arm 1, Abel's own page under the emulated cap** (`browser:weeb3-native`, recording `080a0715`,
+  120 s settle, 60 s cap): "1.000x before, 1.000x while capped, 1.000x after". His page runs the
+  same SharedWorker, so the cap never reached his node either, and the page also held 384 s of
+  buffer. Not a download test.
+- **Arm 1b, our VOD viewer in-tab under the emulated cap** (`browser:vod`, rung `6902cf52`, same
+  settle and cap, client `0.0.341001`): "1.000x before, 1.000x while capped, 1.000x after", bytes
+  from the in-tab node by the client's own account. Same fault, same verdict: void.
+
+The one control that stands is **our player through the gateway under the same cap**: 1.000x
+throughout, 183 fragments fetched, on both the 207 s and the 505 s recording. The gateway path is
+HTTP from the page, which the emulation does throttle, and it kept pace.
+
+### A harness trap that cost two attempts
+
+`bench-on-host.sh --no-setup` skips the sync as well as the build and the install, so a run launched
+with it measures the host checkout as of the last setup, not the head just landed. The second arm 2
+attempt failed on the secure-context fault after the fix had been committed locally, because the fix
+never reached the host. Every `--no-setup` result of the day has to be read against what the host
+checkout actually held.
+
+### Arm 2, the real link: the first valid capped reading of our client on the latest weeb-3
+
+`in-tab-throttle-probe-2026-09-02T11-29-05-393Z.md`. `browser-on-host.sh --own-network
+--shape-kbps 2800`: a `tc` ingress policer on the browser container's own interface, under every
+socket the tab opens, proved at **326,904 bytes/s** against the 350,000 the cap allows by
+downloading the 3.9 MB wasm before the browser opened. Our client on `0.0.341001`, the same recording,
+0 BZZ. The node joined the network in **30.5 s** under the cap, against 0.8 s uncapped: the join alone
+pulls about ten megabytes, and a capped viewer waits half a minute before it can ask for a byte of
+video. All 13 rows completed inside their budget.
+
+| arm | payload | observed | floor at 326,904 B/s | observed over floor |
+| --- | ---: | ---: | ---: | ---: |
+| 360p, n=6 (canaries included) | 219 to 236 KB | **0.76 to 1.04 s** | 0.69 s | 1.1 to 1.5x |
+| 1080p, n=3 | 1.16 to 1.21 MB | **6.7 to 6.85 s** | 3.6 s | 1.9x |
+| two 360p at once, n=2 pairs | 451 to 459 KB | both done in **2.5 s** and **3.5 s** | 1.4 s | 1.8 to 2.5x |
+
+Against the pre-registration for this arm, written before it ran: a capped 360p in 1.5 s or less
+**met**. The 1080p line, 4 s or less, **not met**, and its failure line of 12 s or more not met
+either, so "improved, not closed" for a rung whose own bitrate exceeds the cap. The pairs are slower
+than two in sequence (2.5 and 3.5 s against 2.0 s), a mild contention rather than the morning's
+collapse.
+
+Against the morning's figures (`0.0.329001` under Chrome's emulation: 360p 3.4 to 4.2 s, 1080p 16.5
+to 19.6 s, pairs 6.4 to 9.1 s each) this is **four times faster on 360p, two and a half on 1080p**.
+⚠️ **Two things changed between those runs, the weeb-3 release and the cap instrument**, so the
+improvement belongs to neither alone until the like-for-like below separates them. The byte and frame
+columns of this report read 0 for the reason given above, so the timing is the reading and no
+amplification figure exists for this build yet.
+
+### The like-for-like: the morning's pin under the same real link, and the morning's red was the instrument
+
+`in-tab-throttle-probe-2026-09-02T11-41-33-865Z.md`. The stage client rolled back to `0.0.329001`
+(node in the page, so the recorder sees its sockets and every column reads), the same `tc` shaper
+proved at 330,271 bytes/s, the same recording, 0 BZZ. The node joined in 19.0 s. 13 of 13 rows inside
+budget.
+
+| arm | `0.0.329001` under Chrome's emulation, the morning | `0.0.329001` under the real link | `0.0.341001` under the real link |
+| --- | ---: | ---: | ---: |
+| 360p, one at a time | **3.4 to 4.2 s**, ×1.92 to 2.00, link 31 to 51% full | **1.0 s** (n=6), ×1.10 to 1.15, link 68 to 75% full | **0.76 to 1.04 s** (n=6), bytes unread |
+| 1080p, one at a time | **16.5 to 19.6 s**, ×2.33 to 2.87 | **8.4 to 8.9 s**, ×1.84 to 1.93, link 75 to 76% full, 2.2 to 2.6 MB more in the tail | **6.7 to 6.85 s**, bytes unread |
+| two 360p at once | 6.4 to 9.1 s each, 1.3 to 1.7 MB late | **1.8 to 2.3 s** each, ×1.31 to 1.47 together, link 84 to 87% full | 2.5 and 3.5 s for both |
+
+Same release, same client, same recording, same driver, same 2800 kbps figure. Under a real link the
+360p segment that took 3.4 to 4.2 s under Chrome's emulation takes **1.0 s**, carries **1.1 bytes
+per payload byte** instead of 2, and fills the link to 70% instead of leaving it half idle. **The
+morning's headline, doubled traffic on a half-idle link at the cheapest rung, was a property of
+`Network.emulateNetworkConditions`, not of weeb-3 `0.0.329001`.** The owner's ruling that the fault
+was on our side is confirmed at the instrument.
+
+What survives from the morning, now measured on a link that is real: at **1080p** the old release
+does pull **1.8 to 1.9 bytes per payload byte** and keeps pulling **about two more segments' worth**
+after the segment is complete. A 1.2 MB retrieval outlives the one-second mark, which is where the
+hedging the morning's document describes begins, and a 225 KB one does not. That rung's own bitrate
+exceeds this cap, so no adaptive viewer should be on it under this link, and whether `0.0.341001`
+still does it is unread until the recorder reaches the worker.
+
+Between the two releases under the same real link: equal on 360p, `0.0.341001` about 20% faster on
+1080p, `0.0.329001` a little faster on the pairs. Both join slowly under the cap, 19.0 s and 30.5 s
+against 0.8 s uncapped, and one of two capped boots of `0.0.341001` timed out before the node
+existed. A throttled viewer's first half minute is the join, on either release.
+
+Caveats, in the open: one run per cell, and the morning's cell was four hours earlier against a
+different peer set. Rows inside each cell replicate within 10%, and the gap between the emulated and
+the real cell is 3.5 to 4x, so peer drift does not carry it. The pre-registration for arm 3 asked for
+a capped 360p in 1.5 s or less on the new release, which the real link gave on both releases.
+
+### What this means for V2
+
+V2 as it was measured is an instrument reading. Its cap has to be a real one, the `tc` shaper with
+its rate proof, or the worker-aware emulation once that harness change lands and proves itself by
+effect on every run. Under a real 2800 kbps link, on either release, the in-tab node delivers the
+cheapest rung at link speed with a second to spare per two-second segment. Whether the viewer's
+adaptive logic then holds that rung is the question V2 has to be re-run to answer.

@@ -1,0 +1,964 @@
+{
+  "measuredAt": "2026-09-02T11:41:33.865Z",
+  "clientUrl": "http://host.docker.internal:10074",
+  "chromeVersion": "Chrome 151.0.7922.75",
+  "owner": "8d8a30ff4cbcf8ad0e0773547686295f8157feb0",
+  "manifests": [
+    {
+      "rung": "360p",
+      "topicHex": "906fe47f1d5c4e1c2a2bb0718aa0e55477a23b9a6d6c7229550c8b6ce0b1af10",
+      "segmentCount": 127,
+      "targetDurationS": 2,
+      "medianSegmentSeconds": 2
+    },
+    {
+      "rung": "1080p",
+      "topicHex": "fbb12dbb0037cce1db284d7c751f7762ac75bf9bf371ec01f6aaa99156d4830b",
+      "segmentCount": 127,
+      "targetDurationS": 2,
+      "medianSegmentSeconds": 2
+    }
+  ],
+  "joinedInMs": 18983,
+  "budgetMs": 90000,
+  "tailMs": 10000,
+  "gapMs": 15000,
+  "capKbps": 2800,
+  "lowCapKbps": null,
+  "capSource": "external",
+  "externalCapMeasuredBps": 330271,
+  "idleWindows": [
+    {
+      "label": "external 2800 kbps",
+      "kbpsCap": 2800,
+      "capSource": "external",
+      "startedAtMs": 1788349319267,
+      "endedAtMs": 1788349379268,
+      "perSecond": [
+        {
+          "secondIndex": 0,
+          "inBytes": 207604,
+          "outBytes": 27887,
+          "inFrames": 415,
+          "outFrames": 316
+        },
+        {
+          "secondIndex": 1,
+          "inBytes": 134317,
+          "outBytes": 40048,
+          "inFrames": 558,
+          "outFrames": 447
+        },
+        {
+          "secondIndex": 2,
+          "inBytes": 104302,
+          "outBytes": 52010,
+          "inFrames": 734,
+          "outFrames": 585
+        },
+        {
+          "secondIndex": 3,
+          "inBytes": 74294,
+          "outBytes": 49110,
+          "inFrames": 690,
+          "outFrames": 557
+        },
+        {
+          "secondIndex": 4,
+          "inBytes": 118221,
+          "outBytes": 43891,
+          "inFrames": 612,
+          "outFrames": 491
+        },
+        {
+          "secondIndex": 5,
+          "inBytes": 128138,
+          "outBytes": 47273,
+          "inFrames": 687,
+          "outFrames": 543
+        },
+        {
+          "secondIndex": 6,
+          "inBytes": 181858,
+          "outBytes": 49485,
+          "inFrames": 705,
+          "outFrames": 558
+        },
+        {
+          "secondIndex": 7,
+          "inBytes": 306257,
+          "outBytes": 18750,
+          "inFrames": 340,
+          "outFrames": 220
+        },
+        {
+          "secondIndex": 8,
+          "inBytes": 480163,
+          "outBytes": 15774,
+          "inFrames": 316,
+          "outFrames": 180
+        },
+        {
+          "secondIndex": 9,
+          "inBytes": 205107,
+          "outBytes": 21333,
+          "inFrames": 352,
+          "outFrames": 243
+        },
+        {
+          "secondIndex": 10,
+          "inBytes": 208324,
+          "outBytes": 34915,
+          "inFrames": 541,
+          "outFrames": 403
+        },
+        {
+          "secondIndex": 11,
+          "inBytes": 234731,
+          "outBytes": 36869,
+          "inFrames": 585,
+          "outFrames": 427
+        },
+        {
+          "secondIndex": 12,
+          "inBytes": 232810,
+          "outBytes": 28148,
+          "inFrames": 471,
+          "outFrames": 338
+        },
+        {
+          "secondIndex": 13,
+          "inBytes": 210424,
+          "outBytes": 12396,
+          "inFrames": 244,
+          "outFrames": 159
+        },
+        {
+          "secondIndex": 14,
+          "inBytes": 50389,
+          "outBytes": 2512,
+          "inFrames": 72,
+          "outFrames": 48
+        },
+        {
+          "secondIndex": 15,
+          "inBytes": 29524,
+          "outBytes": 5080,
+          "inFrames": 88,
+          "outFrames": 77
+        },
+        {
+          "secondIndex": 16,
+          "inBytes": 39605,
+          "outBytes": 4692,
+          "inFrames": 98,
+          "outFrames": 83
+        },
+        {
+          "secondIndex": 17,
+          "inBytes": 11696,
+          "outBytes": 1654,
+          "inFrames": 8,
+          "outFrames": 37
+        },
+        {
+          "secondIndex": 18,
+          "inBytes": 11424,
+          "outBytes": 1838,
+          "inFrames": 10,
+          "outFrames": 41
+        },
+        {
+          "secondIndex": 19,
+          "inBytes": 11176,
+          "outBytes": 1622,
+          "inFrames": 14,
+          "outFrames": 37
+        },
+        {
+          "secondIndex": 20,
+          "inBytes": 900,
+          "outBytes": 2106,
+          "inFrames": 30,
+          "outFrames": 51
+        },
+        {
+          "secondIndex": 21,
+          "inBytes": 750,
+          "outBytes": 2108,
+          "inFrames": 25,
+          "outFrames": 50
+        },
+        {
+          "secondIndex": 22,
+          "inBytes": 600,
+          "outBytes": 1312,
+          "inFrames": 20,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 23,
+          "inBytes": 420,
+          "outBytes": 1098,
+          "inFrames": 14,
+          "outFrames": 27
+        },
+        {
+          "secondIndex": 24,
+          "inBytes": 60,
+          "outBytes": 1072,
+          "inFrames": 2,
+          "outFrames": 24
+        },
+        {
+          "secondIndex": 25,
+          "inBytes": 60,
+          "outBytes": 1226,
+          "inFrames": 2,
+          "outFrames": 27
+        },
+        {
+          "secondIndex": 26,
+          "inBytes": 210,
+          "outBytes": 1744,
+          "inFrames": 7,
+          "outFrames": 40
+        },
+        {
+          "secondIndex": 27,
+          "inBytes": 30,
+          "outBytes": 1042,
+          "inFrames": 1,
+          "outFrames": 23
+        },
+        {
+          "secondIndex": 28,
+          "inBytes": 0,
+          "outBytes": 460,
+          "inFrames": 0,
+          "outFrames": 10
+        },
+        {
+          "secondIndex": 29,
+          "inBytes": 1280,
+          "outBytes": 1072,
+          "inFrames": 31,
+          "outFrames": 23
+        },
+        {
+          "secondIndex": 30,
+          "inBytes": 2590,
+          "outBytes": 2082,
+          "inFrames": 63,
+          "outFrames": 45
+        },
+        {
+          "secondIndex": 31,
+          "inBytes": 3770,
+          "outBytes": 3114,
+          "inFrames": 93,
+          "outFrames": 69
+        },
+        {
+          "secondIndex": 32,
+          "inBytes": 4860,
+          "outBytes": 3780,
+          "inFrames": 120,
+          "outFrames": 84
+        },
+        {
+          "secondIndex": 33,
+          "inBytes": 4840,
+          "outBytes": 3700,
+          "inFrames": 117,
+          "outFrames": 79
+        },
+        {
+          "secondIndex": 34,
+          "inBytes": 4300,
+          "outBytes": 3340,
+          "inFrames": 106,
+          "outFrames": 74
+        },
+        {
+          "secondIndex": 35,
+          "inBytes": 4500,
+          "outBytes": 3420,
+          "inFrames": 108,
+          "outFrames": 72
+        },
+        {
+          "secondIndex": 36,
+          "inBytes": 4900,
+          "outBytes": 3760,
+          "inFrames": 119,
+          "outFrames": 81
+        },
+        {
+          "secondIndex": 37,
+          "inBytes": 2210,
+          "outBytes": 1550,
+          "inFrames": 48,
+          "outFrames": 26
+        },
+        {
+          "secondIndex": 38,
+          "inBytes": 2010,
+          "outBytes": 1470,
+          "inFrames": 46,
+          "outFrames": 28
+        },
+        {
+          "secondIndex": 39,
+          "inBytes": 2750,
+          "outBytes": 1940,
+          "inFrames": 66,
+          "outFrames": 39
+        },
+        {
+          "secondIndex": 40,
+          "inBytes": 3970,
+          "outBytes": 2890,
+          "inFrames": 102,
+          "outFrames": 66
+        },
+        {
+          "secondIndex": 41,
+          "inBytes": 4910,
+          "outBytes": 3470,
+          "inFrames": 124,
+          "outFrames": 76
+        },
+        {
+          "secondIndex": 42,
+          "inBytes": 3610,
+          "outBytes": 2600,
+          "inFrames": 97,
+          "outFrames": 61
+        },
+        {
+          "secondIndex": 43,
+          "inBytes": 2580,
+          "outBytes": 1520,
+          "inFrames": 72,
+          "outFrames": 39
+        },
+        {
+          "secondIndex": 44,
+          "inBytes": 1180,
+          "outBytes": 1100,
+          "inFrames": 37,
+          "outFrames": 29
+        },
+        {
+          "secondIndex": 45,
+          "inBytes": 1360,
+          "outBytes": 1680,
+          "inFrames": 43,
+          "outFrames": 43
+        },
+        {
+          "secondIndex": 46,
+          "inBytes": 1580,
+          "outBytes": 2178,
+          "inFrames": 48,
+          "outFrames": 53
+        },
+        {
+          "secondIndex": 47,
+          "inBytes": 660,
+          "outBytes": 1986,
+          "inFrames": 22,
+          "outFrames": 47
+        },
+        {
+          "secondIndex": 48,
+          "inBytes": 540,
+          "outBytes": 2018,
+          "inFrames": 18,
+          "outFrames": 47
+        },
+        {
+          "secondIndex": 49,
+          "inBytes": 660,
+          "outBytes": 1802,
+          "inFrames": 22,
+          "outFrames": 43
+        },
+        {
+          "secondIndex": 50,
+          "inBytes": 780,
+          "outBytes": 2046,
+          "inFrames": 26,
+          "outFrames": 49
+        },
+        {
+          "secondIndex": 51,
+          "inBytes": 1020,
+          "outBytes": 2258,
+          "inFrames": 34,
+          "outFrames": 55
+        },
+        {
+          "secondIndex": 52,
+          "inBytes": 600,
+          "outBytes": 1312,
+          "inFrames": 20,
+          "outFrames": 32
+        },
+        {
+          "secondIndex": 53,
+          "inBytes": 360,
+          "outBytes": 1008,
+          "inFrames": 12,
+          "outFrames": 24
+        },
+        {
+          "secondIndex": 54,
+          "inBytes": 60,
+          "outBytes": 1042,
+          "inFrames": 2,
+          "outFrames": 23
+        },
+        {
+          "secondIndex": 55,
+          "inBytes": 60,
+          "outBytes": 1226,
+          "inFrames": 2,
+          "outFrames": 27
+        },
+        {
+          "secondIndex": 56,
+          "inBytes": 120,
+          "outBytes": 1624,
+          "inFrames": 4,
+          "outFrames": 36
+        },
+        {
+          "secondIndex": 57,
+          "inBytes": 0,
+          "outBytes": 920,
+          "inFrames": 0,
+          "outFrames": 20
+        },
+        {
+          "secondIndex": 58,
+          "inBytes": 0,
+          "outBytes": 552,
+          "inFrames": 0,
+          "outFrames": 12
+        },
+        {
+          "secondIndex": 59,
+          "inBytes": 1250,
+          "outBytes": 1042,
+          "inFrames": 30,
+          "outFrames": 22
+        },
+        {
+          "secondIndex": 60,
+          "inBytes": 0,
+          "outBytes": 0,
+          "inFrames": 0,
+          "outFrames": 0
+        }
+      ],
+      "inBytesPerSecondMean": 50777.55370743821,
+      "outBytesPerSecondMean": 9515.791403476609,
+      "connectionsOpenStart": 10,
+      "connectionsOpenEnd": 200
+    }
+  ],
+  "retrievals": [
+    {
+      "arm": "canary",
+      "kbpsCap": 2800,
+      "ref": "afd0706d9000cc7cd0f876e5fcd94f75b485311a77947569bffc545bbb3c2901",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349379300,
+      "settledAtMs": 1788349380343,
+      "outcome": "resolved",
+      "byteLength": 224848,
+      "elapsedMs": 1032,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 249631,
+      "outFramesDuring": 324,
+      "inBytesTailAfter": 45458,
+      "amplification": 1.1102211271614602
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": 2800,
+      "ref": "fd547a30dd98386ba4786aa5d9fa1abb78dbe1238ac34ea111fcea825b4435c7",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349405351,
+      "settledAtMs": 1788349406382,
+      "outcome": "resolved",
+      "byteLength": 231052,
+      "elapsedMs": 1019.5999984741211,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 253688,
+      "outFramesDuring": 313,
+      "inBytesTailAfter": 39158,
+      "amplification": 1.097969288298738
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": 2800,
+      "ref": "ce4a28d1c4c5d7f524ec377d63ff5404eefde8301ffb5b104e1c3204ef00b2be",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349431408,
+      "settledAtMs": 1788349439783,
+      "outcome": "resolved",
+      "byteLength": 1163720,
+      "elapsedMs": 8364.20000076294,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 2235264,
+      "outFramesDuring": 4609,
+      "inBytesTailAfter": 2240950,
+      "amplification": 1.9207919430790912
+    },
+    {
+      "arm": "canary",
+      "kbpsCap": 2800,
+      "ref": "4ef5d372972f068b5bdb56d0a0aa9c9305eb13abaacb50f07dd9fad7113ae3ef",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349464803,
+      "settledAtMs": 1788349465765,
+      "outcome": "resolved",
+      "byteLength": 222216,
+      "elapsedMs": 953.9000015258789,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 251408,
+      "outFramesDuring": 332,
+      "inBytesTailAfter": 29820,
+      "amplification": 1.1313676782949922
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": 2800,
+      "ref": "ab920cf224fb135c3df6c772ca950f200f28ff6fe2e27c485458a08cb5c8365f",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349490775,
+      "settledAtMs": 1788349499669,
+      "outcome": "resolved",
+      "byteLength": 1209780,
+      "elapsedMs": 8887.70000076294,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 2340593,
+      "outFramesDuring": 5038,
+      "inBytesTailAfter": 2480051,
+      "amplification": 1.9347261485559357
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": 2800,
+      "ref": "9d0ed6b5b6cf0c7e43b0a1a8dc459032eba81b9187383787beabcc463dd29144",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349524683,
+      "settledAtMs": 1788349525717,
+      "outcome": "resolved",
+      "byteLength": 234436,
+      "elapsedMs": 1028,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 259178,
+      "outFramesDuring": 373,
+      "inBytesTailAfter": 47623,
+      "amplification": 1.1055383985394736
+    },
+    {
+      "arm": "canary",
+      "kbpsCap": 2800,
+      "ref": "bc96b411c648fef81e244933b89f31269e14e02d74a4cdcd9694562ab426e1a7",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349550731,
+      "settledAtMs": 1788349551765,
+      "outcome": "resolved",
+      "byteLength": 235752,
+      "elapsedMs": 1028,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 267410,
+      "outFramesDuring": 412,
+      "inBytesTailAfter": 22962,
+      "amplification": 1.1342851810377006
+    },
+    {
+      "arm": "360p",
+      "kbpsCap": 2800,
+      "ref": "69e957283b36ddf4ddc1dc52537b748de7b011fc95bda3eeebb226f6c92654b7",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349576792,
+      "settledAtMs": 1788349577818,
+      "outcome": "resolved",
+      "byteLength": 218832,
+      "elapsedMs": 1020.7000007629395,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 251033,
+      "outFramesDuring": 388,
+      "inBytesTailAfter": 20147,
+      "amplification": 1.147149411420633
+    },
+    {
+      "arm": "1080p",
+      "kbpsCap": 2800,
+      "ref": "afab98c64ac2c9c6ee3fc58e024589c8e0e0ae5c1d93638eef3007741b5889a4",
+      "roundIndex": 2,
+      "roundDegraded": false,
+      "capSource": "external",
+      "startedAtMs": 1788349602834,
+      "settledAtMs": 1788349611278,
+      "outcome": "resolved",
+      "byteLength": 1210908,
+      "elapsedMs": 8437,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 2224166,
+      "outFramesDuring": 4847,
+      "inBytesTailAfter": 2555742,
+      "amplification": 1.836775378476317
+    },
+    {
+      "startedAtMs": 1788349636306,
+      "settledAtMs": 1788349638357,
+      "outcome": "resolved",
+      "byteLength": 226916,
+      "elapsedMs": 2043.7999992370605,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "capSource": "external",
+      "ref": "0c3f072a69466d4c411b7cda0c0832e1b5c61d5f2ef57fcf521078244fc74dc3",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 621880,
+      "outFramesDuring": 938,
+      "inBytesTailAfter": 199483,
+      "amplification": 2.7405736043293554
+    },
+    {
+      "startedAtMs": 1788349636309,
+      "settledAtMs": 1788349638606,
+      "outcome": "resolved",
+      "byteLength": 231616,
+      "elapsedMs": 2290.300003051758,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "capSource": "external",
+      "ref": "c94211dd014ec8a307beaf700746eff896c2f4f22d5fc8f5daf10b8bf79da44c",
+      "roundIndex": 0,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 675280,
+      "outFramesDuring": 1010,
+      "inBytesTailAfter": 146143,
+      "amplification": 2.915515335728102
+    },
+    {
+      "startedAtMs": 1788349663651,
+      "settledAtMs": 1788349665467,
+      "outcome": "resolved",
+      "byteLength": 218456,
+      "elapsedMs": 1807,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "capSource": "external",
+      "ref": "9873ccef47add528295fc7ab9c0567948faf077d6afbc96081a34292ec2e3f1b",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 538058,
+      "outFramesDuring": 870,
+      "inBytesTailAfter": 191802,
+      "amplification": 2.4630039916504924
+    },
+    {
+      "startedAtMs": 1788349663654,
+      "settledAtMs": 1788349665583,
+      "outcome": "resolved",
+      "byteLength": 232744,
+      "elapsedMs": 1922,
+      "arm": "pair",
+      "kbpsCap": 2800,
+      "capSource": "external",
+      "ref": "2ebd27f52fbe001cf8925cd8e9910f4c8dff18119d6e396b7da41506dd1c2d10",
+      "roundIndex": 1,
+      "roundDegraded": false,
+      "budgetMs": 90000,
+      "tailMs": 10000,
+      "inBytesDuring": 589390,
+      "outFramesDuring": 888,
+      "inBytesTailAfter": 140530,
+      "amplification": 2.5323531433678204
+    }
+  ],
+  "pairs": [
+    {
+      "roundIndex": 0,
+      "startedAtMs": 1788349636306,
+      "watchedUntilMs": 1788349638606,
+      "inBytes": 675280,
+      "payloadBytes": 458532,
+      "amplification": 1.4726998333813126,
+      "occupancy": 0.838857142857143
+    },
+    {
+      "roundIndex": 1,
+      "startedAtMs": 1788349663651,
+      "watchedUntilMs": 1788349665583,
+      "inBytes": 589390,
+      "payloadBytes": 451200,
+      "amplification": 1.3062721631205674,
+      "occupancy": 0.8716208222419403
+    }
+  ],
+  "cost": {
+    "before": {
+      "atMs": 1788349294152,
+      "nodes": [
+        {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 28,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.926481481481481,
+          "postageImmutable": true,
+          "bzz": 7.75258479999428
+        },
+        {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 36,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.923541666666667,
+          "postageImmutable": true,
+          "bzz": 3.47030439999824
+        },
+        {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 58,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.923657407407408,
+          "postageImmutable": true,
+          "bzz": 3.8662756999982704
+        },
+        {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 74,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.923773148148148,
+          "postageImmutable": true,
+          "bzz": 4.41907509999829
+        }
+      ]
+    },
+    "after": {
+      "atMs": 1788349691207,
+      "nodes": [
+        {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 28,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.922141203703704,
+          "postageImmutable": true,
+          "bzz": 7.75258479999428
+        },
+        {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 36,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.919201388888889,
+          "postageImmutable": true,
+          "bzz": 3.47030439999824
+        },
+        {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 58,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.919317129629629,
+          "postageImmutable": true,
+          "bzz": 3.8662756999982704
+        },
+        {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 74,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.91943287037037,
+          "postageImmutable": true,
+          "bzz": 4.41907509999829
+        }
+      ]
+    },
+    "minutes": 6.617583333333333,
+    "bucketsUsed": 0,
+    "bzzSpent": 0,
+    "bucketsPerMinute": 0,
+    "bzzPerMinute": 0,
+    "bzzPerMegabyte": null,
+    "minutesOfPostageLeft": null,
+    "minutesOfBzzLeft": null,
+    "perNode": [
+      {
+        "rung": "360p",
+        "port": 10075,
+        "before": {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 28,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.926481481481481,
+          "postageImmutable": true,
+          "bzz": 7.75258479999428
+        },
+        "after": {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 28,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.922141203703704,
+          "postageImmutable": true,
+          "bzz": 7.75258479999428
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "480p",
+        "port": 11071,
+        "before": {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 36,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.923541666666667,
+          "postageImmutable": true,
+          "bzz": 3.47030439999824
+        },
+        "after": {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 36,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.919201388888889,
+          "postageImmutable": true,
+          "bzz": 3.47030439999824
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "720p",
+        "port": 11073,
+        "before": {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 58,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.923657407407408,
+          "postageImmutable": true,
+          "bzz": 3.8662756999982704
+        },
+        "after": {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 58,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.919317129629629,
+          "postageImmutable": true,
+          "bzz": 3.8662756999982704
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "1080p",
+        "port": 11075,
+        "before": {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 74,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.923773148148148,
+          "postageImmutable": true,
+          "bzz": 4.41907509999829
+        },
+        "after": {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 74,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.91943287037037,
+          "postageImmutable": true,
+          "bzz": 4.41907509999829
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      }
+    ],
+    "warnings": []
+  }
+}
