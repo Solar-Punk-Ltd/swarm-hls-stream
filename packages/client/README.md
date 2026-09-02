@@ -146,6 +146,13 @@ that uses the `/bzz/` routes it intercepts. The glue registers it the moment the
 site without it logs a failed ServiceWorker registration at 404 on every page load. Its scope is
 `/weeb-3/`, which keeps it away from every request this app makes.
 
+That registration also means **the in-tab node only boots in a secure context**: https, or a
+loopback host such as `localhost`. On a plain-http page reached by IP or hostname
+`navigator.serviceWorker` does not exist, and the node dies at boot with `could not install
+ServiceWorker relay listener` before it reaches any peer. A deployment that wants viewers on the
+in-tab backend serves the client over https. The e2e harness, which reaches a stage over plain http,
+launches Chrome with `--unsafely-treat-insecure-origin-as-secure` for that one origin instead.
+
 ## Project Structure
 
 ```
