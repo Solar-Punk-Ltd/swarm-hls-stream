@@ -878,6 +878,25 @@ function readSilencedRung(run: Record<string, unknown>): string | null {
   return asString(silenced.rung, 'run.silenced.rung');
 }
 
+/**
+ * One rung of a finished recording, as `browser/vod.ts` read it.
+ *
+ * ⭐ {@link lastSegmentRef} is the whole point. Whether a rung holds the whole broadcast is an
+ * identity against the last segment the uploader published on it, never a count times a nominal
+ * length: the count picks up stragglers from the broadcast before and reads a partial tail fragment
+ * as a whole one.
+ */
+export interface VodRung {
+  /** Off the master's own RESOLUTION, which is what joins a rung to the declared ladder. */
+  height: number | null;
+  /** Null where neither the player nor the rung's own feed produced a playlist for it. */
+  segments: number | null;
+  durationS: number | null;
+  lastSegmentRef: string | null;
+  /** `player` or `feed`, so a reader can tell which copy of the playlist answered. */
+  readFrom: string | null;
+}
+
 /** What a finished recording gave a player, as `browser/vod.ts` judges it. */
 export interface VodResult {
   /**
@@ -892,6 +911,14 @@ export interface VodResult {
   seekableToS: number | null;
   /** Every rung the player parsed out of the recording's master, by height. */
   ladderHeights: readonly number[];
+  /**
+   * What each of those rungs holds, or null on an artifact written before the reading existed.
+   *
+   * ⛔ Null is a refusal rather than an empty ladder, and `wholeBroadcastRefusal` says so in those
+   * words. A browser image built before 2026-09-03 writes every other field intact, so defaulting
+   * here would report a recording as whole on the strength of a reading nobody took.
+   */
+  rungs: readonly VodRung[] | null;
 }
 
 /**
@@ -915,7 +942,35 @@ function readVodResult(run: Record<string, unknown>): VodResult | null {
     ladderHeights: asArray(vod.ladderHeights, 'run.vod.ladderHeights').map((height, i) =>
       asNumber(height, `run.vod.ladderHeights[${i}]`),
     ),
+    rungs: readVodRungs(vod),
   };
+}
+
+/**
+ * What each rung of the recording holds, or the absence of the reading.
+ *
+ * ⛔ Absent is read as absent and never as an empty ladder. Only a driver from 2026-09-03 onwards
+ * writes it, so an older browser image produces a file that is right in every other respect, and the
+ * refusal that reads this names the driver rather than the recording.
+ *
+ * ⛔ Every field inside a rung that IS present is read strictly. A rung whose playlist neither the
+ * player nor its own feed produced writes explicit nulls, which is a reading, and a malformed entry
+ * is a file this harness does not match.
+ */
+function readVodRungs(vod: Record<string, unknown>): readonly VodRung[] | null {
+  if (vod.rungs === undefined || vod.rungs === null) {
+    return null;
+  }
+  return asArray(vod.rungs, 'run.vod.rungs').map((entry, i) => {
+    const rung = asObject(entry, `run.vod.rungs[${i}]`);
+    return {
+      height: asNumberOrNull(rung.height, `run.vod.rungs[${i}].height`),
+      segments: asNumberOrNull(rung.segments, `run.vod.rungs[${i}].segments`),
+      durationS: asNumberOrNull(rung.durationS, `run.vod.rungs[${i}].durationS`),
+      lastSegmentRef: asStringOrNull(rung.lastSegmentRef, `run.vod.rungs[${i}].lastSegmentRef`),
+      readFrom: asStringOrNull(rung.readFrom, `run.vod.rungs[${i}].readFrom`),
+    };
+  });
 }
 
 /**

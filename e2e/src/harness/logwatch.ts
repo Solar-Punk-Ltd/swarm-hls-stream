@@ -325,13 +325,16 @@ export function publishedRenditions(text: string): PublishedRendition[] {
 }
 
 /**
- * One `Segment N of <stream> uploaded` line: which stream's counter moved, and to what.
+ * One `Segment N of <stream> uploaded` line: which stream's counter moved, to what, and the
+ * reference the bytes landed under.
  * Not exported: callers take it from {@link segmentUploads}'s inferred return, and exporting it
  * would add a name to the surface that nothing imports.
  */
 interface SegmentUpload {
   streamId: string;
   index: number;
+  /** The Swarm reference, which is the only field that identifies a segment across broadcasts. */
+  reference: string;
 }
 
 /**
@@ -344,7 +347,43 @@ export function segmentUploads(text: string): SegmentUpload[] {
   return [...messageText(text).matchAll(segmentUploadedPattern('g'))].map((match) => ({
     streamId: match[2],
     index: Number(match[1]),
+    reference: match[3],
   }));
+}
+
+/** `live/stream_1080p` is the `1080p` rung. Null where a stream id names no rung. */
+const RUNG_OF_STREAM = /stream_(\S+)$/;
+
+function rungNameOf(streamId: string): string | null {
+  return RUNG_OF_STREAM.exec(streamId)?.[1] ?? null;
+}
+
+/**
+ * The reference of the LAST segment the uploader published on each rung, keyed by rung name.
+ *
+ * ⛔⛔ The last line per rung wins, and that is the whole point of reading it this way. SRS's segment
+ * counter runs on across broadcasts, so a log window opened at a broadcast's start also carries the
+ * previous broadcast's final segments at indices that continue the sequence. Anything that COUNTS
+ * lines in the window therefore counts a neighbour's stragglers as this broadcast's media: on
+ * 2026-09-02 that put a sixteenth 1080p segment into V4's arithmetic from a broadcast that had ended
+ * eleven seconds before this one began, and V4 refused a complete recording for being 2.4s short. A
+ * straggler precedes this broadcast's own segments in the log, so the last line is always this
+ * broadcast's.
+ *
+ * ⛔ Keyed by rung NAME rather than by stream id, because the ladder the deployment declares names
+ * rungs while the log names streams. A stream id carrying no `stream_<rung>` suffix is not a rung of
+ * a ladder and is left out rather than keyed under its whole id, which would put a name no ladder
+ * declares next to the ones that do.
+ */
+export function lastUploadedSegmentRefByRung(text: string): ReadonlyMap<string, string> {
+  const byRung = new Map<string, string>();
+  for (const upload of segmentUploads(text)) {
+    const rung = rungNameOf(upload.streamId);
+    if (rung !== null) {
+      byRung.set(rung, upload.reference);
+    }
+  }
+  return byRung;
 }
 
 /**

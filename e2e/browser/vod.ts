@@ -15,6 +15,11 @@
  *   - does a recording play at all, and does it report a finite duration rather than a live edge
  *   - does seeking land where it was asked, forwards and backwards
  *   - does playback resume after each seek, or does the player stall on a fresh retrieval
+ *   - which rungs the master handed the player, and which segment each rung's playlist ends at
+ *
+ * ⭐ That last one is `vod.rungs`, written since 2026-09-03, and it is what a suite judges a
+ * recording's completeness on. See {@link RecordingRung} for what it replaced and why a count of
+ * segments cannot answer the same question.
  *
  * `BROWSER_FETCH_BACKEND` chooses where the segment bytes come from, `weeb3` being the in-tab node
  * and `gateway` the control, and the run proves the bytes came from where it says before it ends.
@@ -98,7 +103,7 @@ import {
   thinRequestLog,
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
-import { segmentRefsOf } from '../src/browser/rungManifest.js';
+import { segmentRefsOf, segmentSecondsOf } from '../src/browser/rungManifest.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import { kbpsAsBytesPerSecond, squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
 import {
@@ -184,7 +189,7 @@ interface SqueezePlan {
 const SEGMENT_ROUTE = '/bytes/';
 
 /** A feed read can take seconds on a busy gateway, and a rung playlist is one of them. */
-const CAP_PROOF_MANIFEST_TIMEOUT_S = 30;
+const RUNG_PLAYLIST_TIMEOUT_S = 30;
 
 /**
  * Quiet time counted into the cap proof's own window after its retrieval settled.
@@ -236,10 +241,177 @@ async function refFromTheRecording(host: Host, cfg: E2EConfig, fragmentLog: Frag
     return null;
   }
   const text = await host
-    .localText(cfg.ports.beeGatewayApi, `/feeds/${owner}/${topic}`, CAP_PROOF_MANIFEST_TIMEOUT_S)
+    .localText(cfg.ports.beeGatewayApi, `/feeds/${owner}/${topic}`, RUNG_PLAYLIST_TIMEOUT_S)
     .catch(() => '');
   const refs = segmentRefsOf(text);
   return refs[refs.length - 1] ?? null;
+}
+
+/**
+ * One rung of a finished recording, as the player holds it.
+ *
+ * ⛔⛔ Whether a rung is the whole broadcast is decided on {@link lastSegmentRef} and on nothing else.
+ * The reading it replaced was a segment COUNT off the uploader's log times the DECLARED segment
+ * length, compared against the player's duration with two seconds of tolerance, and that is an
+ * estimate held against a measurement. SRS's segment counter runs on across broadcasts, so the count
+ * picks up the previous broadcast's stragglers, and a partial tail fragment is counted as a whole
+ * one. On 2026-09-02 it refused a complete four rung recording for being 2.4s short, and across the
+ * nine passes before it the same arithmetic landed anywhere from 0.3s over to exactly on the
+ * tolerance. An identity has no tolerance to be lucky inside.
+ */
+interface RecordingRung {
+  /** Off the master's own RESOLUTION, which is what joins a rung to the ladder the deployment declares. */
+  height: number | null;
+  /** The rung feed the master pointed the player at, so a rung with no playlist is still identifiable. */
+  uri: string | null;
+  /** Null where neither the player nor the rung's own feed produced a playlist. */
+  segments: number | null;
+  durationS: number | null;
+  lastSegmentRef: string | null;
+  readFrom: RungReadFrom | null;
+}
+
+/** The player's own parse of a rung playlist, which is the copy it would actually play. */
+const READ_FROM_PLAYER = 'player';
+/** The rung's own feed, read where hls.js never loaded that level's playlist. */
+const READ_FROM_FEED = 'feed';
+type RungReadFrom = typeof READ_FROM_PLAYER | typeof READ_FROM_FEED;
+
+/**
+ * Where the client publishes the player when built with `VITE_EXPOSE_PLAYER`.
+ *
+ * Mirrored rather than imported, exactly as {@link SEGMENT_ROUTE} and the byte-source handle are:
+ * `e2e` does not depend on `client`, and this is the name the browser sees rather than a value either
+ * side computes. `packages/client/test/bundle.test.ts` holds the other end.
+ */
+const PLAYER_HANDLE = '__swarmHlsPlayer';
+
+/** A reference inside a url rather than alone on a line. `/bytes/<ref>` and `swarm://<owner>/<ref>` both carry one. */
+const HEX_64_IN_URL = /[0-9a-f]{64}/g;
+
+/** What one hls.js level says about itself, before the harness turns a fragment url into a reference. */
+interface LevelReading {
+  height: number | null;
+  uri: string | null;
+  segments: number | null;
+  durationS: number | null;
+  lastSegmentUrl: string | null;
+}
+
+/**
+ * Every level the player parsed out of the recording's master, and what it holds for each.
+ *
+ * ⛔ Null where the page publishes no player at all, which is a client built without
+ * `VITE_EXPOSE_PLAYER` rather than a recording with no rungs. The two are told apart here so a suite
+ * can refuse the first instead of reading it as the second.
+ */
+async function readLevelsFromThePlayer(page: Page): Promise<LevelReading[] | null> {
+  return page.evaluate((handle: string) => {
+    const player = (globalThis as unknown as Record<string, unknown>)[handle] as
+      | {
+          levels?: {
+            height?: number;
+            uri?: string;
+            details?: { fragments?: { url?: string }[]; totalduration?: number };
+          }[];
+        }
+      | undefined;
+
+    if (!player || !Array.isArray(player.levels)) {
+      return null;
+    }
+
+    return player.levels.map((level) => {
+      const fragments = level.details?.fragments;
+      const last = fragments === undefined ? undefined : fragments[fragments.length - 1];
+      return {
+        height: typeof level.height === 'number' && level.height > 0 ? level.height : null,
+        uri: typeof level.uri === 'string' && level.uri !== '' ? level.uri : null,
+        segments: fragments === undefined ? null : fragments.length,
+        durationS: typeof level.details?.totalduration === 'number' ? level.details.totalduration : null,
+        lastSegmentUrl: typeof last?.url === 'string' && last.url !== '' ? last.url : null,
+      };
+    });
+  }, PLAYER_HANDLE);
+}
+
+/** The reference a segment url carries, whichever form the url took. */
+function refFromSegmentUrl(url: string | null): string | null {
+  const found = url === null ? null : url.toLowerCase().match(HEX_64_IN_URL);
+  return found === null ? null : found[found.length - 1] ?? null;
+}
+
+/** What one rung's playlist holds, read off the rung's own feed the way the client reads it. */
+type RungPlaylistReading = Pick<RecordingRung, 'segments' | 'durationS' | 'lastSegmentRef' | 'readFrom'>;
+
+const NO_PLAYLIST: RungPlaylistReading = {
+  segments: null,
+  durationS: null,
+  lastSegmentRef: null,
+  readFrom: null,
+};
+
+async function readRungPlaylist(host: Host, cfg: E2EConfig, uri: string | null): Promise<RungPlaylistReading> {
+  if (uri === null) {
+    return NO_PLAYLIST;
+  }
+  const { owner, topic } = parseSwarmUri(uri);
+  if (!HEX_40.test(owner ?? '') || !HEX_64.test(topic ?? '')) {
+    return NO_PLAYLIST;
+  }
+
+  const text = await host
+    .localText(cfg.ports.beeGatewayApi, `/feeds/${owner}/${topic}`, RUNG_PLAYLIST_TIMEOUT_S)
+    .catch(() => '');
+  const refs = segmentRefsOf(text);
+  if (refs.length === 0) {
+    return NO_PLAYLIST;
+  }
+  const extinf = segmentSecondsOf(text);
+
+  return {
+    segments: refs.length,
+    durationS: extinf.length === 0 ? null : Math.round(extinf.reduce((total, one) => total + one, 0) * 1000) / 1000,
+    lastSegmentRef: refs[refs.length - 1],
+    readFrom: READ_FROM_FEED,
+  };
+}
+
+/**
+ * Every rung of the recording, with the segment each one ends at.
+ *
+ * ⛔⛔ The rungs are the PLAYER's, off the master it was actually handed, so a recording judged
+ * complete is the one this run opened rather than whatever the catalog described.
+ *
+ * ⛔ hls.js loads a level's playlist only when it plays that level, so on a four rung recording three
+ * of the four levels carry no `details` at all and a reading taken from the player alone would call
+ * three rungs unknown on every healthy run. Those are read from the rung feed the level itself names,
+ * through the same `/feeds/{owner}/{topic}` read the cap proof makes, and each rung records which of
+ * the two answered. A rung neither side could produce a playlist for records nulls, which refuses.
+ */
+async function rungsOfTheRecording(page: Page, host: Host, cfg: E2EConfig): Promise<RecordingRung[] | null> {
+  const levels = await readLevelsFromThePlayer(page);
+  if (levels === null) {
+    return null;
+  }
+
+  const rungs: RecordingRung[] = [];
+  for (const level of levels) {
+    const { height, uri } = level;
+    if (level.segments === null) {
+      rungs.push({ height, uri, ...(await readRungPlaylist(host, cfg, uri)) });
+      continue;
+    }
+    rungs.push({
+      height,
+      uri,
+      segments: level.segments,
+      durationS: level.durationS,
+      lastSegmentRef: refFromSegmentUrl(level.lastSegmentUrl),
+      readFrom: READ_FROM_PLAYER,
+    });
+  }
+  return rungs;
 }
 
 /**
@@ -725,6 +897,11 @@ async function main(): Promise<void> {
     // sample would be read as a frozen picture.
     const watched = samples.filter((sample): sample is ViewerSample => sample !== null);
 
+    // ⛔ After the measurement rather than inside it. Most levels have no playlist in the player, so
+    // this reads their own feeds, and a gateway read taken mid-run would land in a stretch's byte
+    // column and in the cap proof's window.
+    const recordingRungs = await rungsOfTheRecording(page, host, cfg);
+
     const network = summarizeNetwork(requests);
     // ⛔ A playback run publishes nothing, so the per-minute rates here come out at zero and the
     // runways read "not measurable from this run", which is the honest answer rather than a gap. What
@@ -776,6 +953,9 @@ async function main(): Promise<void> {
         durationS: afterSettle?.duration ?? null,
         seekableToS: afterSettle?.seekable ?? null,
         ladderHeights: ladderOfRecording(watched),
+        // ⛔ What says whether the recording is the whole broadcast, per rung and by identity. Null
+        // on a client that publishes no player, which a suite refuses rather than reads as no rungs.
+        rungs: recordingRungs,
       },
       // Undefined on a run that named no byte source, which is a run on whatever the build defaults
       // to rather than a malformed one. `readProof` in `harness/browser.ts` reads it that way.
@@ -886,6 +1066,8 @@ function renderVodReport(run: {
   instrument: { sound: boolean; failures: string[] };
   network: unknown;
   byteSource?: ByteSourceCondition;
+  /** The per-rung completeness reading, under the same key the state file carries it. */
+  vod: { rungs: readonly RecordingRung[] | null };
   cost: ResourceCost;
   /** The squeeze readings, or absent on the seek battery this driver runs by default. */
   quality?: VodSqueezeReport['quality'];
@@ -971,6 +1153,7 @@ function renderVodReport(run: {
   lines.push('which is why the rung list is here and is read from the shipped overlay rather than from');
   lines.push('the media element.');
   lines.push('');
+  lines.push(...rungCompletenessSection(run.vod.rungs));
 
   if (squeezed !== undefined) {
     lines.push(...vodSqueezeSection(squeezed));
@@ -1006,6 +1189,47 @@ function renderVodReport(run: {
   lines.push(...renderWhatThePlayerDid(run));
   lines.push(...costSection(run.cost));
   return lines.join('\n');
+}
+
+/**
+ * What each rung of the recording holds, and where that reading came from.
+ *
+ * ⭐ The last segment is printed rather than left in the json, because it is what says a rung is the
+ * whole broadcast and a rung short by one segment is invisible in every other row of this report. The
+ * reference is shortened here and kept whole in the state file beside it.
+ */
+function rungCompletenessSection(rungs: readonly RecordingRung[] | null): string[] {
+  if (rungs === null) {
+    return [
+      '⛔ **No per-rung reading was taken**, because the page published no player to read the levels',
+      'off. That is a client built without `VITE_EXPOSE_PLAYER`, so whether each rung holds the whole',
+      'broadcast cannot be answered from this run at all.',
+      '',
+    ];
+  }
+
+  const lines = ['### What each rung holds', '', '| rung | segments | duration | ends at | read from |'];
+  lines.push('| --- | ---: | ---: | --- | --- |');
+  rungs.forEach((rung) => {
+    lines.push(
+      `| ${rung.height === null ? 'no height' : `${rung.height}p`} | ${rung.segments ?? 'unknown'} | ` +
+        `${rung.durationS === null ? 'unknown' : `${rung.durationS.toFixed(2)}s`} | ` +
+        `${rung.lastSegmentRef === null ? 'nothing' : `\`${shortRef(rung.lastSegmentRef)}\``} | ` +
+        `${rung.readFrom ?? 'neither the player nor its feed'} |`,
+    );
+  });
+  lines.push('');
+  lines.push('hls.js loads a level playlist only when it plays that level, so a rung read from its own');
+  lines.push('feed is the ordinary case rather than a fault. What a suite judges on is the last');
+  lines.push('reference against the last segment the uploader published on that rung, with no tolerance.');
+  lines.push('');
+
+  return lines;
+}
+
+/** Enough of a reference to identify a segment. The state file beside the report keeps all of it. */
+function shortRef(reference: string): string {
+  return `${reference.slice(0, 12)}…`;
 }
 
 /**

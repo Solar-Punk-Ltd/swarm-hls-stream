@@ -4,16 +4,16 @@ import { describe, it } from 'node:test';
 import { parseBrowserArmState, type VodResult } from '../src/harness/browser.js';
 import {
   finishedTimelineRefusal,
+  type LastPublishedByRungHeight,
   pictureMovedRefusal,
   playedBackRefusal,
-  RECORDING_SHORTFALL_TOLERANCE_S,
   vodArmRefusal,
   vodArmSummary,
   wholeBroadcastRefusal,
   wholeLadderRefusal,
 } from '../src/harness/vodArm.js';
 
-import { armState, PLAYED_THE_WHOLE_LADDER, vodArmState } from './helpers/browserArmFixtures.js';
+import { armState, lastSegmentRefFor, PLAYED_THE_WHOLE_LADDER, vodArmState } from './helpers/browserArmFixtures.js';
 
 /**
  * The questions a finished recording is asked when a real player opens it.
@@ -113,27 +113,118 @@ describe('whether the recording is the whole ladder it was published as', () => 
   });
 });
 
-describe('whether the recording is the whole broadcast', () => {
-  it('accepts a recording that covers what was broadcast', () => {
-    assert.equal(wholeBroadcastRefusal(PLAYED, 63.0), null);
+describe('the per-rung reading, out of the artifact', () => {
+  it('reads every rung the driver wrote, with the segment each one ends at', () => {
+    assert.deepEqual(PLAYED.rungs, [
+      { height: 1080, segments: 31, durationS: 62, lastSegmentRef: lastSegmentRefFor(1080), readFrom: 'player' },
+      { height: 720, segments: 31, durationS: 62, lastSegmentRef: lastSegmentRefFor(720), readFrom: 'feed' },
+      { height: 480, segments: 31, durationS: 62, lastSegmentRef: lastSegmentRefFor(480), readFrom: 'feed' },
+      { height: 360, segments: 31, durationS: 62, lastSegmentRef: lastSegmentRefFor(360), readFrom: 'feed' },
+    ]);
   });
 
   /**
-   * ⭐ A tolerance rather than an equality, and it is arithmetic rather than a threshold: the
-   * publisher stops between segment boundaries, so the last partial segment is never in the
-   * recording.
+   * ⛔ Additive, because a browser image built before the reading existed writes a file that is right
+   * in every other respect. Read as null and refused by name, never defaulted into a pass.
    */
-  it('allows the partial segment a clean stop always leaves behind', () => {
-    assert.equal(wholeBroadcastRefusal(PLAYED, PLAYED.durationS! + RECORDING_SHORTFALL_TOLERANCE_S), null);
+  it('reads an artifact written before the section existed as having none', () => {
+    const older = { ...PLAYED_THE_WHOLE_LADDER };
+    delete older.rungs;
+
+    assert.equal(parseBrowserArmState(vodArmState({ vod: older })).vod?.rungs, null);
   });
 
-  it('refuses a recording that stops well short of the broadcast', () => {
-    assert.match(String(wholeBroadcastRefusal(PLAYED, 120)), /cannot reach the end of what was broadcast/);
+  /** A rung neither the player nor its own feed produced a playlist for is a reading, so it parses. */
+  it('reads a rung whose playlist nothing produced', () => {
+    const unread = {
+      ...PLAYED_THE_WHOLE_LADDER,
+      rungs: [{ height: 720, segments: null, durationS: null, lastSegmentRef: null, readFrom: null }],
+    };
+
+    assert.deepEqual(parseBrowserArmState(vodArmState({ vod: unread })).vod?.rungs, [
+      { height: 720, segments: null, durationS: null, lastSegmentRef: null, readFrom: null },
+    ]);
+  });
+});
+
+/**
+ * ⛔⛔⛔ An identity per rung, and the reason it is not a length.
+ *
+ * This compared the player's duration against a segment COUNT times the DECLARED segment length,
+ * inside two seconds of tolerance, until 2026-09-03. SRS's segment counter runs on across broadcasts,
+ * so the count also picked up the previous broadcast's stragglers: on 2026-09-02 one line from a
+ * broadcast that had ended eleven seconds earlier made a complete four rung recording read as 2.4s
+ * short, and V4 was the only red of the sitting. The nine passes before it landed anywhere from 0.3s
+ * over to exactly on the tolerance, so the check was a coin toss rather than a rule.
+ */
+describe('whether the recording is the whole broadcast', () => {
+  const SHIPPED = [1080, 720, 480, 360];
+  const published = (overrides: Record<number, string | null> = {}): LastPublishedByRungHeight =>
+    new Map(SHIPPED.map((height) => [height, height in overrides ? overrides[height] : lastSegmentRefFor(height)]));
+
+  it('accepts a recording whose every rung ends at the last segment the uploader published', () => {
+    assert.equal(wholeBroadcastRefusal(PLAYED, published()), null);
   });
 
-  /** Nothing to compare against where there is no duration, and the timeline refusal already said so. */
-  it('says nothing where there was no duration to compare', () => {
-    assert.equal(wholeBroadcastRefusal(cameBack({ durationS: null }), 120), null);
+  /** ⭐⭐ The straggler case, which is the one the seconds comparison got wrong on a complete recording. */
+  it('names the rung that ends before the uploader did, and only that rung', () => {
+    const refusal = String(wholeBroadcastRefusal(PLAYED, published({ 1080: 'f'.repeat(64) })));
+
+    assert.match(refusal, /the 1080p rung ends at 1080108010/);
+    assert.match(refusal, /31 segment\(s\)/);
+    assert.match(refusal, /cannot reach the end of what was broadcast/);
+    assert.doesNotMatch(refusal, /720p|480p|360p/);
+  });
+
+  /** A recording that plays perfectly at every rung it kept, and lost one of the four it was published as. */
+  it('names a rung the deployment published and the recording does not carry', () => {
+    const withoutTheTop = cameBack({ rungs: PLAYED.rungs!.filter((rung) => rung.height !== 1080) });
+
+    const refusal = String(wholeBroadcastRefusal(withoutTheTop, published()));
+    assert.match(refusal, /carries no 1080p rung and the deployment published one/);
+    assert.match(refusal, /720p, 480p, 360p/);
+  });
+
+  /**
+   * ⛔ A reading nobody took, said in those words. A browser image built before `vod.rungs` existed
+   * writes every other field intact, so a default here would report the recording as whole on the
+   * strength of nothing.
+   */
+  it('refuses an artifact whose driver predates the reading rather than passing it', () => {
+    const refusal = String(wholeBroadcastRefusal(cameBack({ rungs: null }), published()));
+
+    assert.match(refusal, /predates the last-segment check/);
+    assert.match(refusal, /Rebuild the browser image/);
+  });
+
+  /** Neither the player nor the rung's own feed produced a playlist, which is not the same as a short one. */
+  it('says so where a rung of the recording could not be read at all', () => {
+    const unread = cameBack({
+      rungs: PLAYED.rungs!.map((rung) =>
+        rung.height === 480 ? { ...rung, segments: null, lastSegmentRef: null, readFrom: null } : rung,
+      ),
+    });
+
+    assert.match(String(wholeBroadcastRefusal(unread, published())), /480p rung's playlist reached neither/);
+  });
+
+  /** A playlist that reached the run and named no segment, which is a different shape from no playlist. */
+  it('says so where a rung of the recording names no last segment', () => {
+    const nameless = cameBack({
+      rungs: PLAYED.rungs!.map((rung) => (rung.height === 480 ? { ...rung, segments: 0, lastSegmentRef: null } : rung)),
+    });
+
+    assert.match(String(wholeBroadcastRefusal(nameless, published())), /480p rung holds 0 segment\(s\)/);
+  });
+
+  /** A declared rung the uploader never wrote a segment for, which is a fault of the broadcast. */
+  it('names a rung the uploader published nothing on', () => {
+    assert.match(String(wholeBroadcastRefusal(PLAYED, published({ 720: null }))), /no segment at all on the 720p rung/);
+  });
+
+  /** ⛔ Not a silent pass. An expectation of nothing would certify any recording at all. */
+  it('refuses where the log named no last segment on any rung', () => {
+    assert.match(String(wholeBroadcastRefusal(PLAYED, new Map())), /nothing for this recording to be the whole of/);
   });
 });
 

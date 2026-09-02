@@ -82,10 +82,12 @@ missing the cadence its own config asks for is invisible here, and is what
 length says `E2E_EXPECT_SEGMENT_S=any` once, which is also the answer for OME, whose segmenter config
 this cannot read.
 
-⚠️ **A run declaring `any` also reaches V4 without a length, so V4 records a segment-count target instead and asks everything except whether the recording covers the whole broadcast.** VOD playback checks that a recording is the whole
-broadcast, and a broadcast length cannot be computed from a segment count when no segment length was
-declared. The suite runs everything else and prints, under its observations, that the one question
-was not asked, so an `any` run keeps its VOD coverage and the totals show the suite ran.
+⚠️ **A run declaring `any` reaches V4 without a length, and since 2026-09-03 that costs it nothing.**
+V4 asks whether a recording is the whole broadcast by comparing the last segment of each rung's
+playlist against the last segment the uploader published on that rung, by reference. An identity
+needs no segment length, so an `any` run now asks every question a pinned run asks. All the
+declaration still decides is the unit V4 sizes its own recording in, seconds where it was pinned and
+segments where it was not.
 
 `e2e/suites/preflight/uploader-log-shape.test.ts` refuses a stage whose **deployed uploader** predates
 the log messages this harness parses. Every upload-side assertion is read out of the uploader's own
@@ -128,25 +130,25 @@ node is deliberately not read, it holds no upload batch, and batch utilization s
 
 ## The map
 
-| Functionality                                                                                            | Today                                                                               | Plan                                           |
-| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------- |
-| Publish, gapless segments, manifest advances                                                             | `happy-path`, green in the 2026-09-01 sittings two, three and four                  | rerun on ladder deploy                         |
-| Ladder: 4 rungs publish, one group, gapless                                                              | `abr-ladder`, never green (attempted 2026-08-27, instrument defects since fixed)    | first green pending                            |
-| Ladder survives engine restart as one ladder                                                             | `abr-engine-restart`, same status                                                   | first green pending                            |
-| One rung dies, others carry on                                                                           | both legs built: the viewer steps down (V3) and the master stops advertising it     | rerun, neither leg has run inside a full suite |
-| Uploader crash recovery                                                                                  | F, green 2026-08-03                                                                 | rerun                                          |
-| Finalize/recovery family (mid-finalize kill, whole-stack restart, corrupt entry, reconnect during drain) | H I J K, all green in sitting four 2026-09-01, H after `f2e7305`                    | rerun, H's resume path has not run live yet    |
-| Writer bee outage short and long                                                                         | A B, green 2026-08-03                                                               | rerun                                          |
-| Gateway outage, upload side                                                                              | G, green 2026-08-03                                                                 | rerun                                          |
-| Catalog live to VOD, /health lifecycle                                                                   | green 2026-08-03                                                                    | rerun                                          |
-| Two simultaneous broadcasts                                                                              | green 2026-08-03, single-rendition only                                             | ladder version planned after viewer scenarios  |
-| Viewer: live playback in a real browser                                                                  | V1, built 2026-08-28                                                                | run both profiles                              |
-| Viewer: quality switch works                                                                             | V2, built 2026-08-30, green through a gateway                                       | rerun on the 1.0s stage                        |
-| Viewer: rung goes quiet, viewer steps down instead of freezing                                           | V3, built 2026-08-30, failover armed 2026-09-01 and green live                      | rerun, it has never run with the failover on   |
-| Viewer: VOD playback                                                                                     | V4, built 2026-08-30, green three for three, asks all but broadcast length on `any` | rerun on the 1.0s stage                        |
-| Viewer: broadcast ends cleanly on screen                                                                 | V5, built 2026-08-28                                                                | rerun                                          |
-| Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, promoted 2026-08-29, first green pending                                 | run both profiles                              |
-| weeb3 actually served the bytes (arm proof)                                                              | sitting-only assertion                                                              | built into every in-browser viewer test        |
+| Functionality                                                                                            | Today                                                                                  | Plan                                           |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Publish, gapless segments, manifest advances                                                             | `happy-path`, green in the 2026-09-01 sittings two, three and four                     | rerun on ladder deploy                         |
+| Ladder: 4 rungs publish, one group, gapless                                                              | `abr-ladder`, never green (attempted 2026-08-27, instrument defects since fixed)       | first green pending                            |
+| Ladder survives engine restart as one ladder                                                             | `abr-engine-restart`, same status                                                      | first green pending                            |
+| One rung dies, others carry on                                                                           | both legs built: the viewer steps down (V3) and the master stops advertising it        | rerun, neither leg has run inside a full suite |
+| Uploader crash recovery                                                                                  | F, green 2026-08-03                                                                    | rerun                                          |
+| Finalize/recovery family (mid-finalize kill, whole-stack restart, corrupt entry, reconnect during drain) | H I J K, all green in sitting four 2026-09-01, H after `f2e7305`                       | rerun, H's resume path has not run live yet    |
+| Writer bee outage short and long                                                                         | A B, green 2026-08-03                                                                  | rerun                                          |
+| Gateway outage, upload side                                                                              | G, green 2026-08-03                                                                    | rerun                                          |
+| Catalog live to VOD, /health lifecycle                                                                   | green 2026-08-03                                                                       | rerun                                          |
+| Two simultaneous broadcasts                                                                              | green 2026-08-03, single-rendition only                                                | ladder version planned after viewer scenarios  |
+| Viewer: live playback in a real browser                                                                  | V1, built 2026-08-28                                                                   | run both profiles                              |
+| Viewer: quality switch works                                                                             | V2, built 2026-08-30, green through a gateway                                          | rerun on the 1.0s stage                        |
+| Viewer: rung goes quiet, viewer steps down instead of freezing                                           | V3, built 2026-08-30, failover armed 2026-09-01 and green live                         | rerun, it has never run with the failover on   |
+| Viewer: VOD playback                                                                                     | V4, built 2026-08-30, judges completeness on each rung's last segment since 2026-09-03 | rerun on the 1.0s stage                        |
+| Viewer: broadcast ends cleanly on screen                                                                 | V5, built 2026-08-28                                                                   | rerun                                          |
+| Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, promoted 2026-08-29, first green pending                                    | run both profiles                              |
+| weeb3 actually served the bytes (arm proof)                                                              | sitting-only assertion                                                                 | built into every in-browser viewer test        |
 
 ### Reading the letters
 

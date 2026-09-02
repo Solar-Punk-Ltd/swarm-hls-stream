@@ -13,6 +13,7 @@ import {
   announcedSessionTopics,
   announcedVodFinalizeCount,
   ladderRungs,
+  lastUploadedSegmentRefByRung,
   publishedRenditions,
   segmentIndicesByStream,
   segmentUploads,
@@ -171,7 +172,7 @@ describe('segmentUploads', () => {
   it('reads the JSON format', () => {
     const log = jsonLine(segmentUploaded('live/stream', 7, 'ref'));
 
-    assert.deepEqual(segmentUploads(log), [{ streamId: 'live/stream', index: 7 }]);
+    assert.deepEqual(segmentUploads(log), [{ streamId: 'live/stream', index: 7, reference: 'ref' }]);
   });
 
   /**
@@ -311,5 +312,58 @@ describe('segmentIndicesByStream', () => {
 
     assert.deepEqual(byStream.get('live/stream_720p'), [35, 36]);
     assert.deepEqual(byStream.get('live/stream_360p'), [41]);
+  });
+});
+
+/**
+ * ⛔⛔ What a finished recording is judged complete against, and why it is the LAST line per rung.
+ *
+ * SRS's segment counter runs on across broadcasts, so a log window opened at a broadcast's start also
+ * carries the previous broadcast's final segments at indices that continue the sequence. Anything
+ * counting lines in that window counts a neighbour's stragglers as this broadcast's media, and on
+ * 2026-09-02 exactly one such line made a complete four rung recording read as 2.4s short.
+ */
+describe('lastUploadedSegmentRefByRung', () => {
+  it('takes the last reference each rung published, not the first', () => {
+    const log = [
+      segmentUploaded('live/stream_1080p', 823, 'ref-823'),
+      segmentUploaded('live/stream_360p', 823, 'ref-360-823'),
+      segmentUploaded('live/stream_1080p', 824, 'ref-824'),
+    ]
+      .map(textLine)
+      .join('\n');
+
+    const byRung = lastUploadedSegmentRefByRung(log);
+
+    assert.equal(byRung.get('1080p'), 'ref-824');
+    assert.equal(byRung.get('360p'), 'ref-360-823');
+  });
+
+  /** ⭐ The straggler. It precedes this broadcast's own segments, so the last line is still ours. */
+  it('is not reached by a straggler from the broadcast before', () => {
+    const log = [
+      segmentUploaded('live/stream_1080p', 823, 'the-previous-broadcasts-last-segment'),
+      segmentUploaded('live/stream_1080p', 824, 'ours-first'),
+      segmentUploaded('live/stream_1080p', 838, 'ours-last'),
+    ]
+      .map(textLine)
+      .join('\n');
+
+    assert.equal(lastUploadedSegmentRefByRung(log).get('1080p'), 'ours-last');
+  });
+
+  it('reads the JSON format too, since a deployment chooses which one it writes', () => {
+    const log = jsonLine(segmentUploaded('live/stream_480p', 12, 'ref-12'));
+
+    assert.equal(lastUploadedSegmentRefByRung(log).get('480p'), 'ref-12');
+  });
+
+  /** A stream id naming no rung is not a rung of a ladder, and keying it by its whole id would say it was. */
+  it('leaves out a stream whose id names no rung', () => {
+    const log = [segmentUploaded('live/demo', 3, 'ref-3'), segmentUploaded('live/stream_720p', 3, 'ref-720')]
+      .map(textLine)
+      .join('\n');
+
+    assert.deepEqual([...lastUploadedSegmentRefByRung(log).keys()], ['720p']);
   });
 });

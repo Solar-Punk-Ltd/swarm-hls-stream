@@ -247,6 +247,7 @@ browser image on the host and the settings under **Saying whether a real browser
 | file                             | proves                                                                                                                             |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `viewer/live-playback`           | (V1) a real viewer keeps up with a live broadcast, decodes a picture, errors at nothing, and is the byte-source arm it is filed as |
+| `viewer/vod-playback`            | (V4) a finished recording plays through, offers every rung it was published as, and every rung ends at the uploader's last segment |
 | `viewer/broadcast-ended`         | (V5) the broadcaster stops under a watching viewer and the viewer is told, rather than left on a frozen last frame                 |
 | `viewer/crash-gateway-outage`    | (V6) the gateway is taken away for 20s: the picture plays out its buffer, says why it stopped, and comes back on its own           |
 | `viewer/crash-uploader-killed`   | (V7) the uploader is killed: the viewer waits **in silence**, which is issue #100, and resumes when it answers again               |
@@ -310,7 +311,14 @@ Which command supports which:
 order a sitting's arms must run in, so the shell driver reads the rule instead of deriving its own.
 
 `browser:vod` plays a finished recording through the shipped client and, by default, seeks around
-inside it. Set `BROWSER_VOD_SQUEEZE_KBPS` and it stops seeking and squeezes instead: it plays from the
+inside it. It also writes `vod.rungs`, one row per level the player parsed out of the master, each
+carrying the rung's height, its segment count, its duration and the reference of its LAST segment.
+That last reference is what V4 judges completeness on: a rung is the whole broadcast when it ends at
+the segment the uploader published last on it, with no tolerance. ⚠️ hls.js loads a level playlist
+only when it plays that level, so most rungs are read from their own feed through the gateway
+instead, and each row says which of the two answered.
+
+Set `BROWSER_VOD_SQUEEZE_KBPS` and it stops seeking and squeezes instead: it plays from the
 start, caps the tab's download part way through, lifts the cap and samples the three stretches either
 side, sized by `BROWSER_VOD_SETTLE_S` (45), `BROWSER_VOD_SQUEEZE_S` (60) and `BROWSER_VOD_RECOVER_S`
 (60). A recording is the control a squeezed live watch never had, because a capped live viewer is also

@@ -117,10 +117,11 @@ rather than freezing, and that the overlay does not claim the broadcast ended.
 
 `suites/viewer/vod-playback.test.ts`, on an extended `pnpm browser:vod`.
 
-⚠️ **It does not run at all on a stage that pins no segment length.** A run declaring
-`E2E_EXPECT_SEGMENT_S=any` skips the whole file, because a broadcast length cannot be computed from a
-segment count without one, and a skip is the honest answer where the arithmetic has no input. So a
-green suite on an `any` run is a suite that never asked this question.
+✅ **It runs on a stage that pins no segment length, and asks every question there.** Completeness is
+an identity since 2026-09-03: each rung of the recording has to end at the last segment the uploader
+published on that rung, by reference. A reference needs no segment length, so `E2E_EXPECT_SEGMENT_S=any`
+costs this file nothing. It skipped the whole file before that, then ran everything but the length
+question, and both of those readings are gone.
 
 ⛔ **The gap it closes.** A ladder recording whose master resolved and whose upper rung playlists did
 not plays perfectly at its bottom rung: it starts, the duration is finite, the seeks land, the

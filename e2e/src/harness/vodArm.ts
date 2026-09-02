@@ -22,17 +22,7 @@
  * rule nothing checks until a paid broadcast is already burning.
  */
 
-import { type BrowserArmResult, type VodResult } from './browser.js';
-
-/**
- * How much shorter than the broadcast a recording may be and still be the whole of it.
- *
- * ⭐ A tolerance rather than an equality, and it is not a performance threshold: the publisher is
- * stopped between segment boundaries, so the last partial segment is never in the recording and the
- * broadcast's own wall clock includes the seconds before the first segment was cut. One segment
- * either side is the arithmetic of where the boundaries fall.
- */
-export const RECORDING_SHORTFALL_TOLERANCE_S = 2;
+import { type BrowserArmResult, type VodResult, type VodRung } from './browser.js';
 
 /**
  * Why this run is not a real player opening a finished recording, or null.
@@ -115,28 +105,103 @@ export function wholeLadderRefusal(vod: VodResult, expected: readonly number[]):
 }
 
 /**
+ * The last segment the uploader published on each rung, keyed by that rung's height in the ladder.
+ *
+ * A null value is a rung the deployment declares that the uploader published nothing on at all, which
+ * is a fault of its own and not the same as a rung missing from the recording.
+ */
+export type LastPublishedByRungHeight = ReadonlyMap<number, string | null>;
+
+/**
  * Why the recording is not the whole broadcast, or null.
  *
- * Measured against how long the broadcast actually ran, which the suite knows because it started and
- * stopped the publisher. ⛔ Not against a fixed length: a recording that is complete for a short
- * broadcast and truncated for a long one is a defect that only shows against the real duration.
+ * ## ⛔⛔⛔ Why this is an identity and not a length
+ *
+ * Until 2026-09-03 this compared the player's duration against a segment COUNT off the uploader's log
+ * times the DECLARED segment length, inside two seconds of tolerance. That is an estimate held
+ * against a measurement, and it was wrong in both directions.
+ *
+ * SRS's segment counter runs on across broadcasts, so a log window opened at a broadcast's start also
+ * holds the previous broadcast's last segments at indices that continue the sequence. On 2026-09-02
+ * one such straggler, from a broadcast that had ended eleven seconds earlier, made a complete four
+ * rung recording read as 2.4s short and V4 was the only red of the sitting. The other direction is
+ * the partial fragment a clean stop always leaves: counting it as a full segment inflates the
+ * estimate, which is what the tolerance was there to absorb. Across the nine passes before that the
+ * gap ran from 0.3s over to exactly 2.0s, against a tolerance of 2, so the check was a coin toss.
+ *
+ * A reference is the segment. Comparing the last one in each rung's playlist against the last one the
+ * uploader published on that rung needs no tolerance, no segment length, and no arithmetic that a
+ * neighbouring broadcast can reach.
+ *
+ * ⛔ Per rung, because one rung of four stopping is this deployment's signature failure. A recording
+ * whose 1080p playlist ends four segments early plays perfectly at 360p.
  */
-export function wholeBroadcastRefusal(vod: VodResult, broadcastS: number): string | null {
-  if (vod.durationS === null) {
+export function wholeBroadcastRefusal(vod: VodResult, lastPublished: LastPublishedByRungHeight): string | null {
+  const rungs = vod.rungs;
+  if (rungs === null) {
+    return (
+      'this artifact carries no per-rung reading, so the browser image that wrote it predates the ' +
+      'last-segment check and cannot say whether the recording is the whole broadcast. Rebuild the ' +
+      'browser image on the host rather than reading this run as a complete recording'
+    );
+  }
+  if (lastPublished.size === 0) {
+    return (
+      'the uploader published no last segment on any rung of the declared ladder, so there is nothing ' +
+      'for this recording to be the whole of. That is the log window or the rung names, not the recording'
+    );
+  }
+
+  const reasons = [...lastPublished].flatMap(([height, published]) => {
+    const reason = rungShortfall(rungs, height, published);
+    return reason === null ? [] : [reason];
+  });
+  if (reasons.length === 0) {
     return null;
   }
-  // ⛔ Rounded to the millisecond before comparing. Both figures are floats read off different
-  // clocks, and 64.4 - 62.4 is 2.0000000000000036 in IEEE 754, so an exact boundary comparison
-  // refuses a recording that is exactly within tolerance. A paid run is not the place to discover that.
-  const shortfall = Math.round((broadcastS - vod.durationS) * 1000) / 1000;
-  if (shortfall <= RECORDING_SHORTFALL_TOLERANCE_S) {
-    return null;
+  return `${reasons.join('. ')}. Judged on the identity of each rung's last segment, with no tolerance`;
+}
+
+function rungShortfall(rungs: readonly VodRung[], height: number, published: string | null): string | null {
+  if (published === null) {
+    return `the uploader published no segment at all on the ${height}p rung, so that rung holds no broadcast`;
   }
-  return (
-    `the broadcast ran ${broadcastS.toFixed(1)}s and the recording is ${vod.durationS.toFixed(1)}s, which is ` +
-    `${shortfall.toFixed(1)}s short against a tolerance of ${RECORDING_SHORTFALL_TOLERANCE_S}s. A viewer ` +
-    'opening this recording cannot reach the end of what was broadcast'
-  );
+
+  const rung = rungs.find((candidate) => candidate.height === height);
+  if (rung === undefined) {
+    const offered = rungs.map((candidate) =>
+      candidate.height === null ? 'a rung with no height' : `${candidate.height}p`,
+    );
+    return (
+      `this recording carries no ${height}p rung and the deployment published one. It offers ` +
+      `${offered.join(', ') || 'no rungs at all'}`
+    );
+  }
+  if (rung.segments === null) {
+    return (
+      `the ${height}p rung's playlist reached neither the player nor a read of its own feed, so nothing ` +
+      'here says how much of the broadcast it holds'
+    );
+  }
+  if (rung.lastSegmentRef === null) {
+    return (
+      `the ${height}p rung holds ${rung.segments} segment(s) and names no last reference, so its ` +
+      'playlist reached this run in a shape nothing can be judged against'
+    );
+  }
+  if (rung.lastSegmentRef !== published) {
+    return (
+      `the ${height}p rung ends at ${shortRef(rung.lastSegmentRef)} over ${rung.segments} segment(s) and ` +
+      `the uploader published ${shortRef(published)} last on it, so a viewer on that rung cannot reach ` +
+      'the end of what was broadcast'
+    );
+  }
+  return null;
+}
+
+/** Enough of a reference to identify a segment. The artifact keeps every character of it. */
+function shortRef(reference: string): string {
+  return `${reference.slice(0, 12)}…`;
 }
 
 /** Why nothing was actually decoded, or null. A recording can start, report a duration and show nothing. */

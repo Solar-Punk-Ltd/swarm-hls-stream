@@ -418,12 +418,34 @@ export function rungArmState(overrides: ArmStateOverrides = {}): unknown {
   });
 }
 
-/** A recording that played whole: finite timeline, the full ladder, seekable to the end. */
+/**
+ * The reference the fixture recording's last segment carries on one rung.
+ *
+ * Distinct per rung and shaped like a real one, 64 lowercase hex, so a refusal naming the wrong rung
+ * is visible rather than plausible.
+ */
+export function lastSegmentRefFor(height: number): string {
+  return `${height}`.padStart(4, '0').repeat(16);
+}
+
+/** The four rungs of the fixture recording, each ending where the uploader stopped. */
+const RECORDED_RUNGS: readonly Record<string, unknown>[] = [1080, 720, 480, 360].map((height, index) => ({
+  height,
+  segments: 31,
+  durationS: 62.0,
+  lastSegmentRef: lastSegmentRefFor(height),
+  // The played rung is the player's own parse and the rest are read off their own feeds, which is
+  // what a healthy run looks like: hls.js loads a level playlist only when it plays that level.
+  readFrom: index === 0 ? 'player' : 'feed',
+}));
+
+/** A recording that played whole: finite timeline, the full ladder, every rung ending where it should. */
 export const PLAYED_THE_WHOLE_LADDER: Record<string, unknown> = {
   openError: null,
   durationS: 62.4,
   seekableToS: 62.4,
   ladderHeights: [1080, 720, 480, 360],
+  rungs: RECORDED_RUNGS,
 };
 
 /** A playback arm's state file, which is a watch's plus the section only `browser/vod.ts` writes. */

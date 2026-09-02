@@ -89,13 +89,26 @@ export function segmentRefsOf(text: string): string[] {
     .filter((line) => SEGMENT_REF.test(line));
 }
 
-export function parseRungManifest(rung: RungName, topicHex: string, text: string): ParsedRungManifest {
-  const lines = text.split('\n').map((line) => line.trim());
-  const refs = segmentRefsOf(text);
-  const durations = lines
+/**
+ * Every `#EXTINF` an m3u8 declares, in playlist order.
+ *
+ * Its own function because two readers want different things from the same list: a probe wants the
+ * typical segment length, which says which stage a recording belongs to, and `browser:vod` wants the
+ * sum, which is how long the rung actually holds.
+ */
+export function segmentSecondsOf(text: string): number[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
     .filter((line) => line.startsWith(SEGMENT_DURATION_TAG))
     .map((line) => taggedNumber([line], SEGMENT_DURATION_TAG))
     .filter((duration): duration is number => duration !== null);
+}
+
+export function parseRungManifest(rung: RungName, topicHex: string, text: string): ParsedRungManifest {
+  const lines = text.split('\n').map((line) => line.trim());
+  const refs = segmentRefsOf(text);
+  const durations = segmentSecondsOf(text);
 
   return {
     manifest: {

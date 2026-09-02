@@ -3,11 +3,12 @@ import { after, before, describe, it } from 'node:test';
 
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
-import { runBrowserArm } from '../../src/harness/browser.js';
+import { runBrowserArm, type VodRung } from '../../src/harness/browser.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedSessionTopics,
   announcedVodFinalizeCount,
+  lastUploadedSegmentRefByRung,
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
@@ -21,6 +22,7 @@ import {
 } from '../../src/harness/viewer.js';
 import {
   finishedTimelineRefusal,
+  type LastPublishedByRungHeight,
   pictureMovedRefusal,
   playedBackRefusal,
   vodArmRefusal,
@@ -49,8 +51,8 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  * ## What this asserts
  *
  * That the recording played, that the player was handed a FINISHED timeline rather than a live one,
- * that the recording offers every rung the deployment published, that the timeline covers the whole
- * broadcast, and that a picture actually moved.
+ * that the recording offers every rung the deployment published, that every rung ends at the last
+ * segment the uploader published on it, and that a picture actually moved.
  *
  * ## ⛔⛔ Why the recording is found through the CATALOG
  *
@@ -67,27 +69,35 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  *
  * ## ⛔ Why this publishes its own broadcast rather than reusing one
  *
- * The suite has to know how long the broadcast ran to say whether the recording is the whole of it.
- * A recording found lying on the stack has no known length, so `wholeBroadcastRefusal` could not be
- * asked at all, and a truncated recording would pass on every other reading.
+ * The suite has to know what the broadcast published to say whether the recording is the whole of it.
+ * A recording found lying on the stack has no log window of its own, so nothing names the segment
+ * each rung should end at, and a truncated recording would pass on every other reading.
+ *
+ * ## ⛔⛔⛔ Completeness is an identity, not a length
+ *
+ * Until 2026-09-03 this compared the player's duration against a segment count times the declared
+ * segment length, inside a two second tolerance, and it was a coin toss. SRS's segment counter runs
+ * on across broadcasts, so the count picked up the previous broadcast's stragglers: on 2026-09-02 one
+ * such line, from a broadcast that had ended eleven seconds before this one started, made a complete
+ * four rung recording read as 2.4s short and V4 was the only red of the sitting. Now each rung of the
+ * recording is held against the LAST SEGMENT the uploader published on that rung, by reference, with
+ * no tolerance. See {@link wholeBroadcastRefusal}.
  *
  * ## ⛔ No timing is asserted
  *
  * Owner ruling of 2026-08-29. How fast a seek landed is measured, printed and filed.
  *
- * ## ⛔⛔ A run that pinned no segment length still runs this file
+ * ## ⛔⛔ A run that pinned no segment length still runs this file, and now asks every question
  *
- * `E2E_EXPECT_SEGMENT_S=any` is a legal declaration rather than a gap, and this file used to answer
- * it by skipping the whole describe. That is the silent shrink this suite's own gates exist to
- * prevent: a describe-level skip prints `# tests 0, # skipped 0, # fail 0`, exit 0, so a run where a
- * real Chrome never opened a recording reads character for character like one where it did.
+ * `E2E_EXPECT_SEGMENT_S=any` is a legal declaration rather than a gap, and this file once answered it
+ * by skipping the whole describe. That is the silent shrink this suite's own gates exist to prevent: a
+ * describe-level skip prints `# tests 0, # skipped 0, # fail 0`, exit 0, so a run where a real Chrome
+ * never opened a recording reads character for character like one where it did.
  *
- * What `any` actually costs is ONE of the questions here. Every length reading starts from a segment
- * COUNT off the uploader's log multiplied by how long a segment is, and with no declared length there
- * is no second factor, so {@link wholeBroadcastRefusal} cannot be asked. So it is not asked, the run
- * says so in one line beside the observations, and every other assertion runs exactly as it does on a
- * numeric run. The recording is sized in segments instead of seconds, at
- * {@link RECORD_SEGMENTS_WHEN_UNPINNED}.
+ * It then cost one question instead, because the old length check needed a segment length to turn a
+ * count into seconds. The last-segment check needs neither, so an `any` run now asks everything a
+ * numeric run asks. All the declaration still decides is the unit this file records in, seconds where
+ * it was pinned and segments at {@link RECORD_SEGMENTS_WHEN_UNPINNED} where it was not.
  *
  * ⛔ Requires a deployed profile, a funded stamp and the browser image on the host, like every suite
  * under `suites/`. Nothing in CI runs these.
@@ -108,11 +118,9 @@ const RECORD_MEDIA_SECONDS = 30;
  * How much to record when the run declared no segment length, counted in SEGMENTS on the widest rung.
  *
  * ⛔ A count is the wrong unit for the numeric path and the only unit available here. The two stages
- * cut at different lengths, so 30 segments is 15s of media on one and 60s on the other, and a
- * recording judged against a broadcast length would be judged against a different broadcast on each.
- * Nothing here judges one: {@link wholeBroadcastRefusal} is the single question a run without a
- * declared length does not ask, and every other assertion is indifferent to how long the recording is
- * as long as it is long enough to seek around in.
+ * cut at different lengths, so 30 segments is 15s of media on one and 60s on the other. Nothing here
+ * is judged against a length: {@link wholeBroadcastRefusal} compares references, and every other
+ * assertion is indifferent to how long the recording is as long as it is long enough to seek around in.
  *
  * ⭐ 30 rather than a handful, for {@link RECORD_MEDIA_SECONDS}'s reason: a recording that fits whole
  * in the player's buffer answers nothing about retrieval, and a missing segment out of three is
@@ -274,18 +282,12 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
     );
     assert.equal(shortLadder, null, `this recording is not the ladder it was published as: ${shortLadder}`);
 
-    // ⛔ The one question a run that pinned no segment length cannot put. Its answer needs the
-    // broadcast's own length, which is a segment count times a declared segment length, and this run
-    // has no second factor. It is skipped rather than guessed at, and said out loud below: a
-    // recording judged against a length nobody chose passes or fails on the guess.
-    //
-    // ⭐ The length comes from the segments the uploader says it published, rather than from wall
-    // clock. Wall clock includes the settle before the first segment and the drain after the last,
-    // and neither is media a viewer can reach.
-    if (pinsSegmentLength) {
-      const truncated = wholeBroadcastRefusal(vod, mediaSecondsPublished(finalLog));
-      assert.equal(truncated, null, `this recording is not the whole broadcast: ${truncated}`);
-    }
+    // ⛔⛔ Asked on every run, including one that declared no segment length, because a reference
+    // needs no arithmetic. The rung each reference belongs to comes from the uploader's own log, and
+    // the LAST line per rung wins, which is what a straggler from the broadcast before cannot reach.
+    const published = lastPublishedByRungHeight(finalLog);
+    const truncated = wholeBroadcastRefusal(vod, published);
+    assert.equal(truncated, null, `this recording is not the whole broadcast: ${truncated}`);
 
     const nothingShown = pictureMovedRefusal(result);
     assert.equal(nothingShown, null, `nothing was actually shown: ${nothingShown}`);
@@ -297,15 +299,50 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
         `${pinsSegmentLength ? `, ${mediaSecondsPublished(finalLog).toFixed(1)}s of media` : ''} over ` +
         `${wallS.toFixed(1)}s of wall clock, and the recording reports ${vod.durationS?.toFixed(1)}s`,
     );
-    if (!pinsSegmentLength) {
+    // ⭐ Per rung, off the recording itself rather than off the count times a nominal length. The
+    // per-rung sums are what the old estimate was standing in for, and they disagreed with it.
+    for (const rung of vod.rungs ?? []) {
       console.log(
-        `  the broadcast-length question was not asked, because this run declares ` +
-          `E2E_EXPECT_SEGMENT_S=${SEGMENT_ANY} and a segment count cannot be turned into seconds ` +
-          'without one. Every other assertion in this case ran',
+        `  ${rung.height === null ? 'a rung with no height' : `${rung.height}p`}: ` +
+          `${rung.segments ?? 'unknown'} segment(s) in the recording, ` +
+          `${rung.durationS === null ? 'no duration' : `${rung.durationS.toFixed(1)}s`}, read from ` +
+          `${rung.readFrom ?? 'neither the player nor its own feed'}, and its last segment ` +
+          `${lastSegmentVerdict(rung, published)}`,
       );
     }
   });
 });
+
+/**
+ * The last segment the uploader published on each rung, keyed by the rung's height in the ladder.
+ *
+ * ⛔ Every rung the deployment DECLARES is in the map, published or not, so a rung the uploader never
+ * wrote a segment for refuses rather than quietly leaving the expectation one rung shorter.
+ *
+ * ⛔ The join is by rung NAME, which is the only name both sides share: the log says
+ * `live/stream_1080p` and the ladder says `1080p:1920:1080:5000`, while the recording's rungs carry a
+ * height off the master's RESOLUTION. The ladder is what maps one to the other.
+ */
+function lastPublishedByRungHeight(log: string): LastPublishedByRungHeight {
+  const byRung = lastUploadedSegmentRefByRung(log);
+  return new Map(cfg.abrLadder.map((rung) => [rung.height, byRung.get(rung.name) ?? null]));
+}
+
+/**
+ * What the observation line says about one rung's last segment.
+ *
+ * ⛔ Three answers rather than two. A rung of the recording that the deployment does not declare was
+ * never asked anything, and printing that as a mismatch would report a rung nothing refused as a
+ * fault, right under an assertion that had just passed.
+ */
+function lastSegmentVerdict(rung: VodRung, published: LastPublishedByRungHeight): string {
+  if (rung.height === null || !published.has(rung.height)) {
+    return 'was asked nothing, because the deployment declares no rung at this height';
+  }
+  return rung.lastSegmentRef === published.get(rung.height)
+    ? "matches the uploader's last"
+    : "does NOT match the uploader's last";
+}
 
 /**
  * How many segments the broadcast published, off the uploader's own log.
