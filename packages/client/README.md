@@ -106,6 +106,43 @@ Standard hls.js expects static manifest URLs. On Swarm, every manifest update pr
 
 5. **`fragmentRequested` and `fragmentSettled` are a parsed contract, not debug output.** The loaders write those two console lines, `packages/shared/src/clientLog.ts` composes them and owns their wording, and `e2e/src/browser/fragmentRequests.ts` reads them back. They are the only thing that lets a sitting say whether a down-switch the player asked for actually completed or starved. Rewording either one throws nothing and fails nothing: the e2e quality arm's reading simply comes back empty, and the run reports on a viewer it could not see.
 
+## weeb-3 runs in a SharedWorker
+
+Built with `VITE_BROWSER_FETCH_BACKEND=weeb3`, the client fetches segment bytes from a Swarm node
+running in the viewer's own tab instead of from a Bee gateway. That node is **not in the page**. From
+`@lat-murmeldjur/weeb_3` 0.0.341001 the `Weeb3No103` class is a facade with no node behind it, and
+every call it makes, `retrieveBytes` included, is passed to a SharedWorker. **There is no in-page mode
+to fall back to**, so if the worker cannot start, a viewer on this backend gets no Swarm at all and the
+only symptom is `the in-tab node did not reach the network: SharedWorker request timed out`.
+
+A SharedWorker script has to come from the page's own origin, so the client serves the package's
+runtime itself. Four things go into one directory, because they resolve relative to each other:
+
+| Served as                | What it is                                                        |
+| ------------------------ | ----------------------------------------------------------------- |
+| `/weeb-3/worker.js`      | The worker script. `Weeb3FetchBackend` passes this URL explicitly |
+| `/weeb-3/weeb_3.js`      | The wasm-bindgen glue, which `worker.js` imports                  |
+| `/weeb-3/weeb_3_bg.wasm` | 3.9 MB of node, which the glue fetches beside itself              |
+| `/weeb-3/snippets/**`    | Two files the glue imports by relative path                       |
+
+`scripts/copy-weeb3-runtime.mjs` copies them out of `node_modules` into `public/weeb-3/`, which Vite
+copies verbatim into `dist/`. It runs from `prebuild` and `predev`, so a plain `pnpm build` or
+`pnpm dev` is enough. The directory is generated and gitignored: the lockfile is the only thing that
+says which version a deployment serves, and the copy refuses rather than serving a partial runtime if
+a release stops shipping one of the four.
+
+In production `deploy/client-nginx.conf.template` answers `/weeb-3/` off the filesystem with
+`try_files $uri =404`. That block is load-bearing. Without it the prefix inherits the SPA fallback,
+`worker.js` comes back as the app's own HTML at 200, and the failure surfaces as the timeout above
+rather than as a missing file. The nginx image already maps `application/wasm`, which the glue needs
+for `WebAssembly.instantiateStreaming`.
+
+The worker URL is origin-absolute, so a deployment under a sub-path has to serve `/weeb-3/` at the
+domain root as well.
+
+`/weeb-3/service.js` is deliberately **not** served. It exists for weeb-3's own player via
+`attachStream`, which would measure weeb-3's hls.js rather than this client's.
+
 ## Project Structure
 
 ```
