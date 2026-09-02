@@ -356,6 +356,73 @@ chequebook counters through the harness instead of over ssh, which is the only w
 node-metrics gate from inside the browser container on the deployment host, and zero spend there is
 the gateway-less claim proved from the nodes' side.
 
+### ⛔⛔⛔ The cap and the recorder attach to the worker targets, and until 2026-09-02 they did not
+
+**The in-tab node runs entirely inside a SharedWorker.** Since weeb-3 0.0.341001 the client loads it
+from `/weeb-3/worker.js` and there is no in-page mode, so every WebSocket the node opens belongs to
+the **worker** target rather than to the page. Two of this harness's instruments were built before
+that and both went quiet without saying so:
+
+- **The cap.** `squeezeDownload` applied `Network.emulateNetworkConditions` on the page's own debug
+  session, so it capped nothing the node does.
+- **The recorder.** `webSocketTraffic.ts` listens on Playwright's `page.on('websocket')`, which is
+  page scoped too, so it counted nothing the node moved.
+
+`src/browser/workerTargets.ts` closes both. It opens a second, raw CDP client to Chrome's own
+debugging endpoint, auto-attaches to every worker target the browser makes, records their frames into
+the same `WebSocketTraffic` every existing reader already sums, and applies the emulation to every
+attached session **including ones that attach after a squeeze started**, which is what a respawned
+worker produces. A raw client rather than Playwright's own because a flattened child session is
+addressed by putting its `sessionId` on every message and `CDPSession.send(method, params)` exposes
+no such argument, verified against the pinned playwright-core 1.61.1. Chrome is launched with
+`--remote-debugging-port` on a port the harness picks, through `launchViewerWatchingWorkers`, and
+`BROWSER_CHROME_PATH` still chooses the binary.
+
+Only worker-type sessions get `Network.enable`, so no byte is counted twice: Playwright keeps the
+page's sockets and this keeps the workers'. Page targets are attached anyway, purely to carry the
+auto-attach down to their own dedicated workers.
+
+#### The two refusals, and what each says
+
+A cap that cannot prove itself is the failure this exists to stop repeating, so neither instrument is
+believed. `src/browser/capProof.ts` holds both, and both are about the **instrument** rather than the
+product, which is why they refuse where the owner ruling of 2026-08-29 forbids a suite to gate on a
+timing.
+
+- **The cap proof.** One retrieval of a known-size payload is timed under the cap, through the path
+  that arm's video travels: `__swarmFetchBackendSwitch.retrieveBytes` on an in-tab arm and a plain
+  fetch of a segment from inside the page on a gateway one. Below four fifths of how long that
+  payload takes at the cap, the run refuses with **"the cap did not reach the node"**, naming the
+  bytes, the time and the floor. A run with nothing to time refuses too, as **"the cap could not
+  prove itself"**, because the absence of the proof is exactly the failure.
+- **The recorder proof.** Those payload bytes crossed a wire, so an inbound total below them means
+  sockets the recorder never had. Such a run refuses with **"the recorder is blind"** and never
+  prints the zero as a reading. The probe's H0 now reads this first: a run whose recorder was not
+  shown to see says **"H0 cannot hold: instrument blind, run refused"** where it used to print a
+  pass.
+
+weeb-3's own page publishes no retrieval handle and no player handle, so `browser:weeb3-native` gets
+the **one-sided** pair instead: inbound over the cap refuses, and a phase that gained media while the
+recorder counted nothing refuses. Its report and its console line both say that passing them is not
+evidence the cap landed, because an idle node and a blind recorder read a cap identically, and that
+zero media beside zero bytes is a starved viewer rather than a fault.
+
+`PROBE_CAP_MODE=external` applies no emulation and takes the timed proof anyway, judged against the
+rate `shape-container-ingress.sh` proved rather than the label. The two are not redundant: the shaper
+measured a curl from the container's own namespace and the proof measures the node.
+
+#### ⛔ The two readings these void
+
+- **The arm 3 probe, `docs/bench/in-tab-throttle-probe-2026-09-02T10-53-22-247Z.md`.** Under a
+  "2800 kbps cap", which carries 350,000 bytes/s, every 225 KB retrieval completed in 0.1 s and every
+  1.2 MB one in 0.3 to 0.4 s. The physical floors are 0.64 s and 3.3 s, so the link was never held
+  down. Every byte column in it reads **0** while those retrievals succeeded, and its H0 check
+  declared "H0 holds" on the strength of that zero. **A zero from a blind instrument passed as a
+  healthy reading.** Quote nothing from it.
+- **The `browser:weeb3-native` squeeze runs of 2026-09-02.** His page runs the node in a SharedWorker
+  exactly as ours does, so its "1.000x under the cap" is void for the same two reasons. Both faults
+  were ours. weeb-3 is not to be changed and no change to it may be proposed.
+
 ### The shaped mode: a real slow link instead of Chrome's
 
 Every "slow connection" this repository has ever measured was Chrome's
