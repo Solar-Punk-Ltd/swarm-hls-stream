@@ -104,18 +104,23 @@ publishes and an idle stage would look identical to a stale one. One `docker exe
 refusal names redeploying as the fix and rewording the patterns as the wrong one, because the wrong
 one is tempting and buys a green run against code nobody is shipping.
 
-Since 2026-09-01 it lists every family the harness parses, sixteen in all: the four originals, the
-finalize flips and session ends seven scenarios wait on, the five lines that arm a discontinuity
+Since 2026-09-01 it lists every family the harness parses, seventeen in all: the four originals, the
+finalize flips and session ends seven scenarios wait on, the six lines that arm a discontinuity
 (six suites assert that count is zero, and a line nothing matches passes them vacuously green), the
 catalog-lost discriminator, the catalog announce, and the finalize that resumes rather than
 republishes after a crash. The finalize one reports whether scenario H's kill landed inside the window
 it aims at, and a deployment that cannot write it still passes the scenario, and passes it without
 anyone being able to say the window was ever exercised.
 
-The newest is the fifth arming line, added on 2026-09-03 with the re-anchored dating: the segment
-where the engine's own counter restarted now carries a break, and that path goes nowhere near
-`pendingDiscontinuity`, so nothing else in the suite can see it. Two of
-the sixteen refuse any uploader built
+The newest is the sixth arming line, added on 2026-09-03: a gap the uploader was never told about
+and worked out from the engine's own numbering. It is the only kind of loss the shipped SRS path
+produces, because SRS posts each closed segment to the webhook once and never retries, so everything
+it closed while the uploader was dead is simply absent. Scenario F waits on that family by itself,
+which is why `logwatch` counts it separately as well as inside the armed total. The fifth was added
+the same day with the re-anchored dating: the segment where the engine's own counter restarted now
+carries a break, and that path goes nowhere near `pendingDiscontinuity`. Both leave the uploaded
+segment run gapless, so nothing else in the suite can see either of them. Two of the seventeen refuse
+any uploader built
 before the messages moved into the shared contract even though no wording changed, one string used
 to be assembled across a `+` join and one lived in a file the gate does not read, so the first run
 after this checkout lands asks for exactly one redeploy.
@@ -298,17 +303,27 @@ count exact and the sequence is asserted. **Nothing about that can red a correct
 varies what is covered, and it is recorded here rather than dressed up: separating the two sessions
 needs the session-end lines, and that was not built.
 
-**`no`** is F. It reads after the recovery timeout and the gateway catalog's own lag, by which point
-the live window holds only post-recovery media and the playlist genuinely no longer starts at the
-broadcast's first segment. F is there for the dates and the gaps, which is where a recovered session's
-restored numbering shows.
+**`no`** is F. Its final read comes after the recovery timeout and the gateway catalog's own lag, by
+which point the live window holds only post-recovery media and the playlist genuinely no longer starts
+at the broadcast's first segment. F is there for the dates and the gaps, which is where a recovered
+session's restored numbering shows.
+
+Since 2026-09-03 F reads the timeline **twice**, and the first read is the one the scenario is about.
+As soon as segments resume it waits for the uploader to report the gap the engine never posted, then
+polls a read until an `#EXT-X-DISCONTINUITY` is inside a published window and judges that read. The
+old single read at the end could not see the join at all: the window is about 31 segments and the read
+came after a 60 second timeout plus the catalog's lag, so the join had always slid out, and F was
+green on 2026-09-03 while saying nothing about it. The break has to be there because the date step
+across the join is the length of the outage, and a step wider than one fragment is legal only across
+a break.
 
 The fragment length is the run's own declaration, `E2E_EXPECT_SEGMENT_S`, which
 `suites/preflight/segment-length.test.ts` has already held the deployed stage to. A run declaring
 `any` pins none, and then the timeline is not checked and the suite prints one line saying so.
 
 ⛔ **Still to be proved by a paid sitting.** Every assertion above is wired and none has run against a
-deployment. Three things to read on the first sitting that includes them: whether F reds on the join
-across the uploader's own downtime, where SRS's lost segments leave a gap that nothing arms a
-discontinuity for. Whether the ladder's four rungs really agree segment for segment. And which of E
-and the ABR restart actually reached the sequence assertion, which their printed summary says.
+deployment. Three things to read on the first sitting that includes them: whether F's early read
+finds the break across the uploader's own downtime, which is where SRS's never-posted segments used to
+leave a gap nothing armed a discontinuity for. Whether the ladder's four rungs really agree segment
+for segment. And which of E and the ABR restart actually reached the sequence assertion, which their
+printed summary says.

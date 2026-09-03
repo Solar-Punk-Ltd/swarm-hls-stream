@@ -133,9 +133,29 @@ restart: it is a segment that arrived out of order, and it takes its true place 
 
 ⚠️ **The segment the restart lands on carries the discontinuity itself**, whatever the engine
 declared, and only that one segment. The SRS webhook path delivers a segment with no break of its
-own, so on the shipped engine the reset is the only evidence there is: the two things that otherwise
-arm a break are a failed segment upload and a loss the OME puller reported, and a counter reset
-implies neither.
+own, so on the shipped engine the reset is the only evidence there is: the other things that arm a
+break are a failed segment upload, a loss the OME puller reported, and a gap in the engine's own
+numbering, and a counter reset implies none of them.
+
+### A gap in the engine's numbering is a loss nobody reported
+
+⛔ **SRS posts each closed segment to `on_hls` once and never retries.** So every segment it closed
+while this service was down or unreachable is simply gone, and nothing tells the uploader: the OME
+puller is what calls `handleSegmentLoss`, and the SRS path only calls it for a segment it delivered
+and had refused. Left there, the playlist published the arriving index at a sequence and a date the
+width of the gap above the last one with no `#EXT-X-DISCONTINUITY` in front, which promises a viewer
+media the playlist does not name and stalls hls.js on the join.
+
+`StreamOrchestrator` therefore keeps the last index it accounted for per stream, and a segment
+arriving more than one above it is a skip. The indexes in between that its duplicate filter does not
+hold are the loss: they are counted into `swarm_hls_segments_lost_total`, they set the
+`segment_loss` health signal, and the arriving segment carries the break.
+
+⚠️ **Three things it does not do.** It does not report a gap the engine already reported, because a
+reported loss moves the accounting too, so one hole is one break on OME as well. It does not read
+the engine's counter going backwards as a gap, which is the restart above. And a session recovered
+from an entry holding no segments infers nothing on its first arrival, because a broadcast opens at
+whatever number a warm engine's counter is on and there is nothing to measure a gap from.
 
 ⚠️ **A stamp costs the live window about 50 bytes per segment.** The window is a byte budget against
 one bee chunk (`LIVE_WINDOW_MAX_BYTES`), so it now holds roughly 30 segments where it held about 50,
@@ -311,7 +331,7 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                        |
 | `swarm_hls_rung_segments_uploaded_total`    | counter | The same, by ABR rung. Empty with no ladder, see below      |
 | `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone     |
-| `swarm_hls_segments_lost_total`             | counter | Segments the engine could never obtain from its origin      |
+| `swarm_hls_segments_lost_total`             | counter | Segments the engine never obtained, or never posted at all  |
 | `swarm_hls_segments_skipped_total`          | counter | Segments discarded on purpose at a puller handover          |
 | `swarm_hls_opening_segments_withheld_total` | counter | Opening segments held back until the broadcast showed video |
 | `swarm_hls_segments_never_named_total`      | counter | Segments in Swarm that no published manifest named          |
@@ -409,7 +429,7 @@ empty feed, so the finalize is deferred to the next boot rather than risking a s
 | Reason                   | Meaning                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `segment_upload_failure` | A segment reached the uploader but its upload retry window was spent, so that data is gone                                                                                                                                                                                                                                                 |
-| `segment_loss`           | The engine could not obtain a segment from its origin at all, so it never reached the uploader. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it                                                                                                           |
+| `segment_loss`           | A segment never reached the uploader: the engine could not obtain it from its origin, or it skipped the index and never posted it at all. Stays reported for `SEGMENT_STALL_MS` after the loss, because a loss is permanent and the stream usually keeps flowing around it                                                                 |
 | `stale_manifest`         | Three consecutive live-manifest publish failures, so the live playlist is not moving                                                                                                                                                                                                                                                       |
 | `queue_pressure`         | Either a segment queue above 80% of `MAX_QUEUE_SIZE`, where the next segments start being refused, or a backlog holding more than `SEGMENT_STALL_MS` of playing time, which is how far behind live a viewer is                                                                                                                             |
 | `segment_stall`          | A stream that should be producing has sent nothing for `SEGMENT_STALL_MS`                                                                                                                                                                                                                                                                  |
