@@ -8,7 +8,6 @@ import {
   announcedVodFinalizeCount,
   catalogContinuedEmpty,
   manifestIndicesByStream,
-  parseUploaderLog,
   resumedFinalizeCount,
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
