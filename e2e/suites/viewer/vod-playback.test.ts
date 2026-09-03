@@ -109,11 +109,19 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  * ⭐ Enough that a truncated recording is visible. A recording missing its last segment out of three
  * is within any honest tolerance, and out of sixty it is not.
  *
+ * ⛔⛔ And longer than the arm's own settle, which is the reason this is 120 and not 30. The playback
+ * arm PLAYS the recording while its byte source settles (`BROWSER_BYTE_SOURCE_SETTLE_SECONDS`, 60 s)
+ * and only then watches for eight seconds and seeks. A 30 s recording had reached its end by 34 s, so
+ * from 2026-09-02 on every run watched an ended, paused element, read "advance 0" and landed every
+ * seek on a picture that could not move again. Measured across six runs on 2026-09-02 and 09-03, all
+ * with the recording played through to its last second beforehand. The 2026-09-01 runs passed only
+ * because the arm had no byte-source settle yet and watched from playback start.
+ *
  * ⛔ Media seconds rather than a segment count, because the two stages cut at different lengths: 30s
  * is 60 segments on the light-client stage and 15 on the in-browser one. A count would record four
  * times as much on one as the other and mean something different on each.
  */
-const RECORD_MEDIA_SECONDS = 30;
+const RECORD_MEDIA_SECONDS = 120;
 /**
  * How much to record when the run declared no segment length, counted in SEGMENTS on the widest rung.
  *
@@ -122,11 +130,12 @@ const RECORD_MEDIA_SECONDS = 30;
  * is judged against a length: {@link wholeBroadcastRefusal} compares references, and every other
  * assertion is indifferent to how long the recording is as long as it is long enough to seek around in.
  *
- * ⭐ 30 rather than a handful, for {@link RECORD_MEDIA_SECONDS}'s reason: a recording that fits whole
- * in the player's buffer answers nothing about retrieval, and a missing segment out of three is
- * invisible where one out of thirty is not.
+ * ⭐ 120 rather than a handful, for {@link RECORD_MEDIA_SECONDS}'s reasons: a recording that fits whole
+ * in the player's buffer answers nothing about retrieval, a missing segment out of three is invisible
+ * where one out of sixty is not, and a recording that ends inside the arm's 60 s settle is watched
+ * after it has ended. At 2 s a segment this is four minutes and at 1 s two, both past the settle.
  */
-const RECORD_SEGMENTS_WHEN_UNPINNED = 30;
+const RECORD_SEGMENTS_WHEN_UNPINNED = 120;
 const SEGMENT_WAIT_MS = 300_000;
 const VOD_WAIT_MS = 120_000;
 /**
