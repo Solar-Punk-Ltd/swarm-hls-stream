@@ -57,6 +57,24 @@ export const ALL_REMOTE = {
 /** Env files written into a sandbox root, keyed by filename. Enough for the scripts to load and run. */
 const DEFAULT_ENV_FILES = { '.env': 'STAMP=stamp\nSTREAM_KEY=key\n' };
 
+/**
+ * What the stubbed `git` answers, so a test can assert a deploy carried these exact values rather
+ * than only that some key was written.
+ *
+ * ⛔ A sandbox is an `mkdtemp` outside any checkout, so a real `git` there answers "not a git
+ * repository" for every question and every computed value comes out empty. Empty is ALSO what a
+ * legitimately git-less deploy produces, which is a case the scripts have to survive. Without a stub
+ * the two are indistinguishable and a test could not tell a working computation from a dead one.
+ *
+ * `GIT_STUB_DIRTY=1` makes `status --porcelain` report a modified file, and `GIT_STUB_FAIL=1` makes
+ * every call exit non-zero, which is the git-less host.
+ */
+export const GIT_STUB = {
+  head: '1111111111111111111111111111111111111111',
+  clientTree: '2222222222222222222222222222222222222222',
+  sharedTree: '3333333333333333333333333333333333333333',
+};
+
 const sandboxes = [];
 
 export function removeSandboxes() {
@@ -102,10 +120,15 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
   const localJournal = join(root, 'docker-argv');
   const remoteJournal = join(root, 'docker-argv-remote');
   const sshJournal = join(root, 'ssh-argv');
+  const gitJournal = join(root, 'git-argv');
   writeFileSync(localJournal, '');
   writeFileSync(remoteJournal, '');
   writeFileSync(sshJournal, '');
+  writeFileSync(gitJournal, '');
+  writeFileSync(envFileJournal(localJournal), '');
+  writeFileSync(envFileJournal(remoteJournal), '');
 
+  writeNodeStub(join(binDir, 'git'), gitStub(gitJournal));
   writeNodeStub(join(binDir, 'docker'), dockerStub(localJournal, project));
   writeStub(join(binDir, 'ssh'), sshStub(remoteHome, remoteJournal, sshJournal));
   writeNodeStub(join(binDir, 'rsync'), rsyncStub(remoteHome));
@@ -128,6 +151,12 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
     remoteCalls: () => readLines(remoteJournal),
     /** Every `ssh` invocation, as the single string the far side's login shell would receive. */
     sshCommands: () => readLines(sshJournal),
+    /** Every `git` invocation, in order, one argv per entry. */
+    gitCalls: () => readLines(gitJournal),
+    /** The contents of every `--env-file` compose was pointed at on this host, concatenated. */
+    envFiles: () => readFileSync(envFileJournal(localJournal), 'utf8'),
+    /** The same, for the compose call the script ran through `ssh` on the far side. */
+    remoteEnvFiles: () => readFileSync(envFileJournal(remoteJournal), 'utf8'),
     /** Whether a path exists on the stand-in remote host, relative to its home directory. */
     remoteHas: (relative) => existsSync(join(remoteHome, relative)),
   };
@@ -138,10 +167,10 @@ export function makeSandbox({ project = 'default', config = ALL_LOCAL, envFiles 
  * reports how it exited instead of throwing. Half of what these scripts are asked to prove is that
  * they refuse, so the exit code is an assertion rather than an error.
  */
-export async function runScript(sandbox, name, args = []) {
+export async function runScript(sandbox, name, args = [], env = {}) {
   try {
     const ok = await execFileAsync('bash', [sandbox.scriptPath(name), ...args], {
-      env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+      env: { ...process.env, ...env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
     });
     return { stdout: ok.stdout, stderr: ok.stderr, exitCode: 0 };
   } catch (error) {
@@ -169,8 +198,8 @@ async function runShell(sandbox, script) {
 }
 
 /** For the paths where the script is supposed to succeed, so a crash cannot pass as a silent no-op. */
-export async function runScriptOk(sandbox, name, args = []) {
-  const run = await runScript(sandbox, name, args);
+export async function runScriptOk(sandbox, name, args = [], env = {}) {
+  const run = await runScript(sandbox, name, args, env);
   assert.equal(run.exitCode, 0, `${name} failed: ${run.stdout}${run.stderr}`);
   return run;
 }
@@ -197,10 +226,63 @@ function writeNodeStub(path, body) {
   writeStub(path, '#!/bin/sh\nexec node -- "$0.cjs" "$@"\n');
 }
 
+/**
+ * Where the docker stub records the contents of an env file it was pointed at, derived from the argv
+ * journal so the ssh stub's `DOCKER_STUB_JOURNAL` carries the remote one across without knowing it.
+ */
+function envFileJournal(journal) {
+  return `${journal}-env-files`;
+}
+
 function readLines(path) {
   return readFileSync(path, 'utf8')
     .split('\n')
     .filter((line) => line.length > 0);
+}
+
+/**
+ * Answers the handful of questions the deploy scripts ask git, from fixed values, and records every
+ * call so a test can assert WHICH revision and WHICH paths were asked about.
+ *
+ * `-C <dir>` is how the scripts point git at the repo root. The sandbox is not one, so the directory
+ * is journalled and otherwise ignored.
+ */
+function gitStub(journal) {
+  return `const fs = require('fs');
+const argv = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(journal)}, argv.join(' ') + '\\n');
+
+if (process.env.GIT_STUB_FAIL === '1') {
+  process.stderr.write('fatal: not a git repository\\n');
+  process.exit(128);
+}
+
+const rest = argv[0] === '-C' ? argv.slice(2) : argv;
+const REVISIONS = {
+  'HEAD': ${JSON.stringify(GIT_STUB.head)},
+  'HEAD:packages/client': ${JSON.stringify(GIT_STUB.clientTree)},
+  'HEAD:packages/shared': ${JSON.stringify(GIT_STUB.sharedTree)},
+};
+
+if (rest[0] === 'rev-parse') {
+  const answer = REVISIONS[rest[1]];
+  if (answer === undefined) {
+    process.stderr.write('fatal: not a valid object name: ' + rest[1] + '\\n');
+    process.exit(128);
+  }
+  console.log(answer);
+  process.exit(0);
+}
+
+if (rest[0] === 'status') {
+  if (process.env.GIT_STUB_DIRTY === '1') {
+    console.log(' M packages/client/src/main.tsx');
+  }
+  process.exit(0);
+}
+
+process.exit(0);
+`;
 }
 
 /**
@@ -211,7 +293,17 @@ function readLines(path) {
 function dockerStub(defaultJournal, project) {
   return `const fs = require('fs');
 const argv = process.argv.slice(2);
-fs.appendFileSync(process.env.DOCKER_STUB_JOURNAL || ${JSON.stringify(defaultJournal)}, argv.join(' ') + '\\n');
+const journal = process.env.DOCKER_STUB_JOURNAL || ${JSON.stringify(defaultJournal)};
+fs.appendFileSync(journal, argv.join(' ') + '\\n');
+
+// Compose interpolates build args and environment from its --env-file, so a value a deploy COMPUTED
+// is only ever in that file and never in the argv above. Recorded here because both deploy paths
+// delete the file the moment compose returns, leaving a test nothing to read afterwards.
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--env-file' && argv[i + 1] && fs.existsSync(argv[i + 1])) {
+    fs.appendFileSync(journal + '-env-files', fs.readFileSync(argv[i + 1], 'utf8'));
+  }
+}
 
 if (argv[0] !== 'ps' && argv[0] !== 'volume') {
   process.exit(0);

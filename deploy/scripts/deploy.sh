@@ -380,6 +380,48 @@ sync_to_remote() {
   rsync -az "$ROOT_DIR/nodes/init-node.sh" "$target:$REMOTE_BASE/nodes/"
 }
 
+# --- Client build stamp ---
+
+# The sources whose content decides what a viewer is actually served: the two packages vite compiles
+# into the bundle, plus the image and the nginx template that decide how it is served.
+#
+# `bench-on-host.sh` answers the harness side of the same question over the same four paths, and
+# `deploy/test/clientBuildStamp.test.js` is what holds the two lists together. A path in one and not
+# the other is a source that can change a viewer's client while both sides still call it a match.
+CLIENT_SOURCE_PATHS=(
+  "packages/client"
+  "packages/shared"
+  "deploy/Dockerfile.client"
+  "deploy/client-nginx.conf.template"
+)
+
+# Emit the KEY=VALUE\n lines that make the client image record which sources it was built from.
+#
+# The image serves them at `/build-stamp.json` and the `client-shape` e2e preflight reads them back
+# over HTTP, so a sitting whose served client did not come from the harness checkout's own sources is
+# refused before the first frame. Nothing else notices that drift: this script builds the image and
+# `bench-on-host.sh`, which every browser run goes through, never rebuilds it.
+#
+# ⚠️ Every value is empty when git cannot answer, and the deploy carries on regardless. A tree built
+# from an export has no history to name, and the gate refuses on the empty hash rather than this
+# script blocking a deploy over a stamp.
+client_build_stamp_text() {
+  local out="" head client_tree shared_tree dirty=0
+  head=$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)
+  client_tree=$(git -C "$ROOT_DIR" rev-parse HEAD:packages/client 2>/dev/null || true)
+  shared_tree=$(git -C "$ROOT_DIR" rev-parse HEAD:packages/shared 2>/dev/null || true)
+  if [ -n "$(git -C "$ROOT_DIR" status --porcelain -- "${CLIENT_SOURCE_PATHS[@]}" 2>/dev/null || true)" ]; then
+    dirty=1
+  fi
+
+  out+="CLIENT_BUILD_CLIENT_TREE=${client_tree}\n"
+  out+="CLIENT_BUILD_SHARED_TREE=${shared_tree}\n"
+  out+="CLIENT_BUILD_HEAD=${head}\n"
+  out+="CLIENT_BUILD_DIRTY=${dirty}\n"
+  out+="CLIENT_BUILD_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n"
+  printf '%s' "$out"
+}
+
 # --- Generate env overrides for a target ---
 
 generate_env_overrides() {
@@ -429,6 +471,7 @@ generate_env_overrides() {
       # local-dev value (e.g. http://localhost:1653), which would otherwise get
       # baked into the Vite build and break the deployed viewer.
       overrides="${overrides}VITE_READER_BEE_URL=/bee\n"
+      overrides="${overrides}$(client_build_stamp_text)"
     fi
   done
 

@@ -203,7 +203,41 @@ if [ "${OWN_NETWORK}" -eq 1 ]; then
   HOST_ADDRESS="${HOST_GATEWAY_ALIAS}"
 fi
 
+# The four sources whose content decides what a viewer is served. `deploy.sh` stamps the client image
+# with the same four, and `deploy/test/clientBuildStamp.test.js` holds the two lists together.
+CLIENT_SOURCE_PATHS=(
+  "packages/client"
+  "packages/shared"
+  "deploy/Dockerfile.client"
+  "deploy/client-nginx.conf.template"
+)
+
+# ⛔ `.git` is excluded from the rsync above, so the harness cannot answer this for itself once it is
+# on the host. Computed here, on the operator's machine, and carried in as the expectation the
+# `client-shape` preflight measures the served client's own build stamp against.
+#
+# Only a resolved object name is passed on. Anything else would be interpolated into a docker command
+# carried over ssh, and an unset expectation is refused by the gate rather than guessed at.
+git_tree_or_empty() {
+  local resolved
+  resolved="$(git -C "${REPO_ROOT}" rev-parse "HEAD:$1" 2>/dev/null || true)"
+  case "${resolved}" in
+    '' | *[!0-9a-f]*) printf '' ;;
+    *) printf '%s' "${resolved}" ;;
+  esac
+}
+
+EXPECT_CLIENT_TREE="$(git_tree_or_empty packages/client)"
+EXPECT_SHARED_TREE="$(git_tree_or_empty packages/shared)"
+EXPECT_CLIENT_DIRTY=0
+if [ -n "$(git -C "${REPO_ROOT}" status --porcelain -- "${CLIENT_SOURCE_PATHS[@]}" 2>/dev/null || true)" ]; then
+  EXPECT_CLIENT_DIRTY=1
+fi
+
 RUN_ENV="-e E2E_SSH_TARGET=local -e E2E_PUBLIC_HOST=${HOST_ADDRESS} -e E2E_PROFILE=${PROFILE} -e E2E_PORT_SLOT=${PORT_SLOT}"
+RUN_ENV="${RUN_ENV} -e E2E_EXPECT_CLIENT_TREE=${EXPECT_CLIENT_TREE}"
+RUN_ENV="${RUN_ENV} -e E2E_EXPECT_SHARED_TREE=${EXPECT_SHARED_TREE}"
+RUN_ENV="${RUN_ENV} -e E2E_EXPECT_CLIENT_DIRTY=${EXPECT_CLIENT_DIRTY}"
 if [ "${OWN_NETWORK}" -eq 1 ]; then
   RUN_ENV="${RUN_ENV} -e E2E_LOCAL_HOST_ADDRESS=${HOST_ADDRESS}"
 fi
