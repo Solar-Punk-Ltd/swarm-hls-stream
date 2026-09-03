@@ -14,6 +14,8 @@
  * rather than letting a run discover mid-sitting that it is out of fresh references.
  */
 
+import { Topic } from '@ethersphere/bee-js';
+
 /** The two rungs of the recording. */
 export type RungName = '360p' | '1080p';
 
@@ -103,6 +105,22 @@ export function segmentSecondsOf(text: string): number[] {
     .filter((line) => line.startsWith(SEGMENT_DURATION_TAG))
     .map((line) => taggedNumber([line], SEGMENT_DURATION_TAG))
     .filter((duration): duration is number => duration !== null);
+}
+
+const HEX_64_TOPIC = /^[0-9a-f]{64}$/i;
+
+/**
+ * The feed topic the gateway answers `/feeds/{owner}/{topic}` for, from the topic a manifest names.
+ *
+ * A master playlist names each rung feed as `swarm://<owner>/<topic>` with the topic as the RAW string
+ * the uploader chose, a UUID on this stage, and the gateway wants the 32-byte topic that string hashes
+ * to, as hex. The client hashes it exactly this way when it follows the master, so a harness reading
+ * the same feed has to as well: on 2026-09-03 the first V4 run with the per-rung check read nothing for
+ * three rungs of four because it handed the raw UUID to a guard that wanted hex. A topic already in
+ * hex form is passed through, lowercased, so a caller holding either form reads the same feed.
+ */
+export function feedTopicHexOf(topic: string): string {
+  return HEX_64_TOPIC.test(topic) ? topic.toLowerCase() : Topic.fromString(topic).toHex();
 }
 
 export function parseRungManifest(rung: RungName, topicHex: string, text: string): ParsedRungManifest {

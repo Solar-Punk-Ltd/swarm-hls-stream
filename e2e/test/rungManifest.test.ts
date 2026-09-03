@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  feedTopicHexOf,
   makeRefPool,
   manifestRefusal,
   MIN_SEGMENT_REFS,
@@ -167,5 +168,25 @@ describe('the pool a run takes its references from', () => {
 
     assert.throws(() => pool.take(), /1080p/);
     assert.throws(() => pool.take(), /cache/);
+  });
+});
+
+/**
+ * The topic a master names a rung feed by is the raw string, and the gateway wants its hash.
+ *
+ * The vector is the 360p ladder group of the 2026-09-02 V4 broadcast: the raw UUID the master carried,
+ * and the hex the gateway answered the recording's playlist for.
+ */
+describe('the feed topic a manifest names', () => {
+  it('hashes a raw topic string to the 32-byte topic the gateway serves', () => {
+    assert.equal(
+      feedTopicHexOf('85c23b10-b224-4ee7-93e6-90cf82c69d0d'),
+      '0fd0326b6bac931c4fe1a73dac31d66212a1465b35300471a7c3167ae6872941',
+    );
+  });
+
+  it('passes a topic already in hex form through, lowercased', () => {
+    const hex = '0FD0326B6BAC931C4FE1A73DAC31D66212A1465B35300471A7C3167AE6872941';
+    assert.equal(feedTopicHexOf(hex), hex.toLowerCase());
   });
 });

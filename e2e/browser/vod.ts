@@ -116,7 +116,7 @@ import {
   thinRequestLog,
   writeRunArtifacts,
 } from '../src/browser/runFiles.js';
-import { segmentRefsOf, segmentSecondsOf } from '../src/browser/rungManifest.js';
+import { feedTopicHexOf, segmentRefsOf, segmentSecondsOf } from '../src/browser/rungManifest.js';
 import { summarize, type ViewerSample } from '../src/browser/session.js';
 import { kbpsAsBytesPerSecond, squeezeDownload, type ThrottleHandle } from '../src/browser/throttle.js';
 import {
@@ -369,12 +369,15 @@ async function readRungPlaylist(host: Host, cfg: E2EConfig, uri: string | null):
     return NO_PLAYLIST;
   }
   const { owner, topic } = parseSwarmUri(uri);
-  if (!HEX_40.test(owner ?? '') || !HEX_64.test(topic ?? '')) {
+  if (!HEX_40.test(owner ?? '') || topic === null || topic === undefined || topic === '') {
     return NO_PLAYLIST;
   }
 
+  // ⛔ The master names the rung feed by its RAW topic, a UUID here, and the gateway wants the hex of
+  // what that string hashes to. The first run of this reading handed the UUID to a hex guard and read
+  // nothing for three rungs of four.
   const text = await host
-    .localText(cfg.ports.beeGatewayApi, `/feeds/${owner}/${topic}`, RUNG_PLAYLIST_TIMEOUT_S)
+    .localText(cfg.ports.beeGatewayApi, `/feeds/${owner}/${feedTopicHexOf(topic)}`, RUNG_PLAYLIST_TIMEOUT_S)
     .catch(() => '');
   const refs = segmentRefsOf(text);
   if (refs.length === 0) {
