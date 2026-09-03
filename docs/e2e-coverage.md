@@ -129,6 +129,36 @@ after this checkout lands asks for exactly one redeploy.
 deployment's `LOG_LEVEL` admits these lines at all. Level and shape are separate questions and both
 have now been answered the expensive way once.
 
+`e2e/suites/preflight/client-shape.test.ts` refuses a stage whose **served client** was not built
+from the client sources this harness was checked out with. It is the viewer-side twin of the gate
+above, and the gap was open the whole time: `bench-on-host.sh` syncs this repo on every run and never
+rebuilds the client image, so the harness can be current while a viewer is served a client that is
+weeks old. Everything under `e2e/src/browser/` parses that client, its console lines, the fetch
+backend it publishes on `globalThis` and the weeb-3 worker it serves. The harness-side version of the
+same staleness was caught three days old under a sitting about to be paid for, and the client-side
+version was caught fifteen days old under a browser sitting that had already run.
+
+The client image now records what it was built from and serves it at `/build-stamp.json`:
+`git rev-parse HEAD:packages/client`, the same for `packages/shared`, the head commit, whether the
+build came from uncommitted sources, and the two Vite knobs that decide what the bundle does.
+`deploy.sh` mints those through the compose override file, and `bench-on-host.sh` carries the same
+two tree hashes into the container as `E2E_EXPECT_CLIENT_TREE` and `E2E_EXPECT_SHARED_TREE`, because
+its rsync excludes `.git` and a harness on the host has no history to ask. A run from a checkout
+falls back to reading git itself.
+
+⚠️ **It compares what the client was built from, not what survived the build.** A bundle is minified
+and tree-shaken, so grepping it for a symbol the way the uploader gate greps `dist` would answer
+about the wrong thing. Tree hashes are content hashes, so a rebuild from an unchanged tree still
+matches and only a real source change refuses. The read goes through nginx over one `curl`, because
+what a viewer is served is the thing under test, and it costs no broadcast and no BZZ.
+
+Four refusals, each naming its fix: no readable stamp means the client predates it and asks for a
+redeploy, a mismatched tree prints both hashes with the head and the build time, a dirty flag on
+either side means the hashes describe something other than what is running, and an expectation it
+cannot establish is refused rather than passed. ⛔ That last one matters most. A gate that passed
+when it could not judge a stage would report green on every run launched outside both paths, which
+is the vacuous green this repo has already paid for elsewhere.
+
 `e2e/src/harness/stageStamps.ts` gates every suite's `before()` on postage: every Bee node the
 uploader publishes through must hold a usable batch with more TTL than the run needs, or the suite
 refuses before its publisher starts. The check it replaced read the coordinator alone and spoke for

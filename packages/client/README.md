@@ -43,6 +43,22 @@ In production builds or when pointing to a remote gateway, requests go directly 
 | `VITE_APP_OWNER`      | Yes      | Feed owner address (hex, no 0x prefix)                            |
 | `VITE_APP_RAW_TOPIC`  | Yes      | Feed topic for the stream catalog, must match `STREAM_LIST_TOPIC` |
 
+## The build stamp
+
+A deployed client serves `/build-stamp.json` beside `index.html`, recording which sources the bundle
+was built from: `clientTree` and `sharedTree` are `git rev-parse HEAD:packages/client` and the same
+for `packages/shared`, alongside the head commit, whether the build came from uncommitted sources,
+when it was built, and the two Vite knobs that decide what the bundle actually does. `deploy.sh`
+mints the values from git and `deploy/Dockerfile.client` writes them into `dist/`, so nginx serves
+the file off the filesystem with no configuration of its own.
+
+It exists because nothing else can tell a stale client from a current one. `bench-on-host.sh` syncs
+the e2e harness to the deployment host on every run and never rebuilds this image, and the harness
+parses this client's own behaviour, so the two can drift for weeks in silence. The
+`client-shape` e2e preflight reads the stamp over HTTP and refuses a sitting whose served client did
+not come from the harness checkout's sources. A build whose args were never passed writes empty
+hashes, which that gate reads as a client predating the stamp and answers with a redeploy.
+
 ## Features
 
 - **Stream Browser**: Fetches the stream catalog from Swarm feeds, displays up to 10 streams sorted by state (live first) and timestamp
