@@ -41,7 +41,7 @@
  * repository's rule on what an e2e suite may gate on.
  */
 
-import { HLS_PLAYLIST_TYPE_VOD, parseManifest } from '@swarm-hls-stream/shared';
+import { HLS_DISCONTINUITY, HLS_PLAYLIST_TYPE_VOD, parseManifest } from '@swarm-hls-stream/shared';
 
 import { feedTopicHexOf } from '../browser/rungManifest.js';
 import type { E2EConfig } from '../config.js';
@@ -96,6 +96,15 @@ interface RungPlaylistParse {
   unreadable: string | null;
   segments: number;
   mediaSequence: number | null;
+  /**
+   * How many `#EXT-X-DISCONTINUITY` tags this window carries.
+   *
+   * ⛔ The one thing that makes a forward date step wider than a fragment legal, and the reason a
+   * suite can wait for a join to become visible rather than guess at the clock. Read off the tag
+   * lines rather than off the parsed segments, so a tag the parse could not attach to a segment is
+   * still counted: this answers "does the playlist declare a break" and never "which segment has it".
+   */
+  discontinuities: number;
   /** The first and last `#EXT-X-PROGRAM-DATE-TIME`, as ISO text, or null where a segment carried none. */
   firstDate: string | null;
   lastDate: string | null;
@@ -249,10 +258,16 @@ export function rungPlaylistParse(feed: RungFeed, body: string): RungPlaylistPar
     unreadable: null,
     segments: parsed.segments.length,
     mediaSequence: mediaSequenceOf(text),
+    discontinuities: discontinuityCountOf(text),
     firstDate: isoOf(dates[0]),
     lastDate: isoOf(dates[dates.length - 1]),
     recording: parsed.headers.includes(HLS_PLAYLIST_TYPE_VOD),
   };
+}
+
+/** Tag lines, so a break the parse could not attach to a segment is still counted. See {@link RungPlaylistParse.discontinuities}. */
+function discontinuityCountOf(text: string): number {
+  return text.split('\n').filter((line) => line.trim() === HLS_DISCONTINUITY).length;
 }
 
 /** The fields a parse carries when the feed produced no playlist to read. */
@@ -260,6 +275,7 @@ const NOTHING_READ = {
   playlist: null,
   segments: 0,
   mediaSequence: null,
+  discontinuities: 0,
   firstDate: null,
   lastDate: null,
   recording: false,
@@ -430,6 +446,15 @@ interface TimelineVerdict {
   summary: string;
   /** Why the published playlists do not meet the contract, or null. */
   refusal: string | null;
+  /**
+   * How many `#EXT-X-DISCONTINUITY` tags this read saw across every rung.
+   *
+   * ⛔ What lets a suite wait for a join instead of guessing at the clock. A break is the only thing
+   * that makes a forward date step wider than one fragment legal, so a suite asserting the contract
+   * ACROSS a join has to know the join is in the window it just read. Zero on a run that pinned no
+   * segment length, which is a read that never happened rather than a window holding no break.
+   */
+  discontinuitiesSeen: number;
 }
 
 /**
@@ -446,7 +471,7 @@ export async function checkPublishedTimeline(
 ): Promise<TimelineVerdict> {
   const fragmentSeconds = fragmentSecondsFor(check.expectation);
   if (fragmentSeconds === null) {
-    return { summary: `  ${UNCHECKED_WITHOUT_FRAGMENT}`, refusal: null };
+    return { summary: `  ${UNCHECKED_WITHOUT_FRAGMENT}`, refusal: null, discontinuitiesSeen: 0 };
   }
 
   const parses = await readRungPlaylists(host, cfg, { owner: check.owner, rungs: check.rungs });
@@ -459,14 +484,21 @@ export async function checkPublishedTimeline(
     return byNow !== null && namesEverySegmentPublished(parse, byNow);
   });
 
-  return { summary: describeRungPlaylists(parses), refusal: rungPlaylistRefusal(readings) };
+  return {
+    summary: describeRungPlaylists(parses),
+    refusal: rungPlaylistRefusal(readings),
+    discontinuitiesSeen: parses.reduce((total, parse) => total + parse.discontinuities, 0),
+  };
 }
 
 /**
- * One line per rung: what came back and the span of time it claims to cover.
+ * One line per rung: what came back, how many breaks it declares, and the span of time it claims to
+ * cover.
  *
  * Printed by every wired suite whether it passes or fails, so a red names the segment and the date
- * it objected to beside a reading of what the whole ladder held at that moment.
+ * it objected to beside a reading of what the whole ladder held at that moment. The break count is
+ * on the line because it is what makes a wide date step legal, so a reader looking at a step and a
+ * verdict can see which of the two rules applied.
  */
 export function describeRungPlaylists(parses: readonly RungPlaylistParse[]): string {
   return parses.map(lineFor).join('\n');
@@ -483,7 +515,7 @@ function lineFor(parse: RungPlaylistParse): string {
     parse.mediaSequence === null ? 'no #EXT-X-MEDIA-SEQUENCE' : `#EXT-X-MEDIA-SEQUENCE:${parse.mediaSequence}`;
   const span = parse.firstDate === null ? 'no dates' : `${parse.firstDate} to ${parse.lastDate}`;
 
-  return `  ${name}: ${kind}, ${parse.segments} segments, ${sequence}, ${span}`;
+  return `  ${name}: ${kind}, ${parse.segments} segments, ${parse.discontinuities} discontinuities, ${sequence}, ${span}`;
 }
 
 /** How a report names one feed: its rung, or what a deployment with no rungs is. */

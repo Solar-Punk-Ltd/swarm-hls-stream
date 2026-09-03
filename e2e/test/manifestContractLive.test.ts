@@ -193,10 +193,25 @@ describe('reading one rung playlist back', () => {
 
     assert.equal(parse.segments, 4);
     assert.equal(parse.mediaSequence, 0);
+    assert.equal(parse.discontinuities, 0);
     assert.equal(parse.firstDate, fixtureDateOf(0));
     assert.equal(parse.lastDate, fixtureDateOf(3));
     assert.equal(parse.recording, false);
     assert.equal(parse.unreadable, null);
+  });
+
+  /**
+   * ⛔ What lets a suite wait for a join rather than guess at the clock. A break is the only thing
+   * that makes a forward date step wider than one fragment legal, so a suite asserting the contract
+   * across a join has to be able to see that the join is in the window it just read.
+   */
+  it('counts the breaks a window declares, so a suite can tell a join is in it', () => {
+    assert.equal(rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3], { breaks: [2] })).discontinuities, 1);
+    assert.equal(rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3], { breaks: [1, 3] })).discontinuities, 2);
+  });
+
+  it('counts no break on a feed that answered no playlist, which is a read rather than a window', () => {
+    assert.equal(rungPlaylistParse(feed, GATEWAY_ERROR_ENVELOPE).discontinuities, 0);
   });
 
   it('hashes the raw topic into the hex the gateway answers for', () => {
@@ -408,6 +423,19 @@ describe('what a wired suite prints', () => {
     assert.match(summary, new RegExp(fixtureDateOf(0)));
     assert.match(summary, new RegExp(fixtureDateOf(2)));
     assert.match(summary, /3 segments/);
+    assert.match(summary, /0 discontinuities/);
+  });
+
+  /**
+   * On the line because it is what makes a wide date step legal. A reader looking at a step and a
+   * verdict should be able to see which of the two rules applied without fetching the playlist again.
+   */
+  it('says how many breaks a rung’s window declares', () => {
+    const summary = describeRungPlaylists([
+      rungPlaylistParse(feedOf('360p', TOPIC_360), rungPlaylist([0, 1, 2], { breaks: [2] })),
+    ]);
+
+    assert.match(summary, /1 discontinuities/);
   });
 
   it('says which rung read a recording and which read a live playlist', () => {
