@@ -8,6 +8,7 @@ import crypto from 'crypto';
 
 import {
   ANONYMOUS_CLAIMANT,
+  BroadcastAnchor,
   HealthSignals,
   LadderMembership,
   MEDIA_TYPE_VIDEO,
@@ -42,7 +43,7 @@ import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
-import { LadderGroupStore } from './LadderGroupStore.js';
+import { LadderGroupStore, RememberedLadder } from './LadderGroupStore.js';
 import { Logger } from './Logger.js';
 import { RecentSegmentIndexes } from './RecentSegmentIndexes.js';
 import { RecoveryStore } from './RecoveryStore.js';
@@ -76,6 +77,11 @@ export interface StreamOrchestratorConfig {
   /** How long a live stream may receive nothing before it is reaped as an orphan. See #86. */
   orphanReapMs: number;
   segmentStallMs: number;
+  /**
+   * Nominal seconds of media per fragment, from `HLS_FRAGMENT`, which is what every segment's
+   * `#EXT-X-PROGRAM-DATE-TIME` steps by. See {@link BroadcastAnchor}.
+   */
+  fragmentSeconds: number;
   /** How many further segments an index stays remembered for, so a duplicate inside that is refused. */
   segmentDedupWindow: number;
   /** Defaults to the real clock. Injected so tests can step time rather than wait for it. */
@@ -226,7 +232,7 @@ export class StreamOrchestrator {
   /** Totals that outlive the streams they describe, which is what `/health` structurally cannot do. */
   private readonly metrics = new ServiceMetrics();
   /** Ladder id per base stream, so the four rungs of one source share a catalog entry. */
-  private ladderGroups = new Map<string, string>();
+  private ladderGroups = new Map<string, RememberedLadder>();
   private streamBases = new Map<string, string>();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
@@ -516,11 +522,19 @@ export class StreamOrchestrator {
     // start overwriting it at SOC index 0. What has to be stable across a ladder is the group.
     const streamTopic = crypto.randomUUID();
 
+    // Minted with the group and never per rung. Every rung of one ladder dates the same media the
+    // same way only because they all read this one instant, and a rung admitted a moment later
+    // taking its own reading is exactly the disagreement `#EXT-X-PROGRAM-DATE-TIME` exists to avoid.
+    let startedAtMs = this.clock.now();
+
     if (match) {
-      const group = this.groupFor(match.baseStreamId);
-      ladder = { group, rung: match.rung };
+      const remembered = this.groupFor(match.baseStreamId);
+      startedAtMs = remembered.startedAtMs;
+      ladder = { group: remembered.group, rung: match.rung };
       this.streamBases.set(streamId, match.baseStreamId);
-      this.logger.info(`[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, group, streamTopic)}`);
+      this.logger.info(
+        `[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, remembered.group, streamTopic)}`,
+      );
     }
 
     // Which node's postage batch pays for this rung. A stream with no rung, single-rendition or
@@ -538,6 +552,7 @@ export class StreamOrchestrator {
       streamTopic,
       mediatype,
       ladder,
+      anchor: { startedAtMs, fragmentSeconds: this.config.fragmentSeconds },
       metrics: this.metrics,
     });
 
@@ -958,13 +973,21 @@ export class StreamOrchestrator {
     // Reinstate the ladder from what was persisted, not from the current ABR_LADDER: a rung that was
     // mid-stream keeps the group and topic its siblings already published under, even if the ladder
     // has been reconfigured since.
+    // Restored before the ladder is reinstated, because the ladder record is written from it: a rung
+    // recovered from an entry that predates the anchor has no start of its own, and taking one now is
+    // the same late-but-honest reading `readPersistedLadder` takes.
+    const anchor: BroadcastAnchor = state.anchor ?? {
+      startedAtMs: this.clock.now(),
+      fragmentSeconds: this.config.fragmentSeconds,
+    };
+
     if (state.ladder) {
       const base = baseStreamId(streamId, state.ladder.rung.name);
       // Written back to disk rather than only read into memory. The recovery entry and the group
       // store are two records of one fact and either can be the survivor: a rung that finalized
       // cleared its entry and left the group behind, and an entry an operator restores by hand
       // arrives with no group on disk at all.
-      this.rememberLadder(base, state.ladder.group);
+      this.rememberLadder(base, { group: state.ladder.group, startedAtMs: anchor.startedAtMs });
       this.streamBases.set(streamId, base);
     }
 
@@ -985,6 +1008,7 @@ export class StreamOrchestrator {
       streamTopic: state.streamRawTopic,
       mediatype: state.mediatype,
       ladder: state.ladder,
+      anchor,
       restoreState: {
         streamRawTopic: state.streamRawTopic,
         socIndex: state.socIndex,
@@ -994,6 +1018,7 @@ export class StreamOrchestrator {
         isFirstManifestReady: state.isFirstManifestReady,
         pendingDiscontinuity: state.pendingDiscontinuity,
         bitrate: state.bitrate,
+        anchor: state.anchor,
       },
       metrics: this.metrics,
     });
@@ -1429,21 +1454,37 @@ export class StreamOrchestrator {
    * deletes each rung's entry as that rung completes, so the broadcast came back under a second
    * group and was listed for viewers a second time.
    */
-  private groupFor(base: string): string {
-    const existing = this.ladderGroups.get(base) ?? this.config.ladderGroupStore?.load(base);
+  private groupFor(base: string): RememberedLadder {
+    const existing = this.ladderGroups.get(base) ?? this.readPersistedLadder(base);
     if (existing) {
-      this.ladderGroups.set(base, existing);
+      this.rememberLadder(base, existing);
       return existing;
     }
 
-    const group = crypto.randomUUID();
-    this.rememberLadder(base, group);
-    return group;
+    const identity = { group: crypto.randomUUID(), startedAtMs: this.clock.now() };
+    this.rememberLadder(base, identity);
+    return identity;
   }
 
-  private rememberLadder(base: string, group: string): void {
-    this.ladderGroups.set(base, group);
-    this.config.ladderGroupStore?.remember(base, group);
+  /**
+   * The ladder on disk, given the start instant it may predate.
+   *
+   * A record written before the start was kept here names a broadcast already in progress, and
+   * nothing can say when it began. Dating it now is late by however long it has been running, and
+   * that is the honest option: the alternative is a second group, which is a second catalog entry
+   * for one broadcast and the defect this whole store exists to prevent.
+   */
+  private readPersistedLadder(base: string): RememberedLadder | null {
+    const persisted = this.config.ladderGroupStore?.load(base);
+    if (!persisted) {
+      return null;
+    }
+    return { group: persisted.group, startedAtMs: persisted.startedAtMs ?? this.clock.now() };
+  }
+
+  private rememberLadder(base: string, ladder: RememberedLadder): void {
+    this.ladderGroups.set(base, ladder);
+    this.config.ladderGroupStore?.remember(base, ladder);
   }
 
   /**

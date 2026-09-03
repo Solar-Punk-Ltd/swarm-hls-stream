@@ -5,7 +5,25 @@ import { describe, it } from 'node:test';
 
 import { LIVE_WINDOW_MAX_BYTES, ManifestManager } from '../src/libs/ManifestManager.js';
 
+import { TEST_ANCHOR } from './helpers/fakes.js';
+
 const DISCONTINUITY_TAG = '#EXT-X-DISCONTINUITY';
+const PROGRAM_DATE_TIME_TAG = '#EXT-X-PROGRAM-DATE-TIME';
+
+/** The wall clock {@link TEST_ANCHOR} puts on the segment at this playlist sequence. */
+function pdtLineAt(sequence: number): string {
+  return `${PROGRAM_DATE_TIME_TAG}:${new Date(
+    TEST_ANCHOR.startedAtMs + sequence * TEST_ANCHOR.fragmentSeconds * 1000,
+  ).toISOString()}`;
+}
+
+/** Every `#EXT-X-PROGRAM-DATE-TIME` a manifest carries, in playlist order, as epoch milliseconds. */
+function programDateTimesOf(manifest: string): number[] {
+  return manifest
+    .split('\n')
+    .filter((line) => line.startsWith(`${PROGRAM_DATE_TIME_TAG}:`))
+    .map((line) => Date.parse(line.slice(PROGRAM_DATE_TIME_TAG.length + 1)));
+}
 
 /**
  * Every segment length this project has published a profile for, shortest first.
@@ -51,7 +69,7 @@ function ref(index: number): string {
 }
 
 function withSegments(count: number, duration: number): ManifestManager {
-  const manager = new ManifestManager();
+  const manager = new ManifestManager(TEST_ANCHOR);
   for (let i = 0; i < count; i++) {
     manager.addSegment(i, duration, ref(i));
   }
@@ -60,7 +78,7 @@ function withSegments(count: number, duration: number): ManifestManager {
 
 describe('ManifestManager media sequence', () => {
   it('reports the engine sequence number of the playlist’s first segment', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     feed(manager, 0, 3);
 
     assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
@@ -70,7 +88,7 @@ describe('ManifestManager media sequence', () => {
     // A rung whose opening segment was lost, or whose engine restarted mid-broadcast, retains a first
     // segment that is not index 0. Renumbering the VOD playlist to zero misaligns the ladder's levels
     // for a VOD viewer exactly as it would live, since the master playlist names all four rungs.
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     feed(manager, 4, 3);
 
     assert.equal(mediaSequenceOf(manager.buildVODManifest()), 4);
@@ -91,8 +109,8 @@ describe('ManifestManager media sequence', () => {
     // A count of segments this uploader had seen would make both of these start at 0, claiming the
     // 1080p rung's first segment covers the same instant as the 360p rung's when it is two segments
     // (3 seconds) later. Every switch would then land that far off.
-    const early = new ManifestManager();
-    const late = new ManifestManager();
+    const early = new ManifestManager(TEST_ANCHOR);
+    const late = new ManifestManager(TEST_ANCHOR);
 
     feed(early, 0, 5);
     feed(late, 2, 3);
@@ -102,7 +120,7 @@ describe('ManifestManager media sequence', () => {
   });
 
   it('uses the first segment it holds even when segments arrive out of order', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     manager.addSegment(7, 1.5, 'ref-7');
     manager.addSegment(5, 1.5, 'ref-5');
     manager.addSegment(6, 1.5, 'ref-6');
@@ -114,7 +132,7 @@ describe('ManifestManager media sequence', () => {
   });
 
   it('survives a restore, which is where the sequence numbers come back from disk', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     manager.restoreState(
       [
         { index: 11, duration: 1.5, ref: 'ref-11' },
@@ -127,7 +145,7 @@ describe('ManifestManager media sequence', () => {
   });
 
   it('returns nothing at all before the first segment, rather than a headers-only playlist', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
 
     assert.equal(manager.buildLiveManifest(), '');
     assert.equal(manager.buildVODManifest(), '');
@@ -136,31 +154,33 @@ describe('ManifestManager media sequence', () => {
 
 describe('ManifestManager discontinuity handling', () => {
   it('emits a discontinuity tag before a flagged segment in the VOD manifest', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     manager.addSegment(0, 2, 'ref0');
     manager.addSegment(1, 2, 'ref1', true);
     manager.addSegment(2, 2, 'ref2');
 
     const manifest = manager.buildVODManifest();
 
-    assert.ok(manifest.includes(`${DISCONTINUITY_TAG}\n#EXTINF:2,\nref1`));
+    // The break comes first and the wall clock after it, which is the order RFC 8216 §4.3.2.6 wants:
+    // the stamp dates the media that resumes, so it belongs on the far side of the break.
+    assert.ok(manifest.includes(`${DISCONTINUITY_TAG}\n${pdtLineAt(1)}\n#EXTINF:2,\nref1`));
     assert.equal(countOccurrences(manifest, DISCONTINUITY_TAG), 1);
-    assert.ok(!manifest.includes(`${DISCONTINUITY_TAG}\n#EXTINF:2,\nref0`));
+    assert.ok(!manifest.includes(`${DISCONTINUITY_TAG}\n${pdtLineAt(0)}\n#EXTINF:2,\nref0`));
   });
 
   it('emits a discontinuity tag before a flagged segment in the live manifest', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     manager.addSegment(0, 2, 'ref0');
     manager.addSegment(1, 2, 'ref1', true);
 
     const manifest = manager.buildLiveManifest();
 
-    assert.ok(manifest.includes(`${DISCONTINUITY_TAG}\n#EXTINF:2,\nref1`));
+    assert.ok(manifest.includes(`${DISCONTINUITY_TAG}\n${pdtLineAt(1)}\n#EXTINF:2,\nref1`));
     assert.equal(countOccurrences(manifest, DISCONTINUITY_TAG), 1);
   });
 
   it('does not emit a discontinuity tag when no segment is flagged', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     manager.addSegment(0, 2, 'ref0');
     manager.addSegment(1, 2, 'ref1');
 
@@ -275,7 +295,7 @@ describe('segments the window slid past before anything named them', () => {
   // A segment whose own upload failed was never added, and `recordSegmentDropped` already owns it.
   // Counting the hole it left here would report the same loss twice under two different causes.
   it('counts only segments it actually holds, so a dropped one is not counted twice', () => {
-    const manager = new ManifestManager();
+    const manager = new ManifestManager(TEST_ANCHOR);
     for (let i = 0; i < 500; i++) {
       if (i !== 50 && i !== 51) {
         manager.addSegment(i, 2, ref(i));
@@ -289,7 +309,7 @@ describe('segments the window slid past before anything named them', () => {
 
   it('names the newest segment the window reaches, which is what was announced', () => {
     assert.equal(withSegments(500, 2).liveWindowNewestIndex(), 499);
-    assert.equal(new ManifestManager().liveWindowNewestIndex(), null);
+    assert.equal(new ManifestManager(TEST_ANCHOR).liveWindowNewestIndex(), null);
   });
 });
 
@@ -362,7 +382,7 @@ describe('ending a broadcast that live viewers are still following', () => {
   });
 
   it('says nothing when there was never a segment to end', () => {
-    assert.equal(new ManifestManager().buildClosingLiveManifest(), '');
+    assert.equal(new ManifestManager(TEST_ANCHOR).buildClosingLiveManifest(), '');
   });
 
   /** The recording is a separate resource with a separate reader, and it is not what changed. */
@@ -371,5 +391,135 @@ describe('ending a broadcast that live viewers are still following', () => {
 
     assert.equal(mediaSequenceOf(manager.buildVODManifest()), 0);
     assert.equal(segmentUris(manager.buildVODManifest()).length, 500);
+  });
+});
+
+/**
+ * The wall clock every playlist now carries, and the two things it is derived from.
+ *
+ * ⛔ Both terms are nominal. The instant is the broadcast's, handed in once for the whole ladder,
+ * and the step is the fragment length the deployment declared. Neither is read off a segment, which
+ * is what lets four rungs date the same media identically while their uploads land milliseconds
+ * apart.
+ */
+describe('every segment carries a program date-time derived from the broadcast anchor', () => {
+  const ANCHOR = { startedAtMs: Date.UTC(2026, 8, 1, 12, 0, 0), fragmentSeconds: 2 };
+  const STEP_MS = ANCHOR.fragmentSeconds * 1000;
+
+  function anchored(): ManifestManager {
+    return new ManifestManager(ANCHOR);
+  }
+
+  it('stamps the first segment with the anchor itself', () => {
+    const manager = anchored();
+    manager.addSegment(0, 2, ref(0));
+
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [ANCHOR.startedAtMs]);
+  });
+
+  it('steps by the declared fragment length, not by the segment’s own EXTINF', () => {
+    const manager = anchored();
+    // Half the declared fragment, which is what a force-closed segment looks like. The stamp must
+    // not follow it: a rung whose encoder cut short would otherwise drift away from its siblings.
+    feed(manager, 0, 3, 1);
+
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
+      ANCHOR.startedAtMs,
+      ANCHOR.startedAtMs + STEP_MS,
+      ANCHOR.startedAtMs + 2 * STEP_MS,
+    ]);
+  });
+
+  it('writes UTC to the millisecond, which is what a sub-second fragment needs', () => {
+    const manager = new ManifestManager({ startedAtMs: ANCHOR.startedAtMs, fragmentSeconds: 0.5 });
+    feed(manager, 0, 2, 0.5);
+
+    const manifest = manager.buildLiveManifest();
+
+    assert.ok(manifest.includes(`${PROGRAM_DATE_TIME_TAG}:2026-09-01T12:00:00.000Z`), manifest);
+    assert.ok(manifest.includes(`${PROGRAM_DATE_TIME_TAG}:2026-09-01T12:00:00.500Z`), manifest);
+  });
+
+  /**
+   * The defect the tag exists to prevent. Two rungs of one ladder date the same media alike because
+   * both derive from the anchor their group shares, whatever their own uploads did.
+   */
+  it('dates the same media alike on two rungs of one ladder', () => {
+    const tall = anchored();
+    const short = anchored();
+
+    feed(tall, 0, 5, 2);
+    feed(short, 0, 5, 1.98);
+
+    assert.deepEqual(programDateTimesOf(tall.buildLiveManifest()), programDateTimesOf(short.buildLiveManifest()));
+  });
+
+  it('stamps every segment of the recording too, not only the live playlist', () => {
+    const manager = anchored();
+    feed(manager, 0, 4, 2);
+
+    const vod = manager.buildVODManifest();
+
+    assert.deepEqual(programDateTimesOf(vod).length, segmentUris(vod).length);
+    assert.deepEqual(programDateTimesOf(vod)[3], ANCHOR.startedAtMs + 3 * STEP_MS);
+  });
+
+  it('stamps every segment of the closing playlist', () => {
+    const manager = anchored();
+    feed(manager, 0, 4, 2);
+
+    const closing = manager.buildClosingLiveManifest();
+
+    assert.equal(programDateTimesOf(closing).length, segmentUris(closing).length);
+  });
+
+  it('keeps one stamp per segment as the window slides, still on the broadcast’s own clock', () => {
+    const manager = anchored();
+    feed(manager, 0, 500, 2);
+
+    const manifest = manager.buildLiveManifest();
+    const stamps = programDateTimesOf(manifest);
+
+    assert.equal(stamps.length, segmentUris(manifest).length);
+    assert.ok(stamps.length < 500, 'the window did not slide, so this proves nothing about sliding');
+    assert.equal(stamps[stamps.length - 1], ANCHOR.startedAtMs + 499 * STEP_MS);
+  });
+
+  it('holds the anchor across a restore, so a recovered broadcast is not re-dated', () => {
+    const manager = anchored();
+    feed(manager, 0, 3, 2);
+    const state = manager.getState();
+
+    const recovered = anchored();
+    recovered.restoreState(state.segments, state.hlsHeaders);
+    recovered.addSegment(3, 2, ref(3));
+
+    assert.deepEqual(programDateTimesOf(recovered.buildLiveManifest()), [
+      ANCHOR.startedAtMs,
+      ANCHOR.startedAtMs + STEP_MS,
+      ANCHOR.startedAtMs + 2 * STEP_MS,
+      ANCHOR.startedAtMs + 3 * STEP_MS,
+    ]);
+  });
+
+  /**
+   * A recovery entry written before the sequence was persisted alongside the index. Its offset is
+   * recovered from the first segment it holds, which is what the sequence was then, so the restored
+   * history keeps the stamps it already published.
+   */
+  it('dates a recovery entry that predates the sequence from the first segment it holds', () => {
+    const manager = anchored();
+    manager.restoreState(
+      [
+        { index: 11, duration: 2, ref: ref(11) },
+        { index: 12, duration: 2, ref: ref(12) },
+      ],
+      ['#EXTM3U', '#EXT-X-VERSION:3'],
+    );
+
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
+      ANCHOR.startedAtMs,
+      ANCHOR.startedAtMs + STEP_MS,
+    ]);
   });
 });

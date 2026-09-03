@@ -12,7 +12,7 @@ import { StreamCatalog } from '../src/libs/StreamCatalog.js';
 import { StreamUploader } from '../src/libs/StreamUploader.js';
 import { MEDIA_TYPE_VIDEO, StreamState } from '../src/types.js';
 
-import { makeFakeCatalog, makeFakeRecoveryStore } from './helpers/fakes.js';
+import { makeFakeCatalog, makeFakeRecoveryStore, TEST_ANCHOR } from './helpers/fakes.js';
 
 // A valid 32-byte secp256k1 private key (value 1) — enough for bee-js to derive a signer in tests.
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
@@ -96,6 +96,7 @@ function newUploader(
 ): StreamUploader {
   const feedControl = opts.feedControl ?? (opts.feedWriteFails ? { fail: permanentError } : {});
   return new StreamUploader({
+    anchor: TEST_ANCHOR,
     bee: makeBee(segmentControl, feedControl),
     streamCatalog: makeFakeCatalog(),
     recoveryStore: makeFakeRecoveryStore(),
@@ -285,6 +286,7 @@ describe('StreamUploader discontinuity lifecycle', () => {
       listActive: () => [],
     } as unknown as RecoveryStore;
     const uploader = new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee: makeBee({ fail: permanentError }),
       streamCatalog: makeFakeCatalog(),
       recoveryStore: recovery,
@@ -337,6 +339,7 @@ describe('StreamUploader Swarm write options', () => {
     } as unknown as Bee;
 
     const uploader = new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee,
       streamCatalog: makeFakeCatalog(),
       recoveryStore: makeFakeRecoveryStore(),
@@ -497,6 +500,7 @@ describe('StreamUploader finalization (CON-25)', () => {
     });
 
     const uploader = new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee,
       streamCatalog: catalog,
       recoveryStore: makeFakeRecoveryStore(),
@@ -552,6 +556,7 @@ describe('StreamUploader finalization (CON-25)', () => {
     } as unknown as Bee;
 
     const uploader = new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee,
       streamCatalog: makeFakeCatalog(),
       recoveryStore: makeFakeRecoveryStore(),
@@ -620,6 +625,7 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
   /** Omitting the window is a case of its own: it is the one every deployment actually runs. */
   function newAnnouncingUploader(catalog: StreamCatalog, catalogAnnounceRetryMs?: number): StreamUploader {
     return new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee: makeBee({}),
       streamCatalog: catalog,
       recoveryStore: makeFakeRecoveryStore(),
@@ -759,6 +765,7 @@ describe('StreamUploader catalog announce backoff (CON-3)', () => {
 describe('StreamUploader recovery persist failures (OBS-4)', () => {
   function newUploaderWithStore(recoveryStore: RecoveryStore): StreamUploader {
     return new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee: makeBee({}),
       streamCatalog: makeFakeCatalog(),
       recoveryStore,
@@ -835,7 +842,7 @@ const OVERFLOWING_SEGMENT_COUNT = 60;
 
 /** How many of `count` segments a live manifest built the same way would actually name. */
 function liveWindowSize(count: number): number {
-  const probe = new ManifestManager();
+  const probe = new ManifestManager(TEST_ANCHOR);
   for (let i = 0; i < count; i++) {
     probe.addSegment(i, 2, wideRef(i));
   }
@@ -878,6 +885,7 @@ interface UploaderFixtureOptions {
 
 function uploaderWith(bee: Bee, options: UploaderFixtureOptions = {}): StreamUploader {
   return new StreamUploader({
+    anchor: TEST_ANCHOR,
     bee,
     streamCatalog: makeFakeCatalog(),
     recoveryStore: makeFakeRecoveryStore(),
@@ -1197,6 +1205,7 @@ describe('StreamUploader catalog entry title', () => {
 
     const published: { title: string }[] = [];
     const uploader = new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee: makeBee({}),
       streamCatalog: makeFakeCatalog({
         addStream: async (entry: { title: string }) => {
@@ -1301,6 +1310,7 @@ describe('StreamUploader catalog failures on the segment path', () => {
     } as unknown as RecoveryStore;
 
     return new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee: makeBee({}),
       streamCatalog: catalog,
       recoveryStore: recovery,
@@ -1413,6 +1423,7 @@ describe('StreamUploader ladder finalize metrics', () => {
     } as unknown as StreamCatalog;
 
     return new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee: makeBee({}),
       streamCatalog: catalog,
       recoveryStore: recovery,
@@ -1464,6 +1475,7 @@ describe('StreamUploader ladder re-announce safety', () => {
     } as unknown as RecoveryStore;
 
     return new StreamUploader({
+      anchor: TEST_ANCHOR,
       bee: makeBee({}),
       streamCatalog: catalog,
       recoveryStore: recovery,

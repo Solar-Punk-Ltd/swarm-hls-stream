@@ -14,6 +14,7 @@ import PQueue from 'p-queue';
 
 import {
   BitrateSample,
+  BroadcastAnchor,
   LadderMembership,
   MediaType,
   Rendition,
@@ -121,6 +122,8 @@ interface RestoreState {
   isFirstManifestReady: boolean;
   pendingDiscontinuity?: boolean;
   bitrate?: BitrateSample;
+  /** Absent on an entry written before playlists carried a wall clock. See {@link BroadcastAnchor}. */
+  anchor?: BroadcastAnchor;
 }
 
 export interface StreamUploaderOptions {
@@ -146,6 +149,11 @@ export interface StreamUploaderOptions {
    */
   redundancyLevel: number;
   ladder?: LadderMembership;
+  /**
+   * The instant this broadcast started and the fragment length it cuts at, which together date every
+   * segment this session publishes. One value for the whole ladder. See {@link BroadcastAnchor}.
+   */
+  anchor: BroadcastAnchor;
   /** State from a previous run of this stream id, so a restart resumes rather than starting over. */
   restoreState?: RestoreState;
   /**
@@ -175,6 +183,8 @@ export class StreamUploader {
   private mediatype: MediaType;
   private readiness: AnnounceReadiness = READINESS_PENDING;
   private ladder?: LadderMembership;
+  /** What dates this broadcast's segments, persisted so a recovered session keeps it. */
+  private readonly anchor: BroadcastAnchor;
   private liveManifestQueued = false;
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
@@ -232,8 +242,12 @@ export class StreamUploader {
     this.mediatype = options.mediatype;
     this.ladder = options.ladder;
     this.streamRawTopic = options.streamTopic;
+    // Restored in preference to the one this session was handed, so a recovered broadcast keeps the
+    // wall clock its earlier segments were dated against. Taking the fresh one would restamp the
+    // recording's whole history at the moment of the recovery.
+    this.anchor = options.restoreState?.anchor ?? options.anchor;
 
-    this.manifestManager = new ManifestManager();
+    this.manifestManager = new ManifestManager(this.anchor);
 
     const restoreState = options.restoreState;
     this.resumedFromCrash = restoreState !== undefined;
@@ -629,6 +643,7 @@ export class StreamUploader {
       updatedAt: Date.now(),
       ladder: this.ladder,
       bitrate: this.bitrate,
+      anchor: this.anchor,
     };
   }
 

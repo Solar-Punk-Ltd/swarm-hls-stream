@@ -3,11 +3,26 @@ import path from 'path';
 
 import { Logger } from './Logger.js';
 
-/** Base stream id to the ladder group its rungs publish under. */
-type PersistedLadderGroups = Record<string, string>;
+/** What every rung of one source's ladder has to agree on, and which outlives any one of them. */
+export interface RememberedLadder {
+  /** The ladder's group id, which is the catalog entry's identity and the master feed's topic. */
+  group: string;
+  /** Epoch milliseconds this broadcast was admitted. See `BroadcastAnchor`. */
+  startedAtMs: number;
+}
 
 /**
- * Which ladder each source's rungs belong to, kept where a restart of this process can find it.
+ * Base stream id to its ladder's identity.
+ *
+ * A bare string is what a file written before the broadcast start was kept here holds, and it is
+ * read back as a group with no start rather than discarded, so an upgrade mid-broadcast costs that
+ * ladder a fresh start instant rather than a duplicate catalog entry.
+ */
+type PersistedLadderGroups = Record<string, RememberedLadder | string>;
+
+/**
+ * Which ladder each source's rungs belong to and when its broadcast started, kept where a restart of
+ * this process can find them.
  *
  * The group is the identity a broadcast's single catalog entry is written under. Four rungs fold
  * into one entry keyed by `(owner, group)`, and `StreamCatalog` replaces an entry only when the
@@ -30,14 +45,29 @@ export class LadderGroupStore {
 
   constructor(private filePath: string) {}
 
-  /** The group this source's rungs were last publishing under, or null for one nothing remembers. */
-  public load(base: string): string | null {
-    const group = this.read()[base];
-    return typeof group === 'string' ? group : null;
+  /**
+   * The ladder this source's rungs were last publishing under, or null for one nothing remembers.
+   *
+   * `startedAtMs` is null where the record predates this file keeping one. The caller mints a fresh
+   * instant there rather than being handed a fabricated one, because a wrong wall clock on a
+   * recording is worse than a late one on a broadcast that was already in progress.
+   */
+  public load(base: string): { group: string; startedAtMs: number | null } | null {
+    const identity = this.read()[base];
+    if (typeof identity === 'string') {
+      return { group: identity, startedAtMs: null };
+    }
+    if (identity === null || typeof identity !== 'object' || typeof identity.group !== 'string') {
+      return null;
+    }
+    return {
+      group: identity.group,
+      startedAtMs: typeof identity.startedAtMs === 'number' ? identity.startedAtMs : null,
+    };
   }
 
-  public remember(base: string, group: string): void {
-    this.write({ ...this.read(), [base]: group });
+  public remember(base: string, ladder: RememberedLadder): void {
+    this.write({ ...this.read(), [base]: ladder });
   }
 
   public forget(base: string): void {

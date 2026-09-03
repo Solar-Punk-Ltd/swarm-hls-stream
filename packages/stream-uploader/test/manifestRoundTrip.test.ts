@@ -10,6 +10,8 @@ import { describe, it } from 'node:test';
 
 import { ManifestManager } from '../src/libs/ManifestManager.js';
 
+import { TEST_ANCHOR } from './helpers/fakes.js';
+
 /**
  * The two halves of the manifest contract, exercised against each other.
  *
@@ -27,7 +29,7 @@ interface AddedSegment {
 }
 
 function managerWith(segments: AddedSegment[]): ManifestManager {
-  const manager = new ManifestManager();
+  const manager = new ManifestManager(TEST_ANCHOR);
   for (const segment of segments) {
     manager.addSegment(segment.index, segment.duration, segment.ref, segment.discontinuity ?? false);
   }
@@ -196,7 +198,7 @@ describe('manifest round trip (ARCH-1)', () => {
   });
 
   it('reports an empty manifest as no segments rather than throwing', () => {
-    const parsed = parseManifest(new ManifestManager().buildLiveManifest());
+    const parsed = parseManifest(new ManifestManager(TEST_ANCHOR).buildLiveManifest());
 
     assert.deepEqual(parsed.segments, []);
     assert.equal(parsed.isFinalized, false);

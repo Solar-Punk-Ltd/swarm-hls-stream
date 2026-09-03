@@ -1,6 +1,6 @@
-import { buildExtinf } from '@swarm-hls-stream/shared';
+import { buildExtinf, buildProgramDateTime } from '@swarm-hls-stream/shared';
 
-import { SegmentEntry } from '../types.js';
+import { BroadcastAnchor, SegmentEntry } from '../types.js';
 import {
   HLS_DISCONTINUITY,
   HLS_ENDLIST,
@@ -31,6 +31,8 @@ import { Logger } from './Logger.js';
  */
 export const LIVE_WINDOW_MAX_BYTES = 4096;
 
+const MS_PER_SECOND = 1000;
+
 /**
  * The bytes a manifest of these lines occupies once joined, without joining them.
  *
@@ -42,6 +44,25 @@ function manifestBytes(lines: string[]): number {
 
 function joinManifest(lines: string[]): string {
   return lines.join('\n') + '\n';
+}
+
+/** Where the broadcast's numbering starts: the engine index that publishes as `sequence`. */
+interface SequenceAnchor {
+  index: number;
+  sequence: number;
+}
+
+/**
+ * A segment's place in the broadcast, defaulting to its engine index.
+ *
+ * The default is for entries restored from a recovery entry written before the two numbers were
+ * separated, where nothing on disk records the offset. {@link ManifestManager.restoreState} rewrites
+ * those on the way in, so nothing built from them ever reaches this fallback, and it is kept because
+ * the field stays optional on the persisted shape and a silent `NaN` here would sort the playlist
+ * into nonsense.
+ */
+function sequenceOf(seg: SegmentEntry): number {
+  return seg.sequence ?? seg.index;
 }
 
 /**
@@ -64,18 +85,23 @@ function joinManifest(lines: string[]): string {
  * ⚠️ Recordings published before this carry absolute URIs permanently, so the client keeps passing an
  * absolute segment URI through untouched. That path is for old content, not for new.
  *
- * ## One rung’s media playlist
+ * ## One rung's media playlist, and the two numbers on it
  *
- ** One rung's media playlist.
- **
- ** `EXT-X-MEDIA-SEQUENCE` carries the engine's own sequence number for the playlist's first
- ** segment, not a count of what this uploader has seen. On a single-rendition stream the two are
- ** interchangeable; across an ABR ladder they are not, and the difference is what makes a switch
- ** land where it should. Every rung is transcoded from the same source with keyframes forced to the
- ** same media timestamps, so segment N of 360p and segment N of 1080p cover the same interval —
- ** which is the only thing telling hls.js that two levels share a timeline, since these playlists
- ** carry no `EXT-X-PROGRAM-DATE-TIME`. A count would drift the moment one rung's uploader started a
- ** fragment later than another's, and a switch would then jump by however far apart they were.
+ * A segment reaches here under the **engine's own index**, a counter SRS runs per rung stream and
+ * carries on across broadcasts for as long as its process lives. The playlist publishes a
+ * **sequence** instead, which counts from 0 at the first segment of this broadcast, and an
+ * `EXT-X-PROGRAM-DATE-TIME` derived from that sequence and the broadcast's anchor. Every uploader
+ * log line still names the engine's index, because that is what correlates with the engine's own
+ * logs and with what the e2e harness reads.
+ *
+ * What ties the rungs of a ladder together is that all four derive both numbers from **one anchor**:
+ * every rung is transcoded from the same source with keyframes forced to the same media timestamps,
+ * so segment N of 360p and segment N of 1080p cover the same interval, and both the sequence and the
+ * date-time therefore agree across rungs for the same media. A per-rung count of what each uploader
+ * happened to see would drift the moment one rung started a fragment later than another, and a level
+ * switch would land that far off.
+ *
+ * @see BroadcastAnchor for why the date-time is derived rather than observed per segment.
  */
 export class ManifestManager {
   private segments: SegmentEntry[] = [];
@@ -83,9 +109,32 @@ export class ManifestManager {
   private targetDuration = 0;
   private logger = Logger.getInstance();
 
+  /**
+   * The engine index that publishes as {@link SequenceAnchor.sequence}, and that sequence.
+   *
+   * Null until the first segment arrives, because the first index a rung announces is what the
+   * broadcast's numbering is measured from and nothing before then knows what it will be.
+   */
+  private sequenceAnchor: SequenceAnchor | null = null;
+
+  /**
+   * Whether a sequence number this manager assigned has already gone out in a playlist.
+   *
+   * The one thing that separates the two ways an index can arrive below the anchor. See
+   * {@link sequenceFor}.
+   */
+  private sequenceHasBeenPublished = false;
+
+  constructor(private readonly anchor: BroadcastAnchor) {}
+
   public addSegment(index: number, duration: number, ref: string, discontinuity = false): void {
-    this.segments.push({ index, duration, ref, discontinuity });
-    this.segments.sort((a, b) => a.index - b.index);
+    const sequence = this.sequenceFor(index);
+    this.segments.push({ index, duration, ref, discontinuity, sequence });
+    // By sequence rather than by index, which are the same order for the whole of an ordinary
+    // broadcast and are not after an engine restart: the engine's counter goes back to 0 there and
+    // sorting on it would file the media that comes after the restart in front of the media that
+    // came before.
+    this.segments.sort((a, b) => sequenceOf(a) - sequenceOf(b));
 
     const newTarget = Math.ceil(duration);
     if (newTarget > this.targetDuration) {
@@ -93,6 +142,58 @@ export class ManifestManager {
     }
 
     this.logger.debug(`[ManifestManager] Added segment ${index}, total: ${this.segments.length}`);
+  }
+
+  /**
+   * The playlist sequence this engine index publishes as, counting from 0 at the broadcast's first
+   * segment.
+   *
+   * ⛔ **An index below the anchor is one of two different things, and getting them the wrong way
+   * round breaks a real guarantee each time.**
+   *
+   * Before any playlist has gone out, it is a segment that arrived out of order, and the broadcast
+   * simply began earlier than the first arrival said. Nothing has been promised to anyone yet, so
+   * the anchor moves down and everything already held shifts up to keep media order.
+   *
+   * Afterwards it is the engine's counter having reset under a restart, which SRS does whenever it
+   * disposes a stream. A number already published can never be reused or reduced: hls.js reads a
+   * media sequence that moves backwards as a parsing error, escalates it to fatal on a
+   * single-variant stream, and the client answers a fatal parsing error by remounting the player,
+   * which restarts playback at the beginning. So the numbering re-anchors forwards instead and this
+   * segment continues from the last one published. Its date-time follows the sequence rather than
+   * the reset index, for the same reason.
+   */
+  private sequenceFor(index: number): number {
+    if (this.sequenceAnchor === null) {
+      this.sequenceAnchor = { index, sequence: 0 };
+      return 0;
+    }
+
+    if (index >= this.sequenceAnchor.index) {
+      return this.sequenceAnchor.sequence + (index - this.sequenceAnchor.index);
+    }
+
+    if (!this.sequenceHasBeenPublished) {
+      const shift = this.sequenceAnchor.index - index;
+      this.segments = this.segments.map((seg) => ({ ...seg, sequence: sequenceOf(seg) + shift }));
+      this.sequenceAnchor = { index, sequence: this.sequenceAnchor.sequence };
+      return this.sequenceAnchor.sequence;
+    }
+
+    const resumeAt = this.highestSequence() + 1;
+    this.logger.warn(
+      `[ManifestManager] Segment index ${index} arrived below the anchor at ${this.sequenceAnchor.index}, ` +
+        `so the engine's counter has restarted. Continuing the playlist at sequence ${resumeAt} rather ` +
+        'than moving it backwards',
+    );
+    this.sequenceAnchor = { index, sequence: resumeAt };
+    return resumeAt;
+  }
+
+  /** The highest sequence assigned so far, which the segment list holds in its last entry. */
+  private highestSequence(): number {
+    const newest = this.segments[this.segments.length - 1];
+    return newest === undefined ? 0 : sequenceOf(newest);
   }
 
   public buildLiveManifest(): string {
@@ -126,11 +227,10 @@ export class ManifestManager {
     // uploader has seen. On a single-rendition stream the two are interchangeable; across an ABR
     // ladder they are not, and the difference is what makes a level switch land where it should.
     // Every rung forces keyframes to the same media timestamps, so segment N means the same interval
-    // on every rung, and that is the only thing telling hls.js the levels share a timeline — these
-    // playlists carry no `EXT-X-PROGRAM-DATE-TIME`. A count would drift the moment one rung's
-    // uploader started a fragment later than another's.
+    // on every rung.
     const mediaSequence = windowSegments.length > 0 ? windowSegments[0].index : 0;
 
+    this.sequenceHasBeenPublished = true;
     return [...this.liveHeaderLines(mediaSequence), ...windowSegments.flatMap((seg) => this.segmentLines(seg))];
   }
 
@@ -139,6 +239,7 @@ export class ManifestManager {
       return '';
     }
 
+    this.sequenceHasBeenPublished = true;
     return joinManifest([
       ...this.hlsHeaders,
       `${HLS_TARGET_DURATION}:${this.targetDuration}`,
@@ -194,9 +295,26 @@ export class ManifestManager {
     };
   }
 
+  /**
+   * Take a previous run's segments back, numbering and all.
+   *
+   * ⛔ The numbering is restored rather than recomputed. Whatever this broadcast already published
+   * is what a viewer's player is holding, so a recovered session that renumbered its own history
+   * would move every sequence a viewer had already been handed. An entry written before the engine
+   * index and the playlist sequence were separate numbers carries no sequence at all, and its offset
+   * is recovered from the first segment it holds, which is what the sequence was then.
+   */
   public restoreState(segments: SegmentEntry[], hlsHeaders: string[]): void {
-    this.segments = [...segments];
+    const firstIndex = segments[0]?.index ?? 0;
+    this.segments = segments.map((seg) => ({ ...seg, sequence: seg.sequence ?? seg.index - firstIndex }));
     this.hlsHeaders = [...hlsHeaders];
+
+    const newest = this.segments[this.segments.length - 1];
+    this.sequenceAnchor = newest === undefined ? null : { index: newest.index, sequence: sequenceOf(newest) };
+    // A restored run is one whose numbers are already on disk and, for all this session can tell,
+    // already in a feed a viewer is reading. So its history is settled: an index arriving below the
+    // anchor from here is the engine's counter restarting, never an out-of-order arrival.
+    this.sequenceHasBeenPublished = this.segments.length > 0;
 
     if (this.segments.length > 0) {
       this.targetDuration = Math.ceil(Math.max(...this.segments.map((s) => s.duration)));
@@ -250,8 +368,24 @@ export class ManifestManager {
     ];
   }
 
+  /**
+   * The lines one segment occupies, in the order RFC 8216 §4.3.2.6 wants them: the break first, then
+   * the wall clock the media after the break resumes at, then the segment itself.
+   */
   private segmentLines(seg: SegmentEntry): string[] {
     const discontinuity = seg.discontinuity ? [HLS_DISCONTINUITY] : [];
-    return [...discontinuity, buildExtinf(seg.duration), seg.ref];
+    return [...discontinuity, buildProgramDateTime(this.programDateTimeMsOf(seg)), buildExtinf(seg.duration), seg.ref];
+  }
+
+  /**
+   * When a segment's first frame is presented, derived and never observed.
+   *
+   * Nominal on both terms. The anchor is the broadcast's admission instant rather than any segment's
+   * arrival, and the step is the fragment length the deployment declared rather than the `#EXTINF`
+   * this segment measured. Using either observation would make the four rungs of one ladder disagree
+   * about the same media, which is the one thing this tag exists here to prevent.
+   */
+  private programDateTimeMsOf(seg: SegmentEntry): number {
+    return this.anchor.startedAtMs + Math.round(sequenceOf(seg) * this.anchor.fragmentSeconds * MS_PER_SECOND);
   }
 }

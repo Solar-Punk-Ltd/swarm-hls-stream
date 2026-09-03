@@ -28,6 +28,29 @@ export interface StreamState {
   /** Absent on state written before the ABR ladder existed, and on non-ladder streams. */
   ladder?: LadderMembership;
   bitrate?: BitrateSample;
+  /** Absent on state written before playlists carried a wall clock. See {@link BroadcastAnchor}. */
+  anchor?: BroadcastAnchor;
+}
+
+/**
+ * What fixes a broadcast's playlists to a wall clock, so all four rungs date the same media alike.
+ *
+ * ⛔ **`startedAtMs` is one instant for the whole ladder and it is never re-read from a clock.**
+ * `#EXT-X-PROGRAM-DATE-TIME` is derived from it as `startedAtMs + sequence * fragmentSeconds`, and
+ * that arithmetic is the point: four rung uploaders stamping each segment with the time it happened
+ * to reach them would disagree by their own upload jitter, and hls.js would read that disagreement
+ * as the rungs covering different media. It is minted once, when the broadcast is admitted, and it
+ * outlives every session of that broadcast, including one rebuilt from a recovery entry.
+ *
+ * `fragmentSeconds` is what the deployment declared through `HLS_FRAGMENT`, not what any segment
+ * measured. It is nominal by design: a stamp that tracked measured drift would move a viewer's clock
+ * around by the encoder's rounding.
+ */
+export interface BroadcastAnchor {
+  /** Epoch milliseconds of the broadcast's first fragment, shared by every rung of the ladder. */
+  startedAtMs: number;
+  /** Nominal seconds of media per fragment, from `HLS_FRAGMENT`. */
+  fragmentSeconds: number;
 }
 
 /** One rung of the encoder's ABR ladder, as configured via ABR_LADDER. */
@@ -67,10 +90,19 @@ export interface SegmentSize {
  */
 
 export interface SegmentEntry {
+  /** The engine's own running counter for this segment, which every uploader log line names. */
   index: number;
   duration: number;
   ref: string;
   discontinuity?: boolean;
+  /**
+   * Where this segment sits in the playlist this broadcast publishes, counting from 0.
+   *
+   * Not the same number as `index` and deliberately so: see {@link BroadcastAnchor} and
+   * `ManifestManager.sequenceFor`. Absent on entries persisted before the two were separated, where
+   * the offset between them is recovered from the first segment held.
+   */
+  sequence?: number;
 }
 
 /**

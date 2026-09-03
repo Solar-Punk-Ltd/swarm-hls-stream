@@ -4,11 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
-import { LadderGroupStore } from '../src/libs/LadderGroupStore.js';
+import { LadderGroupStore, RememberedLadder } from '../src/libs/LadderGroupStore.js';
 
 const BASE = 'video/livestream';
 const OTHER_BASE = 'video/second';
 const GROUP = 'ladder-1';
+const STARTED_AT_MS = Date.UTC(2026, 8, 1, 12, 0, 0);
+const LADDER: RememberedLadder = { group: GROUP, startedAtMs: STARTED_AT_MS };
+const OTHER_LADDER: RememberedLadder = { group: 'ladder-2', startedAtMs: STARTED_AT_MS + 60_000 };
 
 const tempRoots: string[] = [];
 
@@ -64,46 +67,72 @@ describe('LadderGroupStore', () => {
     assert.equal(store.load(BASE), null);
   });
 
-  it('hands back the group a base was last remembered under', () => {
+  it('hands back the ladder a base was last remembered under', () => {
     const { store } = storeIn(makeTempRoot());
 
-    store.remember(BASE, GROUP);
+    store.remember(BASE, LADDER);
 
-    assert.equal(store.load(BASE), GROUP);
+    assert.deepEqual(store.load(BASE), LADDER);
   });
 
   /**
    * The whole reason this class exists. A crash takes the orchestrator's in-memory map with it, and
    * a second store over the same file is what the next boot has instead.
    */
-  it('hands the group to a store built fresh over the same file, which is what a restart is', () => {
+  it('hands the ladder to a store built fresh over the same file, which is what a restart is', () => {
     const root = makeTempRoot();
-    storeIn(root).store.remember(BASE, GROUP);
+    storeIn(root).store.remember(BASE, LADDER);
 
-    assert.equal(storeIn(root).store.load(BASE), GROUP);
+    assert.deepEqual(storeIn(root).store.load(BASE), LADDER);
+  });
+
+  /**
+   * The start instant is why the group survives a restart at all now: it is what dates every segment
+   * of the recovered broadcast, so a boot that recovered the group and lost the clock would restamp
+   * the whole recording at the moment of the restart.
+   */
+  it('carries the broadcast start across a restart, not only the group', () => {
+    const root = makeTempRoot();
+    storeIn(root).store.remember(BASE, LADDER);
+
+    assert.equal(storeIn(root).store.load(BASE)?.startedAtMs, STARTED_AT_MS);
+  });
+
+  /**
+   * A file written before this store kept a start instant. Read as a group with no clock, so the
+   * caller mints a late-but-honest one, rather than as nothing, which would mint a second group and
+   * list one broadcast twice.
+   */
+  it('reads a bare group string as that group with no start recorded', () => {
+    const root = makeTempRoot();
+    const { filePath } = storeIn(root);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({ [BASE]: GROUP }));
+
+    assert.deepEqual(storeIn(root).store.load(BASE), { group: GROUP, startedAtMs: null });
   });
 
   it('keeps one base group apart from another', () => {
     const root = makeTempRoot();
     const { store } = storeIn(root);
 
-    store.remember(BASE, GROUP);
-    store.remember(OTHER_BASE, 'ladder-2');
+    store.remember(BASE, LADDER);
+    store.remember(OTHER_BASE, OTHER_LADDER);
 
-    assert.equal(storeIn(root).store.load(BASE), GROUP);
-    assert.equal(storeIn(root).store.load(OTHER_BASE), 'ladder-2');
+    assert.deepEqual(storeIn(root).store.load(BASE), LADDER);
+    assert.deepEqual(storeIn(root).store.load(OTHER_BASE), OTHER_LADDER);
   });
 
   it('forgets a base once its ladder is done, so the next broadcast on it is a new recording', () => {
     const root = makeTempRoot();
     const { store } = storeIn(root);
-    store.remember(BASE, GROUP);
-    store.remember(OTHER_BASE, 'ladder-2');
+    store.remember(BASE, LADDER);
+    store.remember(OTHER_BASE, OTHER_LADDER);
 
     store.forget(BASE);
 
     assert.equal(storeIn(root).store.load(BASE), null);
-    assert.equal(storeIn(root).store.load(OTHER_BASE), 'ladder-2', 'forgetting one base took another with it');
+    assert.deepEqual(storeIn(root).store.load(OTHER_BASE), OTHER_LADDER, 'forgetting one base took another with it');
   });
 
   it('forgets a base it never held without complaining', () => {
@@ -122,7 +151,7 @@ describe('LadderGroupStore', () => {
   it('reads a damaged file as nothing remembered, loudly, rather than throwing', () => {
     const root = makeTempRoot();
     const { store, filePath } = storeIn(root);
-    store.remember(BASE, GROUP);
+    store.remember(BASE, LADDER);
     fs.writeFileSync(filePath, '{ this is not json');
 
     const { result, lines } = capturingErrors(() => storeIn(root).store.load(BASE));
@@ -134,8 +163,8 @@ describe('LadderGroupStore', () => {
   it('reads a file holding the wrong shape as nothing remembered', () => {
     const root = makeTempRoot();
     const { store, filePath } = storeIn(root);
-    store.remember(BASE, GROUP);
-    fs.writeFileSync(filePath, JSON.stringify({ [BASE]: { group: GROUP } }));
+    store.remember(BASE, LADDER);
+    fs.writeFileSync(filePath, JSON.stringify({ [BASE]: { startedAtMs: STARTED_AT_MS } }));
 
     const { result } = capturingErrors(() => storeIn(root).store.load(BASE));
 
@@ -145,7 +174,7 @@ describe('LadderGroupStore', () => {
   it('reports a write it could not land instead of throwing into the announce path', () => {
     const store = new LadderGroupStore(unwritablePath(makeTempRoot()));
 
-    const { lines } = capturingErrors(() => store.remember(BASE, GROUP));
+    const { lines } = capturingErrors(() => store.remember(BASE, LADDER));
 
     assert.equal(lines.length, 1, `a refused write must be reported exactly once, got ${lines.length} line(s)`);
   });

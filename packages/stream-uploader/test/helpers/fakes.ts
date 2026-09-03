@@ -7,6 +7,7 @@ import { MetricsSnapshot } from '../../src/libs/ServiceMetrics.js';
 import { StreamCatalog } from '../../src/libs/StreamCatalog.js';
 import { StreamOrchestrator, StreamOrchestratorConfig } from '../../src/libs/StreamOrchestrator.js';
 import {
+  BroadcastAnchor,
   HealthSignals,
   MEDIA_TYPE_VIDEO,
   PRESSURE_LOW,
@@ -18,6 +19,19 @@ import {
 } from '../../src/types.js';
 
 const TEST_STREAM_KEY = '0'.repeat(63) + '1';
+
+/**
+ * The wall clock a test broadcast is dated against, and the fragment length it steps by.
+ *
+ * A round instant and a whole number of seconds, so a `#EXT-X-PROGRAM-DATE-TIME` an assertion writes
+ * out by hand is legible. Deliberately unlike any `#EXTINF` the fakes produce: the stamp is derived
+ * from the declared fragment length and never from what a segment measured, and a test whose two
+ * numbers agreed would not notice if that stopped being true.
+ */
+export const TEST_ANCHOR: BroadcastAnchor = {
+  startedAtMs: Date.UTC(2026, 8, 1, 12, 0, 0),
+  fragmentSeconds: 2,
+};
 
 /**
  * A status outside `RETRYABLE_HTTP_STATUSES`, so `retryUntilDeadlineAsync` rethrows on the first
@@ -316,6 +330,7 @@ export function makeTestOrchestrator(
     recoveryTimeout: 60_000,
     orphanReapMs: 60_000,
     segmentStallMs: 30_000,
+    fragmentSeconds: TEST_ANCHOR.fragmentSeconds,
     segmentDedupWindow: 10_000,
     segmentRedundancy: 1,
     ...config,

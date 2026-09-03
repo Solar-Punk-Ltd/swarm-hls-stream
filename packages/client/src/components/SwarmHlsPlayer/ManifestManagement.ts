@@ -171,11 +171,13 @@ export class ManifestStateManager {
     // manifest. A viewer sees a recording that never starts.
     //
     // Kept exactly as the uploader wrote them rather than renumbered. The header that matters is
-    // EXT-X-MEDIA-SEQUENCE, the engine's own sequence number for the oldest segment in this first
+    // EXT-X-MEDIA-SEQUENCE, the sequence the publisher gave the oldest segment in this first
     // playlist. It used to be rewritten to zero, which reads fine for one playlist on its own but is
-    // wrong across a ladder: with no EXT-X-PROGRAM-DATE-TIME here it is the only thing telling hls.js
-    // two rungs share a timeline, so four rungs all starting at zero while their first segments cover
-    // different intervals turn every level switch into a gap or an overlap. See ABR media-sequence.
+    // wrong across a ladder: the publisher derives that number and each segment's
+    // EXT-X-PROGRAM-DATE-TIME from one anchor the whole ladder shares, so a viewer renumbering its
+    // own copy per rung puts four rungs back into disagreement about the same media. A viewer who
+    // joined mid-broadcast holds a window that starts later than one who joined at the top, and
+    // rewriting both to zero is exactly the claim that they cover the same instant.
     if (state.headers.length === 0) {
       state.headers = [...headers];
     }
@@ -252,6 +254,14 @@ export class ManifestStateManager {
     for (const seg of state.segments) {
       if (seg.discontinuity) {
         lines.push(HLS_DISCONTINUITY);
+      }
+      // Passed through exactly as the publisher wrote it, never recomputed. It is the publisher's
+      // one statement of when this media happened, derived there from a single anchor the whole
+      // ladder shares, and a viewer rebuilding it from its own arrival times would hand hls.js four
+      // rungs that disagree about the same segment. Absent on a recording published before the
+      // uploader stamped them, where there is nothing to pass on.
+      if (seg.programDateTime) {
+        lines.push(seg.programDateTime);
       }
       lines.push(seg.extinf);
       lines.push(this.buildUri(seg.uri, bytesUrl));

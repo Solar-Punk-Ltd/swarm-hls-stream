@@ -9,6 +9,9 @@ import { parseManifest } from '../src/components/SwarmHlsPlayer/playlist';
 const M3U = '#EXTM3U';
 const EXTINF_2S = '#EXTINF:2,';
 const DISCONTINUITY = '#EXT-X-DISCONTINUITY';
+const PROGRAM_DATE_TIME = '#EXT-X-PROGRAM-DATE-TIME';
+const PDT_0 = `${PROGRAM_DATE_TIME}:2026-09-01T12:00:00.000Z`;
+const PDT_1 = `${PROGRAM_DATE_TIME}:2026-09-01T12:00:02.000Z`;
 
 describe('parseManifest discontinuity handling', () => {
   it('attaches the discontinuity flag to the segment following the tag', () => {
@@ -86,11 +89,63 @@ describe('ManifestStateManager serialize', () => {
     assert.ok(!out.includes(`${DISCONTINUITY}\n${EXTINF_2S}\nseg0.ts`), 'seg0 must not carry a discontinuity');
   });
 
-  it('keeps the engine media sequence of the first playlist instead of rewinding it to zero', () => {
+  /**
+   * The publisher's own wall clock, handed on untouched.
+   *
+   * It is derived there from one anchor the whole ladder shares, so it is the statement that two
+   * rungs cover the same media. A viewer that dropped it, or rebuilt it from its own arrival times,
+   * would put the rungs back into disagreement. Dropping it is the easy failure: a per-segment tag
+   * that the parser filed as a header would be emitted once, above everything, and every segment
+   * after the first would lose its stamp with nothing reporting it.
+   */
+  it('re-emits every #EXT-X-PROGRAM-DATE-TIME with the segment it belongs to', () => {
+    const manifest = [
+      M3U,
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:2',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '',
+      PDT_0,
+      EXTINF_2S,
+      'seg0.ts',
+      PDT_1,
+      EXTINF_2S,
+      'seg1.ts',
+    ].join('\n');
+    const parsed = parseManifest(manifest);
+    manager.updateManifest(TOPIC, parsed.headers, parsed.segments, parsed.isFinalized);
+
+    const out = manager.serialize(TOPIC, '');
+
+    assert.ok(out.includes(`${PDT_0}\n${EXTINF_2S}\nseg0.ts`), `seg0 lost its wall clock, got:\n${out}`);
+    assert.ok(out.includes(`${PDT_1}\n${EXTINF_2S}\nseg1.ts`), `seg1 lost its wall clock, got:\n${out}`);
+    assert.equal(out.split(PROGRAM_DATE_TIME).length - 1, 2, `one stamp per segment, got:\n${out}`);
+  });
+
+  it('puts the break before the stamp, so the stamp dates the media that resumes', () => {
+    const manifest = [M3U, PDT_0, EXTINF_2S, 'seg0.ts', DISCONTINUITY, PDT_1, EXTINF_2S, 'seg1.ts'].join('\n');
+    const parsed = parseManifest(manifest);
+    manager.updateManifest(TOPIC, parsed.headers, parsed.segments, parsed.isFinalized);
+
+    const out = manager.serialize(TOPIC, '');
+
+    assert.ok(out.includes(`${DISCONTINUITY}\n${PDT_1}\n${EXTINF_2S}\nseg1.ts`), `got:\n${out}`);
+  });
+
+  /** Old recordings carry no stamps, and a viewer must not invent one for them. */
+  it('emits no stamp at all for a playlist that carries none', () => {
+    const manifest = [M3U, EXTINF_2S, 'seg0.ts', EXTINF_2S, 'seg1.ts'].join('\n');
+    const parsed = parseManifest(manifest);
+    manager.updateManifest(TOPIC, parsed.headers, parsed.segments, parsed.isFinalized);
+
+    assert.ok(!manager.serialize(TOPIC, '').includes(PROGRAM_DATE_TIME));
+  });
+
+  it('keeps the media sequence of the first playlist instead of rewinding it to zero', () => {
     // The relapse guard for ABR's media-sequence fix. Every rung is transcoded from one source with
-    // keyframes on the same timestamps, so segment N is the same interval on all of them, and with no
-    // EXT-X-PROGRAM-DATE-TIME the sequence number is the only thing telling hls.js two rungs share a
-    // timeline. Rewriting it to zero, which every rung would do, lands each level switch in a gap.
+    // keyframes on the same timestamps, so segment N is the same interval on all of them, and the
+    // publisher derives both the sequence and each stamp from one anchor the ladder shares.
+    // Rewriting the sequence to zero, which every rung would do, lands each level switch in a gap.
     //
     // Asserted on the '#' lines on purpose: the fetcher's own tests read only segment URIs, so a
     // renumbering would pass every one of them, which is how this was lost in the merge.

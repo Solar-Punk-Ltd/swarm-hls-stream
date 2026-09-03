@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { buildExtinf, parseManifest, segmentDuration } from '../src/manifest.js';
+import {
+  buildExtinf,
+  buildProgramDateTime,
+  parseManifest,
+  programDateTimeMs,
+  segmentDuration,
+} from '../src/manifest.js';
 
 describe('segmentDuration', () => {
   it('reads the fractional seconds an EXTINF line carries', () => {
@@ -116,5 +122,96 @@ describe('parseManifest', () => {
     const parsed = parseManifest([...LIVE, '#EXTINF:4,', 'seg0.ts', '#EXT-X-TARGETDURATION:9'].join('\n'));
 
     assert.ok(!parsed.headers.includes('#EXT-X-TARGETDURATION:9'));
+  });
+
+  const PDT_0 = '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:00.000Z';
+  const PDT_1 = '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:04.000Z';
+
+  it('attaches a program date-time to the segment that follows it', () => {
+    const parsed = parseManifest([...LIVE, PDT_0, '#EXTINF:4,', 'seg0.ts', PDT_1, '#EXTINF:4,', 'seg1.ts'].join('\n'));
+
+    assert.deepEqual(
+      parsed.segments.map((s) => s.programDateTime),
+      [PDT_0, PDT_1],
+    );
+  });
+
+  // The header branch is where a per-segment tag emitted before the first segment used to land, and
+  // a client that captures the first playlist's headers once would then repeat that one instant
+  // above every segment it ever appends.
+  it('keeps the first segment’s program date-time out of the headers', () => {
+    const parsed = parseManifest([...LIVE, PDT_0, '#EXTINF:4,', 'seg0.ts'].join('\n'));
+
+    assert.deepEqual(parsed.headers, LIVE.filter(Boolean));
+    assert.equal(parsed.segments[0].programDateTime, PDT_0);
+  });
+
+  it('does not carry a program date-time past the segment it belongs to', () => {
+    const parsed = parseManifest([...LIVE, PDT_0, '#EXTINF:4,', 'seg0.ts', '#EXTINF:4,', 'seg1.ts'].join('\n'));
+
+    assert.deepEqual(
+      parsed.segments.map((s) => s.programDateTime),
+      [PDT_0, undefined],
+    );
+  });
+
+  it('reads a break and the stamp after it as belonging to the same segment', () => {
+    const parsed = parseManifest(
+      [...LIVE, '#EXTINF:4,', 'seg0.ts', '#EXT-X-DISCONTINUITY', PDT_1, '#EXTINF:4,', 'seg1.ts'].join('\n'),
+    );
+
+    assert.deepEqual(parsed.segments[1], {
+      extinf: '#EXTINF:4,',
+      uri: 'seg1.ts',
+      discontinuity: true,
+      programDateTime: PDT_1,
+    });
+  });
+
+  it('leaves the field off a playlist that carries no stamps, which is every old recording', () => {
+    const parsed = parseManifest([...LIVE, '#EXTINF:4,', 'seg0.ts'].join('\n'));
+
+    assert.equal(parsed.segments[0].programDateTime, undefined);
+  });
+
+  it('counts the segments of a stamped playlist exactly as it counts an unstamped one', () => {
+    const stamped = [...LIVE, PDT_0, '#EXTINF:4,', 'seg0.ts', PDT_1, '#EXTINF:4,', 'seg1.ts'];
+    const bare = [...LIVE, '#EXTINF:4,', 'seg0.ts', '#EXTINF:4,', 'seg1.ts'];
+
+    assert.equal(parseManifest(stamped.join('\n')).segments.length, parseManifest(bare.join('\n')).segments.length);
+  });
+});
+
+describe('buildProgramDateTime', () => {
+  it('writes UTC to the millisecond, which is the precision RFC 8216 allows', () => {
+    assert.equal(
+      buildProgramDateTime(Date.UTC(2026, 8, 1, 12, 0, 0) + 500),
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:00.500Z',
+    );
+  });
+
+  it('round-trips through the reader', () => {
+    const at = Date.UTC(2026, 8, 1, 12, 0, 0) + 250;
+
+    assert.equal(programDateTimeMs(buildProgramDateTime(at)), at);
+  });
+});
+
+describe('programDateTimeMs', () => {
+  it('reads an offset spelled as +00:00, which is what other origins write', () => {
+    assert.equal(programDateTimeMs('#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:00.000+00:00'), Date.UTC(2026, 8, 1, 12));
+  });
+
+  it('tolerates the space some origins leave after the colon', () => {
+    assert.equal(programDateTimeMs('#EXT-X-PROGRAM-DATE-TIME: 2026-09-01T12:00:00.000Z '), Date.UTC(2026, 8, 1, 12));
+  });
+
+  // Not a number rather than 0, which would date the segment to 1970 and read as a real instant.
+  it('answers null for a value that is not a date', () => {
+    assert.equal(programDateTimeMs('#EXT-X-PROGRAM-DATE-TIME:not-a-date'), null);
+  });
+
+  it('answers null for a line that is not the tag', () => {
+    assert.equal(programDateTimeMs('#EXTINF:4,'), null);
   });
 });

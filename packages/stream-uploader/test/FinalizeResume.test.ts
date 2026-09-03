@@ -17,7 +17,7 @@ import {
   StreamStatus,
 } from '../src/types.js';
 
-import { FakeFeedHead, makeFakeBee, makeFakeCatalog, makeFakeRecoveryStore } from './helpers/fakes.js';
+import { FakeFeedHead, makeFakeBee, makeFakeCatalog, makeFakeRecoveryStore, TEST_ANCHOR } from './helpers/fakes.js';
 
 /**
  * ## Scenario H, as a unit: a finalize that comes back after a crash must not buy the recording twice
@@ -50,7 +50,7 @@ const SEGMENTS: SegmentEntry[] = [
 
 /** The playlists the real producer writes, so the discriminator is read off `ManifestManager`. */
 function manifests(segments: SegmentEntry[]): { vod: string; closingLive: string } {
-  const manager = new ManifestManager();
+  const manager = new ManifestManager(TEST_ANCHOR);
   manager.restoreState(segments, ['#EXTM3U', '#EXT-X-VERSION:3']);
   return { vod: manager.buildVODManifest(), closingLive: manager.buildClosingLiveManifest() };
 }
@@ -117,6 +117,7 @@ function makeRecovered(options: RecoveredOptions = {}): RecoveredUploader {
   };
 
   const uploader = new StreamUploader({
+    anchor: TEST_ANCHOR,
     bee,
     streamCatalog: options.catalog ?? makeFakeCatalog(),
     recoveryStore,

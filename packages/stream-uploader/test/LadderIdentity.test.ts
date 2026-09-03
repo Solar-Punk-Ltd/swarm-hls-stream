@@ -5,7 +5,7 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
-import { LadderGroupStore } from '../src/libs/LadderGroupStore.js';
+import { LadderGroupStore, RememberedLadder } from '../src/libs/LadderGroupStore.js';
 import { buildLadderEntry, LadderIdentity, StreamEntry } from '../src/libs/StreamCatalog.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import { MEDIA_TYPE_VIDEO, Rendition } from '../src/types.js';
@@ -43,11 +43,15 @@ function makeTempRoot(): string {
 
 /** Reaches the ladder maps directly, for the reason `StreamOrchestrator.test.ts` gives: the group id has no behavioural signal to observe. */
 interface LadderMaps {
-  ladderGroups: Map<string, string>;
+  ladderGroups: Map<string, RememberedLadder>;
+}
+
+function ladderOf(orch: StreamOrchestrator, base: string): RememberedLadder | undefined {
+  return (orch as unknown as LadderMaps).ladderGroups.get(base);
 }
 
 function groupOf(orch: StreamOrchestrator, base: string): string | undefined {
-  return (orch as unknown as LadderMaps).ladderGroups.get(base);
+  return ladderOf(orch, base)?.group;
 }
 
 /**
@@ -89,6 +93,25 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
       groupOf(after, BASE),
       group,
       'the reboot minted a second ladder for one broadcast, so the catalog lists it twice',
+    );
+
+    await after.stopStream(RUNG_720P);
+  });
+
+  it('gives a rung announced after the crash the wall clock its broadcast started on', async () => {
+    const root = makeTempRoot();
+    const before = bootWithLadder(root);
+    before.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    await waitFor(() => ladderOf(before, BASE) !== undefined, SETTLE_CEILING_MS);
+    const startedAtMs = ladderOf(before, BASE)?.startedAtMs;
+
+    const after = bootWithLadder(root);
+    after.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+
+    assert.equal(
+      ladderOf(after, BASE)?.startedAtMs,
+      startedAtMs,
+      'the reboot re-dated the broadcast, so every segment after it claims a wall clock the media never had',
     );
 
     await after.stopStream(RUNG_720P);

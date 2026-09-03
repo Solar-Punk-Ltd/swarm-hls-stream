@@ -1,16 +1,21 @@
-import { HLS_DISCONTINUITY, HLS_ENDLIST, HLS_EXTINF } from './hlsTags.js';
+import { HLS_DISCONTINUITY, HLS_ENDLIST, HLS_EXTINF, HLS_PROGRAM_DATE_TIME } from './hlsTags.js';
 
 /**
  * One media segment as it survives a manifest round trip.
  *
- * `extinf` is the whole `#EXTINF:<duration>,` line rather than the number, because the parser is
- * lossless by design: what the builder wrote is what a reader gets back, and `segmentDuration`
- * exists for the callers that want the number.
+ * `extinf` and `programDateTime` are whole lines rather than numbers, because the parser is
+ * lossless by design: what the builder wrote is what a reader gets back, and `segmentDuration` and
+ * `programDateTimeMs` exist for the callers that want the numbers.
  */
 export interface Segment {
   extinf: string;
   uri: string;
   discontinuity?: boolean;
+  /**
+   * The `#EXT-X-PROGRAM-DATE-TIME` line that preceded this segment, absent on a playlist that
+   * carries none. Recordings published before the uploader started stamping them are the case.
+   */
+  programDateTime?: string;
 }
 
 export interface ParsedManifest {
@@ -57,11 +62,45 @@ export function segmentDuration(extinf: string): number | null {
 }
 
 /**
+ * The `#EXT-X-PROGRAM-DATE-TIME:<instant>` line for a segment, the one spelling both packages write.
+ *
+ * `toISOString` is UTC with exactly three decimal places, which is the precision RFC 8216 §4.3.2.6
+ * permits and the precision a fragment length below a second needs: at 0.5s fragments a whole-second
+ * stamp would give two consecutive segments the same instant.
+ *
+ * @param epochMs when the segment's first frame is presented, in epoch milliseconds
+ */
+export function buildProgramDateTime(epochMs: number): string {
+  return `${HLS_PROGRAM_DATE_TIME}:${new Date(epochMs).toISOString()}`;
+}
+
+/**
+ * The instant an `#EXT-X-PROGRAM-DATE-TIME` line carries in epoch milliseconds, or `null` when the
+ * line is not one or its value is not a date.
+ *
+ * `Date.parse` accepts every offset form RFC 8216 allows, so a `+00:00` from another origin reads
+ * the same as the `Z` this project writes.
+ */
+export function programDateTimeMs(line: string): number | null {
+  if (!line.startsWith(`${HLS_PROGRAM_DATE_TIME}:`)) {
+    return null;
+  }
+  const parsed = Date.parse(line.slice(HLS_PROGRAM_DATE_TIME.length + 1).trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Split a playlist into its headers and its segments.
  *
- * Header lines are the ones before the first segment or discontinuity. `#EXT-X-ENDLIST` sets
- * `isFinalized` wherever it appears, since a finished recording is the one fact a reader must not
- * miss.
+ * Header lines are the ones before the first segment, discontinuity or program date-time.
+ * `#EXT-X-ENDLIST` sets `isFinalized` wherever it appears, since a finished recording is the one
+ * fact a reader must not miss.
+ *
+ * ⛔ `#EXT-X-PROGRAM-DATE-TIME` belongs to the segment after it, never to the headers, and it ends
+ * the header block for the same reason a discontinuity does. Left in the header branch, the first
+ * segment's stamp would be captured as a header the client then repeats above every later segment,
+ * and every other stamp would be dropped on the floor, silently, because a line that is neither a
+ * header nor a segment has nowhere else to go.
  *
  * **This reads the playlists this project produces, not RFC 8216 in general**, and the difference is
  * worth stating because the function now lives in a shared package where it looks more general than
@@ -79,6 +118,7 @@ export function parseManifest(text: string): ParsedManifest {
   let isFinalized = false;
   let headersDone = false;
   let pendingDiscontinuity = false;
+  let pendingProgramDateTime: string | undefined;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -94,14 +134,26 @@ export function parseManifest(text: string): ParsedManifest {
       continue;
     }
 
+    if (line.startsWith(`${HLS_PROGRAM_DATE_TIME}:`)) {
+      headersDone = true;
+      pendingProgramDateTime = line;
+      continue;
+    }
+
     if (line.startsWith(HLS_EXTINF)) {
       headersDone = true;
       const uri = lines[i + 1]?.trim();
       if (uri && !uri.startsWith('#')) {
-        segments.push({ extinf: line, uri, discontinuity: pendingDiscontinuity });
+        segments.push({
+          extinf: line,
+          uri,
+          discontinuity: pendingDiscontinuity,
+          ...(pendingProgramDateTime === undefined ? {} : { programDateTime: pendingProgramDateTime }),
+        });
         i++;
       }
       pendingDiscontinuity = false;
+      pendingProgramDateTime = undefined;
       continue;
     }
 

@@ -50,6 +50,22 @@ const MAX_STAMP_MIN_TTL_HOURS = 24 * 365;
 const DEFAULT_STAMP_MAX_UTILIZATION = 0.9;
 
 /**
+ * Nominal seconds of media per fragment, matching `HLS_FRAGMENT`'s default in `docker-compose.yml`.
+ *
+ * ⚠️ It is what the deployment **asks** the engine to cut at, never what a segment measured. Under
+ * a ladder the two agree, because each rung is re-GOPed at `ABR_FPS x HLS_FRAGMENT` and SRS then
+ * cuts exactly there. On a single-rendition stream the publisher's own keyframe interval decides the
+ * segment and this is only a floor, so a broadcaster sending a longer GOP produces longer segments
+ * than the wall clock derived from this steps by. See `deploy/README.md`.
+ *
+ * The bounds are the range SRS itself will work in: below a frame the entrypoint refuses the GOP
+ * arithmetic outright, and an hour is `isUsableDuration`'s own ceiling on a segment.
+ */
+const DEFAULT_HLS_FRAGMENT_SECONDS = 0.5;
+const MIN_HLS_FRAGMENT_SECONDS = 0.01;
+const MAX_HLS_FRAGMENT_SECONDS = 3600;
+
+/**
  * The ABR ladder, or null when the engine is producing a single rendition.
  *
  * Parsed eagerly and allowed to throw: a malformed ABR_LADDER means the uploader would group
@@ -106,6 +122,10 @@ export const config = {
   maxQueueSize: optionalInt('MAX_QUEUE_SIZE', 100, { min: 1 }),
   recoveryTimeout: optionalInt('RECOVERY_TIMEOUT', 60000, { min: 1 }),
   segmentStallMs: optionalInt('SEGMENT_STALL_MS', 30000, { min: 1 }),
+  fragmentSeconds: optionalNumber('HLS_FRAGMENT', DEFAULT_HLS_FRAGMENT_SECONDS, {
+    min: MIN_HLS_FRAGMENT_SECONDS,
+    max: MAX_HLS_FRAGMENT_SECONDS,
+  }),
   /**
    * How long a live stream may receive nothing before it is finalized as a VOD, on the assumption
    * that its engine died without sending `on_unpublish`. See #86.

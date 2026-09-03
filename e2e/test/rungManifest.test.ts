@@ -84,6 +84,32 @@ describe('what a rung manifest says', () => {
 
     assert.deepEqual(parseRungManifest('360p', 'topic', text).refs, [REF_A]);
   });
+
+  /**
+   * Every playlist the uploader writes now carries a wall clock before each `#EXTINF`. This reader
+   * counts segments and reads durations off the tags it wants, so the new line must change neither.
+   * A probe that counted one extra segment per stamp would take a reference pool it does not have.
+   */
+  it('is unmoved by the program date-time before every segment', () => {
+    const stamped = [
+      '#EXTM3U',
+      '#EXT-X-TARGETDURATION:3',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:00.000Z',
+      '#EXTINF:2.000, no desc',
+      REF_A,
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:02.000Z',
+      '#EXTINF:2.000, no desc',
+      REF_B,
+    ].join('\n');
+
+    const parsed = parseRungManifest('360p', 'topic', stamped);
+
+    assert.deepEqual(parsed.refs, [REF_A, REF_B]);
+    assert.equal(parsed.manifest.segmentCount, 2);
+    assert.equal(parsed.manifest.medianSegmentSeconds, 2);
+    assert.equal(parsed.manifest.targetDurationS, 3);
+  });
 });
 
 describe('whether a recording can carry this run', () => {
