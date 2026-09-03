@@ -24,6 +24,7 @@ import {
   REJECT_QUEUE_FULL,
   REJECT_UNKNOWN_STREAM,
   REJECT_UNUSABLE_DURATION,
+  SegmentEntry,
   SegmentResult,
   STOP_FAILURE_DRAIN_TIMEOUT,
   STOP_FAILURE_FINALIZE_FAILED,
@@ -162,6 +163,32 @@ function isRebuildableStreamState(state: StreamState): boolean {
   return Array.isArray(state.segments);
 }
 
+/**
+ * The engine index of the newest segment a recovery entry holds, or null for an entry holding none.
+ *
+ * ⛔ Newest by playlist **sequence** rather than by index, because those two disagree exactly where
+ * it matters. An engine whose counter restarted before the crash leaves the entry holding a low
+ * index for its most recent media, and reading the highest index as the newest would then infer a
+ * loss the width of the whole pre-restart broadcast on the first segment after the recovery.
+ *
+ * `sequence ?? index` is the same ordering `ManifestManager` sorts these entries by, so this asks
+ * the array the question it is already arranged to answer. The field is optional on the persisted
+ * shape, and on an entry written before the two numbers were separated the index IS the order.
+ */
+function newestRestoredIndex(segments: readonly SegmentEntry[]): number | null {
+  let newestIndex: number | null = null;
+  let newestOrder = -Infinity;
+
+  for (const segment of segments) {
+    const order = segment.sequence ?? segment.index;
+    if (order > newestOrder) {
+      newestOrder = order;
+      newestIndex = segment.index;
+    }
+  }
+  return newestIndex;
+}
+
 /** Why an announce may not take a live stream id. Each spelling states only what its own branch established. */
 type TakeoverRefusal = 'proven-incumbent' | 'still-publishing';
 
@@ -188,6 +215,15 @@ export class StreamOrchestrator {
    */
   private drainPromises = new Map<string, { uploader: StreamUploader | undefined; promise: Promise<void> }>();
   private processedSegments = new Map<string, RecentSegmentIndexes>();
+  /**
+   * Per stream, the last engine index accounted for in arrival order: one this stream took, or one a
+   * reported loss covered. What the next arrival is measured against, so a skip in the engine's own
+   * numbering becomes a discontinuity instead of a silent hole. See {@link accountForTakenSegment}.
+   *
+   * Absent means nothing has been accounted for yet, and the first arrival then infers nothing: a
+   * broadcast opens at whatever number a warm engine's counter is on, so there is no gap to measure.
+   */
+  private lastAccountedIndex = new Map<string, number>();
   private recoveryTimers = new Map<string, Timer>();
   /**
    * One watchdog per live stream, which finalizes it if its engine goes silent and stays silent.
@@ -467,6 +503,10 @@ export class StreamOrchestrator {
   private retireSession(streamId: string): void {
     this.activeStreams.delete(streamId);
     this.processedSegments.delete(streamId);
+    // OBS-19's hazard, one map along. The engine's counter is a fact about the session producing it,
+    // and the id can be handed straight to another engine: kept, the first segment of the next
+    // broadcast on this id would read as a gap the distance between two unrelated counters.
+    this.lastAccountedIndex.delete(streamId);
     this.streamActivityAt.delete(streamId);
     this.streamIngestAt.delete(streamId);
     this.streamClaimants.delete(streamId);
@@ -693,6 +733,9 @@ export class StreamOrchestrator {
       return { accepted: false, reason: REJECT_QUEUE_FULL };
     }
 
+    // Before the filter is told about this index, because the walk below asks the filter what it
+    // holds and `add` may retire a whole generation of it.
+    this.accountForTakenSegment(streamId, uploader, segmentIndex, processed);
     processed?.add(segmentIndex);
     this.streamActivityAt.set(streamId, this.clock.now());
 
@@ -781,6 +824,88 @@ export class StreamOrchestrator {
   }
 
   /**
+   * Record an index this stream has just taken, and arm a discontinuity for whatever the engine
+   * skipped to reach it.
+   *
+   * ⛔ **The gap nobody reports.** `handleSegmentLoss` covers every loss the uploader is TOLD about,
+   * and on the shipped SRS engine it is told about almost none: SRS posts each closed segment to the
+   * webhook once and never retries, so everything it closed while this process was down is simply
+   * absent. `ManifestManager` then publishes the arriving index at a sequence the width of the gap
+   * above the last one, and derives its `#EXT-X-PROGRAM-DATE-TIME` from that, with no break in
+   * front of it. That is a playlist promising a viewer media it does not name, and hls.js stalls on
+   * one. The arriving index is the only evidence there is.
+   *
+   * Called where the segment is taken, which is the accept path and the withheld-opening path both:
+   * a withheld segment reached this service intact and is never retried, so it accounts for itself.
+   * A duplicate and every rejection leave the accounting alone, and on the SRS path a rejection is
+   * followed by `handleSegmentLoss` for that same index.
+   *
+   * ⚠️ An index at or below the last one is the engine's counter restarting, not a gap, and it is
+   * already answered where it shows: `ManifestManager.placeInBroadcast` re-anchors the numbering and
+   * the dating forwards and marks the segment it lands on. The accounting follows the restart down,
+   * so a real gap inside the new run is still seen.
+   *
+   * Deliberately does not touch `streamActivityAt`. The arriving segment refreshes it on the accept
+   * path one line along, and a loss is not progress. See `handleSegmentLoss`.
+   */
+  private accountForTakenSegment(
+    streamId: string,
+    uploader: StreamUploader,
+    segmentIndex: number,
+    processed: RecentSegmentIndexes | undefined,
+  ): void {
+    const lastAccounted = this.lastAccountedIndex.get(streamId);
+    this.lastAccountedIndex.set(streamId, segmentIndex);
+
+    if (lastAccounted === undefined || segmentIndex <= lastAccounted + 1) {
+      return;
+    }
+
+    const lost = this.unaccountedInteriorCount(lastAccounted, segmentIndex, processed);
+    if (lost === 0) {
+      return;
+    }
+
+    this.segmentLossAt.set(streamId, this.clock.now());
+    this.metrics.recordSegmentsLost(lost);
+    // Handed over before this segment's own upload is queued, so the marker lands on this segment
+    // rather than on whichever one happens to follow it. `segmentQueue` runs at concurrency 1.
+    uploader.handleInferredSegmentLoss(lastAccounted, segmentIndex, lost);
+  }
+
+  /**
+   * How many indexes strictly between the two this stream never took.
+   *
+   * The duplicate filter is the record of what it did take, and it answers in O(1) without being
+   * iterated, so the walk costs one lookup per index in the gap and never anything per index in the
+   * broadcast. It matters because an out-of-order arrival leaves a hole that a later index fills:
+   * asking the filter is what keeps that from being reported as a loss.
+   *
+   * ⛔ Past the filter's own window the walk is skipped and the whole interior is counted. An index
+   * is only guaranteed to be remembered for `segmentDedupWindow` further ones, so beyond that a
+   * "not held" is the filter having forgotten rather than an answer, and a gap that wide is one no
+   * redelivery could have filled anyway.
+   */
+  private unaccountedInteriorCount(
+    lastAccounted: number,
+    arriving: number,
+    processed: RecentSegmentIndexes | undefined,
+  ): number {
+    const interior = arriving - lastAccounted - 1;
+    if (processed === undefined || interior > this.config.segmentDedupWindow) {
+      return interior;
+    }
+
+    let unaccounted = 0;
+    for (let index = lastAccounted + 1; index < arriving; index += 1) {
+      if (!processed.has(index)) {
+        unaccounted += 1;
+      }
+    }
+    return unaccounted;
+  }
+
+  /**
    * How much media this segment holds, preferring the segment over whatever the engine said about it.
    *
    * Substituted here rather than in either engine, because this is where the HTTP route, the SRS
@@ -834,9 +959,23 @@ export class StreamOrchestrator {
     }
 
     this.segmentLossAt.set(streamId, this.clock.now());
+    // ⛔ What keeps one hole from becoming two breaks. The OME puller reports a gap and then delivers
+    // the index behind it, and without this the arrival would infer the very gap the puller had just
+    // announced. Forwards only, unlike an arrival: an arrival is where the engine's counter is now,
+    // and a report is about a range, so a report about older indexes is not news about the position.
+    this.accountForReportedLoss(streamId, firstIndex + count - 1);
     this.metrics.recordSegmentsLost(count);
     uploader.handleSegmentLoss(firstIndex, count);
     return true;
+  }
+
+  /** @param throughIndex the last index the report covers, which nothing will deliver now. */
+  private accountForReportedLoss(streamId: string, throughIndex: number): void {
+    const lastAccounted = this.lastAccountedIndex.get(streamId);
+    this.lastAccountedIndex.set(
+      streamId,
+      lastAccounted === undefined ? throughIndex : Math.max(lastAccounted, throughIndex),
+    );
   }
 
   /**
@@ -1080,6 +1219,15 @@ export class StreamOrchestrator {
       processed.add(segment.index);
     }
     this.processedSegments.set(streamId, processed);
+
+    // Where the accounting resumes, so the segments the engine closed while this process was down
+    // are inferred as the loss they are. An entry holding nothing seeds nothing: there is no index
+    // to measure from, and the engine's counter is wherever it happens to be, so the first arrival
+    // after such a recovery must infer no gap at all.
+    const newest = newestRestoredIndex(state.segments);
+    if (newest !== null) {
+      this.lastAccountedIndex.set(streamId, newest);
+    }
 
     // Only where the crash beat the first manifest. A restored manifest that already names a segment
     // is one players have been served, and their codec sets are fixed whatever this stream does next,

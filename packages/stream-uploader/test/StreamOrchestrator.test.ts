@@ -1,9 +1,11 @@
+import { engineSkippedSegments, engineSkippedSegmentsPattern, segmentUploadedPattern } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
 import { RememberedLadder } from '../src/libs/LadderGroupStore.js';
+import { Logger } from '../src/libs/Logger.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
@@ -35,6 +37,7 @@ import {
   TEST_ANCHOR,
   toRecoveryFileId,
 } from './helpers/fakes.js';
+import { audioOnlySegment, FRAME_TICKS, videoSegment } from './helpers/transportStream.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
 
 const RECOVERY_TIMEOUT_MS = 80;
@@ -46,6 +49,25 @@ const RECOVERY_TIMEOUT_MS = 80;
  * costs nothing on the passing path.
  */
 const SETTLE_CEILING_MS = 4_000;
+
+/** Frames per hand-built segment, enough for the duration reader to measure a span. */
+const WITHHELD_FRAMES = 8;
+
+/** Run against the shared logger with a captured sink, restoring whatever was configured before. */
+async function withCapturedLog(run: (lines: string[]) => Promise<void>): Promise<void> {
+  const lines: string[] = [];
+  const logger = Logger.getInstance();
+  const previous = logger.configure({
+    sink: (_level, line) => {
+      lines.push(line);
+    },
+  });
+  try {
+    await run(lines);
+  } finally {
+    logger.configure(previous);
+  }
+}
 
 /** The feed topic of the newest persisted state, which is what tells one session's writes from another's. */
 async function waitForTopic(saved: StreamState[]): Promise<string> {
@@ -1119,6 +1141,304 @@ describe('StreamOrchestrator segment loss (OBS-11)', () => {
       5_000,
       'refreshing the activity clock on a loss would hide a dead stream behind its own losses',
     );
+  });
+});
+
+/**
+ * The gap nobody reports. SRS posts each closed segment to the webhook once and never retries, so
+ * everything it closed while this process was down is simply absent: `handleSegmentLoss` is never
+ * called, and the manifest used to carry the join with no `#EXT-X-DISCONTINUITY` in front of it,
+ * which is a playlist promising a viewer media it does not name. The arriving index is the only
+ * evidence there is, and these cases are about reading it.
+ */
+describe('StreamOrchestrator inferring a loss from a skipped index', () => {
+  const STREAM = 'live/one';
+
+  /** The exact line the harness counts this family by, so a reword here fails rather than goes quiet. */
+  function skipLines(lines: readonly string[]): string[] {
+    return lines.filter((line) => engineSkippedSegmentsPattern().test(line));
+  }
+
+  /** The one skip line this stream wrote, refusing to guess when there is not exactly one. */
+  function soleSkipLine(lines: readonly string[]): string {
+    const found = skipLines(lines);
+    assert.equal(found.length, 1, `expected exactly one skip line, got ${found.length}:\n${found.join('\n')}`);
+    return found[0];
+  }
+
+  /**
+   * A barrier rather than a wait for the thing under test. The announce and the segment go onto one
+   * queue of concurrency 1, announce first, so a segment that has finished uploading proves any
+   * announce queued before it has already been written. Every assertion below is made after one.
+   */
+  async function untilUploaded(lines: readonly string[], index: number): Promise<void> {
+    await waitFor(
+      () =>
+        lines.some((line) => {
+          const found = segmentUploadedPattern().exec(line);
+          return found !== null && found[1] === String(index) && found[2] === STREAM;
+        }),
+      SETTLE_CEILING_MS,
+    );
+  }
+
+  it('infers nothing from a contiguous run', async () => {
+    await withCapturedLog(async (lines) => {
+      const orch = makeTestOrchestrator();
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      for (let index = 0; index < 5; index += 1) {
+        orch.handleSegment(STREAM, index, 2, Buffer.from(`seg${index}`));
+      }
+      await untilUploaded(lines, 4);
+
+      assert.deepEqual(skipLines(lines), []);
+      assert.equal(orch.getMetricsSnapshot().segmentsLostTotal, 0);
+      assert.equal(orch.getMsSinceSegmentLoss(), null);
+      await orch.cleanup();
+    });
+  });
+
+  it('reports the gap between the last index it took and the one that arrived', async () => {
+    await withCapturedLog(async (lines) => {
+      const saved: StreamState[] = [];
+      const orch = makeTestOrchestrator(
+        {},
+        {},
+        makeFakeRecoveryStore({ save: (_id: string, state: StreamState) => saved.push(state) }),
+      );
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      for (let index = 0; index < 5; index += 1) {
+        orch.handleSegment(STREAM, index, 2, Buffer.from(`seg${index}`));
+      }
+      orch.handleSegment(STREAM, 9, 2, Buffer.from('seg9'));
+      await untilUploaded(lines, 9);
+
+      // Named by its edges, 4 and 9, because both of those are media a viewer has or will get. The
+      // four indexes between them are what is gone.
+      assert.ok(soleSkipLine(lines).includes(engineSkippedSegments(4, 9, STREAM, 4)), soleSkipLine(lines));
+      assert.equal(orch.getMetricsSnapshot().segmentsLostTotal, 4);
+      assert.notEqual(
+        orch.getMsSinceSegmentLoss(),
+        null,
+        'the loss has to reach /health, or the gap is armed and nothing reports it',
+      );
+
+      await waitFor(() => saved.some((state) => state.segments.some((s) => s.index === 9)), SETTLE_CEILING_MS);
+      const manifest = saved.filter((state) => state.segments.some((s) => s.index === 9)).pop() as StreamState;
+      assert.equal(
+        manifest.segments.find((s) => s.index === 9)?.discontinuity,
+        true,
+        'the segment that closes the gap has to carry the marker, or the playlist calls the join seamless',
+      );
+      assert.notEqual(
+        manifest.segments.find((s) => s.index === 4)?.discontinuity,
+        true,
+        'and the segment in front of the gap is not flagged retroactively',
+      );
+      await orch.cleanup();
+    });
+  });
+
+  /**
+   * ⛔ The guard against one loss being reported twice. The OME puller reports a gap and then
+   * delivers the index behind it, so without the accounting moving here the arrival would infer the
+   * very gap the puller just announced, and a viewer would get two breaks for one hole.
+   *
+   * The second assertion is the other half of `handleSegmentLoss`'s contract, retested because the
+   * accounting write now sits beside it: a stream that only loses segments is not making progress,
+   * and an accounting write that had become an activity write would hide a stall behind the losses.
+   */
+  it('infers nothing after a loss the engine reported, and does not read that report as activity', async () => {
+    await withCapturedLog(async (lines) => {
+      const clock = new FakeClock();
+      const orch = makeTestOrchestrator({ clock, segmentStallMs: 1_000 });
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      orch.handleSegment(STREAM, 0, 2, Buffer.from('seg0'));
+      clock.advance(5_000);
+      orch.handleSegmentLoss(STREAM, 1, 4);
+      orch.handleSegment(STREAM, 5, 2, Buffer.from('seg5'));
+      await untilUploaded(lines, 5);
+
+      assert.deepEqual(skipLines(lines), [], 'the puller already announced this gap, and one hole is one break');
+      assert.equal(orch.getMetricsSnapshot().segmentsLostTotal, 4, 'and the four are counted once, not twice');
+      assert.equal(
+        orch.getMsSinceStreamActivity(),
+        0,
+        'segment 5 is progress, whatever the report before it did to the accounting',
+      );
+      await orch.cleanup();
+    });
+  });
+
+  /**
+   * The engine's counter going back inside a session. That is a restart rather than a gap, and
+   * `ManifestManager.placeInBroadcast` already re-anchors the numbering and the dating forwards and
+   * marks the segment it lands on. Inferring here as well would count the whole pre-restart broadcast
+   * as lost.
+   */
+  it('infers nothing from an index below the last one, and still sees a gap inside the new run', async () => {
+    await withCapturedLog(async (lines) => {
+      const orch = makeTestOrchestrator();
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      for (const index of [40, 41, 0]) {
+        orch.handleSegment(STREAM, index, 2, Buffer.from(`seg${index}`));
+      }
+      await untilUploaded(lines, 0);
+      assert.deepEqual(skipLines(lines), [], 'a counter that restarted lost nothing, it started again');
+
+      orch.handleSegment(STREAM, 4, 2, Buffer.from('seg4'));
+      await untilUploaded(lines, 4);
+      // The accounting has to follow the restart down, or a real gap inside the new run is missed.
+      assert.ok(soleSkipLine(lines).includes(engineSkippedSegments(0, 4, STREAM, 3)), soleSkipLine(lines));
+      await orch.cleanup();
+    });
+  });
+
+  it('infers nothing from a duplicate index, which took no segment and lost none', async () => {
+    await withCapturedLog(async (lines) => {
+      const orch = makeTestOrchestrator();
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      orch.handleSegment(STREAM, 0, 2, Buffer.from('seg0'));
+      orch.handleSegment(STREAM, 1, 2, Buffer.from('seg1'));
+      orch.handleSegment(STREAM, 1, 2, Buffer.from('seg1 again'));
+      await untilUploaded(lines, 1);
+
+      assert.deepEqual(skipLines(lines), []);
+      assert.equal(orch.getMetricsSnapshot().segmentsLostTotal, 0);
+      await orch.cleanup();
+    });
+  });
+
+  /**
+   * A withheld opening segment is taken and never retried: it reached this service intact and there
+   * is nothing for a redelivery to fix. So it has to move the accounting, or the first segment
+   * carrying a frame reads as a gap the width of everything withheld before it.
+   */
+  it('accounts for a withheld opening segment, which is taken even though it is not published', async () => {
+    await withCapturedLog(async (lines) => {
+      const orch = makeTestOrchestrator();
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      orch.handleSegment(STREAM, 0, 2, audioOnlySegment(WITHHELD_FRAMES));
+      orch.handleSegment(STREAM, 1, 2, audioOnlySegment(WITHHELD_FRAMES, FRAME_TICKS * WITHHELD_FRAMES));
+      orch.handleSegment(STREAM, 2, 2, videoSegment(WITHHELD_FRAMES, FRAME_TICKS * WITHHELD_FRAMES * 2));
+      await untilUploaded(lines, 2);
+
+      assert.equal(
+        orch.getHealthSignals().openingSegmentsWithheld,
+        2,
+        'the first two segments carry no video, so this case is not about a withheld segment unless they were withheld',
+      );
+      assert.deepEqual(skipLines(lines), []);
+      await orch.cleanup();
+    });
+  });
+
+  /**
+   * ⛔ The case this whole path exists for: scenario F's crash. The restored manifest says where the
+   * broadcast had got to, and SRS carries on from wherever its own counter reached while nothing was
+   * listening.
+   */
+  it('seeds the accounting from the restored manifest, so the post-crash gap is inferred', async () => {
+    await withCapturedLog(async (lines) => {
+      const restored = makeRecoveredState(STREAM);
+      const orch = makeOrchestrator(
+        makeFakeRecoveryStore({
+          listActive: () => [toRecoveryFileId(STREAM)],
+          load: () => ({
+            ...restored,
+            segments: [0, 1, 2, 3, 4, 5, 6].map((index) => ({
+              index,
+              duration: 2,
+              ref: `ref${index}`,
+              discontinuity: false,
+              sequence: index,
+            })),
+          }),
+        }),
+      );
+
+      assert.deepEqual(await orch.recoverStreams(), [STREAM]);
+      orch.handleSegment(STREAM, 15, 2, Buffer.from('seg15'));
+      await untilUploaded(lines, 15);
+
+      assert.ok(soleSkipLine(lines).includes(engineSkippedSegments(6, 15, STREAM, 8)), soleSkipLine(lines));
+      assert.equal(orch.getMetricsSnapshot().segmentsLostTotal, 8);
+      await orch.cleanup();
+    });
+  });
+
+  /**
+   * ⚠️ The other half of the crash, and the one that must stay quiet. A stream whose crash beat its
+   * first upload restores holding nothing, so there is no index to measure a gap from and the engine's
+   * counter is wherever it happens to be. Inferring there would open every such broadcast with a
+   * break and a loss count taken off SRS's running counter.
+   */
+  it('infers nothing on the first arrival after recovering an empty manifest', async () => {
+    await withCapturedLog(async (lines) => {
+      const restored = makeRecoveredState(STREAM);
+      const orch = makeOrchestrator(
+        makeFakeRecoveryStore({
+          listActive: () => [toRecoveryFileId(STREAM)],
+          load: () => ({ ...restored, segments: [], isFirstSegmentReady: false, isFirstManifestReady: false }),
+        }),
+      );
+
+      assert.deepEqual(await orch.recoverStreams(), [STREAM]);
+      orch.handleSegment(STREAM, 850, 2, Buffer.from('seg850'));
+      await untilUploaded(lines, 850);
+
+      assert.deepEqual(skipLines(lines), []);
+      assert.equal(orch.getMetricsSnapshot().segmentsLostTotal, 0);
+      await orch.cleanup();
+    });
+  });
+
+  /**
+   * OBS-19's shape, one map along. The accounting is written per session and cleared nowhere would
+   * mean a broadcaster reconnecting on the same id opens with a break and a loss count that is the
+   * distance between two unrelated engine counters.
+   */
+  it('does not infer a loss against the session that replaces a stopped one', async () => {
+    await withCapturedLog(async (lines) => {
+      const orch = makeTestOrchestrator();
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      orch.handleSegment(STREAM, 0, 2, Buffer.from('seg0'));
+      await orch.stopStream(STREAM);
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      orch.handleSegment(STREAM, 500, 2, Buffer.from('seg500'));
+      await untilUploaded(lines, 500);
+
+      assert.deepEqual(skipLines(lines), [], 'the new session has lost nothing, and its counter is its own');
+      assert.equal(orch.getMsSinceSegmentLoss(), null);
+      await orch.cleanup();
+    });
+  });
+
+  /**
+   * The bound on the walk. A gap wider than the duplicate filter's window cannot be answered by that
+   * filter, since an index is only guaranteed to be remembered for that many further indexes, so the
+   * interior is counted whole rather than asked about one index at a time.
+   */
+  it('counts a gap wider than the duplicate window without walking it', async () => {
+    await withCapturedLog(async (lines) => {
+      const orch = makeTestOrchestrator({ segmentDedupWindow: 4 });
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      orch.handleSegment(STREAM, 0, 2, Buffer.from('seg0'));
+      orch.handleSegment(STREAM, 1_000, 2, Buffer.from('seg1000'));
+      await untilUploaded(lines, 1_000);
+
+      assert.ok(soleSkipLine(lines).includes(engineSkippedSegments(0, 1_000, STREAM, 999)), soleSkipLine(lines));
+      await orch.cleanup();
+    });
   });
 });
 
