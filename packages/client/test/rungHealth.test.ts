@@ -10,7 +10,6 @@ import {
   FEED_STATE_STALLED,
   FeedHealthTracker,
   RUNG_DEATH_LAG_SEGMENTS,
-  UNSERVED_SLOT_STALL_MS,
 } from '../src/components/SwarmHlsPlayer/feedState';
 
 /** One segment at the longest stage this project runs, so the clock in these cases is a real one. */

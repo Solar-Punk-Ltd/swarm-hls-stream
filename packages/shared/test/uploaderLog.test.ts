@@ -22,7 +22,6 @@ import {
   originDeclaredDiscontinuityPattern,
   publishingRendition,
   publishingRenditionPattern,
-  replacedSessionFinalized,
   replacedSessionFinalizedPattern,
   rungAnnounced,
   rungAnnouncedPattern,
