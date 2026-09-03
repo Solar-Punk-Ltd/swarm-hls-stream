@@ -131,6 +131,12 @@ parsing error by remounting the player, which restarts playback at the beginning
 An index below the anchor before anything has been published is the other case and it is not a
 restart: it is a segment that arrived out of order, and it takes its true place in media order.
 
+⚠️ **The segment the restart lands on carries the discontinuity itself**, whatever the engine
+declared, and only that one segment. The SRS webhook path delivers a segment with no break of its
+own, so on the shipped engine the reset is the only evidence there is: the two things that otherwise
+arm a break are a failed segment upload and a loss the OME puller reported, and a counter reset
+implies neither.
+
 ⚠️ **A stamp costs the live window about 50 bytes per segment.** The window is a byte budget against
 one bee chunk (`LIVE_WINDOW_MAX_BYTES`), so it now holds roughly 30 segments where it held about 50,
 which at `HLS_FRAGMENT=1.0` is still well past both the engine's own `HLS_WINDOW` and the player's
