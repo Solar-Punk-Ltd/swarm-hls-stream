@@ -211,6 +211,14 @@ parse_profile_args() {
     esac
   done
 
+  if ! [[ "$PORT_SLOT" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}ERROR: --portSlot must be a whole number, got: $PORT_SLOT${NC}" >&2
+    exit 1
+  fi
+  # Base 10 on purpose. Bash arithmetic reads a leading zero as octal, so an unforced "08" dies in
+  # apply_port_slot with "value too great for base" and "010" silently becomes slot 8.
+  PORT_SLOT=$((10#$PORT_SLOT))
+
   if ! [[ "$PROFILE" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; then
     echo -e "${RED}ERROR: invalid profile name: $PROFILE${NC}" >&2
     echo "Profile must match ^[a-z0-9][a-z0-9-]{0,30}$" >&2

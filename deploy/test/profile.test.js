@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
-import { makeSandbox, removeSandboxes, runScript, runScriptOk } from './helpers/sandbox.js';
+import { makeSandbox, removeSandboxes, runScript, runScriptOk, sourceLib } from './helpers/sandbox.js';
 
 after(removeSandboxes);
 
@@ -107,5 +107,50 @@ describe('unknown --profile (OPS-4)', () => {
     await runScriptOk(sandbox, 'stop.sh', []);
 
     assert.ok(sandbox.calls().length > 0, 'the default profile produced no docker call at all');
+  });
+});
+
+/**
+ * Bash arithmetic reads a leading zero as octal, so `--portSlot=08` used to die deep inside
+ * `apply_port_slot` with "value too great for base" and `--portSlot=010` was silently slot 8. A slot
+ * is a decimal id and nothing else. The June 2026 fix for this sat on an unmerged branch until
+ * 2026-09-03, which is when it was ported here.
+ */
+describe('--portSlot is read as a decimal whole number', () => {
+  it('reads a leading zero as decimal, so slot 08 is slot 8', async () => {
+    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+
+    const run = await sourceLib(
+      sandbox,
+      'parse_profile_args --profile=streamer1 --portSlot=08\necho "slot=$PORT_SLOT"',
+    );
+
+    assert.equal(run.exitCode, 0, run.stderr);
+    assert.match(run.stdout, /^slot=8$/m);
+  });
+
+  it('reads 010 as ten, not as octal eight', async () => {
+    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+
+    const run = await sourceLib(
+      sandbox,
+      'parse_profile_args --profile=streamer1 --portSlot=010\necho "slot=$PORT_SLOT"',
+    );
+
+    assert.equal(run.exitCode, 0, run.stderr);
+    assert.match(run.stdout, /^slot=10$/m);
+  });
+
+  it('refuses a slot that is not a whole number, naming the value', async () => {
+    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+
+    const run = await sourceLib(
+      sandbox,
+      'parse_profile_args --profile=streamer1 --portSlot=7x\necho "slot=$PORT_SLOT"',
+    );
+
+    assert.notEqual(run.exitCode, 0, 'a slot that is not a number was accepted');
+    assert.match(run.stderr, /--portSlot must be a whole number/);
+    assert.match(run.stderr, /7x/);
   });
 });
