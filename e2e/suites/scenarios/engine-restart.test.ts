@@ -27,8 +27,10 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * ⭐ This is where the two numbers a segment carries come apart, so the resumed session's playlists
  * are read and held to the manifest contract. SRS's own segment counter carries on across the
  * restart, six recordings of this stage having opened at 210, 317, 416, 580, 707 and 850, while the
- * resumed broadcast's playlist has to open at `#EXT-X-MEDIA-SEQUENCE:0`. No uploader log line carries
- * the playlist's number, by design. See `src/harness/manifestContractLive.ts`.
+ * resumed broadcast's playlist has to open at `#EXT-X-MEDIA-SEQUENCE:0` and date its media off its
+ * own anchor. No uploader log line carries either, by design. ⚠️ The dates are asserted on every run
+ * and the sequence only where the retired session's drain leaves the count exact, which the case
+ * itself explains. See `src/harness/manifestContractLive.ts`.
  */
 
 const WARMUP_WAIT_MS = 90_000;
@@ -153,11 +155,19 @@ describe('E — media-engine restart: broadcaster resumes', () => {
       'reconnecting after an engine restart must yield a new live stream, not a rejection',
     );
 
-    // ⭐ The resumed broadcast is a fresh session with a fresh anchor, so its FIRST playlist opens at
-    // `#EXT-X-MEDIA-SEQUENCE:0` while the engine's own counter carries on from wherever the restart
-    // left it. That is the whole point of the two numbers being separate, and the log cannot show it:
-    // every uploader line names the engine's index. Read here from the restart's own window, so the
-    // retired session's segments are not counted against the resumed session's playlist.
+    // ⭐ The resumed broadcast is a fresh session with a fresh anchor, so it dates its media off its
+    // own instant while the engine's own counter carries on from wherever the restart left it. That is
+    // the whole point of the two numbers being separate, and the log cannot show either: every
+    // uploader line names the engine's index.
+    //
+    // ⚠️ **The sequence is asserted only when it can be shown, and here it often cannot.** The retired
+    // session drains its queued segments after the restart instant and logs them under the same stream
+    // id the resumed session then uses, because a stream id names a rung rather than a session. The
+    // count in this window is therefore the resumed playlist's segments plus whatever drained, and the
+    // derivation then declines to call the playlist the broadcast's first. A drain that was empty
+    // leaves it exact and `#EXT-X-MEDIA-SEQUENCE:0` is asserted. Either way the dates, their step and
+    // their gaps are asserted, and the printed summary says which sequence the playlist declared.
+    // See `docs/e2e-coverage.md` under "What the sequence column is saying".
     const resumedLog = async (): Promise<string> => host.logsSince(uploader, restartedAt);
     const verdict = await checkPublishedTimeline(host, cfg, {
       owner: feed.owner,

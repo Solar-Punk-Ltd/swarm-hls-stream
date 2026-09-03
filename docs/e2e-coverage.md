@@ -237,17 +237,23 @@ suite has to read the playlist.
 `e2e/test/manifestContractLive.test.ts` covers everything in it but the feed read. Seven live suites
 call it:
 
-| Suite                                       | What only this one can see                                                                            |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `service/happy-path`                        | the baseline, on a broadcast with no fault in it                                                      |
-| `service/abr-ladder`                        | all four rungs deriving both numbers from one anchor, which is what a level switch lands on           |
-| E `engine-restart`, `abr-engine-restart`    | the resumed broadcast opening at 0 while SRS's counter carries on from 210, 317, 416, 580, 707 or 850 |
-| F `uploader-crash-recovery`                 | the recovered session still writing the playlist a viewer holds, on sequences restored off disk       |
-| H `finalize-crash`, I `whole-stack-restart` | the recording's own numbering, which no catalog entry speaks for                                      |
+| Suite                                       | What only this one can see                                                                      | Sequence 0 |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- |
+| `service/happy-path`                        | the baseline, on a broadcast with no fault in it                                                | asserted   |
+| `service/abr-ladder`                        | all four rungs deriving both numbers from one anchor, which is what a level switch lands on     | asserted   |
+| H `finalize-crash`, I `whole-stack-restart` | the recording's own numbering, which no catalog entry speaks for                                | asserted   |
+| E `engine-restart`, `abr-engine-restart`    | the resumed session dating its media off its own anchor rather than the dead session's          | when shown |
+| F `uploader-crash-recovery`                 | the recovered session still writing the playlist a viewer holds, on sequences restored off disk | no         |
 
 Each one prints one line per rung: whether the feed answered a live playlist or a recording, how many
 segments it names, the sequence it declares and the span of dates it holds. A refusal names the rung,
-the segment and the date it objected to.
+the segment and the date it objected to. Everything but the sequence is asserted in all seven: a wall
+clock on every segment, strictly rising, stepping by a whole number of fragments, nothing wider
+without an `#EXT-X-DISCONTINUITY`, and no date before this project existed.
+
+⚠️ **Where the sequence column says less than "asserted", read the next section for why.** It is never
+a promise nobody checked: the sequence is asserted exactly where the playlist can be shown to be the
+broadcast's first, and left alone otherwise.
 
 ### The two things that were thought to be in the way, and were not
 
@@ -266,11 +272,33 @@ the segment and the date it objected to.
    The published count is read **after** the playlist, because the other order can call a slid window
    a first playlist and red a correct product.
 
+### What the sequence column is saying
+
+**`asserted`** means the derivation always fires. `happy-path` and `abr-ladder` open their log window
+after `waitForIdle`, so every segment line in it is their own broadcast's and the count is exact.
+H and I read after the finalize, where the feed head is the recording, and a recording names every
+segment of its broadcast whatever the crash did to the engine's counter.
+
+**`when shown`** is E and the ABR engine restart, and the reason is worth writing down. The retired
+session drains its queued segments **after** the restart instant and logs them under the same stream
+id the recovered session then uses, because a stream id names a rung and not a session. So the count
+in the restart's own window can be the recovered playlist's segments plus a few of the dead session's,
+and the derivation then declines to claim the playlist is the first. A drain that was empty leaves the
+count exact and the sequence is asserted. **Nothing about that can red a correct product**, it only
+varies what is covered, and it is recorded here rather than dressed up: separating the two sessions
+needs the session-end lines, and that was not built.
+
+**`no`** is F. It reads after the recovery timeout and the gateway catalog's own lag, by which point
+the live window holds only post-recovery media and the playlist genuinely no longer starts at the
+broadcast's first segment. F is there for the dates and the gaps, which is where a recovered session's
+restored numbering shows.
+
 The fragment length is the run's own declaration, `E2E_EXPECT_SEGMENT_S`, which
 `suites/preflight/segment-length.test.ts` has already held the deployed stage to. A run declaring
 `any` pins none, and then the timeline is not checked and the suite prints one line saying so.
 
 ⛔ **Still to be proved by a paid sitting.** Every assertion above is wired and none has run against a
-deployment. Two things to read on the first sitting that includes them: whether F reds on the join
+deployment. Three things to read on the first sitting that includes them: whether F reds on the join
 across the uploader's own downtime, where SRS's lost segments leave a gap that nothing arms a
-discontinuity for, and whether the ladder's four rungs really agree segment for segment.
+discontinuity for; whether the ladder's four rungs really agree segment for segment; and which of E
+and the ABR restart actually reached the sequence assertion, which their printed summary says.

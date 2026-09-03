@@ -198,16 +198,23 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
   });
 
   /**
-   * ⭐ The sharpest thing a restart can be asked, and no log line can answer it. Every recovered rung
-   * is a fresh session with a fresh anchor, so all four playlists must open at
-   * `#EXT-X-MEDIA-SEQUENCE:0` and date their segments off one shared instant, while SRS's own counter
-   * carries on from wherever the restart left it. A ladder whose rungs disagreed about the same media
-   * would land every level switch off by the difference, with nothing in the logs calling it an error.
+   * ⭐ The thing no log line can answer. Every recovered rung is a fresh session with a fresh anchor,
+   * so all four playlists date their segments off one shared instant while SRS's own counter carries
+   * on from wherever the restart left it. A ladder whose rungs disagreed about the same media would
+   * land every level switch off by the difference, with nothing in the logs calling it an error.
    *
-   * Scoped to the restart's own log window, so the retired session's segments are not counted against
-   * the recovered playlists, and so the feeds are the recovered topics rather than the retired ones.
+   * Scoped to the restart's own log window, which is what makes the feeds the recovered topics rather
+   * than the retired ones.
+   *
+   * ⚠️ **`#EXT-X-MEDIA-SEQUENCE:0` is asserted only when it can be shown, and here it often cannot.**
+   * The retired sessions drain their queued segments after the restart instant and log them under the
+   * same stream ids the recovered rungs then use, because a stream id names a rung rather than a
+   * session. The count in this window is therefore each recovered playlist's segments plus whatever
+   * drained, and the derivation then declines to call the playlist the broadcast's first. The dates,
+   * their step and their gaps are asserted either way, and the printed summary says which sequence
+   * each rung declared. See `docs/e2e-coverage.md` under "What the sequence column is saying".
    */
-  it('opens every recovered rung at sequence 0 and dates it off one anchor', async () => {
+  it('dates every recovered rung off one anchor, with a timeline no log line carries', async () => {
     const { restartedAt, priorTopics } = await restartAndReconnect();
 
     await waitFor(async () => (await recoveredRungCount(restartedAt, priorTopics)) >= rungsBefore.length, {
