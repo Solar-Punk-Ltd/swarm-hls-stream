@@ -146,7 +146,11 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
    * re-anchoring, and reusing it is exactly the lag this whole shape removes.
    */
   it('re-anchors on the first restart rather than keeping the broadcast’s start', () => {
-    const epoch = reanchorEpoch(BROADCAST, { resumeAt: 2, nowMs: STARTED_AT_MS + 4_000, notBeforeMs: nominalDateOf(2) });
+    const epoch = reanchorEpoch(BROADCAST, {
+      resumeAt: 2,
+      nowMs: STARTED_AT_MS + 4_000,
+      notBeforeMs: nominalDateOf(2),
+    });
 
     assert.equal(epoch.atMs, STARTED_AT_MS + 4_000);
   });

@@ -126,7 +126,7 @@ export interface SegmentEntry {
    * Where this segment sits in the playlist this broadcast publishes, counting from 0.
    *
    * Not the same number as `index` and deliberately so: see {@link BroadcastAnchor} and
-   * `ManifestManager.sequenceFor`. Absent on entries persisted before the two were separated, where
+   * `ManifestManager.placeInBroadcast`. Absent on entries persisted before the two were separated, where
    * the offset between them is recovered from the first segment held.
    */
   sequence?: number;

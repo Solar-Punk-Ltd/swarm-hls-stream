@@ -51,6 +51,16 @@ interface SequenceAnchor {
   sequence: number;
 }
 
+/** Where a segment landed in the broadcast, and whether landing it moved the broadcast's own anchors. */
+interface PlacedSegment {
+  sequence: number;
+  /**
+   * Whether this segment is where the engine's counter restarted, so both the numbering and the
+   * dating re-anchored at it. It carries the discontinuity that marks the join.
+   */
+  reanchored: boolean;
+}
+
 /**
  * A segment's place in the broadcast, defaulting to its engine index.
  *
@@ -134,7 +144,7 @@ export class ManifestManager {
    * Whether a sequence number this manager assigned has already gone out in a playlist.
    *
    * The one thing that separates the two ways an index can arrive below the anchor. See
-   * {@link sequenceFor}.
+   * {@link placeInBroadcast}.
    */
   private sequenceHasBeenPublished = false;
 
@@ -167,8 +177,20 @@ export class ManifestManager {
   }
 
   public addSegment(index: number, duration: number, ref: string, discontinuity = false): void {
-    const sequence = this.sequenceFor(index);
-    this.segments.push({ index, duration, ref, discontinuity, sequence });
+    const placed = this.placeInBroadcast(index);
+    this.segments.push({
+      index,
+      duration,
+      ref,
+      // Armed by a re-anchoring as well as by the caller, and neither implies the other. The media
+      // after an engine restart is not a continuation of what came before it, and the SRS webhook
+      // path declares no break of its own, so on the shipped engine nothing else would mark the
+      // join. A playlist that omits it tells a player the join is seamless, which is what a player
+      // stalls on, and it is also what makes the date jumping the length of the outage legal rather
+      // than a promise of media the playlist does not name.
+      discontinuity: discontinuity || placed.reanchored,
+      sequence: placed.sequence,
+    });
     // By sequence rather than by index, which are the same order for the whole of an ordinary
     // broadcast and are not after an engine restart: the engine's counter goes back to 0 there and
     // sorting on it would file the media that comes after the restart in front of the media that
@@ -185,7 +207,7 @@ export class ManifestManager {
 
   /**
    * The playlist sequence this engine index publishes as, counting from 0 at the broadcast's first
-   * segment.
+   * segment, and whether placing it re-anchored the broadcast.
    *
    * ⛔ **An index that does not carry the numbering forward is one of two different things, and
    * getting them the wrong way round breaks a real guarantee each time.**
@@ -207,29 +229,29 @@ export class ManifestManager {
    * that restarts resets to 0: comparing indexes would read that reset as no movement at all and
    * hand a second segment the sequence the first one already has.
    */
-  private sequenceFor(index: number): number {
+  private placeInBroadcast(index: number): PlacedSegment {
     const anchor = this.sequenceAnchor;
     if (anchor === null) {
       this.sequenceAnchor = { index, sequence: 0 };
-      return 0;
+      return { sequence: 0, reanchored: false };
     }
 
     const candidate = anchor.sequence + (index - anchor.index);
 
     if (!this.sequenceHasBeenPublished) {
       if (index >= anchor.index) {
-        return candidate;
+        return { sequence: candidate, reanchored: false };
       }
 
       const shift = anchor.index - index;
       this.segments = this.segments.map((seg) => ({ ...seg, sequence: sequenceOf(seg) + shift }));
       this.sequenceAnchor = { index, sequence: anchor.sequence };
-      return anchor.sequence;
+      return { sequence: anchor.sequence, reanchored: false };
     }
 
     const highest = this.highestSequence();
     if (candidate > highest) {
-      return candidate;
+      return { sequence: candidate, reanchored: false };
     }
 
     const resumeAt = highest + 1;
@@ -240,7 +262,7 @@ export class ManifestManager {
     );
     this.sequenceAnchor = { index, sequence: resumeAt };
     this.reanchorDating(resumeAt);
-    return resumeAt;
+    return { sequence: resumeAt, reanchored: true };
   }
 
   /**

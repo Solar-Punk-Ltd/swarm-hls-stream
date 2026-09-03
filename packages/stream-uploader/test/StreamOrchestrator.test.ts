@@ -2110,8 +2110,10 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
     orch.handleSegment(STREAM_ID, 102, 2, Buffer.from('three'));
     await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 3, SETTLE_CEILING_MS);
 
+    // No discontinuity flag, which is how the shipped engine delivers: the SRS webhook declares
+    // none of its own, so the counter reset is the only evidence there is of the break.
     nowMs = RESTARTED_AT_MS;
-    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after'), true);
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after'));
     orch.handleSegment(STREAM_ID, 1, 2, Buffer.from('after too'));
     await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 5, SETTLE_CEILING_MS);
 
@@ -2122,6 +2124,11 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
       RESTARTED_AT_MS,
       RESTARTED_AT_MS + STEP_MS,
     ]);
+    assert.equal(
+      newestLivePlaylist(published).split('#EXT-X-DISCONTINUITY').length - 1,
+      1,
+      'the date jumped the length of the outage with nothing marking the join',
+    );
     await orch.cleanup();
   });
 

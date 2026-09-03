@@ -286,6 +286,35 @@ describe('an engine that restarts mid-broadcast and starts counting again', () =
   });
 
   /**
+   * ⛔ The caller does not always ask, and on the shipped engine it never does. SRS delivers its
+   * segments through a webhook that declares no break of its own (`engines/srs.ts`), so the reset is
+   * the only evidence there is that the media after it is not a continuation. Without the marker a
+   * player is told the join is seamless, which is what it stalls on, and the date stepping the length
+   * of the outage becomes a promise of media the playlist does not name.
+   */
+  it('marks the restart as a discontinuity even when the caller says nothing about one', () => {
+    const manager = livePast(3);
+
+    manager.addSegment(0, 2, 'after-restart-0');
+
+    const manifest = manager.buildLiveManifest();
+
+    assert.ok(
+      manifest.includes(`${DISCONTINUITY_TAG}\n${pdtLineAtMs(RESTARTED_AT_MS)}\n#EXTINF:2,\nafter-restart-0`),
+      `the engine's reset went into the playlist as a seamless join, got:\n${manifest}`,
+    );
+  });
+
+  it('marks only the segment the restart landed on, not the ones after it', () => {
+    const manager = livePast(3);
+
+    manager.addSegment(0, 2, 'after-restart-0');
+    manager.addSegment(1, 2, 'after-restart-1');
+
+    assert.equal(countOccurrences(manager.buildLiveManifest(), DISCONTINUITY_TAG), 1);
+  });
+
+  /**
    * A recovered session is settled the moment it is restored: its numbers are on disk and, for all
    * this session can tell, in a feed a viewer is reading. So the engine's reset is read as a reset
    * rather than as an out-of-order arrival, which is what the same index means before anything has
