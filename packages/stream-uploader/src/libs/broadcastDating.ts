@@ -73,7 +73,7 @@ export function withEpoch(anchor: BroadcastAnchor, epoch: BroadcastEpoch): Broad
   return { ...anchor, epochs: [...kept, epoch] };
 }
 
-export interface ReanchorRequest {
+interface ReanchorRequest {
   /** The first playlist sequence the resuming rung will publish, which is its own re-anchoring point. */
   resumeAt: number;
   /** The wall clock now, which is what a re-anchoring exists to put on the media. */
