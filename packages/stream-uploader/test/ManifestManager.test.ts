@@ -77,21 +77,35 @@ function withSegments(count: number, duration: number): ManifestManager {
 }
 
 describe('ManifestManager media sequence', () => {
-  it('reports the engine sequence number of the playlist’s first segment', () => {
+  it('starts the broadcast at zero', () => {
     const manager = new ManifestManager(TEST_ANCHOR);
     feed(manager, 0, 3);
 
     assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
   });
 
-  it('starts the VOD manifest at the engine index of its first segment, not zero', () => {
-    // A rung whose opening segment was lost, or whose engine restarted mid-broadcast, retains a first
-    // segment that is not index 0. Renumbering the VOD playlist to zero misaligns the ladder's levels
-    // for a VOD viewer exactly as it would live, since the master playlist names all four rungs.
+  /**
+   * The whole of the sequence-zero decision. SRS's counter runs on across broadcasts for as long as
+   * its process lives, so a warm engine opens a broadcast at whatever number the previous one ended
+   * on: six recordings of this stage opened at 210, 317, 416, 580, 707 and 850. Abel's player wants
+   * a history starting at 0, and only the uploader knows where a broadcast began.
+   */
+  it('starts at zero however high the engine’s own counter has climbed', () => {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    feed(manager, 850, 3);
+
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
+  });
+
+  it('starts the VOD manifest at zero too, on the same numbering as the live playlists', () => {
+    // The two have to agree. A viewer whose live playlist ends is handed the closing playlist and
+    // then the recording, and hls.js reports a media sequence that moves between them as a parsing
+    // error rather than as a change of resource, which the client answers by remounting the player.
     const manager = new ManifestManager(TEST_ANCHOR);
     feed(manager, 4, 3);
 
-    assert.equal(mediaSequenceOf(manager.buildVODManifest()), 4);
+    assert.equal(mediaSequenceOf(manager.buildVODManifest()), 0);
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
   });
 
   // The sliding-window case is covered by 'names the count it dropped as the media sequence' in the
@@ -100,23 +114,19 @@ describe('ManifestManager media sequence', () => {
   // chunk, so fourteen short refs all fit and it never slides. The surviving test derives its
   // expectation from what the window actually kept rather than hard-coding a length.
 
-  it('does not renumber a rung whose uploader joined the stream late', () => {
-    // The defect this exists to prevent. Every rung of a ladder is transcoded from one source with
-    // keyframes forced to the same media timestamps, so segment N means the same interval on all of
-    // them — and with no EXT-X-PROGRAM-DATE-TIME in these playlists, the sequence number is the
-    // only thing telling hls.js that two levels share a timeline.
-    //
-    // A count of segments this uploader had seen would make both of these start at 0, claiming the
-    // 1080p rung's first segment covers the same instant as the 360p rung's when it is two segments
-    // (3 seconds) later. Every switch would then land that far off.
-    const early = new ManifestManager(TEST_ANCHOR);
-    const late = new ManifestManager(TEST_ANCHOR);
+  it('moves the rungs of one ladder together, all of them starting at zero', () => {
+    // Both rungs of one broadcast, whose engines number their own streams independently: SRS runs a
+    // counter per rung stream, so 1080p can be at 850 while 360p is at 12. They must still advertise
+    // the same sequence for the same media, because that number is what tells hls.js the two levels
+    // share a timeline, and a switch lands wherever the two disagree.
+    const tall = new ManifestManager(TEST_ANCHOR);
+    const short = new ManifestManager(TEST_ANCHOR);
 
-    feed(early, 0, 5);
-    feed(late, 2, 3);
+    feed(tall, 850, 5);
+    feed(short, 12, 5);
 
-    assert.equal(mediaSequenceOf(early.buildLiveManifest()), 0);
-    assert.equal(mediaSequenceOf(late.buildLiveManifest()), 2);
+    assert.equal(mediaSequenceOf(tall.buildLiveManifest()), 0);
+    assert.equal(mediaSequenceOf(short.buildLiveManifest()), 0);
   });
 
   it('uses the first segment it holds even when segments arrive out of order', () => {
@@ -127,11 +137,26 @@ describe('ManifestManager media sequence', () => {
 
     const manifest = manager.buildLiveManifest();
 
-    assert.equal(mediaSequenceOf(manifest), 5);
+    assert.equal(mediaSequenceOf(manifest), 0);
     assert.deepEqual(segmentUris(manifest), ['ref-5', 'ref-6', 'ref-7']);
   });
 
   it('survives a restore, which is where the sequence numbers come back from disk', () => {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    manager.restoreState(
+      [
+        { index: 11, duration: 1.5, ref: 'ref-11', sequence: 4 },
+        { index: 12, duration: 1.5, ref: 'ref-12', sequence: 5 },
+      ],
+      ['#EXTM3U', '#EXT-X-VERSION:3'],
+    );
+
+    // Restored rather than recomputed. These two numbers were already published, so renumbering them
+    // to 0 would move what every sequence a viewer already holds refers to.
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 4);
+  });
+
+  it('recovers the numbering of an entry written before the sequence was persisted', () => {
     const manager = new ManifestManager(TEST_ANCHOR);
     manager.restoreState(
       [
@@ -141,7 +166,7 @@ describe('ManifestManager media sequence', () => {
       ['#EXTM3U', '#EXT-X-VERSION:3'],
     );
 
-    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 11);
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
   });
 
   it('returns nothing at all before the first segment, rather than a headers-only playlist', () => {
@@ -149,6 +174,108 @@ describe('ManifestManager media sequence', () => {
 
     assert.equal(manager.buildLiveManifest(), '');
     assert.equal(manager.buildVODManifest(), '');
+  });
+});
+
+/**
+ * The engine restarting inside one broadcast, which resets its counter to 0.
+ *
+ * ⛔ `#EXT-X-MEDIA-SEQUENCE` must never move backwards. hls.js reports one that does as a parsing
+ * error, escalates it to fatal on a single-variant stream, and the client answers a fatal parsing
+ * error by remounting the player, which restarts playback at the beginning.
+ */
+describe('an engine that restarts mid-broadcast and starts counting again', () => {
+  const STEP_MS = TEST_ANCHOR.fragmentSeconds * 1000;
+
+  /** A session that has been live long enough to have published its numbering. */
+  function livePast(count: number): ManifestManager {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    feed(manager, 0, count, 2);
+    manager.buildLiveManifest();
+    return manager;
+  }
+
+  it('continues the sequence forwards rather than repeating a published number', () => {
+    const manager = livePast(5);
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.equal(mediaSequenceOf(manager.buildLiveManifest()), 0);
+    assert.deepEqual(segmentUris(manager.buildLiveManifest()).at(-1), 'after-restart-0');
+  });
+
+  it('keeps the numbering rising across the whole restart', () => {
+    const manager = livePast(5);
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+    manager.addSegment(1, 2, 'after-restart-1');
+
+    const sequences = programDateTimesOf(manager.buildLiveManifest()).map(
+      (at) => (at - TEST_ANCHOR.startedAtMs) / STEP_MS,
+    );
+
+    assert.deepEqual(sequences, [0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it('files the post-restart media after the media it follows, not in front of it', () => {
+    const manager = livePast(3);
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.deepEqual(segmentUris(manager.buildLiveManifest()), ['ref-0', 'ref-1', 'ref-2', 'after-restart-0']);
+  });
+
+  it('dates the post-restart media from the sequence, not from the reset engine index', () => {
+    const manager = livePast(5);
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.equal(programDateTimesOf(manager.buildLiveManifest()).at(-1), TEST_ANCHOR.startedAtMs + 5 * STEP_MS);
+  });
+
+  it('marks the restart as a discontinuity, as the caller asked', () => {
+    const manager = livePast(3);
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    const manifest = manager.buildLiveManifest();
+
+    assert.ok(
+      manifest.includes(`${DISCONTINUITY_TAG}\n${pdtLineAt(3)}\n#EXTINF:2,\nafter-restart-0`),
+      `the restart lost its break or its wall clock, got:\n${manifest}`,
+    );
+  });
+
+  /**
+   * A recovered session is settled the moment it is restored: its numbers are on disk and, for all
+   * this session can tell, in a feed a viewer is reading. So the engine's reset is read as a reset
+   * rather than as an out-of-order arrival, which is what the same index means before anything has
+   * been published.
+   */
+  it('reads the reset as a reset in a session rebuilt from a recovery entry', () => {
+    const manager = new ManifestManager(TEST_ANCHOR);
+    manager.restoreState(
+      [
+        { index: 100, duration: 2, ref: 'ref-100', sequence: 0 },
+        { index: 101, duration: 2, ref: 'ref-101', sequence: 1 },
+      ],
+      ['#EXTM3U', '#EXT-X-VERSION:3'],
+    );
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.deepEqual(segmentUris(manager.buildLiveManifest()), ['ref-100', 'ref-101', 'after-restart-0']);
+    assert.equal(programDateTimesOf(manager.buildLiveManifest()).at(-1), TEST_ANCHOR.startedAtMs + 2 * STEP_MS);
+  });
+
+  it('keeps the recording on the same numbering as the live playlists after a restart', () => {
+    const manager = livePast(3);
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    const vod = manager.buildVODManifest();
+
+    assert.equal(mediaSequenceOf(vod), 0);
+    assert.deepEqual(segmentUris(vod), ['ref-0', 'ref-1', 'ref-2', 'after-restart-0']);
   });
 });
 
@@ -414,7 +541,7 @@ describe('every segment carries a program date-time derived from the broadcast a
     const manager = anchored();
     manager.addSegment(0, 2, ref(0));
 
-    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [ANCHOR.startedAtMs]);
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [TEST_ANCHOR.startedAtMs]);
   });
 
   it('steps by the declared fragment length, not by the segment’s own EXTINF', () => {
@@ -424,14 +551,14 @@ describe('every segment carries a program date-time derived from the broadcast a
     feed(manager, 0, 3, 1);
 
     assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
-      ANCHOR.startedAtMs,
-      ANCHOR.startedAtMs + STEP_MS,
-      ANCHOR.startedAtMs + 2 * STEP_MS,
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + STEP_MS,
+      TEST_ANCHOR.startedAtMs + 2 * STEP_MS,
     ]);
   });
 
   it('writes UTC to the millisecond, which is what a sub-second fragment needs', () => {
-    const manager = new ManifestManager({ startedAtMs: ANCHOR.startedAtMs, fragmentSeconds: 0.5 });
+    const manager = new ManifestManager({ startedAtMs: TEST_ANCHOR.startedAtMs, fragmentSeconds: 0.5 });
     feed(manager, 0, 2, 0.5);
 
     const manifest = manager.buildLiveManifest();
@@ -461,7 +588,7 @@ describe('every segment carries a program date-time derived from the broadcast a
     const vod = manager.buildVODManifest();
 
     assert.deepEqual(programDateTimesOf(vod).length, segmentUris(vod).length);
-    assert.deepEqual(programDateTimesOf(vod)[3], ANCHOR.startedAtMs + 3 * STEP_MS);
+    assert.deepEqual(programDateTimesOf(vod)[3], TEST_ANCHOR.startedAtMs + 3 * STEP_MS);
   });
 
   it('stamps every segment of the closing playlist', () => {
@@ -482,7 +609,7 @@ describe('every segment carries a program date-time derived from the broadcast a
 
     assert.equal(stamps.length, segmentUris(manifest).length);
     assert.ok(stamps.length < 500, 'the window did not slide, so this proves nothing about sliding');
-    assert.equal(stamps[stamps.length - 1], ANCHOR.startedAtMs + 499 * STEP_MS);
+    assert.equal(stamps[stamps.length - 1], TEST_ANCHOR.startedAtMs + 499 * STEP_MS);
   });
 
   it('holds the anchor across a restore, so a recovered broadcast is not re-dated', () => {
@@ -495,10 +622,10 @@ describe('every segment carries a program date-time derived from the broadcast a
     recovered.addSegment(3, 2, ref(3));
 
     assert.deepEqual(programDateTimesOf(recovered.buildLiveManifest()), [
-      ANCHOR.startedAtMs,
-      ANCHOR.startedAtMs + STEP_MS,
-      ANCHOR.startedAtMs + 2 * STEP_MS,
-      ANCHOR.startedAtMs + 3 * STEP_MS,
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + STEP_MS,
+      TEST_ANCHOR.startedAtMs + 2 * STEP_MS,
+      TEST_ANCHOR.startedAtMs + 3 * STEP_MS,
     ]);
   });
 
@@ -518,8 +645,8 @@ describe('every segment carries a program date-time derived from the broadcast a
     );
 
     assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
-      ANCHOR.startedAtMs,
-      ANCHOR.startedAtMs + STEP_MS,
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + STEP_MS,
     ]);
   });
 });

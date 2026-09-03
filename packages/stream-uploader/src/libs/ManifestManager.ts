@@ -94,6 +94,15 @@ function sequenceOf(seg: SegmentEntry): number {
  * log line still names the engine's index, because that is what correlates with the engine's own
  * logs and with what the e2e harness reads.
  *
+ * ⭐ **The two are separate numbers because SRS's is not a broadcast's.** Read in `ossrs/srs`
+ * 6.0release: `SrsHlsMuxer::_sequence_no` is set to 0 in the muxer's constructor and nowhere else,
+ * `on_publish` and `on_unpublish` do not touch it, and `hls_dispose` deletes the segments and the
+ * m3u8 without resetting it. It goes back to 0 only when the whole `SrsLiveSource` is reaped and a
+ * fresh muxer is built, which the idle timeout normally does a few seconds after a publisher leaves.
+ * So a broadcast on a warm engine opens at whatever number the previous one ended on: six recordings
+ * of this stage opened at 210, 317, 416, 580, 707 and 850. Abel's player wants a history starting at
+ * 0, and it is the uploader's to give, because only the uploader knows where a broadcast began.
+ *
  * What ties the rungs of a ladder together is that all four derive both numbers from **one anchor**:
  * every rung is transcoded from the same source with keyframes forced to the same media timestamps,
  * so segment N of 360p and segment N of 1080p cover the same interval, and both the sequence and the
@@ -148,49 +157,67 @@ export class ManifestManager {
    * The playlist sequence this engine index publishes as, counting from 0 at the broadcast's first
    * segment.
    *
-   * ⛔ **An index below the anchor is one of two different things, and getting them the wrong way
-   * round breaks a real guarantee each time.**
+   * ⛔ **An index that does not carry the numbering forward is one of two different things, and
+   * getting them the wrong way round breaks a real guarantee each time.**
    *
-   * Before any playlist has gone out, it is a segment that arrived out of order, and the broadcast
-   * simply began earlier than the first arrival said. Nothing has been promised to anyone yet, so
-   * the anchor moves down and everything already held shifts up to keep media order.
+   * Before any playlist has gone out, it is a segment that arrived out of order, and one below the
+   * anchor means the broadcast began earlier than the first arrival said. Nothing has been promised
+   * to anyone yet, so the segment takes its true place in media order and the anchor moves down to
+   * meet it, everything already held shifting up.
    *
-   * Afterwards it is the engine's counter having reset under a restart, which SRS does whenever it
-   * disposes a stream. A number already published can never be reused or reduced: hls.js reads a
-   * media sequence that moves backwards as a parsing error, escalates it to fatal on a
-   * single-variant stream, and the client answers a fatal parsing error by remounting the player,
-   * which restarts playback at the beginning. So the numbering re-anchors forwards instead and this
-   * segment continues from the last one published. Its date-time follows the sequence rather than
-   * the reset index, for the same reason.
+   * Afterwards it is the engine's counter having restarted. A number already published can never be
+   * reused or reduced: hls.js reads a media sequence that moves backwards as a parsing error,
+   * escalates it to fatal on a single-variant stream, and the client answers a fatal parsing error
+   * by remounting the player, which restarts playback at the beginning. So the numbering re-anchors
+   * forwards and this segment continues from the last one published. Its date-time follows the
+   * sequence rather than the reset index, for the same reason.
+   *
+   * ⚠️ The test is against the highest sequence already assigned rather than against the anchor's
+   * own index, because a broadcast whose first segment was index 0 is anchored at 0 and an engine
+   * that restarts resets to 0: comparing indexes would read that reset as no movement at all and
+   * hand a second segment the sequence the first one already has.
    */
   private sequenceFor(index: number): number {
-    if (this.sequenceAnchor === null) {
+    const anchor = this.sequenceAnchor;
+    if (anchor === null) {
       this.sequenceAnchor = { index, sequence: 0 };
       return 0;
     }
 
-    if (index >= this.sequenceAnchor.index) {
-      return this.sequenceAnchor.sequence + (index - this.sequenceAnchor.index);
-    }
+    const candidate = anchor.sequence + (index - anchor.index);
 
     if (!this.sequenceHasBeenPublished) {
-      const shift = this.sequenceAnchor.index - index;
+      if (index >= anchor.index) {
+        return candidate;
+      }
+
+      const shift = anchor.index - index;
       this.segments = this.segments.map((seg) => ({ ...seg, sequence: sequenceOf(seg) + shift }));
-      this.sequenceAnchor = { index, sequence: this.sequenceAnchor.sequence };
-      return this.sequenceAnchor.sequence;
+      this.sequenceAnchor = { index, sequence: anchor.sequence };
+      return anchor.sequence;
     }
 
-    const resumeAt = this.highestSequence() + 1;
+    const highest = this.highestSequence();
+    if (candidate > highest) {
+      return candidate;
+    }
+
+    const resumeAt = highest + 1;
     this.logger.warn(
-      `[ManifestManager] Segment index ${index} arrived below the anchor at ${this.sequenceAnchor.index}, ` +
-        `so the engine's counter has restarted. Continuing the playlist at sequence ${resumeAt} rather ` +
-        'than moving it backwards',
+      `[ManifestManager] Segment index ${index} would publish at sequence ${candidate}, at or below the ` +
+        `${highest} already published, so the engine's counter has restarted. Continuing the playlist at ` +
+        `sequence ${resumeAt} rather than moving it backwards`,
     );
     this.sequenceAnchor = { index, sequence: resumeAt };
     return resumeAt;
   }
 
-  /** The highest sequence assigned so far, which the segment list holds in its last entry. */
+  /**
+   * The highest sequence assigned so far, which the segment list holds in its last entry because it
+   * is sorted by sequence.
+   *
+   * Only ever read with an anchor already set, so a segment list is always there to read it from.
+   */
   private highestSequence(): number {
     const newest = this.segments[this.segments.length - 1];
     return newest === undefined ? 0 : sequenceOf(newest);
@@ -223,12 +250,13 @@ export class ManifestManager {
 
     const windowSegments = this.segments.slice(this.segments.length - this.liveWindowLength());
 
-    // The engine's own sequence number for the window's first segment, not a count of what this
-    // uploader has seen. On a single-rendition stream the two are interchangeable; across an ABR
-    // ladder they are not, and the difference is what makes a level switch land where it should.
-    // Every rung forces keyframes to the same media timestamps, so segment N means the same interval
-    // on every rung.
-    const mediaSequence = windowSegments.length > 0 ? windowSegments[0].index : 0;
+    // This broadcast's own sequence for the window's first segment, so the playlist a viewer joining
+    // at the top reads starts at 0. Not the engine's index, which on a warm engine opens wherever
+    // the previous broadcast ended, and not a count of what this uploader has seen either: a count
+    // would drift across an ABR ladder the moment one rung started a fragment later than another,
+    // and every level switch would land that far off. The sequence is derived from the anchor all
+    // four rungs share, so it agrees across them by construction.
+    const mediaSequence = windowSegments.length > 0 ? sequenceOf(windowSegments[0]) : 0;
 
     this.sequenceHasBeenPublished = true;
     return [...this.liveHeaderLines(mediaSequence), ...windowSegments.flatMap((seg) => this.segmentLines(seg))];
@@ -244,7 +272,11 @@ export class ManifestManager {
       ...this.hlsHeaders,
       `${HLS_TARGET_DURATION}:${this.targetDuration}`,
       HLS_PLAYLIST_TYPE_VOD,
-      `${HLS_MEDIA_SEQUENCE}:${this.segments[0].index}`,
+      // The same numbering the live playlists used, which for a recording naming every segment is 0.
+      // It has to be the same one: a viewer whose live playlist ended is handed the closing playlist
+      // and then the recording, and hls.js reports a media sequence that moves between them as a
+      // parsing error rather than as a change of resource.
+      `${HLS_MEDIA_SEQUENCE}:${sequenceOf(this.segments[0])}`,
       '',
       ...this.segments.flatMap((seg) => this.segmentLines(seg)),
       HLS_ENDLIST,
@@ -337,14 +369,13 @@ export class ManifestManager {
    * segment overrunning what is left.
    */
   private liveWindowLength(): number {
-    // Reserved against the largest media sequence there could be. That used to be the segment
-    // count, because the sequence was a count; it is now the engine's own index for the window's
-    // first segment, which can exceed the count outright — a restarted uploader, or an engine that
-    // did not begin at zero. The newest index is the real upper bound, and under-reserving here
-    // spends a budget that is one bee chunk. Its own digits are part of the header, and reserving
-    // this way avoids a second pass over a header whose length depends on the answer.
-    const newestIndex = this.segments.length === 0 ? 0 : this.segments[this.segments.length - 1].index;
-    const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(newestIndex));
+    // Reserved against the largest media sequence there could be, whose own digits are part of the
+    // header. Reserving this way avoids a second pass over a header whose length depends on the
+    // answer, and under-reserving spends a budget that is one bee chunk. The newest sequence is the
+    // upper bound rather than the segment count, because an engine restart re-anchors the numbering
+    // forwards and leaves the sequence above the count.
+    const newestSequence = this.segments.length === 0 ? 0 : sequenceOf(this.segments[this.segments.length - 1]);
+    const budget = LIVE_WINDOW_MAX_BYTES - manifestBytes(this.liveHeaderLines(newestSequence));
 
     let spent = 0;
     let length = 0;
