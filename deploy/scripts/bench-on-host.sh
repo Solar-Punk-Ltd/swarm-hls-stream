@@ -169,9 +169,11 @@ DOCKER_RUN="docker run --rm ${NETWORK_ARGS} \
 if [ "${SETUP}" -eq 1 ]; then
 echo "bench-on-host: syncing source to ${TARGET}:${REMOTE_DIR}"
 # `node_modules` is excluded because the container installs into the bind mount and the two trees are
-# built for different platforms. `.git` is excluded because nothing here reads history.
+# built for different platforms. `.git` is excluded because nothing here reads history. Agent worktrees
+# under `.claude/worktrees` are whole second copies of this tree, so they are excluded too.
 rsync -az --delete \
   --exclude '.git' \
+  --exclude '.claude/worktrees' \
   --exclude 'node_modules' \
   --exclude 'reports' \
   --exclude 'docs/bench' \
