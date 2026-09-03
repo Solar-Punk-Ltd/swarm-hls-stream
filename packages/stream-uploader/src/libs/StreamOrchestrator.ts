@@ -42,7 +42,7 @@ import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from
 
 import { AbrLadder } from './AbrLadder.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
-import { BroadcastDating, programDateTimeMsOf, reanchorEpoch, withEpoch } from './broadcastDating.js';
+import { BroadcastDating, programDateTimeMsOf, reanchorDecision, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -1720,7 +1720,9 @@ export class StreamOrchestrator {
    * ⛔ **Minted against the broadcast's own record rather than per rung, which is the whole point.**
    * An engine restart reaches every rung of a ladder, seconds apart, and four rungs each taking
    * their own reading of the clock is the disagreement `#EXT-X-PROGRAM-DATE-TIME` is here to prevent.
-   * `reanchorEpoch` decides between minting and landing on the line a sibling already minted.
+   * `reanchorDecision` decides between minting and landing on the line a sibling already minted, and
+   * says which it did, because a rung that landed on an existing line has no movement to report and
+   * announcing one anyway is what filled a live restart's log with 23 dates becoming themselves.
    *
    * The record goes back to disk with the group so a reboot mid-broadcast comes back on the same
    * dating, and each rung's own recovery entry carries it too, which is what covers a lone rendition
@@ -1735,7 +1737,7 @@ export class StreamOrchestrator {
     const anchor =
       this.broadcastAnchors.get(datingKey) ??
       ({ startedAtMs: this.wallClock(), fragmentSeconds: this.config.fragmentSeconds } as BroadcastAnchor);
-    const epoch = reanchorEpoch(anchor, { resumeAt, nowMs: this.wallClock(), notBeforeMs });
+    const { epoch, joined } = reanchorDecision(anchor, { resumeAt, nowMs: this.wallClock(), notBeforeMs });
     const reanchored = withEpoch(anchor, epoch);
     this.broadcastAnchors.set(datingKey, reanchored);
 
@@ -1745,9 +1747,12 @@ export class StreamOrchestrator {
     }
 
     this.logger.info(
-      `[StreamOrchestrator] Broadcast ${datingKey} re-anchored its dating at sequence ${resumeAt}: ` +
-        `${new Date(programDateTimeMsOf(anchor, resumeAt)).toISOString()} becomes ` +
-        `${new Date(epoch.atMs).toISOString()}`,
+      joined
+        ? `[StreamOrchestrator] Broadcast ${datingKey} joined the dating line already minted for this ` +
+            `restart, at sequence ${resumeAt}: ${new Date(epoch.atMs).toISOString()}`
+        : `[StreamOrchestrator] Broadcast ${datingKey} re-anchored its dating at sequence ${resumeAt}: ` +
+            `${new Date(programDateTimeMsOf(anchor, resumeAt)).toISOString()} becomes ` +
+            `${new Date(epoch.atMs).toISOString()}`,
     );
     return epoch;
   }

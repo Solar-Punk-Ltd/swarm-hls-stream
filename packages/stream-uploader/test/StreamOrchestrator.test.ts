@@ -2409,6 +2409,12 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
   const RESTARTED_AT_MS = STARTED_AT_MS + 600_000;
   const STEP_MS = TEST_ANCHOR.fragmentSeconds * 1000;
   const PROGRAM_DATE_TIME_TAG = '#EXT-X-PROGRAM-DATE-TIME';
+  /**
+   * An instant as the log writes it. Matched to its own shape rather than by non-whitespace, so a
+   * capture cannot run off the end of one and into whatever the configured log format appends.
+   */
+  const ISO_INSTANT = String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z`;
+  const A_DATE_BECOMES_ANOTHER = new RegExp(`(${ISO_INSTANT}) becomes (${ISO_INSTANT})`);
 
   function stampsOf(manifest: string): number[] {
     return manifest
@@ -2573,5 +2579,80 @@ describe('the dating a broadcast re-anchors to across an engine restart', () => 
       RESTARTED_AT_MS + STEP_MS,
     ]);
     await orch.cleanup();
+  });
+
+  /**
+   * Every rung of a ladder writes this line for one restart, and only the first of them minted
+   * anything. A live sitting on 2026-09-03 wrote it 24 times: one mint, where a rung moved the
+   * broadcast's dating 17 seconds on to the wall clock, and 23 joins, where a sibling landed on the
+   * line already minted for that same restart. A join has the same date on both sides of the
+   * wording the mint uses, so 23 of the 24 read as a date becoming itself.
+   */
+  describe('the line each rung of a ladder writes about it', () => {
+    /** Every rung shares the base, so all of them report under it and the first one to log minted. */
+    const REANCHOR_SUBJECT = `[StreamOrchestrator] Broadcast ${STREAM_ID} `;
+
+    function reanchorLines(lines: readonly string[]): string[] {
+      return lines.filter((line) => line.includes(REANCHOR_SUBJECT) && line.includes(' at sequence '));
+    }
+
+    function uploadedIndexes(lines: readonly string[], index: number): string[] {
+      return lines
+        .map((line) => segmentUploadedPattern().exec(line))
+        .filter((found) => found !== null && found[1] === String(index))
+        .map((found) => String(found?.[2]));
+    }
+
+    /** Two rungs of one ladder, both crossing a counter reset inside the session already running. */
+    async function acrossOneRestart(run: (lines: string[]) => Promise<void>): Promise<void> {
+      await withCapturedLog(async (lines) => {
+        const rungs = [`${STREAM_ID}_360p`, `${STREAM_ID}_720p`];
+        let nowMs = STARTED_AT_MS;
+        const orch = makeTestOrchestrator(
+          { ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC), wallClock: () => nowMs },
+          capturingPlaylists([]),
+        );
+
+        for (const rung of rungs) {
+          orch.startStream(rung, MEDIA_TYPE_VIDEO);
+        }
+        await waitFor(() => orch.getActiveStreamCount() === rungs.length, SETTLE_CEILING_MS);
+
+        // The engine's own counter, which on a warm SRS opens wherever the previous broadcast ended.
+        for (const rung of rungs) {
+          orch.handleSegment(rung, 100, 2, Buffer.from('one'));
+        }
+        await waitFor(() => uploadedIndexes(lines, 100).length === rungs.length, SETTLE_CEILING_MS);
+
+        nowMs = RESTARTED_AT_MS;
+        for (const rung of rungs) {
+          orch.handleSegment(rung, 0, 2, Buffer.from('after'));
+        }
+        await waitFor(() => reanchorLines(lines).length === rungs.length, SETTLE_CEILING_MS);
+
+        await run(lines);
+        await orch.cleanup();
+      });
+    }
+
+    it('says the first rung moved the dating and the sibling landed on that line', async () => {
+      await acrossOneRestart(async (lines) => {
+        const [minted, joined] = reanchorLines(lines);
+
+        assert.match(minted, /re-anchored its dating at sequence 1: /);
+        assert.match(joined, /joined the dating line already minted for this restart, at sequence 1: /);
+      });
+    });
+
+    it('never says a date becomes itself', async () => {
+      await acrossOneRestart(async (lines) => {
+        const idle = reanchorLines(lines).filter((line) => {
+          const found = A_DATE_BECOMES_ANOTHER.exec(line);
+          return found !== null && found[1] === found[2];
+        });
+
+        assert.deepEqual(idle, [], 'a rung reported its dating moving to the date it already carried');
+      });
+    });
   });
 });
