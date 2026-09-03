@@ -52,6 +52,39 @@ At 11:48 WITA the whole suite ran through the in-tab node on this uploader, head
 ABR restart, E and V10) and the three crash-recovery paths (F, H, I) all passed with the numbering re-anchored
 and the anchor restored. The previous best was 32 of 33, twice, the night before. About 1.8 BZZ.
 
+## The gateway sitting, the same afternoon
+
+At 13:46 WITA the whole suite ran again on the same uploader, head `54bf4fa`, with the viewers fetching through
+the gateway instead of the in-tab node: 9 of 9 gates and **32 of 33 suites**. The one red is H, killed inside
+finalize, which reported the recording had lost a rendition across the crash, 3 left of 4 announced. The
+uploader log shows why, and it is the harness: its warmup counted segments across every rung merged, reached
+its threshold on the three fast rungs, and killed the uploader before the 1080p rung had uploaded a single
+segment. A recording that never held a fourth rendition cannot lose one. It is the ninth time a number summed
+across rungs has read as a fault in this project. The warmup now waits for every rung on its own (`fad8290`),
+and that fix has not yet run on the stage: its proving run was refused by the spend gate, correctly, because a
+3 BZZ deposit landed on the 1080p node during the sitting and the ledger's start balance for that node no
+longer reads as a start. The gate's own words: "A deposit landed after this authorisation was written". It
+runs the moment the owner writes a fresh ledger.
+
+Everything else held through the gateway as it had in the in-tab node. V2 went 1080p to 480p under the
+2800 kbps cap and climbed back to 1080p 28.4 s after the lift, 0.978 media seconds per wall second while
+capped. V4 played the whole two-minute recording at 1080p with all four rungs offered, 61/61/61/62 segments.
+Artifacts `browser-quality-2026-09-03T06-32-01-420Z.md` and `browser-vod-2026-09-03T06-44-21-952Z.md`.
+
+The sitting cost 2.486 BZZ read across all five chequebooks, against about 1.8 for the in-tab sitting. The
+difference is almost entirely the gateway node's own 0.619 BZZ, the retrievals the viewers made through it
+and which the in-tab node pays for itself. The publishers' side was 1.867. The 1080p node's figure is the
+reading with the 3.000 BZZ deposit removed, which its total balance shows to the plur.
+
+| node | spent |
+| --- | ---: |
+| 360p, the coordinator, :10075 | 0.241 |
+| 480p, :11071 | 0.189 |
+| 720p, :11073 | 0.528 |
+| 1080p, :11075 | 0.909 |
+| gateway, :10077 | 0.619 |
+| **all five** | **2.486** |
+
 ## Open, the owner's calls
 
 1. A stamp costs about 50 bytes per segment of the 4096 byte live window, so the window holds about 30

@@ -1,0 +1,1347 @@
+{
+  "measuredAt": "2026-09-03T06:44:21.952Z",
+  "watchUrl": "http://127.0.0.1:10074/#/watch/video/8d8a30ff4cbcf8ad0e0773547686295f8157feb0/395d39ef-b86c-43a0-b783-d5b9cff9fc67?qoe=1",
+  "chromeVersion": "Chrome 151.0.7922.75",
+  "openError": null,
+  "startedPlaying": {
+    "currentTime": 0.01019,
+    "duration": 122.6,
+    "buffered": 1.941332,
+    "readyState": 4,
+    "paused": false,
+    "seekable": 122.6,
+    "mediaError": null,
+    "networkState": 2
+  },
+  "afterSettle": {
+    "currentTime": 68.10428,
+    "duration": 123.071999,
+    "buffered": 123.071999,
+    "readyState": 4,
+    "paused": false,
+    "seekable": 123.071999,
+    "mediaError": null,
+    "networkState": 2
+  },
+  "seeks": [
+    {
+      "fraction": 0.5,
+      "targetS": 61.5359995,
+      "landedAtS": 61.546227,
+      "landedInMs": 236,
+      "resumedInMs": 328,
+      "error": null
+    },
+    {
+      "fraction": 0.9,
+      "targetS": 110.7647991,
+      "landedAtS": 110.773044,
+      "landedInMs": 130,
+      "resumedInMs": 350,
+      "error": null
+    },
+    {
+      "fraction": 0.2,
+      "targetS": 24.6143998,
+      "landedAtS": 24.630981,
+      "landedInMs": 148,
+      "resumedInMs": 346,
+      "error": null
+    }
+  ],
+  "vod": {
+    "openError": null,
+    "durationS": 123.071999,
+    "seekableToS": 123.071999,
+    "ladderHeights": [
+      360,
+      480,
+      720,
+      1080
+    ],
+    "rungs": [
+      {
+        "height": 360,
+        "uri": "swarm://8d8a30ff4cbcf8ad0e0773547686295f8157feb0/530eaf4e-a6b4-4cb0-9a4b-baa285183493",
+        "segments": 61,
+        "durationS": 121.633,
+        "lastSegmentRef": "9616e7521ca65b9ed9acf160584ca640710b76d9e67207796ea696c6e7cec24b",
+        "readFrom": "feed"
+      },
+      {
+        "height": 480,
+        "uri": "swarm://8d8a30ff4cbcf8ad0e0773547686295f8157feb0/f9959691-932a-427e-9c16-0edc53ec4292",
+        "segments": 61,
+        "durationS": 121.566,
+        "lastSegmentRef": "188142a502eed3fb17d15bc91a557d348576e035660a5780ccd4a70a911edf55",
+        "readFrom": "feed"
+      },
+      {
+        "height": 720,
+        "uri": "swarm://8d8a30ff4cbcf8ad0e0773547686295f8157feb0/081dd69d-c47a-49e5-9edb-2fcfa95d858a",
+        "segments": 61,
+        "durationS": 121.566,
+        "lastSegmentRef": "69069e89d1de9b8338657547a05ba3acc5fda901b1e7ad0d88f1b65532a1db8d",
+        "readFrom": "feed"
+      },
+      {
+        "height": 1080,
+        "uri": "swarm://8d8a30ff4cbcf8ad0e0773547686295f8157feb0/65e7b442-9974-4f50-9850-d0ee4daf1a0f",
+        "segments": 62,
+        "durationS": 122.6,
+        "lastSegmentRef": "335c9230547b7807734c0e0fcfe40657faae37a7f158bace756a469047db9bd1",
+        "readFrom": "player"
+      }
+    ]
+  },
+  "byteSource": {
+    "requested": "gateway",
+    "reported": "gateway",
+    "settledForMs": 60028,
+    "proofWindow": "from-playback-start"
+  },
+  "summary": {
+    "samples": 8,
+    "spanMs": 7090,
+    "stalledSamples": 0,
+    "medianAdvanceRatio": 0.9998654797230375,
+    "overallAdvanceRatio": 1.0000394922425941,
+    "forwardSeeks": 0,
+    "seekedPastS": 0,
+    "rebufferCount": 0,
+    "rebufferMs": 0,
+    "fatalErrors": 0,
+    "droppedFrames": 1,
+    "resolution": "1920×1080",
+    "deliveredFps": 29.900088571960517,
+    "medianBufferAheadS": 58.520044000000006,
+    "feedStatesSeen": [
+      "ended"
+    ],
+    "latency": {
+      "joinLatencyS": 122.6,
+      "medianLatencyS": 122.6,
+      "minLatencyS": 122.6,
+      "maxLatencyS": 122.6,
+      "reachedTargetAtJoin": true,
+      "heldTarget": true,
+      "joinedPastSeekThreshold": true,
+      "ranLong": true
+    },
+    "latencyTarget": {
+      "configuredS": 6,
+      "worstS": 7,
+      "medianPastTargetS": 115.6,
+      "raisedByS": 1,
+      "stalls": 0,
+      "held": false
+    }
+  },
+  "samples": [
+    {
+      "atMs": 1788417932675,
+      "currentTime": 61.005296,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 62.066703000000004,
+      "decodedFrames": 1833,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 4,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    },
+    {
+      "atMs": 1788417933692,
+      "currentTime": 62.023303,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 61.04869600000001,
+      "decodedFrames": 1863,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 4,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    },
+    {
+      "atMs": 1788417934705,
+      "currentTime": 63.035569,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 60.03643,
+      "decodedFrames": 1893,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 4,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    },
+    {
+      "atMs": 1788417935716,
+      "currentTime": 64.046433,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 59.02556600000001,
+      "decodedFrames": 1925,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 4,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    },
+    {
+      "atMs": 1788417936727,
+      "currentTime": 65.057477,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 58.014522,
+      "decodedFrames": 1955,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 5,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    },
+    {
+      "atMs": 1788417937739,
+      "currentTime": 66.070078,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 57.00192100000001,
+      "decodedFrames": 1985,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 5,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    },
+    {
+      "atMs": 1788417938752,
+      "currentTime": 67.082804,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 55.98919500000001,
+      "decodedFrames": 2016,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 5,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    },
+    {
+      "atMs": 1788417939765,
+      "currentTime": 68.095576,
+      "paused": false,
+      "readyState": 4,
+      "playbackRate": 1,
+      "bufferAheadS": 54.97642300000001,
+      "decodedFrames": 2045,
+      "liveLatencyS": 122.6,
+      "liveTargetLatencyS": 7,
+      "bufferStalls": 1,
+      "rebufferCount": 0,
+      "rebufferMs": 0,
+      "selectedRungHeight": 1080,
+      "abrWouldPickHeight": 1080,
+      "qualitySwitches": 1,
+      "abrEnabled": true,
+      "bandwidthEstimateKbps": 47107,
+      "ladderHeights": [
+        360,
+        480,
+        720,
+        1080
+      ],
+      "fatalErrors": 0,
+      "droppedFrames": 5,
+      "resolution": "1920×1080",
+      "feedStateMessage": "This broadcast has ended",
+      "feedState": "ended"
+    }
+  ],
+  "screenshots": [],
+  "player": {
+    "installed": true,
+    "sourceBuffers": [
+      "audio/mp4;codecs=mp4a.40.2",
+      "video/mp4;codecs=avc1.4d4028"
+    ],
+    "appends": [
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 628
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 728
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 31691
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1112531
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1101635
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33406
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1115935
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33842
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1131068
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33882
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1169644
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33959
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1046298
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33447
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1134486
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33906
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1058199
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33919
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1135048
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33851
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1063079
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33585
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1163627
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33861
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1087833
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33835
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1136805
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33791
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1184323
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33832
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1113719
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33594
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1096131
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33916
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1146996
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33740
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1075721
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33872
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1108767
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33866
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1070597
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33568
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1135709
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33893
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1047727
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33869
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1176227
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33851
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1063307
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33482
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1176710
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33973
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1075811
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33769
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1170698
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33447
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1105830
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33963
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1163229
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33852
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1054405
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33890
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1160733
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33467
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1103195
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33812
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1150957
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33973
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1090364
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33508
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1160967
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33828
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1055811
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33830
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1113308
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33885
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1076100
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33402
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1129186
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33948
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1082946
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33810
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1215394
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 34017
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1067686
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33479
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1129491
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33794
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1119888
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33975
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1169062
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33845
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1034462
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33752
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1170595
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33487
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1083712
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33856
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1118229
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33927
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1060074
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33903
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1238746
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33908
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1062021
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33516
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1153228
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33772
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1122974
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33908
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1129889
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33917
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1121860
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33577
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1142088
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33879
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1104050
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33763
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1146966
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33446
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1055427
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33898
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 1194313
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 33983
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "bytes": 376996
+      },
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "bytes": 19075
+      }
+    ],
+    "failures": [],
+    "events": [
+      {
+        "name": "play() called",
+        "atMs": 3841,
+        "readyState": 0
+      },
+      {
+        "name": "play",
+        "atMs": 3842,
+        "readyState": 0
+      },
+      {
+        "name": "waiting",
+        "atMs": 3843,
+        "readyState": 0
+      },
+      {
+        "name": "play() called",
+        "atMs": 4528,
+        "readyState": 0
+      },
+      {
+        "name": "loadedmetadata",
+        "atMs": 4813,
+        "readyState": 1
+      },
+      {
+        "name": "loadeddata",
+        "atMs": 4943,
+        "readyState": 4
+      },
+      {
+        "name": "canplay",
+        "atMs": 4943,
+        "readyState": 4
+      },
+      {
+        "name": "playing",
+        "atMs": 4944,
+        "readyState": 4
+      },
+      {
+        "name": "play() resolved",
+        "atMs": 4945,
+        "readyState": 4
+      },
+      {
+        "name": "play() resolved",
+        "atMs": 4945,
+        "readyState": 4
+      },
+      {
+        "name": "canplaythrough",
+        "atMs": 4945,
+        "readyState": 4
+      },
+      {
+        "name": "seeking",
+        "atMs": 73092,
+        "readyState": 1
+      },
+      {
+        "name": "waiting",
+        "atMs": 73101,
+        "readyState": 1
+      },
+      {
+        "name": "seeked",
+        "atMs": 73299,
+        "readyState": 4
+      },
+      {
+        "name": "canplay",
+        "atMs": 73299,
+        "readyState": 4
+      },
+      {
+        "name": "playing",
+        "atMs": 73299,
+        "readyState": 4
+      },
+      {
+        "name": "canplaythrough",
+        "atMs": 73300,
+        "readyState": 4
+      },
+      {
+        "name": "seeking",
+        "atMs": 73660,
+        "readyState": 1
+      },
+      {
+        "name": "waiting",
+        "atMs": 73660,
+        "readyState": 1
+      },
+      {
+        "name": "seeked",
+        "atMs": 73781,
+        "readyState": 4
+      },
+      {
+        "name": "canplay",
+        "atMs": 73782,
+        "readyState": 4
+      },
+      {
+        "name": "playing",
+        "atMs": 73782,
+        "readyState": 4
+      },
+      {
+        "name": "canplaythrough",
+        "atMs": 73782,
+        "readyState": 4
+      },
+      {
+        "name": "seeking",
+        "atMs": 74142,
+        "readyState": 1
+      },
+      {
+        "name": "waiting",
+        "atMs": 74143,
+        "readyState": 1
+      },
+      {
+        "name": "seeked",
+        "atMs": 74270,
+        "readyState": 4
+      },
+      {
+        "name": "canplay",
+        "atMs": 74270,
+        "readyState": 4
+      },
+      {
+        "name": "playing",
+        "atMs": 74271,
+        "readyState": 4
+      },
+      {
+        "name": "canplaythrough",
+        "atMs": 74271,
+        "readyState": 4
+      }
+    ],
+    "elements": [
+      {
+        "currentTime": 28.699446,
+        "readyState": 4,
+        "paused": false,
+        "muted": true,
+        "autoplay": true,
+        "buffered": [
+          [
+            0,
+            123.071999
+          ]
+        ],
+        "error": null
+      }
+    ],
+    "tracks": [
+      {
+        "mime": "audio/mp4;codecs=mp4a.40.2",
+        "buffered": [
+          [
+            0,
+            123.071999
+          ]
+        ]
+      },
+      {
+        "mime": "video/mp4;codecs=avc1.4d4028",
+        "buffered": [
+          [
+            0,
+            122.6
+          ]
+        ]
+      }
+    ]
+  },
+  "messages": [
+    {
+      "type": "warning",
+      "text": "HLS.js non-fatal error: bufferStalledError Playback stalling at @0 due to low buffer ({\"len\":1.941332,\"start\":0,\"end\":1.941332,\"buffered\":[{\"start\":0,\"end\":1.941332}],\"bufferedIndex\":0})"
+    }
+  ],
+  "instrumentProofs": [
+    {
+      "sensor": "timerDriftRatio",
+      "degradation": "its main thread blocked for 3000ms",
+      "rejected": true,
+      "firedChecks": [
+        "timerDriftRatio"
+      ]
+    },
+    {
+      "sensor": "visibilityState",
+      "degradation": "document.visibilityState overridden to 'hidden'",
+      "rejected": true,
+      "firedChecks": [
+        "visibilityState"
+      ]
+    }
+  ],
+  "instrument": {
+    "sound": true,
+    "failures": [],
+    "firedChecks": [],
+    "soundSamples": 1
+  },
+  "network": {
+    "spanMs": 24294,
+    "segmentRequests": 62,
+    "distinctSegments": 62,
+    "refusals": 0,
+    "refusalShare": 0,
+    "segmentsRefusedAtLeastOnce": 0,
+    "segmentsNeverServed": 0,
+    "medianTransferMs": 279.5,
+    "totalWaitedBetweenAttemptsMs": 0,
+    "segmentBytesPerSecond": 3000509.096896353,
+    "segmentBytesDelivered": 72894368,
+    "maxConcurrent": 1
+  },
+  "cost": {
+    "before": {
+      "atMs": 1788417862233,
+      "nodes": [
+        {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.113969907407407,
+          "postageImmutable": true,
+          "bzz": 6.7392191999939906
+        },
+        {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 44,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.111041666666667,
+          "postageImmutable": true,
+          "bzz": 2.67077929999796
+        },
+        {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 78,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.111157407407408,
+          "postageImmutable": true,
+          "bzz": 1.72801549999777
+        },
+        {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 106,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.111273148148148,
+          "postageImmutable": true,
+          "bzz": 3.59444739999794
+        }
+      ]
+    },
+    "after": {
+      "atMs": 1788417945068,
+      "nodes": [
+        {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.113101851851852,
+          "postageImmutable": true,
+          "bzz": 6.7392191999939906
+        },
+        {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 44,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.110173611111111,
+          "postageImmutable": true,
+          "bzz": 2.67077929999796
+        },
+        {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 78,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.1102893518518515,
+          "postageImmutable": true,
+          "bzz": 1.72801549999777
+        },
+        {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 106,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.110405092592592,
+          "postageImmutable": true,
+          "bzz": 3.59444739999794
+        }
+      ]
+    },
+    "minutes": 1.3805833333333333,
+    "bucketsUsed": 0,
+    "bzzSpent": 0,
+    "bucketsPerMinute": 0,
+    "bzzPerMinute": 0,
+    "bzzPerMegabyte": 0,
+    "minutesOfPostageLeft": null,
+    "minutesOfBzzLeft": null,
+    "perNode": [
+      {
+        "rung": "360p",
+        "port": 10075,
+        "before": {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.113969907407407,
+          "postageImmutable": true,
+          "bzz": 6.7392191999939906
+        },
+        "after": {
+          "rung": "360p",
+          "port": 10075,
+          "batchId": "56c72ae8",
+          "postageUtilization": 35,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.113101851851852,
+          "postageImmutable": true,
+          "bzz": 6.7392191999939906
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "480p",
+        "port": 11071,
+        "before": {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 44,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.111041666666667,
+          "postageImmutable": true,
+          "bzz": 2.67077929999796
+        },
+        "after": {
+          "rung": "480p",
+          "port": 11071,
+          "batchId": "cf989cc6",
+          "postageUtilization": 44,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.110173611111111,
+          "postageImmutable": true,
+          "bzz": 2.67077929999796
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "720p",
+        "port": 11073,
+        "before": {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 78,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.111157407407408,
+          "postageImmutable": true,
+          "bzz": 1.72801549999777
+        },
+        "after": {
+          "rung": "720p",
+          "port": 11073,
+          "batchId": "453689f2",
+          "postageUtilization": 78,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.1102893518518515,
+          "postageImmutable": true,
+          "bzz": 1.72801549999777
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      },
+      {
+        "rung": "1080p",
+        "port": 11075,
+        "before": {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 106,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.111273148148148,
+          "postageImmutable": true,
+          "bzz": 3.59444739999794
+        },
+        "after": {
+          "rung": "1080p",
+          "port": 11075,
+          "batchId": "709b3e21",
+          "postageUtilization": 106,
+          "postageCapacity": 256,
+          "postageTtlDays": 5.110405092592592,
+          "postageImmutable": true,
+          "bzz": 3.59444739999794
+        },
+        "bucketsUsed": 0,
+        "bzzSpent": 0,
+        "bucketsPerMinute": 0,
+        "bzzPerMinute": 0,
+        "minutesOfPostageLeft": null,
+        "minutesOfBzzLeft": null
+      }
+    ],
+    "warnings": []
+  }
+}
