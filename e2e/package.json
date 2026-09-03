@@ -16,6 +16,7 @@
     "test:e2e:quality": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/viewer/quality-switch.test.ts'",
     "//test:e2e:vod": "The same shape for V4: the gates, then the recorded-playback suite alone. One short broadcast to prove a fix to the suite without buying every other suite's broadcast.",
     "test:e2e:vod": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/viewer/vod-playback.test.ts'",
+    "test:e2e:finalize-crash": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/scenarios/finalize-crash.test.ts'",
     "test:e2e:smoke": "TSX_DISABLE_CACHE=1 tsx --test 'suites/smoke/*.test.ts'",
     "bench:latency": "tsx bench/latency.ts",
     "bench:longrun": "tsx bench/longrun.ts",
