@@ -8,6 +8,10 @@
  * the engine's own segment index and the feed's SOC index, on purpose, because those are what
  * correlate with the engine's logs and with a segment reference. So this reads the playlist.
  *
+ * A third, of 2026-09-03, is what an `#EXT-X-DISCONTINUITY` excuses. An engine restart inside a
+ * broadcast re-anchors the dating on the wall clock the engine came back at, so the step across the
+ * break is the length of the outage rather than a whole number of fragments. See {@link stampFailures}.
+ *
  * ⛔ It answers with reasons rather than throwing, and it asserts nothing about timing. Every reason
  * it can give is a statement the playlist makes about itself being wrong, which is correctness. See
  * the repository's rule on what an e2e suite may gate on.
@@ -120,9 +124,15 @@ function mediaSequenceFailures(text: string, contract: ManifestContract): string
 /**
  * Whether every segment is dated, and whether the dates step by the fragment length.
  *
- * A step wider than one fragment is only legal across an `#EXT-X-DISCONTINUITY`, where it is the
- * media that went missing or the engine's counter restarting, and it still has to be a whole number
- * of fragments because the stamp is derived from a segment count rather than measured.
+ * Without an `#EXT-X-DISCONTINUITY` the step must be exactly one fragment. The stamp is derived from
+ * a segment's playlist sequence rather than measured, so anything else means it was taken from
+ * something else: an arrival time, a measured `#EXTINF`, or media the playlist does not name.
+ *
+ * ⛔ Across a discontinuity a forward step of **any** size is legal, and this required a whole number
+ * of fragments until the owner's decision of 2026-09-03. An engine restart re-anchors the dating on
+ * the wall clock the engine came back at, so the step across that break is the length of the outage
+ * and nothing rounds it to fragments. A step that does not move forwards stays illegal everywhere: a
+ * date that repeats or goes backwards is media a viewer is already holding being re-dated.
  */
 function stampFailures(segments: Segment[], fragmentSeconds: number): string[] {
   const failures: string[] = [];
@@ -150,6 +160,11 @@ function stampFailures(segments: Segment[], fragmentSeconds: number): string[] {
       continue;
     }
 
+    // The break is where the dating re-anchors, so the size of the step across it says nothing.
+    if (segments[i].discontinuity) {
+      continue;
+    }
+
     const fragments = Math.round(gapMs / stepMs);
     if (Math.abs(gapMs - fragments * stepMs) > STEP_SLACK_MS) {
       failures.push(
@@ -159,7 +174,7 @@ function stampFailures(segments: Segment[], fragmentSeconds: number): string[] {
       continue;
     }
 
-    if (fragments > 1 && !segments[i].discontinuity) {
+    if (fragments > 1) {
       failures.push(
         `segment ${i} is dated ${fragments} fragments after the one before it with no ` +
           '#EXT-X-DISCONTINUITY between them, so the playlist promises a viewer media it does not name',

@@ -130,6 +130,57 @@ describe('the timeline a playlist declares', () => {
   });
 
   /**
+   * A playlist whose dating re-anchors, which is what an engine restart inside a broadcast produces.
+   *
+   * @param accountedFor whether the segment the dating re-anchors at carries its `#EXT-X-DISCONTINUITY`
+   */
+  function reanchoredPlaylist(accountedFor: boolean): string {
+    return [
+      '#EXTM3U',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '',
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:00.000Z',
+      '#EXTINF:2,',
+      ref(0),
+      ...(accountedFor ? ['#EXT-X-DISCONTINUITY'] : []),
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:09:41.317Z',
+      '#EXTINF:2,',
+      ref(1),
+      '#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:09:43.317Z',
+      '#EXTINF:2,',
+      ref(2),
+      '',
+    ].join('\n');
+  }
+
+  /**
+   * ⛔ Owner decision of 2026-09-03. An engine restart re-anchors the dating on the wall clock the
+   * engine came back at, so the step across the break is the length of the outage and nothing makes
+   * that a whole number of fragments. The step after it is one fragment again.
+   */
+  it('accepts an uneven forward step across a discontinuity, which is where the dating re-anchors', () => {
+    assert.deepEqual(manifestContractFailures(reanchoredPlaylist(true), CONTRACT), []);
+  });
+
+  it('refuses that same re-anchoring with no discontinuity to account for it', () => {
+    const failures = manifestContractFailures(reanchoredPlaylist(false), CONTRACT);
+
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /not a whole number of 2s fragments/);
+  });
+
+  /**
+   * A break excuses a step of any size **forwards** and nothing excuses one that does not move. A
+   * media sequence that goes backwards is what hls.js reports as a parsing error, and a stamp that
+   * goes backwards with it is a re-anchoring that re-dated media a viewer is already holding.
+   */
+  it('refuses a stamp that goes backwards even where a discontinuity accounts for the break', () => {
+    const backwards = playlist([0, 2, 1], { mediaSequence: 0, breaks: [1] });
+
+    assert.ok(manifestContractFailures(backwards, CONTRACT).some((failure) => /at or before the/.test(failure)));
+  });
+
+  /**
    * The stamp is nominal, so a step of half a fragment means it was taken from something other than
    * the anchor: an arrival time, or a measured `#EXTINF`. That is the defect the derivation exists to
    * prevent, and a suite that let it through would be watching four rungs drift apart.
