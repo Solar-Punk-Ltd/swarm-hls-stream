@@ -421,13 +421,15 @@ export interface TimelineCheck {
 
 /** What a suite prints and asserts on. */
 export interface TimelineVerdict {
-  /** One line per rung, or the sentence saying why nothing was checked. */
+  /**
+   * One line per rung, or the sentence saying why nothing was checked.
+   *
+   * A suite prints this whether it passes or fails, so the two states are told apart in the run's own
+   * output rather than by a field nobody reads.
+   */
   summary: string;
   /** Why the published playlists do not meet the contract, or null. */
   refusal: string | null;
-  /** Whether the contract was applied at all, so a suite reports coverage rather than implying it. */
-  checked: boolean;
-  readings: readonly RungPlaylistReading[];
 }
 
 /**
@@ -444,7 +446,7 @@ export async function checkPublishedTimeline(
 ): Promise<TimelineVerdict> {
   const fragmentSeconds = fragmentSecondsFor(check.expectation);
   if (fragmentSeconds === null) {
-    return { summary: `  ${UNCHECKED_WITHOUT_FRAGMENT}`, refusal: null, checked: false, readings: [] };
+    return { summary: `  ${UNCHECKED_WITHOUT_FRAGMENT}`, refusal: null };
   }
 
   const parses = await readRungPlaylists(host, cfg, { owner: check.owner, rungs: check.rungs });
@@ -457,12 +459,7 @@ export async function checkPublishedTimeline(
     return byNow !== null && namesEverySegmentPublished(parse, byNow);
   });
 
-  return {
-    summary: describeRungPlaylists(parses),
-    refusal: rungPlaylistRefusal(readings),
-    checked: true,
-    readings,
-  };
+  return { summary: describeRungPlaylists(parses), refusal: rungPlaylistRefusal(readings) };
 }
 
 /**

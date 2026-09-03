@@ -1,9 +1,15 @@
 import { addingStreamToList, rungAnnounced, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, describe, it } from 'node:test';
 
+import { type E2EConfig, loadConfig } from '../src/config.js';
+import type { Host } from '../src/harness/host.js';
 import type { ManifestContract } from '../src/harness/manifestContract.js';
 import {
+  checkPublishedTimeline,
   describeRungPlaylists,
   fragmentSecondsFor,
   judgeRungPlaylists,
@@ -427,5 +433,131 @@ describe('what a wired suite prints', () => {
     ]);
 
     assert.match(summary, /single rendition/);
+  });
+});
+
+const roots: string[] = [];
+
+after(() => {
+  for (const dir of roots) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function config(env: NodeJS.ProcessEnv = {}): E2EConfig {
+  const rootDir = mkdtempSync(join(tmpdir(), 'e2e-manifest-live-'));
+  roots.push(rootDir);
+  return loadConfig({ env, rootDir });
+}
+
+/** What one gateway read was asked for, and when it happened relative to the log re-read. */
+type Step = { readonly feed: string } | { readonly log: true };
+
+/** A Host that answers every feed read with one playlist and records the order it was asked. */
+function stubHost(playlist: string, steps: Step[]): Host {
+  return {
+    localText: async (_port: number, path: string) => {
+      steps.push({ feed: path });
+      return playlist;
+    },
+  } as unknown as Host;
+}
+
+describe('the one call a live suite makes', () => {
+  const cfg = config({ E2E_EXPECT_ABR: 'true', E2E_EXPECT_SEGMENT_S: String(FIXTURE_FRAGMENT_SECONDS) });
+  const OWNER = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+
+  /**
+   * ⛔⛔ The ordering rule, pinned because getting it wrong reds a correct product rather than
+   * failing loudly. A count read before the playlists can be lower than what the broadcast had
+   * published by the time they were fetched, which calls a slid window a first playlist and then
+   * demands a sequence of 0 the uploader was right to have moved past.
+   */
+  it('re-reads the log only once every playlist is in hand', async () => {
+    const steps: Step[] = [];
+    const host = stubHost(rungPlaylist([0, 1, 2]), steps);
+
+    await checkPublishedTimeline(host, cfg, {
+      owner: OWNER,
+      rungs: [feedOf('360p', TOPIC_360), feedOf('1080p', TOPIC_1080)],
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: async () => {
+        steps.push({ log: true });
+        return uploadLines('live/stream_360p', 3);
+      },
+    });
+
+    assert.deepEqual(
+      steps.map((step) => ('log' in step ? 'log' : 'feed')),
+      ['feed', 'feed', 'log'],
+    );
+  });
+
+  it('passes a ladder whose rungs each named every segment they published', async () => {
+    const verdict = await checkPublishedTimeline(stubHost(rungPlaylist([0, 1, 2]), []), cfg, {
+      owner: OWNER,
+      rungs: [feedOf('360p', TOPIC_360)],
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: async () => uploadLines('live/stream_360p', 3),
+    });
+
+    assert.equal(verdict.refusal, null);
+    assert.match(verdict.summary, /360p/);
+  });
+
+  /**
+   * Without the counts nothing can show a live window has not slid, so sequence 0 is asked of
+   * recordings alone. A live playlist opening on the engine's own counter passes here, and that is
+   * the assertion a suite gives up by not re-reading its log rather than a hole in the contract.
+   */
+  it('leaves a live playlist’s sequence alone when the suite offers no counts', async () => {
+    const engineCounter = rungPlaylist([0, 1, 2], { mediaSequence: 580 });
+
+    const verdict = await checkPublishedTimeline(stubHost(engineCounter, []), cfg, {
+      owner: OWNER,
+      rungs: [feedOf('360p', TOPIC_360)],
+      expectation: cfg.segmentExpectation,
+    });
+
+    assert.equal(verdict.refusal, null);
+  });
+
+  it('refuses that same playlist once the counts show the window has not slid', async () => {
+    const engineCounter = rungPlaylist([0, 1, 2], { mediaSequence: 580 });
+
+    const verdict = await checkPublishedTimeline(stubHost(engineCounter, []), cfg, {
+      owner: OWNER,
+      rungs: [feedOf('360p', TOPIC_360)],
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: async () => uploadLines('live/stream_360p', 3),
+    });
+
+    assert.match(verdict.refusal ?? '', /#EXT-X-MEDIA-SEQUENCE:580 rather than 0/);
+  });
+
+  /** `E2E_EXPECT_SEGMENT_S=any` is a declaration, so it is printed and nothing is read at all. */
+  it('reads nothing and says so when the run pinned no segment length', async () => {
+    const steps: Step[] = [];
+    const anyLength = config({ E2E_EXPECT_ABR: 'true', E2E_EXPECT_SEGMENT_S: SEGMENT_ANY });
+
+    const verdict = await checkPublishedTimeline(stubHost(rungPlaylist([0]), steps), anyLength, {
+      owner: OWNER,
+      rungs: [feedOf('360p', TOPIC_360)],
+      expectation: anyLength.segmentExpectation,
+    });
+
+    assert.deepEqual(steps, []);
+    assert.equal(verdict.refusal, null);
+    assert.match(verdict.summary, /E2E_EXPECT_SEGMENT_S/);
+  });
+
+  it('refuses a broadcast that announced no rung feed rather than reporting a pass', async () => {
+    const verdict = await checkPublishedTimeline(stubHost(rungPlaylist([0]), []), cfg, {
+      owner: OWNER,
+      rungs: [],
+      expectation: cfg.segmentExpectation,
+    });
+
+    assert.match(verdict.refusal ?? '', /no rung feed/);
   });
 });
