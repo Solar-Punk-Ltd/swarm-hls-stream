@@ -53,6 +53,35 @@ COPY packages/client packages/client
 # scripts by default, which is what makes `build` alone enough.
 RUN pnpm --filter @swarm-hls-stream/client build
 
+# What this bundle was built from, minted by `deploy/scripts/deploy.sh` out of git.
+#
+# Declared here rather than beside the VITE args on purpose. A build arg's value is part of the cache
+# key of every layer after it, and CLIENT_BUILD_HEAD moves on every commit, so above the install and
+# the build it would rebuild both for a checkout whose client sources never changed.
+ARG CLIENT_BUILD_CLIENT_TREE=
+ARG CLIENT_BUILD_SHARED_TREE=
+ARG CLIENT_BUILD_HEAD=
+ARG CLIENT_BUILD_DIRTY=0
+ARG CLIENT_BUILD_AT=
+
+# Read back over HTTP at `/build-stamp.json` by the `client-shape` e2e preflight, which refuses a
+# sitting whose served client was not built from the sources the harness was checked out with. It
+# lands in `dist/`, so the runtime stage's COPY below carries it into the site and nginx serves it
+# off the filesystem with no template change.
+#
+# ⚠️ `dirty` is written as a JSON boolean, because the gate refuses on it and a quoted "0" would be
+# truthy on the way in. An image built by a deploy script that passes none of these args still
+# builds, and the empty clientTree is what the gate then refuses on, which asks for a redeploy.
+RUN printf '{"clientTree":"%s","sharedTree":"%s","head":"%s","dirty":%s,"builtAt":"%s","fetchBackend":"%s","exposePlayer":"%s"}\n' \
+      "$CLIENT_BUILD_CLIENT_TREE" \
+      "$CLIENT_BUILD_SHARED_TREE" \
+      "$CLIENT_BUILD_HEAD" \
+      "$(if [ "$CLIENT_BUILD_DIRTY" = "1" ]; then echo true; else echo false; fi)" \
+      "$CLIENT_BUILD_AT" \
+      "$VITE_BROWSER_FETCH_BACKEND" \
+      "$VITE_EXPOSE_PLAYER" \
+      > /app/packages/client/dist/build-stamp.json
+
 # --- Runtime stage ------------------------------------------------------
 FROM nginx:1.27-alpine
 
