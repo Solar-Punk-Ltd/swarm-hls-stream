@@ -97,8 +97,11 @@ reading with the 3.000 BZZ deposit removed, which its total balance shows to the
 3. After an engine restart inside a broadcast the numbering re-anchors forward with a discontinuity and
    the date stays anchored to the broadcast's start, so the rungs keep agreeing while the absolute time
    lags by the length of the gap.
-4. The live suites do not yet assert this contract. The check exists in the harness and is unit-proved.
-   Wiring it needs the playlist text during a suite, which needs the owner and topic, and the log names
-   the topic but not the owner.
+4. ✅ **Decided and built.** Seven live suites now fetch the playlists a broadcast published and assert
+   the contract on them: `service/happy-path`, `service/abr-ladder`, scenarios E, F, H and I, and the
+   ABR engine restart. No uploader change was needed. One `STREAM_KEY` signs the catalog, every master
+   and every rung's manifest feed, so the owner is the address `discoverCatalogFeed` already reads out
+   of the `[StreamCatalog]` line, and the topic comes from the rung announce. See
+   `e2e/src/harness/manifestContractLive.ts`.
 5. Abel's player needs telling that the history starts at 0 now and that stamps are present. The owner
    does that.
