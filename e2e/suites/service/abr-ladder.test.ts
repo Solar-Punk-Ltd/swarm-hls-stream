@@ -30,7 +30,7 @@ import { waitFor } from '../../src/harness/wait.js';
  * The uploader's own log is the assertion source for everything about the ladder's SHAPE, as it is
  * for every upload-side suite here. That makes the observable facts "which rungs published" and "did
  * their segments stay gapless". The master playlist is written to a feed rather than logged, so
- * **this suite does not assert that the master is correct** — `packages/shared/test/masterPlaylist.test.ts`
+ * **this suite does not assert that the master is correct**. `packages/shared/test/masterPlaylist.test.ts`
  * owns the master's text and `packages/client/test/ladderSource.test.ts` owns reading it back. Saying
  * so here rather than implying broader coverage than there is.
  *

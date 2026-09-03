@@ -38,7 +38,7 @@ import {
  *
  * ⛔ Every case here is built from log text and playlist text, so it is free and it runs in CI. What
  * it cannot do is prove a stage publishes such a playlist, which is the paid half and is what the
- * suites under `e2e/suites/` are for. `manifestContract.test.ts` owns the contract's own rules; this
+ * suites under `e2e/suites/` are for. `manifestContract.test.ts` owns the contract's own rules. This
  * file owns everything around them.
  */
 

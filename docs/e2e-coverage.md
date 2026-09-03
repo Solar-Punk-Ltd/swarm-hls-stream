@@ -300,5 +300,5 @@ The fragment length is the run's own declaration, `E2E_EXPECT_SEGMENT_S`, which
 ⛔ **Still to be proved by a paid sitting.** Every assertion above is wired and none has run against a
 deployment. Three things to read on the first sitting that includes them: whether F reds on the join
 across the uploader's own downtime, where SRS's lost segments leave a gap that nothing arms a
-discontinuity for; whether the ladder's four rungs really agree segment for segment; and which of E
+discontinuity for. Whether the ladder's four rungs really agree segment for segment. And which of E
 and the ABR restart actually reached the sequence assertion, which their printed summary says.
