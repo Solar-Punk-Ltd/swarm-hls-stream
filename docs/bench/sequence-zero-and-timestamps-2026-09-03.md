@@ -87,6 +87,43 @@ reading with the 3.000 BZZ deposit removed, which its total balance shows to the
 | gateway, :10077 | 0.619 |
 | **all five** | **2.486** |
 
+## The proving sitting for the two decisions, the same evening
+
+At 17:50 WITA the whole suite ran through the gateway once more, on the uploader redeployed at head `9252186`, which
+carries both decisions: the dating re-anchors on the wall clock at an engine restart, and seven live suites now fetch
+the playlists a broadcast published and hold them to this contract. **9 of 9 gates and 36 of 36 suites**, the third
+fully green sitting on this uploader and the first in which the contract is asserted by the suites themselves rather
+than read by hand. Gate 8 accepted the redeployed uploader's new log line on the first try.
+
+The re-anchor fired live in the first suite, the ABR engine restart. The uploader's own log has the 1080p rung minting
+the line at 09:51:42.712Z, "re-anchored its dating at sequence 0: 09:51:25.917Z becomes 09:51:42.710Z", which is the
+17 seconds of lag the decision set out to remove, and the other three rungs joining that same line within 800 ms. The
+suite then re-announced all four rungs five more times over the next seventy seconds as the broadcaster reconnected
+through the restart, a behaviour that predates today, and every one of those 20 announces joined the line minted
+first, so the ladder never dated one segment two ways. The lag that sharing costs a session announced late is bounded
+by the two minute tolerance in `broadcastDating.ts`, against the unbounded lag before. The other restart shape, an
+engine counter resetting inside one session, was not exercised live, the log shows no "Continuing the playlist at
+sequence" line all sitting, so that branch stands on its unit tests.
+
+What the suites printed, one line per rung: H's recording carried all four rungs at `#EXT-X-MEDIA-SEQUENCE:0`,
+5 segments each, dated 09:55:04.524Z to 09:55:12.524Z on every rung. I's recording the same at sequence 0. The
+happy path and the ladder suite read live playlists at sequence 0 with 5 to 10 segments and one shared first date.
+Scenario F read its post-crash playlists at sequences 15 to 18 with 31 segments each, dates continuous over 60 s,
+which means the crash join had already slid out of the live window before the read, exactly as the wiring predicted.
+So the segment-loss gap named under "Open" below is still unobserved live: F is green without having looked at it.
+
+The sitting cost 2.494 BZZ across the five chequebooks, the same as sitting D to the hundredth, with no deposit and
+no cheque cashed during it (every total balance unmoved).
+
+| node | spent |
+| --- | ---: |
+| 360p, the coordinator, :10075 | 0.247 |
+| 480p, :11071 | 0.199 |
+| 720p, :11073 | 0.515 |
+| 1080p, :11075 | 0.939 |
+| gateway, :10077 | 0.594 |
+| **all five** | **2.494** |
+
 ## Open, the owner's calls
 
 1. A stamp costs about 50 bytes per segment of the 4096 byte live window, so the window holds about 30
@@ -99,14 +136,14 @@ reading with the 3.000 BZZ deposit removed, which its total balance shows to the
    broadcaster's keyframe interval to divide it or its stamps fall behind by the excess of every
    segment, without bound. Under the ladder the engine re-GOPs every rung at `ABR_FPS × HLS_FRAGMENT`,
    so there is no drift. Written up in the uploader README.
-3. ✅ **Decided, re-anchor.** After an engine restart inside a broadcast the date now re-anchors on the
+3. ✅ **Decided, re-anchor, built and proven live** (the sitting above). After an engine restart inside a broadcast the date now re-anchors on the
    wall clock the engine came back at, so the media after the gap carries the time it really happened
    while the media published before it keeps the dates it went out with. The re-anchoring is minted
    once for the whole ladder, by whichever rung crosses the restart first, and every other rung lands
    on that same line, so the mapping from sequence to date stays one function for the ladder. Both
    restart paths do it, the recording uses the same function, and the epochs ride with the group record
    and with each recovery entry so a crash after a restart comes back on them.
-4. ✅ **Decided and built.** Seven live suites now fetch the playlists a broadcast published and assert
+4. ✅ **Decided, built and proven live** (the sitting above). Seven live suites now fetch the playlists a broadcast published and assert
    the contract on them: `service/happy-path`, `service/abr-ladder`, scenarios E, F, H and I, and the
    ABR engine restart. No uploader change was needed. One `STREAM_KEY` signs the catalog, every master
    and every rung's manifest feed, so the owner is the address `discoverCatalogFeed` already reads out
