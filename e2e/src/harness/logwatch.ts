@@ -24,6 +24,7 @@ import {
   addingStreamToListPattern,
   catalogStateLostPattern,
   datingReanchoredPattern,
+  engineSkippedSegmentsPattern,
   finalizeResumedPattern,
   ladderFinalizedPattern,
   manifestUploadedPattern,
@@ -43,15 +44,26 @@ import {
 export interface UploaderEvents {
   uploadedSegments: number[];
   /**
-   * How many discontinuities were armed, by any of the five lines that say one was.
+   * How many discontinuities were armed, by any of the six lines that say one was.
    *
-   * A count rather than a list of indices, because only one of the five names a segment. The
-   * scenarios that care read this number, and the one that wants an index reads
-   * `discontinuitySegments`.
+   * A count rather than a list of indices, because only one of the six reports a segment whose
+   * upload was attempted. The scenarios that care read this number, and the one that wants an index
+   * reads `discontinuitySegments`.
    */
   discontinuitiesArmed: number;
   /** Segment indices from the upload-failure path, the only one that reports an index. */
   discontinuitySegments: number[];
+  /**
+   * How many gaps the uploader inferred from the engine's own numbering rather than being told
+   * about, out of the sixth arming line alone.
+   *
+   * ⛔ Counted on its own because scenario F needs exactly this family and no other. SRS posts each
+   * closed segment once and never retries, so the segments it closed while the uploader was dead are
+   * never reported by anything and the arriving index is the only evidence there is. A wait on
+   * `discontinuitiesArmed` would be satisfied by a spent retry window or an origin-declared break,
+   * neither of which says the post-crash gap was armed.
+   */
+  inferredSegmentGaps: number;
   manifestSocIndices: number[];
   staleWarnings: number;
   retries: number;
@@ -74,24 +86,29 @@ export interface UploaderEvents {
 /**
  * Every line that means a discontinuity was armed, in the shapes the producers compose them.
  *
- * `StreamUploader` sets `pendingDiscontinuity` from three call sites: the retry window being spent,
- * `handleSegmentLoss`, and `markDiscontinuity`. The OME puller writes a fourth line reporting the
- * same loss `handleSegmentLoss` is about to record, beside the uploader's rather than instead of it,
- * so one loss on OME contributes two. That double count is what this counter has always produced and
- * it is preserved deliberately: changing a count in the same step as moving a message leaves neither
- * provable, and `test/logwatch.test.ts` pins both halves.
+ * `StreamUploader` sets `pendingDiscontinuity` from four call sites: the retry window being spent,
+ * `handleSegmentLoss`, `handleInferredSegmentLoss`, and `markDiscontinuity`. The OME puller writes a
+ * further line reporting the same loss `handleSegmentLoss` is about to record, beside the uploader's
+ * rather than instead of it, so one loss on OME contributes two. That double count is what this
+ * counter has always produced and it is preserved deliberately: changing a count in the same step as
+ * moving a message leaves neither provable, and `test/logwatch.test.ts` pins both halves.
  *
  * The fifth is `ManifestManager`, which arms one on the segment where the engine's own counter
  * restarted. It does not go through `pendingDiscontinuity` at all, because the shipped SRS webhook
  * path declares no break of its own and the reset is the only evidence there is.
  *
+ * The sixth is the gap nobody reports, which `StreamOrchestrator` infers from the index it is handed
+ * being more than one above the last it accounted for. That is the only kind of loss the SRS webhook
+ * path produces, since SRS posts each closed segment once and never retries, and it is counted
+ * separately as well as here. See {@link UploaderEvents.inferredSegmentGaps}.
+ *
  * ⛔ Not written out here. Each pattern is derived from the composer the producer logs with, so a
  * reworded message cannot leave this matching nothing. Six suites assert this count is zero on a
  * clean run and a blind reader passes every one of them, for ever, on a stage arming discontinuities
- * all night. Anchoring on the upload failure alone once matched one of the four for exactly that
+ * all night. Anchoring on the upload failure alone once matched one of the six for exactly that
  * reason, and the `markDiscontinuity` miss is the dangerous shape: the segment carrying an
  * origin-declared marker IS accepted and uploaded, so it leaves no hole and `isContiguous` is no
- * backstop either. The re-anchoring has that same shape.
+ * backstop either. The re-anchoring and the inferred gap both have that same shape.
  */
 const discontinuityPatterns = (): RegExp[] => [
   segmentUploadFailedPattern('g'),
@@ -99,6 +116,7 @@ const discontinuityPatterns = (): RegExp[] => [
   originDeclaredDiscontinuityPattern('g'),
   omeSegmentLossReportedPattern('g'),
   datingReanchoredPattern('g'),
+  engineSkippedSegmentsPattern('g'),
 ];
 
 /**
@@ -244,6 +262,7 @@ export function parseUploaderLog(text: string): UploaderEvents {
     uploadedSegments: captureNumbers(messages, segmentUploadedPattern('g')),
     discontinuitiesArmed: countAnyMatch(messages, discontinuityPatterns()),
     discontinuitySegments: captureNumbers(messages, segmentUploadFailedPattern('g')),
+    inferredSegmentGaps: countMatches(messages, engineSkippedSegmentsPattern('g')),
     manifestSocIndices: captureSecondNumbers(messages, manifestSocPattern()),
     staleWarnings: countMatches(messages, RE_STALE),
     retries: countMatches(messages, RE_RETRY),

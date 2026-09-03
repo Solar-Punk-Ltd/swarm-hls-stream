@@ -1,4 +1,10 @@
-import { finalizeResumed, ladderFinalized, manifestUploaded, segmentUploaded } from '@swarm-hls-stream/shared';
+import {
+  engineSkippedSegments,
+  finalizeResumed,
+  ladderFinalized,
+  manifestUploaded,
+  segmentUploaded,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -111,6 +117,7 @@ describe('parseUploaderLog reads the text format', () => {
       uploadedSegments: [],
       discontinuitiesArmed: 0,
       discontinuitySegments: [],
+      inferredSegmentGaps: 0,
       manifestSocIndices: [],
       staleWarnings: 0,
       retries: 0,
@@ -146,6 +153,7 @@ describe('parseUploaderLog reads the json format', () => {
       manifestSocIndices: [4],
       discontinuitiesArmed: 1,
       discontinuitySegments: [1],
+      inferredSegmentGaps: 0,
       staleWarnings: 1,
       retries: 1,
       videolessSegments: [],
@@ -155,13 +163,14 @@ describe('parseUploaderLog reads the json format', () => {
 
 describe('every path that arms a discontinuity is counted', () => {
   /**
-   * `StreamUploader` arms `pendingDiscontinuity` from three call sites and only one of them says
-   * "Failed to upload segment". Anchoring on that one matched a third of them, and both misses are
-   * reachable only through the OME puller, an engine this harness supports as a first-class
-   * target. Six suites assert `discontinuitiesArmed === 0` in the general wording "must not arm a
-   * discontinuity", so on OME each of them was asserting something it could not observe.
+   * `StreamUploader` arms `pendingDiscontinuity` from four call sites and only one of them says
+   * "Failed to upload segment". Anchoring on that one matched a quarter of them, and two of the
+   * misses are reachable only through the OME puller, an engine this harness supports as a
+   * first-class target. Six suites assert `discontinuitiesArmed === 0` in the general wording "must
+   * not arm a discontinuity", so on OME each of them was asserting something it could not observe.
    *
-   * The fifth path does not go through `pendingDiscontinuity` at all. See the case for it below.
+   * The fifth path does not go through `pendingDiscontinuity` at all, and the sixth is the one the
+   * shipped SRS path actually takes. See the cases for both below.
    */
   for (const [name, line] of [
     ['the upload retry window being spent', DISCONTINUITY(2)],
@@ -248,6 +257,62 @@ describe('every path that arms a discontinuity is counted', () => {
 
   it('reads no segment index off the re-anchoring, whose number is a playlist sequence', () => {
     assert.deepEqual(parseUploaderLog(textLine('info', REANCHORED(42))).discontinuitySegments, []);
+  });
+
+  /**
+   * ⛔ The sixth line, and the only kind of loss the shipped SRS webhook path produces. SRS posts
+   * each closed segment once and never retries, so a segment it closed while the uploader was dead
+   * is reported by nothing at all: the orchestrator infers the gap from the arriving index being
+   * more than one above the last it accounted for. Scenario F reads this family on its own, because
+   * a wait on the whole armed count would be satisfied by any of the other five.
+   */
+  const SKIPPED = (from: number, to: number, count: number) => engineSkippedSegments(from, to, 'stream-7', count);
+
+  it('counts a gap the uploader inferred from the engine’s numbering', () => {
+    assert.equal(parseUploaderLog(textLine('error', SKIPPED(4, 9, 4))).discontinuitiesArmed, 1);
+  });
+
+  it('counts the inferred gaps on their own, so a scenario can ask for this family alone', () => {
+    const log = [
+      textLine('error', SKIPPED(4, 9, 4)),
+      textLine('error', SKIPPED(20, 24, 3)),
+      // The other five must not reach this counter, or F's post-recovery wait is satisfied by a
+      // spent retry window on a stage that armed nothing for the crash.
+      textLine('error', DISCONTINUITY(2)),
+      textLine('error', SEGMENT_LOST(2)),
+      textLine('info', ORIGIN_DISCONTINUITY),
+      textLine('error', OME_LOSS_REPORT(5, 7)),
+      textLine('info', REANCHORED(42)),
+    ].join('\n');
+    const events = parseUploaderLog(log);
+
+    assert.equal(events.inferredSegmentGaps, 2);
+    assert.equal(events.discontinuitiesArmed, 7, 'and the family still lands in the count six suites read');
+  });
+
+  it('names nothing inferred on a log holding none', () => {
+    const log = [textLine('log', UPLOADED(0)), textLine('log', UPLOADED(1))].join('\n');
+
+    assert.equal(parseUploaderLog(log).inferredSegmentGaps, 0);
+  });
+
+  /**
+   * The dangerous shape, shared with the origin-declared break. The segment that CLOSES the gap is
+   * accepted and uploaded, so the uploaded run either side of the join is gapless in the log and
+   * `isContiguous` is no backstop. The segments in the gap were never posted, so nothing names them.
+   */
+  it('sees an inferred gap whose uploaded run is gapless', () => {
+    const log = [textLine('log', UPLOADED(0)), textLine('error', SKIPPED(0, 1, 4)), textLine('log', UPLOADED(1))].join(
+      '\n',
+    );
+    const events = parseUploaderLog(log);
+
+    assert.equal(events.inferredSegmentGaps, 1, 'an inferred gap must be counted');
+    assert.equal(isContiguous(events.uploadedSegments), true, 'and it leaves no gap in what was uploaded');
+  });
+
+  it('reads no failed-upload index off an inferred gap, whose numbers are the edges of one', () => {
+    assert.deepEqual(parseUploaderLog(textLine('error', SKIPPED(4, 9, 4))).discontinuitySegments, []);
   });
 
   /** The puller's other two words for the same loss, both of which recorded nothing and armed nothing. */
