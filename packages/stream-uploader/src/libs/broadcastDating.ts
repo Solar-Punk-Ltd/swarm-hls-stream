@@ -99,9 +99,23 @@ export interface BroadcastDating {
   epochFrom(resumeAt: number, notBeforeMs: number): BroadcastEpoch;
 }
 
+/** Which of the two ways a re-anchoring reached its epoch, alongside the epoch itself. */
+interface ReanchorDecision {
+  epoch: BroadcastEpoch;
+  /**
+   * Whether the epoch is this rung's own point on a line a sibling already minted for the same
+   * restart, rather than a line this rung minted itself.
+   *
+   * ⭐ Not derivable from the epoch afterwards. A joining rung lands on the date its own sequence
+   * already carried far more often than not, so a caller comparing the dating before against the
+   * dating after cannot tell a join from a restart that happened to move nothing.
+   */
+  joined: boolean;
+}
+
 /**
  * The epoch a rung takes when its numbering resumes after a restart, reusing the line a sibling
- * already minted for that same restart.
+ * already minted for that same restart, and which of those two things it did.
  *
  * ⭐ **What is shared across the ladder is the line, never the point it is written down at.** Rungs
  * cross a restart with their own numbering at their own places, so each one materialises the shared
@@ -128,18 +142,23 @@ export interface BroadcastDating {
  * restart too, and the minter's floor already puts the line at or after the date its own resuming
  * sequence would have carried, so a rung any number of sequences behind lands at or after its own.
  */
-export function reanchorEpoch(anchor: BroadcastAnchor, request: ReanchorRequest): BroadcastEpoch {
+export function reanchorDecision(anchor: BroadcastAnchor, request: ReanchorRequest): ReanchorDecision {
   const { resumeAt, nowMs, notBeforeMs } = request;
   const minted = (anchor.epochs ?? []).at(-1);
 
   if (minted !== undefined) {
     const onTheSameLine = dateOnLine(minted, resumeAt, anchor.fragmentSeconds);
     if (Math.abs(onTheSameLine - nowMs) <= SAME_RESTART_TOLERANCE_MS) {
-      return { fromSequence: resumeAt, atMs: onTheSameLine };
+      return { epoch: { fromSequence: resumeAt, atMs: onTheSameLine }, joined: true };
     }
   }
 
-  return { fromSequence: resumeAt, atMs: Math.max(nowMs, notBeforeMs) };
+  return { epoch: { fromSequence: resumeAt, atMs: Math.max(nowMs, notBeforeMs) }, joined: false };
+}
+
+/** {@link reanchorDecision} for a caller with no use for how the epoch was reached. */
+export function reanchorEpoch(anchor: BroadcastAnchor, request: ReanchorRequest): BroadcastEpoch {
+  return reanchorDecision(anchor, request).epoch;
 }
 
 /**

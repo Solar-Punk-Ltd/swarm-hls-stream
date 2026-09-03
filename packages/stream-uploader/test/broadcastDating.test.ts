@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   programDateTimeMsOf,
+  reanchorDecision,
   reanchorEpoch,
   SAME_RESTART_TOLERANCE_MS,
   withEpoch,
@@ -277,5 +278,73 @@ describe('the epoch a rung takes when its numbering resumes after a restart', ()
       'the rung took a replacement session’s line and dated its media five hundred fragments into the future',
     );
     assert.ok(epoch.atMs >= nominalDateOf(500), 'the rung dated its resuming segment before the one in front of it');
+  });
+});
+
+/**
+ * Which of the two ways a rung reached its epoch, which the epoch alone cannot say.
+ *
+ * ⭐ A rung landing on a sibling's line usually lands on the very date its own sequence already
+ * carried, so a caller comparing the date before against the date after sees no change and has no
+ * way to tell a join from a restart that moved nothing.
+ */
+describe('what a re-anchoring reports about how it reached its epoch', () => {
+  const RESTARTED_AT_MS = STARTED_AT_MS + 600_000;
+  const MINTED = withEpoch(BROADCAST, { fromSequence: 40, atMs: RESTARTED_AT_MS });
+
+  it('reports a mint where this restart has no line yet', () => {
+    const decision = reanchorDecision(BROADCAST, {
+      resumeAt: 40,
+      nowMs: RESTARTED_AT_MS,
+      notBeforeMs: nominalDateOf(40),
+    });
+
+    assert.deepEqual(decision, { epoch: { fromSequence: 40, atMs: RESTARTED_AT_MS }, joined: false });
+  });
+
+  /**
+   * ⚠️ The tolerance is measured against where this rung lands on the line, not against the point
+   * the line was minted at. A rung one sequence behind its siblings lands one fragment back down the
+   * line, so its window sits one fragment earlier too.
+   */
+  it('reports a join where a sibling rung minted the line, anywhere inside the tolerance', () => {
+    const landsAt = RESTARTED_AT_MS - STEP_MS;
+
+    const decision = reanchorDecision(MINTED, {
+      resumeAt: 39,
+      nowMs: landsAt + SAME_RESTART_TOLERANCE_MS - 1,
+      notBeforeMs: nominalDateOf(39),
+    });
+
+    assert.deepEqual(decision, { epoch: { fromSequence: 39, atMs: landsAt }, joined: true });
+  });
+
+  it('reports a mint where the floor wins over the clock', () => {
+    const aheadOfTheClock = nominalDateOf(40) + 30_000;
+
+    const decision = reanchorDecision(BROADCAST, {
+      resumeAt: 40,
+      nowMs: nominalDateOf(40) + 20_000,
+      notBeforeMs: aheadOfTheClock,
+    });
+
+    assert.deepEqual(decision, { epoch: { fromSequence: 40, atMs: aheadOfTheClock }, joined: false });
+  });
+
+  /**
+   * The case a test on whether any line exists at all gets wrong. A second restart has a line in
+   * front of it and still mints, because that line no longer dates this rung's media as happening
+   * now.
+   */
+  it('reports a mint for a second restart the earlier line no longer dates as now', () => {
+    const secondRestartAtMs = RESTARTED_AT_MS + 2 * STEP_MS + 600_000;
+
+    const decision = reanchorDecision(MINTED, {
+      resumeAt: 42,
+      nowMs: secondRestartAtMs,
+      notBeforeMs: RESTARTED_AT_MS + 2 * STEP_MS,
+    });
+
+    assert.deepEqual(decision, { epoch: { fromSequence: 42, atMs: secondRestartAtMs }, joined: false });
   });
 });

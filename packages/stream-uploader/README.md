@@ -184,7 +184,7 @@ numbering is one sequence behind its siblings when the engine dies therefore dat
 segment one fragment earlier on that shared line, which is the same function of sequence all four are
 reading.
 
-**How "the same restart" is recognised**, in `reanchorEpoch` in `src/libs/broadcastDating.ts`: a rung
+**How "the same restart" is recognised**, in `reanchorDecision` in `src/libs/broadcastDating.ts`: a rung
 takes the line an earlier rung minted when that line still dates the rung's own resuming sequence
 within two minutes of now. A sibling crossing the same restart is asking about a sequence within a
 fragment or two of the one the line was minted at, so the line dates it within a fragment or two of
