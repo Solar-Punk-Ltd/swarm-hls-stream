@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
+import { BroadcastDating, reanchorEpoch, withEpoch } from '../src/libs/broadcastDating.js';
 import { LIVE_WINDOW_MAX_BYTES, ManifestManager } from '../src/libs/ManifestManager.js';
+import { BroadcastAnchor } from '../src/types.js';
 
 import { TEST_ANCHOR } from './helpers/fakes.js';
 
@@ -12,9 +14,41 @@ const PROGRAM_DATE_TIME_TAG = '#EXT-X-PROGRAM-DATE-TIME';
 
 /** The wall clock {@link TEST_ANCHOR} puts on the segment at this playlist sequence. */
 function pdtLineAt(sequence: number): string {
-  return `${PROGRAM_DATE_TIME_TAG}:${new Date(
-    TEST_ANCHOR.startedAtMs + sequence * TEST_ANCHOR.fragmentSeconds * 1000,
-  ).toISOString()}`;
+  return pdtLineAtMs(TEST_ANCHOR.startedAtMs + sequence * TEST_ANCHOR.fragmentSeconds * 1000);
+}
+
+function pdtLineAtMs(epochMs: number): string {
+  return `${PROGRAM_DATE_TIME_TAG}:${new Date(epochMs).toISOString()}`;
+}
+
+/**
+ * A restart's dating pinned to one instant, standing in for the one the orchestrator shares across
+ * a ladder, and recording what it was asked so a test can read the floor the manager offered.
+ */
+function pinnedDating(atMs: number): BroadcastDating & { asked: { resumeAt: number; notBeforeMs: number }[] } {
+  const asked: { resumeAt: number; notBeforeMs: number }[] = [];
+  return {
+    asked,
+    epochFrom(resumeAt, notBeforeMs) {
+      asked.push({ resumeAt, notBeforeMs });
+      return { fromSequence: resumeAt, atMs };
+    },
+  };
+}
+
+/**
+ * A dating two managers share the way a ladder's rungs share the orchestrator's: the first rung to
+ * re-anchor mints the restart's line and every other rung lands on it.
+ */
+function ladderDating(anchor: BroadcastAnchor, nowMs: () => number): BroadcastDating {
+  let held = anchor;
+  return {
+    epochFrom(resumeAt, notBeforeMs) {
+      const epoch = reanchorEpoch(held, { resumeAt, nowMs: nowMs(), notBeforeMs });
+      held = withEpoch(held, epoch);
+      return epoch;
+    },
+  };
 }
 
 /** Every `#EXT-X-PROGRAM-DATE-TIME` a manifest carries, in playlist order, as epoch milliseconds. */
@@ -186,10 +220,12 @@ describe('ManifestManager media sequence', () => {
  */
 describe('an engine that restarts mid-broadcast and starts counting again', () => {
   const STEP_MS = TEST_ANCHOR.fragmentSeconds * 1000;
+  /** When the engine came back, well past where the pre-restart dating had reached. */
+  const RESTARTED_AT_MS = TEST_ANCHOR.startedAtMs + 600_000;
 
   /** A session that has been live long enough to have published its numbering. */
-  function livePast(count: number): ManifestManager {
-    const manager = new ManifestManager(TEST_ANCHOR);
+  function livePast(count: number, dating: BroadcastDating = pinnedDating(RESTARTED_AT_MS)): ManifestManager {
+    const manager = new ManifestManager(TEST_ANCHOR, dating);
     feed(manager, 0, count, 2);
     manager.buildLiveManifest();
     return manager;
@@ -210,11 +246,10 @@ describe('an engine that restarts mid-broadcast and starts counting again', () =
     manager.addSegment(0, 2, 'after-restart-0', true);
     manager.addSegment(1, 2, 'after-restart-1');
 
-    const sequences = programDateTimesOf(manager.buildLiveManifest()).map(
-      (at) => (at - TEST_ANCHOR.startedAtMs) / STEP_MS,
+    assert.deepEqual(
+      manager.getState().segments.map((seg) => seg.sequence),
+      [0, 1, 2, 3, 4, 5, 6],
     );
-
-    assert.deepEqual(sequences, [0, 1, 2, 3, 4, 5, 6]);
   });
 
   it('files the post-restart media after the media it follows, not in front of it', () => {
@@ -225,12 +260,16 @@ describe('an engine that restarts mid-broadcast and starts counting again', () =
     assert.deepEqual(segmentUris(manager.buildLiveManifest()), ['ref-0', 'ref-1', 'ref-2', 'after-restart-0']);
   });
 
-  it('dates the post-restart media from the sequence, not from the reset engine index', () => {
+  it('dates the post-restart media from the restart’s own wall clock, not from the reset engine index', () => {
     const manager = livePast(5);
 
     manager.addSegment(0, 2, 'after-restart-0', true);
+    manager.addSegment(1, 2, 'after-restart-1');
 
-    assert.equal(programDateTimesOf(manager.buildLiveManifest()).at(-1), TEST_ANCHOR.startedAtMs + 5 * STEP_MS);
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()).slice(-2), [
+      RESTARTED_AT_MS,
+      RESTARTED_AT_MS + STEP_MS,
+    ]);
   });
 
   it('marks the restart as a discontinuity, as the caller asked', () => {
@@ -241,7 +280,7 @@ describe('an engine that restarts mid-broadcast and starts counting again', () =
     const manifest = manager.buildLiveManifest();
 
     assert.ok(
-      manifest.includes(`${DISCONTINUITY_TAG}\n${pdtLineAt(3)}\n#EXTINF:2,\nafter-restart-0`),
+      manifest.includes(`${DISCONTINUITY_TAG}\n${pdtLineAtMs(RESTARTED_AT_MS)}\n#EXTINF:2,\nafter-restart-0`),
       `the restart lost its break or its wall clock, got:\n${manifest}`,
     );
   });
@@ -253,7 +292,7 @@ describe('an engine that restarts mid-broadcast and starts counting again', () =
    * been published.
    */
   it('reads the reset as a reset in a session rebuilt from a recovery entry', () => {
-    const manager = new ManifestManager(TEST_ANCHOR);
+    const manager = new ManifestManager(TEST_ANCHOR, pinnedDating(RESTARTED_AT_MS));
     manager.restoreState(
       [
         { index: 100, duration: 2, ref: 'ref-100', sequence: 0 },
@@ -265,7 +304,7 @@ describe('an engine that restarts mid-broadcast and starts counting again', () =
     manager.addSegment(0, 2, 'after-restart-0', true);
 
     assert.deepEqual(segmentUris(manager.buildLiveManifest()), ['ref-100', 'ref-101', 'after-restart-0']);
-    assert.equal(programDateTimesOf(manager.buildLiveManifest()).at(-1), TEST_ANCHOR.startedAtMs + 2 * STEP_MS);
+    assert.equal(programDateTimesOf(manager.buildLiveManifest()).at(-1), RESTARTED_AT_MS);
   });
 
   it('keeps the recording on the same numbering as the live playlists after a restart', () => {
@@ -276,6 +315,191 @@ describe('an engine that restarts mid-broadcast and starts counting again', () =
 
     assert.equal(mediaSequenceOf(vod), 0);
     assert.deepEqual(segmentUris(vod), ['ref-0', 'ref-1', 'ref-2', 'after-restart-0']);
+  });
+});
+
+/**
+ * The dating a restart moves on to, which is the owner's decision of 2026-09-03.
+ *
+ * ⛔ Before it, the date kept stepping from the instant the broadcast was admitted, so the media
+ * after an engine restart carried a time behind real time by the whole length of the gap, without
+ * bound. It re-anchors now: the first segment after the restart is dated at the wall clock it
+ * arrived at, and the segments after it step one fragment from there.
+ *
+ * ⛔ What must not change is that every rung of one ladder dates a given sequence identically, so
+ * the restart's dating is minted once for the whole ladder and each rung lands on that one line
+ * wherever its own numbering had reached. See `broadcastDating.ts`.
+ */
+describe('the dating a broadcast re-anchors to when the engine restarts inside it', () => {
+  const STEP_MS = TEST_ANCHOR.fragmentSeconds * 1000;
+  const RESTARTED_AT_MS = TEST_ANCHOR.startedAtMs + 600_000;
+
+  function livePast(count: number, dating: BroadcastDating): ManifestManager {
+    const manager = new ManifestManager(TEST_ANCHOR, dating);
+    feed(manager, 0, count, 2);
+    manager.buildLiveManifest();
+    return manager;
+  }
+
+  it('leaves the media published before the restart on the dates it went out with', () => {
+    const manager = livePast(3, pinnedDating(RESTARTED_AT_MS));
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.deepEqual(programDateTimesOf(manager.buildLiveManifest()), [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + STEP_MS,
+      TEST_ANCHOR.startedAtMs + 2 * STEP_MS,
+      RESTARTED_AT_MS,
+    ]);
+  });
+
+  /**
+   * The floor the manager offers is the date the resuming sequence would have carried, which is one
+   * fragment past the newest segment it has dated. A dating that had run ahead of the wall clock
+   * cannot then be pulled backwards, which hls.js reads as a parsing error rather than as a restart.
+   */
+  it('offers the date the resuming sequence would have carried as the floor', () => {
+    const dating = pinnedDating(RESTARTED_AT_MS);
+    const manager = livePast(3, dating);
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.deepEqual(dating.asked, [{ resumeAt: 3, notBeforeMs: TEST_ANCHOR.startedAtMs + 3 * STEP_MS }]);
+  });
+
+  it('asks its dating once per restart rather than once per segment', () => {
+    const dating = pinnedDating(RESTARTED_AT_MS);
+    const manager = livePast(3, dating);
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+    manager.addSegment(1, 2, 'after-restart-1');
+    manager.addSegment(2, 2, 'after-restart-2');
+
+    assert.equal(dating.asked.length, 1);
+  });
+
+  it('dates the recording from the same line the live playlists used', () => {
+    const manager = livePast(3, pinnedDating(RESTARTED_AT_MS));
+    manager.addSegment(0, 2, 'after-restart-0', true);
+    manager.addSegment(1, 2, 'after-restart-1');
+
+    assert.deepEqual(programDateTimesOf(manager.buildVODManifest()), [
+      TEST_ANCHOR.startedAtMs,
+      TEST_ANCHOR.startedAtMs + STEP_MS,
+      TEST_ANCHOR.startedAtMs + 2 * STEP_MS,
+      RESTARTED_AT_MS,
+      RESTARTED_AT_MS + STEP_MS,
+    ]);
+  });
+
+  it('dates the closing playlist a live viewer is handed from it too', () => {
+    const manager = livePast(3, pinnedDating(RESTARTED_AT_MS));
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.equal(programDateTimesOf(manager.buildClosingLiveManifest()).at(-1), RESTARTED_AT_MS);
+  });
+
+  /**
+   * The one thing a rung has to carry out of a restart, because a crash after one would otherwise
+   * restore the dating the broadcast opened on and re-date every post-restart segment back into the
+   * lag. See `StreamUploader.getStreamState`.
+   */
+  it('carries the re-anchoring on the anchor it hands out for persistence', () => {
+    const manager = livePast(3, pinnedDating(RESTARTED_AT_MS));
+
+    manager.addSegment(0, 2, 'after-restart-0', true);
+
+    assert.deepEqual(manager.broadcastAnchor(), {
+      ...TEST_ANCHOR,
+      epochs: [{ fromSequence: 3, atMs: RESTARTED_AT_MS }],
+    });
+  });
+
+  it('dates a session rebuilt from an entry that already re-anchored from the same line', () => {
+    const restored = new ManifestManager(
+      { ...TEST_ANCHOR, epochs: [{ fromSequence: 3, atMs: RESTARTED_AT_MS }] },
+      pinnedDating(RESTARTED_AT_MS),
+    );
+    restored.restoreState(
+      [
+        { index: 0, duration: 2, ref: 'ref-0', sequence: 0 },
+        { index: 0, duration: 2, ref: 'after-restart-0', sequence: 3, discontinuity: true },
+      ],
+      ['#EXTM3U', '#EXT-X-VERSION:3'],
+    );
+
+    restored.addSegment(1, 2, 'after-restart-1');
+
+    assert.deepEqual(programDateTimesOf(restored.buildLiveManifest()), [
+      TEST_ANCHOR.startedAtMs,
+      RESTARTED_AT_MS,
+      RESTARTED_AT_MS + STEP_MS,
+    ]);
+  });
+
+  /**
+   * ⛔ The property the whole shape exists for. Two rungs of one ladder cross the same restart with
+   * their own numbering at their own places, and they must still put the same date on the same
+   * sequence, because hls.js reads four rungs disagreeing about one segment as four rungs covering
+   * different media.
+   */
+  describe('two rungs of one ladder crossing the same restart', () => {
+    /** The 1080p rung is the slow one, so it is the rung that gets one fewer segment out before the engine dies. */
+    function twoRungs(behindBy: number, secondsApart: number) {
+      let nowMs = RESTARTED_AT_MS;
+      const dating = ladderDating(TEST_ANCHOR, () => nowMs);
+
+      const fast = livePast(5, dating);
+      const slow = livePast(5 - behindBy, dating);
+
+      fast.addSegment(0, 2, 'fast-after-restart', true);
+      nowMs += secondsApart * 1000;
+      slow.addSegment(0, 2, 'slow-after-restart', true);
+
+      return { fast, slow };
+    }
+
+    it('dates the same sequence identically when both resume at the same one', () => {
+      const { fast, slow } = twoRungs(0, 2);
+
+      assert.deepEqual(
+        programDateTimesOf(slow.buildLiveManifest()),
+        programDateTimesOf(fast.buildLiveManifest()),
+        'the rungs took two readings of the clock, so a level switch lands on media dated somewhere else',
+      );
+    });
+
+    it('puts the rung that is one sequence behind one fragment earlier on that same line', () => {
+      const { fast, slow } = twoRungs(1, 2);
+
+      assert.equal(programDateTimesOf(fast.buildLiveManifest()).at(-1), RESTARTED_AT_MS);
+      assert.equal(programDateTimesOf(slow.buildLiveManifest()).at(-1), RESTARTED_AT_MS - STEP_MS);
+    });
+
+    it('keeps the rung that is one behind moving forwards from the segment in front of it', () => {
+      const { slow } = twoRungs(1, 2);
+
+      const stamps = programDateTimesOf(slow.buildLiveManifest());
+
+      assert.ok(
+        stamps.every((stamp, i) => i === 0 || stamp > stamps[i - 1]),
+        `the rung dated its resuming segment at or before the one in front of it: ${stamps.join(', ')}`,
+      );
+    });
+
+    it('agrees on the sequences they both publish after the restart', () => {
+      const { fast, slow } = twoRungs(1, 2);
+
+      fast.addSegment(1, 2, 'fast-1');
+      slow.addSegment(1, 2, 'slow-1');
+      slow.addSegment(2, 2, 'slow-2');
+
+      const fastStamps = programDateTimesOf(fast.buildLiveManifest());
+      const slowStamps = programDateTimesOf(slow.buildLiveManifest());
+
+      assert.equal(fastStamps.at(-1), slowStamps.at(-1), 'sequence 6 is dated differently on the two rungs');
+    });
   });
 });
 

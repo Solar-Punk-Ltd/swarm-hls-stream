@@ -35,12 +35,14 @@ export interface StreamState {
 /**
  * What fixes a broadcast's playlists to a wall clock, so all four rungs date the same media alike.
  *
- * ⛔ **`startedAtMs` is one instant for the whole ladder and it is never re-read from a clock.**
- * `#EXT-X-PROGRAM-DATE-TIME` is derived from it as `startedAtMs + sequence * fragmentSeconds`, and
- * that arithmetic is the point: four rung uploaders stamping each segment with the time it happened
- * to reach them would disagree by their own upload jitter, and hls.js would read that disagreement
- * as the rungs covering different media. It is minted once, when the broadcast is admitted, and it
- * outlives every session of that broadcast, including one rebuilt from a recovery entry.
+ * ⛔ **A segment's date is derived from its playlist sequence and never read off a clock per
+ * segment.** Four rung uploaders stamping each segment with the time it happened to reach them
+ * would disagree by their own upload jitter, and hls.js would read that disagreement as the rungs
+ * covering different media. So the arithmetic is the point, and `broadcastDating.ts` holds it.
+ *
+ * `startedAtMs` is where the dating begins: one instant for the whole ladder, minted when the
+ * broadcast is admitted, outliving every session of that broadcast including one rebuilt from a
+ * recovery entry.
  *
  * `fragmentSeconds` is what the deployment declared through `HLS_FRAGMENT`, not what any segment
  * measured. It is nominal by design: a stamp that tracked measured drift would move a viewer's clock
@@ -51,6 +53,31 @@ export interface BroadcastAnchor {
   startedAtMs: number;
   /** Nominal seconds of media per fragment, from `HLS_FRAGMENT`. */
   fragmentSeconds: number;
+  /**
+   * Where the dating was moved on to the wall clock again, in `fromSequence` order. Absent until the
+   * engine has restarted inside this broadcast. See {@link BroadcastEpoch}.
+   */
+  epochs?: BroadcastEpoch[];
+}
+
+/**
+ * One re-anchoring of a broadcast's dating, which an engine restart inside the broadcast produces.
+ *
+ * ⛔ Owner decision of 2026-09-03. The dating used to be a single instant, so the media after a
+ * restart carried a time behind real time by the whole length of the gap, without bound over a long
+ * broadcast. It is a list of epochs now: the media before the restart keeps the dates it was
+ * published with, and the media after it is dated from the wall clock the engine came back at.
+ *
+ * ⛔ **Minted once for the whole ladder, by whichever rung crosses the restart first.** Every other
+ * rung materialises that same line at its own resuming sequence, so the mapping from sequence to
+ * date stays one function for the ladder. That is the property the tag is here for, and it is why
+ * the shared thing is the line rather than the point it is written down at.
+ */
+export interface BroadcastEpoch {
+  /** The first playlist sequence this epoch dates. Everything below it keeps the epoch it had. */
+  fromSequence: number;
+  /** Epoch milliseconds that sequence's first frame is presented at. */
+  atMs: number;
 }
 
 /** One rung of the encoder's ABR ladder, as configured via ABR_LADDER. */

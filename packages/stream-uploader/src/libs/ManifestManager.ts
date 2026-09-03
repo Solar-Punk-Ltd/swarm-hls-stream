@@ -11,6 +11,7 @@ import {
   HLS_VERSION,
 } from '../utils/hlsTags.js';
 
+import { BroadcastDating, programDateTimeMsOf, soleRungDating, withEpoch } from './broadcastDating.js';
 import { Logger } from './Logger.js';
 
 /**
@@ -30,8 +31,6 @@ import { Logger } from './Logger.js';
  * headroom was already paid for.
  */
 export const LIVE_WINDOW_MAX_BYTES = 4096;
-
-const MS_PER_SECOND = 1000;
 
 /**
  * The bytes a manifest of these lines occupies once joined, without joining them.
@@ -110,6 +109,11 @@ function sequenceOf(seg: SegmentEntry): number {
  * happened to see would drift the moment one rung started a fragment later than another, and a level
  * switch would land that far off.
  *
+ * An engine restart re-anchors the date-time as well as the numbering, on to the wall clock the
+ * engine came back at, so the media after the gap carries the time it really happened. That
+ * re-anchoring is minted once for the whole ladder, which is what keeps the rungs agreeing across
+ * it. See {@link BroadcastEpoch} and `broadcastDating.ts`.
+ *
  * @see BroadcastAnchor for why the date-time is derived rather than observed per segment.
  */
 export class ManifestManager {
@@ -134,7 +138,33 @@ export class ManifestManager {
    */
   private sequenceHasBeenPublished = false;
 
-  constructor(private readonly anchor: BroadcastAnchor) {}
+  /**
+   * What dates this rung's segments, replaced rather than edited when a restart re-anchors it.
+   *
+   * Replaced, so a session that has been retired keeps the dating it published with while its
+   * replacement moves on: the retired session's own finalize builds its recording from this.
+   */
+  private anchor: BroadcastAnchor;
+
+  /** Where a restart's re-anchoring is minted, once for the whole ladder. See {@link BroadcastDating}. */
+  private readonly dating: BroadcastDating;
+
+  constructor(anchor: BroadcastAnchor, dating?: BroadcastDating) {
+    this.anchor = anchor;
+    this.dating = dating ?? soleRungDating(() => this.anchor);
+  }
+
+  /**
+   * The dating this rung is publishing on, for the recovery entry to carry.
+   *
+   * Read from here rather than from the value the session was constructed with, which is the whole of
+   * what makes a re-anchoring survive a crash: a session that restarted and then died would
+   * otherwise come back on the dating the broadcast opened with and re-date every post-restart
+   * segment into the lag.
+   */
+  public broadcastAnchor(): BroadcastAnchor {
+    return this.anchor;
+  }
 
   public addSegment(index: number, duration: number, ref: string, discontinuity = false): void {
     const sequence = this.sequenceFor(index);
@@ -169,8 +199,8 @@ export class ManifestManager {
    * reused or reduced: hls.js reads a media sequence that moves backwards as a parsing error,
    * escalates it to fatal on a single-variant stream, and the client answers a fatal parsing error
    * by remounting the player, which restarts playback at the beginning. So the numbering re-anchors
-   * forwards and this segment continues from the last one published. Its date-time follows the
-   * sequence rather than the reset index, for the same reason.
+   * forwards and this segment continues from the last one published. The dating re-anchors with it,
+   * on to the wall clock the engine came back at. See {@link reanchorDating}.
    *
    * ⚠️ The test is against the highest sequence already assigned rather than against the anchor's
    * own index, because a broadcast whose first segment was index 0 is anchored at 0 and an engine
@@ -209,7 +239,30 @@ export class ManifestManager {
         `sequence ${resumeAt} rather than moving it backwards`,
     );
     this.sequenceAnchor = { index, sequence: resumeAt };
+    this.reanchorDating(resumeAt);
     return resumeAt;
+  }
+
+  /**
+   * Move the dating on to the wall clock the engine came back at, from `resumeAt` forwards.
+   *
+   * ⛔ Nothing already dated moves. The epoch starts at `resumeAt`, and a sequence below it keeps
+   * the epoch it had, so the segments still in the live window carry the dates a viewer was handed.
+   *
+   * The floor offered is the date `resumeAt` would have carried had nothing restarted, which is one
+   * fragment past the newest segment this rung has dated. It matters where the dating had run ahead
+   * of the wall clock, which is what a segment longer than `HLS_FRAGMENT` accumulates: minting at the
+   * clock there would pull a stamp backwards, and hls.js reads that as a parsing error rather than
+   * as a restart.
+   */
+  private reanchorDating(resumeAt: number): void {
+    const wouldHaveBeen = this.dateOf(resumeAt);
+    const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen);
+    this.anchor = withEpoch(this.anchor, epoch);
+    this.logger.info(
+      `[ManifestManager] Re-anchored the dating at sequence ${resumeAt}: ` +
+        `${new Date(wouldHaveBeen).toISOString()} becomes ${new Date(epoch.atMs).toISOString()}`,
+    );
   }
 
   /**
@@ -405,18 +458,18 @@ export class ManifestManager {
    */
   private segmentLines(seg: SegmentEntry): string[] {
     const discontinuity = seg.discontinuity ? [HLS_DISCONTINUITY] : [];
-    return [...discontinuity, buildProgramDateTime(this.programDateTimeMsOf(seg)), buildExtinf(seg.duration), seg.ref];
+    return [...discontinuity, buildProgramDateTime(this.dateOf(sequenceOf(seg))), buildExtinf(seg.duration), seg.ref];
   }
 
   /**
-   * When a segment's first frame is presented, derived and never observed.
+   * When the segment at this sequence is presented, derived and never observed.
    *
-   * Nominal on both terms. The anchor is the broadcast's admission instant rather than any segment's
-   * arrival, and the step is the fragment length the deployment declared rather than the `#EXTINF`
-   * this segment measured. Using either observation would make the four rungs of one ladder disagree
-   * about the same media, which is the one thing this tag exists here to prevent.
+   * Nominal on both terms. The instant is the broadcast's own rather than any segment's arrival, and
+   * the step is the fragment length the deployment declared rather than the `#EXTINF` this segment
+   * measured. Using either observation would make the four rungs of one ladder disagree about the
+   * same media, which is the one thing this tag exists here to prevent.
    */
-  private programDateTimeMsOf(seg: SegmentEntry): number {
-    return this.anchor.startedAtMs + Math.round(sequenceOf(seg) * this.anchor.fragmentSeconds * MS_PER_SECOND);
+  private dateOf(sequence: number): number {
+    return programDateTimeMsOf(this.anchor, sequence);
   }
 }
