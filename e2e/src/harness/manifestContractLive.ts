@@ -10,24 +10,34 @@
  *
  * `docs/e2e-coverage.md` recorded, correctly for the log lines it looked at, that a ladder announce
  * carries the topic and the group and no owner, and concluded that either the uploader had to log
- * one or the harness had to hold `STREAM_KEY`. Neither is so. **There is one feed owner for the
- * whole uploader**: `StreamCatalog`, `MasterFeedWriter` and every `StreamUploader` build their signer
- * from the same `STREAM_KEY` (`packages/stream-uploader/src/index.ts`), so the address
- * {@link discoverCatalogFeed} already reads out of the `[StreamCatalog]` line is also the owner of
- * every rung's playlist feed. The topic comes from the rung announce, and the read is the one
- * `e2e/browser/vod.ts` already makes:
+ * one or the harness had to hold `STREAM_KEY`. Neither is so. **There is one feed owner for the whole
+ * uploader**: `StreamCatalog`, `MasterFeedWriter` and every `StreamUploader` build their signer from
+ * the same `STREAM_KEY` (`packages/stream-uploader/src/index.ts`), so the address
+ * `discoverCatalogFeed` already reads out of the `[StreamCatalog]` line owns every rung's playlist
+ * feed as well. The topic comes from the rung announce, and the read is the one `e2e/browser/vod.ts`
+ * already makes:
  *
  *   `GET /feeds/{owner}/{feedTopicHexOf(rawTopic)}` on the bee gateway, which answers the m3u8 itself.
  *
  * ## What one read covers
  *
  * The live playlist and the recording are the same feed at different indices, because `finalize`
- * publishes the closing live playlist and then the VOD manifest to the stream's own manifest feed.
- * A feed read answers with the head, so a suite reading mid-broadcast gets the live playlist and one
- * reading after the finalize gets the recording, and {@link RungPlaylistReading.recording} says which
+ * publishes the closing live playlist and then the VOD manifest to the stream's own manifest feed. A
+ * feed read answers with the head, so a suite reading mid-broadcast gets the live playlist and one
+ * reading after the finalize gets the recording. {@link RungPlaylistParse.recording} says which
  * arrived rather than leaving a reader to guess.
  *
- * ⛔ Correctness only. Nothing here times anything, and nothing here refuses on a duration. See the
+ * ## ⛔ Why fetching and judging are two steps
+ *
+ * `#EXT-X-MEDIA-SEQUENCE:0` is required of the playlist that still starts at the broadcast's first
+ * segment, and the live window is a byte budget that slides once the broadcast outgrows it. A suite
+ * cannot know from the clock whether it read before that: at 2s fragments the window holds about a
+ * minute, and a suite that asserted zero because it "read early" would be green on the wall clock
+ * rather than on the product. So the read hands back what the feed said, the suite establishes what
+ * it can defend, and {@link judgeRungPlaylists} applies the rules. See
+ * {@link namesEverySegmentPublished} for the one derivation that settles it without a stopwatch.
+ *
+ * ⛔ Correctness only. Nothing here times anything and nothing here refuses on a duration. See the
  * repository's rule on what an e2e suite may gate on.
  */
 
@@ -52,8 +62,7 @@ export interface RungFeed {
   /** The rung name on a ladder, or null on a deployment publishing one rendition. */
   rung: string | null;
   /**
-   * The stream the uploader keyed its segment and manifest lines on, or null where no line names
-   * one.
+   * The stream the uploader keyed its segment and manifest lines on, or null where no line names one.
    *
    * Carried so a suite can read the playlists of exactly the streams it already judged. A rung that
    * announced and never uploaded has an empty feed, and a suite scoped to "every rung that uploaded
@@ -67,15 +76,15 @@ export interface RungFeed {
 /** Where every playlist one broadcast published can be read: one owner, one topic per rung. */
 export interface BroadcastPlaylists {
   /**
-   * The signer's address, as {@link discoverCatalogFeed} reads it off the `[StreamCatalog]` line.
-   * One for the catalog, every master and every rung. See the header.
+   * The signer's address, as `discoverCatalogFeed` reads it off the `[StreamCatalog]` line. One for
+   * the catalog, every master and every rung. See the header.
    */
   owner: string;
   rungs: readonly RungFeed[];
 }
 
-/** What one rung's published playlist says about its own timeline. */
-export interface RungPlaylistReading {
+/** What one rung's feed answered, before any rule is applied to it. */
+export interface RungPlaylistParse {
   rung: string | null;
   streamId: string | null;
   topic: string;
@@ -83,6 +92,8 @@ export interface RungPlaylistReading {
   topicHex: string;
   /** The m3u8 as the gateway served it, or null where the feed answered something that is not one. */
   playlist: string | null;
+  /** Why nothing could be read, or null. Kept apart from a contract failure: this is the transport. */
+  unreadable: string | null;
   segments: number;
   mediaSequence: number | null;
   /** The first and last `#EXT-X-PROGRAM-DATE-TIME`, as ISO text, or null where a segment carried none. */
@@ -96,18 +107,22 @@ export interface RungPlaylistReading {
    * read as a recording would demand sequence 0 of a live window that has legitimately slid.
    */
   recording: boolean;
-  /** Everything wrong with this rung's timeline, or empty. Also holds the reason nothing was read. */
+}
+
+/** One rung's playlist with the contract applied to it. */
+export interface RungPlaylistReading extends RungPlaylistParse {
+  /** Everything wrong with this rung's timeline, or empty. Holds the transport reason too. */
   failures: readonly string[];
 }
 
-/** How long one feed read is given before the reading records what the gateway did answer. */
+/** How long one feed read is given before the parse records what the gateway did answer. */
 const PLAYLIST_READ_TIMEOUT_S = 15;
 /**
  * How long a rung is given to answer with a playlist at all, across retries.
  *
- * Spent only by a rung whose feed answered nothing usable. A gateway restarting answers its own
- * error envelope for a few seconds, and a suite failing on that would name the transport rather than
- * the product.
+ * Spent only by a rung whose feed answered nothing usable. A gateway that is restarting answers its
+ * own error envelope for a few seconds, and a suite failing on that would name the transport rather
+ * than the product.
  */
 const PLAYLIST_RETRY_WINDOW_MS = 30_000;
 const PLAYLIST_RETRY_INTERVAL_MS = 2_000;
@@ -122,7 +137,7 @@ const PLAYLIST_MARKER = '#EXTM3U';
  * The step a playlist's dates must take, out of what the run declared, or null where it declared
  * none.
  *
- * ⛔ The run's declaration and not a measurement. `#EXT-X-PROGRAM-DATE-TIME` is derived from
+ * ⛔ The run's declaration and never a measurement. `#EXT-X-PROGRAM-DATE-TIME` is derived from
  * `HLS_FRAGMENT` and a segment count rather than from any segment's own `#EXTINF`, precisely so the
  * rungs of one ladder agree about the same media, and checking a nominal step against an observation
  * would pass exactly the drift the derivation exists to prevent.
@@ -145,14 +160,14 @@ export const UNCHECKED_WITHOUT_FRAGMENT =
  * Every rung feed the broadcasts in this log window announced, whichever shape the deployment
  * publishes.
  *
- * ⛔ The NEWEST announce per rung, for the reason {@link lastUploadedSegmentRefByRung} records: a
- * session that an engine restart replaced announces again on a fresh topic while the retired one
- * keeps its own, and the retired feed is mid-finalize as the read happens. The newest announce is
- * the session a suite asking "what is this broadcast publishing" means. A suite that wants a
- * specific session filters {@link announcedRungs} itself and builds the feeds from that.
+ * ⛔ The NEWEST announce per rung, for the reason `lastUploadedSegmentRefByRung` records: a session
+ * an engine restart replaced announces again on a fresh topic while the retired one keeps its own,
+ * and the retired feed is mid-finalize as the read happens. The newest announce is the session a
+ * suite asking "what is this broadcast publishing" means. A suite that wants a specific session
+ * filters `announcedRungs` itself and builds the feeds from that.
  *
- * The two line families are mode-exclusive, the way {@link announcedSessionTopics} relies on: a
- * ladder never writes `Adding stream to list` and a single rendition never announces a rung.
+ * The two line families are mode-exclusive, the way `announcedSessionTopics` relies on: a ladder
+ * never writes `Adding stream to list` and a single rendition never announces a rung.
  */
 export function rungFeedsOf(logText: string): RungFeed[] {
   const ladder = announcedRungs(logText);
@@ -168,12 +183,12 @@ export function rungFeedsOf(logText: string): RungFeed[] {
 }
 
 /**
- * What one rung's playlist text says about its own timeline.
+ * What one rung's playlist text says about itself.
  *
- * Pure, so the whole verdict is reachable from CI on fixtures rather than only from a paid sitting.
- * {@link readRungPlaylists} is the half that needs a deployment.
+ * Pure, so everything but the feed read is reachable from CI on fixtures rather than only from a
+ * paid sitting.
  */
-export function rungPlaylistReading(feed: RungFeed, body: string, contract: ManifestContract): RungPlaylistReading {
+export function rungPlaylistParse(feed: RungFeed, body: string): RungPlaylistParse {
   const base = {
     rung: feed.rung,
     streamId: feed.streamId,
@@ -183,7 +198,7 @@ export function rungPlaylistReading(feed: RungFeed, body: string, contract: Mani
   const text = body.trim();
 
   if (text === '') {
-    return { ...base, ...NOTHING_READ, failures: [`the ${feedName(feed)} feed answered nothing at all`] };
+    return { ...base, ...NOTHING_READ, unreadable: `the ${feedName(feed)} feed answered nothing at all` };
   }
   // ⛔ Checked before the parse, not after. A gateway's own JSON error envelope parses as a playlist
   // naming no segments, so a reader that trusted the parse would report an empty timeline the
@@ -192,34 +207,26 @@ export function rungPlaylistReading(feed: RungFeed, body: string, contract: Mani
     return {
       ...base,
       ...NOTHING_READ,
-      failures: [`the ${feedName(feed)} feed answered no playlist, but ${excerpt(text)}`],
+      unreadable: `the ${feedName(feed)} feed answered no playlist, but ${excerpt(text)}`,
     };
   }
 
   const parsed = parseManifest(text);
-  const recording = parsed.headers.includes(HLS_PLAYLIST_TYPE_VOD);
   const dates = programDateTimesOf(text);
 
   return {
     ...base,
     playlist: text,
+    unreadable: null,
     segments: parsed.segments.length,
     mediaSequence: mediaSequenceOf(text),
     firstDate: isoOf(dates[0]),
     lastDate: isoOf(dates[dates.length - 1]),
-    recording,
-    // A recording names every segment of the broadcast, so its sequence is 0 by construction and
-    // that holds however late a suite read it. Left to the caller's flag, the one playlist whose
-    // numbering can always be checked would go unchecked in every scenario that reads a finished
-    // broadcast, which is every crash scenario that leaves one.
-    failures: manifestContractFailures(text, {
-      ...contract,
-      firstOfBroadcast: contract.firstOfBroadcast || recording,
-    }),
+    recording: parsed.headers.includes(HLS_PLAYLIST_TYPE_VOD),
   };
 }
 
-/** The fields a reading carries when the feed produced no playlist to read. */
+/** The fields a parse carries when the feed produced no playlist to read. */
 const NOTHING_READ = {
   playlist: null,
   segments: 0,
@@ -230,7 +237,7 @@ const NOTHING_READ = {
 } as const;
 
 /**
- * Read every rung's published playlist and hold each against the contract.
+ * Read every rung's published playlist, without judging any of it.
  *
  * One rung at a time rather than all at once. The reads go over one ssh master connection to the
  * deployment host, and nothing here compares one rung's timeline against another's, so there is
@@ -240,13 +247,12 @@ export async function readRungPlaylists(
   host: Host,
   cfg: E2EConfig,
   broadcast: BroadcastPlaylists,
-  contract: ManifestContract,
-): Promise<RungPlaylistReading[]> {
-  const readings: RungPlaylistReading[] = [];
+): Promise<RungPlaylistParse[]> {
+  const parses: RungPlaylistParse[] = [];
   for (const feed of broadcast.rungs) {
-    readings.push(await readOneRungPlaylist(host, cfg, broadcast.owner, feed, contract));
+    parses.push(await readOneRungPlaylist(host, cfg, broadcast.owner, feed));
   }
-  return readings;
+  return parses;
 }
 
 async function readOneRungPlaylist(
@@ -254,8 +260,7 @@ async function readOneRungPlaylist(
   cfg: E2EConfig,
   owner: string,
   feed: RungFeed,
-  contract: ManifestContract,
-): Promise<RungPlaylistReading> {
+): Promise<RungPlaylistParse> {
   const route = `/feeds/${owner}/${feedTopicHexOf(feed.topic)}`;
   const deadline = Date.now() + PLAYLIST_RETRY_WINDOW_MS;
 
@@ -263,16 +268,62 @@ async function readOneRungPlaylist(
     const body = await host
       .localText(cfg.ports.beeGatewayApi, route, PLAYLIST_READ_TIMEOUT_S)
       .catch((error: Error) => `no answer from the gateway: ${error.message}`);
-    const reading = rungPlaylistReading(feed, body, contract);
+    const parse = rungPlaylistParse(feed, body);
 
-    // Retried only while nothing readable came back, never on a playlist the contract refused. A
-    // rung whose timeline is wrong is wrong now and will be wrong in thirty seconds, and polling it
-    // would turn one refusal into a wait that reports a timeout instead of the reason.
-    if (reading.playlist !== null || Date.now() >= deadline) {
-      return reading;
+    if (parse.playlist !== null || Date.now() >= deadline) {
+      return parse;
     }
     await sleep(PLAYLIST_RETRY_INTERVAL_MS);
   }
+}
+
+/**
+ * Whether this playlist can only be the broadcast's first, from how much its rung had published.
+ *
+ * A live window that has slid names exactly the newest segments that fit its byte budget, so a
+ * playlist naming at least as many segments as the rung has ever published has dropped none and
+ * therefore still starts at the broadcast's first. That is a fact about the playlist rather than
+ * about when it was read, which is the whole reason it exists.
+ *
+ * ⛔⛔ **Read the count AFTER the playlist, never before.** A count taken first can be lower than
+ * what the broadcast had actually published by the time the playlist was fetched, and this would
+ * then call a slid window a first playlist and demand a sequence of 0 that the product is right to
+ * have moved past. Taken afterwards it can only be too high, which costs an assertion nobody was
+ * owed rather than a red on correct code.
+ *
+ * @param publishedByNow segment uploads the uploader's log attributes to this rung
+ */
+export function namesEverySegmentPublished(parse: RungPlaylistParse, publishedByNow: number): boolean {
+  return parse.playlist !== null && parse.segments >= publishedByNow;
+}
+
+/**
+ * Apply the contract to every parse.
+ *
+ * ⛔ A recording is held to sequence 0 whatever the caller promised, because a recording names every
+ * segment of the broadcast by construction and that holds however late it was read. Left to the
+ * caller's flag, the one playlist whose numbering can always be checked would go unchecked in every
+ * scenario that reads a finished broadcast, which is every crash scenario that leaves one.
+ *
+ * @param knownFirst per rung, whether the suite can show this playlist still starts at the
+ *   broadcast's first segment. Defaults to the contract's own flag for every rung. See
+ *   {@link namesEverySegmentPublished}.
+ */
+export function judgeRungPlaylists(
+  parses: readonly RungPlaylistParse[],
+  contract: ManifestContract,
+  knownFirst: (parse: RungPlaylistParse) => boolean = () => contract.firstOfBroadcast,
+): RungPlaylistReading[] {
+  return parses.map((parse) => ({
+    ...parse,
+    failures:
+      parse.playlist === null
+        ? [parse.unreadable ?? 'nothing was read from this feed and no reason was recorded']
+        : manifestContractFailures(parse.playlist, {
+            ...contract,
+            firstOfBroadcast: parse.recording || knownFirst(parse),
+          }),
+  }));
 }
 
 /**
@@ -303,24 +354,24 @@ export function rungPlaylistRefusal(readings: readonly RungPlaylistReading[]): s
  * One line per rung: what came back and the span of time it claims to cover.
  *
  * Printed by every wired suite whether it passes or fails, so a red names the segment and the date
- * it objected to against a reading of what the whole ladder held at that moment.
+ * it objected to beside a reading of what the whole ladder held at that moment.
  */
-export function describeRungPlaylists(readings: readonly RungPlaylistReading[]): string {
-  return readings.map(lineFor).join('\n');
+export function describeRungPlaylists(parses: readonly RungPlaylistParse[]): string {
+  return parses.map(lineFor).join('\n');
 }
 
-function lineFor(reading: RungPlaylistReading): string {
-  const name = feedName(reading);
-  if (reading.playlist === null) {
+function lineFor(parse: RungPlaylistParse): string {
+  const name = feedName(parse);
+  if (parse.playlist === null) {
     return `  ${name}: nothing was read from its feed`;
   }
 
-  const kind = reading.recording ? 'recording' : 'live';
+  const kind = parse.recording ? 'recording' : 'live';
   const sequence =
-    reading.mediaSequence === null ? 'no #EXT-X-MEDIA-SEQUENCE' : `#EXT-X-MEDIA-SEQUENCE:${reading.mediaSequence}`;
-  const span = reading.firstDate === null ? 'no dates' : `${reading.firstDate} to ${reading.lastDate}`;
+    parse.mediaSequence === null ? 'no #EXT-X-MEDIA-SEQUENCE' : `#EXT-X-MEDIA-SEQUENCE:${parse.mediaSequence}`;
+  const span = parse.firstDate === null ? 'no dates' : `${parse.firstDate} to ${parse.lastDate}`;
 
-  return `  ${name}: ${kind}, ${reading.segments} segments, ${sequence}, ${span}`;
+  return `  ${name}: ${kind}, ${parse.segments} segments, ${sequence}, ${span}`;
 }
 
 /** How a report names one feed: its rung, or what a deployment with no rungs is. */

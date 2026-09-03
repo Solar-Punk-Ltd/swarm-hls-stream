@@ -6,8 +6,11 @@ import type { ManifestContract } from '../src/harness/manifestContract.js';
 import {
   describeRungPlaylists,
   fragmentSecondsFor,
+  judgeRungPlaylists,
+  namesEverySegmentPublished,
+  type RungFeed,
   rungFeedsOf,
-  rungPlaylistReading,
+  rungPlaylistParse,
   rungPlaylistRefusal,
   UNCHECKED_WITHOUT_FRAGMENT,
 } from '../src/harness/manifestContractLive.js';
@@ -30,10 +33,16 @@ import {
  * file owns everything around them.
  */
 
-const CONTRACT: ManifestContract = { fragmentSeconds: FIXTURE_FRAGMENT_SECONDS, firstOfBroadcast: true };
+const FIRST_PLAYLIST: ManifestContract = { fragmentSeconds: FIXTURE_FRAGMENT_SECONDS, firstOfBroadcast: true };
+const SLID_WINDOW: ManifestContract = { fragmentSeconds: FIXTURE_FRAGMENT_SECONDS, firstOfBroadcast: false };
 const LADDER = 'ladder-7f21';
 const TOPIC_360 = '3e2b0c8a-1111-4a1b-9c3d-000000000360';
 const TOPIC_1080 = '3e2b0c8a-2222-4a1b-9c3d-000000001080';
+const TOPIC_720 = 'c0ffee0a-4444-4a1b-9c3d-000000000720';
+
+function feedOf(rung: string, topic: string): RungFeed {
+  return { rung, streamId: `live/stream_${rung}`, topic };
+}
 
 function ladderLog(announces: readonly { rung: string; topic: string }[]): string {
   return announces
@@ -49,6 +58,11 @@ function ladderLog(announces: readonly { rung: string; topic: string }[]): strin
     .join('\n');
 }
 
+/** The two phases in one call, for the cases where the split itself is not what is under test. */
+function readingOf(feed: RungFeed, body: string, contract: ManifestContract) {
+  return judgeRungPlaylists([rungPlaylistParse(feed, body)], contract)[0];
+}
+
 describe('finding the feeds a broadcast published', () => {
   it('names one feed per rung of a ladder, with the rung the report should use', () => {
     const feeds = rungFeedsOf(
@@ -58,10 +72,7 @@ describe('finding the feeds a broadcast published', () => {
       ]),
     );
 
-    assert.deepEqual(feeds, [
-      { rung: '360p', streamId: 'live/stream_360p', topic: TOPIC_360 },
-      { rung: '1080p', streamId: 'live/stream_1080p', topic: TOPIC_1080 },
-    ]);
+    assert.deepEqual(feeds, [feedOf('360p', TOPIC_360), feedOf('1080p', TOPIC_1080)]);
   });
 
   /**
@@ -80,7 +91,7 @@ describe('finding the feeds a broadcast published', () => {
       ]),
     );
 
-    assert.deepEqual(feeds, [{ rung: '360p', streamId: 'live/stream_360p', topic: resumed }]);
+    assert.deepEqual(feeds, [feedOf('360p', resumed)]);
   });
 
   /**
@@ -119,28 +130,25 @@ describe('the step a run declared', () => {
 });
 
 describe('reading one rung playlist back', () => {
-  const feed = { rung: '360p', streamId: 'live/stream_360p', topic: TOPIC_360 };
+  const feed = feedOf('360p', TOPIC_360);
 
-  it('passes a live playlist that opens at zero and steps by the fragment', () => {
-    const reading = rungPlaylistReading(feed, rungPlaylist([0, 1, 2, 3]), CONTRACT);
+  it('reads back what a live playlist says about itself', () => {
+    const parse = rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3]));
 
-    assert.deepEqual(reading.failures, []);
-    assert.equal(reading.segments, 4);
-    assert.equal(reading.mediaSequence, 0);
-    assert.equal(reading.firstDate, fixtureDateOf(0));
-    assert.equal(reading.lastDate, fixtureDateOf(3));
-    assert.equal(reading.recording, false);
+    assert.equal(parse.segments, 4);
+    assert.equal(parse.mediaSequence, 0);
+    assert.equal(parse.firstDate, fixtureDateOf(0));
+    assert.equal(parse.lastDate, fixtureDateOf(3));
+    assert.equal(parse.recording, false);
+    assert.equal(parse.unreadable, null);
   });
 
   it('hashes the raw topic into the hex the gateway answers for', () => {
-    assert.match(rungPlaylistReading(feed, rungPlaylist([0]), CONTRACT).topicHex, /^[0-9a-f]{64}$/);
+    assert.match(rungPlaylistParse(feed, rungPlaylist([0])).topicHex, /^[0-9a-f]{64}$/);
   });
 
   it('reports a finished recording as one', () => {
-    const reading = rungPlaylistReading(feed, rungPlaylist([0, 1, 2], { recording: true }), CONTRACT);
-
-    assert.equal(reading.recording, true);
-    assert.deepEqual(reading.failures, []);
+    assert.equal(rungPlaylistParse(feed, rungPlaylist([0, 1, 2], { recording: true })).recording, true);
   });
 
   /**
@@ -151,10 +159,41 @@ describe('reading one rung playlist back', () => {
   it('does not call the closing live playlist a recording, whatever its ENDLIST says', () => {
     const closing = rungPlaylist([12, 13, 14], { mediaSequence: 12, closed: true });
 
-    const reading = rungPlaylistReading(feed, closing, { ...CONTRACT, firstOfBroadcast: false });
+    assert.equal(rungPlaylistParse(feed, closing).recording, false);
+    assert.deepEqual(readingOf(feed, closing, SLID_WINDOW).failures, []);
+  });
 
-    assert.equal(reading.recording, false);
-    assert.deepEqual(reading.failures, []);
+  /**
+   * ⛔ The envelope parses as a playlist naming no segments, so a reader that trusted the parse would
+   * report an empty timeline the broadcast never published. The body is quoted in the reason, because
+   * "no playlist" and "a 404 from a gateway that is restarting" need different answers from a reader.
+   */
+  it('refuses a gateway error envelope as no playlist rather than as an empty one', () => {
+    const parse = rungPlaylistParse(feed, GATEWAY_ERROR_ENVELOPE);
+
+    assert.equal(parse.playlist, null);
+    assert.equal(parse.segments, 0);
+    assert.match(parse.unreadable ?? '', /no playlist/);
+    assert.match(parse.unreadable ?? '', /Not Found/);
+  });
+
+  it('refuses an empty body, which is what a timed-out gateway read leaves', () => {
+    const parse = rungPlaylistParse(feed, '');
+
+    assert.equal(parse.playlist, null);
+    assert.match(parse.unreadable ?? '', /answered nothing/);
+  });
+
+  it('carries the transport reason into the failures a suite asserts on', () => {
+    assert.match(readingOf(feed, '', FIRST_PLAYLIST).failures[0], /answered nothing/);
+  });
+});
+
+describe('holding a playlist to the contract', () => {
+  const feed = feedOf('360p', TOPIC_360);
+
+  it('passes a live playlist that opens at zero and steps by the fragment', () => {
+    assert.deepEqual(readingOf(feed, rungPlaylist([0, 1, 2, 3]), FIRST_PLAYLIST).failures, []);
   });
 
   /**
@@ -166,7 +205,7 @@ describe('reading one rung playlist back', () => {
   it('requires zero of a recording even where the suite could not promise a first playlist', () => {
     const renumbered = rungPlaylist([0, 1, 2], { mediaSequence: 580, recording: true });
 
-    const failures = rungPlaylistReading(feed, renumbered, { ...CONTRACT, firstOfBroadcast: false }).failures;
+    const failures = readingOf(feed, renumbered, SLID_WINDOW).failures;
 
     assert.equal(failures.length, 1, failures.join('\n'));
     assert.match(failures[0], /#EXT-X-MEDIA-SEQUENCE:580 rather than 0/);
@@ -175,54 +214,66 @@ describe('reading one rung playlist back', () => {
   it('accepts a live window that has slid, where the suite did not promise a first playlist', () => {
     const slid = rungPlaylist([12, 13, 14], { mediaSequence: 12 });
 
-    assert.deepEqual(rungPlaylistReading(feed, slid, { ...CONTRACT, firstOfBroadcast: false }).failures, []);
+    assert.deepEqual(readingOf(feed, slid, SLID_WINDOW).failures, []);
   });
 
   it('carries the contract’s own reasons through, naming the segment it objected to', () => {
-    const silent = rungPlaylist([0, 1, 3, 4]);
-
-    const failures = rungPlaylistReading(feed, silent, CONTRACT).failures;
+    const failures = readingOf(feed, rungPlaylist([0, 1, 3, 4]), FIRST_PLAYLIST).failures;
 
     assert.equal(failures.length, 1, failures.join('\n'));
     assert.match(failures[0], /segment 2 is dated 2 fragments after/);
   });
 
-  /**
-   * ⛔ The envelope parses as a playlist naming no segments, so a reader that trusted the parse would
-   * report an empty timeline the broadcast never published. The body is quoted in the reason, because
-   * "no playlist" and "a 404 from a gateway that is restarting" need different answers from a reader.
-   */
-  it('refuses a gateway error envelope as no playlist rather than as an empty one', () => {
-    const reading = rungPlaylistReading(feed, GATEWAY_ERROR_ENVELOPE, CONTRACT);
+  it('asks per rung whether the window still starts at the broadcast’s first segment', () => {
+    const parses = [
+      rungPlaylistParse(feedOf('360p', TOPIC_360), rungPlaylist([12, 13, 14], { mediaSequence: 12 })),
+      rungPlaylistParse(feedOf('1080p', TOPIC_1080), rungPlaylist([0, 1, 2], { mediaSequence: 9 })),
+    ];
 
-    assert.equal(reading.playlist, null);
-    assert.equal(reading.segments, 0);
-    assert.equal(reading.failures.length, 1, reading.failures.join('\n'));
-    assert.match(reading.failures[0], /no playlist/);
-    assert.match(reading.failures[0], /Not Found/);
+    const readings = judgeRungPlaylists(parses, FIRST_PLAYLIST, (parse) => parse.rung === '1080p');
+
+    assert.deepEqual(readings[0].failures, [], 'the rung nobody vouched for is left alone');
+    assert.match(readings[1].failures[0] ?? '', /#EXT-X-MEDIA-SEQUENCE:9 rather than 0/);
+  });
+});
+
+/**
+ * ⛔ The one derivation that settles sequence zero without a stopwatch. A suite reading "early" is
+ * green on the wall clock rather than on the product, and the live window is a byte budget that
+ * slides at a segment count no clock knows.
+ */
+describe('whether a playlist can only be the broadcast’s first', () => {
+  const feed = feedOf('360p', TOPIC_360);
+
+  it('says yes where the playlist names every segment the rung has published', () => {
+    assert.equal(namesEverySegmentPublished(rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3])), 4), true);
   });
 
-  it('refuses an empty body, which is what a timed-out gateway read leaves', () => {
-    const reading = rungPlaylistReading(feed, '', CONTRACT);
+  it('says no where the rung published more than the playlist names, which is a slid window', () => {
+    const parse = rungPlaylistParse(feed, rungPlaylist([12, 13, 14], { mediaSequence: 12 }));
 
-    assert.equal(reading.playlist, null);
-    assert.match(reading.failures[0], /answered nothing/);
+    assert.equal(namesEverySegmentPublished(parse, 15), false);
+  });
+
+  /** A count read after the playlist can only be too high, which costs an assertion, never a red. */
+  it('says yes where the log counted fewer than the playlist names', () => {
+    assert.equal(namesEverySegmentPublished(rungPlaylistParse(feed, rungPlaylist([0, 1, 2, 3])), 2), true);
+  });
+
+  it('says no where no playlist was read at all', () => {
+    assert.equal(namesEverySegmentPublished(rungPlaylistParse(feed, ''), 0), false);
   });
 });
 
 describe('the verdict over a whole ladder', () => {
-  const clean = () => [
-    rungPlaylistReading(
-      { rung: '360p', streamId: 'live/stream_360p', topic: TOPIC_360 },
-      rungPlaylist([0, 1, 2]),
-      CONTRACT,
-    ),
-    rungPlaylistReading(
-      { rung: '1080p', streamId: 'live/stream_1080p', topic: TOPIC_1080 },
-      rungPlaylist([0, 1, 2]),
-      CONTRACT,
-    ),
-  ];
+  const clean = () =>
+    judgeRungPlaylists(
+      [
+        rungPlaylistParse(feedOf('360p', TOPIC_360), rungPlaylist([0, 1, 2])),
+        rungPlaylistParse(feedOf('1080p', TOPIC_1080), rungPlaylist([0, 1, 2])),
+      ],
+      FIRST_PLAYLIST,
+    );
 
   it('passes a ladder whose every rung published a sound timeline', () => {
     assert.equal(rungPlaylistRefusal(clean()), null);
@@ -231,10 +282,9 @@ describe('the verdict over a whole ladder', () => {
   it('names the rung and the reason when one rung is wrong', () => {
     const readings = [
       ...clean(),
-      rungPlaylistReading(
-        { rung: '720p', streamId: 'live/stream_720p', topic: 'c0ffee0a-4444-4a1b-9c3d-000000000720' },
-        rungPlaylist([0, 1, 2], { mediaSequence: 317 }),
-        CONTRACT,
+      ...judgeRungPlaylists(
+        [rungPlaylistParse(feedOf('720p', TOPIC_720), rungPlaylist([0, 1, 2], { mediaSequence: 317 }))],
+        FIRST_PLAYLIST,
       ),
     ];
 
@@ -256,11 +306,7 @@ describe('the verdict over a whole ladder', () => {
   it('refuses a ladder where one rung could not be read, however sound the others are', () => {
     const readings = [
       ...clean(),
-      rungPlaylistReading(
-        { rung: '720p', streamId: 'live/stream_720p', topic: 'c0ffee0a-4444-4a1b-9c3d-000000000720' },
-        '',
-        CONTRACT,
-      ),
+      ...judgeRungPlaylists([rungPlaylistParse(feedOf('720p', TOPIC_720), '')], FIRST_PLAYLIST),
     ];
 
     assert.match(rungPlaylistRefusal(readings) ?? '', /720p/);
@@ -269,13 +315,7 @@ describe('the verdict over a whole ladder', () => {
 
 describe('what a wired suite prints', () => {
   it('gives one line per rung, with the sequence and the span of dates it holds', () => {
-    const summary = describeRungPlaylists([
-      rungPlaylistReading(
-        { rung: '360p', streamId: 'live/stream_360p', topic: TOPIC_360 },
-        rungPlaylist([0, 1, 2]),
-        CONTRACT,
-      ),
-    ]);
+    const summary = describeRungPlaylists([rungPlaylistParse(feedOf('360p', TOPIC_360), rungPlaylist([0, 1, 2]))]);
 
     assert.match(summary, /360p/);
     assert.match(summary, /#EXT-X-MEDIA-SEQUENCE:0/);
@@ -286,16 +326,8 @@ describe('what a wired suite prints', () => {
 
   it('says which rung read a recording and which read a live playlist', () => {
     const summary = describeRungPlaylists([
-      rungPlaylistReading(
-        { rung: '360p', streamId: 'live/stream_360p', topic: TOPIC_360 },
-        rungPlaylist([0, 1], { recording: true }),
-        CONTRACT,
-      ),
-      rungPlaylistReading(
-        { rung: '1080p', streamId: 'live/stream_1080p', topic: TOPIC_1080 },
-        rungPlaylist([0, 1]),
-        CONTRACT,
-      ),
+      rungPlaylistParse(feedOf('360p', TOPIC_360), rungPlaylist([0, 1], { recording: true })),
+      rungPlaylistParse(feedOf('1080p', TOPIC_1080), rungPlaylist([0, 1])),
     ]);
 
     assert.match(summary, /360p.*recording/);
@@ -303,9 +335,7 @@ describe('what a wired suite prints', () => {
   });
 
   it('says a rung read nothing rather than leaving its line blank', () => {
-    const summary = describeRungPlaylists([
-      rungPlaylistReading({ rung: '720p', streamId: 'live/stream_720p', topic: TOPIC_360 }, '', CONTRACT),
-    ]);
+    const summary = describeRungPlaylists([rungPlaylistParse(feedOf('720p', TOPIC_720), '')]);
 
     assert.match(summary, /720p/);
     assert.match(summary, /nothing/);
@@ -313,7 +343,7 @@ describe('what a wired suite prints', () => {
 
   it('calls a single-rendition broadcast by what it is, having no rung name to use', () => {
     const summary = describeRungPlaylists([
-      rungPlaylistReading({ rung: null, streamId: null, topic: TOPIC_360 }, rungPlaylist([0]), CONTRACT),
+      rungPlaylistParse({ rung: null, streamId: null, topic: TOPIC_360 }, rungPlaylist([0])),
     ]);
 
     assert.match(summary, /single rendition/);
