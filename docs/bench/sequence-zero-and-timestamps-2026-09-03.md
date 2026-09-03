@@ -45,6 +45,13 @@ monotonic clock at 51 s never becomes the anchor, and the contract refuses any s
 `manifest-2026-09-03T03-27-20Z-first-live-playlist-uptime-clock.m3u8` kept as the evidence of the defect.
 Run 2's playback artifact is `browser-vod-2026-09-03T03-39-21-109Z.md`.
 
+## The full sitting that followed
+
+At 11:48 WITA the whole suite ran through the in-tab node on this uploader, head `93f12ff`: 9 of 9 gates and
+**33 of 33 suites**, the first fully green sitting this project has had. The three engine-restart paths (the
+ABR restart, E and V10) and the three crash-recovery paths (F, H, I) all passed with the numbering re-anchored
+and the anchor restored. The previous best was 32 of 33, twice, the night before. About 1.8 BZZ.
+
 ## Open, the owner's calls
 
 1. A stamp costs about 50 bytes per segment of the 4096 byte live window, so the window holds about 30
