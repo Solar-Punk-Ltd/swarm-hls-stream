@@ -124,6 +124,85 @@ no cheque cashed during it (every total balance unmoved).
 | gateway, :10077 | 0.594 |
 | **all five** | **2.494** |
 
+## The segment-loss gap, closed and proven live the same night, twice
+
+The gap the evening sitting could not see. SRS posts each closed segment to the uploader's webhook once
+and never retries, so every segment it closes while the uploader process is dead is simply absent, and
+nothing reports it. The recovered uploader used to take the next index as if nothing were missing, so the
+playlist jumped sequence and date by the width of the outage with no `#EXT-X-DISCONTINUITY` in front of
+the join: a playlist promising a viewer media it does not name, which hls.js stalls on. Scenario F read
+its playlists only at the very end, after the recovery timeout and the catalog wait, by which time the
+join had slid out of the roughly 31 segment live window, so F was green at 36 of 36 while saying nothing
+about it.
+
+**The fix, head `f53a577`.** The uploader keeps, per stream, the last engine index it accounted for: one it
+took, or one a reported loss covered. When the engine hands it an index more than one above that, the
+indexes in between that its duplicate filter never saw are a loss nobody reported. They are counted into
+`swarm_hls_segments_lost_total`, they age the `segment_loss` health signal, the arriving segment carries
+the break, and one log line says so: the sixth arming family, which the harness counts on its own and F
+now waits for before it reads. A loss the engine did report advances the same accounting, so one hole on
+OME stays one break. The engine's counter going backwards is the restart, handled where it already was,
+and a session recovered from an entry holding no segments infers nothing on its first arrival. F then
+polls a playlist read until a break is inside a published window and judges that read, and only then goes
+on to the recovery timeout, the health check and the catalog, with the old read at the end kept.
+
+Each run: the uploader redeployed alone with `HLS_FRAGMENT=2.0` exported, then `pnpm e2e:crash-recovery`
+on the host, which is the nine gates and F by itself. F publishes a four rung ladder, kills the uploader
+container after four segments, starts it again, and reads.
+
+| | run 1, 21:55 WITA | run 2, 21:58 WITA |
+| --- | --- | --- |
+| gates | 9 of 9 | 9 of 9 |
+| restored after the kill | 13:56:21.1Z, four rungs at SOC index 0 | 13:59:14.4Z, four rungs at SOC index 0 |
+| segments never posted, per rung | 1080p 2, 360p 2, 480p 2, 720p 3 | 2 on every rung |
+| the skip the uploader read | 0 to 3, 1 to 4, 1 to 4, 0 to 4 | 69 to 72 on every rung |
+| gap lines counted by F | 4 rungs | 4 rungs |
+| early read, every rung | live, 18 to 21 segments, **1 discontinuity**, `MEDIA-SEQUENCE:0`, first stamp 13:56:12.938Z on all four | live, 18 to 22 segments, **1 discontinuity**, `MEDIA-SEQUENCE:0`, first stamp 13:59:07.324Z on all four |
+| contract across the join | holds | holds |
+| final read, every rung | 31 segments, 0 discontinuities, `MEDIA-SEQUENCE:33` to 37 | 31 segments, 0 discontinuities, `MEDIA-SEQUENCE:35` to 38 |
+| F | pass, 140.0 s | pass, 143.1 s |
+| cost, five nodes | 0.100 BZZ | 0.109 BZZ |
+
+**What the two reads together say.** The early read holds the join: one break per rung, in front of a
+date step the width of the outage, and the contract accepts the step because the break is there. The
+final read, taken as F always took it, shows the same window a minute later with the join gone and the
+sequence in the thirties, which is exactly the reading the evening sitting mistook for a clean crash.
+Two to three segments a rung is four to six seconds of media at 2.0 s fragments, which is the kill to
+recovery time, and it is what a viewer skips over rather than stalls on.
+
+**Sequence zero held independent of the engine's counter.** Run 1 began with SRS's counter at 0 and 1,
+because the live source had been reaped between the evening sitting and the redeploy, and run 2 began at
+69, because the source survived the two minutes between the runs. Both playlists opened at
+`MEDIA-SEQUENCE:0`, which is the morning's finding again from the other side.
+
+The uploader's own lines, run 1 and run 2:
+
+```
+13:56:21.357Z Segments resumed for live/stream_1080p; cancelled recovery finalize timer
+13:56:21.358Z The engine skipped from segment 0 to segment 3 for stream live/stream_1080p, 2 never posted, marking a discontinuity
+13:56:22.806Z The engine skipped from segment 1 to segment 4 for stream live/stream_360p, 2 never posted, marking a discontinuity
+13:56:22.820Z The engine skipped from segment 1 to segment 4 for stream live/stream_480p, 2 never posted, marking a discontinuity
+13:56:23.355Z The engine skipped from segment 0 to segment 4 for stream live/stream_720p, 3 never posted, marking a discontinuity
+13:59:15.266Z The engine skipped from segment 69 to segment 72 for stream live/stream_360p, 2 never posted, marking a discontinuity
+13:59:15.292Z The engine skipped from segment 69 to segment 72 for stream live/stream_480p, 2 never posted, marking a discontinuity
+13:59:15.359Z The engine skipped from segment 69 to segment 72 for stream live/stream_720p, 2 never posted, marking a discontinuity
+13:59:16.119Z The engine skipped from segment 69 to segment 72 for stream live/stream_1080p, 2 never posted, marking a discontinuity
+```
+
+| node | run 1 | run 2 |
+| --- | --- | --- |
+| 360p, :10075 | 0.0091 | 0.0082 |
+| 480p, :11071 | 0.0108 | 0.0141 |
+| 720p, :11073 | 0.0262 | 0.0275 |
+| 1080p, :11075 | 0.0531 | 0.0585 |
+| gateway, :10077 | 0.0008 | 0.0002 |
+| **all five** | **0.0999** | **0.1086** |
+
+Neither run moved a total balance, so nothing was deposited between the readings. ⚠️ Run 1's own closing
+balance line was lost to the operator: its chain was stopped by hand after F had already finished,
+mistaken for a run still in setup, so run 1 is priced from run 2's opening balances instead. Run 2 is the
+replicate, and it repeats run 1 in every row.
+
 ## Open, the owner's calls
 
 1. A stamp costs about 50 bytes per segment of the 4096 byte live window, so the window holds about 30

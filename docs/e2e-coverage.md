@@ -321,9 +321,9 @@ The fragment length is the run's own declaration, `E2E_EXPECT_SEGMENT_S`, which
 `suites/preflight/segment-length.test.ts` has already held the deployed stage to. A run declaring
 `any` pins none, and then the timeline is not checked and the suite prints one line saying so.
 
-⛔ **Still to be proved by a paid sitting.** Every assertion above is wired and none has run against a
-deployment. Three things to read on the first sitting that includes them: whether F's early read
-finds the break across the uploader's own downtime, which is where SRS's never-posted segments used to
-leave a gap nothing armed a discontinuity for. Whether the ladder's four rungs really agree segment
-for segment. And which of E and the ABR restart actually reached the sequence assertion, which their
-printed summary says.
+The wired assertions ran green in the 36 of 36 gateway sitting of 2026-09-03, and F's early read found
+the break across the uploader's own downtime on both runs of that night: one `#EXT-X-DISCONTINUITY` per
+rung at `MEDIA-SEQUENCE:0`, across a two to three segment gap, with the contract holding, and the same
+window a minute later with the join gone. See `docs/bench/sequence-zero-and-timestamps-2026-09-03.md`.
+Two things still to read off a sitting's printed summaries: whether the ladder's four rungs really
+agree segment for segment, and which of E and the ABR restart actually reached the sequence assertion.
