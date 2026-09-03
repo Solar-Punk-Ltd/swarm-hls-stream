@@ -207,6 +207,34 @@ resolve_bee_url() {
   bee_target=$(get_target "$SVC_BEE_UPLOADER")
   uploader_target=$(get_target "$SVC_UPLOADER")
 
+  # This *profile* runs no Bee node of its own, so there is no local address to
+  # compute: whatever BEE_URL .env.<profile> carries is the only answer
+  # available, and it is a deliberate one.
+  #
+  # is_enabled alone was not enough. It reads config.json, which says what this
+  # checkout is *configured* for, not what a given profile is made of — and the
+  # deployment manager writes config.json once at bootstrap, never per profile,
+  # listing bee-uploader as "localhost". So for every profile deploying a
+  # stream-uploader this returned http://bee-uploader:<port> and wrote it into
+  # .env.deploy, the second --env-file, which outranks .env.<profile>. A
+  # deployment of `srs + stream-uploader` naming an external node was pointed
+  # at a compose service that is not running: the uploader died on
+  # `getaddrinfo ENOTFOUND bee-uploader` and restarted forever.
+  #
+  # The service *filter* cannot answer this. It says which services this
+  # invocation was asked to bring up, and the manager deploys a held-back
+  # uploader on its own (`deploy.sh --profile=x stream-uploader`) once a batch
+  # is bought — a profile that does own a Bee node, and does need the local
+  # address computed. Only the writer of .env.<profile> knows the profile's
+  # full service list, so it states it: LOCAL_BEE_UPLOADER=false means "no Bee
+  # node in this deployment, leave BEE_URL alone".
+  #
+  # Absent (a hand-run deploy.sh, or an older manager) means "decide as
+  # before", so nothing outside the manager's control changes behaviour.
+  if [ "${LOCAL_BEE_UPLOADER:-}" = "false" ]; then
+    return
+  fi
+
   if ! is_enabled "$bee_target"; then
     # bee-uploader disabled — use whatever BEE_URL is in .env
     return
