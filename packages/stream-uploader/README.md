@@ -79,7 +79,8 @@ read the same value however far apart they were admitted, and it outlives every 
 broadcast: it rides with the group in `state/ladder/groups.json` and in each rung's recovery entry,
 so a rung rebuilt after a crash keeps it rather than re-dating the recording at the restart.
 
-**`#EXT-X-PROGRAM-DATE-TIME`** is `anchor + sequence × HLS_FRAGMENT`, in UTC to the millisecond.
+**`#EXT-X-PROGRAM-DATE-TIME`** is `anchor + sequence × HLS_FRAGMENT`, in UTC to the millisecond. An
+engine restart inside the broadcast adds an epoch to that arithmetic, described below.
 
 ⛔ It is derived and never observed. It is not the time the segment arrived, and it does not follow
 the segment's own `#EXTINF`. Four rung uploaders stamping their own arrival times would disagree by
@@ -87,11 +88,22 @@ their upload jitter, and hls.js reads that disagreement as the rungs covering di
 millisecond precision is what a sub-second fragment needs: at `HLS_FRAGMENT=0.5` a whole-second
 stamp would give two consecutive segments the same instant.
 
-⚠️ It is therefore **nominal, and under a single-rendition stream it can be a claim the media does
-not meet**. `HLS_FRAGMENT` is a floor on the segment rather than the segment: SRS cuts on the first
-keyframe at or after it, so a broadcaster sending a longer GOP produces longer segments than the
-stamp steps by. Under a ladder the two agree, because each rung is re-GOPed at
-`ABR_FPS × HLS_FRAGMENT`. See [deploy/README.md](../../deploy/README.md).
+⚠️ **It is therefore nominal, and the operating rule that keeps it honest is about the source's
+keyframe interval.** Decided by the owner on 2026-09-03: accepted as it is, with this rule and no
+code change.
+
+The stamps drift from real time only when the source's keyframe interval does not divide
+`HLS_FRAGMENT`. `HLS_FRAGMENT` is a floor on the segment rather than the segment, because the engine
+cuts at the first keyframe at or after it, so a source whose GOP does not divide it produces segments
+longer than the stamp steps by and the stamps fall behind by that excess on every segment, without
+bound over a long broadcast. Under the ABR ladder there is no drift, because the engine transcodes
+every rung with a GOP that divides the fragment (`ABR_FPS × HLS_FRAGMENT`). **A single-rendition
+deployment must set the broadcaster's keyframe interval to divide `HLS_FRAGMENT`**, and nothing in
+this service can make it do so. See [deploy/README.md](../../deploy/README.md).
+
+The e2e preflight gate that checks the stage cuts at the configured length would catch a misaligned
+stage on a sitting. Nothing catches it in production, where the keyframe interval belongs to whoever
+is broadcasting.
 
 **`#EXT-X-MEDIA-SEQUENCE`** counts from 0 at the broadcast's first segment.
 
@@ -111,9 +123,9 @@ than a second one of its own.
 ⛔ **The sequence never moves backwards.** An engine that restarts inside one broadcast resets its
 counter, and an index that would publish at or below a sequence already published re-anchors the
 numbering forwards instead: the playlist continues from the last number plus one, the post-restart
-media is filed after the media it follows, a discontinuity is armed, and the date-time follows the
-sequence rather than the reset index. hls.js reads a media sequence that moves backwards as a
-parsing error, escalates it to fatal on a single-variant stream, and the client answers a fatal
+media is filed after the media it follows, a discontinuity is armed, and the date-time re-anchors
+with it rather than following the reset index. hls.js reads a media sequence that moves backwards as
+a parsing error, escalates it to fatal on a single-variant stream, and the client answers a fatal
 parsing error by remounting the player, which restarts playback at the beginning.
 
 An index below the anchor before anything has been published is the other case and it is not a
@@ -124,11 +136,56 @@ one bee chunk (`LIVE_WINDOW_MAX_BYTES`), so it now holds roughly 30 segments whe
 which at `HLS_FRAGMENT=1.0` is still well past both the engine's own `HLS_WINDOW` and the player's
 `liveSyncDuration`.
 
-⚠️ **After an engine restart the wall clock is the broadcast's start, not the restart's.** The
-ladder group deliberately survives an engine restart so the rungs come back as one ladder, and the
-anchor rides with the group, so the fresh sessions date their first segment at the original start.
-All four rungs still agree with each other, which is what the tag is here for. Nothing has measured
-what a player makes of the absolute value being behind.
+### After an engine restart the dating re-anchors on the clock
+
+⛔ **Owner decision of 2026-09-03.** The dating used to be one instant for the whole broadcast, so
+the media after an engine restart carried a time behind real time by the whole length of the gap,
+and nothing bounded that. A broadcast's dating is a list of epochs now, in `BroadcastAnchor.epochs`:
+
+- The media published before the restart keeps the dates it went out with. Those segments are in a
+  window a viewer is holding, and re-dating them would move media that has already been served.
+- The first segment after the restart is dated at the wall clock it arrived at, and the segments
+  after it step one fragment from there.
+- An epoch dates every sequence at or above its own `fromSequence`, so `#EXT-X-PROGRAM-DATE-TIME` is
+  `epoch + (sequence − epoch.fromSequence) × HLS_FRAGMENT` under the newest epoch that reaches the
+  segment. The broadcast's start is the implicit first epoch.
+
+⛔ **The re-anchoring is minted once for the whole ladder**, by whichever rung crosses the restart
+first, and every other rung lands on that same line rather than taking its own reading of the clock.
+Four rungs dating one segment four ways is the disagreement the tag is here to prevent: hls.js reads
+it as the rungs covering different media, and a level switch lands somewhere else. A rung whose
+numbering is one sequence behind its siblings when the engine dies therefore dates its own resuming
+segment one fragment earlier on that shared line, which is the same function of sequence all four are
+reading.
+
+**How "the same restart" is recognised**, in `reanchorEpoch` in `src/libs/broadcastDating.ts`: a rung
+takes the line an earlier rung minted when that line still dates the rung's own resuming sequence
+within two minutes of now. A sibling crossing the same restart is asking about a sequence within a
+fragment or two of the one the line was minted at, so the line dates it within a fragment or two of
+now. A second, later restart is asking about a sequence the line reaches only after an outage in
+which no sequence advanced at all, so the line dates it that whole outage ago and a fresh epoch is
+minted. That one test separates both cases, where a clock window alone cannot: an engine that comes
+back, publishes two segments and dies again re-anchors twice within a couple of fragments of media.
+
+The broadcast's own start is never reused, so the first restart of a broadcast always re-anchors. A
+minted epoch is never dated before the segment in front of it either, which matters where the
+nominal dating had run ahead of the wall clock: a stamp moving backwards is what hls.js reports as a
+parsing error rather than as a restart.
+
+**Both restart paths re-anchor.** The engine re-announcing a stream this service still tracks gets a
+replacement session whose playlist numbers from zero again, so its epoch starts at sequence 0
+(`StreamOrchestrator.reanchorReplacedBroadcast`). Segments resuming inside one session re-anchor at
+the sequence the numbering continues from (`ManifestManager.reanchorDating`). A single-rendition
+stream is a ladder of one and behaves identically.
+
+The epochs ride with the group in `state/ladder/groups.json` and with each rung's recovery entry, so
+a crash after a restart comes back on the re-anchored dating rather than re-dating everything after
+the gap. The recording is built from the same function as the live playlists, so it carries the same
+dates.
+
+⚠️ Nothing has measured what a player makes of the step across the break, which is the length of the
+outage rather than a whole number of fragments. The harness contract allows a forward step of any
+size there and refuses one that does not move forwards.
 
 ### One Bee node per rung
 

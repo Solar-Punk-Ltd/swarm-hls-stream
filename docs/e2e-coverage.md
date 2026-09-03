@@ -223,9 +223,15 @@ deployment's nominal fragment length. The contract is described in
 
 `manifestContractFailures` in `e2e/src/harness/manifestContract.ts` is the rulebook, and
 `e2e/test/manifestContract.test.ts` proves it against playlist text: sequence 0 on the first playlist
-of a broadcast, a readable wall clock on every segment, strictly rising stamps, steps of a whole
-number of fragments, and anything wider accounted for by an `#EXT-X-DISCONTINUITY`. That is free and
-it runs in CI.
+of a broadcast, a readable wall clock on every segment, strictly rising stamps, and a step of exactly
+one fragment between segments that carry no `#EXT-X-DISCONTINUITY` between them. That is free and it
+runs in CI.
+
+Across a discontinuity a forward step of any size is legal, decided by the owner on 2026-09-03. An
+engine restart inside a broadcast re-anchors the dating on the wall clock the engine came back at, so
+the step across that break is the length of the outage and nothing rounds it to fragments. A step
+that does not move forwards stays a failure wherever it appears, discontinuity or not, because a date
+that repeats or goes backwards is media a viewer is already holding being re-dated.
 
 ⛔ **The uploader's log cannot falsify any of it, by design.** The log names the engine's own segment
 index and the feed's SOC index, because those are what correlate with the engine's logs and with a

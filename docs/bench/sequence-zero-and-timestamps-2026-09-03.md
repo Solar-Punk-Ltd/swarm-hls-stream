@@ -91,12 +91,21 @@ reading with the 3.000 BZZ deposit removed, which its total balance shows to the
 
 1. A stamp costs about 50 bytes per segment of the 4096 byte live window, so the window holds about 30
    segments where it held about 50. At 2.0 s that is 60 s, past the engine's own window and the player's
-   6 s target.
-2. On a single-rendition stream the stamp steps by `HLS_FRAGMENT` while the segment can be longer, since
-   the engine cuts at the next keyframe. Under a ladder the two agree.
-3. After an engine restart inside a broadcast the numbering re-anchors forward with a discontinuity and
-   the date stays anchored to the broadcast's start, so the rungs keep agreeing while the absolute time
-   lags by the length of the gap.
+   6 s target. ✅ **Decided, kept as built.**
+2. ✅ **Decided, accepted as it is, with an operating rule and no code change.** On a single-rendition
+   stream the stamp steps by `HLS_FRAGMENT` while the segment can be longer, since the engine cuts at
+   the first keyframe at or after it. The rule: the stamps drift only when the source's keyframe
+   interval does not divide `HLS_FRAGMENT`, and a single-rendition deployment must set the
+   broadcaster's keyframe interval to divide it or its stamps fall behind by the excess of every
+   segment, without bound. Under the ladder the engine re-GOPs every rung at `ABR_FPS × HLS_FRAGMENT`,
+   so there is no drift. Written up in the uploader README.
+3. ✅ **Decided, re-anchor.** After an engine restart inside a broadcast the date now re-anchors on the
+   wall clock the engine came back at, so the media after the gap carries the time it really happened
+   while the media published before it keeps the dates it went out with. The re-anchoring is minted
+   once for the whole ladder, by whichever rung crosses the restart first, and every other rung lands
+   on that same line, so the mapping from sequence to date stays one function for the ladder. Both
+   restart paths do it, the recording uses the same function, and the epochs ride with the group record
+   and with each recovery entry so a crash after a restart comes back on them.
 4. ✅ **Decided and built.** Seven live suites now fetch the playlists a broadcast published and assert
    the contract on them: `service/happy-path`, `service/abr-ladder`, scenarios E, F, H and I, and the
    ABR engine restart. No uploader change was needed. One `STREAM_KEY` signs the catalog, every master
