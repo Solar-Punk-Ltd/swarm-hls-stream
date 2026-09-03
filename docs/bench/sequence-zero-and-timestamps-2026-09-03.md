@@ -60,11 +60,13 @@ finalize, which reported the recording had lost a rendition across the crash, 3 
 uploader log shows why, and it is the harness: its warmup counted segments across every rung merged, reached
 its threshold on the three fast rungs, and killed the uploader before the 1080p rung had uploaded a single
 segment. A recording that never held a fourth rendition cannot lose one. It is the ninth time a number summed
-across rungs has read as a fault in this project. The warmup now waits for every rung on its own (`fad8290`),
-and that fix has not yet run on the stage: its proving run was refused by the spend gate, correctly, because a
-3 BZZ deposit landed on the 1080p node during the sitting and the ledger's start balance for that node no
-longer reads as a start. The gate's own words: "A deposit landed after this authorisation was written". It
-runs the moment the owner writes a fresh ledger.
+across rungs has read as a fault in this project. The warmup now waits for every rung on its own (`fad8290`). Its first proving run
+was refused by the spend gate, correctly, because a 3 BZZ deposit landed on the 1080p node during the sitting and
+the ledger's start balance for that node no longer read as a start. The gate's own words: "A deposit landed after
+this authorisation was written". The owner wrote a fresh ledger at 15:19 WITA and H ran alone at 15:21 on head
+`12f0d7c`: 9 of 9 gates, **H green**. All four recovery entries survived the kill and the finished entry carries
+4 renditions from 4 announced rungs, one catalog write, nothing republished. 0.010 BZZ. With it, every suite has
+now passed live on this uploader in both byte sources.
 
 Everything else held through the gateway as it had in the in-tab node. V2 went 1080p to 480p under the
 2800 kbps cap and climbed back to 1080p 28.4 s after the lift, 0.978 media seconds per wall second while
