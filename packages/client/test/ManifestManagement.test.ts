@@ -165,7 +165,7 @@ describe('ManifestStateManager serialize', () => {
 
     const out = manager.serialize(TOPIC, '');
 
-    assert.ok(out.includes('#EXT-X-MEDIA-SEQUENCE:4'), `the engine sequence must survive, got:\n${out}`);
+    assert.ok(out.includes('#EXT-X-MEDIA-SEQUENCE:4'), `the publisher's own sequence must survive, got:\n${out}`);
     assert.ok(!out.includes('#EXT-X-MEDIA-SEQUENCE:0'), `must not rewind a joining viewer to zero, got:\n${out}`);
   });
 

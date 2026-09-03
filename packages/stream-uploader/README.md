@@ -33,8 +33,8 @@ back together:
 
 Each rung's `BANDWIDTH` in the master is measured from real segments rather than copied from the
 encoder's target, and is re-announced when it drifts more than 15% (at most every 30s, since the
-catalog is one feed shared by every stream). `EXT-X-MEDIA-SEQUENCE` carries the engine's own
-sequence number, which is what tells a player that two rungs share a timeline.
+catalog is one feed shared by every stream). What tells a player that two rungs share a timeline is
+the pair of numbers on every segment line, and they are the subject of the next section.
 
 The master also stops advertising a rung that has stopped being produced. A rung the ladder has
 delivered four segments past is dropped from the next master write, and it is put back the moment it
@@ -51,6 +51,84 @@ renditions at all is never written, because that is an unplayable stream rather 
 The segment path asks it on every delivery and rewrites the master only when the set of live rungs
 actually changes. A version of this filter shipped correct, tested and deployed, and never ran once,
 because only `upsertRendition` wrote a master.
+
+### The manifest contract: timestamps and sequence zero
+
+Every playlist this service writes, live, closing and recording alike, carries two numbers per
+segment. Both are **derived from one anchor the whole broadcast shares**, and neither is the number
+the engine handed over.
+
+```
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:1
+#EXT-X-MEDIA-SEQUENCE:0
+
+#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:00.000Z
+#EXTINF:1,
+2a5f…c1
+#EXT-X-PROGRAM-DATE-TIME:2026-09-01T12:00:01.000Z
+#EXTINF:1,
+9b04…7e
+```
+
+**The anchor** is one instant, taken when the broadcast is admitted, at the engine's publish
+callback (`StreamOrchestrator.startStream` → `spawnUploader`), plus the nominal fragment length the
+deployment declared through `HLS_FRAGMENT`. It is minted once per ladder group, so all four rungs
+read the same value however far apart they were admitted, and it outlives every session of that
+broadcast: it rides with the group in `state/ladder/groups.json` and in each rung's recovery entry,
+so a rung rebuilt after a crash keeps it rather than re-dating the recording at the restart.
+
+**`#EXT-X-PROGRAM-DATE-TIME`** is `anchor + sequence × HLS_FRAGMENT`, in UTC to the millisecond.
+
+⛔ It is derived and never observed. It is not the time the segment arrived, and it does not follow
+the segment's own `#EXTINF`. Four rung uploaders stamping their own arrival times would disagree by
+their upload jitter, and hls.js reads that disagreement as the rungs covering different media. The
+millisecond precision is what a sub-second fragment needs: at `HLS_FRAGMENT=0.5` a whole-second
+stamp would give two consecutive segments the same instant.
+
+⚠️ It is therefore **nominal, and under a single-rendition stream it can be a claim the media does
+not meet**. `HLS_FRAGMENT` is a floor on the segment rather than the segment: SRS cuts on the first
+keyframe at or after it, so a broadcaster sending a longer GOP produces longer segments than the
+stamp steps by. Under a ladder the two agree, because each rung is re-GOPed at
+`ABR_FPS × HLS_FRAGMENT`. See [deploy/README.md](../../deploy/README.md).
+
+**`#EXT-X-MEDIA-SEQUENCE`** counts from 0 at the broadcast's first segment.
+
+The engine's own index is not this number and is not used for it. SRS runs one counter per rung
+stream and only resets it when the whole `SrsLiveSource` is destroyed, which its idle timeout does a
+few seconds after a publisher leaves, so a broadcast on a warm engine opens at whatever number the
+previous one ended on: six recordings of this stage opened at 210, 317, 416, 580, 707 and 850. Read
+in `ossrs/srs` 6.0release, `trunk/src/app/srs_app_hls.cpp`: `_sequence_no` is set to 0 in
+`SrsHlsMuxer`'s constructor and nowhere else, `on_publish` and `on_unpublish` leave it alone, and
+`hls_dispose` deletes the segments and the m3u8 without touching it.
+
+⛔ **The uploader's log lines keep naming the engine's index** (`Segment N of <stream> uploaded:
+<ref>`), because that is what correlates with the engine's own logs and with a segment reference.
+Only the playlists renumber, and the recording uses the same numbering as the live playlists rather
+than a second one of its own.
+
+⛔ **The sequence never moves backwards.** An engine that restarts inside one broadcast resets its
+counter, and an index that would publish at or below a sequence already published re-anchors the
+numbering forwards instead: the playlist continues from the last number plus one, the post-restart
+media is filed after the media it follows, a discontinuity is armed, and the date-time follows the
+sequence rather than the reset index. hls.js reads a media sequence that moves backwards as a
+parsing error, escalates it to fatal on a single-variant stream, and the client answers a fatal
+parsing error by remounting the player, which restarts playback at the beginning.
+
+An index below the anchor before anything has been published is the other case and it is not a
+restart: it is a segment that arrived out of order, and it takes its true place in media order.
+
+⚠️ **A stamp costs the live window about 50 bytes per segment.** The window is a byte budget against
+one bee chunk (`LIVE_WINDOW_MAX_BYTES`), so it now holds roughly 30 segments where it held about 50,
+which at `HLS_FRAGMENT=1.0` is still well past both the engine's own `HLS_WINDOW` and the player's
+`liveSyncDuration`.
+
+⚠️ **After an engine restart the wall clock is the broadcast's start, not the restart's.** The
+ladder group deliberately survives an engine restart so the rungs come back as one ladder, and the
+anchor rides with the group, so the fresh sessions date their first segment at the original start.
+All four rungs still agree with each other, which is what the tag is here for. Nothing has measured
+what a player makes of the absolute value being behind.
 
 ### One Bee node per rung
 
@@ -122,6 +200,7 @@ The API server starts on port 3000 (default).
 | `MAX_QUEUE_SIZE`       | `100`     | Max queued segments per stream                                                                                       |
 | `RECOVERY_TIMEOUT`     | `60000`   | Crash recovery timeout (ms)                                                                                          |
 | `SEGMENT_STALL_MS`     | `30000`   | Silence after which `/health` reads degraded                                                                         |
+| `HLS_FRAGMENT`         | `0.5`     | Nominal seconds per fragment, which every `#EXT-X-PROGRAM-DATE-TIME` steps by. Same variable the engine reads        |
 | `SEGMENT_DEDUP_WINDOW` | `10000`   | Segment indexes remembered per stream, twice this many held at most                                                  |
 | `SEGMENT_REDUNDANCY`   | `1`       | Erasure-coding parity on segment uploads, `0` turns it off                                                           |
 | `ENGINE`               | _(empty)_ | Engine plugin to load (`srs`, `ome` or empty)                                                                        |

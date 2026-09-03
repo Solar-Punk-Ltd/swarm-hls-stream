@@ -1,6 +1,6 @@
 # What the e2e suite covers, and what it does not
 
-**As of 2026-09-02.** A living map from product functionality to the live end-to-end scenarios that
+**As of 2026-09-03.** A living map from product functionality to the live end-to-end scenarios that
 exercise it, and to when each one was last green against a real deployment. It is here so that
 "is that tested" has one answer rather than a search, and so that a gap is written down as a gap
 instead of being inferred from a suite nobody wrote.
@@ -149,6 +149,7 @@ node is deliberately not read, it holds no upload batch, and batch utilization s
 | Viewer: broadcast ends cleanly on screen                                                                 | V5, built 2026-08-28                                                                   | rerun                                          |
 | Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, promoted 2026-08-29, first green pending                                    | run both profiles                              |
 | weeb3 actually served the bytes (arm proof)                                                              | sitting-only assertion                                                                 | built into every in-browser viewer test        |
+| Playlist timeline: sequence 0 and a date-time on every segment                                           | **checker built and unit-green, no live suite calls it yet**                           | see the gap below                              |
 
 ### Reading the letters
 
@@ -212,3 +213,42 @@ plan to turn those drivers into scenarios that have a verdict.
 The scenario runs twice, once under each run profile, so the same assertion is made about a viewer
 whose bytes come from their own tab and about a viewer reading through a gateway. A viewer result
 that holds in one and not the other is a finding rather than a flake.
+
+## The playlist timeline: a checker with no suite calling it
+
+**Added 2026-09-03.** Every playlist the uploader writes now opens at `#EXT-X-MEDIA-SEQUENCE:0` and
+carries an `#EXT-X-PROGRAM-DATE-TIME` on every segment, stepping by the deployment's nominal
+fragment length. The contract is described in
+[the uploader's README](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
+
+`manifestContractFailures` in `e2e/src/harness/manifestContract.ts` is the check, and
+`e2e/test/manifestContract.test.ts` proves it against playlist text: sequence 0 on the first playlist
+of a broadcast, a readable wall clock on every segment, strictly rising stamps, steps of a whole
+number of fragments, and anything wider accounted for by an `#EXT-X-DISCONTINUITY`. That is free and
+it runs in CI.
+
+⛔ **No live suite calls it yet, and this row is the gap rather than the coverage.** Scenario D
+(`publish-stop-to-vod`) and both engine-restart scenarios read the **uploader's container log** and
+nothing else, and the log deliberately does not carry either number: it names the engine's own
+segment index and the feed's SOC index, because those are what correlate with the engine's logs and
+with a segment reference. So the contract is unfalsifiable from the log by design.
+
+**What those suites would need**, all of it new to them:
+
+1. **The playlist text.** `host.localText(cfg.ports.beeGatewayApi, '/feeds/{owner}/{topicHex}')`
+   already exists and is what `e2e/browser/vod.ts` uses. `feedTopicHexOf` in
+   `e2e/src/browser/rungManifest.ts` converts the raw topic a manifest names into the hex the gateway
+   wants.
+2. **The owner and the topic.** For a single-rendition stream `announcedLiveStreams` in
+   `logwatch.ts` reads both out of the `Adding stream to list:` line. **For a ladder there is no
+   owner in the log at all**: `rungAnnounced` carries the topic and the group, and the catalog entry
+   with the owner in it is never logged as JSON. Either the uploader logs the owner on a ladder
+   announce, or the harness derives it from `STREAM_KEY`, which it does not hold today.
+3. **A first-playlist reading.** `firstOfBroadcast` is only true while the live window still starts
+   at the broadcast's first segment. The window is a byte budget, so a suite has to read the playlist
+   early rather than assume a segment count, or pass `firstOfBroadcast: false` and check only the
+   stamps.
+4. **The fragment length.** `HLS_FRAGMENT` for the deployment under test. The run profiles leave it
+   to the operator's `engines/srs/.env.<profile>`, so the harness config would have to carry it.
+
+None of that was built here, and none of it can be proved without a paid sitting.

@@ -64,9 +64,13 @@ Feed URIs use a `swarm://<owner>/<topic>` scheme. That is not cosmetic: hls.js r
 
 Append `?level=<rung>` to a stream watcher URL to pin playback to one rung (`?level=720p`), which is how you tell a bad rung apart from a bad switch. Without it, hls.js's ABR chooses. A stream with no ladder ignores the parameter and plays its single rendition as before.
 
-### Rungs share a timeline through EXT-X-MEDIA-SEQUENCE
+### Rungs share a timeline, and the viewer passes it through untouched
 
-These playlists carry no `EXT-X-PROGRAM-DATE-TIME`, so the sequence number is the only thing telling hls.js that two levels cover the same media. Every rung is transcoded from one source with keyframes forced to the same timestamps, so segment N means the same interval on all of them, and both the uploader and `ManifestStateManager` therefore preserve the _engine's_ sequence number rather than renumbering from zero. Renumbering is right for one playlist read alone and wrong across a ladder: four rungs all claiming to start at 0 while their first segments cover different instants is a switch that lands in a gap.
+Two lines per segment say when its media happened: `#EXT-X-MEDIA-SEQUENCE`, which counts from 0 at the broadcast's first segment, and a per-segment `#EXT-X-PROGRAM-DATE-TIME`. The publisher derives both from **one anchor the whole ladder shares**, so segment N of 360p and segment N of 1080p carry the same pair of numbers and hls.js can land a level switch on the same instant. Every rung is transcoded from one source with keyframes forced to the same timestamps, which is what makes segment N the same interval on all of them. The full contract is in [the uploader's README](../stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
+
+`ManifestStateManager` **passes both through exactly as the publisher wrote them**. It keeps the headers of the first playlist a viewer ever reads, so its `EXT-X-MEDIA-SEQUENCE` stays the sequence of the oldest segment that viewer holds for the whole session, and it re-emits each segment's own date-time with that segment. Recomputing either per viewer is what puts four rungs back into disagreement: a viewer who joined mid-broadcast holds a window that starts later than one who joined at the top, and rewriting both to 0 is exactly the claim that they cover the same instant.
+
+A recording published before the uploader stamped its segments carries no date-time, and the viewer emits none for it rather than inventing one.
 
 ### Tuning
 

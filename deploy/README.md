@@ -141,6 +141,15 @@ rounded up, so lowering the encoder's keyframe interval without lowering `HLS_FR
 changes nothing. The pair is a range: a GOP outside `[HLS_FRAGMENT, HLS_FRAGMENT * HLS_AOF_RATIO]`,
 shipped as `[0.5, 2.5]`, is either rounded up or force-cut without a keyframe.
 
+⛔ **`HLS_FRAGMENT` now reaches the stream-uploader as well as the engine, and it is what every
+segment's `#EXT-X-PROGRAM-DATE-TIME` steps by.** Set it once in the profile's `.env` and both
+services read the same value. Set it for the engine alone and the uploader falls back to `0.5`,
+which dates a recording against a fragment length nothing produced. Under a ladder the declared
+length is also the real one, because each rung is re-GOPed at `ABR_FPS x HLS_FRAGMENT`. On a
+single-rendition stream the publisher's own GOP decides the segment, so a broadcaster sending a
+longer GOP produces segments longer than the stamps step by. See
+[the manifest contract](../packages/stream-uploader/README.md#the-manifest-contract-timestamps-and-sequence-zero).
+
 ## Scripts
 
 ### deploy.sh
