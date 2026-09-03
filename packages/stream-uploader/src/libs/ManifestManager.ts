@@ -1,4 +1,4 @@
-import { buildExtinf, buildProgramDateTime } from '@swarm-hls-stream/shared';
+import { buildExtinf, buildProgramDateTime, datingReanchored } from '@swarm-hls-stream/shared';
 
 import { BroadcastAnchor, SegmentEntry } from '../types.js';
 import {
@@ -281,9 +281,11 @@ export class ManifestManager {
     const wouldHaveBeen = this.dateOf(resumeAt);
     const epoch = this.dating.epochFrom(resumeAt, wouldHaveBeen);
     this.anchor = withEpoch(this.anchor, epoch);
+    // Composed in the shared log contract rather than written out here, because the e2e harness
+    // counts this as one of the ways a discontinuity is armed and six suites assert that count is
+    // zero on a clean broadcast. A line reworded here and not read there passes them for ever.
     this.logger.info(
-      `[ManifestManager] Re-anchored the dating at sequence ${resumeAt}: ` +
-        `${new Date(wouldHaveBeen).toISOString()} becomes ${new Date(epoch.atMs).toISOString()}`,
+      datingReanchored(resumeAt, new Date(wouldHaveBeen).toISOString(), new Date(epoch.atMs).toISOString()),
     );
   }
 

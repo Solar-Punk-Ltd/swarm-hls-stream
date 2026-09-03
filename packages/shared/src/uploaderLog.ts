@@ -215,11 +215,11 @@ const SUBJECT_SLOT = 'SUBJECTSLOT';
 const CAUSE_SLOT = 'CAUSESLOT';
 
 /**
- * ## The four lines below all mean one thing: a discontinuity was armed
+ * ## The five lines below all mean one thing: a discontinuity was armed
  *
  * A discontinuity tells a player the media after it is not a continuation of the media before it, so
- * it skips the join instead of stalling on a hole it was told was seamless. Four separate messages
- * report one being armed, and the harness counts all four as one number.
+ * it skips the join instead of stalling on a hole it was told was seamless. Five separate messages
+ * report one being armed, and the harness counts all five as one number.
  *
  * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast armed
  * NONE. A message reworded here and not deployed, or deployed and not read, does not fail those
@@ -313,6 +313,43 @@ export function omeSegmentLossReportedPattern(flags = ''): RegExp {
   const escaped = omeSegmentLossReported(SUBJECT_SLOT, STREAM_SLOT, CAUSE_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(
     escaped.replace(SUBJECT_SLOT, '(.+)').replace(STREAM_SLOT, '(\\S+)').replace(CAUSE_SLOT, '(.+)'),
+    flags,
+  );
+}
+
+/**
+ * The engine's own counter restarting inside a broadcast, which re-anchors both the playlist
+ * numbering and the dating and puts a break on the segment it lands on.
+ *
+ * ⛔ **The reason this is here and not an ordinary info line.** The shipped SRS webhook path
+ * declares no break of its own, so on that engine the reset is the only evidence there is, and the
+ * segment carries the marker on the strength of it. That made a fifth way to arm a discontinuity
+ * that the harness could not count, which is exactly the blind spot the four above are spelled out
+ * to prevent: six suites assert a clean broadcast armed none, and an arming the counter cannot see
+ * passes them for ever.
+ *
+ * ⚠️ **It names no stream**, unlike the other four, because `ManifestManager` is not given one and
+ * every line it writes is already anonymous. Nothing reads a stream off this: the counter counts.
+ *
+ * @param sequence the playlist sequence the numbering and the dating both continue from
+ * @param wasAt the date that sequence would have carried had nothing restarted, as an ISO instant
+ * @param nowAt the date it carries instead, which is the wall clock the engine came back at
+ */
+export function datingReanchored(sequence: number, wasAt: string, nowAt: string): string {
+  return (
+    `The engine's counter restarted at playlist sequence ${sequence}, so the dating re-anchors from ` +
+    `${wasAt} to ${nowAt}, marking a discontinuity`
+  );
+}
+
+/**
+ * {@link datingReanchored} as a matcher, the sequence and the two instants as capture groups 1 to 3.
+ * Counted rather than captured, the same as the two above.
+ */
+export function datingReanchoredPattern(flags = ''): RegExp {
+  const escaped = datingReanchored(INDEX_SLOT, SUBJECT_SLOT, CAUSE_SLOT).replace(REGEX_SPECIAL, '\\$&');
+  return new RegExp(
+    escaped.replace(String(INDEX_SLOT), '(\\d+)').replace(SUBJECT_SLOT, '(\\S+)').replace(CAUSE_SLOT, '(\\S+)'),
     flags,
   );
 }

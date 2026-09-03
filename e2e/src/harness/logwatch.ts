@@ -23,6 +23,7 @@
 import {
   addingStreamToListPattern,
   catalogStateLostPattern,
+  datingReanchoredPattern,
   finalizeResumedPattern,
   ladderFinalizedPattern,
   manifestUploadedPattern,
@@ -42,9 +43,9 @@ import {
 export interface UploaderEvents {
   uploadedSegments: number[];
   /**
-   * How many discontinuities were armed, by any of the four lines that say one was.
+   * How many discontinuities were armed, by any of the five lines that say one was.
    *
-   * A count rather than a list of indices, because only one of the four names a segment. The
+   * A count rather than a list of indices, because only one of the five names a segment. The
    * scenarios that care read this number, and the one that wants an index reads
    * `discontinuitySegments`.
    */
@@ -80,19 +81,24 @@ export interface UploaderEvents {
  * it is preserved deliberately: changing a count in the same step as moving a message leaves neither
  * provable, and `test/logwatch.test.ts` pins both halves.
  *
+ * The fifth is `ManifestManager`, which arms one on the segment where the engine's own counter
+ * restarted. It does not go through `pendingDiscontinuity` at all, because the shipped SRS webhook
+ * path declares no break of its own and the reset is the only evidence there is.
+ *
  * ⛔ Not written out here. Each pattern is derived from the composer the producer logs with, so a
  * reworded message cannot leave this matching nothing. Six suites assert this count is zero on a
  * clean run and a blind reader passes every one of them, for ever, on a stage arming discontinuities
  * all night. Anchoring on the upload failure alone once matched one of the four for exactly that
  * reason, and the `markDiscontinuity` miss is the dangerous shape: the segment carrying an
  * origin-declared marker IS accepted and uploaded, so it leaves no hole and `isContiguous` is no
- * backstop either.
+ * backstop either. The re-anchoring has that same shape.
  */
 const discontinuityPatterns = (): RegExp[] => [
   segmentUploadFailedPattern('g'),
   segmentsNeverArrivedPattern('g'),
   originDeclaredDiscontinuityPattern('g'),
   omeSegmentLossReportedPattern('g'),
+  datingReanchoredPattern('g'),
 ];
 
 /**

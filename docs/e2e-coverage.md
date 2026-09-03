@@ -104,14 +104,18 @@ publishes and an idle stage would look identical to a stale one. One `docker exe
 refusal names redeploying as the fix and rewording the patterns as the wrong one, because the wrong
 one is tempting and buys a green run against code nobody is shipping.
 
-Since 2026-09-01 it lists every family the harness parses, fifteen in all: the four originals, the
-finalize flips and session ends seven scenarios wait on, the four lines that arm a discontinuity
+Since 2026-09-01 it lists every family the harness parses, sixteen in all: the four originals, the
+finalize flips and session ends seven scenarios wait on, the five lines that arm a discontinuity
 (six suites assert that count is zero, and a line nothing matches passes them vacuously green), the
 catalog-lost discriminator, the catalog announce, and the finalize that resumes rather than
-republishes after a crash. That last one is the newest, added with `f2e7305`, and it reports whether
-scenario H's kill landed inside the window it aims at. A deployment that cannot write it still passes
-the scenario, and passes it without anyone being able to say the window was ever exercised. Two of
-the fifteen refuse any uploader built
+republishes after a crash. The finalize one reports whether scenario H's kill landed inside the window
+it aims at, and a deployment that cannot write it still passes the scenario, and passes it without
+anyone being able to say the window was ever exercised.
+
+The newest is the fifth arming line, added on 2026-09-03 with the re-anchored dating: the segment
+where the engine's own counter restarted now carries a break, and that path goes nowhere near
+`pendingDiscontinuity`, so nothing else in the suite can see it. Two of
+the sixteen refuse any uploader built
 before the messages moved into the shared contract even though no wording changed, one string used
 to be assembled across a `+` join and one lived in a file the gate does not read, so the first run
 after this checkout lands asks for exactly one redeploy.

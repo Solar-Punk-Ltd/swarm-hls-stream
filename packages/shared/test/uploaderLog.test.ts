@@ -6,6 +6,8 @@ import {
   addingStreamToListPattern,
   catalogStateLost,
   catalogStateLostPattern,
+  datingReanchored,
+  datingReanchoredPattern,
   finalizeResumed,
   finalizeResumedPattern,
   ladderFinalized,
@@ -279,12 +281,12 @@ describe('the catalog announce message', () => {
 
 /**
  * ⛔ The property every zero-arm assertion in the e2e suite rests on. `parseUploaderLog` sums matches
- * across these four patterns, and that sum is the number of discontinuities armed only while each
+ * across these five patterns, and that sum is the number of discontinuities armed only while each
  * message matches exactly one of them. Asserted message by message rather than left to the reader: a
  * pattern that grew into a sibling's line would double a count six suites assert is zero, and a
  * count that is never zero fails nothing, it just stops meaning anything.
  */
-describe('the four messages that mean a discontinuity was armed', () => {
+describe('the five messages that mean a discontinuity was armed', () => {
   const STREAM = 'live/stream_720p';
   const ARMING: readonly (readonly [string, string])[] = [
     ['a spent retry window', segmentUploadFailed(STREAM, 41)],
@@ -292,6 +294,10 @@ describe('the four messages that mean a discontinuity was armed', () => {
     ['several segments that never arrived', segmentsNeverArrived('3 segments from index 42', STREAM)],
     ['the origin declaring one', originDeclaredDiscontinuity(STREAM)],
     ['the OME puller reporting a loss', omeSegmentLossReported('Segments 5 to 7', STREAM, '3 download failures')],
+    [
+      "the engine's own counter restarting",
+      datingReanchored(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
+    ],
   ];
 
   const armingPatterns = (): RegExp[] => [
@@ -299,13 +305,14 @@ describe('the four messages that mean a discontinuity was armed', () => {
     segmentsNeverArrivedPattern('g'),
     originDeclaredDiscontinuityPattern('g'),
     omeSegmentLossReportedPattern('g'),
+    datingReanchoredPattern('g'),
   ];
 
   for (const [name, message] of ARMING) {
-    it(`counts ${name} exactly once across the four patterns`, () => {
+    it(`counts ${name} exactly once across the five patterns`, () => {
       const hits = armingPatterns().reduce((total, re) => total + [...message.matchAll(re)].length, 0);
 
-      assert.equal(hits, 1, `"${message}" matched ${hits} of the four patterns, so the armed count is not a count`);
+      assert.equal(hits, 1, `"${message}" matched ${hits} of the five patterns, so the armed count is not a count`);
     });
   }
 
@@ -325,14 +332,29 @@ describe('the four messages that mean a discontinuity was armed', () => {
     assert.equal(found[2], STREAM);
   });
 
-  it('reads no index off the three that name none, so a caller cannot invent one', () => {
+  it('reads no index off the four that name no segment, so a caller cannot invent one', () => {
     for (const message of [
       segmentsNeverArrived('Segment 42', STREAM),
       originDeclaredDiscontinuity(STREAM),
       omeSegmentLossReported('Segment 5', STREAM, 'the origin rolled it out of its playlist window'),
+      // A playlist sequence rather than a segment index, and the two are different numbers on
+      // purpose. A caller reading this as an index would name the engine's counter, which is what
+      // the sequence exists to replace.
+      datingReanchored(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
     ]) {
       assert.equal(segmentUploadFailedPattern().test(message), false, message);
     }
+  });
+
+  it('round-trips the sequence and the two instants off the re-anchoring message', () => {
+    const found = datingReanchoredPattern().exec(
+      datingReanchored(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
+    );
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[1], '42');
+    assert.equal(found[2], '2026-09-03T12:00:00.000Z');
+    assert.equal(found[3], '2026-09-03T12:09:41.317Z');
   });
 
   it('round-trips the stream off the origin-declared message', () => {

@@ -157,9 +157,11 @@ describe('every path that arms a discontinuity is counted', () => {
   /**
    * `StreamUploader` arms `pendingDiscontinuity` from three call sites and only one of them says
    * "Failed to upload segment". Anchoring on that one matched a third of them, and both misses are
-   * reachable only through the OME puller — an engine this harness supports as a first-class
+   * reachable only through the OME puller, an engine this harness supports as a first-class
    * target. Six suites assert `discontinuitiesArmed === 0` in the general wording "must not arm a
    * discontinuity", so on OME each of them was asserting something it could not observe.
+   *
+   * The fifth path does not go through `pendingDiscontinuity` at all. See the case for it below.
    */
   for (const [name, line] of [
     ['the upload retry window being spent', DISCONTINUITY(2)],
@@ -217,6 +219,35 @@ describe('every path that arms a discontinuity is counted', () => {
 
     assert.equal(events.discontinuitiesArmed, 2, 'the count that six suites assert is zero must not have moved');
     assert.deepEqual(events.discontinuitySegments, [], 'and neither line names an index');
+  });
+
+  /**
+   * ⛔ The fifth line, added on 2026-09-03 with the re-anchored dating, and the same dangerous shape
+   * as the origin-declared one. `ManifestManager` arms this break itself, nowhere near
+   * `pendingDiscontinuity`, because the shipped SRS webhook declares none of its own and the
+   * engine's counter restarting is the only evidence there is. The segment carrying it IS accepted
+   * and uploaded, so the run stays gapless and nothing else in the suite can see it.
+   */
+  const REANCHORED = (sequence: number) =>
+    `The engine's counter restarted at playlist sequence ${sequence}, so the dating re-anchors from ` +
+    '2026-09-03T12:00:00.000Z to 2026-09-03T12:09:41.317Z, marking a discontinuity';
+
+  it('counts the engine’s own counter restarting', () => {
+    assert.equal(parseUploaderLog(textLine('info', REANCHORED(42))).discontinuitiesArmed, 1);
+  });
+
+  it('sees a re-anchoring that leaves the segment run gapless', () => {
+    const log = [textLine('log', UPLOADED(0)), textLine('info', REANCHORED(1)), textLine('log', UPLOADED(1))].join(
+      '\n',
+    );
+    const events = parseUploaderLog(log);
+
+    assert.equal(events.discontinuitiesArmed, 1, 'a re-anchored dating must be counted');
+    assert.equal(isContiguous(events.uploadedSegments), true, 'and it leaves no gap, which is why the count is needed');
+  });
+
+  it('reads no segment index off the re-anchoring, whose number is a playlist sequence', () => {
+    assert.deepEqual(parseUploaderLog(textLine('info', REANCHORED(42))).discontinuitySegments, []);
   });
 
   /** The puller's other two words for the same loss, both of which recorded nothing and armed nothing. */

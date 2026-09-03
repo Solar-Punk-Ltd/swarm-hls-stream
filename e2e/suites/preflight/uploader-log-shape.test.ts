@@ -1,6 +1,7 @@
 import {
   addingStreamToList,
   catalogStateLost,
+  datingReanchored,
   finalizeResumed,
   ladderFinalized,
   manifestUploaded,
@@ -129,10 +130,10 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     'the same wait, for a rung whose drain lost the race to its own reconnect, which is the half of ' +
       'that scenario nothing else can observe',
   ),
-  // ⛔ The four below are one counter, `discontinuitiesArmed`. Six suites assert it is zero on a
+  // ⛔ The five below are one counter, `discontinuitiesArmed`. Six suites assert it is zero on a
   // clean run, so a line nothing matches does not fail them, it passes them for ever on a stage
   // arming discontinuities all night. A vacuous green is the worst thing this gate can be asked to
-  // prevent, which is why each of the four is listed rather than the family.
+  // prevent, which is why each of the five is listed rather than the family.
   deployedMessage(
     'discontinuities armed by a spent retry window',
     (stream, index) => segmentUploadFailed(stream, index),
@@ -157,6 +158,13 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     (stream) => omeSegmentLossReported(stream, stream, stream),
     "the same seven assertions on an OME deployment, where this line is written beside the uploader's " +
       'own and both have always counted, so losing it changes a count as well as blinding a check',
+  ),
+  deployedMessage(
+    'discontinuities the engine’s own counter restarting armed',
+    (text, index) => datingReanchored(index, text, text),
+    'the same seven assertions, for the path that goes nowhere near `pendingDiscontinuity`: the ' +
+      'shipped SRS webhook declares no break of its own, so the reset is the only evidence there ' +
+      'is and the segment run stays gapless, which leaves nothing else in the suite able to see it',
   ),
   deployedMessage(
     'the catalog giving up on its own previous state',
