@@ -4,7 +4,11 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { announcedSessionTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
-import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
+import {
+  checkPublishedTimeline,
+  fragmentSecondsFor,
+  publishingRungFeedsOf,
+} from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
@@ -23,11 +27,14 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * recoverStreams restores the stream + a 60s timer; SRS keeps POSTing segments (it was not
  * restarted, so seq_no keeps climbing) → handleSegment accepts them and cancels the timer.
  *
- * ⭐ The playlist the recovered session keeps writing is read at the end and held to the manifest
- * contract. It is the same playlist a viewer is already reading, so its numbering has to survive the
- * crash: a media sequence that moved backwards is what hls.js reports as a parsing error, and the
- * client answers that by remounting the player at the start of the broadcast. See
- * `src/harness/manifestContractLive.ts`.
+ * ⭐ **The join the crash leaves is what this scenario is really about.** SRS posts each closed
+ * segment to the webhook once and never retries, so the segments it closed while the uploader was
+ * dead are gone and nothing reports them. The uploader infers that gap from the index it is handed
+ * being above the last it accounted for, arms an `#EXT-X-DISCONTINUITY` for it, and re-anchors the
+ * dating across it. So the playlist a viewer is already reading has to hold two things at once: a
+ * media sequence that never moved backwards, and a break in front of the join, because a forward
+ * date step wider than one fragment is legal only across one. Both are read here while the join is
+ * still in the live window, which is what the wait below is for.
  */
 
 const RECOVERY_TIMEOUT_MS = 60_000; // mirrors the uploader RECOVERY_TIMEOUT default
@@ -35,6 +42,15 @@ const WARMUP_SEGMENTS = 4;
 const WARMUP_WAIT_MS = 120_000;
 const REBOOT_WAIT_MS = 60_000;
 const RESUME_WAIT_MS = 120_000;
+/** How long the uploader is given to report the gap the crash left, once segments are flowing again. */
+const GAP_ARMED_WAIT_MS = 60_000;
+/**
+ * How long the join is given to appear in a published playlist.
+ *
+ * A feed read costs no BZZ, so this is generous: the arming is in the log by the time it starts, and
+ * what is being waited on is one more manifest publish reaching the gateway.
+ */
+const JOIN_VISIBLE_WAIT_MS = 90_000;
 const POST_TIMEOUT_MARGIN_MS = 20_000;
 // The recovered stream is live on the uploader immediately, but that state reaches the
 // gateway-served catalog on the deferred single-node push path — allow minutes for it to surface.
@@ -59,6 +75,45 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
   };
   const uploaded = async (): Promise<number[]> =>
     parseUploaderLog(await host.logsSince(uploader, startedAt)).uploadedSegments;
+  /** Gaps the uploader worked out from the numbering, which on the SRS path is the only kind there is. */
+  const gapsInferred = async (): Promise<number> =>
+    parseUploaderLog(await host.logsSince(uploader, startedAt)).inferredSegmentGaps;
+  const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
+  const readTimeline = async () =>
+    checkPublishedTimeline(host, cfg, {
+      owner: feed.owner,
+      rungs: publishingRungFeedsOf(await log()),
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: log,
+    });
+
+  /**
+   * The timeline read once the join is visible in it, so the verdict is about a window that contains
+   * the break rather than about whatever the window happened to hold.
+   *
+   * ⚠️ A run that pinned no segment length checks no timeline at all and can see no break, so
+   * waiting for one would spend the whole window for nothing. Such a run returns the unchecked
+   * verdict, which is what every other wired suite prints on one.
+   */
+  const waitForJoinedTimeline = async () => {
+    let latest = await readTimeline();
+    if (fragmentSecondsFor(cfg.segmentExpectation) === null || latest.discontinuitiesSeen >= 1) {
+      return latest;
+    }
+
+    await waitFor(
+      async () => {
+        latest = await readTimeline();
+        return latest.discontinuitiesSeen >= 1;
+      },
+      {
+        timeoutMs: JOIN_VISIBLE_WAIT_MS,
+        intervalMs: 5_000,
+        label: 'the break the crash left is inside a published live window',
+      },
+    );
+    return latest;
+  };
 
   before(async () => {
     await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
@@ -116,6 +171,27 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
       { timeoutMs: RESUME_WAIT_MS, intervalMs: 3_000, label: 'segments resume after recovery' },
     );
 
+    // ⛔ The gap the crash left, read as soon as segments are flowing again rather than at the end.
+    // Nothing reported those segments, so this family is the only evidence they were accounted for:
+    // the whole armed count would be satisfied by a spent retry window on a stage that armed nothing
+    // for the crash. A red here says the join reached the playlist as a silent hole.
+    await waitFor(async () => (await gapsInferred()) >= 1, {
+      timeoutMs: GAP_ARMED_WAIT_MS,
+      intervalMs: 3_000,
+      label: 'the uploader reports the segments the engine never posted while it was dead',
+    });
+    console.log(`  ${await gapsInferred()} rung(s) reported a gap the engine never posted`);
+
+    // ⛔ Then the playlist, and only once the join is IN it. The break is what makes the date step
+    // across the join legal, so a read taken before the post-crash segments reached the window would
+    // be judging a timeline that does not contain the thing under test. This used to be read once at
+    // the very end, after the recovery-timeout sleep and the catalog wait, by which time the join had
+    // long slid out of the roughly 31 segment window and F said nothing about it at all.
+    const joined = await waitForJoinedTimeline();
+
+    console.log(joined.summary);
+    assert.equal(joined.refusal, null, joined.refusal ?? '');
+
     // Wait past the recovery timeout, then assert on the AUTHORITATIVE, lag-free signal: the uploader
     // must still track the stream as active. If the timer had VOD-ed it, stopStream would have removed
     // it from activeStreams. (The gateway catalog cannot gate this — being eventually-consistent, a
@@ -135,31 +211,19 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
       label: 'the recovered stream surfaces as live in the gateway catalog',
     });
 
-    // ⛔ A recovered session keeps publishing into the SAME playlist a viewer is already reading, so
-    // its timeline has to survive the crash: `restoreState` takes the sequences back off disk rather
-    // than recomputing them, and `sequenceFor` treats an index below the anchor from there as the
-    // engine's counter restarting and continues FORWARDS. A playlist whose numbering moved backwards
-    // is what hls.js reports as a parsing error, and the client answers that by remounting the player
-    // at the beginning of the broadcast. Nothing until now read the playlist to find out.
+    // ⛔ The same playlist read again at the end, now that the window has slid past the join. A
+    // recovered session keeps publishing into the playlist a viewer is already reading, so its
+    // numbering has to keep holding afterwards too: `restoreState` takes the sequences back off disk
+    // rather than recomputing them, and an index below the anchor from there is the engine's counter
+    // restarting, which continues FORWARDS. A media sequence that moved backwards is what hls.js
+    // reports as a parsing error, and the client answers that by remounting the player at the start
+    // of the broadcast.
     //
-    // ⚠️ **What a red here may be saying, and it is not a flake.** SRS posts each closed segment once
-    // and never retries, so the segments it closed while the uploader was dead are lost, and nothing
-    // on the SRS path arms a discontinuity for them: `handleSegment` does not look at the index it is
-    // handed, `pendingDiscontinuity` comes back off disk as whatever it was before the kill, and
-    // `handleSegmentLoss` is the OME puller's. So the join can be a gap of several fragments with no
-    // `#EXT-X-DISCONTINUITY` in front of it, which is a playlist promising a viewer media it does not
-    // name. It reaches this assertion only while the join is still inside the live window, which is
-    // about 31 segments here, and this read comes after the recovery timeout plus the gateway
-    // catalog's own lag, so ordinarily the join has long slid out. If it does go red on that, read the
-    // reason: it names the segment and the width of the gap, and it is a statement about the product
-    // rather than about this file.
-    const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-    const verdict = await checkPublishedTimeline(host, cfg, {
-      owner: feed.owner,
-      rungs: publishingRungFeedsOf(await log()),
-      expectation: cfg.segmentExpectation,
-      logAfterTheRead: log,
-    });
+    // ⚠️ **What a red here is saying.** The join itself was judged above, while it was still in the
+    // window. A red here is about the segments published since, so read the reason: it names the
+    // segment and the date it objected to, and it is a statement about the product rather than about
+    // this file.
+    const verdict = await readTimeline();
 
     console.log(verdict.summary);
     assert.equal(verdict.refusal, null, verdict.refusal ?? '');

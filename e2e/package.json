@@ -17,6 +17,8 @@
     "//test:e2e:vod": "The same shape for V4: the gates, then the recorded-playback suite alone. One short broadcast to prove a fix to the suite without buying every other suite's broadcast.",
     "test:e2e:vod": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/viewer/vod-playback.test.ts'",
     "test:e2e:finalize-crash": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/scenarios/finalize-crash.test.ts'",
+    "//test:e2e:crash-recovery": "The same shape for F: the gates, then the hard-crash suite alone. One paid broadcast to read the join the crash leaves, rather than every other suite's broadcast too. Same && for the same reason, see spend-ceiling.test.ts.",
+    "test:e2e:crash-recovery": "TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/preflight/*.test.ts' && TSX_DISABLE_CACHE=1 tsx --test --test-concurrency=1 'suites/scenarios/uploader-crash-recovery.test.ts'",
     "test:e2e:smoke": "TSX_DISABLE_CACHE=1 tsx --test 'suites/smoke/*.test.ts'",
     "bench:latency": "tsx bench/latency.ts",
     "bench:longrun": "tsx bench/longrun.ts",
