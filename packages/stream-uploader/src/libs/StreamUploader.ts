@@ -1,6 +1,7 @@
 import { Bee, BeeResponseError, PrivateKey, Topic } from '@ethersphere/bee-js';
 import {
   addingStreamToList,
+  engineSkippedSegments,
   finalizeResumed,
   manifestUploaded,
   originDeclaredDiscontinuity,
@@ -346,6 +347,23 @@ export class StreamUploader {
   public handleSegmentLoss(firstIndex: number, count: number): void {
     const subject = count === 1 ? `Segment ${firstIndex}` : `${count} segments from index ${firstIndex}`;
     this.queueDiscontinuity(() => this.logger.error(segmentsNeverArrived(subject, this.streamId)));
+  }
+
+  /**
+   * A gap nobody reported, which the orchestrator found between the index it last accounted for and
+   * the one it has just taken. Everything {@link handleSegmentLoss} does, announced as its own family.
+   *
+   * ⛔ **The two must not share a line.** A reported loss is the engine saying it could not fetch
+   * something, which only the OME puller ever says. This is the SRS path, where a segment closed
+   * while this process was dead is never posted again and the following index is the only evidence
+   * there is. Scenario F waits on this family by itself to prove the gap after a crash was armed, and
+   * a wait on the reported-loss wording would be satisfied by an OME broadcast losing a segment.
+   *
+   * @param fromIndex the last index accounted for, whose own segment is already queued or published
+   * @param toIndex the index that has just arrived, which the marker attaches to
+   */
+  public handleInferredSegmentLoss(fromIndex: number, toIndex: number, count: number): void {
+    this.queueDiscontinuity(() => this.logger.error(engineSkippedSegments(fromIndex, toIndex, this.streamId, count)));
   }
 
   /**

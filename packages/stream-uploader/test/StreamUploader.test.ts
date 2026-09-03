@@ -1,4 +1,5 @@
 import { Bee } from '@ethersphere/bee-js';
+import { engineSkippedSegments } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -38,17 +39,25 @@ function failOnly(nth: number, error: () => Error): () => Error | null {
   return () => (++calls === nth ? error() : null);
 }
 
-/** Run against the shared logger with a captured sink, restoring whatever was configured before. */
-async function withCapturedLog(run: (lines: string[]) => Promise<void>): Promise<void> {
+/**
+ * Run against the shared logger with a captured sink, restoring whatever was configured before.
+ *
+ * The levels are handed over beside the lines because the level is not reliably in the line: under
+ * `LOG_FORMAT=json` the line is an envelope, so a test reading `[ERROR]` out of the text would pass
+ * or fail on how the machine running it is configured.
+ */
+async function withCapturedLog(run: (lines: string[], levels: string[]) => Promise<void>): Promise<void> {
   const lines: string[] = [];
+  const levels: string[] = [];
   const logger = Logger.getInstance();
   const previous = logger.configure({
-    sink: (_level, line) => {
+    sink: (level, line) => {
       lines.push(line);
+      levels.push(level);
     },
   });
   try {
-    await run(lines);
+    await run(lines, levels);
   } finally {
     logger.configure(previous);
   }
@@ -194,6 +203,55 @@ describe('StreamUploader discontinuity lifecycle', () => {
 
     assert.equal(byIndex.get(41)?.discontinuity, true, 'the segment that closes the gap carries the marker');
     assert.equal(byIndex.get(42)?.discontinuity, false, 'and the one after it does not');
+  });
+
+  /**
+   * The gap nobody reported. On the SRS path a segment closed while this process was dead is never
+   * posted again, so the only evidence is the index that follows it, and the orchestrator hands the
+   * gap here. Queued the same way a reported loss is, so it lands in front of the arriving segment's
+   * own upload rather than on whatever was already waiting.
+   */
+  it('flags the segment that closes a gap the orchestrator inferred', async () => {
+    const uploader = newUploader();
+
+    uploader.handleSegment(4, 2, Buffer.from('seg4'));
+    uploader.handleInferredSegmentLoss(4, 9, 4);
+    uploader.handleSegment(9, 2, Buffer.from('seg9'));
+    uploader.handleSegment(10, 2, Buffer.from('seg10'));
+    await drain(uploader);
+
+    const byIndex = new Map(uploader.getStreamState().segments.map((s) => [s.index, s]));
+
+    assert.equal(byIndex.get(4)?.discontinuity, false, 'the segment in front of the gap is not flagged retroactively');
+    assert.equal(byIndex.get(9)?.discontinuity, true, 'the segment that closes the gap carries the marker');
+    assert.equal(byIndex.get(10)?.discontinuity, false, 'and the one after it does not');
+    assert.equal(
+      uploader.getConsecutiveSegmentFailures(),
+      0,
+      'an inferred loss attempted no upload, so it must not move the upload-failure counter',
+    );
+  });
+
+  /**
+   * ⛔ The wording is the assertion. `logwatch` counts this family on its own and scenario F waits
+   * for it, so a line reworded here and not read there passes that wait vacuously for ever.
+   */
+  it('announces an inferred loss in the words the harness reads it by', async () => {
+    await withCapturedLog(async (lines, levels) => {
+      const uploader = newUploader();
+
+      uploader.handleInferredSegmentLoss(4, 9, 4);
+      await drain(uploader);
+
+      const announce = lines.findIndex((line) => line.includes(engineSkippedSegments(4, 9, 'stream-test', 4)));
+
+      assert.notEqual(announce, -1, `the announce is not the composed message. Lines were:\n${lines.join('\n')}`);
+      assert.equal(
+        levels[announce],
+        'error',
+        'an inferred loss is media that is gone, so it is an error rather than an ordinary note',
+      );
+    });
   });
 
   it('restores pendingDiscontinuity across a restart so the next segment is flagged', async () => {
