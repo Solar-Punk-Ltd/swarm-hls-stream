@@ -8,6 +8,8 @@ import {
   catalogStateLostPattern,
   datingReanchored,
   datingReanchoredPattern,
+  engineSkippedSegments,
+  engineSkippedSegmentsPattern,
   finalizeResumed,
   finalizeResumedPattern,
   ladderFinalized,
@@ -281,12 +283,12 @@ describe('the catalog announce message', () => {
 
 /**
  * ⛔ The property every zero-arm assertion in the e2e suite rests on. `parseUploaderLog` sums matches
- * across these five patterns, and that sum is the number of discontinuities armed only while each
+ * across these six patterns, and that sum is the number of discontinuities armed only while each
  * message matches exactly one of them. Asserted message by message rather than left to the reader: a
  * pattern that grew into a sibling's line would double a count six suites assert is zero, and a
  * count that is never zero fails nothing, it just stops meaning anything.
  */
-describe('the five messages that mean a discontinuity was armed', () => {
+describe('the six messages that mean a discontinuity was armed', () => {
   const STREAM = 'live/stream_720p';
   const ARMING: readonly (readonly [string, string])[] = [
     ['a spent retry window', segmentUploadFailed(STREAM, 41)],
@@ -298,6 +300,7 @@ describe('the five messages that mean a discontinuity was armed', () => {
       "the engine's own counter restarting",
       datingReanchored(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
     ],
+    ['an index skip the uploader inferred a loss from', engineSkippedSegments(4, 9, STREAM, 4)],
   ];
 
   const armingPatterns = (): RegExp[] => [
@@ -306,13 +309,14 @@ describe('the five messages that mean a discontinuity was armed', () => {
     originDeclaredDiscontinuityPattern('g'),
     omeSegmentLossReportedPattern('g'),
     datingReanchoredPattern('g'),
+    engineSkippedSegmentsPattern('g'),
   ];
 
   for (const [name, message] of ARMING) {
-    it(`counts ${name} exactly once across the five patterns`, () => {
+    it(`counts ${name} exactly once across the six patterns`, () => {
       const hits = armingPatterns().reduce((total, re) => total + [...message.matchAll(re)].length, 0);
 
-      assert.equal(hits, 1, `"${message}" matched ${hits} of the five patterns, so the armed count is not a count`);
+      assert.equal(hits, 1, `"${message}" matched ${hits} of the six patterns, so the armed count is not a count`);
     });
   }
 
@@ -332,7 +336,7 @@ describe('the five messages that mean a discontinuity was armed', () => {
     assert.equal(found[2], STREAM);
   });
 
-  it('reads no index off the four that name no segment, so a caller cannot invent one', () => {
+  it('reads no failed-upload index off the five other messages, so a caller cannot invent one', () => {
     for (const message of [
       segmentsNeverArrived('Segment 42', STREAM),
       originDeclaredDiscontinuity(STREAM),
@@ -341,9 +345,39 @@ describe('the five messages that mean a discontinuity was armed', () => {
       // purpose. A caller reading this as an index would name the engine's counter, which is what
       // the sequence exists to replace.
       datingReanchored(42, '2026-09-03T12:00:00.000Z', '2026-09-03T12:09:41.317Z'),
+      // Two indexes and a count, none of them a segment whose upload was attempted. A reader taking
+      // one of these for the failed-upload index would name a segment that reached Swarm.
+      engineSkippedSegments(4, 9, STREAM, 4),
     ]) {
       assert.equal(segmentUploadFailedPattern().test(message), false, message);
     }
+  });
+
+  it('round-trips both indexes, the stream and the count off the inferred skip', () => {
+    const found = engineSkippedSegmentsPattern().exec(engineSkippedSegments(4, 9, STREAM, 4));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[1], '4');
+    assert.equal(found[2], '9');
+    assert.equal(found[3], STREAM);
+    assert.equal(found[4], '4');
+  });
+
+  /**
+   * The pair that must never be confused. One means the engine reported a loss and the other means
+   * nobody did, scenario F asserts on the second by itself, and both end in the same four words.
+   */
+  it('keeps the inferred skip and the reported loss out of each other’s pattern', () => {
+    assert.equal(
+      segmentsNeverArrivedPattern().test(engineSkippedSegments(4, 9, STREAM, 4)),
+      false,
+      'the reported-loss pattern read a skip nobody reported',
+    );
+    assert.equal(
+      engineSkippedSegmentsPattern().test(segmentsNeverArrived('4 segments from index 5', STREAM)),
+      false,
+      'the inferred-skip pattern read a loss the engine did report',
+    );
   });
 
   it('round-trips the sequence and the two instants off the re-anchoring message', () => {

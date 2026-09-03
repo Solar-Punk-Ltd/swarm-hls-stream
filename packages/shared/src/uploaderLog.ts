@@ -215,11 +215,11 @@ const SUBJECT_SLOT = 'SUBJECTSLOT';
 const CAUSE_SLOT = 'CAUSESLOT';
 
 /**
- * ## The five lines below all mean one thing: a discontinuity was armed
+ * ## The six lines below all mean one thing: a discontinuity was armed
  *
  * A discontinuity tells a player the media after it is not a continuation of the media before it, so
- * it skips the join instead of stalling on a hole it was told was seamless. Five separate messages
- * report one being armed, and the harness counts all five as one number.
+ * it skips the join instead of stalling on a hole it was told was seamless. Six separate messages
+ * report one being armed, and the harness counts all six as one number.
  *
  * ⛔⛔ **The reason the wording is a contract.** Six suites assert that a clean broadcast armed
  * NONE. A message reworded here and not deployed, or deployed and not read, does not fail those
@@ -232,8 +232,9 @@ const CAUSE_SLOT = 'CAUSESLOT';
  * Written when a segment's whole retry window is spent with nothing landing, so the segment is
  * dropped and the next one to land carries the break.
  *
- * The only one of the four that names a segment, which is why it is also the only one an index can
- * be read off. The bee-outage scenario asserts on that index.
+ * The only one of the six an index can be read off, which is why the bee-outage scenario asserts on
+ * that index. {@link engineSkippedSegments} names two segments and neither of them is this one: it
+ * names the edges of a gap rather than a segment anything was attempted for.
  */
 export function segmentUploadFailed(streamId: string, index: number): string {
   return `Failed to upload segment ${index} for stream ${streamId} within the retry window; marking a discontinuity`;
@@ -350,6 +351,53 @@ export function datingReanchoredPattern(flags = ''): RegExp {
   const escaped = datingReanchored(INDEX_SLOT, SUBJECT_SLOT, CAUSE_SLOT).replace(REGEX_SPECIAL, '\\$&');
   return new RegExp(
     escaped.replace(String(INDEX_SLOT), '(\\d+)').replace(SUBJECT_SLOT, '(\\S+)').replace(CAUSE_SLOT, '(\\S+)'),
+    flags,
+  );
+}
+
+/** Two further numeric stand-ins, distinct from {@link INDEX_SLOT} so a message carrying three substitutes each. */
+const TO_INDEX_SLOT = 717171717171;
+const COUNT_SLOT = 626262626262;
+
+/**
+ * Segments the engine never posted at all, found by the uploader in the gap between the index it last
+ * accounted for and the one it has just been handed. One gap is one line, however wide it is.
+ *
+ * ⛔ **Not {@link segmentsNeverArrived}, and the difference is who knew.** That line means the engine
+ * reported a loss, which is the only kind the OME puller produces. This one means nobody reported
+ * anything and the uploader read it off the numbering, which is the only kind the SRS webhook
+ * produces: SRS posts each closed segment once and never retries, so everything it closed while this
+ * process was dead is simply absent. Until this line existed the playlist carried that gap with no
+ * break in front of it, which is a playlist promising a viewer media it does not name, and hls.js
+ * stalls on one. Scenario F asserts on this family by itself, so the two wordings must stay apart.
+ *
+ * @param fromIndex the last index this stream accounted for, which was delivered or reported lost
+ * @param toIndex the index that has just arrived, which is delivered and so is not part of the gap
+ * @param count how many indexes between the two were never seen
+ */
+export function engineSkippedSegments(fromIndex: number, toIndex: number, streamId: string, count: number): string {
+  return `The engine skipped from segment ${fromIndex} to segment ${toIndex} for stream ${streamId}, ${count} never posted, marking a discontinuity`;
+}
+
+/**
+ * {@link engineSkippedSegments} as a matcher, the two indexes, the stream and the count as capture
+ * groups 1 to 4, in the order the message names them and so in the composer's own argument order.
+ *
+ * ⚠️ Counted rather than captured today. The indexes are readable off it, and nothing reads them:
+ * scenario F asserts that this family fired at all, and the width of the gap is the engine's to
+ * choose rather than anything a suite can predict.
+ */
+export function engineSkippedSegmentsPattern(flags = ''): RegExp {
+  const escaped = engineSkippedSegments(INDEX_SLOT, TO_INDEX_SLOT, STREAM_SLOT, COUNT_SLOT).replace(
+    REGEX_SPECIAL,
+    '\\$&',
+  );
+  return new RegExp(
+    escaped
+      .replace(String(INDEX_SLOT), '(\\d+)')
+      .replace(String(TO_INDEX_SLOT), '(\\d+)')
+      .replace(STREAM_SLOT, '(\\S+)')
+      .replace(String(COUNT_SLOT), '(\\d+)'),
     flags,
   );
 }
