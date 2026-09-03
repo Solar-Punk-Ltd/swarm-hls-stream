@@ -74,7 +74,7 @@ export interface RungFeed {
 }
 
 /** Where every playlist one broadcast published can be read: one owner, one topic per rung. */
-export interface BroadcastPlaylists {
+interface BroadcastPlaylists {
   /**
    * The signer's address, as `discoverCatalogFeed` reads it off the `[StreamCatalog]` line. One for
    * the catalog, every master and every rung. See the header.
@@ -84,7 +84,7 @@ export interface BroadcastPlaylists {
 }
 
 /** What one rung's feed answered, before any rule is applied to it. */
-export interface RungPlaylistParse {
+interface RungPlaylistParse {
   rung: string | null;
   streamId: string | null;
   topic: string;
@@ -272,7 +272,7 @@ const NOTHING_READ = {
  * deployment host, and nothing here compares one rung's timeline against another's, so there is
  * nothing a simultaneous read would buy.
  */
-export async function readRungPlaylists(
+async function readRungPlaylists(
   host: Host,
   cfg: E2EConfig,
   broadcast: BroadcastPlaylists,
@@ -395,7 +395,7 @@ export function rungPlaylistRefusal(readings: readonly RungPlaylistReading[]): s
 }
 
 /** What a suite asks about the playlists its broadcast published. */
-export interface TimelineCheck {
+interface TimelineCheck {
   /** The signer's address, from `discoverCatalogFeed`. See {@link BroadcastPlaylists.owner}. */
   owner: string;
   /** Usually {@link publishingRungFeedsOf} over the suite's own log window. */
@@ -420,7 +420,7 @@ export interface TimelineCheck {
 }
 
 /** What a suite prints and asserts on. */
-export interface TimelineVerdict {
+interface TimelineVerdict {
   /**
    * One line per rung, or the sentence saying why nothing was checked.
    *

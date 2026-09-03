@@ -31,7 +31,7 @@ import {
 export const FIXTURE_FRAGMENT_SECONDS = 2;
 
 /** The instant the fixture broadcast was admitted, which every stamp below is derived from. */
-export const FIXTURE_ANCHOR_MS = Date.UTC(2026, 8, 3, 10, 0, 0);
+const FIXTURE_ANCHOR_MS = Date.UTC(2026, 8, 3, 10, 0, 0);
 
 const MS_PER_SECOND = 1000;
 
@@ -44,7 +44,7 @@ export function fixtureDateOf(sequence: number): string {
   return new Date(FIXTURE_ANCHOR_MS + sequence * FIXTURE_FRAGMENT_SECONDS * MS_PER_SECOND).toISOString();
 }
 
-export interface PlaylistOptions {
+interface PlaylistOptions {
   /** Defaults to the first sequence, which is what an unslid window declares. */
   mediaSequence?: number;
   /** Sequences that carry an `#EXT-X-DISCONTINUITY`. */
