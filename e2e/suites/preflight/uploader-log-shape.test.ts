@@ -2,6 +2,7 @@ import {
   addingStreamToList,
   catalogStateLost,
   datingReanchored,
+  engineSkippedSegments,
   finalizeResumed,
   ladderFinalized,
   manifestUploaded,
@@ -130,10 +131,10 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     'the same wait, for a rung whose drain lost the race to its own reconnect, which is the half of ' +
       'that scenario nothing else can observe',
   ),
-  // ⛔ The five below are one counter, `discontinuitiesArmed`. Six suites assert it is zero on a
+  // ⛔ The six below are one counter, `discontinuitiesArmed`. Six suites assert it is zero on a
   // clean run, so a line nothing matches does not fail them, it passes them for ever on a stage
   // arming discontinuities all night. A vacuous green is the worst thing this gate can be asked to
-  // prevent, which is why each of the five is listed rather than the family.
+  // prevent, which is why each of the six is listed rather than the family.
   deployedMessage(
     'discontinuities armed by a spent retry window',
     (stream, index) => segmentUploadFailed(stream, index),
@@ -165,6 +166,18 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
     'the same seven assertions, for the path that goes nowhere near `pendingDiscontinuity`: the ' +
       'shipped SRS webhook declares no break of its own, so the reset is the only evidence there ' +
       'is and the segment run stays gapless, which leaves nothing else in the suite able to see it',
+  ),
+  deployedMessage(
+    'discontinuities armed for a gap the uploader inferred from the numbering',
+    // ⚠️ Every substituted value takes the placeholder, the two indexes and the count included. A
+    // real-looking number instead bakes itself into the fixed half, and the gate then demands the
+    // deployment contain that number.
+    (stream, index) => engineSkippedSegments(index, index, stream, index),
+    "the same seven assertions, and scenario F's post-recovery wait, which is the only check in the " +
+      'suite that asks for this family by itself. It is the only kind of loss the shipped SRS path ' +
+      'produces: SRS posts each closed segment once and never retries, so a segment closed while ' +
+      'the uploader was dead is reported by nothing, the run either side of the join stays gapless, ' +
+      'and a deployment that cannot write this line leaves F asserting a gap it cannot see',
   ),
   deployedMessage(
     'the catalog giving up on its own previous state',
