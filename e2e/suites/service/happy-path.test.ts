@@ -9,14 +9,21 @@ import {
   parseUploaderLog,
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
+import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
+import { discoverCatalogFeed } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
  * Service — happy-path live publish with no faults. The full pipeline (SRS → uploader → bee) must
  * upload segments in a gapless run AND keep the manifest advancing in lockstep, arming no
  * discontinuity. This is the baseline the fault scenarios (A/B) deviate from.
+ *
+ * ⭐ It also reads the playlists the broadcast published and holds them to the manifest contract:
+ * `#EXT-X-MEDIA-SEQUENCE:0`, a wall clock on every segment, and steps of a whole fragment. Neither
+ * number is in the log, on purpose, so this is the only place the baseline can see them. See
+ * `src/harness/manifestContractLive.ts`.
  */
 
 const TARGET_SEGMENTS = 6;
@@ -137,5 +144,34 @@ describe('service — happy-path publish: gapless segments + advancing manifest'
           `each publish); SOC indices: ${indices.join(',')}`,
       );
     }
+  });
+
+  /**
+   * The two things the log deliberately cannot say, read off the playlists the broadcast published.
+   *
+   * The uploader's log names the ENGINE's segment index and the feed's SOC index, because those are
+   * what correlate with the engine's own logs and with a segment reference. The playlist publishes a
+   * media sequence counting from 0 at this broadcast's first segment and an `#EXT-X-PROGRAM-DATE-TIME`
+   * derived from one anchor the whole ladder shares, and neither reaches any log line. So the
+   * contract is unfalsifiable from the log by design, and this is the case that falsifies it.
+   *
+   * ⛔ Scoped to the rungs that uploaded, which is the same scope the case above judges. A rung that
+   * announced and has yet to publish has an empty feed, and refusing on that would be a red about a
+   * rung this file does not claim to judge.
+   */
+  it('publishes a playlist per rung that opens at sequence 0 and dates every segment', async () => {
+    const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
+    const { owner } = await discoverCatalogFeed(host, cfg);
+    const rungs = publishingRungFeedsOf(await log());
+
+    const verdict = await checkPublishedTimeline(host, cfg, {
+      owner,
+      rungs,
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: log,
+    });
+
+    console.log(verdict.summary);
+    assert.equal(verdict.refusal, null, verdict.refusal ?? '');
   });
 });

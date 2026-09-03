@@ -11,8 +11,10 @@ import {
   publishedRenditions,
   segmentUploads,
 } from '../../src/harness/logwatch.js';
+import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
+import { discoverCatalogFeed } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -25,12 +27,18 @@ import { waitFor } from '../../src/harness/wait.js';
  *
  * ## What this can see, and what it cannot
  *
- * The uploader's own log is the assertion source, as it is for every upload-side suite here. That
- * makes the observable facts "which rungs published" and "did their segments stay gapless". The
- * master playlist is written to a feed rather than logged, so **this suite does not assert that the
- * master is correct** — `packages/shared/test/masterPlaylist.test.ts` owns the master's text and
- * `packages/client/test/ladderSource.test.ts` owns reading it back. Saying so here rather than
- * implying broader coverage than there is.
+ * The uploader's own log is the assertion source for everything about the ladder's SHAPE, as it is
+ * for every upload-side suite here. That makes the observable facts "which rungs published" and "did
+ * their segments stay gapless". The master playlist is written to a feed rather than logged, so
+ * **this suite does not assert that the master is correct** — `packages/shared/test/masterPlaylist.test.ts`
+ * owns the master's text and `packages/client/test/ladderSource.test.ts` owns reading it back. Saying
+ * so here rather than implying broader coverage than there is.
+ *
+ * ⭐ The last case is the exception, and it reads the rung playlists themselves. Every rung of one
+ * ladder derives its media sequence and its `#EXT-X-PROGRAM-DATE-TIME` from a single anchor, so that
+ * segment N of 360p and segment N of 1080p cover the same interval and a level switch lands where the
+ * player expects. Nothing in the log can show that, because the log names each rung's own engine
+ * index. See `src/harness/manifestContractLive.ts`.
  *
  * ## Skipped rather than failed on a single-rendition deployment
  *
@@ -139,6 +147,32 @@ describe('service — ABR ladder: every rung publishes and stays gapless', { ski
       assert.ok(isContiguous(indices), `segment indices of ${streamId} must be gapless; got: ${indices.join(',')}`);
     }
     assert.equal(parseUploaderLog(text).discontinuitiesArmed, 0, 'transcoding a ladder should not arm a discontinuity');
+  });
+
+  /**
+   * Every rung's playlist declares a sound timeline of its own, which is what makes them one ladder.
+   *
+   * ⛔ Last in the file on purpose. The cases above have already waited for every rung to upload
+   * several segments, so by here each rung's feed holds a playlist rather than nothing, and a rung
+   * that is merely announced cannot make this red for a reason the suite is not about.
+   *
+   * ⛔ Nothing here is judged on the clock. Whether a live window still starts at the broadcast's
+   * first segment, and therefore whether `#EXT-X-MEDIA-SEQUENCE:0` is owed, is settled by comparing
+   * the playlist against what its rung has published rather than by how long the broadcast has run.
+   */
+  it('declares a sound timeline on every rung, with the sequence and the wall clock the log cannot show', async () => {
+    const { owner } = await discoverCatalogFeed(host, cfg);
+    const rungs = publishingRungFeedsOf(await log());
+
+    const verdict = await checkPublishedTimeline(host, cfg, {
+      owner,
+      rungs,
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: log,
+    });
+
+    console.log(verdict.summary);
+    assert.equal(verdict.refusal, null, verdict.refusal ?? '');
   });
 });
 

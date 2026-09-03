@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
-import { loadConfig } from '../../src/config.js';
+import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
+import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { type CatalogEntry, type CatalogFeed, discoverCatalogFeed, fetchCatalog } from '../../src/harness/viewer.js';
@@ -22,6 +23,12 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * Restarting the engine drops ffmpeg's SRT (no auto-reconnect) so the first publisher dies. When a
  * new broadcaster session connects, the engine re-announces the publish; the uploader finalizes the
  * stale session as a VOD and starts a fresh live stream — a new, distinct catalog entry via the gateway.
+ *
+ * ⭐ This is where the two numbers a segment carries come apart, so the resumed session's playlists
+ * are read and held to the manifest contract. SRS's own segment counter carries on across the
+ * restart, six recordings of this stage having opened at 210, 317, 416, 580, 707 and 850, while the
+ * resumed broadcast's playlist has to open at `#EXT-X-MEDIA-SEQUENCE:0`. No uploader log line carries
+ * the playlist's number, by design. See `src/harness/manifestContractLive.ts`.
  */
 
 const WARMUP_WAIT_MS = 90_000;
@@ -33,6 +40,7 @@ const cfg = loadConfig();
 describe('E — media-engine restart: broadcaster resumes', () => {
   const engine = getEngine(cfg);
   const host = makeHost(cfg);
+  const uploader = containerName(cfg, 'stream-uploader');
   const mediaContainer = engine.mediaContainer(cfg);
   let first: Publisher;
   let second: Publisher;
@@ -97,6 +105,11 @@ describe('E — media-engine restart: broadcaster resumes', () => {
       { timeoutMs: WARMUP_WAIT_MS, intervalMs: 3_000, label: 'first stream goes live before the engine restart' },
     );
 
+    // Stamped before the restart, so the log window below holds the RESUMED session alone. The
+    // retired session's announces and segments are all in front of this instant, and counting them
+    // as the resumed broadcast's would make every recovered playlist look like a window that had
+    // already slid. See `logAfterTheRead` in `manifestContractLive.ts`.
+    const restartedAt = await host.nowIso();
     await host.restart(mediaContainer);
     await first.stop();
     await sleep(engine.reconnectGraceMs); // let the engine accept SRT again before reconnecting
@@ -139,5 +152,21 @@ describe('E — media-engine restart: broadcaster resumes', () => {
       resumedTopic && resumedTopic !== firstTopic,
       'reconnecting after an engine restart must yield a new live stream, not a rejection',
     );
+
+    // ⭐ The resumed broadcast is a fresh session with a fresh anchor, so its FIRST playlist opens at
+    // `#EXT-X-MEDIA-SEQUENCE:0` while the engine's own counter carries on from wherever the restart
+    // left it. That is the whole point of the two numbers being separate, and the log cannot show it:
+    // every uploader line names the engine's index. Read here from the restart's own window, so the
+    // retired session's segments are not counted against the resumed session's playlist.
+    const resumedLog = async (): Promise<string> => host.logsSince(uploader, restartedAt);
+    const verdict = await checkPublishedTimeline(host, cfg, {
+      owner: feed.owner,
+      rungs: publishingRungFeedsOf(await resumedLog()),
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: resumedLog,
+    });
+
+    console.log(verdict.summary);
+    assert.equal(verdict.refusal, null, verdict.refusal ?? '');
   });
 });

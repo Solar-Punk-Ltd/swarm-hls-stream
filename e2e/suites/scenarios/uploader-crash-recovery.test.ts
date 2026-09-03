@@ -4,6 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, loadConfig } from '../../src/config.js';
 import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { announcedSessionTopics, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { type CatalogFeed, discoverCatalogFeed, entryCarriesTopic, fetchCatalog } from '../../src/harness/viewer.js';
@@ -21,6 +22,12 @@ import { sleep, waitFor } from '../../src/harness/wait.js';
  * (docker kill does not trip the restart policy in this environment, so we stand in for it);
  * recoverStreams restores the stream + a 60s timer; SRS keeps POSTing segments (it was not
  * restarted, so seq_no keeps climbing) → handleSegment accepts them and cancels the timer.
+ *
+ * ⭐ The playlist the recovered session keeps writing is read at the end and held to the manifest
+ * contract. It is the same playlist a viewer is already reading, so its numbering has to survive the
+ * crash: a media sequence that moved backwards is what hls.js reports as a parsing error, and the
+ * client answers that by remounting the player at the start of the broadcast. See
+ * `src/harness/manifestContractLive.ts`.
  */
 
 const RECOVERY_TIMEOUT_MS = 60_000; // mirrors the uploader RECOVERY_TIMEOUT default
@@ -127,5 +134,34 @@ describe('F — uploader hard crash: same stream recovers and keeps running', ()
       intervalMs: 3_000,
       label: 'the recovered stream surfaces as live in the gateway catalog',
     });
+
+    // ⛔ A recovered session keeps publishing into the SAME playlist a viewer is already reading, so
+    // its timeline has to survive the crash: `restoreState` takes the sequences back off disk rather
+    // than recomputing them, and `sequenceFor` treats an index below the anchor from there as the
+    // engine's counter restarting and continues FORWARDS. A playlist whose numbering moved backwards
+    // is what hls.js reports as a parsing error, and the client answers that by remounting the player
+    // at the beginning of the broadcast. Nothing until now read the playlist to find out.
+    //
+    // ⚠️ **What a red here may be saying, and it is not a flake.** SRS posts each closed segment once
+    // and never retries, so the segments it closed while the uploader was dead are lost, and nothing
+    // on the SRS path arms a discontinuity for them: `handleSegment` does not look at the index it is
+    // handed, `pendingDiscontinuity` comes back off disk as whatever it was before the kill, and
+    // `handleSegmentLoss` is the OME puller's. So the join can be a gap of several fragments with no
+    // `#EXT-X-DISCONTINUITY` in front of it, which is a playlist promising a viewer media it does not
+    // name. It reaches this assertion only while the join is still inside the live window, which is
+    // about 31 segments here, and this read comes after the recovery timeout plus the gateway
+    // catalog's own lag, so ordinarily the join has long slid out. If it does go red on that, read the
+    // reason: it names the segment and the width of the gap, and it is a statement about the product
+    // rather than about this file.
+    const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
+    const verdict = await checkPublishedTimeline(host, cfg, {
+      owner: feed.owner,
+      rungs: publishingRungFeedsOf(await log()),
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: log,
+    });
+
+    console.log(verdict.summary);
+    assert.equal(verdict.refusal, null, verdict.refusal ?? '');
   });
 });

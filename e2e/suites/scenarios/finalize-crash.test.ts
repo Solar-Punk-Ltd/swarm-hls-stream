@@ -11,6 +11,7 @@ import {
   resumedFinalizeCount,
   segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
+import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
@@ -37,6 +38,11 @@ import { waitFor } from '../../src/harness/wait.js';
  * exactly one recording, and does the catalog point at it?** A second finalize would publish a second
  * VOD manifest at a higher feed index and pay for it, and the catalog would name the newer one while
  * the older sits in the feed, bought and unreachable.
+ *
+ * ⭐ It also reads the surviving recording's own playlists, which is the only way to see that the
+ * crash did not renumber them. A recovered session takes its sequences back off disk rather than
+ * recomputing them, exactly so a viewer's history is not moved, and a recording names every segment
+ * of its broadcast so its media sequence must be 0. See `src/harness/manifestContractLive.ts`.
  *
  * ## Why the trigger is the finalize's own feed writes
  *
@@ -280,6 +286,24 @@ describe('H — killed inside finalize: one recording, and the catalog points at
         'A reboot that cannot read its catalog entry back rebuilds the ladder from the one rung it ' +
         'holds and writes that over the finished one',
     );
+
+    // ⛔ The recording itself, not the catalog's word for it. A crash mid-finalize is the one place a
+    // playlist's own numbering can be lost: `restoreState` takes a session's sequences back off disk
+    // rather than recomputing them, precisely so a recovered broadcast does not renumber history a
+    // viewer already holds, and nothing until now read the result. A recording names every segment of
+    // the broadcast, so its media sequence is 0 by construction whatever the crash did to the engine's
+    // own counter, and that check needs no promise from this file about when it read.
+    // The catalog feed's owner, which is also every rung playlist's: one `STREAM_KEY` signs the
+    // catalog, the masters and every manifest feed. See `manifestContractLive.ts`.
+    const verdict = await checkPublishedTimeline(host, cfg, {
+      owner: feed.owner,
+      rungs: publishingRungFeedsOf(finalLog),
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: log,
+    });
+
+    console.log(verdict.summary);
+    assert.equal(verdict.refusal, null, verdict.refusal ?? '');
   });
 });
 

@@ -5,8 +5,10 @@ import { containerName, loadConfig } from '../../src/config.js';
 import { getEngine } from '../../src/harness/engine.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { type AnnouncedRung, announcedRungs, ladderRungs, segmentUploads } from '../../src/harness/logwatch.js';
+import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
+import { discoverCatalogFeed } from '../../src/harness/viewer.js';
 import { sleep, waitFor } from '../../src/harness/wait.js';
 
 /**
@@ -193,6 +195,38 @@ describe('ABR — engine restart: the ladder comes back whole', { skip: abrOff(c
         label: 'every recovered rung uploads at least two segments, so none is merely announced and stuck',
       },
     );
+  });
+
+  /**
+   * ⭐ The sharpest thing a restart can be asked, and no log line can answer it. Every recovered rung
+   * is a fresh session with a fresh anchor, so all four playlists must open at
+   * `#EXT-X-MEDIA-SEQUENCE:0` and date their segments off one shared instant, while SRS's own counter
+   * carries on from wherever the restart left it. A ladder whose rungs disagreed about the same media
+   * would land every level switch off by the difference, with nothing in the logs calling it an error.
+   *
+   * Scoped to the restart's own log window, so the retired session's segments are not counted against
+   * the recovered playlists, and so the feeds are the recovered topics rather than the retired ones.
+   */
+  it('opens every recovered rung at sequence 0 and dates it off one anchor', async () => {
+    const { restartedAt, priorTopics } = await restartAndReconnect();
+
+    await waitFor(async () => (await recoveredRungCount(restartedAt, priorTopics)) >= rungsBefore.length, {
+      timeoutMs: RECOVERY_WAIT_MS,
+      intervalMs: 3_000,
+      label: 'the ladder re-forms on fresh topics after the restart',
+    });
+
+    const recoveredLog = async (): Promise<string> => host.logsSince(uploader, restartedAt);
+    const { owner } = await discoverCatalogFeed(host, cfg);
+    const verdict = await checkPublishedTimeline(host, cfg, {
+      owner,
+      rungs: publishingRungFeedsOf(await recoveredLog()),
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: recoveredLog,
+    });
+
+    console.log(verdict.summary);
+    assert.equal(verdict.refusal, null, verdict.refusal ?? '');
   });
 });
 

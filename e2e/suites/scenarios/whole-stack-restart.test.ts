@@ -4,6 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import { containerName, type E2EConfig, loadConfig, type ServiceName, SERVICES } from '../../src/config.js';
 import { type Host, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import { announcedSessionTopics, announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
+import { checkPublishedTimeline, publishingRungFeedsOf } from '../../src/harness/manifestContractLive.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
 import { recoveryEntryIds } from '../../src/harness/uploaderState.js';
@@ -33,6 +34,11 @@ import { waitFor } from '../../src/harness/wait.js';
  * The publisher's connection dies with the engine, so the broadcast genuinely ends and there is
  * nothing to resume. What must survive is the **recording**: exactly one VOD, the catalog naming it,
  * and no recovery entry left behind to be re-finalized on the next boot.
+ *
+ * ⭐ And the recording has to be a playable one, which the catalog cannot say. Its playlists are read
+ * and held to the manifest contract, because the finalize that wrote them built its manifest from
+ * state restored off disk and pushed it through a bee node starting from cold. See
+ * `src/harness/manifestContractLive.ts`.
  */
 
 const WARMUP_SEGMENTS = 4;
@@ -146,5 +152,20 @@ describe('I — whole-stack restart: the recording survives a host reboot', () =
       intervalMs: 3_000,
       label: 'the recording of the interrupted broadcast surfaces as a VOD',
     });
+
+    // ⛔ The catalog naming a recording and the recording being playable are different facts, and this
+    // scenario is the one where they can come apart: the recovered finalize built its VOD manifest
+    // from state restored off disk, through a bee node that was itself starting from cold. So the
+    // playlists are read and held to the contract. A recording names every segment of its broadcast,
+    // so its media sequence must be 0 however far the engine's own counter had run.
+    const verdict = await checkPublishedTimeline(host, cfg, {
+      owner: feed.owner,
+      rungs: publishingRungFeedsOf(await log()),
+      expectation: cfg.segmentExpectation,
+      logAfterTheRead: log,
+    });
+
+    console.log(verdict.summary);
+    assert.equal(verdict.refusal, null, verdict.refusal ?? '');
   });
 });

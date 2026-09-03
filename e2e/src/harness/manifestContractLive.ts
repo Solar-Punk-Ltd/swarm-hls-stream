@@ -48,7 +48,7 @@ import type { E2EConfig } from '../config.js';
 import { SEGMENT_ANY, type SegmentExpectation } from '../segmentLength.js';
 
 import type { Host } from './host.js';
-import { announcedLiveTopics, announcedRungs } from './logwatch.js';
+import { announcedLiveTopics, announcedRungs, segmentIndicesByStream } from './logwatch.js';
 import {
   type ManifestContract,
   manifestContractFailures,
@@ -183,6 +183,35 @@ export function rungFeedsOf(logText: string): RungFeed[] {
 }
 
 /**
+ * The feeds of the rungs that actually published, out of the announces and the segment lines in one
+ * log window.
+ *
+ * ⛔ Scoped to rungs whose stream uploaded a segment, and that scope is the point. A rung that
+ * announced and never uploaded has an empty feed, and refusing on that would be this check inventing
+ * a red for a rung the suite around it deliberately does not judge: `service/happy-path` asserts
+ * about "every rung that uploaded a segment" and scenario I warms up on a merged count that one fast
+ * rung can satisfy alone.
+ *
+ * A single-rendition feed carries no stream id, so it is kept whenever the window holds any upload
+ * at all. There is one stream on such a deployment, so there is nothing else the uploads could
+ * belong to.
+ */
+export function publishingRungFeedsOf(logText: string): RungFeed[] {
+  const published = publishedCountsOf(logText);
+  return rungFeedsOf(logText).filter((feed) =>
+    feed.streamId === null ? published.size > 0 : published.has(feed.streamId),
+  );
+}
+
+/**
+ * Segment uploads per stream, which is what {@link namesEverySegmentPublished} weighs a playlist
+ * against.
+ */
+export function publishedCountsOf(logText: string): ReadonlyMap<string, number> {
+  return new Map([...segmentIndicesByStream(logText)].map(([streamId, indices]) => [streamId, indices.length]));
+}
+
+/**
  * What one rung's playlist text says about itself.
  *
  * Pure, so everything but the feed read is reachable from CI on fixtures rather than only from a
@@ -298,6 +327,21 @@ export function namesEverySegmentPublished(parse: RungPlaylistParse, publishedBy
 }
 
 /**
+ * How many segments this rung had published, out of the log's per-stream counts, or null where the
+ * counts cannot be attributed to it.
+ *
+ * A single-rendition feed carries no stream id, so it takes the count of the one stream the window
+ * holds. Two or more streams with no id to choose between them is a case this refuses to guess at,
+ * and null there costs an assertion rather than risking one against another broadcast's numbers.
+ */
+export function publishedFor(parse: RungPlaylistParse, byStream: ReadonlyMap<string, number>): number | null {
+  if (parse.streamId !== null) {
+    return byStream.get(parse.streamId) ?? null;
+  }
+  return byStream.size === 1 ? [...byStream.values()][0] : null;
+}
+
+/**
  * Apply the contract to every parse.
  *
  * ⛔ A recording is held to sequence 0 whatever the caller promised, because a recording names every
@@ -348,6 +392,77 @@ export function rungPlaylistRefusal(readings: readonly RungPlaylistReading[]): s
   }
 
   return wrong.flatMap((reading) => reading.failures.map((failure) => `${feedName(reading)}: ${failure}`)).join('\n');
+}
+
+/** What a suite asks about the playlists its broadcast published. */
+export interface TimelineCheck {
+  /** The signer's address, from `discoverCatalogFeed`. See {@link BroadcastPlaylists.owner}. */
+  owner: string;
+  /** Usually {@link publishingRungFeedsOf} over the suite's own log window. */
+  rungs: readonly RungFeed[];
+  /**
+   * What the run declared it needs a segment to be, out of `cfg.segmentExpectation`. A run that
+   * pinned none leaves the timeline unchecked and says so. See {@link fragmentSecondsFor}.
+   */
+  expectation: SegmentExpectation;
+  /**
+   * The uploader's log, re-read once the playlists are in hand.
+   *
+   * ⛔ Called by this function AFTER the reads and never before, which is the ordering
+   * {@link namesEverySegmentPublished} depends on and the reason it is a callback rather than a
+   * string. Its per-stream segment counts are what prove a live window has not slid, so leaving it
+   * out means sequence 0 is asserted on recordings alone.
+   *
+   * Scope it to the session under test. A suite that restarted the engine mid-broadcast must count
+   * from the restart, or the retired session's segments make every recovered playlist look slid.
+   */
+  logAfterTheRead?: () => Promise<string>;
+}
+
+/** What a suite prints and asserts on. */
+export interface TimelineVerdict {
+  /** One line per rung, or the sentence saying why nothing was checked. */
+  summary: string;
+  /** Why the published playlists do not meet the contract, or null. */
+  refusal: string | null;
+  /** Whether the contract was applied at all, so a suite reports coverage rather than implying it. */
+  checked: boolean;
+  readings: readonly RungPlaylistReading[];
+}
+
+/**
+ * Read the playlists this broadcast published and say what is wrong with them.
+ *
+ * The one call a live suite makes. It reads each rung's feed, re-reads the log to learn what each
+ * rung had published by then, applies the contract and composes both the summary and the refusal, so
+ * a red is legible beside a reading of what the whole ladder held at that moment.
+ */
+export async function checkPublishedTimeline(
+  host: Host,
+  cfg: E2EConfig,
+  check: TimelineCheck,
+): Promise<TimelineVerdict> {
+  const fragmentSeconds = fragmentSecondsFor(check.expectation);
+  if (fragmentSeconds === null) {
+    return { summary: `  ${UNCHECKED_WITHOUT_FRAGMENT}`, refusal: null, checked: false, readings: [] };
+  }
+
+  const parses = await readRungPlaylists(host, cfg, { owner: check.owner, rungs: check.rungs });
+  const published = check.logAfterTheRead === undefined ? null : publishedCountsOf(await check.logAfterTheRead());
+  const readings = judgeRungPlaylists(parses, { fragmentSeconds, firstOfBroadcast: false }, (parse) => {
+    if (published === null) {
+      return false;
+    }
+    const byNow = publishedFor(parse, published);
+    return byNow !== null && namesEverySegmentPublished(parse, byNow);
+  });
+
+  return {
+    summary: describeRungPlaylists(parses),
+    refusal: rungPlaylistRefusal(readings),
+    checked: true,
+    readings,
+  };
 }
 
 /**

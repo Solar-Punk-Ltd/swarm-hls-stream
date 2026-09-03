@@ -1,4 +1,4 @@
-import { addingStreamToList, rungAnnounced } from '@swarm-hls-stream/shared';
+import { addingStreamToList, rungAnnounced, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -8,6 +8,9 @@ import {
   fragmentSecondsFor,
   judgeRungPlaylists,
   namesEverySegmentPublished,
+  publishedCountsOf,
+  publishedFor,
+  publishingRungFeedsOf,
   type RungFeed,
   rungFeedsOf,
   rungPlaylistParse,
@@ -56,6 +59,13 @@ function ladderLog(announces: readonly { rung: string; topic: string }[]): strin
         )}`,
     )
     .join('\n');
+}
+
+function uploadLines(streamId: string, count: number): string {
+  return Array.from(
+    { length: count },
+    (_unused, index) => `[2026-09-03T10:00:00.000Z] [LOG] - ${segmentUploaded(streamId, index, 'a'.repeat(64))}`,
+  ).join('\n');
 }
 
 /** The two phases in one call, for the cases where the split itself is not what is under test. */
@@ -108,6 +118,46 @@ describe('finding the feeds a broadcast published', () => {
 
   it('finds nothing in a log that announced nothing', () => {
     assert.deepEqual(rungFeedsOf('[2026-09-03T10:00:00.000Z] [LOG] - Uploader started'), []);
+  });
+});
+
+/**
+ * ⛔ The scope that stops this check inventing a red. `service/happy-path` asserts about "every rung
+ * that uploaded a segment", and scenario I warms up on a merged count one fast rung can satisfy
+ * alone, so a rung that announced and has yet to publish must not be refused for an empty feed.
+ */
+describe('scoping to the rungs that actually published', () => {
+  const announces = ladderLog([
+    { rung: '360p', topic: TOPIC_360 },
+    { rung: '1080p', topic: TOPIC_1080 },
+  ]);
+
+  it('keeps a rung whose stream uploaded and drops the one that only announced', () => {
+    const feeds = publishingRungFeedsOf(`${announces}\n${uploadLines('live/stream_360p', 3)}`);
+
+    assert.deepEqual(feeds, [feedOf('360p', TOPIC_360)]);
+  });
+
+  it('keeps every rung once they have all published', () => {
+    const log = [announces, uploadLines('live/stream_360p', 3), uploadLines('live/stream_1080p', 2)].join('\n');
+
+    assert.deepEqual(publishingRungFeedsOf(log), [feedOf('360p', TOPIC_360), feedOf('1080p', TOPIC_1080)]);
+  });
+
+  it('finds nothing where a ladder announced and published nothing at all', () => {
+    assert.deepEqual(publishingRungFeedsOf(announces), []);
+  });
+
+  it('counts the uploads each stream made, which is what a slid window is weighed against', () => {
+    const log = [uploadLines('live/stream_360p', 3), uploadLines('live/stream_1080p', 2)].join('\n');
+
+    assert.deepEqual(
+      [...publishedCountsOf(log)],
+      [
+        ['live/stream_360p', 3],
+        ['live/stream_1080p', 2],
+      ],
+    );
   });
 });
 
@@ -262,6 +312,36 @@ describe('whether a playlist can only be the broadcast’s first', () => {
 
   it('says no where no playlist was read at all', () => {
     assert.equal(namesEverySegmentPublished(rungPlaylistParse(feed, ''), 0), false);
+  });
+
+  it('takes the count of the rung’s own stream', () => {
+    const counts = new Map([
+      ['live/stream_360p', 3],
+      ['live/stream_1080p', 9],
+    ]);
+
+    assert.equal(publishedFor(rungPlaylistParse(feed, rungPlaylist([0])), counts), 3);
+  });
+
+  /** One rendition means one stream, so there is nothing else the uploads could belong to. */
+  it('takes the one stream’s count for a broadcast with no rung name', () => {
+    const single = rungPlaylistParse({ rung: null, streamId: null, topic: TOPIC_360 }, rungPlaylist([0]));
+
+    assert.equal(publishedFor(single, new Map([['live/stream', 4]])), 4);
+  });
+
+  it('refuses to guess between two streams when the feed names none', () => {
+    const single = rungPlaylistParse({ rung: null, streamId: null, topic: TOPIC_360 }, rungPlaylist([0]));
+    const counts = new Map([
+      ['live/stream', 4],
+      ['live/other', 7],
+    ]);
+
+    assert.equal(publishedFor(single, counts), null);
+  });
+
+  it('answers null for a rung the log holds no uploads for', () => {
+    assert.equal(publishedFor(rungPlaylistParse(feed, rungPlaylist([0])), new Map()), null);
   });
 });
 
