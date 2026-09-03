@@ -39,8 +39,13 @@ export const BUILD_STAMP_PATH = '/build-stamp.json';
 /** How much of a hash a summary line prints, enough to tell two builds apart at a glance. */
 const SHORT_HASH_LENGTH = 12;
 
-/** What `deploy/Dockerfile.client` writes into `dist/build-stamp.json`. */
-export interface ClientBuildStamp {
+/**
+ * What `deploy/Dockerfile.client` writes into `dist/build-stamp.json`.
+ *
+ * Unexported: callers take it by inference off {@link parseClientBuildStamp} and have no reason to
+ * name it, and every export here is a promise something may import.
+ */
+interface ClientBuildStamp {
   readonly clientTree: string;
   readonly sharedTree: string;
   readonly head: string;
@@ -61,7 +66,7 @@ export interface ClientTrees {
  * Named in the refusal, so a reader knows which side to correct: a stale expectation from the run
  * script is a resync, a stale one from this checkout is a git pull.
  */
-export type ExpectationSource = 'the run script' | 'this checkout';
+type ExpectationSource = 'the run script' | 'this checkout';
 
 export interface ClientShapeExpectation extends ClientTrees {
   readonly source: ExpectationSource;
