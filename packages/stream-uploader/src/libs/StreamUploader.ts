@@ -37,6 +37,7 @@ import {
   readinessToPersisted,
 } from './AnnounceReadiness.js';
 import { averageBandwidth, emptyBitrateSample, peakBandwidth, recordSegment } from './BitrateMeter.js';
+import { BroadcastDating } from './broadcastDating.js';
 import { ErrorHandler } from './ErrorHandler.js';
 import { Logger } from './Logger.js';
 import { ManifestManager } from './ManifestManager.js';
@@ -154,6 +155,11 @@ export interface StreamUploaderOptions {
    * segment this session publishes. One value for the whole ladder. See {@link BroadcastAnchor}.
    */
   anchor: BroadcastAnchor;
+  /**
+   * Where a restart's re-anchoring of that dating is minted, once for the whole ladder. Absent
+   * leaves this session re-anchoring on its own wall clock, which is a ladder of one.
+   */
+  dating?: BroadcastDating;
   /** State from a previous run of this stream id, so a restart resumes rather than starting over. */
   restoreState?: RestoreState;
   /**
@@ -183,8 +189,6 @@ export class StreamUploader {
   private mediatype: MediaType;
   private readiness: AnnounceReadiness = READINESS_PENDING;
   private ladder?: LadderMembership;
-  /** What dates this broadcast's segments, persisted so a recovered session keeps it. */
-  private readonly anchor: BroadcastAnchor;
   private liveManifestQueued = false;
   private pendingDiscontinuity = false;
   private consecutiveManifestFailures = 0;
@@ -245,9 +249,9 @@ export class StreamUploader {
     // Restored in preference to the one this session was handed, so a recovered broadcast keeps the
     // wall clock its earlier segments were dated against. Taking the fresh one would restamp the
     // recording's whole history at the moment of the recovery.
-    this.anchor = options.restoreState?.anchor ?? options.anchor;
+    const anchor = options.restoreState?.anchor ?? options.anchor;
 
-    this.manifestManager = new ManifestManager(this.anchor);
+    this.manifestManager = new ManifestManager(anchor, options.dating);
 
     const restoreState = options.restoreState;
     this.resumedFromCrash = restoreState !== undefined;
@@ -643,7 +647,9 @@ export class StreamUploader {
       updatedAt: Date.now(),
       ladder: this.ladder,
       bitrate: this.bitrate,
-      anchor: this.anchor,
+      // Read from the manifest manager rather than from what this session was constructed with,
+      // because a restart re-anchors it mid-session. See `ManifestManager.broadcastAnchor`.
+      anchor: this.manifestManager.broadcastAnchor(),
     };
   }
 

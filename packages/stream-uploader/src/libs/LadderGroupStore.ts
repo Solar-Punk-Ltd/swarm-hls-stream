@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 
+import { BroadcastEpoch } from '../types.js';
+
 import { Logger } from './Logger.js';
 
 /** What every rung of one source's ladder has to agree on, and which outlives any one of them. */
@@ -9,6 +11,12 @@ export interface RememberedLadder {
   group: string;
   /** Epoch milliseconds this broadcast was admitted. See `BroadcastAnchor`. */
   startedAtMs: number;
+  /**
+   * Where an engine restart inside this broadcast moved the dating on to the wall clock again.
+   * Absent on a record written before anything restarted, and on one written before this file kept
+   * them. See `BroadcastEpoch`.
+   */
+  epochs?: BroadcastEpoch[];
 }
 
 /**
@@ -19,6 +27,28 @@ export interface RememberedLadder {
  * ladder a fresh start instant rather than a duplicate catalog entry.
  */
 type PersistedLadderGroups = Record<string, RememberedLadder | string>;
+
+/**
+ * The re-anchorings on a persisted record, ignoring anything that is not one.
+ *
+ * Read one field at a time rather than trusted wholesale, for the reason `read` treats damage as
+ * absence: this file is an optimisation for the crash case, and a malformed entry must cost a
+ * broadcast its dating rather than take a broadcaster off the air. A dropped epoch dates the media
+ * after a restart from the broadcast's start, which is where it was dated before any of this
+ * existed.
+ */
+function readEpochs(epochs: unknown): BroadcastEpoch[] {
+  if (!Array.isArray(epochs)) {
+    return [];
+  }
+  return epochs.filter(
+    (epoch): epoch is BroadcastEpoch =>
+      epoch !== null &&
+      typeof epoch === 'object' &&
+      typeof (epoch as BroadcastEpoch).fromSequence === 'number' &&
+      typeof (epoch as BroadcastEpoch).atMs === 'number',
+  );
+}
 
 /**
  * Which ladder each source's rungs belong to and when its broadcast started, kept where a restart of
@@ -52,7 +82,7 @@ export class LadderGroupStore {
    * instant there rather than being handed a fabricated one, because a wrong wall clock on a
    * recording is worse than a late one on a broadcast that was already in progress.
    */
-  public load(base: string): { group: string; startedAtMs: number | null } | null {
+  public load(base: string): { group: string; startedAtMs: number | null; epochs?: BroadcastEpoch[] } | null {
     const identity = this.read()[base];
     if (typeof identity === 'string') {
       return { group: identity, startedAtMs: null };
@@ -60,9 +90,13 @@ export class LadderGroupStore {
     if (identity === null || typeof identity !== 'object' || typeof identity.group !== 'string') {
       return null;
     }
+    const epochs = readEpochs(identity.epochs);
     return {
       group: identity.group,
       startedAtMs: typeof identity.startedAtMs === 'number' ? identity.startedAtMs : null,
+      // Absent rather than empty for a broadcast nothing has restarted, so a record that predates
+      // the epochs reads back the way it was written.
+      ...(epochs.length === 0 ? {} : { epochs }),
     };
   }
 

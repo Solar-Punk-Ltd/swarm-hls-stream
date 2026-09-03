@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { AbrLadder, DEFAULT_LADDER_SPEC } from '../src/libs/AbrLadder.js';
+import { RememberedLadder } from '../src/libs/LadderGroupStore.js';
 import { RecoveryStore } from '../src/libs/RecoveryStore.js';
 import { StreamOrchestrator } from '../src/libs/StreamOrchestrator.js';
 import {
@@ -31,6 +32,7 @@ import {
   makeTestOrchestrator,
   neverSettles,
   rejectImmediately,
+  TEST_ANCHOR,
   toRecoveryFileId,
 } from './helpers/fakes.js';
 import { waitAndConfirmNothingHappened, waitFor } from './helpers/waiting.js';
@@ -1959,7 +1961,7 @@ describe('a settled stop expires from the status map (TEST-32)', () => {
 describe('StreamOrchestrator ladder group lifecycle', () => {
   /** Reaches the ladder maps directly, because the group id has no behavioural signal to observe. */
   interface LadderMaps {
-    ladderGroups: Map<string, string>;
+    ladderGroups: Map<string, RememberedLadder>;
     streamBases: Map<string, string>;
   }
 
@@ -2001,16 +2003,193 @@ describe('StreamOrchestrator ladder group lifecycle', () => {
 
     orch.startStream('live/stream_720p', MEDIA_TYPE_VIDEO);
     await waitFor(() => maps.ladderGroups.get('live/stream') !== undefined, SETTLE_CEILING_MS);
-    const group = maps.ladderGroups.get('live/stream');
+    const group = maps.ladderGroups.get('live/stream')?.group;
 
     orch.startStream('live/stream_720p', MEDIA_TYPE_VIDEO);
 
+    // On the group rather than on the whole record, which the re-announce does rewrite: it
+    // re-anchors the broadcast's dating on to the restart. The identity is what must not move.
     assert.equal(
-      maps.ladderGroups.get('live/stream'),
+      maps.ladderGroups.get('live/stream')?.group,
       group,
       'a re-announce restarted the ladder its predecessor was still writing into',
     );
 
     await orch.stopStream('live/stream_720p');
+  });
+});
+
+/**
+ * The wall clock a broadcast's playlists carry once its engine has restarted inside it.
+ *
+ * ⛔ Owner decision of 2026-09-03. Before it, `#EXT-X-PROGRAM-DATE-TIME` kept stepping from the
+ * instant the broadcast was admitted, so every segment after a restart claimed a time behind real
+ * time by the whole length of the gap, and nothing bounded that. It re-anchors now, on both of the
+ * two paths an engine restart takes through here.
+ */
+describe('the dating a broadcast re-anchors to across an engine restart', () => {
+  const STREAM_ID = 'live/stream';
+  const STARTED_AT_MS = Date.UTC(2026, 8, 3, 12, 0, 0);
+  /** Ten minutes on, which is the lag the old dating carried into every segment after the restart. */
+  const RESTARTED_AT_MS = STARTED_AT_MS + 600_000;
+  const STEP_MS = TEST_ANCHOR.fragmentSeconds * 1000;
+  const PROGRAM_DATE_TIME_TAG = '#EXT-X-PROGRAM-DATE-TIME';
+
+  function stampsOf(manifest: string): number[] {
+    return manifest
+      .split('\n')
+      .filter((line) => line.startsWith(`${PROGRAM_DATE_TIME_TAG}:`))
+      .map((line) => Date.parse(line.slice(PROGRAM_DATE_TIME_TAG.length + 1)));
+  }
+
+  /**
+   * The newest live playlist published, which is the one a viewer following the feed is reading.
+   * Recordings and closing playlists are left out by their end tag: a retired session publishes one
+   * of each while the session that replaced it is already live.
+   */
+  function newestLivePlaylist(published: string[]): string {
+    const live = published.filter((manifest) => !manifest.includes('#EXT-X-ENDLIST'));
+    return live[live.length - 1] ?? '';
+  }
+
+  function capturingPlaylists(published: string[]): FakeUploads {
+    return {
+      uploadPayload: async (index: number, payload: unknown) => {
+        published.push(String(payload));
+        return { reference: { toHex: () => `soc${index}` } };
+      },
+    };
+  }
+
+  /**
+   * The engine re-announcing a stream this process still tracks, which is how SRS comes back from a
+   * restart it did not close first. The replacement session publishes a fresh playlist numbered from
+   * zero, and its opening segment used to be dated at the broadcast's admission however long ago
+   * that was.
+   */
+  it('dates a replacement session’s opening segment at the restart, not at the broadcast’s start', async () => {
+    const published: string[] = [];
+    let nowMs = STARTED_AT_MS;
+    const orch = makeTestOrchestrator({ wallClock: () => nowMs }, capturingPlaylists(published));
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('before'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 1, SETTLE_CEILING_MS);
+    assert.deepEqual(stampsOf(newestLivePlaylist(published)), [STARTED_AT_MS], 'the broadcast opened somewhere else');
+
+    nowMs = RESTARTED_AT_MS;
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+    const publishedBefore = published.length;
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after'));
+    await waitFor(() => published.length > publishedBefore, SETTLE_CEILING_MS);
+
+    assert.deepEqual(
+      stampsOf(newestLivePlaylist(published)),
+      [RESTARTED_AT_MS],
+      'the replacement session dated its opening segment at the start of the broadcast, so it is behind ' +
+        'real time by the length of the gap',
+    );
+    await orch.cleanup();
+  });
+
+  /**
+   * The other path: the engine's session never closed, so its counter simply restarts and segments
+   * resume inside the session already running. The numbering re-anchors forwards there, and the
+   * dating goes with it.
+   */
+  it('dates the media resuming inside one session at the restart, one fragment apart from there', async () => {
+    const published: string[] = [];
+    let nowMs = STARTED_AT_MS;
+    const orch = makeTestOrchestrator({ wallClock: () => nowMs }, capturingPlaylists(published));
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    // The engine's own counter, which on a warm SRS opens wherever the previous broadcast ended.
+    orch.handleSegment(STREAM_ID, 100, 2, Buffer.from('one'));
+    orch.handleSegment(STREAM_ID, 101, 2, Buffer.from('two'));
+    orch.handleSegment(STREAM_ID, 102, 2, Buffer.from('three'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 3, SETTLE_CEILING_MS);
+
+    nowMs = RESTARTED_AT_MS;
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after'), true);
+    orch.handleSegment(STREAM_ID, 1, 2, Buffer.from('after too'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 5, SETTLE_CEILING_MS);
+
+    assert.deepEqual(stampsOf(newestLivePlaylist(published)), [
+      STARTED_AT_MS,
+      STARTED_AT_MS + STEP_MS,
+      STARTED_AT_MS + 2 * STEP_MS,
+      RESTARTED_AT_MS,
+      RESTARTED_AT_MS + STEP_MS,
+    ]);
+    await orch.cleanup();
+  });
+
+  /**
+   * A crash after a restart must come back on the re-anchored dating rather than on the one the
+   * broadcast opened with. The recovery entry is what carries it for a stream with no ladder, which
+   * has no group record to fall back on.
+   */
+  it('persists the re-anchoring in the recovery entry it writes', async () => {
+    const published: string[] = [];
+    const saved: StreamState[] = [];
+    let nowMs = STARTED_AT_MS;
+    const orch = makeTestOrchestrator(
+      { wallClock: () => nowMs },
+      capturingPlaylists(published),
+      makeFakeRecoveryStore({ save: (_streamId: string, state: StreamState) => saved.push(state) }),
+    );
+
+    orch.startStream(STREAM_ID, MEDIA_TYPE_VIDEO);
+    orch.handleSegment(STREAM_ID, 100, 2, Buffer.from('one'));
+    orch.handleSegment(STREAM_ID, 101, 2, Buffer.from('two'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 2, SETTLE_CEILING_MS);
+    assert.deepEqual(saved[saved.length - 1].anchor?.epochs ?? [], [], 'nothing has restarted yet');
+
+    nowMs = RESTARTED_AT_MS;
+    orch.handleSegment(STREAM_ID, 0, 2, Buffer.from('after'), true);
+    await waitFor(() => (saved[saved.length - 1].anchor?.epochs?.length ?? 0) > 0, SETTLE_CEILING_MS);
+
+    assert.deepEqual(saved[saved.length - 1].anchor, {
+      startedAtMs: STARTED_AT_MS,
+      fragmentSeconds: TEST_ANCHOR.fragmentSeconds,
+      epochs: [{ fromSequence: 2, atMs: RESTARTED_AT_MS }],
+    });
+    await orch.cleanup();
+  });
+
+  it('dates a session rebuilt from that entry on the same line rather than re-dating its history', async () => {
+    const published: string[] = [];
+    const state: StreamState = {
+      ...makeRecoveredState(STREAM_ID),
+      segments: [
+        { index: 100, duration: 2, ref: 'ref-100', sequence: 0 },
+        { index: 0, duration: 2, ref: 'ref-restart', sequence: 1, discontinuity: true },
+      ],
+      anchor: {
+        startedAtMs: STARTED_AT_MS,
+        fragmentSeconds: TEST_ANCHOR.fragmentSeconds,
+        epochs: [{ fromSequence: 1, atMs: RESTARTED_AT_MS }],
+      },
+    };
+    const orch = makeTestOrchestrator(
+      { wallClock: () => RESTARTED_AT_MS + 30_000 },
+      capturingPlaylists(published),
+      makeFakeRecoveryStore({
+        listActive: () => [toRecoveryFileId(STREAM_ID)],
+        read: () => ({ kind: RECOVERY_ENTRY_LOADED, state }),
+      }),
+    );
+
+    orch.recoverStreams();
+    orch.handleSegment(STREAM_ID, 1, 2, Buffer.from('resumed'));
+    await waitFor(() => stampsOf(newestLivePlaylist(published)).length === 3, SETTLE_CEILING_MS);
+
+    assert.deepEqual(stampsOf(newestLivePlaylist(published)), [
+      STARTED_AT_MS,
+      RESTARTED_AT_MS,
+      RESTARTED_AT_MS + STEP_MS,
+    ]);
+    await orch.cleanup();
   });
 });

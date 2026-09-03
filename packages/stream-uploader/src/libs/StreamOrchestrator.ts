@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import {
   ANONYMOUS_CLAIMANT,
   BroadcastAnchor,
+  BroadcastEpoch,
   HealthSignals,
   LadderMembership,
   MEDIA_TYPE_VIDEO,
@@ -40,6 +41,7 @@ import { isUsableDuration, measureSegmentDuration, SegmentDurationReading } from
 
 import { AbrLadder } from './AbrLadder.js';
 import { BeePublisherPool, PublisherRoute } from './BeePublisherPool.js';
+import { BroadcastDating, programDateTimeMsOf, reanchorEpoch, withEpoch } from './broadcastDating.js';
 import { Clock, systemClock, Timer } from './Clock.js';
 import { DrainTimeoutError } from './DrainTimeoutError.js';
 import { ErrorHandler } from './ErrorHandler.js';
@@ -62,6 +64,9 @@ import { StreamUploader } from './StreamUploader.js';
 const WITHHOLD_OPENING_CEILING_SECONDS = 10;
 
 const DRAIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Where every broadcast's playlists start numbering, and so where a replacement session starts again. */
+const FIRST_BROADCAST_SEQUENCE = 0;
 
 /**
  * How long a settled stop stays readable through `getStreamStatus`. Comfortably longer than
@@ -244,6 +249,15 @@ export class StreamOrchestrator {
   private readonly metrics = new ServiceMetrics();
   /** Ladder id per base stream, so the four rungs of one source share a catalog entry. */
   private ladderGroups = new Map<string, RememberedLadder>();
+  /**
+   * What dates each broadcast's playlists, keyed by {@link datingKeyOf}: one entry per broadcast and
+   * never one per rung.
+   *
+   * This is what makes a restart's re-anchoring the ladder's rather than each rung's. Every rung
+   * reads and writes the one entry, so whichever of them crosses the restart first mints the line
+   * and the rest land on it. See {@link reanchorBroadcast}.
+   */
+  private broadcastAnchors = new Map<string, BroadcastAnchor>();
   private streamBases = new Map<string, string>();
   private logger = Logger.getInstance();
   private errorHandler = ErrorHandler.getInstance();
@@ -319,6 +333,7 @@ export class StreamOrchestrator {
       this.logger.info(`[StreamOrchestrator] Stream ${streamId} re-announced; finalizing stale session and restarting`);
       stale.retire();
       this.retireSession(streamId);
+      this.reanchorReplacedBroadcast(streamId);
       this.spawnUploader(streamId, mediatype, claimant);
       void this.finalizeRetiredSession(streamId, stale);
       return true;
@@ -538,17 +553,25 @@ export class StreamOrchestrator {
     // Minted with the group and never per rung. Every rung of one ladder dates the same media the
     // same way only because they all read this one instant, and a rung admitted a moment later
     // taking its own reading is exactly the disagreement `#EXT-X-PROGRAM-DATE-TIME` exists to avoid.
-    let startedAtMs = this.wallClock();
+    let anchor: BroadcastAnchor = { startedAtMs: this.wallClock(), fragmentSeconds: this.config.fragmentSeconds };
 
     if (match) {
       const remembered = this.groupFor(match.baseStreamId);
-      startedAtMs = remembered.startedAtMs;
+      anchor = this.anchorOf(remembered);
       ladder = { group: remembered.group, rung: match.rung };
       this.streamBases.set(streamId, match.baseStreamId);
       this.logger.info(
         `[StreamOrchestrator] ${rungAnnounced(streamId, match.rung.name, remembered.group, streamTopic)}`,
       );
+    } else {
+      // A lone rendition is a ladder of one and its dating is kept per broadcast for the same
+      // reasons, so a replacement session takes the re-anchoring `startStream` has already minted
+      // into it rather than a second fresh reading of the clock.
+      anchor = this.broadcastAnchors.get(streamId) ?? anchor;
     }
+
+    const datingKey = this.datingKeyOf(streamId, match?.baseStreamId ?? null);
+    this.broadcastAnchors.set(datingKey, anchor);
 
     // Which node's postage batch pays for this rung. A stream with no rung, single-rendition or
     // anything arriving through the generic API, rides the coordinator: the longest-lived batch.
@@ -565,7 +588,8 @@ export class StreamOrchestrator {
       streamTopic,
       mediatype,
       ladder,
-      anchor: { startedAtMs, fragmentSeconds: this.config.fragmentSeconds },
+      anchor,
+      dating: this.datingFor(datingKey, match?.baseStreamId ?? null),
       metrics: this.metrics,
     });
 
@@ -993,16 +1017,23 @@ export class StreamOrchestrator {
       startedAtMs: this.wallClock(),
       fragmentSeconds: this.config.fragmentSeconds,
     };
+    const base = state.ladder ? baseStreamId(streamId, state.ladder.rung.name) : null;
 
-    if (state.ladder) {
-      const base = baseStreamId(streamId, state.ladder.rung.name);
+    if (state.ladder && base !== null) {
       // Written back to disk rather than only read into memory. The recovery entry and the group
       // store are two records of one fact and either can be the survivor: a rung that finalized
       // cleared its entry and left the group behind, and an entry an operator restores by hand
       // arrives with no group on disk at all.
-      this.rememberLadder(base, { group: state.ladder.group, startedAtMs: anchor.startedAtMs });
+      this.rememberLadder(base, {
+        group: state.ladder.group,
+        startedAtMs: anchor.startedAtMs,
+        epochs: anchor.epochs,
+      });
       this.streamBases.set(streamId, base);
     }
+
+    const datingKey = this.datingKeyOf(streamId, base);
+    this.broadcastAnchors.set(datingKey, anchor);
 
     // Routed from the persisted rung name rather than from a fresh ladder match, so a recovered rung
     // resumes on the node that has been paying for it. If the ladder was reconfigured while this
@@ -1022,6 +1053,7 @@ export class StreamOrchestrator {
       mediatype: state.mediatype,
       ladder: state.ladder,
       anchor,
+      dating: this.datingFor(datingKey, base),
       restoreState: {
         streamRawTopic: state.streamRawTopic,
         socIndex: state.socIndex,
@@ -1492,12 +1524,99 @@ export class StreamOrchestrator {
     if (!persisted) {
       return null;
     }
-    return { group: persisted.group, startedAtMs: persisted.startedAtMs ?? this.wallClock() };
+    return {
+      group: persisted.group,
+      startedAtMs: persisted.startedAtMs ?? this.wallClock(),
+      ...(persisted.epochs === undefined ? {} : { epochs: persisted.epochs }),
+    };
   }
 
   private rememberLadder(base: string, ladder: RememberedLadder): void {
     this.ladderGroups.set(base, ladder);
     this.config.ladderGroupStore?.remember(base, ladder);
+  }
+
+  /**
+   * What dates one broadcast's playlists, as the ladder record holds it plus what this deployment
+   * declares. The fragment length is configuration rather than broadcast state, so it is never
+   * persisted with the group: a record written under one `HLS_FRAGMENT` and read back under another
+   * would otherwise step a redeployed broadcast by the length it used to cut at.
+   */
+  private anchorOf(ladder: RememberedLadder): BroadcastAnchor {
+    return {
+      startedAtMs: ladder.startedAtMs,
+      fragmentSeconds: this.config.fragmentSeconds,
+      ...(ladder.epochs === undefined ? {} : { epochs: ladder.epochs }),
+    };
+  }
+
+  /**
+   * Where one broadcast's dating is held: under the base stream id its rungs share, or under the
+   * stream id itself for a lone rendition, which is a ladder of one.
+   */
+  private datingKeyOf(streamId: string, base: string | null): string {
+    return base ?? streamId;
+  }
+
+  /** The dating handed to one session, bound to its broadcast rather than to the session. */
+  private datingFor(datingKey: string, base: string | null): BroadcastDating {
+    return {
+      epochFrom: (resumeAt, notBeforeMs) => this.reanchorBroadcast(datingKey, base, resumeAt, notBeforeMs),
+    };
+  }
+
+  /**
+   * Move this broadcast's dating on to the wall clock, and answer with the epoch the asking rung
+   * dates from.
+   *
+   * ⛔ **Minted against the broadcast's own record rather than per rung, which is the whole point.**
+   * An engine restart reaches every rung of a ladder, seconds apart, and four rungs each taking
+   * their own reading of the clock is the disagreement `#EXT-X-PROGRAM-DATE-TIME` is here to prevent.
+   * `reanchorEpoch` decides between minting and landing on the line a sibling already minted.
+   *
+   * The record goes back to disk with the group so a reboot mid-broadcast comes back on the same
+   * dating, and each rung's own recovery entry carries it too, which is what covers a lone rendition
+   * with no group record at all.
+   */
+  private reanchorBroadcast(
+    datingKey: string,
+    base: string | null,
+    resumeAt: number,
+    notBeforeMs: number,
+  ): BroadcastEpoch {
+    const anchor =
+      this.broadcastAnchors.get(datingKey) ??
+      ({ startedAtMs: this.wallClock(), fragmentSeconds: this.config.fragmentSeconds } as BroadcastAnchor);
+    const epoch = reanchorEpoch(anchor, { resumeAt, nowMs: this.wallClock(), notBeforeMs });
+    const reanchored = withEpoch(anchor, epoch);
+    this.broadcastAnchors.set(datingKey, reanchored);
+
+    const group = base === null ? undefined : this.ladderGroups.get(base)?.group;
+    if (base !== null && group !== undefined) {
+      this.rememberLadder(base, { group, startedAtMs: reanchored.startedAtMs, epochs: reanchored.epochs });
+    }
+
+    this.logger.info(
+      `[StreamOrchestrator] Broadcast ${datingKey} re-anchored its dating at sequence ${resumeAt}: ` +
+        `${new Date(programDateTimeMsOf(anchor, resumeAt)).toISOString()} becomes ` +
+        `${new Date(epoch.atMs).toISOString()}`,
+    );
+    return epoch;
+  }
+
+  /**
+   * Date a replacement session's opening segment at the restart rather than at the broadcast's start.
+   *
+   * A re-announced session publishes a fresh playlist numbered from zero, so the dating it inherits
+   * with the group would put that segment at the instant the broadcast was admitted, however long
+   * ago that was. Minted through the shared record rather than as a fresh instant here, so the
+   * second rung of a ladder to re-announce reads the epoch the first one minted instead of taking
+   * its own reading of the clock.
+   */
+  private reanchorReplacedBroadcast(streamId: string): void {
+    const base = this.streamBases.get(streamId) ?? null;
+    // No floor: a playlist starting its numbering again has no earlier stamp to move backwards past.
+    this.reanchorBroadcast(this.datingKeyOf(streamId, base), base, FIRST_BROADCAST_SEQUENCE, 0);
   }
 
   /**
@@ -1510,13 +1629,16 @@ export class StreamOrchestrator {
    *
    * The persisted record goes with the in-memory one rather than outliving it. A ladder whose last
    * rung has stopped is a finished recording, and keeping its identity would fold the next broadcast
-   * on that source into it, which is the same duplicate pointing the other way.
+   * on that source into it, which is the same duplicate pointing the other way. The broadcast's
+   * dating retires on exactly that reasoning and at exactly that moment, so nothing here grows for
+   * the life of the process either.
    */
   private releaseLadder(streamId: string): void {
     const base = this.streamBases.get(streamId);
     this.streamBases.delete(streamId);
 
     if (!base) {
+      this.broadcastAnchors.delete(streamId);
       return;
     }
 
@@ -1525,6 +1647,7 @@ export class StreamOrchestrator {
     const stillRunning = [...this.streamBases.values()].some((other) => other === base);
     if (!stillRunning) {
       this.ladderGroups.delete(base);
+      this.broadcastAnchors.delete(base);
       this.config.ladderGroupStore?.forget(base);
     }
   }

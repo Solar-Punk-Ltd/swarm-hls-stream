@@ -143,6 +143,75 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
     await after.stopStream(RUNG_720P);
   });
 
+  /**
+   * The dating a restart re-anchors to, which is the owner's decision of 2026-09-03: the media after
+   * an engine restart carries the wall clock it really happened at rather than a time behind real
+   * time by the length of the gap.
+   *
+   * ⛔ It is minted **once for the whole ladder**, by whichever rung crosses the restart first, and
+   * every other rung lands on that same line. Four rungs each taking their own reading of the clock
+   * is the disagreement `#EXT-X-PROGRAM-DATE-TIME` exists here to prevent: hls.js reads four rungs
+   * dating one segment differently as four rungs covering different media.
+   */
+  it('mints one re-anchoring for the whole ladder when its rungs re-announce', async () => {
+    const startedAtMs = Date.UTC(2026, 8, 3, 12, 0, 0);
+    const restartedAtMs = startedAtMs + 600_000;
+    let nowMs = startedAtMs;
+    const root = makeTempRoot();
+    const orch = makeTestOrchestrator({
+      ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
+      ladderGroupStore: new LadderGroupStore(path.join(root, 'ladder', 'groups.json')),
+      wallClock: () => nowMs,
+    });
+
+    orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    orch.startStream(RUNG_360P, MEDIA_TYPE_VIDEO);
+    await waitFor(() => ladderOf(orch, BASE) !== undefined, SETTLE_CEILING_MS);
+
+    // The engine comes back and re-announces its rungs, seconds apart as a transcoder does.
+    nowMs = restartedAtMs;
+    orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    nowMs = restartedAtMs + 3_000;
+    orch.startStream(RUNG_360P, MEDIA_TYPE_VIDEO);
+
+    assert.deepEqual(
+      ladderOf(orch, BASE)?.epochs,
+      [{ fromSequence: 0, atMs: restartedAtMs }],
+      'the rungs re-anchored one ladder twice, so each of them dates the same media on its own clock',
+    );
+
+    await orch.cleanup();
+  });
+
+  it('carries the re-anchoring across a restart of the uploader', async () => {
+    const startedAtMs = Date.UTC(2026, 8, 3, 12, 0, 0);
+    const restartedAtMs = startedAtMs + 600_000;
+    let nowMs = startedAtMs;
+    const root = makeTempRoot();
+    const before = makeTestOrchestrator({
+      ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
+      ladderGroupStore: new LadderGroupStore(path.join(root, 'ladder', 'groups.json')),
+      wallClock: () => nowMs,
+    });
+    before.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    await waitFor(() => ladderOf(before, BASE) !== undefined, SETTLE_CEILING_MS);
+    nowMs = restartedAtMs;
+    before.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    assert.ok(ladderOf(before, BASE)?.epochs?.length, 'the re-announce did not re-anchor, so nothing is being carried');
+
+    const after = bootWithLadder(root);
+    after.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+
+    assert.deepEqual(
+      ladderOf(after, BASE)?.epochs,
+      [{ fromSequence: 0, atMs: restartedAtMs }],
+      'the reboot came back on the dating the broadcast opened with, so it re-dated everything after the restart',
+    );
+
+    await after.stopStream(RUNG_720P);
+    await before.cleanup();
+  });
+
   it('gives a sibling rung the same group after the crash, not one ladder each', async () => {
     const root = makeTempRoot();
     const before = bootWithLadder(root);
