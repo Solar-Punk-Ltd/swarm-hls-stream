@@ -1423,6 +1423,61 @@ describe('StreamOrchestrator inferring a loss from a skipped index', () => {
   });
 
   /**
+   * The live shape of a reconnect, pinned on its own. A broadcaster reconnecting registers its
+   * replacement under the same id while the outgoing session is still draining, which is what the
+   * ABR restart suite produced 23 times in one sitting. It holds because the re-announce branch of
+   * `startStream` retires the incumbent's per-stream maps in the same synchronous turn it registers
+   * the replacement, so the first index of the new session is measured against nothing. `stopStream`
+   * on its own retires only after the drain, and skips the retire once a successor holds the id, so
+   * that branch is the only thing standing between this first index and an inferred loss the
+   * distance between two unrelated counters.
+   */
+  it('does not infer a loss against a replacement that arrives while its predecessor is still draining', async () => {
+    await withCapturedLog(async (lines) => {
+      let releasePredecessor: (() => void) | null = null;
+      let socWrites = 0;
+      const orch = makeTestOrchestrator(
+        {},
+        {
+          uploadPayload: async () => {
+            socWrites += 1;
+            const write = socWrites;
+            // The predecessor's VOD commit, held open so the reconnect lands inside its drain.
+            if (write === 2) {
+              await new Promise<void>((resolve) => {
+                releasePredecessor = resolve;
+              });
+            }
+            return { reference: { toHex: () => `soc${write}` } };
+          },
+        },
+      );
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(STREAM, 0, 2, Buffer.from('seg0'));
+      const predecessorStop = orch.stopStream(STREAM);
+      await waitFor(() => releasePredecessor !== null, SETTLE_CEILING_MS);
+
+      orch.startStream(STREAM, MEDIA_TYPE_VIDEO);
+      await waitFor(() => orch.getActiveStreamCount() === 1, SETTLE_CEILING_MS);
+      orch.handleSegment(STREAM, 500, 2, Buffer.from('seg500'));
+      await untilUploaded(lines, 500);
+
+      assert.deepEqual(
+        skipLines(lines),
+        [],
+        "the replacement inherited the outgoing session's accounting and read its own first index as a gap",
+      );
+      assert.equal(orch.getMsSinceSegmentLoss(), null);
+
+      (releasePredecessor as unknown as () => void)();
+      await predecessorStop;
+      await orch.cleanup();
+    });
+  });
+
+  /**
    * The bound on the walk. A gap wider than the duplicate filter's window cannot be answered by that
    * filter, since an index is only guaranteed to be remembered for that many further indexes, so the
    * interior is counted whole rather than asked about one index at a time.
