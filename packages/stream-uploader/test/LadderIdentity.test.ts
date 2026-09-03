@@ -98,6 +98,32 @@ describe('a ladder keeps its identity across a restart of the uploader', () => {
     await after.stopStream(RUNG_720P);
   });
 
+  /**
+   * ⛔ The orchestrator's injected clock is `performance.now()`, milliseconds since the process
+   * started, and the first stage broadcast of 2026-09-03 stamped every segment fifty-two seconds
+   * after 1970 because the anchor had been minted from it. An anchor is a date and comes from the
+   * wall clock, whatever the monotonic clock reads.
+   */
+  it('mints the anchor from the wall clock, never from the monotonic clock', async () => {
+    const wallNow = Date.UTC(2026, 8, 3, 3, 26, 50);
+    const root = makeTempRoot();
+    const orch = makeTestOrchestrator({
+      ladder: AbrLadder.parse(DEFAULT_LADDER_SPEC),
+      ladderGroupStore: new LadderGroupStore(path.join(root, 'ladder', 'groups.json')),
+      wallClock: () => wallNow,
+    });
+    orch.startStream(RUNG_720P, MEDIA_TYPE_VIDEO);
+    await waitFor(() => ladderOf(orch, BASE) !== undefined, SETTLE_CEILING_MS);
+
+    assert.equal(
+      ladderOf(orch, BASE)?.startedAtMs,
+      wallNow,
+      'the anchor is not the wall clock, so every stamp derived from it is a process uptime rather than a date',
+    );
+
+    await orch.stopStream(RUNG_720P);
+  });
+
   it('gives a rung announced after the crash the wall clock its broadcast started on', async () => {
     const root = makeTempRoot();
     const before = bootWithLadder(root);

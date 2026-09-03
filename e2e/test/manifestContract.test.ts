@@ -206,3 +206,25 @@ describe('reading the two numbers on their own', () => {
     assert.deepEqual(programDateTimesOf(partial), [null]);
   });
 });
+
+/**
+ * ⛔ The reading the first stage broadcast with stamps produced on 2026-09-03: every segment dated
+ * 1970-01-01T00:00:51Z, fifty-two seconds being the uploader's uptime, because the anchor had been
+ * minted from the monotonic clock. Those stamps rose by exactly one fragment and passed every other
+ * check here.
+ */
+describe('a stamp has to be a date', () => {
+  it('refuses stamps that predate every broadcast this project published', () => {
+    const uptimeStamped = playlist([0, 1, 2]).replace(/2026-09-01T12:00/g, '1970-01-01T00:00');
+
+    const failures = manifestContractFailures(uptimeStamped, CONTRACT);
+
+    assert.equal(failures.length, 1, failures.join('\n'));
+    assert.match(failures[0], /1970-01-01T00:00:00.000Z, which is before any broadcast/);
+    assert.match(failures[0], /not taken from a wall clock/);
+  });
+
+  it("accepts stamps from this project's own era", () => {
+    assert.deepEqual(manifestContractFailures(playlist([0, 1, 2]), CONTRACT), []);
+  });
+});

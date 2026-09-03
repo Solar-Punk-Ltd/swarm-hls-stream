@@ -72,8 +72,30 @@ export function manifestContractFailures(text: string, contract: ManifestContrac
 
   failures.push(...mediaSequenceFailures(text, contract));
   failures.push(...stampFailures(segments, contract.fragmentSeconds));
+  failures.push(...wallClockFailures(segments));
 
   return failures;
+}
+
+/**
+ * No broadcast this project publishes predates it, so a stamp before this instant is not a date.
+ *
+ * ⛔ The first stage broadcast with stamps, 2026-09-03, dated every segment `1970-01-01T00:00:51Z`:
+ * the anchor had been minted from the uploader's monotonic clock and read as the process's uptime.
+ * Every other check here passed on those stamps, because they rose by exactly one fragment. A stamp
+ * is only a timeline if it is also a date.
+ */
+const EARLIEST_PLAUSIBLE_STAMP_MS = Date.UTC(2025, 0, 1);
+
+function wallClockFailures(segments: Segment[]): string[] {
+  const earliest = segments.map(stampOf).find((stamp): stamp is number => stamp !== null);
+  if (earliest === undefined || earliest >= EARLIEST_PLAUSIBLE_STAMP_MS) {
+    return [];
+  }
+  return [
+    `the first stamp reads ${new Date(earliest).toISOString()}, which is before any broadcast this project ` +
+      "published, so the publisher's anchor was not taken from a wall clock",
+  ];
 }
 
 function mediaSequenceFailures(text: string, contract: ManifestContract): string[] {

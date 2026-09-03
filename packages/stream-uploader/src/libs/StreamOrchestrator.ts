@@ -87,6 +87,17 @@ export interface StreamOrchestratorConfig {
   /** Defaults to the real clock. Injected so tests can step time rather than wait for it. */
   clock?: Clock;
   /**
+   * Epoch milliseconds now, for the one reading that is a DATE: a broadcast's anchor. Defaults to
+   * `Date.now`. Injected so a test can pin it.
+   *
+   * ⛔ Never `clock.now()` for this. That clock is `performance.now()`, milliseconds since the
+   * process started, chosen so ages cannot go negative under an NTP step. Minted from it, the first
+   * stage broadcast of 2026-09-03 stamped every segment `1970-01-01T00:00:51Z`, fifty-two seconds
+   * being how long the uploader had been up. A stamp is read by viewers as a date, so it is the one
+   * reading here that must come from the wall clock.
+   */
+  wallClock?: () => number;
+  /**
    * How long a settled stop stays readable through `getStreamStatus`. Injectable only so the expiry
    * can be driven at all: at its default the record outlives any test worth writing.
    */
@@ -244,10 +255,12 @@ export class StreamOrchestrator {
     private config: StreamOrchestratorConfig,
   ) {
     this.clock = config.clock ?? systemClock;
+    this.wallClock = config.wallClock ?? Date.now;
     this.stopOutcomeTtlMs = config.stopOutcomeTtlMs ?? DEFAULT_STOP_OUTCOME_TTL_MS;
   }
 
   private readonly clock: Clock;
+  private readonly wallClock: () => number;
   private readonly stopOutcomeTtlMs: number;
 
   /**
@@ -525,7 +538,7 @@ export class StreamOrchestrator {
     // Minted with the group and never per rung. Every rung of one ladder dates the same media the
     // same way only because they all read this one instant, and a rung admitted a moment later
     // taking its own reading is exactly the disagreement `#EXT-X-PROGRAM-DATE-TIME` exists to avoid.
-    let startedAtMs = this.clock.now();
+    let startedAtMs = this.wallClock();
 
     if (match) {
       const remembered = this.groupFor(match.baseStreamId);
@@ -977,7 +990,7 @@ export class StreamOrchestrator {
     // recovered from an entry that predates the anchor has no start of its own, and taking one now is
     // the same late-but-honest reading `readPersistedLadder` takes.
     const anchor: BroadcastAnchor = state.anchor ?? {
-      startedAtMs: this.clock.now(),
+      startedAtMs: this.wallClock(),
       fragmentSeconds: this.config.fragmentSeconds,
     };
 
@@ -1461,7 +1474,7 @@ export class StreamOrchestrator {
       return existing;
     }
 
-    const identity = { group: crypto.randomUUID(), startedAtMs: this.clock.now() };
+    const identity = { group: crypto.randomUUID(), startedAtMs: this.wallClock() };
     this.rememberLadder(base, identity);
     return identity;
   }
@@ -1479,7 +1492,7 @@ export class StreamOrchestrator {
     if (!persisted) {
       return null;
     }
-    return { group: persisted.group, startedAtMs: persisted.startedAtMs ?? this.clock.now() };
+    return { group: persisted.group, startedAtMs: persisted.startedAtMs ?? this.wallClock() };
   }
 
   private rememberLadder(base: string, ladder: RememberedLadder): void {
