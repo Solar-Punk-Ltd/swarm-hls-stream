@@ -235,9 +235,40 @@ describe('whether anything was actually shown', () => {
 
   /** ⛔ A recording can start, report a duration, land every seek and show one frozen frame. */
   it('refuses a recording that opened on a frame and stayed there', () => {
-    const frozen = parseBrowserArmState(vodArmState({ overallAdvanceRatio: 0 }));
+    const frozen = parseBrowserArmState(
+      vodArmState({
+        overallAdvanceRatio: 0,
+        startedPlaying: { currentTime: 0.01 },
+        afterSettle: { currentTime: 0.01 },
+      }),
+    );
 
     assert.match(String(pictureMovedRefusal(frozen)), /opened on a frame and stayed there/);
+  });
+
+  /**
+   * ⛔⛔ The reading six V4 runs produced on 2026-09-02 and 09-03: a 30 s recording played to its last
+   * second inside the 60 s settle, the watch that followed found an ended element, and advance read 0.
+   * That recording played, and calling it frozen was the harness reading its own window.
+   */
+  it('accepts a recording that reached its end during the settle, whatever the watch after it read', () => {
+    const ended = parseBrowserArmState(
+      vodArmState({
+        overallAdvanceRatio: 0,
+        startedPlaying: { currentTime: 0.012 },
+        afterSettle: { currentTime: 30.533 },
+      }),
+    );
+
+    assert.equal(pictureMovedRefusal(ended), null);
+    assert.equal(ended.vod?.playedThroughS, 30.521);
+  });
+
+  it('reads no settle travel off an artifact that recorded no start or no post-settle state', () => {
+    const older = parseBrowserArmState(vodArmState({ overallAdvanceRatio: 0 }));
+
+    assert.equal(older.vod?.playedThroughS, null);
+    assert.match(String(pictureMovedRefusal(older)), /opened on a frame and stayed there/);
   });
 
   it('refuses a recording that decoded nothing at all', () => {

@@ -204,12 +204,22 @@ function shortRef(reference: string): string {
   return `${reference.slice(0, 12)}…`;
 }
 
-/** Why nothing was actually decoded, or null. A recording can start, report a duration and show nothing. */
+/**
+ * Why nothing was actually decoded, or null. A recording can start, report a duration and show nothing.
+ *
+ * ⛔⛔ A recording that reached its end during the settle is not a frozen picture. The watch this
+ * arm's samples come from opens after the byte-source settle, and a recording shorter than that
+ * settle has already ended by then: the element is paused at its duration, every sample reads the
+ * same second, and the advance ratio is honestly zero about a stretch in which nothing was left to
+ * play. Six V4 runs on 2026-09-02 and 09-03 read exactly that, each after playing 30 s of a 30 s
+ * recording. So the playhead's travel during the settle is asked first, and only a recording that
+ * neither advanced then nor during the watch opened on a frame and stayed there.
+ */
 export function pictureMovedRefusal(result: BrowserArmResult): string | null {
   if (result.resolutions.length === 0) {
     return 'the player never reported a resolution, so nothing was decoded and no picture was shown';
   }
-  if (result.advanceRatio <= 0) {
+  if (result.advanceRatio <= 0 && !(result.vod !== null && (result.vod.playedThroughS ?? 0) > 0)) {
     return (
       'the picture never moved forward across the whole settle, so this recording opened on a frame and ' +
       'stayed there'

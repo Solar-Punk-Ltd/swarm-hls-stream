@@ -919,6 +919,16 @@ export interface VodResult {
    * here would report a recording as whole on the strength of a reading nobody took.
    */
   rungs: readonly VodRung[] | null;
+  /**
+   * How far the playhead travelled while the arm's byte source settled, in media seconds, or null on
+   * an artifact that recorded no start or no post-settle reading.
+   *
+   * ⛔ The one reading that says a recording PLAYED when the watch that follows the settle found it
+   * ended. A 30 s recording under a 60 s settle reaches its last second before the watch begins, and
+   * the watch then reads advance 0 on a paused element, which is not a frozen picture. Measured on
+   * every V4 run from 2026-09-02 to 09-03.
+   */
+  playedThroughS: number | null;
 }
 
 /**
@@ -943,7 +953,23 @@ function readVodResult(run: Record<string, unknown>): VodResult | null {
       asNumber(height, `run.vod.ladderHeights[${i}]`),
     ),
     rungs: readVodRungs(vod),
+    playedThroughS: readPlayedThrough(run),
   };
+}
+
+/** `afterSettle.currentTime - startedPlaying.currentTime`, or null where either reading is absent. */
+function readPlayedThrough(run: Record<string, unknown>): number | null {
+  const started = run.startedPlaying;
+  const settled = run.afterSettle;
+  if (started === null || started === undefined || settled === null || settled === undefined) {
+    return null;
+  }
+  const from = asObject(started, 'run.startedPlaying').currentTime;
+  const to = asObject(settled, 'run.afterSettle').currentTime;
+  if (typeof from !== 'number' || typeof to !== 'number' || !Number.isFinite(from) || !Number.isFinite(to)) {
+    return null;
+  }
+  return Math.round((to - from) * 1000) / 1000;
 }
 
 /**

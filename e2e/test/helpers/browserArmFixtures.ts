@@ -17,6 +17,9 @@
 /** What a caller wants different about this run. Anything omitted is a clean weeb-3 watch. */
 interface ArmStateOverrides {
   overallAdvanceRatio?: unknown;
+  /** The playback arm's readings at start and after its settle. Left out, as every live arm leaves them. */
+  startedPlaying?: Record<string, unknown>;
+  afterSettle?: Record<string, unknown>;
   latency?: Record<string, unknown>;
   resolutions?: readonly (string | null)[];
   feedStatesSeen?: readonly string[] | undefined;
@@ -183,6 +186,12 @@ export function armState(overrides: ArmStateOverrides = {}): unknown {
     delete (run.network as Record<string, unknown>).segmentRequests;
   }
 
+  if (overrides.startedPlaying !== undefined) {
+    run.startedPlaying = overrides.startedPlaying;
+  }
+  if (overrides.afterSettle !== undefined) {
+    run.afterSettle = overrides.afterSettle;
+  }
   return run;
 }
 
