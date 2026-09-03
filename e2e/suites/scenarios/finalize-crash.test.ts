@@ -10,6 +10,7 @@ import {
   manifestIndicesByStream,
   parseUploaderLog,
   resumedFinalizeCount,
+  segmentIndicesByStream,
 } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -114,11 +115,24 @@ describe('H — killed inside finalize: one recording, and the catalog points at
     // twice, which the uploader's log disproved. It counts the flips and no longer arms the kill.
     const vodCommits = (text: string): number => announcedVodFinalizeCount(text);
 
-    await waitFor(async () => parseUploaderLog(await log()).uploadedSegments.length >= WARMUP_SEGMENTS, {
-      timeoutMs: WARMUP_WAIT_MS,
-      intervalMs: 2_000,
-      label: `warmup: ${WARMUP_SEGMENTS} segments before stopping the broadcaster`,
-    });
+    // ⛔ Per rung, and every rung, never the merged count. On 2026-09-03 the merged count reached four
+    // in five seconds on the three fast rungs while the 1080p rung, still transcoding its first
+    // fragment, had uploaded nothing. The broadcaster was stopped, the kill caught three recovery
+    // entries, the recovered finalize produced a three-rung recording, and this file called that a
+    // rendition lost across the crash. The rung had never existed to lose. Floored at one for the
+    // reason scenario A gives: a stage declaring no rungs must not clear on an empty map.
+    const expectedStreams = Math.max(1, cfg.abrEnabled ? cfg.abrRungs.length : 1);
+    await waitFor(
+      async () => {
+        const streams = segmentIndicesByStream(await log());
+        return streams.size >= expectedStreams && [...streams.values()].every((idx) => idx.length >= WARMUP_SEGMENTS);
+      },
+      {
+        timeoutMs: WARMUP_WAIT_MS,
+        intervalMs: 2_000,
+        label: `warmup: ${WARMUP_SEGMENTS} segments on each of ${expectedStreams} stream(s) before stopping the broadcaster`,
+      },
+    );
     // A set, because a ladder announces one topic per rung and the catalog entry carries one of them.
     const ourTopics = new Set(announcedSessionTopics(await log()));
     assert.ok(ourTopics.size > 0, 'the uploader must have announced a live topic before the finalize');
