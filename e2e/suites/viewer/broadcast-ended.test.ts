@@ -5,7 +5,7 @@ import { FEED_STATE_ENDED } from '../../src/browser/feedState.js';
 import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
-import { ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
+import { byteSourceArmRefusal, ladderResolutionRefusal } from '../../src/harness/browserVerdict.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { announcedVodFinalizeCount, parseUploaderLog } from '../../src/harness/logwatch.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
@@ -24,6 +24,23 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  * last frame with a spinner reloads or leaves, and a viewer told the broadcast has ended does neither.
  * `FeedStateOverlay` renders one terminal message for exactly this, and until now nothing asserted
  * that a viewer ever reaches it.
+ *
+ * ## What this asserts
+ *
+ * That the viewer decoded a picture, that the quality they were served is one the deployment's
+ * ladder declares, that the bytes came from the byte source this run is filed under, and that they
+ * reached the terminal ended state once the broadcast finalised as a recording.
+ *
+ * ## ⛔⛔⛔ The byte source, which this asked nothing about until 2026-09-04
+ *
+ * Eight of the ten viewer suites refused an in-tab arm whose segments came from the gateway after
+ * all. This was one of the two that did not, while `runBrowserArm` recorded the proof on every one
+ * of its arms. So an in-browser run whose in-tab node never served a byte passed exactly like one
+ * whose node served all of them, and every V5 in-tab result before this date says only that A viewer
+ * was told the broadcast ended, never that a viewer reading through the node in their own tab was.
+ *
+ * ⭐ That is the same failure `src/browser/byteSourceArm.ts` was written to close one layer down: an
+ * unread setting looks precisely like a setting at its default.
  *
  * ## ⛔ Why this buys its own broadcast rather than riding V1's
  *
@@ -65,6 +82,24 @@ const BEFORE_STOP_MS = 150_000;
  * then has to poll and re-render, so the tail is several times that.
  */
 const MIN_TAIL_MS = 180_000;
+
+/**
+ * The most `/bytes/` requests an in-tab arm may make across the whole watch.
+ *
+ * ⭐ Nine, the same ceiling V1 holds a live watch to, because this is the same driver on the same
+ * window. `browser:watch` opens the arm between playback starting and the first sample and judges
+ * its request log from the end of the settle, exactly as V1's does, so the reads that reach this
+ * count are the ones the in-tab node's boot legitimately makes through the gateway while 4.5 MB of
+ * wasm loads and a peer is dialled. Measured on that path: a ladder arm made 6 where a gateway
+ * viewer made 500, and live in-tab arms have read 3 to 6 across every sitting since.
+ *
+ * ⛔ Neither of this case's two differences from V1 adds a gateway read, which is why the number is
+ * not raised for them. The watch is six minutes rather than four, and the extra two are spent after
+ * the switch, so they buy node reads and not gateway ones. And the broadcast ENDS partway through:
+ * once it has, no rung publishes another segment, so there is nothing left for a starved player to
+ * fetch from anywhere. A viewer sitting in the ended state makes no segment request at all.
+ */
+const MAX_WEEB3_SEGMENT_REQUESTS = 9;
 
 /** The broadcast has to be established before it is worth ending. */
 const WARMUP_SEGMENTS = 4;
@@ -139,6 +174,13 @@ describe('V5 — the viewer is told when the broadcast ends', { skip }, () => {
       result.resolutions.length > 0,
       'the player never decoded anything, so this viewer never watched the broadcast that ended',
     );
+    // ⛔⛔ Before both product readings below, because each is filed against this condition. A
+    // switch that silently did nothing puts the two arms of the matrix on one, every metric agrees,
+    // and the run reports that an in-tab node tells a viewer the broadcast ended exactly as well as
+    // a gateway does. That is the most attractive headline available here, produced by nothing
+    // happening.
+    const notItsCondition = byteSourceArmRefusal(result, { maxSegmentRequests: MAX_WEEB3_SEGMENT_REQUESTS });
+    assert.equal(notItsCondition, null, `this arm is not the byte source it is filed as: ${notItsCondition}`);
     // ⭐ Phase 1 of docs/e2e-viewer-coverage-plan.md. The resolutions were already being captured and
     // printed, so a viewer riding a rung nobody configured passed every suite on a reading that was
     // sitting right there. Asks whether the rung is one the ladder declares, never which one.
