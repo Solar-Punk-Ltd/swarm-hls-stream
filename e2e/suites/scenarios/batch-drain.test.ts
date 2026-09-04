@@ -226,7 +226,8 @@ describe("L, one rung's postage runs dry and the other three carry the broadcast
     });
     const rewrittenAtIso = await host.nowIso();
     console.log(
-      `  the master is down to ${survivingRungs.join(', ')} after ${DEAD_RUNG_MASTER_WAIT_MS / 1_000}s at most`,
+      `  the master is down to ${survivingRungs.join(', ')}, inside the ` +
+        `${DEAD_RUNG_MASTER_WAIT_MS / 1_000}s of patience this suite gives the ramp`,
     );
 
     // ⭐ Every survivor keeps going AFTER the rung is gone, which is the half that makes the
