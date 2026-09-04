@@ -2,7 +2,10 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist/",
-    "target": "ES2020",
+    // ES2022 for the standard `new Error(message, { cause })`, which is how a rethrow keeps the read
+    // that actually failed instead of describing it. Node 22 runs this and nothing here is emitted,
+    // so the target only decides which library declarations a typecheck admits.
+    "target": "ES2022",
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
