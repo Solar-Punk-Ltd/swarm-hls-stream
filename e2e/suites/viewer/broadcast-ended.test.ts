@@ -33,8 +33,8 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  *
  * ## ⛔⛔⛔ The byte source, which this asked nothing about until 2026-09-04
  *
- * Eight of the ten viewer suites refused an in-tab arm whose segments came from the gateway after
- * all. This was one of the two that did not, while `runBrowserArm` recorded the proof on every one
+ * Every viewer suite but two refused an in-tab arm whose segments came from the gateway after all.
+ * This was one of the two that did not, while `runBrowserArm` recorded the proof on every one
  * of its arms. So an in-browser run whose in-tab node never served a byte passed exactly like one
  * whose node served all of them, and every V5 in-tab result before this date says only that A viewer
  * was told the broadcast ended, never that a viewer reading through the node in their own tab was.

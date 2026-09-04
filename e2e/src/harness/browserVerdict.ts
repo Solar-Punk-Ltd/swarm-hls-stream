@@ -123,12 +123,13 @@ export function weeb3ArmRefusal(result: BrowserArmResult, { maxSegmentRequests }
 /**
  * Why this arm is not the condition it is filed as, whichever condition that is, or null.
  *
- * ⛔⛔ **The rule was written four times and reached only eight of the ten viewer suites.**
- * `qualityArm`, `rungArm` and `crashArm` each carry their own identical copy of these three
- * branches. V4 and V5 carried none, so in the in-browser profile they passed whatever served them,
+ * ⛔⛔ **The rule was written four times and two viewer suites carried none of it.** `qualityArm`,
+ * `rungArm` and `crashArm` each carry their own identical copy of these three branches. V4 and V5
+ * carried none until 2026-09-04, so in the in-browser profile they passed whatever served them,
  * which is the exact failure `browser/byteSourceArm.ts` exists to prevent one layer down: an unread
- * setting looks precisely like a setting at its default. This is the one statement of it the two
- * suites that were missing it now share.
+ * setting looks precisely like a setting at its default. This is the one statement of it the suites
+ * that were missing it now share, and every suite under `suites/viewer/` asserts an arm proof
+ * through one of the four.
  *
  * ⭐ **A gateway arm is passed with no ceiling applied**, and that is deliberate rather than an
  * omission. A gateway viewer reads every segment through the gateway by definition, so the in-tab

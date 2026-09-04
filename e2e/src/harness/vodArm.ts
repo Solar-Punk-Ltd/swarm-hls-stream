@@ -93,8 +93,10 @@ interface VodArmExpectation {
  * Asked after the headline, a dead recording is refused by the check that can explain it and a
  * recording that played is held to the condition it is filed under.
  *
- * ⭐ Ordering it this way costs nothing. A recording that never played fetched nothing either, so it
- * passes this on its way to the refusal that owns it.
+ * ⛔ The order is the whole of it, and there is no free pass underneath. A recording that never
+ * played reaches here having named no byte source, which is the first thing `byteSourceArmRefusal`
+ * refuses, so asked first this returns a refusal every time and never falls through to the check that
+ * can explain the run.
  */
 export function vodByteSourceRefusal(result: BrowserArmResult, expectation: VodArmExpectation): string | null {
   return byteSourceArmRefusal(result, { maxSegmentRequests: expectation.maxSegmentRequests });

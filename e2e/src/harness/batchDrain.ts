@@ -137,7 +137,7 @@ export const DROPPED_SEGMENTS_METRIC = `${METRICS_PREFIX}_${DROPPED_SEGMENTS_FAM
  */
 export const HEALTH_REASON_SEGMENT_UPLOAD_FAILURE = 'segment_upload_failure';
 
-/** The one status a healthy uploader reports. Mirrors `HEALTH_OK`, proven by the same test. */
+/** The status an uploader reports once something is wrong with it. Mirrors `HEALTH_DEGRADED`, proven by the same test. */
 export const HEALTH_STATUS_DEGRADED = 'degraded';
 
 /** Where an operator arms and restores the stage. Named in every refusal, because a refusal that stops at "the batch is wrong" leaves the reader to find that out for themselves. */
