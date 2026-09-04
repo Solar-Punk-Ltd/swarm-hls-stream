@@ -154,3 +154,52 @@ describe('--portSlot is read as a decimal whole number', () => {
     assert.match(run.stderr, /7x/);
   });
 });
+
+/**
+ * ⛔ The slot arithmetic owns two blocks of ports, not one. Every service takes `base + slot*10` out
+ * of 1000x, and the per-rung bee nodes take six more out of 1100x on the same rule, because the
+ * first block has no digit left. The two meet at slot 100, where `10000 + 100*10` is 11000 and the
+ * first block lands on top of the second. `_lib.sh` has carried that in a ⚠️ note since the second
+ * block was added and nothing enforced it, so a deployment at slot 100 would have collided with
+ * slot 0's own bee nodes and surfaced as a port already in use, or worse as a stack quietly reaching
+ * another one's node. Slots 1, 2 and 7 are all that have ever been used.
+ */
+describe('--portSlot stops below the second port block', () => {
+  it('accepts 99, the highest slot that keeps the two blocks apart', async () => {
+    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+
+    const run = await sourceLib(
+      sandbox,
+      'parse_profile_args --profile=streamer1 --portSlot=99\necho "slot=$PORT_SLOT"',
+    );
+
+    assert.equal(run.exitCode, 0, run.stderr);
+    assert.match(run.stdout, /^slot=99$/m);
+  });
+
+  it('refuses 100, and says which ports it would have landed on', async () => {
+    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+
+    const run = await sourceLib(
+      sandbox,
+      'parse_profile_args --profile=streamer1 --portSlot=100\necho "slot=$PORT_SLOT"',
+    );
+
+    assert.notEqual(run.exitCode, 0, 'slot 100 was accepted, and it collides with the per-rung bee ports');
+    assert.match(run.stderr, /--portSlot must be 0-99/);
+    assert.match(run.stderr, /100/);
+    assert.match(run.stderr, /11000/);
+  });
+
+  it('refuses 999, which the range used to end at', async () => {
+    const sandbox = makeSandbox({ envFiles: WITH_PROFILE });
+
+    const run = await sourceLib(
+      sandbox,
+      'parse_profile_args --profile=streamer1 --portSlot=999\necho "slot=$PORT_SLOT"',
+    );
+
+    assert.notEqual(run.exitCode, 0, 'slot 999 was accepted');
+    assert.match(run.stderr, /--portSlot must be 0-99/);
+  });
+});

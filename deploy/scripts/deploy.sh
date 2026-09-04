@@ -25,7 +25,7 @@ usage() {
   echo "Per-profile env file: <repo>/.env.<profile> (required when --profile is set)."
   echo "Engine env files are per-profile too: engines/<engine>/.env.<profile> — created"
   echo "automatically from the engine's .env (or .env.sample) on first deploy."
-  echo "--portSlot=<N> (1-999) shifts each default *_PORT by N*10 (10000 -> 10020 with =2)."
+  echo "--portSlot=<N> (1-99) shifts each default *_PORT by N*10 (10000 -> 10020 with =2)."
   echo "When set, the slot is authoritative — port lines in .env.<profile> are ignored."
   echo "--host=<target> ignores per-service targets in config.json and sends every enabled"
   echo "service to <target> (\"localhost\" or any host reachable via ~/.ssh/config)."

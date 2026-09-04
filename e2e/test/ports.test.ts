@@ -123,7 +123,7 @@ describe('OME ports stay outside the slot arithmetic', () => {
   // because they are not in PORT_VARS. Deriving them from the slot instead — which a sibling repo's
   // copy of this harness did — points the publisher at a port OME is not bound to.
   it('is not touched by apply_port_slot at any slot', () => {
-    for (const slot of [0, 3, 999]) {
+    for (const slot of [0, 3, 99]) {
       const vars = readVars(`PORT_SLOT=${slot}\napply_port_slot`, Object.keys(OME_PORT_DEFAULTS));
       for (const name of Object.keys(OME_PORT_DEFAULTS)) {
         assert.equal(vars[name].isSet, false, `apply_port_slot set ${name} at slot ${slot}, so it is slot-shifted now`);
@@ -133,13 +133,18 @@ describe('OME ports stay outside the slot arithmetic', () => {
 });
 
 describe('port slot validation', () => {
-  for (const raw of ['0', '1', '999']) {
+  for (const raw of ['0', '1', '99']) {
     it(`accepts ${raw}`, () => {
       assert.equal(requireValidPortSlot(raw), Number(raw));
     });
   }
 
-  for (const raw of ['1000', '-1', '1.5', '', 'abc', ' 2']) {
+  /**
+   * ⛔ 100 is the first slot the shell refuses, and it has to be refused here too or the harness
+   * would aim at a deployment `--portSlot` cannot create. `10000 + 100*10` is 11000, which is the
+   * block the per-rung bee nodes hold.
+   */
+  for (const raw of ['100', '999', '1000', '-1', '1.5', '', 'abc', ' 2']) {
     it(`refuses ${JSON.stringify(raw)}`, () => {
       assert.throws(() => requireValidPortSlot(raw), /E2E_PORT_SLOT/);
     });
@@ -165,12 +170,12 @@ describe('resolvePort refuses what the deploy would pass through', () => {
 
   /**
    * No valid slot can overflow, which is why neither this mirror nor `apply_port_slot` can reach
-   * its own range check from the slot path: the highest reachable port is 10008 + 999*10 = 19998.
+   * its own range check from the slot path: the highest reachable port is 10008 + 99*10 = 10998.
    * Asserted as a property rather than left implicit, because it is what makes raising
    * MAX_PORT_SLOT a breaking change rather than a bigger number.
    */
   it('cannot overflow from any valid slot, so the range check guards only env values', () => {
-    for (const slot of [0, 1, 500, MAX_PORT_SLOT]) {
+    for (const slot of [0, 1, 50, MAX_PORT_SLOT]) {
       for (const name of PORT_NAMES) {
         const port = resolvePort(name, slot, {});
         assert.ok(port <= MAX_PORT, `${name} at slot ${slot} resolved to ${port}, past ${MAX_PORT}`);

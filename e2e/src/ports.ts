@@ -33,7 +33,15 @@ export const PORT_DEFAULTS = {
 export type PortVar = keyof typeof PORT_DEFAULTS;
 
 export const PORT_SLOT_STRIDE = 10;
-export const MAX_PORT_SLOT = 999;
+
+/**
+ * The highest slot `--portSlot` will create, and the ceiling is the second port block rather than
+ * the TCP range. The per-rung bee nodes take six ports out of 1100x on the same arithmetic, so slot
+ * 100 would put the first block at 11000 and on top of slot 0's own bee nodes. `_lib.sh` refuses
+ * anything above this, and so does this file, or the harness would aim at a deployment the deploy
+ * scripts cannot create.
+ */
+export const MAX_PORT_SLOT = 99;
 export const MAX_PORT = 65535;
 
 /**
@@ -82,7 +90,7 @@ export function resolveOmePort(name: OmePortVar, env: EnvBag): number {
 }
 
 export function requireValidPortSlot(raw: string): number {
-  if (!/^[0-9]{1,3}$/.test(raw)) {
+  if (!/^[0-9]{1,2}$/.test(raw)) {
     throw new Error(`Invalid E2E_PORT_SLOT "${raw}"; expected an integer 0-${MAX_PORT_SLOT}, as --portSlot takes`);
   }
   return Number(raw);

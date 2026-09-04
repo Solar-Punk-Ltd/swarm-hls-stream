@@ -45,10 +45,12 @@ readonly ENV_SAMPLE="$ROOT_DIR/.env.sample"
 #                   The non-default file is REQUIRED — parse_profile_args errors if it is
 #                   missing so a typo in --profile= doesn't silently deploy the wrong stack.
 # - REMOTE_BASE     ~/swarm-hls-stream for default, ~/swarm-hls-stream-<profile> otherwise
-# - PORT_SLOT       integer slot id (0-999). 0 = no slot, env values win.
+# - PORT_SLOT       integer slot id (0-99). 0 = no slot, env values win.
 #                   For slot N>=1, every host-mapped port becomes default + N*10,
-#                   yielding non-overlapping bands of 10 ports per slot in the
-#                   10000-19999 range. See apply_port_slot.
+#                   yielding non-overlapping bands of 10 ports per slot: 10000-10998
+#                   for the stack, and 11001-11996 for the per-rung bee nodes.
+#                   99 is the last slot that keeps those two blocks apart.
+#                   See apply_port_slot and the range check in parse_profile_args.
 PROFILE="default"
 ENV_FILE="$ROOT_DIR/.env"
 REMOTE_BASE="~/swarm-hls-stream"
@@ -99,9 +101,10 @@ readonly PORT_VARS=(
   # 1000x are taken. The per-rung Bee nodes need six more ports, so they open 1100x on the same
   # arithmetic and the same unique-digit rule inside it.
   #
-  # ⚠️ The two blocks meet at slot 100, where 10000 + 100*10 is 11000. Slots are documented 1-999, so
-  # a deployment at slot 100 or above would collide. Nothing enforces that today and it is the one
-  # thing this second decade costs. Filed with the port scheme's own note above.
+  # ⚠️ The two blocks meet at slot 100, where 10000 + 100*10 is 11000, so a deployment there would
+  # collide with slot 0's own bee nodes. Since 2026-09-04 `parse_profile_args` refuses any slot above
+  # 99, which is what this second decade costs and it is now paid for. Filed with the port scheme's
+  # own note above.
   "BEE_RUNG_480P_API_PORT:11001:11001"
   "BEE_RUNG_480P_P2P_PORT:11002:11002"
   "BEE_RUNG_720P_API_PORT:11003:11003"
@@ -225,10 +228,15 @@ parse_profile_args() {
     exit 1
   fi
 
-  # PORT_SLOT shifts each default by slot*10 (so slot 1 → 10010-10018,
-  # slot 999 → 19990-19998). Restrict to 0-999 to stay within TCP range.
-  if ! [[ "$PORT_SLOT" =~ ^[0-9]{1,3}$ ]]; then
-    echo -e "${RED}ERROR: --portSlot must be an integer 0-999 (got: $PORT_SLOT)${NC}" >&2
+  # PORT_SLOT shifts each default by slot*10 (so slot 1 → 10010-10018, slot 99 → 10990-10998).
+  #
+  # ⛔ The ceiling is the SECOND port block and not the TCP range. The per-rung bee nodes take six
+  # ports out of 1100x on the same arithmetic, so slot 100 puts the first block at 11000, on top of
+  # slot 0's own bee nodes. That collision was carried as a ⚠️ note beside PORT_VARS and nothing
+  # enforced it until 2026-09-04. Slots 1, 2 and 7 are all that have ever been used.
+  if ! [[ "$PORT_SLOT" =~ ^[0-9]{1,2}$ ]]; then
+    echo -e "${RED}ERROR: --portSlot must be 0-99 (got: $PORT_SLOT).${NC}" >&2
+    echo "Slot 100 puts the first port block at 11000, on top of the per-rung bee ports." >&2
     exit 1
   fi
 
@@ -263,7 +271,7 @@ PORT_OVERRIDES_TEXT=""
 # Rule:
 #   - PORT_SLOT=0 (no --portSlot flag): keep env values; only fill the
 #     unset ports with their built-in default.
-#   - PORT_SLOT=1-999: AUTHORITATIVE — every port becomes default + slot*10,
+#   - PORT_SLOT=1-99: AUTHORITATIVE — every port becomes default + slot*10,
 #     regardless of any value in .env.<profile>. This avoids surprises where a
 #     hand-edited port in the env file silently survives the slot shift.
 #

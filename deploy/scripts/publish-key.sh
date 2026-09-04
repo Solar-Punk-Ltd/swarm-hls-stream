@@ -17,7 +17,7 @@ usage() {
   # the printed port, and the two-word spellings swallow the stream id and leave the usage text with
   # no hint of why. See TEST-54.
   echo "  --profile=<name>      which .env.<name> and engines/*/.env.<name> to read"
-  echo "  --portSlot=<0-999>    shifts every host port, so the printed URLs follow the deployment"
+  echo "  --portSlot=<0-99>     shifts every host port, so the printed URLs follow the deployment"
   echo "  --host=<target>       overrides the deploy target"
   echo "  --feed-owner=<hex>    override, unused here and consumed anyway"
   echo "  --feed-topic=<hex>    override, unused here and consumed anyway"
