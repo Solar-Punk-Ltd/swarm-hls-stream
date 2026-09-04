@@ -751,12 +751,12 @@ do_arm() {
 
   heading
   log_ok "the ${RUNG} node holds $(text_of "$reading")"
+  # ⛔ The copy and the record both come before the rewrite, and in this order. The copy is what the
+  # env file can be put back from and the record is what the rung can be put back from, so a rung is
+  # never armed until both exist. A failed copy then leaves nothing behind at all, and a failed record
+  # leaves a copy and an env file that still names the rung's own batch.
   back_up_env
 
-  # ⛔ Both before the rewrite, and in this order. The copy is what the env file can be put back from
-  # and the record is what the rung can be put back from, so a rung is never armed until both exist.
-  # A failed copy then leaves nothing behind at all, and a failed record leaves a copy and an env file
-  # that still names the rung's own batch.
   if ! record_original "$original"; then
     fail "could not record the original batch of rung ${RUNG} in ${RECORD_FILE##*/}, so a restore would have nothing to put back, and ${ENV_FILE##*/} has not been rewritten."
   fi
