@@ -6,6 +6,7 @@ import {
   getErrorMessage,
   isRetryableError,
   jitteredDelayMs,
+  nonRetryableStatus,
   retryUntilDeadlineAsync,
 } from '../src/utils/common.js';
 
@@ -51,6 +52,45 @@ describe('isRetryableError', () => {
   it('retries errors with no HTTP status (network/transport failures)', () => {
     assert.equal(isRetryableError(new Error('ECONNREFUSED')), true);
     assert.equal(isRetryableError('boom'), true);
+  });
+});
+
+/**
+ * ⛔ The verdict and the status have to come from one place. A caller reporting a refusal needs both,
+ * and asking `isRetryableError` and then digging the status out separately is how the two answers
+ * drift: a bee node that is simply down throws with no status at all, and a reporter that read a
+ * status of its own would name a batch nothing refused. That is the exact confusion the refusal line
+ * exists to remove.
+ */
+describe('nonRetryableStatus', () => {
+  it('names the status of a refusal the policy will not retry', () => {
+    for (const status of [400, 401, 402, 403, 404, 409]) {
+      assert.equal(nonRetryableStatus(Object.assign(new Error('permanent'), { status })), status);
+    }
+  });
+
+  it('names nothing for a status the policy retries, however long the window is spent', () => {
+    for (const status of [408, 425, 429, 500, 502, 503, 504]) {
+      assert.equal(nonRetryableStatus(Object.assign(new Error('transient'), { status })), undefined);
+    }
+  });
+
+  /** A node that is down, which spends the whole retry window and is not a batch anything refused. */
+  it('names nothing for a transport failure carrying no status', () => {
+    assert.equal(nonRetryableStatus(new Error('ECONNREFUSED')), undefined);
+    assert.equal(nonRetryableStatus('boom'), undefined);
+  });
+
+  it('agrees with isRetryableError on every shape, since one is defined from the other', () => {
+    for (const error of [
+      new Error('ECONNREFUSED'),
+      'boom',
+      Object.assign(new Error('transient'), { status: 503 }),
+      Object.assign(new Error('permanent'), { status: 402 }),
+      Object.assign(new Error('odd'), { status: 'not a number' }),
+    ]) {
+      assert.equal(nonRetryableStatus(error) === undefined, isRetryableError(error), String(error));
+    }
   });
 });
 

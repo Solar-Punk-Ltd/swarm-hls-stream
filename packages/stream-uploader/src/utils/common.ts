@@ -73,12 +73,22 @@ function extractHttpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
-export function isRetryableError(error: unknown): boolean {
+/**
+ * The HTTP status of a failure this policy will not retry, and undefined for everything it will.
+ *
+ * ⛔ **The verdict and the status, from one place.** A caller that reports such a failure needs both,
+ * and asking {@link isRetryableError} and then digging the status out again is how the two answers
+ * drift apart. A bee node that is merely down throws carrying no status at all, so a reporter reading
+ * a status of its own would name a postage batch nothing had refused, which is the exact confusion
+ * `rungBatchRefused` exists to remove.
+ */
+export function nonRetryableStatus(error: unknown): number | undefined {
   const status = extractHttpStatus(error);
-  if (status === undefined) {
-    return true;
-  }
-  return RETRYABLE_HTTP_STATUSES.has(status);
+  return status !== undefined && !RETRYABLE_HTTP_STATUSES.has(status) ? status : undefined;
+}
+
+export function isRetryableError(error: unknown): boolean {
+  return nonRetryableStatus(error) === undefined;
 }
 
 export function backoffDelayMs(attempt: number, baseDelayMs: number = 350, capDelayMs: number = 2000): number {

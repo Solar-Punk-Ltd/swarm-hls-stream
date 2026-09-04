@@ -6,6 +6,7 @@ import {
   manifestUploaded,
   originDeclaredDiscontinuity,
   publishingRendition,
+  rungBatchRefused,
   segmentsNeverArrived,
   segmentUploaded,
   segmentUploadFailed,
@@ -24,7 +25,7 @@ import {
   STREAM_STATUS_VOD,
   StreamState,
 } from '../types.js';
-import { getErrorMessage, retryUntilDeadlineAsync } from '../utils/common.js';
+import { getErrorMessage, nonRetryableStatus, retryUntilDeadlineAsync } from '../utils/common.js';
 import { HLS_ENDLIST, HLS_PLAYLIST_TYPE_VOD } from '../utils/hlsTags.js';
 
 import {
@@ -195,6 +196,15 @@ export class StreamUploader {
   private consecutiveManifestFailures = 0;
   private consecutiveSegmentFailures = 0;
   /**
+   * Whether this stream has already said its postage batch was refused, so it says it once per drain
+   * rather than once per segment a drained batch loses.
+   *
+   * Deliberately not persisted with the rest of the stream state. A restart re-reads `BEE_PUBLISHERS`,
+   * so the batch it comes back with may be a different one, and carrying the flag across would silence
+   * the first refusal of a batch this process has never uploaded against.
+   */
+  private batchRefusalReported = false;
+  /**
    * The newest segment index a published live manifest has named, or null before the first publish.
    *
    * Null rather than restored from persisted state after a crash: the window a recovered uploader
@@ -313,6 +323,9 @@ export class StreamUploader {
     }
 
     this.consecutiveSegmentFailures = 0;
+    // A batch that takes a segment is a batch worth reporting refused again. Beside the failure
+    // counter and not folded into it: that one feeds /health, this one arms one log line.
+    this.batchRefusalReported = false;
     const ref = result.reference.toHex();
     this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
     this.pendingDiscontinuity = false;
@@ -955,9 +968,33 @@ export class StreamUploader {
         UPLOAD_RETRY_CAP_MS,
       );
     } catch (error) {
+      this.reportBatchRefusal(error);
       this.errorHandler.handleError(error, 'StreamUploader.uploadDataToBee');
       return null;
     }
+  }
+
+  /**
+   * The one named line for a postage batch bee will not take a segment against.
+   *
+   * ⛔ **Why the retry verdict decides it and not the mere fact of a failure.** A bee node that is
+   * down throws with no status, spends the whole retry window, and drops the segment exactly as a
+   * refused batch does. Reporting that as a refused batch would send an operator to the postage side
+   * of a node that is simply gone, which is the confusion this line exists to remove rather than
+   * cause. So it fires only for a status the policy refuses to retry, and it carries that status and
+   * bee's own words instead of a guess at which of them means "empty".
+   *
+   * ⚠️ Segment uploads only, which is the `/bytes` POST. `uploadDataAsSoc` spends the same batch and a
+   * refused publish is evidence of the same condition, but that one is retried at the next segment and
+   * the rung goes on publishing media, so reporting it would say a rung had gone quiet while it was up.
+   */
+  private reportBatchRefusal(error: unknown): void {
+    const status = nonRetryableStatus(error);
+    if (status === undefined || this.batchRefusalReported) {
+      return;
+    }
+    this.batchRefusalReported = true;
+    this.logger.error(rungBatchRefused(this.stamp, this.streamId, status, getErrorMessage(error)));
   }
 
   private getFormattedDate(): string {

@@ -1,5 +1,10 @@
 import { Bee } from '@ethersphere/bee-js';
-import { engineSkippedSegments } from '@swarm-hls-stream/shared';
+import {
+  engineSkippedSegments,
+  rungBatchRefused,
+  rungBatchRefusedPattern,
+  segmentUploadFailed,
+} from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -101,7 +106,13 @@ function makeBee(segmentControl: SegmentUploadControl, feedControl: SegmentUploa
 
 function newUploader(
   segmentControl: SegmentUploadControl = {},
-  opts: { restoreState?: unknown; feedWriteFails?: boolean; feedControl?: SegmentUploadControl } = {},
+  opts: {
+    restoreState?: unknown;
+    feedWriteFails?: boolean;
+    feedControl?: SegmentUploadControl;
+    /** Overridden only where the batch id itself is what a test reads, on the refusal line. */
+    stamp?: string;
+  } = {},
 ): StreamUploader {
   const feedControl = opts.feedControl ?? (opts.feedWriteFails ? { fail: permanentError } : {});
   return new StreamUploader({
@@ -110,7 +121,7 @@ function newUploader(
     streamCatalog: makeFakeCatalog(),
     recoveryStore: makeFakeRecoveryStore(),
     streamKey: TEST_STREAM_KEY,
-    stamp: 'stamp',
+    stamp: opts.stamp ?? 'stamp',
     redundancyLevel: 1,
     streamId: 'stream-test',
     streamTopic: 'topic-test',
@@ -524,6 +535,140 @@ describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
       0,
       'a manifest that published is not stale, and /health reports this counter',
     );
+  });
+});
+
+/**
+ * ⛔ **The line that tells a drained postage batch from a dead encoder.** Each rung publishes through
+ * its own bee with its own prepaid batch, and a batch that runs dry stops that rung alone: bee refuses
+ * every upload, the segment is dropped on the first answer, and the dead-rung rule takes the rung out
+ * of the master a few segments later. An encoder that died looks the same from every other
+ * instrument, and `segmentUploadFailed` says only that the retry window is spent.
+ *
+ * Once per drain rather than once per segment, because a drained batch refuses every segment for as
+ * long as it stays configured and a line per segment would bury the diagnosis under its own
+ * consequences. Re-armed by a segment that lands, so a batch replaced by a redeploy and a later
+ * second drain each get their own line.
+ */
+describe('StreamUploader names the postage batch bee refused', () => {
+  /** A batch id is 64 hex characters. One repeated group, so nothing here reads as a real one. */
+  const BATCH = 'ba7c4de1'.repeat(8);
+  /** Bee refusing a full batch: the status is what the retry policy reads, the message its own words. */
+  const batchRefused =
+    (status = 402) =>
+    () =>
+      Object.assign(new Error('batch is not usable'), { status });
+  const refusalLines = (lines: readonly string[]): string[] =>
+    lines.filter((line) => rungBatchRefusedPattern().test(line));
+
+  it('writes the line once, at error level, the first time bee refuses an upload', async () => {
+    await withCapturedLog(async (lines, levels) => {
+      const uploader = newUploader({ fail: batchRefused() }, { stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      const refusals = refusalLines(lines);
+      assert.equal(refusals.length, 1, 'a rung that went quiet with no line is indistinguishable from a dead encoder');
+      assert.ok(refusals[0].includes(rungBatchRefused(BATCH, 'stream-test', 402, 'batch is not usable')), refusals[0]);
+      assert.equal(levels[lines.indexOf(refusals[0])], 'error', 'a refused batch is not an informational event');
+    });
+  });
+
+  /**
+   * ⛔ Beside the existing drop line, never instead of it. Six suites count discontinuities off
+   * `segmentUploadFailed` and the bee-outage scenario asserts on the index it names, so a diagnosis
+   * that replaced it would take a segment index out of the log to say something more general.
+   */
+  it('keeps writing the ordinary drop line for every segment it drops', async () => {
+    await withCapturedLog(async (lines) => {
+      const uploader = newUploader({ fail: batchRefused() }, { stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+      uploader.handleSegment(1, 2, Buffer.from('seg1'));
+      await drain(uploader);
+
+      assert.equal(refusalLines(lines).length, 1, 'the diagnosis is once per drain, not once per lost segment');
+      for (const index of [0, 1]) {
+        assert.ok(
+          lines.some((line) => line.includes(segmentUploadFailed('stream-test', index))),
+          `segment ${index} was dropped and no line names it`,
+        );
+      }
+    });
+  });
+
+  /**
+   * The only way a rung comes back is a batch that works, so a landed segment is what re-arms the
+   * line. Without that, the redeploy that replaces a drained batch and the drain that follows it
+   * hours later are one line in the log and the second drain is invisible.
+   */
+  it('writes a second line after a segment has landed in between', async () => {
+    await withCapturedLog(async (lines) => {
+      const control: SegmentUploadControl = { fail: batchRefused() };
+      const uploader = newUploader(control, { stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      control.fail = undefined;
+      uploader.handleSegment(1, 2, Buffer.from('seg1'));
+      await drain(uploader);
+
+      assert.equal(refusalLines(lines).length, 1, 'precondition: the first drain wrote its line');
+
+      control.fail = batchRefused();
+      uploader.handleSegment(2, 2, Buffer.from('seg2'));
+      await drain(uploader);
+
+      assert.equal(refusalLines(lines).length, 2, 'a batch that was replaced and ran dry again reported once');
+    });
+  });
+
+  /**
+   * ⛔ Which status family bee 2.8.2 answers a full batch with is recorded nowhere in this repo, and
+   * every test here assumes 402 because that is what the fixtures throw. The line carries whatever
+   * arrived so the first live drain settles it, and a status read off anything but the error itself
+   * would answer the question with the assumption.
+   */
+  it('carries the status bee answered with, not the one the fixtures assume', async () => {
+    await withCapturedLog(async (lines) => {
+      const uploader = newUploader({ fail: batchRefused(400) }, { stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      assert.equal(rungBatchRefusedPattern().exec(refusalLines(lines)[0] ?? '')?.[3], '400');
+    });
+  });
+
+  /**
+   * ⛔ Scoped to the segment upload, which is a `/bytes` POST, and not to the manifest's SOC write.
+   * Both spend the same batch, so a refused publish is evidence of the same condition, but it is
+   * retried at the next segment and the rung keeps publishing media. Reporting it as the batch being
+   * refused would say a rung had gone quiet while it was still up.
+   */
+  it('says nothing when only a manifest publish is refused', async () => {
+    await withCapturedLog(async (lines) => {
+      const uploader = newUploader({}, { feedControl: { fail: batchRefused() }, stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      assert.deepEqual(refusalLines(lines), [], 'a rung whose media is landing has not gone quiet');
+    });
+  });
+
+  it('says nothing on a broadcast whose batch holds', async () => {
+    await withCapturedLog(async (lines) => {
+      const uploader = newUploader({}, { stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      assert.deepEqual(refusalLines(lines), []);
+    });
   });
 });
 
