@@ -651,6 +651,26 @@ describe('the message for a postage batch bee refused', () => {
     assert.equal(found[4], '');
   });
 
+  /**
+   * ⛔⛔⛔ **Bee's answer is free text from a remote service arriving in a single line contract, and
+   * a newline in it is the worst shape available here.** The uploader would write the line
+   * correctly, the reader would find no refusal at all because the bounding words sit on the next
+   * physical line, and the drain suite would then wait out its whole four minutes on a paid
+   * broadcast and report three wrong causes: a stage nobody armed, a broadcast too short to fill the
+   * batch, or a deployment that cannot write the line. Bee 2.8.2 answers on one line today, so this
+   * is the guard rather than a bug being fixed.
+   */
+  it('keeps a multi line answer from bee on one line, so the reader still finds it', () => {
+    const line = rungBatchRefused(BATCH, 'live/stream_1080p', 400, 'Bad Request\n{"message":"batch is full"}');
+
+    assert.equal(line.includes('\n'), false, 'a second physical line is a refusal the reader cannot see');
+
+    const read = rungBatchRefusedPattern().exec(line);
+    assert.ok(read, 'the composed line has to match the pattern the harness reads with');
+    assert.equal(read[3], '400');
+    assert.equal(read[4], 'Bad Request {"message":"batch is full"}', "bee's words survive, only the newline goes");
+  });
+
   it('scopes the refusal to its own rung across an interleaved ladder log', () => {
     const log = [
       rungBatchRefused(BATCH, 'live/stream_1080p', 402, REFUSAL),
