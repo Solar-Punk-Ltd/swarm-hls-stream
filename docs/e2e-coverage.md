@@ -143,6 +143,14 @@ lives in the suite's own scripts and a driver is launched beside them. Since 202
 with `browser:`, this gate included, so a stale client now refuses the arm instead of being measured
 by it.
 
+Both held on the stage on 2026-09-04, at 0 BZZ. The client was redeployed through `deploy.sh` at head
+`3796e4a`, the served stamp named both trees, and the ten gates passed on the host. At `95458d1` the
+gate then ran ahead of a browser driver twice, `browser:selfcheck` through `browser-on-host.sh`, ten
+of ten each time with the driver starting only afterwards, and once inside an own-network container,
+where the stamp read dialled `host.docker.internal` and passed. The first gated selfcheck itself came
+back VOID on a timer drift of 4.15x, and the repeat a minute later read 1.00x and SOUND with the host
+at a load of 4.6 on 48 cores: a cold Chrome after the image rebuild, not the gate and not the host.
+
 The client image now records what it was built from and serves it at `/build-stamp.json`:
 `git rev-parse HEAD:packages/client`, the same for `packages/shared`, the head commit, whether the
 build came from uncommitted sources, and the two Vite knobs that decide what the bundle does.
