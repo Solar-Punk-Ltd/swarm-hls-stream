@@ -23,6 +23,15 @@
 # The run now checks its own instrument on every sample and reports VOID rather than a figure when
 # the browser was degrading what it measured. See `e2e/src/browser/instrument.ts`.
 #
+# ## The gates in front of the driver
+#
+# Since 2026-09-04 the driver starts only after the ten preflight gates in `e2e/suites/preflight`
+# have passed, `client-shape` and `uploader-log-shape` among them. That is not implemented here:
+# `bench-on-host.sh` puts them in front of every script whose name begins with `browser:`, so a
+# sitting launched any other way through it is gated too. A refusal opens no browser and exits
+# non-zero, and it names the stage fault rather than leaving it to be read out of a viewer's numbers.
+# There is no flag to switch it off. See that script's header for the two sittings it cost.
+#
 # Usage, against a broadcast that is already running:
 #   deploy/scripts/browser-on-host.sh
 #   deploy/scripts/browser-on-host.sh -- BROWSER_WATCH_SECONDS=300

@@ -136,7 +136,12 @@ rebuilds the client image, so the harness can be current while a viewer is serve
 weeks old. Everything under `e2e/src/browser/` parses that client, its console lines, the fetch
 backend it publishes on `globalThis` and the weeb-3 worker it serves. The harness-side version of the
 same staleness was caught three days old under a sitting about to be paid for, and the client-side
-version was caught fifteen days old under a browser sitting that had already run.
+version was caught fifteen days old under a browser sitting that had already run. That browser
+sitting is the point: the drivers were the one path that ran no gate at all, since the `&&` chain
+lives in the suite's own scripts and a driver is launched beside them. Since 2026-09-04
+`bench-on-host.sh` runs the whole preflight in the container before every script whose name begins
+with `browser:`, this gate included, so a stale client now refuses the arm instead of being measured
+by it.
 
 The client image now records what it was built from and serves it at `/build-stamp.json`:
 `git rev-parse HEAD:packages/client`, the same for `packages/shared`, the head commit, whether the
