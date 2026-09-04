@@ -19,7 +19,7 @@ import { waitFor } from '../../src/harness/wait.js';
 import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
 
 /**
- * V11 — a real viewer watches through one rung's postage batch running dry.
+ * V11, a real viewer watches through one rung's postage batch running dry.
  *
  * ## What this asks that V3 does not
  *
@@ -104,7 +104,7 @@ const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || a
 // Module scope for the same reason: a run aimed at the coordinator must fail before a broadcast starts.
 const drainedRung = drainRung(process.env);
 
-describe('V11 — a viewer watches through one rung losing its postage', { skip }, () => {
+describe('V11, a viewer watches through one rung losing its postage', { skip }, () => {
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;

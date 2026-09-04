@@ -32,7 +32,7 @@ import { discoverCatalogFeed } from '../../src/harness/viewer.js';
 import { waitFor } from '../../src/harness/wait.js';
 
 /**
- * Scenario L — one rung's postage batch runs dry, and the broadcast survives it.
+ * Scenario L, one rung's postage batch runs dry and the broadcast survives it.
  *
  * ## What this asks that nothing else does
  *
@@ -113,7 +113,7 @@ const cfg = loadConfig();
 // broadcast has started. See `drainRung`.
 const drainedRung = drainRung(process.env);
 
-describe("L — one rung's postage batch runs dry, the other three carry the broadcast", { skip: abrOff(cfg) }, () => {
+describe("L, one rung's postage runs dry and the other three carry the broadcast", { skip: abrOff(cfg) }, () => {
   const host = makeHost(cfg);
   const uploader = containerName(cfg, 'stream-uploader');
   let publisher: Publisher;
