@@ -826,6 +826,35 @@ describe('drain-stage keeps the uploader log before it redeploys', () => {
   });
 });
 
+/**
+ * ⛔⛔⛔ A READ THIS SCRIPT CUT SHORT IS NOT A NODE ANSWERING BADLY, and the two used to arrive as the
+ * same refusal. `read_node` captures curl's exit code and the guard under it only read that code on
+ * the remote path, so a local curl that died at its own `--max-time` left a truncated body that is
+ * not empty, reached the parser, and made the script blame bee for a sentence bee never finished
+ * saying. This repo has already lost a whole measurement arm to the same confusion on the ssh side.
+ */
+describe('drain-stage tells a read that failed from a node that answered', () => {
+  /** curl exits 28 at its own --max-time and 18 on a transfer that stopped early. */
+  it('refuses a local read that curl cut short, and blames the read rather than the node', async () => {
+    const sandbox = localSandbox();
+    // A curl that prints half an answer and then reports it timed out, which is what a node that
+    // accepts the connection and then stops writing produces.
+    writeFileSync(join(sandbox.binDir, 'curl'), `#!/bin/sh\nprintf '%s' '{"stamps":[{"batchID":"'\nexit 28\n`);
+    chmodSync(join(sandbox.binDir, 'curl'), 0o755);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a read that was cut short was armed on anyway');
+    assert.match(run.stderr, /exited 28/);
+    assert.doesNotMatch(
+      run.stderr,
+      /unreadable/,
+      'a read this script cut short was reported as the node answering badly',
+    );
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten on a read that failed');
+  });
+});
+
 describe('drain-stage status reads all three places at once', () => {
   it('reports the configured batch, the record and the node’s own reading', async () => {
     const sandbox = remoteSandbox({

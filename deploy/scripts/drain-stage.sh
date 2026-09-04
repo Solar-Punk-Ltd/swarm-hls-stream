@@ -239,6 +239,14 @@ require_node_answer() {
   if [ -z "$NODE_BODY" ]; then
     refuse "the ${RUNG} node on :${PORT} did not answer ${path}, and a node that cannot answer is not a node anything can be armed on."
   fi
+  # ⛔⛔ A BODY THAT ARRIVED WITH A NON-ZERO STATUS IS A READ THIS SCRIPT CUT SHORT, not an answer. The
+  # block above separates a failed transport from a silent node and this one separates a failed read
+  # from a node answering badly, which is the same distinction one hop further in. A truncated body is
+  # not empty, so the guard above passes it to a parser that then reports unreadable JSON as something
+  # the node said. On a local target this status was captured and never read at all.
+  if [ "$NODE_STATUS" != "0" ]; then
+    refuse "the read of ${path} from the ${RUNG} node on :${PORT} exited ${NODE_STATUS} with part of an answer, so the read failed rather than the node answering badly, and curl exits 28 at its own --max-time and 18 on a transfer that stopped early."
+  fi
 }
 
 # The uploader is network_mode: host on every deployment that splits its bees per rung, so 127.0.0.1
