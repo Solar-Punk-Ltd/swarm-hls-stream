@@ -102,11 +102,30 @@ function envFiles({ publishers = publishersLine(), extra = '' } = {}) {
   };
 }
 
+/** Where the `curl` stub records every url it was handed, which is what says which node was dialled. */
+const CURL_JOURNAL = 'curl-urls';
+
+function curlUrls(sandbox) {
+  return readFileSync(join(sandbox.root, CURL_JOURNAL), 'utf8')
+    .split('\n')
+    .filter((line) => line.length > 0);
+}
+
 /**
- * A `curl` that answers only the two endpoints this script reads, from fixtures, and refuses
- * everything else so a script reaching for a third endpoint fails here rather than silently.
+ * A `curl` that answers the two endpoints this script reads ON ONE NODE, from fixtures, records every
+ * url it was handed, and refuses everything else so a script reaching for a third endpoint or for
+ * another rung's node fails here rather than silently.
+ *
+ * ⛔⛔ The port is the point. Every rung publishes through its own bee with its own wallet and its own
+ * batches, so a batch on one node is a batch another rung cannot spend. Answering `/stamps` for any
+ * url that contained it meant a read which dialled the wrong node would have been answered from
+ * these fixtures and passed, and by this script's own docblock the batch would then arm cleanly and
+ * refuse at the first upload, which the drain suite would then report as a product finding.
+ *
+ * Written as a shell wrapper around a `.cjs`, the pattern the sandbox helper documents: an
+ * extensionless node stub under a `"type": "module"` package would fail to load.
  */
-function stubCurl(sandbox, { chainstate = {}, stamps = [] } = {}) {
+function stubCurl(sandbox, { chainstate = {}, stamps = [], port = RUNG_PORT } = {}) {
   const body = {
     chainstate: {
       chainTip: 1,
@@ -118,15 +137,25 @@ function stubCurl(sandbox, { chainstate = {}, stamps = [] } = {}) {
     },
     stamps: { stamps },
   };
+  const journal = join(sandbox.root, CURL_JOURNAL);
+  // Created here rather than on the first call, so a test that makes the sandbox root unwritable is
+  // still driving this stub rather than crashing inside it.
+  writeFileSync(journal, '');
   const path = join(sandbox.binDir, 'curl');
   writeFileSync(
-    path,
-    `#!/usr/bin/env node
+    `${path}.cjs`,
+    `const fs = require('fs');
 const url = process.argv.slice(2).find((a) => a.startsWith('http')) || '';
+fs.appendFileSync(${JSON.stringify(journal)}, url + '\\n');
 const answers = ${JSON.stringify(body)};
-if (url.includes('/chainstate')) {
+const own = ${JSON.stringify(`http://127.0.0.1:${port}`)};
+if (!url.startsWith(own + '/')) {
+  process.stderr.write('curl stub answers ' + own + ' alone, and was asked for ' + url + '\\n');
+  process.exit(7);
+}
+if (url.endsWith('/chainstate')) {
   process.stdout.write(JSON.stringify(answers.chainstate));
-} else if (url.includes('/stamps')) {
+} else if (url.endsWith('/stamps')) {
   process.stdout.write(JSON.stringify(answers.stamps));
 } else {
   process.stderr.write('curl stub was asked for ' + url + '\\n');
@@ -134,6 +163,7 @@ if (url.includes('/chainstate')) {
 }
 `,
   );
+  writeFileSync(path, '#!/bin/sh\nexec node -- "$0.cjs" "$@"\n');
   chmodSync(path, 0o755);
   return sandbox;
 }
@@ -955,6 +985,65 @@ describe('drain-stage tells a read that failed from a node that answered', () =>
     assert.match(run.stderr, /ssh-add -l/, 'the refusal did not say how to check the usual cause');
     assert.doesNotMatch(run.stderr, /did not answer/, 'an unreachable host was reported as a silent node');
     assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten on a read that failed');
+  });
+});
+
+/**
+ * ⛔⛔⛔ WHICH NODE WAS DIALLED, which nothing on the arm or restore path asserted. The reads land on
+ * one rung's bee, and every rung has its own wallet and its own batches, so a batch read off the
+ * wrong node is a batch this rung cannot spend. By this script's own docblock it would then "arm
+ * cleanly and refuse at the first upload", and the drain suite would report that as a product
+ * finding on whichever rung it was actually watching.
+ */
+describe('drain-stage dials the rung’s own node and no other', () => {
+  it('reads the chain price off the rung’s own node', async () => {
+    const sandbox = remoteSandbox();
+
+    const run = await drainStage(sandbox, ['print-buy']);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.deepEqual(curlUrls(sandbox), [`http://127.0.0.1:${RUNG_PORT}/chainstate`]);
+  });
+
+  it('reads the batch off the rung’s own node before arming it', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.deepEqual(curlUrls(sandbox), [`http://127.0.0.1:${RUNG_PORT}/stamps`]);
+  });
+
+  /** A restore dials nothing at all: the record and the env file are the whole answer it needs. */
+  it('reads no node on a restore, so an unreachable node cannot stop a stage going back', async () => {
+    const sandbox = localSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+    writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n`);
+
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.equal(run.exitCode, 0, `restore failed: ${run.stdout}${run.stderr}`);
+    assert.deepEqual(curlUrls(sandbox), []);
+  });
+
+  /**
+   * ⛔ A second rung, so the port under test comes from the rung asked for rather than from one fixed
+   * number that happens to be right for 1080p. 720p is a different bee on a different port.
+   */
+  it('dials the 720p node when 720p is the rung, which is a different bee', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE], port: PORTS['720p'] } });
+
+    const run = await runScript(
+      sandbox,
+      SCRIPT,
+      [`--profile=${PROFILE}`, `--portSlot=${PORT_SLOT}`, '--rung=720p', 'arm', `--batch=${SMALL_BATCH}`],
+      { HOME: sandbox.root },
+    );
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.deepEqual(curlUrls(sandbox), [`http://127.0.0.1:${PORTS['720p']}/stamps`]);
   });
 });
 
