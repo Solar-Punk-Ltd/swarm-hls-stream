@@ -77,3 +77,8 @@ docs/bench/in-tab-throttle-probe-*.md
 # never committed. Lives in the LOCAL repo root: bench-on-host.sh syncs with --delete and no
 # exclusion for it, so a copy that exists only on the host is deleted by the next sync.
 .spend-ledger.env*
+
+# What each rung was publishing through before drain-stage.sh armed it, one file per profile. It
+# carries whole batch ids and it is live state for one deployment, so it belongs beside that
+# deployment's env file and nowhere else. The `.env*` rule above does not cover it.
+.drain-stage.*.env
