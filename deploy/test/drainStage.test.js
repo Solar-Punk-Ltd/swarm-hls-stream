@@ -412,6 +412,54 @@ describe('drain-stage arm refuses every batch that would not run dry', () => {
   });
 });
 
+/**
+ * ⛔⛔⛔ A stage left armed with no way back is what this script's own header calls worse than a lost
+ * log, and two writes on the SUCCESS track used to produce exactly that. Neither `cp` nor the append
+ * that records the original was checked, so a failed one still reached a `✓` line and the arm carried
+ * on. Losing the record means an operator works out by hand which of four 64-character batch ids on
+ * one line the rung was spending, and `restore` refuses in the meantime.
+ */
+describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
+  /** ⛔ The copy is the fallback. Reporting one that was never made is worse than not making it. */
+  it('refuses when the env file cannot be copied aside, rather than arming with no copy', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+
+    // A directory nothing can create a file in, which is what a full disk and a read-only mount both
+    // look like to `cp`. The env file itself stays writable, so only the copy is blocked.
+    chmodSync(sandbox.root, 0o500);
+    try {
+      const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+      assert.notEqual(run.exitCode, 0, 'a rung was armed with no copy of the env file to fall back on');
+      assert.match(run.stderr, /could not copy/);
+      assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten with no copy of it');
+      assert.deepEqual(redeployedServices(sandbox), [], 'a failed copy still redeployed the uploader');
+    } finally {
+      chmodSync(sandbox.root, 0o755);
+    }
+  });
+
+  /**
+   * ⛔ The record is the only thing that knows which batch the rung was publishing through. An arm
+   * that reports it recorded and did not leaves `restore` refusing with "nothing is armed" on a stage
+   * that is armed.
+   */
+  it('refuses when the original cannot be recorded, rather than arming with nothing to put back', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    // A record another rung is already in and this process cannot append to, which is the shape of
+    // one written by a different account.
+    writeFileSync(recordPath(sandbox), `720p=${ORIGINAL['720p']}\n`);
+    chmodSync(recordPath(sandbox), 0o444);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a rung was armed with no record of the batch it was spending');
+    assert.match(run.stderr, /could not record/);
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten with nothing to put back');
+    assert.deepEqual(redeployedServices(sandbox), [], 'a failed record still redeployed the uploader');
+  });
+});
+
 describe('drain-stage arm swaps one rung and nothing else', () => {
   // ⚠️ HOME inside the sandbox, because an arm dumps the uploader's log beside the bench checkout in
   // the home directory and a suite must not write into the operator's own. See the dump block below.

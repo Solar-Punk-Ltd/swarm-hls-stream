@@ -443,13 +443,21 @@ recorded_original() {
   printf '%s' "${line#*=}"
 }
 
+# Non-zero when either write failed, which the caller turns into a refusal.
+#
+# ⛔⛔ This script runs `set -u` and not `set -e`, so an unchecked redirection here carried on to the
+# `✓ recorded the original` line and to the env rewrite. That arms a rung with nothing saying which
+# batch it used to publish through, and `restore` then refuses with "nothing is armed" on a stage
+# that is armed, which is the state this file's own header calls worse than a lost log.
 record_original() {
   local original="$1"
   if [ ! -f "$RECORD_FILE" ]; then
-    {
+    if ! {
       echo "# What each rung was publishing through before deploy/scripts/drain-stage.sh armed it."
       echo "# Read by its restore, and deleted once the last armed rung has been restored."
-    } > "$RECORD_FILE"
+    } > "$RECORD_FILE"; then
+      return 1
+    fi
   fi
   printf '%s=%s\n' "$RUNG" "$original" >> "$RECORD_FILE"
 }
@@ -466,10 +474,15 @@ forget_original() {
 
 # Assigned before use rather than in the `local`, because `local X=$(...)` takes the exit status of
 # the `local` and not of the command substitution. (SC2155, the same trap `_lib.sh` documents.)
+#
+# ⛔⛔ An unchecked `cp` reported a copy that was never made and the rewrite went ahead behind it, so
+# the operator was told there was a file to fall back on when there was none.
 back_up_env() {
   local backup
   backup="${ENV_FILE}.bak-$(date +%Y%m%d-%H%M%S)"
-  cp "$ENV_FILE" "$backup"
+  if ! cp "$ENV_FILE" "$backup"; then
+    fail "could not copy ${ENV_FILE##*/} aside to ${backup##*/}, so there is no copy to fall back on and this ${SUBCOMMAND} has changed nothing."
+  fi
   log_ok "copied ${ENV_FILE##*/} aside to ${backup##*/}"
 }
 
@@ -686,14 +699,20 @@ do_arm() {
   log_ok "the ${RUNG} node holds $(text_of "$reading")"
   back_up_env
 
+  # ⛔ Both before the rewrite, and in this order. The copy is what the env file can be put back from
+  # and the record is what the rung can be put back from, so a rung is never armed until both exist.
+  # A failed copy then leaves nothing behind at all, and a failed record leaves a copy and an env file
+  # that still names the rung's own batch.
+  if ! record_original "$original"; then
+    fail "could not record the original batch of rung ${RUNG} in ${RECORD_FILE##*/}, so a restore would have nothing to put back, and ${ENV_FILE##*/} has not been rewritten."
+  fi
+  log_ok "recorded the original $(short_id "$original") in ${RECORD_FILE##*/}"
+
   written="$(publisher_entry write "$BATCH")"
   if [ "$(verdict_of "$written")" != "OK" ]; then
     fail "the ${RUNG} entry could not be rewritten: $(text_of "$written")."
   fi
   log_ok "BEE_PUBLISHERS now names $(short_id "$BATCH") for ${RUNG}, and the other rungs are untouched"
-
-  record_original "$original"
-  log_ok "recorded the original $(short_id "$original") in ${RECORD_FILE##*/}"
 
   # Before the redeploy, because it is the redeploy that ends the process this log belongs to. The
   # arm keeps the life that ran on the ORIGINAL batch, and the restore keeps the drained one.
