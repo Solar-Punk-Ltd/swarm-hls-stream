@@ -569,10 +569,8 @@ const STATUS_SLOT = 464646464646;
  * @param message bee's own words for it
  */
 export function rungBatchRefused(batch: string, streamId: string, status: number, message: string): string {
-  return `Postage batch ${batch.slice(
-    0,
-    BATCH_ID_PREFIX_LENGTH,
-  )} of ${streamId} refused by bee (${status} ${message}), the rung publishes nothing until the batch is replaced`;
+  const batchPrefix = batch.slice(0, BATCH_ID_PREFIX_LENGTH);
+  return `Postage batch ${batchPrefix} of ${streamId} refused by bee (${status} ${message}), the rung publishes nothing until the batch is replaced`;
 }
 
 /**
