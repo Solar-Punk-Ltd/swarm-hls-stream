@@ -396,8 +396,13 @@ describe('readConfiguredBatch', () => {
     assert.match(read.lastSeen ?? '', /2 of the batches this node lists start 11111111/);
   });
 
+  /**
+   * ⛔ A letter inside the eight characters that are actually compared, in a different case on each
+   * side. Uppercase further along the id proves nothing: the comparison never reaches it, so a
+   * fixture whose only letters sit past position eight passes with both lowercasings deleted.
+   */
   it('matches whatever case either side reports the id in', () => {
-    const read = readConfiguredBatch([stamp({ batchID: `${'1'.repeat(60)}ABCD` })], `${'1'.repeat(8)}…`);
+    const read = readConfiguredBatch([stamp({ batchID: `aB${'1'.repeat(62)}` })], `Ab${'1'.repeat(6)}…`);
 
     assert.equal(read.state, 'held');
   });
