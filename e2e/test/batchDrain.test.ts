@@ -181,6 +181,22 @@ describe('armedStageRefusal', () => {
     assert.match(refusal, /drain-stage\.sh/);
   });
 
+  /**
+   * ⛔⛔ A fill nobody could read is not a fill of zero and is not a spent batch either. This used to
+   * fall into the refusal above and say "bee already counts null chunk(s) on its fullest bucket, so a
+   * previous run spent it", which is the right refusal with the wrong reason: it sends an operator to
+   * buy another batch when the batch may be fresh and the reading of it is what failed.
+   */
+  it('refuses an unreadable fill as a reading that failed, not as a batch a previous run spent', () => {
+    const refusal = armedStageRefusal(armed({ utilization: null }));
+
+    assert.ok(refusal, 'an unread fill is not an empty one');
+    assert.match(refusal, /bee reported no fill for it/);
+    assert.match(refusal, /An unread fill is not an empty one/);
+    assert.doesNotMatch(refusal, /a previous run spent it/, 'this fell through to the spent-batch refusal');
+    assert.doesNotMatch(refusal, /null chunk/, 'a null read as a count reached the message');
+  });
+
   it('names the rung and the node in every refusal, so an operator knows which one to arm', () => {
     for (const reading of [
       armed({ state: 'absent', depth: null, utilization: null }),

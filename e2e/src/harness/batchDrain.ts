@@ -258,8 +258,14 @@ export interface ArmedStageReading {
  * Why this stage is not one a drain suite may run against, or null.
  *
  * ⛔ The order is the order in which the answers become readable. A node that does not hold the
- * configured batch has no depth and no fill to judge, so the later two refusals would be about a
- * batch nobody has.
+ * configured batch has no depth and no fill to judge, so the later refusals would be about a batch
+ * nobody has.
+ *
+ * ⛔⛔ A reading that failed and a batch that is wrong get different sentences, both for depth and
+ * for fill. A null fill used to reach the spent-batch refusal and say "bee already counts null
+ * chunk(s) on its fullest bucket, so a previous run spent it", which is the right refusal with the
+ * wrong reason: it sends an operator off to buy another batch when the batch may be perfectly fresh
+ * and the fill is what nobody could read.
  */
 export function armedStageRefusal(reading: ArmedStageReading): string | null {
   const who = `The ${reading.rung} rung on :${reading.port}`;
@@ -290,6 +296,18 @@ export function armedStageRefusal(reading: ArmedStageReading): string | null {
       `${reading.depth} would take days of publishing. Arm the rung with \`${ARM_COMMAND}\`, which ` +
       `writes a fresh depth ${DRAIN_BATCH_DEPTH} batch into BEE_PUBLISHERS and redeploys the ` +
       `uploader. ${NOTHING_SPENT}`
+    );
+  }
+
+  if (reading.utilization === null) {
+    return (
+      `${who} is configured with depth ${DRAIN_BATCH_DEPTH} batch ${reading.batch} and bee reported ` +
+      'no fill for it, so whether a previous run already spent it cannot be told. That is the one ' +
+      'thing a drain has to know before it starts: a batch with chunks already on it refuses the ' +
+      "rung's first upload, and the suite then reads a ladder that never had four rungs as one that " +
+      'lost a rung. An unread fill is not an empty one, and this is a reading that failed rather ' +
+      `than a batch to replace: read \`/stamps\` on :${reading.port} and run again once the node ` +
+      `answers a utilization for ${reading.batch}. ${NOTHING_SPENT}`
     );
   }
 
