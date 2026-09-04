@@ -104,10 +104,14 @@ export const DRAIN_BATCH_DEPTH = 17;
  *
  * `renderPrometheusMetrics` joins a module-level prefix to each family's own name at render time, so
  * the exposed string exists in no source file on either side. Mirroring the halves is what lets
- * `test/batchDrainMirrors.test.ts` hold each one against the uploader's own declaration.
+ * `test/batchDrainMirrors.test.ts` hold the joined name against what the uploader actually renders.
+ *
+ * ⚠️ The prefix is exported because the metrics tests compose sibling family names with it. The
+ * family half is not: {@link DROPPED_SEGMENTS_METRIC} is the whole of what anything outside this file
+ * has ever wanted, and the mirror test asserts on rendered exposition rather than on either half.
  */
 export const METRICS_PREFIX = 'swarm_hls';
-export const DROPPED_SEGMENTS_FAMILY = 'rung_segments_dropped_total';
+const DROPPED_SEGMENTS_FAMILY = 'rung_segments_dropped_total';
 
 /**
  * The label dimension the per-rung families carry, which is the third half of the same name.
