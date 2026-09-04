@@ -254,11 +254,12 @@ describe('singleRefusalRefusal', () => {
   });
 
   /**
-   * ⚠️ The line is written once per stream for the life of an uploader process and a segment that
-   * lands does not re-arm it, so a second one means a second process or a second session of that
-   * stream: a redeploy mid-run, or an engine reconnect that built a fresh uploader for the same id.
+   * ⚠️ The line is written once per non-retryable status per stream for the life of an uploader
+   * process, and a segment that lands does not re-arm it, so the SAME status twice means a second
+   * process or a second session of that stream: a redeploy mid-run, or an engine reconnect that
+   * built a fresh uploader for the same id.
    */
-  it('refuses two refusals on one stream, which means two uploader processes in the window', () => {
+  it('refuses the same status twice on one stream, which means two uploader processes in the window', () => {
     const twice = [
       { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
       { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
@@ -267,7 +268,23 @@ describe('singleRefusalRefusal', () => {
     const refusal = singleRefusalRefusal(twice, { drainedStreamId: DRAINED, survivingStreamIds: SURVIVORS });
 
     assert.ok(refusal, 'two drains in one broadcast is not the fault this suite arms');
-    assert.match(refusal, /2/);
+    assert.match(refusal, /402/);
+  });
+
+  /**
+   * ⛔⛔⛔ One drained rung writes one line per DISTINCT answer bee gives it, not one line. A ramp
+   * where bee answers most refused segments one way and one oversized segment another is a single
+   * uploader process, and refusing it would send the reader after a redeploy that never happened,
+   * after a paid broadcast. `StreamUploader.batchRefusalStatuses` is keyed on the status for the
+   * reason it records: one flag let an early unrelated rejection silence the real refusal.
+   */
+  it('clears two different statuses on the drained stream, which is one process answering twice', () => {
+    const twoAnswers = [
+      { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
+      { streamId: DRAINED, batch: ARMED_BATCH, status: 413, message: 'payload too large' },
+    ];
+
+    assert.equal(singleRefusalRefusal(twoAnswers, { drainedStreamId: DRAINED, survivingStreamIds: SURVIVORS }), null);
   });
 
   /**
@@ -282,10 +299,10 @@ describe('singleRefusalRefusal', () => {
       [{ streamId: 'stream_from_somewhere_else', batch: 'ffffffff', status: 400, message: 'batch is not usable' }],
     ],
     [
-      'a second refusal on the drained stream',
+      'the same status refused twice on the drained stream',
       [
         { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
-        { streamId: DRAINED, batch: ARMED_BATCH, status: 400, message: 'batch is not usable' },
+        { streamId: DRAINED, batch: 'ffffffff', status: 402, message: 'batch is not usable' },
       ],
     ],
     [

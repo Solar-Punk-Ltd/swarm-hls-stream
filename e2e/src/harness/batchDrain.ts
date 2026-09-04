@@ -599,6 +599,18 @@ export function describeDrainRamp({ buckets, lastLandedAfterS }: DrainRamp): str
   return `${rows}. ${tail}`;
 }
 
+/**
+ * Every status bee answered one stream with more than once, which is the count that means a second
+ * process rather than a second condition.
+ */
+function statusesRefusedTwice(refusals: UploaderEvents['batchRefusals']): number[] {
+  const seen = new Map<number, number>();
+  for (const refusal of refusals) {
+    seen.set(refusal.status, (seen.get(refusal.status) ?? 0) + 1);
+  }
+  return [...seen].filter(([, times]) => times > 1).map(([status]) => status);
+}
+
 /** Which stream is expected to be refused, and which are expected to publish through it untouched. */
 interface RefusalExpectation {
   /** The uploader's stream id for the drained rung, out of its own rung announce. */
@@ -629,12 +641,19 @@ function quoteRefusals(refusals: UploaderEvents['batchRefusals']): string {
  * Why the refusal lines in this log are not one rung's batch running out, or null.
  *
  * ⛔ Four different wrongnesses, kept apart because they have four different causes. Nothing refused
- * at all is an unarmed stage or a broadcast too short to fill the batch. Refused twice is a second
- * uploader process in the window, since the line is written once per stream per process and a segment
- * that lands does not re-arm it. A refusal on a surviving rung is the split failing to isolate
- * anything, which is the whole feature. A refusal on a stream this run never accounted for is a
- * co-tenant's broadcast in the window, and reporting it as one of the three above would name the
- * wrong cause.
+ * at all is an unarmed stage or a broadcast too short to fill the batch. The SAME answer from bee
+ * twice is a second uploader process in the window, since the line is written once per non-retryable
+ * status per stream per process and a segment that lands does not re-arm it. A refusal on a surviving
+ * rung is the split failing to isolate anything, which is the whole feature. A refusal on a stream
+ * this run never accounted for is a co-tenant's broadcast in the window, and reporting it as one of
+ * the three above would name the wrong cause.
+ *
+ * ⛔⛔ Grouped by status, never counted. One drained rung writes one line per DISTINCT answer bee
+ * gives it: `StreamUploader.batchRefusalStatuses` is a set of statuses rather than a flag, for the
+ * reason it records, that one flag let an early unrelated rejection claim the report and silence the
+ * real postage refusal. So a ramp where bee answers most refused segments one way and one oversized
+ * segment another is one process writing two lines, and a reader counting lines would send its
+ * operator after a redeploy that never happened, after a paid broadcast.
  *
  * ⛔ Each of the four quotes the entries themselves, stream, batch, status and bee's own words. See
  * {@link quoteRefusals}.
@@ -653,13 +672,15 @@ export function singleRefusalRefusal(
       'cannot write the line at all, which the preflight log-shape gate answers.'
     );
   }
-  if (drained.length > 1) {
+
+  const repeated = statusesRefusedTwice(drained);
+  if (repeated.length > 0) {
     return (
-      `bee refused ${drainedStreamId}'s batch ${drained.length} times in one window, and the line is ` +
-      'written once per stream for the life of an uploader process: a segment landing in between is ' +
-      'the ramp of a filling batch and does not re-arm it. So this window holds two uploader ' +
-      'processes or two sessions of that stream, which is a redeploy mid-run or an engine reconnect ' +
-      `that built a fresh uploader for the same id. Refused: ${quoteRefusals(drained)}.`
+      `bee answered ${drainedStreamId} with ${repeated.join(', ')} more than once in this window, and ` +
+      'the line is written once per answer for the life of an uploader process: a segment landing in ' +
+      'between is the ramp of a filling batch and does not re-arm it. So this window holds two ' +
+      'uploader processes or two sessions of that stream, which is a redeploy mid-run or an engine ' +
+      `reconnect that built a fresh uploader for the same id. Refused: ${quoteRefusals(drained)}.`
     );
   }
 

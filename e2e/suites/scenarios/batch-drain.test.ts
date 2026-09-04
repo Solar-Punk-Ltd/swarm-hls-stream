@@ -82,8 +82,8 @@ import { waitFor } from '../../src/harness/wait.js';
  *
  * ## What this asserts
  *
- * That bee refused the drained rung's batch exactly once, which is once per stream per uploader
- * process, and no other rung's at all. That the three survivors published a gapless run from the
+ * That bee refused the drained rung's batch, once for each answer it gave and no answer twice, which
+ * is what one uploader process writes, and no other rung's at all. That the three survivors published a gapless run from the
  * master rewrite onward. That the master offers exactly the three rungs that kept their postage, and
  * that the catalog said so. That the uploader process stayed up, and that it reported itself degraded
  * for the segments it lost. And that the per-rung drop counter climbed on the drained label alone.

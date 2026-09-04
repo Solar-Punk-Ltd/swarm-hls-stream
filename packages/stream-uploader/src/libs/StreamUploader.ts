@@ -983,15 +983,15 @@ export class StreamUploader {
   /**
    * The one named line for a postage batch bee will not take a segment against.
    *
-   * ⛔⛔⛔ **A filling batch does not fall silent, it ramps, and this line is written once whatever
-   * the ramp does.** Measured on the first live drain, 2026-09-04: bee refused one rung's depth 17
-   * batch four times in about fifty seconds with segments landing in between. A batch stops accepting
-   * a chunk whose own bucket is full, so at the first overflow almost every bucket still has room and
-   * a segment of about 300 chunks is refused with roughly a quarter of the probability, rising to
-   * nearly all of it a few thousand chunks later. So a landed segment after a refusal is the ramp
-   * rather than a new batch, and it must not re-arm the line: the batch id is fixed for the life of
-   * this process, since `BEE_PUBLISHERS` is read once at start, and the only thing that can replace it
-   * is a redeploy, which is a new process with the flag at false again.
+   * ⛔⛔⛔ **A filling batch does not fall silent, it ramps, and one answer from bee gets one line
+   * whatever the ramp does.** Measured on the first live drain, 2026-09-04: bee refused one rung's
+   * depth 17 batch four times in about fifty seconds with segments landing in between. A batch stops
+   * accepting a chunk whose own bucket is full, so at the first overflow almost every bucket still has
+   * room and a segment of about 300 chunks is refused with roughly a quarter of the probability,
+   * rising to nearly all of it a few thousand chunks later. So a landed segment after a refusal is the
+   * ramp rather than a new batch, and it must not re-arm the line: the batch id is fixed for the life
+   * of this process, since `BEE_PUBLISHERS` is read once at start, and the only thing that can replace
+   * it is a redeploy, which is a new process with {@link batchRefusalStatuses} empty again.
    *
    * ⛔ **Why the retry verdict decides it and not the mere fact of a failure.** A bee node that is
    * down throws with no status, spends the whole retry window, and drops the segment exactly as a
