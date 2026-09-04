@@ -241,7 +241,12 @@ describe('drain-stage print-buy hands the purchase to the owner', () => {
 
     // 65536 buckets of two chunks each, and a third chunk in any one of them ends the batch.
     assert.match(run.stdout, /65536 buckets of 2 chunks/);
-    assert.match(run.stdout, /refus\w+ after about 2\d{3} chunks/);
+    assert.match(run.stdout, /refus\w+ near 2\d{3} chunks/);
+    // ⛔ And the spread, because the closed form runs about 12% high and the first refusal is a
+    // chance event: simulated at depth 17, a tenth of the trials refused under 1350 chunks and a
+    // tenth over 3874. An operator told one figure reads a slow fill as a failed drain.
+    assert.match(run.stdout, /anywhere from about 1\d{3} .* to about 3\d{3} /);
+    assert.match(run.stdout, /the spread is the point/);
   });
 
   /**

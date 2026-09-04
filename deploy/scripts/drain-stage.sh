@@ -622,8 +622,12 @@ answer(
         f"cost {cost_plur / plur_per_bzz:.4f} BZZ ({cost_plur} PLUR, at {plur_per_bzz} PLUR per BZZ)",
         f"capacity {nominal_chunks} chunks nominal ({mib(nominal_chunks):.1f} MiB), "
         f"{buckets} buckets of {per_bucket} chunks",
-        f"expected to start refusing after about {expected_chunks} chunks "
-        f"({mib(expected_chunks):.1f} MiB), where a bucket first sees one chunk more than it holds",
+        f"expected to start refusing near {expected_chunks} chunks ({mib(expected_chunks):.1f} MiB), "
+        f"anywhere from about {int(expected_chunks * 0.45)} ({mib(int(expected_chunks * 0.45)):.1f} MiB) "
+        f"to about {int(expected_chunks * 1.35)} ({mib(int(expected_chunks * 1.35)):.1f} MiB)",
+        "the spread is the point: a chunk picks its bucket by its own address, so the first refusal "
+        "is a chance event and the rung then refuses a growing share of segments rather than falling "
+        "silent at once",
     ),
 )
 ')"
