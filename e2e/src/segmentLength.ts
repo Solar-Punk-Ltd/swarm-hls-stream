@@ -58,8 +58,23 @@ export const SEGMENT_UNDECLARED_REFUSAL =
   `E2E_EXPECT_SEGMENT_S=2 is what an in-tab viewer needs, 0.5 is what the gateway control needs, and ` +
   `E2E_EXPECT_SEGMENT_S=${SEGMENT_ANY} declares a run that does not pin one and is never asked again.`;
 
-/** Whole seconds and fractional seconds, and nothing with a unit or an exponent stuck to it. */
-const SECONDS_RE = /^[0-9]+(\.[0-9]+)?$/;
+/**
+ * A number of seconds as the two containers of a stage already spell it, and nothing else.
+ *
+ * ⛔⛔⛔ **The uploader's own spelling, not a third one.** `optionalNumber` in
+ * `packages/stream-uploader/src/utils/env.ts` matches exactly this, and `require_number` in
+ * `engines/srs/entrypoint.sh` accepts anything made of digits and at most one point, so `.5` and `2.`
+ * are both values a correctly configured stage can be running on. A gate refusing them stops a
+ * correct stage before its first frame, and the gate chain is an and-and, so it stops the whole
+ * sitting. e2e cannot import from the uploader package, which is why this is a copy: the
+ * three spellings this file used to hold are down to one, and it is the producer's.
+ *
+ * ⚠️ The sign is matched and then refused by the callers' own `<= 0`, exactly as `optionalNumber`
+ * matches it and refuses it against a `min`. Whole strings only, because `Number.parseFloat` stops at
+ * the first character it cannot use: `2s` would read as 2 and `0x2` as 0, and a zero-length
+ * declaration and an unparseable one must not become the same value.
+ */
+const SECONDS_RE = /^-?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 /**
  * `E2E_EXPECT_SEGMENT_S` as an expectation, refusing a spelling it does not know.
@@ -118,8 +133,15 @@ interface SegmentCheck {
   stage: StageSegmenting;
 }
 
-/** A whole or fractional number, and nothing an SRS config would not hold. */
-const CONF_NUMBER = '([0-9]+(?:\\.[0-9]+)?)';
+/**
+ * A number as the generated SRS config carries one, which is `HLS_FRAGMENT` interpolated verbatim.
+ *
+ * The same spelling {@link SECONDS_RE} holds, minus the sign, because `entrypoint.sh` substitutes the
+ * profile's value into the directive and into `force_key_frames` without reformatting it. So a
+ * profile carrying `.5` produces `hls_fragment .5;`, and a reader wanting a digit before the point
+ * finds no fragment at all and reports the stage as unreadable.
+ */
+const CONF_NUMBER = '(\\d+(?:\\.\\d*)?|\\.\\d+)';
 
 /**
  * Comparison slack. Near zero on purpose: this is arithmetic over two configured numbers, not a

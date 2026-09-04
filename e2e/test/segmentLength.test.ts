@@ -73,6 +73,29 @@ describe('reading the segment length a run says it needs', () => {
     assert.throws(() => readSegmentExpectation('0'), /E2E_EXPECT_SEGMENT_S/);
     assert.throws(() => readSegmentExpectation('-2'), /E2E_EXPECT_SEGMENT_S/);
   });
+
+  /**
+   * ⛔⛔⛔ **Both spellings the two containers already accept.** `engines/srs/entrypoint.sh` takes
+   * anything made of digits and at most one point, and the uploader's own `optionalNumber` matches
+   * `-?(?:\d+(?:\.\d*)?|\.\d+)`, so `.5` and `2.` are values a correctly configured stage can be
+   * running. A gate refusing them stops the sitting before the first frame, and the gate chain is an
+   * and-and, so it stops the whole sitting.
+   */
+  for (const [raw, seconds] of [
+    ['.5', 0.5],
+    ['2.', 2],
+    ['0.', 0],
+  ] as const) {
+    if (seconds > 0) {
+      it(`reads '${raw}' as ${seconds}s, the way both containers read it`, () => {
+        assert.equal(readSegmentExpectation(raw), seconds);
+      });
+    } else {
+      it(`still refuses '${raw}', because zero is not a segment length`, () => {
+        assert.throws(() => readSegmentExpectation(raw), /E2E_EXPECT_SEGMENT_S/);
+      });
+    }
+  }
 });
 
 interface ConfShape {
@@ -212,6 +235,25 @@ describe('reading what a running SRS stage cuts a segment at', () => {
 
   it('refuses a fragment of zero, which no arithmetic downstream survives', () => {
     assert.throws(() => parseStageSegmenting(singleConf({ fragment: '0' }), PUBLISHER_GOP), /hls_fragment/);
+  });
+
+  /**
+   * ⛔⛔ `entrypoint.sh` interpolates `HLS_FRAGMENT` into both the directive and the cadence
+   * verbatim, and it accepts anything made of digits and at most one point. So a profile carrying
+   * `.5` produces `hls_fragment .5;` in the running config, which a reader wanting a digit before
+   * the point does not find at all: the stage then reads as one whose fragment is missing, and the
+   * gate reports an unreadable deployment rather than the 0.5s stage it is looking at.
+   */
+  it('reads a leading-point fragment and cadence, which is what the entrypoint writes for .5', () => {
+    const stage = parseStageSegmenting(ladderConf({ fragment: '.5' }), PUBLISHER_GOP);
+
+    assert.deepEqual(stage, { fragment: 0.5, aofRatio: 5, gopSeconds: 0.5, transcodes: true });
+  });
+
+  it('reads a trailing-point fragment and cadence, which is what it writes for 2.', () => {
+    const stage = parseStageSegmenting(ladderConf({ fragment: '2.' }), PUBLISHER_GOP);
+
+    assert.deepEqual(stage, { fragment: 2, aofRatio: 5, gopSeconds: 2, transcodes: true });
   });
 });
 
@@ -431,5 +473,19 @@ describe('refusing a stage whose uploader dates by a different length than the e
 
   it('reads a value an env file left whitespace around', () => {
     assert.equal(uploaderDatingRefusal({ ...IN_BROWSER, uploader: '  2.0  ', engine: '2' }), null);
+  });
+
+  /**
+   * ⛔⛔ The leading-point and trailing-point forms, which `engines/srs/entrypoint.sh` and the
+   * uploader's own `optionalNumber` both accept. A profile carrying one of them is a stage that is
+   * correctly configured and agrees with itself, and this pair used to refuse it as a fragment it
+   * could not read, which sends an operator to redeploy a deployment that was never stale.
+   */
+  it('reads a leading-point fragment on both containers as the same length', () => {
+    assert.equal(uploaderDatingRefusal({ profile: 'light-client', needed: 0.5, uploader: '.5', engine: '0.5' }), null);
+  });
+
+  it('reads a trailing-point fragment on both containers as the same length', () => {
+    assert.equal(uploaderDatingRefusal({ ...IN_BROWSER, uploader: '2.', engine: '2.0' }), null);
   });
 });
