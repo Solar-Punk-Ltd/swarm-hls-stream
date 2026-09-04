@@ -198,11 +198,19 @@ describe('armedStageRefusal', () => {
   /**
    * ⛔ A batch bee lists as held with no readable depth refuses rather than passing. Depth is what
    * decides whether a broadcast can fill it at all, and an unknown one is not a small one.
+   *
+   * ⛔⛔ Asserted on the words this branch alone writes. Three of the four branches name the arm
+   * command, so `/drain-stage\.sh arm/` was satisfied by the branch below this one: delete this one
+   * and the run falls through to the wrong depth refusal, which prints "which is depth null" and
+   * tells an operator their stage carries an ordinary batch.
    */
   it('refuses a held batch whose depth could not be read', () => {
     const refusal = armedStageRefusal(armed({ depth: null }));
 
     assert.ok(refusal, 'an unreadable depth is not a depth 17 batch');
+    assert.match(refusal, /bee reported no depth for it/);
+    assert.match(refusal, /an unknown depth is not a small one/);
+    assert.doesNotMatch(refusal, /which is depth null/, 'this fell through to the wrong-depth refusal');
     assert.match(refusal, /drain-stage\.sh arm/);
   });
 });
