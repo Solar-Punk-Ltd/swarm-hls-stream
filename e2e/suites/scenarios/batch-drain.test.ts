@@ -194,7 +194,19 @@ describe(
       const drainedStreamId = streams.get(drainedRung);
       assert.ok(drainedStreamId, `no rung announce in this window names ${drainedRung}, so nothing was drained`);
       const survivingRungs = cfg.abrRungs.filter((rung) => rung !== drainedRung);
-      const survivingStreamIds = survivingRungs.map((rung) => streams.get(rung) ?? '');
+      // ⛔ Refused rather than substituted, exactly as the drained rung is above. An empty id is not
+      // a rung with no announce: `singleRefusalRefusal` sorts a refusal by stream id, so '' matches
+      // neither the drained rung nor a survivor and lands in the co-tenant bucket, which reports
+      // another broadcast on the deployment and prints a blank subject for it.
+      const survivingStreamIds = survivingRungs.map((rung) => {
+        const streamId = streams.get(rung);
+        assert.ok(
+          streamId,
+          `no rung announce in this window names ${rung}, which is a rung nothing drained, so this ` +
+            'window does not hold the four rung ladder a drain has to be read against',
+        );
+        return streamId;
+      });
       console.log(`  drained ${drainedRung} (${drainedStreamId}), surviving ${survivingRungs.join(', ')}`);
 
       await waitFor(async () => refusalsFor(await log(), drainedStreamId).length > 0, {
@@ -206,7 +218,9 @@ describe(
           'so a whole ceiling spent here means the rung is not spending the batch that was armed: read ' +
           "the uploader's /health publishers, and check the arm redeployed the container",
       }).catch(async (error) => {
-        throw new Error(`${(error as Error).message}\n  ${whatWasSeen(await log(), drainedStreamId)}`);
+        throw new Error(`${(error as Error).message}\n  ${whatWasSeen(await log(), drainedStreamId)}`, {
+          cause: error,
+        });
       });
 
       const refusal = refusalsFor(await log(), drainedStreamId)[0];
