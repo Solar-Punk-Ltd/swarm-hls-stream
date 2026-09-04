@@ -339,7 +339,7 @@ export function uploaderHealth(host: Host, cfg: E2EConfig): Promise<UploaderHeal
 export type ConfiguredBatchState = 'held' | 'unusable' | 'absent' | 'unread';
 
 /** What one Bee node answered when it was asked for the batch the uploader routes a rung to. */
-export interface ConfiguredStampRead {
+interface ConfiguredStampRead {
   readonly state: ConfiguredBatchState;
   /** That batch as the node listed it, usable or not. Null when the node did not list it. */
   readonly stamp: Stamp | null;
@@ -348,7 +348,7 @@ export interface ConfiguredStampRead {
 }
 
 /** How much of a batch id `/health` reports and how much of one a printed line ever carries. */
-export const BATCH_ID_SHOWN = 8;
+const BATCH_ID_SHOWN = 8;
 
 const BATCH_ID_PREFIX = new RegExp(`^[0-9a-f]{${BATCH_ID_SHOWN}}`);
 
