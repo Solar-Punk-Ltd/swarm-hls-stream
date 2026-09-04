@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -31,12 +31,20 @@ const SCRIPTS = join(ROOT, 'deploy/scripts');
 const REMOTE_BENCH_DIR = 'swarm-hls-bench';
 
 /**
+ * The other seed. The script refuses a checkout without the owner's ledger before it syncs anything,
+ * which `benchOnHostLedgerGuard.test.js` holds it to, so every run here launches from one that has it.
+ */
+const SPEND_LEDGER = '.spend-ledger.env';
+const OWNER_LEDGER = 'authorised_at=2026-09-03T09:32:45Z\n';
+
+/**
  * Runs the real script with `--no-setup`, which is the repeat-run path and the only one that needs
  * no rsync, and hands back the single command string the far side's login shell would receive.
  */
 async function benchOnHost(args) {
   const sandbox = makeSandbox();
   mkdirSync(join(sandbox.remoteHome, REMOTE_BENCH_DIR), { recursive: true });
+  writeFileSync(join(sandbox.root, SPEND_LEDGER), OWNER_LEDGER);
 
   const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup', ...args]);
   assert.equal(run.exitCode, 0, `bench-on-host.sh failed: ${run.stdout}${run.stderr}`);

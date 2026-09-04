@@ -36,6 +36,10 @@
 # and `uploader-log-shape` both answer that, and neither ran here. There is no flag to switch it off,
 # because a gate that can be switched off from the command line is a warning.
 #
+# ⛔ AND IT REFUSES A CHECKOUT WITHOUT `.spend-ledger.env` BEFORE THE SYNC. The rsync below runs with
+# `--delete`, so a checkout that holds no authorisation to spend, an agent worktree for one, would
+# otherwise replace the host's harness copy, ledger included, before any gate could say no.
+#
 # Anything after `--` is passed to the container as environment, so a knob sweep reads:
 #   deploy/scripts/bench-on-host.sh -- BENCH_GOP_SECONDS=4 BENCH_BITRATE_KBPS=1200
 #
@@ -133,6 +137,21 @@ if [ -n "${SHAPE_KBPS}" ]; then
       exit 2
       ;;
   esac
+fi
+
+# ⛔ The ledger is the owner's authorisation to spend: `.spend-ledger.env` at the root of the checkout
+# this is launched from, written by `spend-ledger.sh` and kept out of git. The `spend-ceiling`
+# preflight reads the copy this script syncs, so a checkout without the file could never pass that
+# gate. The gap was the order: the rsync below runs first, with `--delete`, so a launch from such a
+# checkout would have replaced the host's harness copy, ledger included, with a tree nobody had
+# authorised, and only then been refused. An agent worktree is exactly such a checkout, since it holds
+# only what git tracks. Ruled by the owner on 2026-09-04, when the browser-path gate made it visible.
+# `--no-setup` does not exempt it: the checkout is still the one launching a sitting.
+SPEND_LEDGER_FILE="${REPO_ROOT}/.spend-ledger.env"
+if [ ! -f "${SPEND_LEDGER_FILE}" ]; then
+  echo "bench-on-host: ${SPEND_LEDGER_FILE} does not exist, so this checkout holds no authorisation to spend and nothing is copied to the host." >&2
+  echo "bench-on-host: launch from the checkout that carries the owner's ledger. An agent worktree never does." >&2
+  exit 2
 fi
 
 # Runs as the invoking user so the installed tree and the written reports do not come back owned by
