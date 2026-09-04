@@ -197,6 +197,20 @@ describe('drain-stage print-buy hands the purchase to the owner', () => {
     assert.match(run.stdout, /Immutable: true/);
   });
 
+  /**
+   * Bee 2.8.2 answers `currentPrice` as a JSON string ("84370"), not a number, and the first live
+   * print-buy on 2026-09-04 was refused for it while every fixture here sent a number. The stand-in
+   * now sends what bee sends.
+   */
+  it('reads a currentPrice bee sends as a string, which is what bee sends', async () => {
+    const sandbox = remoteSandbox({ readings: { chainstate: { currentPrice: String(CHAIN_PRICE) } } });
+
+    const run = await drainStage(sandbox, ['print-buy']);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, new RegExp(`/stamps/${CHAIN_PRICE * MINIMUM_VALIDITY_BLOCKS * 2}/${DEPTH}`));
+  });
+
   it('scales the amount with --days, since the amount is what buys the life', async () => {
     const sandbox = remoteSandbox();
 

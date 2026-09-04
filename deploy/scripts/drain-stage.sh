@@ -521,8 +521,22 @@ blocks = state.get("minimumValidityBlocks")
 # Absence is a refusal. minimumValidityBlocks is what turns days into an amount, and reading a
 # missing one as zero would print a command buying a batch that expires immediately, which the
 # uploader would then refuse at startup.
+# Bee answers currentPrice as a JSON string and minimumValidityBlocks as a number, so a digit string
+# is as readable as a number here. Anything else, including absence, is a refusal.
+def readable(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+price = readable(price)
+blocks = readable(blocks)
 for name, value in (("currentPrice", price), ("minimumValidityBlocks", blocks)):
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if value is None:
         answer("REFUSE", f"the node answered /chainstate with no readable {name}, so the price of a batch is unknown")
 
 # Postage is charged per chunk per block, so an amount is a per-chunk allowance and the whole batch
