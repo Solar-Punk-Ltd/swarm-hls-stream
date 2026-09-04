@@ -132,6 +132,29 @@ The recommendations below are therefore the decisions.
    it because one small batch serves one suite, and kept out of `e2e:run`, because the ordinary full suite must never depend on a
    deliberately broken stage. **Recommend: yes.**
 
+## What the first sitting found, 2026-09-04
+
+The first arming ran at 14:22Z on the 1080p rung with a fresh depth 17 batch, and it returned two facts
+this page had wrong.
+
+**A batch does not run dry, it degrades.** It fills bucket by bucket. At the first overflow, about 2954
+chunks in, roughly one bucket in a thousand is full, so a segment of about 300 chunks is refused with a
+chance of about a quarter, rising to about seven in ten by 6000 chunks and nearly all by 10000. Bee
+refused the rung four times in fifty seconds with segments landing in between, and the rung falls silent
+only a minute or two later. The uploader behaved as designed throughout, one dropped segment and one
+discontinuity per refusal, the other three rungs untouched. What assumed a cliff was the named line,
+which re-armed on every landed segment, and the suite, which asserted one refusal and then silence. The
+line is now written once per stream per process, since the batch cannot change without a restart, and
+the suite waits for the master to drop the rung by the product's own rule and records the ramp as
+observations. The restore step also saves the uploader's log before it recreates the container, because
+that first run's evidence of bee's exact answer went with the container.
+
+**The stage's fragment length lived in a shell export.** The uploader redeploys around the sitting ran
+without it and put the uploader on 1.0 s dating while SRS kept cutting 2.0 s, which the ten gates could
+not see and the ladder suite's timeline check caught after the restore. The segment-length gate now
+compares the uploader container's value with the engine's, and the durable value belongs in the
+profile's engine env file, the owner's.
+
 ## What is built, in order
 
 1. The named log line and the per-rung dropped count in the uploader, in the log contract, unit tested.
