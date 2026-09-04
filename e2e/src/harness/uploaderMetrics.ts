@@ -101,21 +101,33 @@ export function rungCountersOf(body: string, family: string, labelName: string):
 }
 
 /**
- * The command that scrapes `/metrics` from inside the uploader container.
+ * The program that scrapes `/metrics`, as `node -e` runs it inside the uploader container.
  *
- * Composed here rather than at a call site so `test/uploaderMetrics.test.ts` can assert the two
- * properties that matter and cannot be checked from a live run: that the token is named only as an
- * environment lookup, and that a status which is not a success fails the command instead of coming
- * back as a body. An empty family is how this harness reports a scrape that did not answer, so a
- * 401 arriving as text would be read as a ladder that lost nothing.
+ * Its own export rather than a string built inside {@link uploaderMetricsCommand}, because it is a
+ * self-contained program and the only honest way to know what it does is to run it.
+ * `test/uploaderMetrics.test.ts` runs exactly this against a local server that answers 401 and then
+ * 200, and asserts the exit status and the stdout. Asserting that the text contains `r.ok` and
+ * `process.exit(1)` proved nothing: inverting the condition, or moving the exit into a branch that
+ * never runs, leaves both substrings in place.
+ *
+ * ⛔ A status that is not a success has to fail the command rather than come back as a body. An empty
+ * family is how this harness reports a scrape that did not answer, so a 401 arriving on stdout would
+ * be read as a ladder that lost nothing.
+ *
+ * ⛔ The token is named only as an environment lookup, never interpolated. The shell inside the
+ * container expands it, so it is never a command argument and never in this process's memory.
  */
-export function uploaderMetricsCommand(container: string): string {
-  const script =
+export function uploaderMetricsScript(): string {
+  return (
     `const port = process.env.API_PORT || ${DEFAULT_API_PORT};` +
     'fetch(`http://127.0.0.1:${port}/metrics`, { headers: { authorization: `Bearer ${process.env.API_AUTH_TOKEN}` } })' +
     '.then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status} from /metrics`))))' +
     '.then((text) => process.stdout.write(text))' +
-    '.catch((error) => { console.error(String(error)); process.exit(1); })';
+    '.catch((error) => { console.error(String(error)); process.exit(1); })'
+  );
+}
 
-  return `docker exec ${container} node -e ${shellQuoted(script)}`;
+/** The scrape as one command for `Host.run`, which is a `docker exec` around the program above. */
+export function uploaderMetricsCommand(container: string): string {
+  return `docker exec ${container} node -e ${shellQuoted(uploaderMetricsScript())}`;
 }
