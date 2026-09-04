@@ -232,9 +232,14 @@ if not usable:
     print(f"REFUSE\tthe {rung} node on :{port} holds no batch that can carry a broadcast: {listed}")
     sys.exit(0)
 
-# Most TTL headroom, which is the same tie-break pollUsableStamp in the e2e harness uses. Said out
-# loud below when there was a choice, because which batch a rung spends is an operator decision and
-# this only makes it when there is exactly one answer.
+# Most TTL headroom. Said out loud below when there was a choice, because which batch a rung spends
+# is an operator decision and this only makes it when there is exactly one answer.
+#
+# This is the one place a batch is picked by shape, and it is the right place: nothing has been
+# configured yet, so there is no id to compare against. Once this has written BEE_PUBLISHERS, that id
+# is the only thing a later reading may go by. The e2e stamp gate used to tie-break by TTL as well
+# and it was wrong to: it then passed a node holding a drained configured batch beside a fresh unused
+# one. See readConfiguredBatch in e2e/src/harness/host.ts.
 usable.sort(key=lambda b: b["batchTTL"], reverse=True)
 chosen = usable[0]
 batch_id = str(chosen.get("batchID", ""))
