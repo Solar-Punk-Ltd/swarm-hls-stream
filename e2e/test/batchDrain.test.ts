@@ -2,6 +2,7 @@ import { segmentUploaded, segmentUploadFailed } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import type { E2EConfig } from '../src/config.js';
 import {
   type ArmedStageReading,
   armedStageRefusal,
@@ -20,8 +21,11 @@ import {
   type UploaderProcess,
   uploaderProcessCommand,
   uploaderRestartRefusal,
+  waitForSurvivingMaster,
 } from '../src/harness/batchDrain.js';
+import type { Host } from '../src/harness/host.js';
 import { COORDINATOR_RUNG } from '../src/harness/publishers.js';
+import { StopWaiting } from '../src/harness/wait.js';
 
 /**
  * The questions a batch-drain run has to answer before any of its readings mean anything.
@@ -623,5 +627,101 @@ describe('whether this run is a drain sitting at all', () => {
     for (const value of ['', '   ', '0', 'false']) {
       assert.notEqual(drainNotDeclared({ E2E_DRAIN_ARMED: value }), false, `'${value}' let the suites run`);
     }
+  });
+});
+
+/**
+ * ⛔⛔⛔ What the one wait a drain suite spends broadcast on says when it ends in nothing.
+ *
+ * Until 2026-09-05 it said only what it had been waiting for: "the master of ladder X offers exactly
+ * 360p, 480p, 720p". That names the expectation and nothing about the stage. Which rungs the master
+ * did offer, whether the gateway answered a playlist at all, whether the body was an error envelope,
+ * all of it was read on every poll and then dropped, and four minutes of paid broadcast ended in a
+ * sentence an operator can do nothing with. `describeMaster` says all three, and what it says of the
+ * last complete read is now appended to whatever ends the wait.
+ *
+ * ⚠️ `readTopics` throws {@link StopWaiting} here to end the wait on the poll of this test's
+ * choosing. A live `readTopics` never does, and nothing in the fix depends on it: it is how a four
+ * minute ceiling is reached in one poll interval, rather than by a knob that could later be used to
+ * shorten a live wait. The composition it proves is the same one a timeout goes through, because the
+ * catch prefixes whatever message it was handed. `describeMaster`'s own branches, the error envelope
+ * among them, are covered in `masterShape.test.ts` where they cost nothing.
+ */
+describe('what a surviving-master wait reports when it never sees one', () => {
+  const OWNER = 'a'.repeat(40);
+  const TOPICS = {
+    '360p': '11111111-1111-4111-8111-111111111111',
+    '480p': '22222222-2222-4222-8222-222222222222',
+    '720p': '33333333-3333-4333-8333-333333333333',
+    '1080p': '44444444-4444-4444-8444-444444444444',
+  } as const;
+  const FULL_LADDER = ['360p', '480p', '720p', '1080p'] as const;
+  const SURVIVORS = ['360p', '480p', '720p'];
+  const LADDER = 'ladder-7f21';
+  const GAVE_UP = 'this test has seen the poll it needed';
+
+  /** The renditions in the order a master lists them, which is lowest first. */
+  function master(rungs: readonly (keyof typeof TOPICS)[]): string {
+    const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
+    for (const rung of rungs) {
+      lines.push('#EXT-X-STREAM-INF:BANDWIDTH=700000,RESOLUTION=640x360');
+      lines.push(`swarm://${OWNER}/${TOPICS[rung]}`);
+    }
+    return `${lines.join('\n')}\n`;
+  }
+
+  /** Answers every feed read with one body, which is all `readLadderMaster` asks of a host. */
+  function gatewayAnswering(body: string): Host {
+    return { localText: async () => body } as unknown as Host;
+  }
+
+  const cfg = { ports: { beeGatewayApi: 10_077 } } as unknown as E2EConfig;
+
+  /** This ladder's announces for `completePolls` polls, then a give-up rather than a spent ceiling. */
+  function topicsFor(completePolls: number): () => Promise<ReadonlyMap<string, string>> {
+    let asked = 0;
+    return async () => {
+      if (asked++ >= completePolls) {
+        throw new StopWaiting(GAVE_UP);
+      }
+      return new Map(Object.entries(TOPICS).map(([rung, topic]) => [topic, rung]));
+    };
+  }
+
+  const waitOn = (body: string, completePolls: number) =>
+    waitForSurvivingMaster(gatewayAnswering(body), cfg, {
+      owner: OWNER,
+      ladder: LADDER,
+      survivingRungs: SURVIVORS,
+      readTopics: topicsFor(completePolls),
+    });
+
+  it('returns the body it waited on once the master is down to the survivors', async () => {
+    const body = await waitOn(master(['360p', '480p', '720p']), 1);
+
+    assert.match(body, /#EXT-X-STREAM-INF/);
+    assert.equal(body.match(/swarm:\/\//g)?.length, 3);
+  });
+
+  /** ⛔ The finding: which rungs the master actually held, beside the ones that were wanted. */
+  it('says what the master last offered, and carries what ended the wait', async () => {
+    await assert.rejects(waitOn(master(FULL_LADDER), 1), (error: Error) => {
+      assert.match(error.message, new RegExp(GAVE_UP));
+      assert.match(error.message, /the master last held: the master offers 4 rung\(s\): 360p, 480p, 720p, 1080p/);
+      assert.ok(error.cause instanceof Error, 'the rethrow has to carry what it was rethrown from');
+      return true;
+    });
+  });
+
+  /**
+   * ⛔ And the honest answer where there is nothing to report. A read that never completed must not
+   * be dressed up as a master offering nothing, which is a broadcast publishing no qualities at all.
+   */
+  it('says nothing was read when no poll got a body and the announces together', async () => {
+    await assert.rejects(waitOn(master(FULL_LADDER), 0), (error: Error) => {
+      assert.match(error.message, /the master last held: nothing was read/);
+      assert.match(error.message, /the reading of it is what failed/);
+      return true;
+    });
   });
 });
