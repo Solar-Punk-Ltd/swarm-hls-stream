@@ -372,12 +372,17 @@ describe('refusing a stage whose uploader dates by a different length than the e
     assert.match(refusal, /cuts/);
   });
 
+  /**
+   * ⛔ Each number asserted beside the container it belongs to. A refusal carrying both numbers
+   * somewhere satisfies a bare `/2/` and `/0\.5/` with the pair swapped, and a swapped pair names the
+   * wrong container to redeploy, which is the whole of what this refusal is for.
+   */
   it('refuses the mirror, an uploader ahead of the engine', () => {
     const refusal = uploaderDatingRefusal({ profile: 'light-client', needed: 0.5, uploader: '2.0', engine: '0.5' });
 
     assert.ok(refusal, 'the disagreement is a fault whichever container is the stale one');
-    assert.match(refusal, /2/);
-    assert.match(refusal, /0\.5/);
+    assert.match(refusal, /uploader of this stage was started with HLS_FRAGMENT 2\b/);
+    assert.match(refusal, /the engine with 0\.5\b/);
   });
 
   /**
