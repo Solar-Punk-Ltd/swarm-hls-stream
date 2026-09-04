@@ -510,14 +510,23 @@ record_original() {
   printf '%s=%s\n' "$RUNG" "$original" >> "$RECORD_FILE"
 }
 
+# ⛔ Checked like the two writes of an arm, though this one fails in the safe direction: the record
+# survives, the stage is genuinely restored, and the only cost is that a later arm refuses with
+# "already armed" until the file is cleared. Said out loud rather than left silent, because an
+# operator who reads "removed the record" and then cannot arm has no way to connect the two.
 forget_original() {
   local kept
   kept="$(grep -v "^${RUNG}=" "$RECORD_FILE")"
   if printf '%s\n' "$kept" | grep -qE '^[0-9a-zA-Z]+='; then
-    printf '%s\n' "$kept" > "$RECORD_FILE"
+    if ! printf '%s\n' "$kept" > "$RECORD_FILE"; then
+      log_warn "could not rewrite ${RECORD_FILE} without rung ${RUNG}, so the stage is restored and that record still names it, and a later arm of this rung refuses until the line is removed by hand."
+      return 0
+    fi
     return 0
   fi
-  rm -f "$RECORD_FILE"
+  if ! rm -f "$RECORD_FILE"; then
+    log_warn "could not remove ${RECORD_FILE}, so the stage is restored and a later arm of this rung refuses until that file is removed by hand."
+  fi
 }
 
 # Assigned before use rather than in the `local`, because `local X=$(...)` takes the exit status of
