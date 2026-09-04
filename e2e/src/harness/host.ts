@@ -350,7 +350,22 @@ interface ConfiguredStampRead {
 /** How much of a batch id `/health` reports and how much of one a printed line ever carries. */
 const BATCH_ID_SHOWN = 8;
 
-const BATCH_ID_PREFIX = new RegExp(`^[0-9a-f]{${BATCH_ID_SHOWN}}`);
+/** What the eight characters are, spelled once so the two patterns below cannot disagree. */
+const BATCH_ID_HEX = `[0-9a-f]{${BATCH_ID_SHOWN}}`;
+
+/**
+ * A batch id as a routing writes it: the prefix, optionally behind the `0x` marker a hex value may
+ * carry, and nothing at all in front of either.
+ *
+ * ⛔⛔ Matched against the raw value rather than against the hex characters picked out of it. Stripping
+ * every non-hex character first keeps the marker's own `0`, which shifts the window by one and answers
+ * a prefix belonging to no batch on any node, and it also salvages a prefix out of a value written in
+ * some shape nobody here can vouch for.
+ */
+const CONFIGURED_BATCH_ID = new RegExp(`^(?:0x)?(${BATCH_ID_HEX})`, 'i');
+
+/** {@link batchIdPrefix}'s own answer, which is the only thing {@link readConfiguredBatch} compares. */
+const BATCH_ID_PREFIX = new RegExp(`^${BATCH_ID_HEX}$`);
 
 /**
  * The hex prefix that finds one configured batch among the ones a node lists.
@@ -360,22 +375,23 @@ const BATCH_ID_PREFIX = new RegExp(`^[0-9a-f]{${BATCH_ID_SHOWN}}`);
  * a rung, and a refusal outlives the run in a scrollback. Eight characters tell apart the handful a
  * node holds, and {@link readConfiguredBatch} refuses a pair that share them rather than guessing.
  *
- * ⛔ Refuses anything shorter rather than returning it. `startsWith('')` is true of every batch a node
- * lists, so a routing this could not read would silently be matched by whichever row came first, which
- * is the select-a-batch-by-shape mistake the whole comparison exists to end.
+ * ⛔ Refuses anything it cannot read from the first character rather than returning it. `startsWith('')`
+ * is true of every batch a node lists, so a routing this could not read would silently be matched by
+ * whichever row came first, which is the select-a-batch-by-shape mistake the whole comparison exists
+ * to end. A prefix assembled out of whichever hex characters a value happened to contain is the same
+ * mistake one step earlier.
  */
 export function batchIdPrefix(configured: string): string {
-  const hex = configured.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
-  const prefix = BATCH_ID_PREFIX.exec(hex);
-  if (prefix === null) {
+  const read = CONFIGURED_BATCH_ID.exec(configured);
+  if (read === null) {
     throw new Error(
-      `a configured postage batch id has to carry eight hex characters to be found on a node, and ` +
-        `"${configured}" carries ${hex.length}. That id comes off the uploader's own /health, which ` +
-        'truncates it, so a shorter one means the routing itself cannot be read rather than that a ' +
-        'batch is missing.',
+      `a configured postage batch id has to open with eight hex characters, or with 0x and then eight, ` +
+        `to be found on a node, and "${configured}" does not. That id comes off the uploader's own ` +
+        '/health, which truncates it to eight and an ellipsis, so anything else means the routing ' +
+        'itself cannot be read rather than that a batch is missing.',
     );
   }
-  return prefix[0];
+  return read[1].toLowerCase();
 }
 
 /**
@@ -390,9 +406,20 @@ export function batchIdPrefix(configured: string): string {
  * ⛔ Two rows sharing the prefix answer `absent` rather than one of the two. Eight characters is
  * enough to tell real batch ids apart, and a tie is the one case where picking would be selecting by
  * shape again.
+ *
+ * @param prefix {@link batchIdPrefix}'s answer, never the routing's raw value. Reading a raw value
+ *   here as well as in {@link pollConfiguredStamp} is what left the parameter meaning either, and a
+ *   reader tolerant of both is a reader that salvages a prefix out of anything it is handed.
  */
-export function readConfiguredBatch(stamps: readonly Stamp[], configured: string): ConfiguredStampRead {
-  const prefix = batchIdPrefix(configured);
+export function readConfiguredBatch(stamps: readonly Stamp[], prefix: string): ConfiguredStampRead {
+  if (!BATCH_ID_PREFIX.test(prefix)) {
+    throw new Error(
+      `"${prefix}" is not the eight hex characters batchIdPrefix answers with, and every comparison ` +
+        "below is against exactly those. startsWith('') is true of every batch a node lists, so a " +
+        'value this cannot compare would have the gate pass on whichever row came first.',
+    );
+  }
+
   const matching = stamps.filter((stamp) => stamp.batchID.toLowerCase().startsWith(prefix));
 
   if (matching.length === 1) {
@@ -433,7 +460,10 @@ export function readConfiguredBatch(stamps: readonly Stamp[], configured: string
  * ⛔ Returns the failure rather than throwing it. `stageStamps.ts` reads every publisher node and has
  * to name all of the ones that cannot stamp, not stop at the first, so composing the message is the
  * caller's job. An unreadable configured id is the exception and throws, from outside the retry loop
- * so it cannot be mistaken for a node that was slow to answer.
+ * so it cannot be mistaken for a node that was slow to answer. ⛔⛔ That is why the prefix is read
+ * here and handed down: the loop's own `catch` turns anything thrown inside it into "the node did not
+ * answer", so a routing nobody can read would spend the whole window and then be reported as a node
+ * that had gone quiet.
  *
  * ⛔ This is the only stamp read left, and deliberately so. `discoverStamp` used to sit beside it and
  * ask the COORDINATOR alone, which on a stage with one Bee node per rung is an answer about one node

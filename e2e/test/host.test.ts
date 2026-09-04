@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
 
 import {
+  batchIdPrefix,
   DEFAULT_LOCAL_HOST_ADDRESS,
   Host,
   LOCAL_TARGET,
@@ -335,12 +336,14 @@ describe('readConfiguredBatch', () => {
   }
 
   const CONFIGURED = '11111111…';
+  /** What a routing's raw value reads as, which is the only thing this function compares. */
+  const PREFIX = batchIdPrefix(CONFIGURED);
   const OTHER_BATCH = '9'.repeat(64);
 
   it('picks the configured batch even when another on the node has far more TTL', () => {
     const read = readConfiguredBatch(
       [stamp({ batchID: OTHER_BATCH, batchTTL: 9_000_000 }), stamp({ batchTTL: 3_600 })],
-      CONFIGURED,
+      PREFIX,
     );
 
     assert.equal(read.state, 'held');
@@ -351,7 +354,7 @@ describe('readConfiguredBatch', () => {
   it('reports the configured batch unusable while a fresh batch sits beside it', () => {
     const read = readConfiguredBatch(
       [stamp({ usable: false, utilization: 2, depth: 17 }), stamp({ batchID: OTHER_BATCH, batchTTL: 9_000_000 })],
-      CONFIGURED,
+      PREFIX,
     );
 
     assert.equal(read.state, 'unusable');
@@ -361,14 +364,14 @@ describe('readConfiguredBatch', () => {
 
   /** `exists: false` is bee saying the batch is gone on chain, which is not a batch to stamp with. */
   it('reports the configured batch unusable when bee says it no longer exists', () => {
-    const read = readConfiguredBatch([stamp({ exists: false })], CONFIGURED);
+    const read = readConfiguredBatch([stamp({ exists: false })], PREFIX);
 
     assert.equal(read.state, 'unusable');
     assert.match(read.lastSeen ?? '', /exists=false/);
   });
 
   it('reports a configured batch the node does not hold, and lists what it does hold', () => {
-    const read = readConfiguredBatch([stamp({ batchID: OTHER_BATCH })], CONFIGURED);
+    const read = readConfiguredBatch([stamp({ batchID: OTHER_BATCH })], PREFIX);
 
     assert.equal(read.state, 'absent');
     assert.equal(read.stamp, null);
@@ -376,7 +379,7 @@ describe('readConfiguredBatch', () => {
   });
 
   it('reports a node that lists no batches at all as not holding the configured one', () => {
-    const read = readConfiguredBatch([], CONFIGURED);
+    const read = readConfiguredBatch([], PREFIX);
 
     assert.equal(read.state, 'absent');
     assert.match(read.lastSeen ?? '', /no batches at all/);
@@ -389,7 +392,7 @@ describe('readConfiguredBatch', () => {
   it('refuses to choose between two batches sharing the configured prefix', () => {
     const read = readConfiguredBatch(
       [stamp({ batchID: `${'1'.repeat(63)}a`, usable: false }), stamp({ batchID: `${'1'.repeat(63)}b` })],
-      CONFIGURED,
+      PREFIX,
     );
 
     assert.equal(read.state, 'absent');
@@ -402,7 +405,7 @@ describe('readConfiguredBatch', () => {
    * fixture whose only letters sit past position eight passes with both lowercasings deleted.
    */
   it('matches whatever case either side reports the id in', () => {
-    const read = readConfiguredBatch([stamp({ batchID: `aB${'1'.repeat(62)}` })], `Ab${'1'.repeat(6)}…`);
+    const read = readConfiguredBatch([stamp({ batchID: `aB${'1'.repeat(62)}` })], batchIdPrefix(`Ab${'1'.repeat(6)}…`));
 
     assert.equal(read.state, 'held');
   });
@@ -411,9 +414,61 @@ describe('readConfiguredBatch', () => {
    * ⛔ An unreadable prefix refuses instead of matching. `startsWith('')` is true of every batch a
    * node lists, so a routing this cannot read would have the gate pass on whichever row came first.
    */
-  it('refuses a configured id it cannot read eight hex characters out of', () => {
-    assert.throws(() => readConfiguredBatch([stamp()], '…'), /eight hex/);
-    assert.throws(() => readConfiguredBatch([stamp()], '1111…'), /eight hex/);
+  it('refuses a prefix it cannot compare eight hex characters of', () => {
+    assert.throws(() => readConfiguredBatch([stamp()], ''), /eight hex/);
+    assert.throws(() => readConfiguredBatch([stamp()], '1111'), /eight hex/);
+  });
+
+  /**
+   * ⛔⛔ It takes {@link batchIdPrefix}'s answer and never the routing's raw value, so the two callers
+   * hand it the same kind of thing. It used to accept either and compute the prefix itself, and that
+   * ambiguity is what made the prefix reader tolerant enough to strip a leading marker as though it
+   * were data.
+   */
+  it('refuses the raw value a routing reports, because that is not a prefix', () => {
+    assert.throws(() => readConfiguredBatch([stamp()], CONFIGURED), /eight hex/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **The prefix is matched against the raw value, never stripped out of it.** Until 2026-09-05
+ * this removed every non-hex character and took the first eight of what was left, so a value written
+ * behind the `0x` marker a hex number may carry kept the marker's own `0` and shifted the window by
+ * one: `0xa1b2c3d4…` answered `0a1b2c3d`, a prefix belonging to no batch on any node. The gate would
+ * then report a rung whose batch is missing, when the batch is there and the reading is off by a
+ * character. Its own docblock promised it refuses anything it cannot read, and this is that promise.
+ */
+describe('batchIdPrefix', () => {
+  it('reads the prefix off the value /health reports, ellipsis and all', () => {
+    assert.equal(batchIdPrefix(`a1b2c3d4${'…'}`), 'a1b2c3d4');
+  });
+
+  it('reads the prefix behind a 0x marker rather than counting the marker as a character', () => {
+    assert.equal(batchIdPrefix('0xa1b2c3d4…'), 'a1b2c3d4');
+    assert.equal(batchIdPrefix(`0x${'1'.repeat(64)}`), '11111111');
+  });
+
+  it('answers in one case whatever case the routing wrote', () => {
+    assert.equal(batchIdPrefix('A1B2C3D4…'), 'a1b2c3d4');
+    assert.equal(batchIdPrefix('0XA1B2C3D4…'), 'a1b2c3d4');
+  });
+
+  /**
+   * ⛔ Refused rather than salvaged. A value this cannot read from its first character is a routing
+   * that cannot be read at all, and answering a prefix assembled out of whichever hex characters
+   * happened to be in it is how a comparison comes to be about a batch nobody configured.
+   */
+  it('refuses a value whose first characters are not the prefix', () => {
+    assert.throws(() => batchIdPrefix('…a1b2c3d4'), /eight hex/);
+    assert.throws(() => batchIdPrefix('batch a1b2c3d4'), /eight hex/);
+    assert.throws(() => batchIdPrefix('a1b2-c3d4…'), /eight hex/);
+  });
+
+  it('refuses a value carrying fewer than eight hex characters', () => {
+    assert.throws(() => batchIdPrefix(''), /eight hex/);
+    assert.throws(() => batchIdPrefix('…'), /eight hex/);
+    assert.throws(() => batchIdPrefix('1111…'), /eight hex/);
+    assert.throws(() => batchIdPrefix('0x1111'), /eight hex/);
   });
 });
 
