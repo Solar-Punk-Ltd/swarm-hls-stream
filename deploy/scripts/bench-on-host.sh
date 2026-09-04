@@ -139,6 +139,28 @@ if [ -n "${SHAPE_KBPS}" ]; then
   esac
 fi
 
+# ⛔ Screened for the same reason: both are interpolated into the container's `--name` below, and from
+# there into a docker command carried over ssh. The rule is the one `_lib.sh` holds a profile and a
+# slot to everywhere else, so the name built here is one docker accepts and one an operator can hand
+# straight back to `docker stop`.
+if ! [[ "${PROFILE}" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; then
+  echo "bench-on-host: --profile must match ^[a-z0-9][a-z0-9-]{0,30}\$ and is '${PROFILE}'" >&2
+  exit 2
+fi
+if ! [[ "${PORT_SLOT}" =~ ^[0-9]{1,2}$ ]]; then
+  echo "bench-on-host: --portSlot must be a whole number from 0 to 99 and is '${PORT_SLOT}'" >&2
+  exit 2
+fi
+
+# The container this launch runs in, on the deployment host. `<profile>-<what>-<which>` is the shape
+# every compose container on that host already has, since the compose project IS the profile: see
+# `containerNameFor` in `e2e/src/config.ts`. Docker's own random name was what made an orphan from a
+# killed launch unstoppable without reading `docker ps` and guessing.
+#
+# Deliberately not derived from `--image`. A browser run and a bench run on one profile and slot
+# drive the same stage, so the guard below has to see either as the other's overlap.
+HARNESS_CONTAINER="${PROFILE}-harness-slot${PORT_SLOT}"
+
 # ⛔ The ledger is the owner's authorisation to spend: `.spend-ledger.env` at the root of the checkout
 # this is launched from, written by `spend-ledger.sh` and kept out of git. The `spend-ceiling`
 # preflight reads the copy this script syncs, so a checkout without the file could never pass that
@@ -184,7 +206,10 @@ if [ -n "${SHAPE_KBPS}" ]; then
   NETWORK_ARGS="${NETWORK_ARGS} --cap-add=NET_ADMIN"
 fi
 
-DOCKER_RUN="docker run --rm ${NETWORK_ARGS} \
+#
+# ⛔ ONE `docker run` string for every phase of a launch, install included, so the name an interrupt
+# would go looking for is the name whatever is running actually has.
+DOCKER_RUN="docker run --rm --name ${HARNESS_CONTAINER} ${NETWORK_ARGS} \
   -u \$(id -u):\$(id -g) \
   --group-add \$(getent group docker | cut -d: -f3) \
   --shm-size=2g \
