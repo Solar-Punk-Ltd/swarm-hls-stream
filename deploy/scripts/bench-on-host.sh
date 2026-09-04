@@ -20,6 +20,23 @@
 # `--setup-only` syncs, builds and installs, then stops without running anything. That is the state a
 # viewer arm of the e2e suite needs, since it mounts this checkout into the browser container.
 #
+# ⛔⛔ THE CONTAINER IS NAMED, THE TARGET IS CHECKED, AND AN INTERRUPT STOPS THE CONTAINER. Three
+# things, all of them here because two faults two minutes apart on 2026-09-04 cost a postage batch
+# the owner had paid for and a stage arming.
+#
+# The container runs as `<profile>-harness-slot<N>`, so an operator can stop it by name instead of
+# reading `docker ps` and guessing which random name was ours. Every phase of one launch, the
+# dependency install included, uses that one name.
+#
+# One remote read before the rsync REFUSES a target already running that container, because two
+# harness runs on one stage read each other's broadcasts. No flag turns it off, and the refusal
+# prints the command that stops what is running.
+#
+# A trap on INT, TERM and EXIT stops the container if this script is interrupted while a launch is in
+# flight. It is best effort: a Ctrl-C occasionally kills the shell before its own handler runs, which
+# is measured beside `stop_harness_container` below. The read above is what catches whatever it
+# misses, on the next launch.
+#
 # ⛔ THIS SYNCS THE HARNESS. IT DOES NOT REDEPLOY THE STACK. The stream-uploader ships as a prebuilt
 # `dist/` through `deploy/scripts/deploy.sh`, so a run launched from here measures THIS checkout's
 # harness against WHATEVER WAS LAST DEPLOYED. On 2026-09-01 that cost a paid sitting: a log line the
@@ -95,6 +112,11 @@ SCRIPT="bench:latency"
 # connection at the twenty-ninth minute and take the report with it, after the postage is spent.
 SSH_OPTS=(-o ServerAliveInterval=30 -o ServerAliveCountMax=20)
 
+# The stop an interrupt issues gets a connect timeout of its own on top of those. The keepalives are
+# for holding a broadcast open, and an interrupt wants an answer or nothing: a host that has gone
+# away must not hold the terminal the operator is trying to get back.
+STOP_CONNECT_TIMEOUT_SECONDS=10
+
 # Docker's own name for the host as seen from a bridge network, published into the container with
 # `--add-host=…:host-gateway`. Not resolvable by default on Linux, which is why the flag is there.
 HOST_GATEWAY_ALIAS="host.docker.internal"
@@ -160,6 +182,64 @@ fi
 # Deliberately not derived from `--image`. A browser run and a bench run on one profile and slot
 # drive the same stage, so the guard below has to see either as the other's overlap.
 HARNESS_CONTAINER="${PROFILE}-harness-slot${PORT_SLOT}"
+
+# 1 only while a container of ours is in flight on the target, which is the window an interrupt
+# orphans a broadcast in. Nothing but the handler below reads it.
+HARNESS_CONTAINER_IN_FLIGHT=0
+
+# ⛔⛔ THE OTHER HALF OF THE SAME 2026-09-04 INCIDENT. The operator killed this script and the
+# container on the host carried on: it passed its own preflight gates and broadcast for about a
+# minute on a stage armed for a different test, spending a postage batch nobody was reading.
+#
+# One stop, no loop and no retry. The flag is cleared before the stop rather than after, so an INT
+# followed by the EXIT handler stops the container once instead of twice.
+#
+# ⚠️ BEST EFFORT, AND THE GUARD ABOVE IS THE CONTROL. A signal sent to the whole process group, which
+# is what a terminal's Ctrl-C sends, sometimes kills the shell before it runs this at all: measured
+# with /bin/bash over 60 attempts per arm, 4 in 60 for TERM and 1 in 60 for INT died at 143 or 130
+# with the handler never reached. Nothing local can close that, since the shell is already gone. What
+# closes it is the busy-target read, which refuses the next launch and names what to stop.
+# shellcheck disable=SC2329 # invoked from the traps below, which shellcheck does not read as calls
+stop_harness_container() {
+  [ "${HARNESS_CONTAINER_IN_FLIGHT}" -eq 1 ] || return 0
+  HARNESS_CONTAINER_IN_FLIGHT=0
+  echo "bench-on-host: interrupted, stopping ${HARNESS_CONTAINER} on ${TARGET}" >&2
+  if ! ssh "${SSH_OPTS[@]}" -o ConnectTimeout="${STOP_CONNECT_TIMEOUT_SECONDS}" "${TARGET}" \
+    "docker stop ${HARNESS_CONTAINER}"; then
+    echo "bench-on-host: the stop failed, so ${HARNESS_CONTAINER} may still be running and broadcasting on ${TARGET}." >&2
+    echo "bench-on-host: stop it with: ssh ${TARGET} 'docker stop ${HARNESS_CONTAINER}'" >&2
+  fi
+}
+
+# ⛔ The status the script was already leaving with survives the stop, because a caller chains on it.
+# A failed stop costs the container and never the exit code.
+# shellcheck disable=SC2329 # the EXIT trap is its only caller, for the same reason
+on_exit() {
+  local rc=$?
+  stop_harness_container
+  exit "${rc}"
+}
+
+# 130 and 143 are 128 plus the signal number, which is what a shell reports for a run a signal ended.
+# INT and TERM are handled on their own rather than folded into EXIT so the code says which arrived.
+trap on_exit EXIT
+trap 'stop_harness_container; exit 130' INT
+trap 'stop_harness_container; exit 143' TERM
+
+# Runs one containerised phase of a launch on the target, with the handler above armed for exactly as
+# long as ssh has not come back. Once it has, it carries the container's own exit status and `--rm`
+# has taken the container, so there is nothing left to stop and a green or a red run alike must not
+# issue one.
+#
+# ⛔ The one orphan this cannot see is a connection that drops mid-run, where ssh returns and the
+# container lives on. The busy-target guard above is what catches that, on the next launch.
+run_harness_container() {
+  local rc=0
+  HARNESS_CONTAINER_IN_FLIGHT=1
+  ssh "${SSH_OPTS[@]}" "${TARGET}" "$1" || rc=$?
+  HARNESS_CONTAINER_IN_FLIGHT=0
+  return "${rc}"
+}
 
 # ⛔ The ledger is the owner's authorisation to spend: `.spend-ledger.env` at the root of the checkout
 # this is launched from, written by `spend-ledger.sh` and kept out of git. The `spend-ceiling`
@@ -253,7 +333,7 @@ echo "bench-on-host: building ${IMAGE} on ${TARGET}"
 ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && docker build -q -f ${DOCKERFILE} -t ${IMAGE} e2e/"
 
 echo "bench-on-host: installing dependencies in the container"
-ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${IMAGE} pnpm install --frozen-lockfile"
+run_harness_container "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${IMAGE} pnpm install --frozen-lockfile"
 fi
 
 if [ "${SETUP_ONLY}" -eq 1 ]; then
@@ -379,10 +459,8 @@ echo "bench-on-host: running ${SCRIPT} on ${TARGET} (profile ${PROFILE}, slot ${
 # and the reports of exactly the runs that need reading stayed on the host: both proving sittings of
 # 2026-09-02 left their V4 artifacts there. Collect first, then exit with the run's own code, so a
 # caller chaining on the exit code still sees the red.
-set +e
-ssh "${SSH_OPTS[@]}" "${TARGET}" "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} ${CONTAINER_CMD}"
-RUN_RC=$?
-set -e
+RUN_RC=0
+run_harness_container "cd ${REMOTE_DIR} && ${DOCKER_RUN} ${RUN_ENV} ${IMAGE} ${CONTAINER_CMD}" || RUN_RC=$?
 
 echo "bench-on-host: collecting reports (run exited ${RUN_RC})"
 mkdir -p "${REPO_ROOT}/docs/bench"

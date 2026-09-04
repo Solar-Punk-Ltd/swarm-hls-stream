@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -35,6 +36,18 @@ const OWNER_LEDGER = 'authorised_at=2026-09-03T09:32:45Z\n';
 /** What the script's own defaults name, so a test asserting on the name does not restate the flags. */
 const DEFAULT_CONTAINER = 'latbench-harness-slot7';
 
+/**
+ * How long the stubbed container holds the run open. Long enough that the signal lands while it is
+ * in flight, short enough that the handler, which waits for that ssh, does not hold up the suite.
+ */
+const CONTAINER_HOLDS_SECONDS = 3;
+const INTERRUPT_DEADLINE_MS = 20_000;
+const POLL_MS = 20;
+
+/** 128 plus the signal number, which is what a shell reports for a run a signal ended. */
+const EXIT_ON_INT = 130;
+const EXIT_ON_TERM = 143;
+
 function benchSandbox() {
   const sandbox = makeSandbox();
   mkdirSync(join(sandbox.remoteHome, REMOTE_BENCH_DIR), { recursive: true });
@@ -60,6 +73,93 @@ function dockerReportsRunning(sandbox, name) {
     join(sandbox.binDir, 'docker'),
     `#!/bin/sh\nif [ "$1" = "ps" ]; then echo ${name}; exit 0; fi\nexec node -- "$0.cjs" "$@"\n`,
   );
+}
+
+/**
+ * A `docker` whose `run` blocks after journalling itself, which is the window an operator kills the
+ * local script in. `stopExitCode` is what its `stop` answers, so the failed-stop path is this same
+ * stub with one number changed.
+ */
+function dockerRunBlocks(sandbox, { marker, stopExitCode }) {
+  writeExecutable(
+    join(sandbox.binDir, 'docker'),
+    `#!/bin/sh
+node -- "$0.cjs" "$@" || exit $?
+if [ "$1" = "run" ]; then : > ${marker}; exec sleep ${CONTAINER_HOLDS_SECONDS}; fi
+if [ "$1" = "stop" ]; then exit ${stopExitCode}; fi
+exit 0
+`,
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForFile(path) {
+  const until = Date.now() + INTERRUPT_DEADLINE_MS;
+  while (Date.now() < until) {
+    if (existsSync(path)) return;
+    await sleep(POLL_MS);
+  }
+  throw new Error(`the stubbed container never started: ${path} was never written`);
+}
+
+/**
+ * Signals the script itself once the stubbed container is up, which is `kill <pid>` from another
+ * terminal. Bash holds the signal until the foreground command returns, so the handler runs when
+ * the run's ssh comes back and while the container is still marked in flight.
+ *
+ * ⛔ Deliberately NOT a signal to the whole process group, which is what a terminal's Ctrl-C sends.
+ * That reaches the same handler, but measured with /bin/bash over 60 attempts per arm it does not
+ * always reach it at all: 4 in 60 for TERM and 1 in 60 for INT, the shell died on the signal at 143
+ * or 130 without running its trap, and the container survived. So the trap is best effort and the
+ * busy-target guard is the control that always holds. A test on the group path would be a test that
+ * fails one run in twenty for a reason that is not a regression.
+ *
+ * The process group is still its own, so the cleanup below can take the stubbed container with it.
+ */
+async function interruptedRun(sandbox, args, { signal = 'SIGINT', stopExitCode = 0 } = {}) {
+  const marker = join(sandbox.root, 'container-started');
+  dockerRunBlocks(sandbox, { marker, stopExitCode });
+
+  const child = spawn('bash', [sandbox.scriptPath('bench-on-host.sh'), ...args], {
+    detached: true,
+    env: { ...process.env, PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}` },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const closed = new Promise((resolve) => child.on('close', (code) => resolve(code)));
+
+  try {
+    await waitForFile(marker);
+    process.kill(child.pid, signal);
+    const exitCode = await Promise.race([
+      closed,
+      sleep(INTERRUPT_DEADLINE_MS).then(() => {
+        throw new Error(`the script did not exit after ${signal}: ${stdout}${stderr}`);
+      }),
+    ]);
+    return { stdout, stderr, exitCode };
+  } finally {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // Already reaped, which is the passing path.
+    }
+  }
+}
+
+/** Every `docker stop` the script issued, as the far side's stub recorded it. */
+function stopCalls(sandbox) {
+  return sandbox.remoteCalls().filter((call) => call.startsWith('stop '));
 }
 
 describe('bench-on-host names its container after the profile and the slot', () => {
@@ -199,5 +299,72 @@ describe('bench-on-host refuses a target that is already running a harness conta
 
     assert.equal(run.exitCode, 0, `a free target was refused: ${run.stdout}${run.stderr}`);
     assert.match(sandbox.sshCommands()[0], /docker ps --filter 'name=\^latbench-harness-slot1\$'/);
+  });
+});
+
+describe('bench-on-host stops the remote container when it is interrupted', () => {
+  /**
+   * ⛔ A run that ended on its own has nothing left to stop: `--rm` took the container before ssh
+   * returned. A stop here would fail on every green run and print an alarm about a container that
+   * is not there.
+   */
+  it('issues no docker stop on a clean run', async () => {
+    const sandbox = benchSandbox();
+
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup']);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.deepEqual(stopCalls(sandbox), [], 'a green run stopped a container that had already gone');
+  });
+
+  /**
+   * ⛔ Nor on a red one, for the same reason. A suite that fails leaves the container removed too,
+   * and a warning printed after every red run is a warning an operator learns to skip.
+   */
+  it("keeps a red run's own exit code and stops nothing", async () => {
+    const sandbox = benchSandbox();
+    writeExecutable(
+      join(sandbox.binDir, 'docker'),
+      '#!/bin/sh\nnode -- "$0.cjs" "$@" || exit $?\nif [ "$1" = "run" ]; then exit 3; fi\nexit 0\n',
+    );
+
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup']);
+
+    assert.equal(run.exitCode, 3, "the run's exit code was not the script's");
+    assert.deepEqual(stopCalls(sandbox), [], 'a red run stopped a container that had already gone');
+    assert.doesNotMatch(run.stderr, /may still be running/);
+  });
+
+  it('stops exactly the container it named, once', async () => {
+    const sandbox = benchSandbox();
+
+    const run = await interruptedRun(sandbox, ['--no-setup']);
+
+    assert.deepEqual(stopCalls(sandbox), [`stop ${DEFAULT_CONTAINER}`]);
+    assert.match(run.stderr, new RegExp(`stopping ${DEFAULT_CONTAINER} on manager-host`));
+    assert.equal(run.exitCode, EXIT_ON_INT);
+  });
+
+  it('stops it on a TERM as well as on an interrupt', async () => {
+    const sandbox = benchSandbox();
+
+    const run = await interruptedRun(sandbox, ['--no-setup'], { signal: 'SIGTERM' });
+
+    assert.deepEqual(stopCalls(sandbox), [`stop ${DEFAULT_CONTAINER}`]);
+    assert.equal(run.exitCode, EXIT_ON_TERM);
+  });
+
+  /**
+   * ⛔ The one thing worse than not stopping the container is not saying so. A stop that failed
+   * leaves a broadcast running on a stage the operator believes is free.
+   */
+  it('says the container may still be running when the stop fails, and keeps the exit code', async () => {
+    const sandbox = benchSandbox();
+
+    const run = await interruptedRun(sandbox, ['--no-setup'], { stopExitCode: 9 });
+
+    assert.equal(run.exitCode, EXIT_ON_INT, 'a failed stop changed the exit code');
+    assert.match(run.stderr, new RegExp(`${DEFAULT_CONTAINER} may still be running`));
+    assert.match(run.stderr, new RegExp(`ssh manager-host 'docker stop ${DEFAULT_CONTAINER}'`));
   });
 });
