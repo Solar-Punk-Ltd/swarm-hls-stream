@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { parseBrowserArmState, type VodResult } from '../src/harness/browser.js';
+import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
+import { type BrowserArmResult, parseBrowserArmState, type VodResult } from '../src/harness/browser.js';
 import {
   finishedTimelineRefusal,
   type LastPublishedByRungHeight,
@@ -9,6 +10,7 @@ import {
   playedBackRefusal,
   vodArmRefusal,
   vodArmSummary,
+  vodByteSourceRefusal,
   wholeBroadcastRefusal,
   wholeLadderRefusal,
 } from '../src/harness/vodArm.js';
@@ -275,6 +277,66 @@ describe('whether anything was actually shown', () => {
     const blank = parseBrowserArmState(vodArmState({ resolutions: [] }));
 
     assert.match(String(pictureMovedRefusal(blank)), /nothing was decoded/);
+  });
+});
+
+/**
+ * Whether the recording that played was served by the arm this run is filed under.
+ *
+ * ⛔⛔ Until now V4 asked nothing of the kind. The proof was recorded on every arm and read by
+ * nobody, so an in-browser run whose in-tab node never served a byte passed exactly like one whose
+ * node served all of them, and every past in-tab playback result means only that A recording played.
+ *
+ * ⭐ The measured separation this is judged on, both arms from 2026-09-03 on the same 120s recording:
+ * the in-tab arm made **6** gateway segment requests over the whole run and the gateway arm made
+ * **61**, one per segment of the recording.
+ */
+describe('whether a playback arm was the byte source it is filed as', () => {
+  const SINGLE_DIGIT = { maxSegmentRequests: 9 };
+  const played = (overrides: Partial<BrowserArmResult>): BrowserArmResult => ({
+    ...parseBrowserArmState(vodArmState()),
+    ...overrides,
+  });
+
+  it('passes an in-tab arm that read the recording through the node in the tab', () => {
+    assert.equal(vodByteSourceRefusal(parseBrowserArmState(vodArmState()), SINGLE_DIGIT), null);
+  });
+
+  /**
+   * ⛔ The control condition, at the count a real one produces. 61 requests is the whole recording
+   * on one rung, and a ceiling applied here would refuse the only arm the in-tab arm is compared
+   * against.
+   */
+  it('passes a gateway arm that read every segment of the recording through the gateway', () => {
+    const gateway = parseBrowserArmState(vodArmState({ backend: GATEWAY_BYTES, segmentRequests: 61 }));
+
+    assert.equal(vodByteSourceRefusal(gateway, SINGLE_DIGIT), null);
+  });
+
+  it('refuses an arm that named no byte source', () => {
+    const unnamed = parseBrowserArmState(vodArmState({ byteSource: null }));
+
+    assert.match(String(vodByteSourceRefusal(unnamed, SINGLE_DIGIT)), /named no byte source/);
+  });
+
+  it('refuses an in-tab arm the client reports on the gateway', () => {
+    const landedElsewhere = played({
+      proof: { requested: WEEB3_BYTES, reported: GATEWAY_BYTES, settledForMs: 60_000 },
+    });
+
+    assert.match(String(vodByteSourceRefusal(landedElsewhere, SINGLE_DIGIT)), /switch did not take/);
+  });
+
+  /**
+   * ⭐ The count is what separates a node that served the recording from a client that answered
+   * honestly and read the gateway anyway. 61 is what the gateway arm of 2026-09-03 measured, so an
+   * in-tab arm reaching it read the whole recording from the wrong place.
+   */
+  it('refuses an in-tab arm that read the recording from the gateway after all', () => {
+    const refusal = vodByteSourceRefusal(played({ segmentRequests: 61 }), SINGLE_DIGIT);
+
+    assert.match(String(refusal), /61/);
+    assert.match(String(refusal), /9/);
   });
 });
 

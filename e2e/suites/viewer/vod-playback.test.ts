@@ -27,6 +27,7 @@ import {
   playedBackRefusal,
   vodArmRefusal,
   vodArmSummary,
+  vodByteSourceRefusal,
   wholeBroadcastRefusal,
   wholeLadderRefusal,
 } from '../../src/harness/vodArm.js';
@@ -52,7 +53,20 @@ import { viewerGate } from '../../src/viewerCoverage.js';
  *
  * That the recording played, that the player was handed a FINISHED timeline rather than a live one,
  * that the recording offers every rung the deployment published, that every rung ends at the last
- * segment the uploader published on it, and that a picture actually moved.
+ * segment the uploader published on it, that a picture actually moved, and that the bytes came from
+ * the byte source this run is filed under.
+ *
+ * ## ⛔⛔⛔ The byte source, which this asked nothing about until 2026-09-04
+ *
+ * Eight of the ten viewer suites refused an in-tab arm whose segments came from the gateway after
+ * all. This was one of the two that did not, while `runBrowserArm` recorded the proof on every one
+ * of its arms. So an in-browser playback run whose in-tab node never served a byte passed exactly
+ * like one whose node served all of them, and every V4 in-tab result before this date says only
+ * that A recording played, never that the node in the tab is what played it.
+ *
+ * ⭐ That is the same failure `src/browser/byteSourceArm.ts` was written to close one layer down: an
+ * unread setting looks precisely like a setting at its default. See {@link vodByteSourceRefusal} for
+ * why the question is asked after the headline rather than with the instrument checks.
  *
  * ## ⛔⛔ Why the recording is found through the CATALOG
  *
@@ -150,6 +164,24 @@ const MIN_STAMP_TTL_S = 600;
 
 /** The playback arm's own budget. The driver settles for seconds and seeks three times. */
 const WATCH_MINUTES = 3;
+
+/**
+ * The most `/bytes/` requests an in-tab playback arm may make across the whole run.
+ *
+ * ⭐ Nine, the same ceiling V1 holds a live watch to, and reached from this arm's own measurements
+ * rather than borrowed. Both conditions of 2026-09-03 played the same 120 s recording: the in-tab
+ * arm made **6** gateway segment requests over the whole run and the gateway arm made **61**, one
+ * per segment. A playback arm opens the recording on the build's default and becomes its condition
+ * only once the in-tab node has booted, so the reads during that boot are honest and the figure is
+ * a handful rather than a zero.
+ *
+ * ⛔ Not raised above single digits even though a recording is pulled faster than a live edge hands
+ * segments out. The control here is 61 rather than the several hundred a live gateway viewer makes,
+ * so the gap this has to sit inside is narrower, and a ceiling loose enough to admit a recording
+ * served half from the gateway would pass an arm that proves nothing. See
+ * {@link vodByteSourceRefusal} for the full reasoning.
+ */
+const MAX_WEEB3_SEGMENT_REQUESTS = 9;
 
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
@@ -278,6 +310,13 @@ describe('V4 — a finished recording plays through, with the whole ladder it wa
     // ⛔ The headline. Everything below is a reading of a recording that played.
     const neverPlayed = playedBackRefusal(vod);
     assert.equal(neverPlayed, null, `the recording did not play: ${neverPlayed}`);
+
+    // ⛔⛔ After the headline and before every product reading, because each one below is filed
+    // against this condition. The driver opens the arm only once the recording is playing, so a
+    // recording that never started reaches here naming no byte source and the check above is the one
+    // that explains it.
+    const notItsCondition = vodByteSourceRefusal(result, { maxSegmentRequests: MAX_WEEB3_SEGMENT_REQUESTS });
+    assert.equal(notItsCondition, null, `this arm is not the byte source it is filed as: ${notItsCondition}`);
 
     // ⛔ Before the ladder and the length. A live playlist reports an infinite duration, and seeking
     // around inside a moving window would make every reading below about a target that had shifted.

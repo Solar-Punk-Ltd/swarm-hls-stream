@@ -23,6 +23,7 @@
  */
 
 import { type BrowserArmResult, type VodResult, type VodRung } from './browser.js';
+import { byteSourceArmRefusal } from './browserVerdict.js';
 
 /**
  * Why this run is not a real player opening a finished recording, or null.
@@ -44,6 +45,59 @@ export function vodArmRefusal(result: BrowserArmResult): string | null {
     );
   }
   return null;
+}
+
+/** What an arm was asked to be, checked against what the artifact says it was. */
+interface VodArmExpectation {
+  /**
+   * The most `/bytes/` requests an in-tab playback arm may make across the whole run.
+   *
+   * ## Why single digits, and why the same nine a live watch uses
+   *
+   * A playback arm opens the recording on whatever the build defaults to and only becomes its
+   * condition afterwards, because booting the in-tab node is 4.5 MB of wasm and a peer dial. Every
+   * segment the player pulls during that boot legitimately comes from the gateway, so the honest
+   * figure is a handful and never a zero.
+   *
+   * ⭐ Measured, both arms of 2026-09-03 on the same 120 s recording: the in-tab arm made **6**
+   * gateway segment requests over the whole run against the gateway arm's **61**, which is one per
+   * segment of the recording. Nine sits above the honest boot reads with room and far below what
+   * "the gateway served this recording" looks like.
+   *
+   * ## ⛔ Why a recording is not simply held to the live arm's reasoning
+   *
+   * A live viewer cannot outrun the broadcast: the edge hands out one segment per segment length, so
+   * a live arm's boot-period reads are capped by the publish rate. A recording has no edge and the
+   * player fills its buffer as fast as the link allows, so the same boot window can cost more
+   * requests on a faster link. The number lands in the same place, and the headroom above the
+   * measured six is doing more work here than it is on V1.
+   *
+   * ⛔ And the separation is narrower than a live arm's, which is the reason not to be generous with
+   * it. A four minute live gateway viewer makes several hundred requests, so nine is under two per
+   * cent of the control. Here the control is 61, so nine is already a seventh of it, and a ceiling
+   * loose enough to admit a recording served half from the gateway would pass an arm that proves
+   * nothing.
+   */
+  maxSegmentRequests: number;
+}
+
+/**
+ * Why this playback arm is not the byte source it is filed as, or null.
+ *
+ * ## ⛔⛔⛔ Call this AFTER {@link playedBackRefusal}, never inside {@link vodArmRefusal}
+ *
+ * `browser/vod.ts` opens the byte-source arm inside `if (!openError)`, so a recording that never
+ * started playing writes no `byteSource` section at all and reaches here as an arm that named no
+ * condition. Asked first, this would report "named no byte source" about a run whose actual finding
+ * is that the recording never started, which sends a reader to the harness for a product failure.
+ * Asked after the headline, a dead recording is refused by the check that can explain it and a
+ * recording that played is held to the condition it is filed under.
+ *
+ * ⭐ Ordering it this way costs nothing. A recording that never played fetched nothing either, so it
+ * passes this on its way to the refusal that owns it.
+ */
+export function vodByteSourceRefusal(result: BrowserArmResult, expectation: VodArmExpectation): string | null {
+  return byteSourceArmRefusal(result, { maxSegmentRequests: expectation.maxSegmentRequests });
 }
 
 /** Why the recording did not play at all, or null. The headline result, and it comes before the rest. */
