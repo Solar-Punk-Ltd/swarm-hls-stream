@@ -217,6 +217,7 @@ prints as 50% full, which is the arithmetic being honest rather than a batch hal
 | Viewer crash matrix (5 faults at a viewer)                                                               | V6 to V10, green 2026-09-04 in both byte sources at `bc9df49`                                                                                                                                            | in every full sitting                                                                 |
 | weeb3 actually served the bytes (arm proof)                                                              | `weeb3ArmRefusal`, asserted in eight of the ten in-browser viewer tests (V1 directly, V2, V3 and V6 to V10 through their shared arms), green 2026-09-04; V4 and V5 record the proof and do not assert it | add the refusal to V4 and V5, so their in-tab green means the in-tab node served them |
 | Playlist timeline: sequence 0 and a date-time on every segment                                           | asserted live by seven suites since 2026-09-03, green 2026-09-04 in both byte sources at `bc9df49`                                                                                                       | in every full sitting                                                                 |
+| One rung's postage batch runs dry, the broadcast survives                                                | `batch-drain` and `batch-drain-viewer` built 2026-09-04, not yet run live                                                                                                                                | first proving sitting behind `drain-stage.sh` arm and restore                         |
 
 ### Reading the letters
 
@@ -232,6 +233,7 @@ The single letters are the scenario labels the suite files carry in their own do
 | I      | `e2e/suites/scenarios/whole-stack-restart.test.ts`     |
 | J      | `e2e/suites/scenarios/recovery-entry-corrupt.test.ts`  |
 | K      | `e2e/suites/scenarios/reconnect-during-drain.test.ts`  |
+| L      | `e2e/suites/scenarios/batch-drain.test.ts`             |
 
 ### Reading the V numbers
 
@@ -250,6 +252,7 @@ empty when this table was first written and were built on 2026-08-30.
 | V8     | `e2e/suites/viewer/crash-writer-bee-pause.test.ts`  | yes   |
 | V9     | `e2e/suites/viewer/crash-writer-bee-outage.test.ts` | yes   |
 | V10    | `e2e/suites/viewer/crash-engine-restart.test.ts`    | yes   |
+| V11    | `e2e/suites/viewer/batch-drain-viewer.test.ts`      | yes   |
 
 V6 to V10 are the 2026-08-27 crash matrix promoted into pass/fail, one file per fault. The matrix ran
 six arms over five faults: the gateway outage was measured twice, once with segment bytes from a node
