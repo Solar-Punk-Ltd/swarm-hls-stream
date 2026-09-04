@@ -256,7 +256,8 @@ describe('drain-stage print-buy hands the purchase to the owner', () => {
 
   it('refuses a node that cannot say what a batch costs', async () => {
     const sandbox = makeSandbox({ config: ALL_REMOTE, project: PROFILE, envFiles: envFiles() });
-    stubCurl(sandbox, {});
+    // A curl that fails rather than one that answers, which is the shape a node that is up but not
+    // listening produces: an empty body and a non-zero status.
     writeFileSync(join(sandbox.binDir, 'curl'), '#!/bin/sh\nexit 7\n');
     chmodSync(join(sandbox.binDir, 'curl'), 0o755);
 
