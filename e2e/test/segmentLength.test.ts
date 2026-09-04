@@ -10,6 +10,7 @@ import {
   segmentLengthRefusal,
   stageSegmentSeconds,
   unreadableEngineRefusal,
+  uploaderDatingRefusal,
 } from '../src/segmentLength.js';
 
 /**
@@ -336,5 +337,94 @@ describe('refusing to pretend a stage it cannot read was checked', () => {
     assert.match(refusal, /ome/);
     assert.match(refusal, /2s/);
     assert.match(refusal, /E2E_EXPECT_SEGMENT_S=any/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ One variable reaches two containers, and until 2026-09-04 nothing held one against the other.
+ *
+ * `HLS_FRAGMENT` is a single value in the profile env. The engine CUTS segments by it. The uploader
+ * DATES them by it, because `#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds per segment from
+ * the broadcast start rather than by anything measured. An uploader on 1.0 in front of an SRS cutting
+ * 2.0 passed all ten gates, and the only thing that caught it was the ABR ladder suite's timeline
+ * subtest, mid-sitting, reporting segments dated 1000ms after the one before them. A gate that reads
+ * both containers costs two `docker inspect` calls and no broadcast.
+ */
+describe('refusing a stage whose uploader dates by a different length than the engine cuts by', () => {
+  const IN_BROWSER = { profile: 'in-browser', needed: 2 };
+
+  it('passes a stage whose two halves and whose run all name the same number', () => {
+    assert.equal(uploaderDatingRefusal({ ...IN_BROWSER, uploader: '2.0', engine: '2' }), null);
+  });
+
+  it('passes the half-second gateway stage the same way', () => {
+    assert.equal(uploaderDatingRefusal({ profile: 'light-client', needed: 0.5, uploader: '0.5', engine: '0.5' }), null);
+  });
+
+  /** ⛔ The live fault, in the direction it actually happened: the uploader stale and the engine current. */
+  it('refuses the pair that shipped, naming both numbers and what each container does with its own', () => {
+    const refusal = uploaderDatingRefusal({ ...IN_BROWSER, uploader: '1.0', engine: '2.0' });
+
+    assert.ok(refusal, 'an uploader dating by 1.0 in front of an engine cutting 2.0 has to refuse');
+    assert.match(refusal, /HLS_FRAGMENT 1/);
+    assert.match(refusal, /2/);
+    assert.match(refusal, /dates/);
+    assert.match(refusal, /cuts/);
+  });
+
+  it('refuses the mirror, an uploader ahead of the engine', () => {
+    const refusal = uploaderDatingRefusal({ profile: 'light-client', needed: 0.5, uploader: '2.0', engine: '0.5' });
+
+    assert.ok(refusal, 'the disagreement is a fault whichever container is the stale one');
+    assert.match(refusal, /2/);
+    assert.match(refusal, /0\.5/);
+  });
+
+  /**
+   * ⛔ The run's declaration is the reference, so a pair that agrees with itself and not with the run
+   * is still refused. A stage agreeing with itself is how a neighbour's whole redeploy would pass.
+   */
+  it('refuses a pair that agrees on a length this run cannot use', () => {
+    const refusal = uploaderDatingRefusal({ ...IN_BROWSER, uploader: '0.5', engine: '0.5' });
+
+    assert.ok(refusal, 'a stage agreeing with itself about the wrong number is still the wrong number');
+    assert.match(refusal, /in-browser/);
+    assert.match(refusal, /2s/);
+    assert.match(refusal, /0\.5/);
+  });
+
+  /**
+   * ⛔⛔ Absence is a refusal, not the uploader's compiled-in default. A container started without the
+   * variable dates by a number this deployment never declared, and "I could not read it" and "it
+   * agrees" must not be the same answer.
+   */
+  for (const [who, pair] of [
+    ['the uploader', { uploader: undefined, engine: '2.0' }],
+    ['the engine', { uploader: '2.0', engine: undefined }],
+  ] as const) {
+    it(`refuses a stage where ${who} declares no fragment at all`, () => {
+      const refusal = uploaderDatingRefusal({ ...IN_BROWSER, ...pair });
+
+      assert.ok(refusal, `${who} carrying no HLS_FRAGMENT is an unknown rather than an agreement`);
+      assert.match(refusal, /not at all/);
+      assert.match(refusal, /deploy\.sh/);
+    });
+  }
+
+  /**
+   * ⛔ Parsed against a pattern before the arithmetic, the same trap `readSegmentExpectation` records:
+   * `parseFloat` reads `2s` as 2 and `0x2` as 0, so an unparseable value would silently become a
+   * length and the pair would agree by accident.
+   */
+  for (const raw of ['2s', '0x2', 'two', '', '0', '-2']) {
+    it(`refuses '${raw}' as a fragment rather than parsing a prefix of it`, () => {
+      const refusal = uploaderDatingRefusal({ ...IN_BROWSER, uploader: raw, engine: '2.0' });
+
+      assert.ok(refusal, `'${raw}' is not a number of seconds and must not read as one`);
+    });
+  }
+
+  it('reads a value an env file left whitespace around', () => {
+    assert.equal(uploaderDatingRefusal({ ...IN_BROWSER, uploader: '  2.0  ', engine: '2' }), null);
   });
 });

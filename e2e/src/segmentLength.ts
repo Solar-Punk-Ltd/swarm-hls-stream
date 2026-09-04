@@ -229,6 +229,90 @@ export function segmentLengthRefusal({ profile, needed, stage }: SegmentCheck): 
   );
 }
 
+/** What the two halves of a stage were started with, as each container's own environment carries it. */
+interface DatingCheck {
+  /** The run profile's name, so a refusal says which run it is refusing. */
+  profile: string;
+  /** Seconds per segment this run needs. Already past {@link readSegmentExpectation}. */
+  needed: number;
+  /** `HLS_FRAGMENT` exactly as the uploader container carries it, or undefined where it carries none. */
+  uploader: string | undefined;
+  /** The same variable on the engine container, which is what its segmenter config was generated from. */
+  engine: string | undefined;
+}
+
+/** `HLS_FRAGMENT` as a positive number of seconds, or null for absent and for anything unparseable. */
+function fragmentSecondsOf(raw: string | undefined): number | null {
+  const value = (raw ?? '').trim();
+  if (!SECONDS_RE.test(value) || Number.parseFloat(value) <= 0) {
+    return null;
+  }
+  return Number.parseFloat(value);
+}
+
+/** How the pair goes wrong, in the one sentence both directions share. */
+const TWO_CLOCKS =
+  'The uploader dates every segment by its own HLS_FRAGMENT, because #EXT-X-PROGRAM-DATE-TIME steps ' +
+  'by that value from the broadcast start rather than by anything measured, while the engine cuts ' +
+  'segments by its own. So the two disagreeing means the playlist says a segment covers one length ' +
+  'of media and the media covers another, on a stage where every other instrument looks healthy.';
+
+/**
+ * Why this stage's uploader dates segments by the wrong length, or `null`.
+ *
+ * ⛔⛔⛔ The gap the ten gates could not see until 2026-09-04. `HLS_FRAGMENT` reaches two containers
+ * from one variable, and nothing had ever held one against the other: the uploader ran with 1.0 while
+ * SRS cut at 2.0, every gate passed, and the only thing that noticed was the ABR ladder suite's
+ * timeline subtest, which found segments dated 1000ms after the one before them on a stage cutting
+ * 2s fragments. That is a paid sitting to learn something two `docker inspect` reads answer for free.
+ *
+ * ⛔ Absence is a refusal rather than the uploader's own default. A container whose environment
+ * carries no `HLS_FRAGMENT` dates by whatever that package compiled in, which is a number this
+ * deployment never declared, and a gate may not pass a stage it could not read.
+ *
+ * ⛔ The run's declaration is the reference and both containers are suspects, the same way
+ * {@link segmentLengthRefusal} treats the stage.
+ */
+export function uploaderDatingRefusal({ profile, needed, uploader, engine }: DatingCheck): string | null {
+  const dated = fragmentSecondsOf(uploader);
+  const cut = fragmentSecondsOf(engine);
+
+  for (const [who, raw, seconds] of [
+    ['uploader', uploader, dated],
+    ['engine', engine, cut],
+  ] as const) {
+    if (seconds === null) {
+      return (
+        `The ${who} container of this stage declares HLS_FRAGMENT ` +
+        `${raw === undefined ? 'not at all' : `as '${raw}'`}, so the length it works to is unknown, ` +
+        `and this run needs ${needed}s segments. ${TWO_CLOCKS} Redeploy through ` +
+        'deploy/scripts/deploy.sh, which supplies the variable to both containers from one value in ' +
+        'the profile env, rather than reading an unset one as the default somebody happened to compile.'
+      );
+    }
+  }
+
+  if (dated !== null && cut !== null && Math.abs(dated - cut) > EPSILON) {
+    return (
+      `The uploader of this stage was started with HLS_FRAGMENT ${dated} and the engine with ` +
+      `${cut}. ${TWO_CLOCKS} One of the two containers is running an older deploy: the variable is ` +
+      'one value in the profile env and it reaches both, so a difference is a container that was ' +
+      'never restarted on the current one. Redeploy the stale one.'
+    );
+  }
+
+  if (dated !== null && Math.abs(dated - needed) > EPSILON) {
+    return (
+      `Run profile '${profile}' needs ${needed}s segments and both containers of this stage were ` +
+      `started with HLS_FRAGMENT ${dated}. ${TWO_CLOCKS} Set HLS_FRAGMENT=${needed} in the profile ` +
+      'env and redeploy the engine and the uploader together, because the pair has to agree whatever ' +
+      'the number is.'
+    );
+  }
+
+  return null;
+}
+
 /**
  * Why a run that named a length cannot be checked on this engine.
  *

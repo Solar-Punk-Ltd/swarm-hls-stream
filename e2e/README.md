@@ -124,16 +124,23 @@ loses rungs, or the ceiling is understood and raised, 0.5 is the value to come b
 
 `preflight/segment-length` refuses a run pointed at the other one:
 
-| `E2E_EXPECT_SEGMENT_S` | what happens                                                                     |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| unset                  | **refused**, before anything is asked of the deployment                          |
-| a number               | the running SRS config is read, and a stage cutting at another length is refused |
-| `any`                  | the check stands down, and the preflight prints that it did                      |
+| `E2E_EXPECT_SEGMENT_S` | what happens                                                                                                                     |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| unset                  | **refused**, before anything is asked of the deployment                                                                          |
+| a number               | the running SRS config and both containers' `HLS_FRAGMENT` are read, and a stage that cuts or dates at another length is refused |
+| `any`                  | the check stands down, and the preflight prints that it did                                                                      |
 
-It reads the config the running SRS container was started on, through one `docker exec cat`: **no
-broadcast, no stamp, nothing published and nothing changed**. That is a prediction from the config
-rather than an observation of published media, so it cannot see an encoder missing the cadence its
-own config asks for. `deploy/scripts/stage-fingerprint.sh` reads raw `#EXTINF` off a live playlist
+⛔⛔⛔ **Two containers work to that one number, and the gate reads both.** `HLS_FRAGMENT` is one value
+in the profile env. The engine **cuts** segments by it, and the uploader **dates** them by it, because
+`#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds per segment from the broadcast start. On
+2026-09-04 an uploader running 1.0 sat in front of an SRS cutting 2.0, all ten gates passed, and the
+only thing that noticed was the ABR ladder suite's timeline subtest mid-sitting. The gate now refuses
+a pair that disagrees, and a pair that agrees on a length the run cannot use.
+
+It reads the config the running SRS container was started on, through one `docker exec cat`, and each
+container's own environment through two `docker inspect` reads: **no broadcast, no stamp, nothing
+published and nothing changed**. That is a prediction from the config rather than an observation of
+published media, so it cannot see an encoder missing the cadence its own config asks for. `deploy/scripts/stage-fingerprint.sh` reads raw `#EXTINF` off a live playlist
 and does catch that, during a sitting where the broadcast is paid for either way.
 
 A refused run names the one knob. With the ladder on, `engines/srs/entrypoint.sh` derives every rung
@@ -212,17 +219,17 @@ run line prints whichever it resolved.
 
 Preflight:
 
-| file                           | proves                                                                                                                                                  |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `preflight/chequebook-funding` | every publisher node holds ≥ 0.5 BZZ available. Read-only: it reports a shortfall and fails, never spends                                               |
-| `preflight/spend-ceiling`      | the run is inside what the owner authorised in `.spend-ledger.env`. Reads one balance per node that can spend, spends nothing                           |
-| `preflight/bee-publishers`     | the uploader's live routing is the one `BEE_PUBLISHERS` declares. Reads `/health` only, spends nothing                                                  |
-| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host                                                                       |
-| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host                                                            |
-| `preflight/profile`            | the run profile parses and declared something. Config only, dials no host, refuses while the stack is cold                                              |
-| `preflight/segment-length`     | the deployed stage cuts at the length this run declares. One `docker exec cat` of the SRS config, spends nothing                                        |
-| `preflight/announcement-rate`  | the ladder does not ask SRS for more announcements a second than it has sustained, which silently kills the top rung. One `docker exec`, spends nothing |
-| `preflight/uploader-log-shape` | the deployed uploader writes all fifteen parsed log families. One `docker exec` against its built code, spends nothing                                  |
+| file                           | proves                                                                                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preflight/chequebook-funding` | every publisher node holds ≥ 0.5 BZZ available. Read-only: it reports a shortfall and fails, never spends                                                                               |
+| `preflight/spend-ceiling`      | the run is inside what the owner authorised in `.spend-ledger.env`. Reads one balance per node that can spend, spends nothing                                                           |
+| `preflight/bee-publishers`     | the uploader's live routing is the one `BEE_PUBLISHERS` declares. Reads `/health` only, spends nothing                                                                                  |
+| `preflight/abr-coverage`       | the run is not silently skipping the ABR suites. Reads config only, dials no host                                                                                                       |
+| `preflight/viewer-coverage`    | the run says whether a real browser watched, and which arm it is. Config only, dials no host                                                                                            |
+| `preflight/profile`            | the run profile parses and declared something. Config only, dials no host, refuses while the stack is cold                                                                              |
+| `preflight/segment-length`     | the deployed stage cuts at the length this run declares, and its uploader dates by the same one. One `docker exec cat` of the SRS config and two `docker inspect` reads, spends nothing |
+| `preflight/announcement-rate`  | the ladder does not ask SRS for more announcements a second than it has sustained, which silently kills the top rung. One `docker exec`, spends nothing                                 |
+| `preflight/uploader-log-shape` | the deployed uploader writes all fifteen parsed log families. One `docker exec` against its built code, spends nothing                                                                  |
 
 Fault scenarios:
 

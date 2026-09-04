@@ -74,8 +74,13 @@ anything is asked of the deployment. It checks only what needs no network, which
 declared no segment length at all.
 
 `e2e/suites/preflight/segment-length.test.ts` refuses a run whose **deployed stage** cuts at the other
-viewer type's length. It reads the config the running SRS container was started on, through one
-`docker exec cat`, so it costs no broadcast, no stamp and no BZZ, and changes nothing. That makes it
+viewer type's length, and since 2026-09-04 also one whose **uploader dates segments** by a length the
+engine does not cut by. `HLS_FRAGMENT` is one value in the profile env reaching two containers: the
+engine cuts by it, the uploader steps `#EXT-X-PROGRAM-DATE-TIME` by it. An uploader on 1.0 in front of
+an SRS cutting 2.0 passed all ten gates, and only the ABR ladder suite's timeline subtest caught it,
+mid-sitting. It reads the config the running SRS container was started on, through one
+`docker exec cat`, and both containers' own environment through two `docker inspect` reads, so it
+costs no broadcast, no stamp and no BZZ, and changes nothing. That makes it
 a prediction from the running config rather than an observation of published media: an encoder
 missing the cadence its own config asks for is invisible here, and is what
 `deploy/scripts/stage-fingerprint.sh` catches from raw `#EXTINF` during a sitting. A run that pins no

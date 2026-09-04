@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { containerName, loadConfig, runProfile } from '../../src/config.js';
-import { makeHost } from '../../src/harness/host.js';
+import { type Host, makeHost } from '../../src/harness/host.js';
 import { readStageSegmenting } from '../../src/harness/stage.js';
 import {
   SEGMENT_ANY,
@@ -10,6 +10,7 @@ import {
   segmentLengthRefusal,
   stageSegmentSeconds,
   unreadableEngineRefusal,
+  uploaderDatingRefusal,
 } from '../../src/segmentLength.js';
 
 /**
@@ -34,12 +35,23 @@ import {
  *
  * ## What it reads, and what it costs
  *
- * It reads the config the running SRS container was started on, through one `docker exec cat`. **No
+ * It reads the config the running SRS container was started on, through one `docker exec cat`, and
+ * the `HLS_FRAGMENT` both containers were started with, through two `docker inspect` reads. **No
  * broadcast, no publish, no stamp, no BZZ, and nothing on the deployment changed.** Reading raw
  * `#EXTINF` off a live playlist would be an observation rather than a prediction, and it needs a
  * broadcast, which is real money on every second. `deploy/scripts/stage-fingerprint.sh` already does
  * exactly that, during a sitting, where the broadcast is paid for either way. This one sits earlier
  * and cheaper and catches the fault that one is too late to save money on.
+ *
+ * ## ⛔⛔⛔ Two containers work to that one number, and this reads both
+ *
+ * `HLS_FRAGMENT` is one value in the profile env and it reaches the engine, which CUTS by it, and the
+ * uploader, which DATES by it: `#EXT-X-PROGRAM-DATE-TIME` steps by that many seconds per segment from
+ * the broadcast start. Nothing had ever held one against the other, and on 2026-09-04 an uploader
+ * running 1.0 sat in front of an SRS cutting 2.0. All ten gates passed. The only thing that noticed
+ * was the ABR ladder suite's timeline subtest, mid-sitting, reporting segments dated 1000ms after the
+ * one before them on a stage cutting 2s fragments. That is a paid broadcast to learn what two
+ * `docker inspect` reads answer for nothing, so this gate now judges the pair as well as the cut.
  *
  * Not from the env files this suite already resolved, though those are free too: an env file edited
  * after the last deploy states an intention, and this bench host is shared. See `harness/stage.ts`.
@@ -98,13 +110,56 @@ describe('preflight — the stage cuts at the length this run needs', () => {
     );
 
     const refusal = segmentLengthRefusal({ profile: runProfile.name, needed, stage });
-    if (refusal === null) {
-      return;
+    if (refusal !== null) {
+      assert.fail(`${refusal}\n${untouched()}\n${howToRestage()}`);
     }
 
-    assert.fail(`${refusal}\n${untouched()}\n${howToRestage()}`);
+    // ⛔ The second half of the same question. What the engine cuts is above; this is what the
+    // uploader dates by, and the two are one variable reaching two containers.
+    const declared = await declaredFragments(host);
+    console.log(
+      `  ${containerName(cfg, 'stream-uploader')} was started with HLS_FRAGMENT ` +
+        `${declared.uploader ?? 'nothing at all'}, ${containerName(cfg, 'srs')} with ` +
+        `${declared.engine ?? 'nothing at all'}`,
+    );
+
+    // ⚠️ Without `howToRestage()`, unlike the refusal above. That one names `srs` alone, and a pair
+    // that disagrees is fixed by redeploying whichever container is stale, which the verdict says.
+    const misdated = uploaderDatingRefusal({ profile: runProfile.name, needed, ...declared });
+    if (misdated !== null) {
+      assert.fail(`${misdated}\n${untouched()}`);
+    }
   });
 });
+
+/**
+ * The `HLS_FRAGMENT` each half of the stage was started with, as docker reports its environment.
+ *
+ * ⛔ Out of the containers and never out of the env files this suite resolved, for the reason
+ * `harness/stage.ts` records at length: an env file edited after the last deploy states an intention,
+ * a bare `docker compose up` loses what `deploy.sh` would have supplied, and this bench host is
+ * shared. A container keeps the environment it was started with, which is the number the process is
+ * actually working to.
+ *
+ * ⛔ Every way of learning nothing lands in the verdict rather than as an unhandled rejection, the
+ * same way the stage read above does: a read that threw is not a stage that agrees with itself.
+ */
+async function declaredFragments(host: Host): Promise<{ uploader: string | undefined; engine: string | undefined }> {
+  try {
+    const [uploader, engine] = await Promise.all([
+      host.containerEnv(containerName(cfg, 'stream-uploader')),
+      host.containerEnv(containerName(cfg, 'srs')),
+    ]);
+    return { uploader: uploader.HLS_FRAGMENT, engine: engine.HLS_FRAGMENT };
+  } catch (error) {
+    assert.fail(
+      `could not read what ${containerName(cfg, 'stream-uploader')} and ${containerName(cfg, 'srs')} ` +
+        `were started with: ${(error as Error).message}. A stage whose two halves cannot be compared ` +
+        `is not a stage that agrees with itself, and this run needs ${cfg.segmentExpectation}s ` +
+        `segments.\n${untouched()}`,
+    );
+  }
+}
 
 /**
  * The closing note on every refusal: nothing was spent, and here is where a declaration lives.
