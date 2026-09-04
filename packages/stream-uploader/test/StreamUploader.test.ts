@@ -1142,13 +1142,15 @@ interface UploaderFixtureOptions {
   metrics?: ServiceMetrics;
   /** Present makes this one rung of a ladder, absent makes it a single-rendition stream. */
   ladder?: { group: string; rung: { name: string; width: number; height: number; configuredKbps: number } };
+  /** A catalog to watch, where the default one accepts everything and remembers nothing. */
+  streamCatalog?: StreamCatalog;
 }
 
 function uploaderWith(bee: Bee, options: UploaderFixtureOptions = {}): StreamUploader {
   return new StreamUploader({
     anchor: TEST_ANCHOR,
     bee,
-    streamCatalog: makeFakeCatalog(),
+    streamCatalog: options.streamCatalog ?? makeFakeCatalog(),
     recoveryStore: makeFakeRecoveryStore(),
     streamKey: TEST_STREAM_KEY,
     stamp: 'stamp',
@@ -1265,6 +1267,50 @@ describe('segments the live window outran before anything published them', () =>
    * is made. Asserted end to end from a published segment, because the counter is only worth having if
    * the rung actually reaches it.
    */
+  /**
+   * ⛔⛔⛔ **The one call the whole dead-rung mechanism hangs off, and a mutation run found nothing
+   * watching it.** Turning `if (this.ladder)` to false left every test in this package green, and
+   * that call is how the catalog learns a rung is still delivering. Without it no rung ever looks
+   * alive, so the master is never rewritten: a rung that goes quiet is never dropped from it, and a
+   * rung that comes back is never restored. Both drain suites and V3 read the master for their
+   * verdict, so a paid broadcast would report the product on a live line nobody made.
+   *
+   * ⭐ A single-rendition stream deliberately records nothing, because a stream with no ladder has no
+   * rung to be the liveness of, and the catalog would have nothing to key it by.
+   */
+  it("tells the catalog its rung delivered, which is what keeps a rung in the ladder's master", async () => {
+    const delivered: Array<[string, string]> = [];
+    const watching = makeFakeCatalog({
+      recordRungDelivered: (group: string, rung: string) => {
+        delivered.push([group, rung]);
+      },
+    });
+    const uploader = uploaderWith(makeBee({}), {
+      streamCatalog: watching,
+      ladder: { group: 'group-1', rung: { name: '720p', width: 1280, height: 720, configuredKbps: 2800 } },
+    });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    assert.deepEqual(delivered, [['group-1', '720p']], 'a landed segment is what marks its rung alive');
+  });
+
+  it('tells the catalog nothing about a rung on a stream that has no ladder', async () => {
+    const delivered: string[] = [];
+    const watching = makeFakeCatalog({
+      recordRungDelivered: (_group: string, rung: string) => {
+        delivered.push(rung);
+      },
+    });
+    const uploader = uploaderWith(makeBee({}), { streamCatalog: watching });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    assert.deepEqual(delivered, [], 'a single-rendition stream has no rung whose liveness this could be');
+  });
+
   it('counts an upload against its rung as well as against the total', async () => {
     const metrics = new ServiceMetrics();
     const uploader = uploaderWith(makeBee({}), {
