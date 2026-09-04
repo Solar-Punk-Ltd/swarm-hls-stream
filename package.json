@@ -38,6 +38,7 @@
     "e2e:finalize-crash": "pnpm --filter @swarm-hls-stream/e2e test:e2e:finalize-crash",
     "e2e:crash-recovery": "pnpm --filter @swarm-hls-stream/e2e test:e2e:crash-recovery",
     "e2e:batch-drain": "pnpm --filter @swarm-hls-stream/e2e test:e2e:batch-drain",
+    "e2e:batch-drain-viewer": "pnpm --filter @swarm-hls-stream/e2e test:e2e:batch-drain-viewer",
     "e2e:abr-ladder": "pnpm --filter @swarm-hls-stream/e2e test:e2e:abr-ladder",
     "bench:latency": "pnpm --filter @swarm-hls-stream/e2e bench:latency",
     "bench:longrun": "pnpm --filter @swarm-hls-stream/e2e bench:longrun",

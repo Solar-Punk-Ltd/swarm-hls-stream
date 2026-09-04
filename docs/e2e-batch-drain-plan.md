@@ -127,8 +127,9 @@ The recommendations below are therefore the decisions.
    protects every other suite too.**
 5. **Recovery scope.** Assert that the master offers four rungs again after restore. Record, do not
    assert, that a viewer who was watching keeps three. **Recommend: as written.**
-6. **Where it lives.** Its own script, `e2e:batch-drain`, run as a sitting with the arm and restore
-   around it, and kept out of `e2e:run`, because the ordinary full suite must never depend on a
+6. **Where it lives.** Its own scripts, `e2e:batch-drain` for the uploader side and
+   `e2e:batch-drain-viewer` for the viewer, each run as a sitting with its own arm and restore around
+   it because one small batch serves one suite, and kept out of `e2e:run`, because the ordinary full suite must never depend on a
    deliberately broken stage. **Recommend: yes.**
 
 ## What is built, in order
