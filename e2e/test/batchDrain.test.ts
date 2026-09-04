@@ -8,6 +8,7 @@ import {
   DEFAULT_DRAIN_RUNG,
   describeDrainRamp,
   DRAIN_BATCH_DEPTH,
+  drainNotDeclared,
   drainRampOf,
   drainRung,
   drainRungRefusal,
@@ -19,7 +20,6 @@ import {
   type UploaderProcess,
   uploaderProcessCommand,
   uploaderRestartRefusal,
-  drainNotDeclared,
 } from '../src/harness/batchDrain.js';
 import { COORDINATOR_RUNG } from '../src/harness/publishers.js';
 

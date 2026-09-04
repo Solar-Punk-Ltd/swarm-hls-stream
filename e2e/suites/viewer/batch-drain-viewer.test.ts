@@ -2,20 +2,24 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
 import { FEED_STATE_ENDED } from '../../src/browser/feedState.js';
-import { byteSourceFromEnv, WEEB3_BYTES } from '../../src/browser/fetchBackendSweep.js';
+import { byteSourceFromEnv } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
 import {
   type ArmedStageReading,
   describeDrainRamp,
+  drainNotDeclared,
   drainRampOf,
   drainRung,
   firstRefusalAtMs,
-  drainNotDeclared,
   requireArmedStage,
   waitForSurvivingMaster,
 } from '../../src/harness/batchDrain.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
-import { ladderResolutionRefusal, viewerPlaybackRefusal, weeb3ArmRefusal } from '../../src/harness/browserVerdict.js';
+import {
+  byteSourceArmRefusal,
+  ladderResolutionRefusal,
+  viewerPlaybackRefusal,
+} from '../../src/harness/browserVerdict.js';
 import { MAX_WEEB3_SEGMENT_REQUESTS } from '../../src/harness/crashArm.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
 import { announcedRungs, parseUploaderLog, timestampedMessages } from '../../src/harness/logwatch.js';
@@ -184,18 +188,14 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
       `this viewer was served a quality the deployment never configured: ${wrongQuality}`,
     );
 
-    // ⛔ The switch must have taken. An arm that asked for one byte source and silently used the
-    // other puts both conditions of the matrix on one, and every figure then agrees for free.
-    assert.equal(
-      result.proof.reported,
-      result.proof.requested,
-      `the client was asked for ${result.proof.requested} and reports ${result.proof.reported}`,
-    );
-
-    if (source === WEEB3_BYTES) {
-      const notInTab = weeb3ArmRefusal(result, { maxSegmentRequests: MAX_WEEB3_SEGMENT_REQUESTS });
-      assert.equal(notInTab, null, `this arm is not the in-tab condition it claims: ${notInTab}`);
-    }
+    // ⛔⛔⛔ The shared refusal rather than the two branches this file used to carry, because the
+    // branch it was missing is the one that matters: an artifact with no byte source section at all
+    // reads back as requested null and reported null, which an equality check passes. A browser
+    // image that predates the section, or any driver path that returns before the arm opens, would
+    // then have filed this run as a proven condition on evidence that names none. That is the exact
+    // hole this same diff closed in V4 and V5, one file later.
+    const notItsCondition = byteSourceArmRefusal(result, { maxSegmentRequests: MAX_WEEB3_SEGMENT_REQUESTS });
+    assert.equal(notItsCondition, null, `this arm is not the byte source it is filed as: ${notItsCondition}`);
 
     // ⭐ The ladder half, read off the published master because that is where the drop is decided.
     // Waited on rather than read once, and waited on until the master offers EXACTLY the survivors,
