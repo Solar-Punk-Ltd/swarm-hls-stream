@@ -11,8 +11,16 @@ import { type NodeStampReading, stageStampsRefusal } from '../src/harness/stageS
  * up tens of minutes later as a rung that stopped being produced, which reaches a viewer as an ABR
  * fault and gets scored as one.
  *
- * These cover the rule rather than the reading, because the rule is the part that decides. The reading
- * side is wiring over `/health` and `/stamps` and cannot run without a deployment.
+ * ⛔⛔ **And the second version of the same mistake, closed 2026-09-04.** The gate read each node's
+ * BEST stamp rather than the batch `BEE_PUBLISHERS` routes that rung to, so a node holding one drained
+ * batch (the configured one) and one fresh unused batch passed cleanly and then refused every upload
+ * it made. Which batch a node is spending is decided in `BEE_PUBLISHERS`, so that is the only batch a
+ * verdict about a rung can be about.
+ *
+ * These cover the rule rather than the reading, because the rule is the part that decides. Picking the
+ * configured batch out of what a node lists is `readConfiguredBatch` in `harness/host.ts` and is
+ * covered in `host.test.ts`. What is left of the reading side is wiring over `/health` and `/stamps`
+ * and cannot run without a deployment.
  */
 
 const MIN_TTL_S = 600;
@@ -22,6 +30,7 @@ function reading(over: Partial<NodeStampReading> = {}): NodeStampReading {
     rungs: ['360p'],
     port: 10075,
     batch: 'aabbccdd',
+    state: 'held',
     ttlS: 86_400,
     utilizationPct: 12,
     problem: null,
@@ -85,7 +94,15 @@ describe('stageStampsRefusal', () => {
           HEALTHY_STAGE[0],
           reading({ rungs: ['480p'], port: 11071, batch: '22222222', ttlS: 30 }),
           HEALTHY_STAGE[2],
-          reading({ rungs: ['1080p'], port: 11075, batch: null, ttlS: null, problem: 'nothing usable after 60s' }),
+          reading({
+            rungs: ['1080p'],
+            port: 11075,
+            batch: '44444444',
+            state: 'unread',
+            ttlS: null,
+            utilizationPct: null,
+            problem: 'nothing usable after 60s',
+          }),
         ],
         MIN_TTL_S,
       ) ?? '';
@@ -105,9 +122,11 @@ describe('stageStampsRefusal', () => {
         reading({
           rungs: ['1080p'],
           port: 11075,
-          batch: null,
+          batch: '44444444',
+          state: 'unread',
           ttlS: null,
-          problem: 'nothing usable after 60s of polling, and it last said: non-JSON from GET :11075/stamps',
+          utilizationPct: null,
+          problem: 'non-JSON from GET :11075/stamps, after 60s of polling',
         }),
       ],
       MIN_TTL_S,
@@ -115,6 +134,85 @@ describe('stageStampsRefusal', () => {
 
     assert.match(refusal ?? '', /1080p on :11075 has no usable batch at all/);
     assert.match(refusal ?? '', /non-JSON from GET :11075\/stamps/);
+  });
+
+  /**
+   * ⛔⛔⛔ **The failure that reopened this file on 2026-09-04.** The 1080p node holds its configured
+   * batch and bee will not stamp with it, while a fresh unused batch sits beside it on the same node.
+   * The old gate read the fresh one, called the stage healthy, and the rung then refused every upload
+   * it made. The reading here is of the configured batch, so the verdict has to refuse.
+   */
+  it('refuses a node whose configured batch is there and unusable', () => {
+    const refusal =
+      stageStampsRefusal(
+        [
+          ...HEALTHY_STAGE.slice(0, 3),
+          reading({
+            rungs: ['1080p'],
+            port: 11075,
+            batch: '44444444',
+            state: 'unusable',
+            problem: 'usable=false exists=true, after 60s of polling',
+          }),
+        ],
+        MIN_TTL_S,
+      ) ?? '';
+
+    assert.match(refusal, /^1 of 4 Bee node\(s\)/);
+    assert.match(refusal, /1080p on :11075 holds configured batch 44444444/);
+    assert.match(refusal, /usable=false exists=true/);
+    assert.match(refusal, /bee-publishers\.sh/);
+  });
+
+  /**
+   * ⛔ A rung routed to a batch its node does not have. The TTL on the reading is healthy, because it
+   * is the TTL of nothing, so a rule that judged TTL alone would pass this.
+   */
+  it('refuses a node that does not hold its configured batch at all', () => {
+    const refusal =
+      stageStampsRefusal(
+        [
+          ...HEALTHY_STAGE.slice(0, 3),
+          reading({
+            rungs: ['1080p'],
+            port: 11075,
+            batch: '44444444',
+            state: 'absent',
+            ttlS: null,
+            utilizationPct: null,
+            problem: 'the node lists 99999999, after 60s of polling',
+          }),
+        ],
+        MIN_TTL_S,
+      ) ?? '';
+
+    assert.match(refusal, /^1 of 4 Bee node\(s\)/);
+    assert.match(refusal, /1080p on :11075 does not hold configured batch 44444444/);
+    assert.match(refusal, /BEE_PUBLISHERS/);
+    assert.match(refusal, /the node lists 99999999/);
+  });
+
+  /**
+   * ⭐ The verdict is about the batch the routing names and about nothing else on the node. Pinned so
+   * that "but there was a healthier batch right there" can never come back as a reason to pass.
+   */
+  it('names the configured batch rather than any other the node holds', () => {
+    const refusal =
+      stageStampsRefusal(
+        [
+          reading({
+            batch: '44444444',
+            state: 'absent',
+            ttlS: null,
+            utilizationPct: null,
+            problem: 'the node lists 11111111, 22222222',
+          }),
+        ],
+        MIN_TTL_S,
+      ) ?? '';
+
+    assert.match(refusal, /configured batch 44444444/);
+    assert.doesNotMatch(refusal, /batch 11111111 has/, 'a batch the rung is not routed to is not the subject');
   });
 
   /** Two rungs on one node is a real topology, and the refusal has to name both of them. */
@@ -148,8 +246,13 @@ describe('stageStampsRefusal', () => {
    * ⭐ Pinned rather than left implicit, because "it also refuses at 95%" is the change somebody makes
    * in good faith, and the refusal it adds fires on a stage the two real gates were about to explain
    * properly.
+   *
+   * ⚠️ The fill is now the CONFIGURED batch's fill, which is the number that matters and also the one
+   * that reads alarmingly on a small batch. A depth 17 batch has two chunks per bucket, so its first
+   * chunk prints as 50% full. Still not a refusal, and the 50 below is exactly that stage.
    */
   it('clears a batch that is nearly full, because the fill is not this rule to judge', () => {
+    assert.equal(stageStampsRefusal([reading({ utilizationPct: 50 })], MIN_TTL_S), null);
     assert.equal(stageStampsRefusal([reading({ utilizationPct: 99.6 })], MIN_TTL_S), null);
     assert.equal(stageStampsRefusal([reading({ utilizationPct: 100 })], MIN_TTL_S), null);
   });

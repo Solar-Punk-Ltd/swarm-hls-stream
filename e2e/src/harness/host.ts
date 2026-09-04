@@ -326,48 +326,137 @@ export function uploaderHealth(host: Host, cfg: E2EConfig): Promise<UploaderHeal
   return host.localJson<UploaderHealth>(cfg.ports.uploaderApi, '/health');
 }
 
-/** The best usable stamp one Bee node holds, or what that node last said instead of offering one. */
-interface StampPoll {
-  stamp: Stamp | null;
-  /** The last thing the node answered before the poll gave up. Null once a stamp was found. */
-  lastSeen: string | null;
+/**
+ * What one Bee node answered about the batch it is configured to stamp with.
+ *
+ * - `held` it holds that batch and bee reports it usable, the one answer a stage gate can pass.
+ * - `unusable` it holds that batch and bee reports `usable: false` or `exists: false`, so uploads on
+ *   the rung routed to it are refused whatever else the node is holding.
+ * - `absent` its batch list was read and the configured batch could not be found in it, which covers
+ *   a node holding other batches, a node holding none, and the pair too alike to tell apart.
+ * - `unread` its batch list could not be read at all, so nothing about its postage is known.
+ */
+export type ConfiguredBatchState = 'held' | 'unusable' | 'absent' | 'unread';
+
+/** What one Bee node answered when it was asked for the batch the uploader routes a rung to. */
+export interface ConfiguredStampRead {
+  readonly state: ConfiguredBatchState;
+  /** That batch as the node listed it, usable or not. Null when the node did not list it. */
+  readonly stamp: Stamp | null;
+  /** What the node said instead of offering it in a usable state. Null once it offered one. */
+  readonly lastSeen: string | null;
+}
+
+/** How much of a batch id `/health` reports and how much of one a printed line ever carries. */
+export const BATCH_ID_SHOWN = 8;
+
+const BATCH_ID_PREFIX = new RegExp(`^[0-9a-f]{${BATCH_ID_SHOWN}}`);
+
+/**
+ * The hex prefix that finds one configured batch among the ones a node lists.
+ *
+ * The uploader truncates every batch id it reports to `BATCH_ID_SHOWN` hex characters and an
+ * ellipsis, and that truncation is deliberate: a batch id is the whole of what authorises spending on
+ * a rung, and a refusal outlives the run in a scrollback. Eight characters tell apart the handful a
+ * node holds, and {@link readConfiguredBatch} refuses a pair that share them rather than guessing.
+ *
+ * ⛔ Refuses anything shorter rather than returning it. `startsWith('')` is true of every batch a node
+ * lists, so a routing this could not read would silently be matched by whichever row came first, which
+ * is the select-a-batch-by-shape mistake the whole comparison exists to end.
+ */
+export function batchIdPrefix(configured: string): string {
+  const hex = configured.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  const prefix = BATCH_ID_PREFIX.exec(hex);
+  if (prefix === null) {
+    throw new Error(
+      `a configured postage batch id has to carry eight hex characters to be found on a node, and ` +
+        `"${configured}" carries ${hex.length}. That id comes off the uploader's own /health, which ` +
+        'truncates it, so a shorter one means the routing itself cannot be read rather than that a ' +
+        'batch is missing.',
+    );
+  }
+  return prefix[0];
 }
 
 /**
- * Poll one Bee node's `/stamps` until it offers a usable batch, preferring the most TTL headroom.
+ * Which of the batches a node listed is the one it is configured to stamp with, and what state it is in.
+ *
+ * ⛔⛔⛔ **Never the best batch, always the configured one.** This replaced a read that took each
+ * node's longest-lived usable stamp on 2026-09-04. A node holding one drained batch, the configured
+ * one, beside one fresh unused batch passed that read cleanly and then refused every upload the rung
+ * made. Which batch a node spends is decided in `BEE_PUBLISHERS` and reported on `/health`, so that
+ * id is the only thing about a node's postage that cannot drift.
+ *
+ * ⛔ Two rows sharing the prefix answer `absent` rather than one of the two. Eight characters is
+ * enough to tell real batch ids apart, and a tie is the one case where picking would be selecting by
+ * shape again.
+ */
+export function readConfiguredBatch(stamps: readonly Stamp[], configured: string): ConfiguredStampRead {
+  const prefix = batchIdPrefix(configured);
+  const matching = stamps.filter((stamp) => stamp.batchID.toLowerCase().startsWith(prefix));
+
+  if (matching.length === 1) {
+    const [held] = matching;
+    return held.usable && held.exists
+      ? { state: 'held', stamp: held, lastSeen: null }
+      : { state: 'unusable', stamp: held, lastSeen: `usable=${held.usable} exists=${held.exists}` };
+  }
+
+  if (matching.length > 1) {
+    return {
+      state: 'absent',
+      stamp: null,
+      lastSeen:
+        `${matching.length} of the batches this node lists start ${prefix}, so which one the routing ` +
+        'means cannot be told from eight characters and this refuses rather than picking one',
+    };
+  }
+
+  const listed = stamps.map((stamp) => stamp.batchID.slice(0, BATCH_ID_SHOWN)).join(', ');
+  return { state: 'absent', stamp: null, lastSeen: `the node lists ${listed || 'no batches at all'}` };
+}
+
+/**
+ * Poll one Bee node's `/stamps` until it offers the batch it is configured to stamp with, usable.
  *
  * Polls rather than failing on the first read, because a scenario that restarts a bee leaves its
  * stamp reporting `usable: false` for tens of seconds while the batch re-syncs, even though uploads
- * already work, and that must not poison the next test's discovery.
+ * already work, and that must not poison the next test's discovery. The wait now applies to the
+ * configured batch: a node whose configured batch is re-syncing is given the same window it always
+ * was, and a node with a fresh batch beside a broken configured one no longer returns on the first
+ * read. ⚠️ So a genuinely misconfigured node costs the whole window before it refuses, and a stage
+ * with four of them costs four. That is the price of the refusal being about the right batch.
  *
  * Takes a port rather than the config, because a split deployment has one Bee node per rung and the
  * ports come off the routing the uploader reports. See {@link nodesBehind}.
  *
  * ⛔ Returns the failure rather than throwing it. `stageStamps.ts` reads every publisher node and has
  * to name all of the ones that cannot stamp, not stop at the first, so composing the message is the
- * caller's job.
+ * caller's job. An unreadable configured id is the exception and throws, from outside the retry loop
+ * so it cannot be mistaken for a node that was slow to answer.
  *
  * ⛔ This is the only stamp read left, and deliberately so. `discoverStamp` used to sit beside it and
  * ask the COORDINATOR alone, which on a stage with one Bee node per rung is an answer about one node
  * of four wearing a statement about the stage. Its last caller moved to `requireStageStamps` on
  * 2026-09-02 and it went with them, so nothing can reach for the single-node answer by accident.
  */
-export async function pollUsableStamp(host: Host, port: number): Promise<StampPoll> {
+export async function pollConfiguredStamp(host: Host, port: number, configured: string): Promise<ConfiguredStampRead> {
+  const prefix = batchIdPrefix(configured);
   const deadline = Date.now() + STAMP_READY_TIMEOUT_MS;
-  let lastSeen = 'no response';
+  let last: ConfiguredStampRead = { state: 'unread', stamp: null, lastSeen: 'no response' };
   for (;;) {
     try {
       const body = await host.localJson<{ stamps: Stamp[] }>(port, '/stamps');
-      const usable = (body.stamps ?? []).filter((s) => s.usable && s.exists);
-      if (usable.length > 0) {
-        return { stamp: usable.sort((a, b) => b.batchTTL - a.batchTTL)[0], lastSeen: null };
+      const read = readConfiguredBatch(body.stamps ?? [], prefix);
+      if (read.state === 'held') {
+        return read;
       }
-      lastSeen = `${(body.stamps ?? []).length} stamp(s), none usable+exists yet`;
+      last = read;
     } catch (error) {
-      lastSeen = (error as Error).message;
+      last = { state: 'unread', stamp: null, lastSeen: (error as Error).message };
     }
     if (Date.now() >= deadline) {
-      return { stamp: null, lastSeen };
+      return last;
     }
     await sleep(3_000);
   }

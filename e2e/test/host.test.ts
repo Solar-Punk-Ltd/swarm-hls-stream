@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, beforeEach, describe, it } from 'node:test';
 
-import { DEFAULT_LOCAL_HOST_ADDRESS, Host, LOCAL_TARGET } from '../src/harness/host.js';
+import {
+  DEFAULT_LOCAL_HOST_ADDRESS,
+  Host,
+  LOCAL_TARGET,
+  readConfiguredBatch,
+  type Stamp,
+} from '../src/harness/host.js';
 
 /**
  * `Host.run` retries, and what it retries is the whole point. ssh answers 255 for its own transport
@@ -295,5 +301,112 @@ describe('the address the local transport curls', () => {
     await new Host('stub-target', undefined, 'host.docker.internal').localText(10_074, '/health');
 
     assert.match(sandbox.invocations()[0], /http:\/\/localhost:10074\/health/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ **Which batch a verdict about a rung is allowed to be about.** Until 2026-09-04 the stage
+ * stamp gate read each node's BEST usable stamp, sorted by TTL, and never compared it with the batch
+ * `BEE_PUBLISHERS` routes that rung to. A node holding one drained batch (the configured one) and one
+ * fresh unused batch therefore passed the gate cleanly and then refused every upload the rung made.
+ *
+ * Which batch a node spends is decided in `BEE_PUBLISHERS` and reported on the uploader's `/health`,
+ * so that id is the only thing that cannot drift. Selecting a batch by shape instead, the healthiest
+ * or the longest-lived, is how a reading here came to be about a row no run ever wrote to.
+ *
+ * `/health` truncates the configured id to eight hex characters and an ellipsis, because a batch id is
+ * the whole of what authorises spending on a rung, so the match is on that prefix.
+ */
+describe('readConfiguredBatch', () => {
+  function stamp(over: Partial<Stamp> = {}): Stamp {
+    return {
+      batchID: '1'.repeat(64),
+      utilization: 1,
+      usable: true,
+      depth: 24,
+      amount: '100000000',
+      bucketDepth: 16,
+      immutableFlag: true,
+      exists: true,
+      batchTTL: 86_400,
+      ...over,
+    };
+  }
+
+  const CONFIGURED = '11111111…';
+  const OTHER_BATCH = '9'.repeat(64);
+
+  it('picks the configured batch even when another on the node has far more TTL', () => {
+    const read = readConfiguredBatch(
+      [stamp({ batchID: OTHER_BATCH, batchTTL: 9_000_000 }), stamp({ batchTTL: 3_600 })],
+      CONFIGURED,
+    );
+
+    assert.equal(read.state, 'held');
+    assert.equal(read.stamp?.batchTTL, 3_600);
+  });
+
+  /** The exact stage the drain test builds: the configured batch refused, a fresh one beside it. */
+  it('reports the configured batch unusable while a fresh batch sits beside it', () => {
+    const read = readConfiguredBatch(
+      [stamp({ usable: false, utilization: 2, depth: 17 }), stamp({ batchID: OTHER_BATCH, batchTTL: 9_000_000 })],
+      CONFIGURED,
+    );
+
+    assert.equal(read.state, 'unusable');
+    assert.equal(read.stamp?.depth, 17, 'the reading has to be of the configured batch, fill included');
+    assert.match(read.lastSeen ?? '', /usable=false/);
+  });
+
+  /** `exists: false` is bee saying the batch is gone on chain, which is not a batch to stamp with. */
+  it('reports the configured batch unusable when bee says it no longer exists', () => {
+    const read = readConfiguredBatch([stamp({ exists: false })], CONFIGURED);
+
+    assert.equal(read.state, 'unusable');
+    assert.match(read.lastSeen ?? '', /exists=false/);
+  });
+
+  it('reports a configured batch the node does not hold, and lists what it does hold', () => {
+    const read = readConfiguredBatch([stamp({ batchID: OTHER_BATCH })], CONFIGURED);
+
+    assert.equal(read.state, 'absent');
+    assert.equal(read.stamp, null);
+    assert.match(read.lastSeen ?? '', /99999999/);
+  });
+
+  it('reports a node that lists no batches at all as not holding the configured one', () => {
+    const read = readConfiguredBatch([], CONFIGURED);
+
+    assert.equal(read.state, 'absent');
+    assert.match(read.lastSeen ?? '', /no batches at all/);
+  });
+
+  /**
+   * ⛔ Two rows sharing the prefix is refused rather than guessed. Picking the usable one of a pair
+   * would be selecting by shape again, which is the whole mistake this function exists to end.
+   */
+  it('refuses to choose between two batches sharing the configured prefix', () => {
+    const read = readConfiguredBatch(
+      [stamp({ batchID: `${'1'.repeat(63)}a`, usable: false }), stamp({ batchID: `${'1'.repeat(63)}b` })],
+      CONFIGURED,
+    );
+
+    assert.equal(read.state, 'absent');
+    assert.match(read.lastSeen ?? '', /2 of the batches this node lists start 11111111/);
+  });
+
+  it('matches whatever case either side reports the id in', () => {
+    const read = readConfiguredBatch([stamp({ batchID: `${'1'.repeat(60)}ABCD` })], `${'1'.repeat(8)}…`);
+
+    assert.equal(read.state, 'held');
+  });
+
+  /**
+   * ⛔ An unreadable prefix refuses instead of matching. `startsWith('')` is true of every batch a
+   * node lists, so a routing this cannot read would have the gate pass on whichever row came first.
+   */
+  it('refuses a configured id it cannot read eight hex characters out of', () => {
+    assert.throws(() => readConfiguredBatch([stamp()], '…'), /eight hex/);
+    assert.throws(() => readConfiguredBatch([stamp()], '1111…'), /eight hex/);
   });
 });

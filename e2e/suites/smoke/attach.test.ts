@@ -37,6 +37,10 @@ describe('attach smoke (read-only)', () => {
    * holding its own postage batch, so an expired batch on the 1080p node is invisible to a read of the
    * coordinator and turns up mid-broadcast as a rung that stopped being produced.
    *
+   * ⛔ And on each node the batch `BEE_PUBLISHERS` routes that rung to, never the healthiest one the
+   * node happens to hold. A node holding a drained configured batch beside a fresh unused one used to
+   * print and pass on the fresh one while refusing every upload the rung made.
+   *
    * This one prints, which `requireStageStamps` deliberately does not. It is the read-only run an
    * operator makes first and its whole job is to report what is out there.
    *
@@ -45,15 +49,16 @@ describe('attach smoke (read-only)', () => {
    * uploader's own `PostageGate`, which are where the stop line lives. Printing it is what turns that
    * into something an operator sees on the run they make first rather than mid-sitting.
    */
-  it('discovers a usable stamp with TTL headroom on every publisher node', async () => {
+  it('finds every publisher node holding the batch it is configured with, with TTL headroom', async () => {
     const readings = await readStageStamps(host, cfg);
 
     console.log(`  ${readings.length} publisher node(s):`);
     for (const reading of readings) {
-      const headroom = reading.ttlS === null ? 'no usable batch' : `TTL ${(reading.ttlS / ONE_HOUR_S).toFixed(1)}h`;
+      const headroom = reading.ttlS === null ? 'no TTL read' : `TTL ${(reading.ttlS / ONE_HOUR_S).toFixed(1)}h`;
       const fill = reading.utilizationPct === null ? 'fill unknown' : `${reading.utilizationPct.toFixed(0)}% full`;
       console.log(
-        `  | ${reading.rungs.join(', ')} :${reading.port} batch ${reading.batch ?? 'none'} ${headroom} ${fill}` +
+        `  | ${reading.rungs.join(', ')} :${reading.port} configured batch ${reading.batch} ` +
+          `${reading.state} ${headroom} ${fill}` +
           (reading.problem === null ? '' : ` (${reading.problem})`),
       );
     }
