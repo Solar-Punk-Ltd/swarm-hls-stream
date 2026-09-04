@@ -278,6 +278,24 @@ Both subcommands also keep the uploader's container log before they redeploy, at
 
 `bee-publishers.sh` cannot do this job: it asks each node for its **healthiest** batch by design, which is the opposite of a batch meant to run out. There is no spend-ledger gate here, unlike `bench-on-host.sh`, because nothing in this script spends from a chequebook. The one purchase is the owner running the printed command, and the broadcast that follows is launched through `bench-on-host.sh`, behind that gate.
 
+### bench-on-host.sh
+
+```bash
+bench-on-host.sh [--profile latbench] [--portSlot 7] [--target manager-host] [--script bench:latency]
+bench-on-host.sh --setup-only    # sync, build and install, then stop without running anything
+bench-on-host.sh --no-setup      # reuse what is already on the host, which is what a sweep repeats
+```
+
+Runs a bench or a browser driver on the deployment host instead of on a workstation, so the capture and the fetch sit on one clock and the operator's uplink stays out of the reading. The checkout is synced, an image is built there, and one script runs inside a container over ssh.
+
+**The container is named `<profile>-harness-slot<N>`**, the shape every compose container on that host already has. Every phase of one launch uses that one name, the dependency install included, so `docker stop <profile>-harness-slot<N>` always stops whatever this script started. It is not derived from the image, because a browser run and a bench run on one profile and slot drive the same stage.
+
+**A launch is refused when that container is already running on the target.** One remote read before the sync, and no flag overrides it. Two harness runs on one stage read each other's broadcasts, and the sync runs with `--delete`, so a second launch would also replace the tree the live container is running from. The refusal names the container and prints the command that stops it.
+
+**An interrupted launch stops the container it would have left behind.** A trap on INT, TERM and EXIT issues one `docker stop` over ssh, with a connect timeout of its own, no retry, and no change to the exit code the run had. A stop that fails says so and says the container may still be broadcasting. It is best effort: a Ctrl-C reaches the whole process group and sometimes kills the shell before its own handler runs, measured with `/bin/bash` at 4 in 60 for TERM and 1 in 60 for INT. The refusal above is the control that always holds, and it catches an orphan whatever left it, a dropped ssh connection included.
+
+Both faults are from 2026-09-04 and happened within two minutes of each other. A killed launch left its container broadcasting for about a minute on a stage armed for a different test, and a second launch then went out on top of it. Between them they cost a postage batch the owner had paid for and a stage arming.
+
 ### Node & stamp CLI
 
 ```bash
