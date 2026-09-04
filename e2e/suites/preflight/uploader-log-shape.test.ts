@@ -11,6 +11,7 @@ import {
   publishingRendition,
   replacedSessionFinalized,
   rungAnnounced,
+  rungBatchRefused,
   segmentDurationUnread,
   segmentsNeverArrived,
   segmentUploaded,
@@ -76,6 +77,14 @@ const cfg = loadConfig();
  * `dist/engines/`, which this gate did not read until the `cat` below was widened. Both now compose
  * in the shared module the gate reads either way. One redeploy answers it, which is what the refusal
  * already asks for.
+ *
+ * ⛔⛔⛔ **One entry refuses every live suite on this stage right now, and it is meant to.** The
+ * batch-refusal line landed in this checkout on 2026-09-04 and the deployed uploader has not been
+ * rebuilt since, so this gate refuses until `deploy/scripts/deploy.sh` has run against a head that
+ * carries it. That redeploy is the step before the next live run rather than a defect here. Adding
+ * the entry only after the redeploy would have been the wrong order: a drain suite reading no
+ * refusal line reports the encoder for a batch the operator emptied on purpose, and telling those
+ * two apart afterwards costs a sitting.
  */
 const PARSED_MESSAGES: readonly DeployedMessage[] = [
   deployedMessage(
@@ -178,6 +187,31 @@ const PARSED_MESSAGES: readonly DeployedMessage[] = [
       'produces: SRS posts each closed segment once and never retries, so a segment closed while ' +
       'the uploader was dead is reported by nothing, the run either side of the join stays gapless, ' +
       'and a deployment that cannot write this line leaves F asserting a gap it cannot see',
+  ),
+  /**
+   * ⛔⛔⛔ **THIS ENTRY REFUSES EVERY LIVE SUITE UNTIL THE UPLOADER IS REDEPLOYED, AND THAT IS
+   * DELIBERATE.** The line landed in this checkout on 2026-09-04 and the deployed uploader ships a
+   * prebuilt `dist/`, so until `deploy/scripts/deploy.sh` has run against a head carrying it, this
+   * gate refuses. Listing it now rather than after the redeploy is the point: a drain suite that
+   * reads no refusal line reports the encoder for a batch it emptied itself, and an operator who has
+   * to be told which of those two happened has already paid for a sitting.
+   *
+   * ⚠️ Its batch id is cut to eight characters by the composer, which is why `messageLiterals` splits
+   * on shortened stand-ins as well as whole ones. Without that, the fragment carrying the cut-short
+   * placeholder became a literal no uploader ever built contains, and this gate refused every
+   * deployment for ever.
+   */
+  deployedMessage(
+    'a rung whose postage batch bee refused',
+    // ⚠️ The batch takes the placeholder too, even though the composer shortens it. A real-looking
+    // id instead bakes its first eight characters into the fixed half, and the gate then demands
+    // the deployment contain that id.
+    (stream, index) => rungBatchRefused(stream, stream, index, stream),
+    'both batch-drain suites, which tell a drained postage batch from a dead encoder by this line ' +
+      'and by nothing else. Every other instrument reports the two identically: the rung stops ' +
+      'uploading, its dropped count climbs, and the master stops offering it. A deployment that ' +
+      'cannot write it leaves scenario L waiting out its whole ceiling and then reporting the ' +
+      'uploader for a batch the operator drained on purpose',
   ),
   deployedMessage(
     'the catalog giving up on its own previous state',
