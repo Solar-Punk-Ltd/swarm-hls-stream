@@ -157,11 +157,22 @@ function envText(sandbox) {
   return readFileSync(join(sandbox.root, `.env.${PROFILE}`), 'utf8');
 }
 
-function publishersOf(sandbox) {
+/**
+ * The whole `BEE_PUBLISHERS` value as one string, which is the only form "byte for byte" can be
+ * asserted in. An entry parses to the same rung and the same batch whether its url points at that
+ * rung's own node or at another one, so a map of what the line means cannot see a rung repointed at
+ * the wrong port, an url deleted, or the spacing changed.
+ */
+function publishersLineOf(sandbox) {
   const line = /^BEE_PUBLISHERS=(.*)$/m.exec(envText(sandbox));
   assert.ok(line, `the env file no longer carries a BEE_PUBLISHERS line:\n${envText(sandbox)}`);
+  return line[1];
+}
+
+/** What the line means, for the assertions that are about one rung's batch and for readable failures. */
+function publishersOf(sandbox) {
   return Object.fromEntries(
-    line[1]
+    publishersLineOf(sandbox)
       .trim()
       .split(/\s+/)
       .map((entry) => [entry.slice(0, entry.indexOf('@')), entry.slice(entry.lastIndexOf('<') + 1, -1)]),
@@ -545,7 +556,15 @@ describe('drain-stage arm swaps one rung and nothing else', () => {
   it('leaves the other three rungs byte for byte as they were', async () => {
     const { sandbox } = await armed();
 
-    assert.deepEqual(publishersOf(sandbox), { ...ORIGINAL, [RUNG]: SMALL_BATCH });
+    // ⛔ The whole line, not a map of what it means. Every one of these passes a parsed comparison:
+    // another rung's url repointed at a different node's port, another rung's url deleted outright,
+    // and the spacing between entries changed. The first of those is a rung publishing to the wrong
+    // node, which is the failure this file says it exists to catch.
+    assert.equal(
+      publishersLineOf(sandbox),
+      publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      `the line parses as ${JSON.stringify(publishersOf(sandbox))}`,
+    );
   });
 
   it('keeps the line where it was rather than appending a second one', async () => {
