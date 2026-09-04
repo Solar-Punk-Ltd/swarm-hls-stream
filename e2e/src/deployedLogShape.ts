@@ -36,9 +36,35 @@ const SAMPLE_NUMBER = 909090909090;
  */
 const MIN_USEFUL_FRAGMENT = 4;
 
+/**
+ * Every stand-in a composed message can carry, longest first.
+ *
+ * ⛔⛔ **The prefixes are here for a composer that SHORTENS one of its arguments**, which this gate
+ * could not see until 2026-09-04. `rungBatchRefused` cuts the batch id to its first eight characters,
+ * deliberately, because a whole id is what authorises spending on a rung and a refusal outlives the
+ * run in a scrollback. Run on the ten character {@link SAMPLE_TEXT} it leaves eight of it behind, the
+ * split found no stand-in there, and `Postage batch SHAPEPRO of` became a literal every deployment
+ * was required to contain.
+ *
+ * ⛔ Which breaks the gate SHUT rather than weakening it. No uploader ever built contains that text,
+ * so the refusal would fire on every deployment for ever and tell an operator to redeploy something
+ * that was never stale. Alternation is ordered, so the longest match wins and a whole stand-in is
+ * never split as a shorter one.
+ *
+ * Safe because {@link SAMPLE_TEXT} is a distinctive invented word: no fixed half of any message in
+ * the contract begins with any of its prefixes, so a prefix can only be a stand-in that was cut short.
+ */
+function standInPattern(): RegExp {
+  const prefixes: string[] = [];
+  for (let length = SAMPLE_TEXT.length; length >= MIN_USEFUL_FRAGMENT; length--) {
+    prefixes.push(SAMPLE_TEXT.slice(0, length));
+  }
+  return new RegExp([...prefixes, String(SAMPLE_NUMBER)].join('|'));
+}
+
 export function messageLiterals(composed: string): string[] {
   return composed
-    .split(new RegExp(`${SAMPLE_TEXT}|${SAMPLE_NUMBER}`))
+    .split(standInPattern())
     .map((fragment) => fragment.trim())
     .filter((fragment) => fragment.length >= MIN_USEFUL_FRAGMENT);
 }

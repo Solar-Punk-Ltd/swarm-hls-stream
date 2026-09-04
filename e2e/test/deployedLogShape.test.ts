@@ -1,4 +1,4 @@
-import { catalogStateLost, manifestUploaded, segmentUploaded } from '@swarm-hls-stream/shared';
+import { catalogStateLost, manifestUploaded, rungBatchRefused, segmentUploaded } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -53,6 +53,38 @@ describe('splitting a composed message into the parts a deployment must contain'
   it('drops fragments too short to distinguish one deployment from another', () => {
     for (const literal of messageLiterals(SEGMENT.composed)) {
       assert.ok(literal.length >= 4, `"${literal}" would match any deployment at all`);
+    }
+  });
+
+  /**
+   * ⛔⛔ **A composer that SHORTENS one of its arguments, which this gate could not see.**
+   * `rungBatchRefused` cuts the batch id to its first eight characters, because a whole id is what
+   * authorises spending on a rung and a refusal outlives the run in a scrollback. Run on a ten
+   * character stand-in that leaves eight of it behind, so the split found no placeholder there and
+   * kept `Postage batch SHAPEPRO of` as a literal the deployment is required to contain.
+   *
+   * ⛔ The direction of the failure is what makes it worth a case of its own. It does not weaken the
+   * gate, it breaks it shut: no uploader ever built contains that text, so the refusal would fire on
+   * every deployment for ever and tell an operator to redeploy something that was never stale.
+   */
+  it('keeps up with a composer that shortens its own placeholder', () => {
+    const refused = deployedMessage(
+      'batch refusals',
+      (text, index) => rungBatchRefused(text, text, index, text),
+      'the batch-drain suites',
+    );
+    const literals = messageLiterals(refused.composed);
+
+    assert.ok(
+      literals.some((literal) => literal.includes('Postage batch')),
+      `the distinctive half was lost: ${literals.join(' | ')}`,
+    );
+    for (const literal of literals) {
+      assert.doesNotMatch(
+        literal,
+        /SHAPE/,
+        `"${literal}" carries a placeholder, so the gate would demand it of every deployment`,
+      );
     }
   });
 });
