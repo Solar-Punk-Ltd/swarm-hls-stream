@@ -34,6 +34,7 @@
     "e2e:run": "pnpm --filter @swarm-hls-stream/e2e test:e2e",
     "e2e:quality": "pnpm --filter @swarm-hls-stream/e2e test:e2e:quality",
     "e2e:vod": "pnpm --filter @swarm-hls-stream/e2e test:e2e:vod",
+    "e2e:broadcast-ended": "pnpm --filter @swarm-hls-stream/e2e test:e2e:broadcast-ended",
     "e2e:finalize-crash": "pnpm --filter @swarm-hls-stream/e2e test:e2e:finalize-crash",
     "e2e:crash-recovery": "pnpm --filter @swarm-hls-stream/e2e test:e2e:crash-recovery",
     "bench:latency": "pnpm --filter @swarm-hls-stream/e2e bench:latency",
