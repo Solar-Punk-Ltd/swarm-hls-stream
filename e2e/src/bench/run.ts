@@ -19,7 +19,7 @@ import type { FfmpegExit } from '../harness/ffmpegProcess.js';
 import { type Host, waitForIdle } from '../harness/host.js';
 import { announcedLiveStreams } from '../harness/logwatch.js';
 import { redactPublishKey } from '../harness/redactPublishKey.js';
-import { sleep, waitFor } from '../harness/wait.js';
+import { sleep, StopWaiting, waitFor } from '../harness/wait.js';
 
 import { measureClockSkew } from './clockSkew.js';
 import {
@@ -251,7 +251,9 @@ async function waitForAnnouncement(host: Host, uploader: string, sinceIso: strin
     async () => {
       const exit = publisher.exit();
       if (exit) {
-        throw new Error(
+        // ⛔ StopWaiting, not a plain Error. waitFor treats an ordinary throw as a read that failed and
+        // polls on, which is what makes a dropped ssh survivable, and would spend the whole ceiling here.
+        throw new StopWaiting(
           `the publisher exited (${describeExit(exit)}) before the uploader announced a live stream, so ` +
             `nothing was ever ingested. ffmpeg said: ${ffmpegSaid()}`,
         );
