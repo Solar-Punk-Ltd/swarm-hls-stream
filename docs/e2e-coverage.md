@@ -173,12 +173,27 @@ when it could not judge a stage would report green on every run launched outside
 is the vacuous green this repo has already paid for elsewhere.
 
 `e2e/src/harness/stageStamps.ts` gates every suite's `before()` on postage: every Bee node the
-uploader publishes through must hold a usable batch with more TTL than the run needs, or the suite
-refuses before its publisher starts. The check it replaced read the coordinator alone and spoke for
-the stage, so an expired batch on the 1080p node passed it and surfaced mid-broadcast as a rung that
-stopped being produced, which reaches a viewer as an ABR fault and gets scored as one. The gateway
-node is deliberately not read, it holds no upload batch, and batch utilization stays with
-`deploy/scripts/stamp-guard.sh` and the uploader's own `PostageGate`.
+uploader publishes through must hold **the postage batch `BEE_PUBLISHERS` routes its rungs to**, in a
+state bee will stamp with, with more TTL than the run needs, or the suite refuses before its
+publisher starts. The check it replaced read the coordinator alone and spoke for the stage, so an
+expired batch on the 1080p node passed it and surfaced mid-broadcast as a rung that stopped being
+produced, which reaches a viewer as an ABR fault and gets scored as one.
+
+Reading every node closed half of that. The other half closed on 2026-09-04, decision 4 of
+`docs/e2e-batch-drain-plan.md`: the batch each reading was about was the node's **best** stamp, the
+longest-lived usable one it happened to hold, so a node holding one drained batch, the configured
+one, beside one fresh unused batch passed cleanly and then refused every upload the rung made. Which
+batch a node spends is decided in `BEE_PUBLISHERS` and reported on the uploader's `/health`, which
+truncates it to eight hex characters, and the gate finds that row on `/stamps` by that prefix. Three
+causes are named apart in the refusal, because they have three different fixes: the node does not
+hold the configured batch, it holds it and bee will not stamp with it, or it holds it and the TTL
+will not outlast the run. A pair of rows sharing the prefix is refused rather than picked between.
+
+The gateway node is deliberately not read, it holds no upload batch, and batch utilization is
+reported for the configured batch and never judged, because that stop line stays with
+`deploy/scripts/stamp-guard.sh` and the uploader's own `PostageGate`. ⚠️ On a small batch that
+percentage reads alarmingly early: a depth 17 batch has two chunks per bucket, so its first chunk
+prints as 50% full, which is the arithmetic being honest rather than a batch half spent.
 
 ## The map
 
