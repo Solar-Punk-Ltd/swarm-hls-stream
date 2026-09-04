@@ -358,12 +358,15 @@ only the first to the breakdown. Difference two scrapes to get a rate. Each rung
 
 **`swarm_hls_rung_segments_dropped_total` is the same breakdown for what a rung lost**, and it is read
 against the uploads on the same label. Each rung publishes through its own bee with its own prepaid
-postage batch, so a batch that runs dry stops that rung and leaves the other three publishing: one
-rung's drops climbing while its uploads sit still is that batch, and the uploader writes one
+postage batch, so a batch that runs out stops that rung and leaves the other three publishing: one
+rung's drops climbing while its uploads slow down is that batch, and the uploader writes one
 `Postage batch <id> of <stream> refused by bee (<status> <message>), the rung publishes nothing until
-the batch is replaced` line at error level naming it. Once per drain, re-armed by a segment that
-lands. `swarm_hls_segments_dropped_total` climbs the same whether one rung of four lost everything or
-all four lost a little, which is what the breakdown separates.
+the batch is replaced` line at error level naming it. Once per stream per process, and never re-armed
+by a segment that lands, because a batch that is filling refuses a growing share of segments rather
+than all of them: measured live on 2026-09-04, four refusals in about fifty seconds with segments
+landing in between. Which batch a rung spends is read once at start, so only a redeploy replaces it
+and a redeploy is a new process. `swarm_hls_segments_dropped_total` climbs the same whether one rung
+of four lost everything or all four lost a little, which is what the breakdown separates.
 
 ⭐⭐⭐ **One rung reading zero while the others hold is the signature to watch for**, and it is
 invisible in `swarm_hls_segments_uploaded_total`. It means SRS is deleting that rung's segments

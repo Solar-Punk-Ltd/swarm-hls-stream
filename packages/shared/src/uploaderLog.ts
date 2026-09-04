@@ -542,10 +542,10 @@ const BEE_ANSWER_SLOT = 'BEEANSWERSLOT';
 const STATUS_SLOT = 464646464646;
 
 /**
- * Written once per stream when bee refuses a segment upload with a status the retry policy will not
- * retry, which on this deployment means the rung's postage batch has no stamps left. The rung then
- * publishes nothing until its batch is replaced, and the dead-rung rule drops it from the master a
- * few segments later.
+ * Written once per stream per uploader process when bee refuses a segment upload with a status the
+ * retry policy will not retry, which on this deployment means the rung's postage batch has no room
+ * left. The rung then publishes less and less until it publishes nothing, and the dead-rung rule
+ * drops it from the master a few segments after its last delivery.
  *
  * ⛔ **This is the only thing that tells a drained batch from a dead encoder.** Every other instrument
  * reports the two identically: the rung's uploads stop, its dropped count climbs, and the master stops
@@ -557,8 +557,11 @@ const STATUS_SLOT = 464646464646;
  * status and the message are reproduced verbatim so the first live drain settles that off the log
  * rather than costing a second sitting.
  *
- * ⚠️ Written once per stream and re-armed by a segment that lands, so a batch replaced by a redeploy
- * and a later second drain each get their own line.
+ * ⚠️ **Written once and never re-armed by a segment that lands.** A batch that is filling refuses a
+ * growing share of segments rather than all of them: measured live on 2026-09-04, four refusals in
+ * about fifty seconds with segments landing in between, because a chunk is only refused when its own
+ * bucket is full. The batch a rung spends is fixed for the life of the uploader process, so the only
+ * thing that replaces it is a redeploy, and that is a new process writing its own first line.
  *
  * ⛔ One template literal, never split across a `+`, for the reason {@link catalogStateLost} records
  * at length: `tsc` keeps a join exactly as written, so the fragment spanning it reaches no built file

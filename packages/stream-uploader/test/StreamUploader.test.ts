@@ -545,10 +545,11 @@ describe('StreamUploader survives a transient Bee failure (TEST-1)', () => {
  * of the master a few segments later. An encoder that died looks the same from every other
  * instrument, and `segmentUploadFailed` says only that the retry window is spent.
  *
- * Once per drain rather than once per segment, because a drained batch refuses every segment for as
- * long as it stays configured and a line per segment would bury the diagnosis under its own
- * consequences. Re-armed by a segment that lands, so a batch replaced by a redeploy and a later
- * second drain each get their own line.
+ * Once per stream per process rather than once per segment, because a batch that has started refusing
+ * goes on refusing for as long as it stays configured and a line per segment would bury the diagnosis
+ * under its own consequences. Never re-armed by a segment that lands: a filling batch refuses a
+ * growing share of segments rather than all of them, and the batch itself cannot change without a
+ * redeploy, which is a new process.
  */
 describe('StreamUploader names the postage batch bee refused', () => {
   /** A batch id is 64 hex characters. One repeated group, so nothing here reads as a real one. */
@@ -600,11 +601,16 @@ describe('StreamUploader names the postage batch bee refused', () => {
   });
 
   /**
-   * The only way a rung comes back is a batch that works, so a landed segment is what re-arms the
-   * line. Without that, the redeploy that replaces a drained batch and the drain that follows it
-   * hours later are one line in the log and the second drain is invisible.
+   * ⛔⛔⛔ **This is the shape a real batch running out has, and the opposite of what the line was
+   * built for.** Measured on the first live drain, 2026-09-04: bee refused one rung's depth 17 batch
+   * four times in about fifty seconds with segments landing in between. A chunk is refused only when
+   * its own bucket is full, and at the first overflow about a thousandth of the buckets are, so a
+   * segment of a few hundred chunks is refused about a quarter of the time and then more and more
+   * often. A landed segment after a refusal is therefore the ramp and never a new batch: which batch
+   * a rung spends is read once at process start, so nothing but a redeploy can change it, and a
+   * redeploy is a new process with its own first line.
    */
-  it('writes a second line after a segment has landed in between', async () => {
+  it('writes one line through a ramp, where segments land in between the refusals', async () => {
     await withCapturedLog(async (lines) => {
       const control: SegmentUploadControl = { fail: batchRefused() };
       const uploader = newUploader(control, { stamp: BATCH });
@@ -616,13 +622,22 @@ describe('StreamUploader names the postage batch bee refused', () => {
       uploader.handleSegment(1, 2, Buffer.from('seg1'));
       await drain(uploader);
 
-      assert.equal(refusalLines(lines).length, 1, 'precondition: the first drain wrote its line');
+      assert.equal(refusalLines(lines).length, 1, 'precondition: the first refusal wrote its line');
 
       control.fail = batchRefused();
       uploader.handleSegment(2, 2, Buffer.from('seg2'));
       await drain(uploader);
 
-      assert.equal(refusalLines(lines).length, 2, 'a batch that was replaced and ran dry again reported once');
+      assert.equal(
+        refusalLines(lines).length,
+        1,
+        'the batch that landed segment 1 is the same batch that refused segment 2, so the second ' +
+          'refusal is the ramp continuing and a second line would read as a second drain',
+      );
+      assert.ok(
+        lines.some((line) => line.includes(segmentUploadFailed('stream-test', 2))),
+        'the segment the ramp cost still has to be named, since the diagnosis is written only once',
+      );
     });
   });
 

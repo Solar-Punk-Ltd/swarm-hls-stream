@@ -196,12 +196,12 @@ export class StreamUploader {
   private consecutiveManifestFailures = 0;
   private consecutiveSegmentFailures = 0;
   /**
-   * Whether this stream has already said its postage batch was refused, so it says it once per drain
-   * rather than once per segment a drained batch loses.
+   * Whether this stream has already said its postage batch was refused, so it says it once for the
+   * life of the process rather than once per segment a filling batch loses.
    *
-   * Deliberately not persisted with the rest of the stream state. A restart re-reads `BEE_PUBLISHERS`,
-   * so the batch it comes back with may be a different one, and carrying the flag across would silence
-   * the first refusal of a batch this process has never uploaded against.
+   * Deliberately not persisted with the rest of the stream state. A restart is the only way the batch
+   * changes, because `BEE_PUBLISHERS` is read once at process start, and a restart starts this flag at
+   * false again, so the first refusal of a batch this process has never uploaded against is still said.
    */
   private batchRefusalReported = false;
   /**
@@ -323,9 +323,6 @@ export class StreamUploader {
     }
 
     this.consecutiveSegmentFailures = 0;
-    // A batch that takes a segment is a batch worth reporting refused again. Beside the failure
-    // counter and not folded into it: that one feeds /health, this one arms one log line.
-    this.batchRefusalReported = false;
     const ref = result.reference.toHex();
     this.manifestManager.addSegment(segmentIndex, duration, ref, this.pendingDiscontinuity);
     this.pendingDiscontinuity = false;
@@ -977,6 +974,16 @@ export class StreamUploader {
   /**
    * The one named line for a postage batch bee will not take a segment against.
    *
+   * ⛔⛔⛔ **A filling batch does not fall silent, it ramps, and this line is written once whatever
+   * the ramp does.** Measured on the first live drain, 2026-09-04: bee refused one rung's depth 17
+   * batch four times in about fifty seconds with segments landing in between. A batch stops accepting
+   * a chunk whose own bucket is full, so at the first overflow almost every bucket still has room and
+   * a segment of about 300 chunks is refused with roughly a quarter of the probability, rising to
+   * nearly all of it a few thousand chunks later. So a landed segment after a refusal is the ramp
+   * rather than a new batch, and it must not re-arm the line: the batch id is fixed for the life of
+   * this process, since `BEE_PUBLISHERS` is read once at start, and the only thing that can replace it
+   * is a redeploy, which is a new process with the flag at false again.
+   *
    * ⛔ **Why the retry verdict decides it and not the mere fact of a failure.** A bee node that is
    * down throws with no status, spends the whole retry window, and drops the segment exactly as a
    * refused batch does. Reporting that as a refused batch would send an operator to the postage side
@@ -987,6 +994,9 @@ export class StreamUploader {
    * ⚠️ Segment uploads only, which is the `/bytes` POST. `uploadDataAsSoc` spends the same batch and a
    * refused publish is evidence of the same condition, but that one is retried at the next segment and
    * the rung goes on publishing media, so reporting it would say a rung had gone quiet while it was up.
+   *
+   * ⚠️ `segmentUploadFailed` still fires for every segment the ramp costs, and the per-rung drop
+   * counter still climbs on each one. This line is the diagnosis, those are the consequences.
    */
   private reportBatchRefusal(error: unknown): void {
     const status = nonRetryableStatus(error);
