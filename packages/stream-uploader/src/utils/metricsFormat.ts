@@ -179,6 +179,13 @@ function describeByRung(snapshot: MetricsSnapshot): LabelledMetric[] {
       labelName: 'rung',
       byLabel: snapshot.segmentsUploadedByRung,
     },
+    {
+      name: 'rung_segments_dropped_total',
+      type: 'counter',
+      help: 'Segments dropped because the upload retry window was spent, by ABR rung. Read next to rung_segments_uploaded_total on the same label: one rung dropping while its uploads sit still and the other rungs hold is a postage batch that ran dry, and the uploader logs the batch it was refused with. segments_dropped_total climbs the same whether one rung of four lost everything or all four lost a little, which is what this separates. Empty on a single-rendition deployment, where a segment belongs to no rung, and empty on a ladder that has lost nothing.',
+      labelName: 'rung',
+      byLabel: snapshot.segmentsDroppedByRung,
+    },
   ];
 }
 

@@ -1240,6 +1240,43 @@ describe('segments the live window outran before anything published them', () =>
     assert.deepEqual(counters.segmentsUploadedByRung, {});
   });
 
+  /**
+   * ⛔ What a drained postage batch costs, per rung. `segmentsDroppedTotal` climbs whether one rung of
+   * four lost everything or all four lost a little, so on a ladder it cannot say which quality a
+   * viewer stopped being offered. The refusal line names the batch, this names the loss.
+   *
+   * Asserted end to end from a refused upload rather than off the counter, because a per-rung counter
+   * the drop path never reaches is worth nothing on the deployment it was added for.
+   */
+  it('counts a dropped segment against its rung as well as against the total', async () => {
+    const metrics = new ServiceMetrics();
+    const uploader = uploaderWith(makeBee({ fail: permanentError }), {
+      metrics,
+      ladder: { group: 'group-1', rung: { name: '1080p', width: 1920, height: 1080, configuredKbps: 6000 } },
+    });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    const counters = metrics.getCounters();
+    assert.equal(counters.segmentsDroppedTotal, 1);
+    assert.deepEqual(counters.segmentsDroppedByRung, { '1080p': 1 });
+    assert.deepEqual(counters.segmentsUploadedByRung, {}, 'a dropped segment must not also count as one that landed');
+  });
+
+  /** Under no rung, for the reason the uploaded breakdown leaves a rung-less segment out of its own. */
+  it('counts a single-rendition drop in the total and under no rung', async () => {
+    const metrics = new ServiceMetrics();
+    const uploader = uploaderWith(makeBee({ fail: permanentError }), { metrics });
+
+    uploader.handleSegment(0, 2, Buffer.from('a'));
+    await drain(uploader);
+
+    const counters = metrics.getCounters();
+    assert.equal(counters.segmentsDroppedTotal, 1);
+    assert.deepEqual(counters.segmentsDroppedByRung, {});
+  });
+
   it('counts nothing while every segment still reaches a manifest', async () => {
     const metrics = new ServiceMetrics();
     const reported: number[] = [];

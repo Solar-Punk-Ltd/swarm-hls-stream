@@ -88,12 +88,17 @@ describe('metrics exposition format', () => {
     queueDepth: 7,
     queueBacklogSeconds: 14,
     segmentsUploadedByRung: { '1080p': 3, '360p': 4, '480p': 3, '720p': 2 },
+    // One rung dropping while the other three do not is the drained-batch shape, and it is why the
+    // two per-rung families are given different label sets here rather than the same four.
+    segmentsDroppedByRung: { '1080p': 2 },
   };
 
-  /** 17 unlabelled metrics, plus the per-rung family, whose four series are four sample lines. */
+  /** 17 unlabelled metrics, plus the two per-rung families, whose series are one sample line each. */
   const UNLABELLED = 17;
-  const FAMILIES = UNLABELLED + 1;
+  const LABELLED_FAMILIES = 2;
+  const FAMILIES = UNLABELLED + LABELLED_FAMILIES;
   const RUNGS_IN_SNAPSHOT = 4;
+  const DROPPING_RUNGS_IN_SNAPSHOT = 1;
 
   it('renders every metric with a help line, a type line and a value', () => {
     const body = renderPrometheusMetrics(SNAPSHOT);
@@ -101,7 +106,7 @@ describe('metrics exposition format', () => {
     const samples = parseExposition(body);
     assert.equal(
       samples.size,
-      UNLABELLED + RUNGS_IN_SNAPSHOT,
+      UNLABELLED + RUNGS_IN_SNAPSHOT + DROPPING_RUNGS_IN_SNAPSHOT,
       `every metric must be exposed once, got ${[...samples.keys()].join(', ')}`,
     );
     for (const name of samples.keys()) {
@@ -188,18 +193,41 @@ describe('metrics exposition format', () => {
   });
 
   /**
+   * ⛔ The reading a drained postage batch is told from a dead encoder by, on the metrics side.
+   * `segments_dropped_total` climbs either way and names no rung, so on a four rung ladder it cannot
+   * say whether one rung lost everything or all four lost a little. The uploader's refusal line says
+   * which batch, and this says how much that cost.
+   */
+  it('renders the dropped segments of each rung beside the uploads', () => {
+    const body = renderPrometheusMetrics(SNAPSHOT);
+
+    assert.equal(
+      (body.match(/^# TYPE swarm_hls_rung_segments_dropped_total counter$/gm) ?? []).length,
+      1,
+      'a labelled family carries one TYPE line, not one per series',
+    );
+    const samples = parseExposition(body);
+    assert.equal(samples.get('swarm_hls_rung_segments_dropped_total{rung="1080p"}'), 2);
+    assert.equal(
+      samples.has('swarm_hls_rung_segments_dropped_total{rung="360p"}'),
+      false,
+      'a rung that dropped nothing must not be invented at zero, the way an uploaded rung is not',
+    );
+    assert.equal(samples.get('swarm_hls_rung_segments_uploaded_total{rung="1080p"}'), 3, 'the two are separate series');
+  });
+
+  /**
    * ⛔ Present with no samples rather than absent. An operator whose dashboard panel disappears reads
    * a broken exporter, and one whose panel is empty reads a deployment with no ladder, which is what
    * this is. The HELP text carries the same warning.
    */
   it('keeps the family present with no samples on a single-rendition deployment', () => {
-    const body = renderPrometheusMetrics({ ...SNAPSHOT, segmentsUploadedByRung: {} });
+    const body = renderPrometheusMetrics({ ...SNAPSHOT, segmentsUploadedByRung: {}, segmentsDroppedByRung: {} });
 
-    assert.match(body, /^# TYPE swarm_hls_rung_segments_uploaded_total counter$/m);
-    assert.equal(
-      body.split('\n').filter((line) => line.startsWith('swarm_hls_rung_segments_uploaded_total{')).length,
-      0,
-    );
+    for (const family of ['swarm_hls_rung_segments_uploaded_total', 'swarm_hls_rung_segments_dropped_total']) {
+      assert.match(body, new RegExp(`^# TYPE ${family} counter$`, 'm'));
+      assert.equal(body.split('\n').filter((line) => line.startsWith(`${family}{`)).length, 0, family);
+    }
   });
 
   /**

@@ -36,6 +36,19 @@ export class ServiceMetrics {
    * refuse to start on if it is malformed. A rung only appears once it has uploaded something.
    */
   private readonly segmentsUploadedByRung = new Map<string, number>();
+  /**
+   * Losses per ABR rung, which `segmentsDropped` cannot give and which a drained postage batch is read
+   * off.
+   *
+   * ⛔ Each rung publishes through its own bee with its own prepaid batch, so a batch that runs dry
+   * costs one quality and leaves the other three publishing. The total climbs identically whether one
+   * rung of four lost everything or all four lost a little, so on a ladder it cannot say which quality
+   * a viewer stopped being offered. Read next to `segmentsUploadedByRung`: one rung's drops climbing
+   * while its uploads sit still is the drained-batch signature.
+   *
+   * Keyed and bounded exactly as its sibling above, and a rung only appears once it has lost something.
+   */
+  private readonly segmentsDroppedByRung = new Map<string, number>();
   private lastSegmentAt: number | null = null;
   private lastAuthRejectionAt: number | null = null;
 
@@ -55,9 +68,19 @@ export class ServiceMetrics {
     }
   }
 
-  /** A segment that reached the uploader and whose upload retry window was spent. The data is gone. */
-  public recordSegmentDropped(): void {
+  /**
+   * A segment that reached the uploader and whose upload retry window was spent. The data is gone.
+   *
+   * `rung` is read exactly as {@link recordSegmentUploaded} reads it: absent on a single-rendition
+   * stream, and absent means counted in the total and nowhere in the breakdown rather than counted
+   * under a rung the deployment does not have. The two breakdowns are label-comparable because of it,
+   * which is what makes "this rung's drops climbing while its uploads sit still" a readable query.
+   */
+  public recordSegmentDropped(rung?: string): void {
     this.segmentsDropped += 1;
+    if (rung !== undefined) {
+      this.segmentsDroppedByRung.set(rung, (this.segmentsDroppedByRung.get(rung) ?? 0) + 1);
+    }
   }
 
   /**
@@ -193,6 +216,7 @@ export class ServiceMetrics {
       segmentsUploadedTotal: this.segmentsUploaded,
       segmentsUploadedByRung: Object.fromEntries(this.segmentsUploadedByRung),
       segmentsDroppedTotal: this.segmentsDropped,
+      segmentsDroppedByRung: Object.fromEntries(this.segmentsDroppedByRung),
       segmentsLostTotal: this.segmentsLost,
       segmentsSkippedTotal: this.segmentsSkipped,
       openingSegmentsWithheldTotal: this.openingSegmentsWithheld,
@@ -220,6 +244,14 @@ export interface MetricsCounters {
    */
   segmentsUploadedByRung: Readonly<Record<string, number>>;
   segmentsDroppedTotal: number;
+  /**
+   * Drops per ABR rung. Empty on a single-rendition deployment, and empty on a ladder that has lost
+   * nothing, which are the same reading and both correct.
+   *
+   * ⚠️ These do not have to sum to `segmentsDroppedTotal`, for the reason the uploaded breakdown does
+   * not sum to its own total: a single-rendition stream contributes to the total alone.
+   */
+  segmentsDroppedByRung: Readonly<Record<string, number>>;
   segmentsLostTotal: number;
   /** Segments the CON-20 handover floor discarded on purpose. Correct behaviour, not a failure. */
   segmentsSkippedTotal: number;

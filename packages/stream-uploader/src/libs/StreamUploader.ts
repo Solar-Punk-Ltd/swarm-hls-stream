@@ -317,7 +317,7 @@ export class StreamUploader {
       this.pendingDiscontinuity = true;
       this.consecutiveSegmentFailures += 1;
       this.logger.error(segmentUploadFailed(this.streamId, segmentIndex));
-      this.metrics?.recordSegmentDropped();
+      this.metrics?.recordSegmentDropped(this.ladder?.rung.name);
       this.persistState();
       return;
     }

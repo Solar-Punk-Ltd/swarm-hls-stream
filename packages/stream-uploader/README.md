@@ -331,6 +331,7 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_segments_uploaded_total`         | counter | Segments whose payload reached Swarm                        |
 | `swarm_hls_rung_segments_uploaded_total`    | counter | The same, by ABR rung. Empty with no ladder, see below      |
 | `swarm_hls_segments_dropped_total`          | counter | Segments whose upload retry window was spent, data gone     |
+| `swarm_hls_rung_segments_dropped_total`     | counter | The same, by ABR rung. Empty with no ladder, see below      |
 | `swarm_hls_segments_lost_total`             | counter | Segments the engine never obtained, or never posted at all  |
 | `swarm_hls_segments_skipped_total`          | counter | Segments discarded on purpose at a puller handover          |
 | `swarm_hls_opening_segments_withheld_total` | counter | Opening segments held back until the broadcast showed video |
@@ -347,13 +348,22 @@ killed it answers `ok` with `activeStreams: 0`.
 | `swarm_hls_queue_depth`                     | gauge   | Segments waiting to upload across every stream              |
 | `swarm_hls_queue_backlog_seconds`           | gauge   | Playing time still queued for the worst stream              |
 
-**The per-rung breakdown is empty on a single-rendition deployment, and that is not zero uploads.** A
+**The per-rung breakdowns are empty on a single-rendition deployment, and that is not zero uploads.** A
 stream with no ABR ladder has no rung to attribute a segment to, so it is counted in
 `swarm_hls_segments_uploaded_total` alone. The two therefore do not have to sum, and both can be live
 at once: a ladder broadcast and a single-rendition one running together contribute to the total, and
 only the first to the breakdown. Difference two scrapes to get a rate. Each rung needs
 `1 / HLS_FRAGMENT` uploads a second and the ladder needs `rungs / HLS_FRAGMENT` between them, so
 1.00 each and 4.00 total at the 1.0s a four-rung ladder runs.
+
+**`swarm_hls_rung_segments_dropped_total` is the same breakdown for what a rung lost**, and it is read
+against the uploads on the same label. Each rung publishes through its own bee with its own prepaid
+postage batch, so a batch that runs dry stops that rung and leaves the other three publishing: one
+rung's drops climbing while its uploads sit still is that batch, and the uploader writes one
+`Postage batch <id> of <stream> refused by bee (<status> <message>), the rung publishes nothing until
+the batch is replaced` line at error level naming it. Once per drain, re-armed by a segment that
+lands. `swarm_hls_segments_dropped_total` climbs the same whether one rung of four lost everything or
+all four lost a little, which is what the breakdown separates.
 
 ⭐⭐⭐ **One rung reading zero while the others hold is the signature to watch for**, and it is
 invisible in `swarm_hls_segments_uploaded_total`. It means SRS is deleting that rung's segments
