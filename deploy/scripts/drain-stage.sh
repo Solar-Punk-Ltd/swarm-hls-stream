@@ -53,6 +53,14 @@
 # `restore` reads that record, writes the original batch back, and removes the record. It refuses when
 # there is nothing recorded rather than guessing which batch the rung used to publish through.
 #
+# ⛔⛔ `arm` and `restore` both keep the uploader's container log before they redeploy, at
+# `~/drain-<profile>-<rung>-<utc>.uploader.log` on the deployment host, beside the bench checkout, and
+# with `-before-arm` on the arm so both process lives are kept. A redeploy replaces the container and
+# `docker logs` goes with it. The first drain sitting, 2026-09-04, lost the whole log of the rung it
+# had just refused four times, and with it bee's own answers, which was the one thing the sitting was
+# for. A dump that fails is reported plainly and the redeploy carries on regardless, because a stage
+# left armed is worse than a lost log.
+#
 # ⛔ No batch id is ever printed whole, only its first eight characters, the rule
 # `bee-publishers.sh` sets: a scrollback outlives the command and a full id is indistinguishable
 # from a wallet private key to anything reading either.
@@ -123,7 +131,7 @@ while [ $# -gt 0 ]; do
     --batch) value_of --batch $#; BATCH="$2"; shift 2 ;;
     --days=*) DAYS="${1#*=}"; DAYS_GIVEN=1; shift ;;
     --days) value_of --days $#; DAYS="$2"; DAYS_GIVEN=1; shift 2 ;;
-    -h|--help) sed -n '2,58p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,66p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) usage_error "$1 is not a flag this script has, and its subcommands are ${SUBCOMMANDS}." ;;
     *)
       if [ -n "$SUBCOMMAND" ]; then
@@ -465,6 +473,50 @@ back_up_env() {
   log_ok "copied ${ENV_FILE##*/} aside to ${backup##*/}"
 }
 
+# Keep the uploader container's log before a redeploy ends the process that wrote it.
+#
+# ⛔⛔⛔ The one thing the first drain sitting could not get back. On 2026-09-04 bee refused the armed
+# rung four times in about fifty seconds, and the restore redeployed the container before anybody had
+# read the log, so what bee actually answered went with it: `docker logs` is the container's, and a
+# replaced container has none. The suite had reported a count, and a count says nothing about which
+# batch on which stream bee refused or in what words.
+#
+# ⚠️ Beside the bench checkout and never inside it. `bench-on-host.sh` keeps the harness at
+# `~/swarm-hls-bench` on this same host and syncs it with `rsync --delete`, so a file written into
+# that directory is gone at the next sitting's setup.
+#
+# ⚠️ A dump that fails says so and returns 0, deliberately. A stage left armed because a log could
+# not be written is worse than a lost log, and this runs on the restore path.
+dump_uploader_log() {
+  local suffix name container status
+  suffix="$1"
+  container="${PROFILE}-${SVC_UPLOADER}-1"
+  name="drain-${PROFILE}-${RUNG}-$(date -u +%Y%m%dT%H%M%SZ)${suffix}.uploader.log"
+
+  if [ "$TARGET" = "$TARGET_LOCAL" ]; then
+    # HOME rather than the checkout, so the file sits where the bench checkout would on a host that
+    # has one. An environment without HOME falls back to the deployment root rather than to wherever
+    # the operator happened to be standing.
+    local home="${HOME:-$ROOT_DIR}"
+    docker logs "$container" > "${home}/${name}" 2>&1
+    status=$?
+    if [ "$status" != "0" ]; then
+      log_warn "could not read the log of ${container} (docker logs exited ${status}), so this process life is not kept, and the ${SUBCOMMAND} carries on regardless"
+      return 0
+    fi
+    log_ok "kept the uploader log at ${home}/${name}"
+    return 0
+  fi
+
+  ssh -o ConnectTimeout=10 "$TARGET" "docker logs ${container} > ~/${name} 2>&1"
+  status=$?
+  if [ "$status" != "0" ]; then
+    log_warn "could not read the log of ${container} on ${TARGET} (the dump exited ${status}), so this process life is not kept, and the ${SUBCOMMAND} carries on regardless"
+    return 0
+  fi
+  log_ok "kept the uploader log at ${TARGET}:~/${name}"
+}
+
 # The uploader reads BEE_PUBLISHERS once at process start, so an env rewrite that does not redeploy is
 # inert. Only the uploader, because nothing else on the stage reads that line.
 redeploy_uploader() {
@@ -639,6 +691,9 @@ do_arm() {
   record_original "$original"
   log_ok "recorded the original $(short_id "$original") in ${RECORD_FILE##*/}"
 
+  # Before the redeploy, because it is the redeploy that ends the process this log belongs to. The
+  # arm keeps the life that ran on the ORIGINAL batch, and the restore keeps the drained one.
+  dump_uploader_log "-before-arm"
   redeploy_uploader
   echo ""
   log_warn "The stage is armed. Put it back with the same flags and restore, whatever the sitting reports."
@@ -668,6 +723,9 @@ do_restore() {
   forget_original
   log_ok "removed the record for ${RUNG} from ${RECORD_FILE##*/}"
 
+  # ⛔ Before the redeploy. This is the log of the process that spent the drained batch, which is the
+  # whole evidence of the sitting, and the redeploy replaces the container it lives in.
+  dump_uploader_log ""
   redeploy_uploader
   echo ""
 }

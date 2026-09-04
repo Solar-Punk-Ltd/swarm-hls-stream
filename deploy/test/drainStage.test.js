@@ -144,8 +144,13 @@ function localSandbox({ readings = {}, ...options } = {}) {
   return stubCurl(sandbox, readings);
 }
 
-function drainStage(sandbox, args) {
-  return runScript(sandbox, SCRIPT, [`--profile=${PROFILE}`, `--portSlot=${PORT_SLOT}`, `--rung=${RUNG}`, ...args]);
+function drainStage(sandbox, args, env = {}) {
+  return runScript(
+    sandbox,
+    SCRIPT,
+    [`--profile=${PROFILE}`, `--portSlot=${PORT_SLOT}`, `--rung=${RUNG}`, ...args],
+    env,
+  );
 }
 
 function envText(sandbox) {
@@ -403,9 +408,11 @@ describe('drain-stage arm refuses every batch that would not run dry', () => {
 });
 
 describe('drain-stage arm swaps one rung and nothing else', () => {
+  // ⚠️ HOME inside the sandbox, because an arm dumps the uploader's log beside the bench checkout in
+  // the home directory and a suite must not write into the operator's own. See the dump block below.
   async function armed() {
     const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
-    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
     assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
     return { sandbox, run };
   }
@@ -478,7 +485,8 @@ describe('drain-stage restore puts the stage back', () => {
     });
     writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n`);
 
-    const run = await drainStage(sandbox, ['restore']);
+    // ⚠️ HOME inside the sandbox, for the reason the arm helper above records.
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
     assert.equal(run.exitCode, 0, `restore failed: ${run.stdout}${run.stderr}`);
     return { sandbox, run };
   }
@@ -503,7 +511,7 @@ describe('drain-stage restore puts the stage back', () => {
     });
     writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n720p=${ORIGINAL['720p']}\n`);
 
-    const run = await drainStage(sandbox, ['restore']);
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
 
     assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
     assert.match(readFileSync(recordPath(sandbox), 'utf8'), new RegExp(`720p=${ORIGINAL['720p']}`));
@@ -537,6 +545,165 @@ describe('drain-stage restore puts the stage back', () => {
     assert.match(run.stderr, /nothing is armed/);
     assert.deepEqual(redeployedServices(sandbox), [], 'a refused restore still redeployed the uploader');
     assert.deepEqual(backups(sandbox), [], 'a refused restore still copied the env file aside');
+  });
+});
+
+/**
+ * ⛔⛔⛔ The evidence of a drain sitting is the uploader's own log, and a redeploy destroys it.
+ *
+ * On 2026-09-04 the first live drain refused the armed rung four times in about fifty seconds, and
+ * the restore redeployed the uploader before anybody read the container log. `docker logs` belongs to
+ * the container, so bee's own answers went with it and all that was left was a count of refusals,
+ * which says nothing about which batch on which stream was refused or in what words. That was the
+ * one thing the sitting was for.
+ *
+ * ⚠️ The dump lands in the home directory of the account the deployment is reached as, beside the
+ * `~/swarm-hls-bench` checkout `bench-on-host.sh` keeps rather than inside it, because that script
+ * syncs with `rsync --delete` and would remove it at the next sitting. These tests point `HOME` at
+ * the sandbox, so the path under test is the real one and nothing is written to the operator's own
+ * home.
+ */
+describe('drain-stage keeps the uploader log before it redeploys', () => {
+  /** Every dump this run left beside the checkout, by name, which is what an operator greps for. */
+  function keptLogs(sandbox) {
+    return readdirSync(sandbox.root).filter((name) => name.startsWith('drain-') && name.endsWith('.uploader.log'));
+  }
+
+  /** Where the `docker logs` read and the redeploy landed in the order docker was called. */
+  function callOrder(sandbox) {
+    const calls = sandbox.calls();
+    return {
+      calls,
+      dumpedAt: calls.findIndex((call) => call.startsWith('logs ')),
+      redeployedAt: calls.findIndex((call) => call.startsWith('compose ') && call.includes(' up -d')),
+    };
+  }
+
+  async function armedWithHome() {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    return { sandbox, run };
+  }
+
+  async function restoredWithHome() {
+    const sandbox = localSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+    writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n`);
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+    assert.equal(run.exitCode, 0, `restore failed: ${run.stdout}${run.stderr}`);
+    return { sandbox, run };
+  }
+
+  it('dumps the drained process log on a restore, named for the profile, the rung and the instant', async () => {
+    const { sandbox, run } = await restoredWithHome();
+
+    const kept = keptLogs(sandbox);
+    assert.equal(kept.length, 1, `expected one dump, got ${kept.join(', ') || 'none'}`);
+    assert.match(kept[0], new RegExp(`^drain-${PROFILE}-${RUNG}-\\d{8}T\\d{6}Z\\.uploader\\.log$`));
+    assert.match(run.stdout, new RegExp(kept[0]), 'the path was not printed, so nobody can find the file');
+  });
+
+  /** ⛔ Both process lives, because the arm ends the one that was running on the original batch. */
+  it('dumps the previous process log on an arm, marked as the life before it', async () => {
+    const { sandbox } = await armedWithHome();
+
+    const kept = keptLogs(sandbox);
+    assert.equal(kept.length, 1, `expected one dump, got ${kept.join(', ') || 'none'}`);
+    assert.match(kept[0], new RegExp(`^drain-${PROFILE}-${RUNG}-\\d{8}T\\d{6}Z-before-arm\\.uploader\\.log$`));
+  });
+
+  /**
+   * ⛔⛔ The whole point of the order. A container compose has replaced has no log to read, so a dump
+   * after the redeploy would collect the fresh process and report success at having saved nothing.
+   */
+  for (const [subcommand, drive] of [
+    ['restore', restoredWithHome],
+    ['arm', armedWithHome],
+  ]) {
+    it(`reads the log before the redeploy on a ${subcommand}, not after it`, async () => {
+      const { sandbox } = await drive();
+
+      const { calls, dumpedAt, redeployedAt } = callOrder(sandbox);
+      assert.ok(dumpedAt >= 0, `no docker logs call at all: ${calls.join(' | ')}`);
+      assert.ok(redeployedAt >= 0, `no redeploy at all: ${calls.join(' | ')}`);
+      assert.ok(
+        dumpedAt < redeployedAt,
+        `the log was read after the redeploy, which reads a container the old one was replaced by: ${calls.join(
+          ' | ',
+        )}`,
+      );
+      assert.match(calls[dumpedAt], new RegExp(`${PROFILE}-stream-uploader-1`));
+    });
+  }
+
+  /**
+   * ⛔ That the file holds what the container said, and both streams of it. The uploader writes the
+   * refused-batch line at error level, so a dump that kept stdout alone would save every ordinary
+   * line and lose the one the sitting is about.
+   */
+  it('carries what the container said into the file, stderr included', async () => {
+    const sandbox = localSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+    writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n`);
+    // A docker that answers `logs` with one line on each stream and hands everything else to the
+    // ordinary stub, which journals. The default stub answers `logs` with nothing at all, so an empty
+    // file would pass a test that only looked for the file.
+    writeFileSync(
+      join(sandbox.binDir, 'docker'),
+      '#!/bin/sh\nif [ "$1" = "logs" ]; then echo ordinary-line; echo refused-line >&2; exit 0; fi\n' +
+        'exec node -- "$0.cjs" "$@"\n',
+    );
+    chmodSync(join(sandbox.binDir, 'docker'), 0o755);
+
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    const kept = keptLogs(sandbox);
+    assert.equal(kept.length, 1, `expected one dump, got ${kept.join(', ') || 'none'}`);
+    const dumped = readFileSync(join(sandbox.root, kept[0]), 'utf8');
+    assert.match(dumped, /ordinary-line/);
+    assert.match(dumped, /refused-line/, 'the error stream was dropped, which is where the refusal is written');
+  });
+
+  /**
+   * ⛔⛔ A stage left armed is worse than a lost log. The restore is the step that puts the deployment
+   * back, so a container that cannot be read has to cost the evidence and nothing else.
+   */
+  it('still restores when the dump fails, and says the log was not kept', async () => {
+    const sandbox = localSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+    writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n`);
+    // A docker that refuses `logs` alone and answers everything else through the ordinary stub, which
+    // is the shape of a container that is not there any more.
+    writeFileSync(
+      join(sandbox.binDir, 'docker'),
+      '#!/bin/sh\nif [ "$1" = "logs" ]; then exit 9; fi\nexec node -- "$0.cjs" "$@"\n',
+    );
+    chmodSync(join(sandbox.binDir, 'docker'), 0o755);
+
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.equal(run.exitCode, 0, `a failed dump stopped the restore: ${run.stdout}${run.stderr}`);
+    assert.deepEqual(publishersOf(sandbox), ORIGINAL, 'the original batch was not put back');
+    assert.deepEqual(redeployedServices(sandbox), ['stream-uploader'], 'the restore did not redeploy');
+    assert.match(run.stdout, /not kept/);
+    assert.match(run.stdout, /carries on/);
+  });
+
+  /** ⛔ Neither read is a write. A dump is a read of a log, and nothing else about the stage moves. */
+  it('writes nothing on a status or a print-buy, which redeploy nothing', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+
+    await drainStage(sandbox, ['status'], { HOME: sandbox.root });
+
+    assert.deepEqual(keptLogs(sandbox), [], 'a read-only subcommand dumped a log');
   });
 });
 
