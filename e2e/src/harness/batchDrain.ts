@@ -182,6 +182,39 @@ export function drainRung(env: NodeJS.ProcessEnv = process.env): string {
   return rung;
 }
 
+/** The environment variable a drain sitting sets to say a batch was armed for it. */
+const DRAIN_DECLARATION_VAR = 'E2E_DRAIN_ARMED';
+
+/**
+ * Why this run is not a drain sitting, or `false` when it is one.
+ *
+ * ## ⛔⛔⛔ Without this, both drain suites join every full suite by glob
+ *
+ * `test:e2e` runs `suites/scenarios/*.test.ts` and `suites/viewer/*.test.ts`, and the two drain
+ * suites live in exactly those directories, so being absent from that script's own list keeps them
+ * out of nothing. On any ordinary stage their `before()` then refuses, because the rung is spending
+ * the depth 24 batch it publishes a broadcast on rather than a fresh depth 17 one nobody minted, and
+ * a full sitting that was correct in every other respect reports two failures after an hour of paid
+ * broadcast. That is the owner's decision 6 of `docs/e2e-batch-drain-plan.md` read the way it was
+ * meant: the ordinary full suite must never depend on a stage somebody broke on purpose.
+ *
+ * ⭐ A declaration rather than a reading of the stage, for two reasons. A suite decides to skip at
+ * module scope where nothing may reach a host, and an arming is an operator's act, so the honest
+ * question is whether this run was launched as a drain sitting at all. `e2e:batch-drain` and
+ * `e2e:batch-drain-viewer` set it and nothing else does.
+ */
+export function drainNotDeclared(env: NodeJS.ProcessEnv = process.env): string | false {
+  const declared = (env[DRAIN_DECLARATION_VAR] ?? '').trim();
+  if (declared === '' || declared === '0' || declared === 'false') {
+    return (
+      `this run did not declare ${DRAIN_DECLARATION_VAR}, so no rung was armed to run dry and there ` +
+      'is nothing here to read. A drain sitting is deploy/scripts/drain-stage.sh arm, then pnpm ' +
+      'e2e:batch-drain or pnpm e2e:batch-drain-viewer, then drain-stage.sh restore.'
+    );
+  }
+  return false;
+}
+
 /** What one rung's Bee node answered about the batch it is configured to spend. */
 export interface ArmedStageReading {
   readonly rung: string;

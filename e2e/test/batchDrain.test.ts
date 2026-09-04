@@ -19,6 +19,7 @@ import {
   type UploaderProcess,
   uploaderProcessCommand,
   uploaderRestartRefusal,
+  drainNotDeclared,
 } from '../src/harness/batchDrain.js';
 import { COORDINATOR_RUNG } from '../src/harness/publishers.js';
 
@@ -595,5 +596,32 @@ describe('droppedSegmentsRefusal', () => {
 
     assert.ok(refusal, 'an empty reading is not a passing one');
     assert.match(refusal, new RegExp(DROPPED_SEGMENTS_METRIC));
+  });
+});
+
+describe('whether this run is a drain sitting at all', () => {
+  /**
+   * ⛔ The case that pays for this file. `test:e2e` globs suites/scenarios and suites/viewer, so
+   * both drain suites are in every full suite whatever the drain script lists, and on an ordinary
+   * stage their setup refuses. An hour of paid broadcast then reports two failures that say nothing
+   * about the product.
+   */
+  it('skips a run that armed nothing, naming what a drain sitting is', () => {
+    const reason = drainNotDeclared({});
+
+    assert.notEqual(reason, false, 'a run with no declaration would have joined every full suite');
+    assert.match(String(reason), /E2E_DRAIN_ARMED/);
+    assert.match(String(reason), /drain-stage\.sh arm/);
+  });
+
+  it('runs when a drain script declared the arming', () => {
+    assert.equal(drainNotDeclared({ E2E_DRAIN_ARMED: '1' }), false);
+  });
+
+  /** Blank, zero and false all read as nothing declared, the way every other knob here treats one. */
+  it('reads an empty, zero or false declaration as no declaration', () => {
+    for (const value of ['', '   ', '0', 'false']) {
+      assert.notEqual(drainNotDeclared({ E2E_DRAIN_ARMED: value }), false, `'${value}' let the suites run`);
+    }
   });
 });

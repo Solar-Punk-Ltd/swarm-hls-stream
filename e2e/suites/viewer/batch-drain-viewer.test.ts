@@ -10,6 +10,7 @@ import {
   drainRampOf,
   drainRung,
   firstRefusalAtMs,
+  drainNotDeclared,
   requireArmedStage,
   waitForSurvivingMaster,
 } from '../../src/harness/batchDrain.js';
@@ -114,7 +115,10 @@ const WATCH_MINUTES = rungArmMinutes();
 const cfg = loadConfig();
 const backend = byteSourceFromEnv(process.env.BROWSER_FETCH_BACKEND);
 // Module scope, so an undeclared run fails the file during import rather than skipping into silence.
-const skip = viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || abrOff(cfg.abrEnabled);
+// ⛔ First, and before the gate that throws: a full suite globs this file out of suites/viewer and
+// has armed nothing, so it has to skip rather than refuse. See `drainNotDeclared`.
+const skip =
+  drainNotDeclared() || viewerGate(cfg.viewerExpectation, backend, cfg.browserRepoDir) || abrOff(cfg.abrEnabled);
 // Module scope for the same reason: a run aimed at the coordinator must fail before a broadcast starts.
 const drainedRung = drainRung(process.env);
 

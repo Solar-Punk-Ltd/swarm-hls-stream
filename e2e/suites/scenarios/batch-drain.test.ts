@@ -12,6 +12,7 @@ import {
   droppedSegmentsRefusal,
   firstRefusalAtMs,
   readUploaderProcess,
+  drainNotDeclared,
   requireArmedStage,
   segmentUploadFailureRefusal,
   singleRefusalRefusal,
@@ -132,201 +133,209 @@ const cfg = loadConfig();
 // broadcast has started. See `drainRung`.
 const drainedRung = drainRung(process.env);
 
-describe("L, one rung's postage runs dry and the other three carry the broadcast", { skip: abrOff(cfg) }, () => {
-  const host = makeHost(cfg);
-  const uploader = containerName(cfg, 'stream-uploader');
-  let publisher: Publisher;
-  let startedAt: string;
-  let armed: ArmedStageReading;
-  let processBefore: UploaderProcess;
+describe(
+  "L, one rung's postage runs dry and the other three carry the broadcast",
+  { skip: drainNotDeclared() || abrOff(cfg) },
+  () => {
+    const host = makeHost(cfg);
+    const uploader = containerName(cfg, 'stream-uploader');
+    let publisher: Publisher;
+    let startedAt: string;
+    let armed: ArmedStageReading;
+    let processBefore: UploaderProcess;
 
-  before(async () => {
-    await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
-    // ⛔ After the stamp gate and before anything is published. The stamp gate asks whether every
-    // rung CAN stamp for the length of a run, which an armed rung can: its drain batch is fresh and
-    // has two days of life. This asks the opposite question of one rung, and only of one.
-    armed = await requireArmedStage(host, cfg, drainedRung);
-    console.log(
-      `  armed: ${armed.rung} on :${armed.port} spends depth ${armed.depth} batch ${armed.batch}, ` +
-        `unspent, ${armed.ttlS}s of TTL`,
-    );
-
-    processBefore = await readUploaderProcess(host, uploader);
-    await waitForIdle(host, cfg);
-    startedAt = await host.nowIso();
-    publisher = startPublisher(cfg);
-  });
-
-  after(async () => {
-    await publisher?.stop();
-    // ⛔ Nothing is restored here, deliberately. The drain batch is spent by now and putting the
-    // original back means rewriting BEE_PUBLISHERS and redeploying the uploader, which is
-    // `deploy/scripts/drain-stage.sh restore` and is the operator's step after this sitting.
-  });
-
-  it('refuses one rung, keeps three publishing, and stops offering the dead one', async () => {
-    const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
-
-    // ⭐ A four-rung ladder first, or there is no isolation to observe. Waited on per rung rather
-    // than on a merged count, because one fast rung satisfies a merged one alone.
-    await waitFor(
-      async () => {
-        const counts = segmentIndicesByStream(await log());
-        return (
-          ladderRungs(await log()).length >= cfg.abrRungs.length &&
-          counts.size >= cfg.abrRungs.length &&
-          [...counts.values()].every((indices) => indices.length >= WARMUP_SEGMENTS)
-        );
-      },
-      {
-        timeoutMs: SEGMENT_WAIT_MS,
-        intervalMs: 3_000,
-        label: `warmup: all ${cfg.abrRungs.length} rungs publish ${WARMUP_SEGMENTS} segments each before the drain`,
-      },
-    );
-
-    const streams = newestStreamIdByRung(await log());
-    const drainedStreamId = streams.get(drainedRung);
-    assert.ok(drainedStreamId, `no rung announce in this window names ${drainedRung}, so nothing was drained`);
-    const survivingRungs = cfg.abrRungs.filter((rung) => rung !== drainedRung);
-    const survivingStreamIds = survivingRungs.map((rung) => streams.get(rung) ?? '');
-    console.log(`  drained ${drainedRung} (${drainedStreamId}), surviving ${survivingRungs.join(', ')}`);
-
-    await waitFor(async () => refusalsFor(await log(), drainedStreamId).length > 0, {
-      timeoutMs: DRAIN_WAIT_MS,
-      intervalMs: 3_000,
-      label:
-        `bee refuses ${drainedRung}'s batch ${armed.batch} on ${drainedStreamId}. A depth ` +
-        '17 batch stops accepting chunks after about 3000 of them, roughly twenty seconds of 1080p, ' +
-        'so a whole ceiling spent here means the rung is not spending the batch that was armed: read ' +
-        "the uploader's /health publishers, and check the arm redeployed the container",
-    }).catch(async (error) => {
-      throw new Error(`${(error as Error).message}\n  ${whatWasSeen(await log(), drainedStreamId)}`);
-    });
-
-    const refusal = refusalsFor(await log(), drainedStreamId)[0];
-    console.log(`  bee answered ${refusal.status} ${refusal.message} for batch ${refusal.batch}`);
-
-    // ⛔⛔ The refusal is the start of a ramp and not the end of anything, so nothing is asserted
-    // here. The wait below is for the rung to be dead by the product's own definition: the master
-    // offering exactly the three survivors. Its ceiling is four minutes of patience from this
-    // moment, which is within one poll of the refusal itself.
-    //
-    // ⭐ The master read is what the assertion rests on and the catalog line below is the narration,
-    // so the wait is on the master. The other order would time out on a reworded log line rather
-    // than failing on one, and the line is an inline string in `StreamCatalog` rather than part of
-    // the log contract in `packages/shared/src/uploaderLog.ts`.
-    const ladder = ladderGroupOf(await log());
-    const { owner } = await discoverCatalogFeed(host, cfg);
-    const master = await waitForSurvivingMaster(host, cfg, {
-      owner,
-      ladder,
-      survivingRungs,
-      readTopics: async () => topicsOf(await log()),
-    });
-    const rewrittenAtIso = await host.nowIso();
-    console.log(
-      `  the master is down to ${survivingRungs.join(', ')}, inside the ` +
-        `${DEAD_RUNG_MASTER_WAIT_MS / 1_000}s of patience this suite gives the ramp`,
-    );
-
-    // ⭐ Every survivor keeps going AFTER the rung is gone, which is the half that makes the
-    // isolation worth anything. Per rung, because a merged count is satisfied by one rung running
-    // ahead, and counted from the rewrite so the window judged below holds a run rather than a
-    // segment each.
-    const publishedAtRewrite = countsOf(await log());
-    await waitFor(
-      async () => {
-        const counts = countsOf(await log());
-        return survivingStreamIds.every(
-          (streamId) => (counts.get(streamId) ?? 0) >= (publishedAtRewrite.get(streamId) ?? 0) + POST_DRAIN_SEGMENTS,
-        );
-      },
-      {
-        timeoutMs: SEGMENT_WAIT_MS,
-        intervalMs: 3_000,
-        label: `every surviving rung publishes ${POST_DRAIN_SEGMENTS} more segments after the master rewrite`,
-      },
-    );
-
-    // One log read for every verdict below, so they all describe the same moment rather than several
-    // fetches apart.
-    const settled = await log();
-    const sinceRewrite = await host.logsSince(uploader, rewrittenAtIso);
-
-    // ⛔ First. It settles whether this run is one batch running out at all, and every reading below
-    // it is about a fault of some other shape if it is not.
-    const notOneDrain = singleRefusalRefusal(parseUploaderLog(settled).batchRefusals, {
-      drainedStreamId,
-      survivingStreamIds,
-    });
-    assert.equal(notOneDrain, null, `this run is not one rung's batch running out: ${notOneDrain}`);
-
-    // ⭐ The assertion the per-rung split exists for. Judged per stream and never on the merge, for
-    // the reason abr-ladder records: four rungs are four independent counters, and a merged
-    // deduplicated view can mask a one-rung gap behind a sibling's healthy index.
-    const indices = segmentIndicesByStream(sinceRewrite);
-    for (const streamId of survivingStreamIds) {
-      const run = indices.get(streamId) ?? [];
-      assert.ok(
-        run.length > 0,
-        `${streamId} published nothing at all after the master lost the drained rung, so it did not survive it`,
+    before(async () => {
+      await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
+      // ⛔ After the stamp gate and before anything is published. The stamp gate asks whether every
+      // rung CAN stamp for the length of a run, which an armed rung can: its drain batch is fresh and
+      // has two days of life. This asks the opposite question of one rung, and only of one.
+      armed = await requireArmedStage(host, cfg, drainedRung);
+      console.log(
+        `  armed: ${armed.rung} on :${armed.port} spends depth ${armed.depth} batch ${armed.batch}, ` +
+          `unspent, ${armed.ttlS}s of TTL`,
       );
-      assert.ok(
-        isContiguous(run),
-        `${streamId} lost a segment after the ladder was down to the rungs that kept their postage; ` +
-          `got: ${run.join(',')}`,
+
+      processBefore = await readUploaderProcess(host, uploader);
+      await waitForIdle(host, cfg);
+      startedAt = await host.nowIso();
+      publisher = startPublisher(cfg);
+    });
+
+    after(async () => {
+      await publisher?.stop();
+      // ⛔ Nothing is restored here, deliberately. The drain batch is spent by now and putting the
+      // original back means rewriting BEE_PUBLISHERS and redeploying the uploader, which is
+      // `deploy/scripts/drain-stage.sh restore` and is the operator's step after this sitting.
+    });
+
+    it('refuses one rung, keeps three publishing, and stops offering the dead one', async () => {
+      const log = async (): Promise<string> => host.logsSince(uploader, startedAt);
+
+      // ⭐ A four-rung ladder first, or there is no isolation to observe. Waited on per rung rather
+      // than on a merged count, because one fast rung satisfies a merged one alone.
+      await waitFor(
+        async () => {
+          const counts = segmentIndicesByStream(await log());
+          return (
+            ladderRungs(await log()).length >= cfg.abrRungs.length &&
+            counts.size >= cfg.abrRungs.length &&
+            [...counts.values()].every((indices) => indices.length >= WARMUP_SEGMENTS)
+          );
+        },
+        {
+          timeoutMs: SEGMENT_WAIT_MS,
+          intervalMs: 3_000,
+          label: `warmup: all ${cfg.abrRungs.length} rungs publish ${WARMUP_SEGMENTS} segments each before the drain`,
+        },
       );
-    }
 
-    const masterRead = masterRungsOf(master, topicsOf(settled));
-    console.log(`  ${describeMaster(masterRead, master)}`);
-    const wrongLadder = masterRungRefusal(masterRead, survivingRungs);
-    assert.equal(wrongLadder, null, `the master is not offering the rungs that survived: ${wrongLadder}`);
+      const streams = newestStreamIdByRung(await log());
+      const drainedStreamId = streams.get(drainedRung);
+      assert.ok(drainedStreamId, `no rung announce in this window names ${drainedRung}, so nothing was drained`);
+      const survivingRungs = cfg.abrRungs.filter((rung) => rung !== drainedRung);
+      const survivingStreamIds = survivingRungs.map((rung) => streams.get(rung) ?? '');
+      console.log(`  drained ${drainedRung} (${drainedStreamId}), surviving ${survivingRungs.join(', ')}`);
 
-    // ⛔ Asserted rather than waited on, so a reworded line fails as an absent line rather than as a
-    // timeout blaming the product. The master above is the witness that carries the verdict.
-    const rewrite = ladderRewrittenPattern(ladder, survivingRungs.length);
-    assert.match(
-      settled,
-      rewrite,
-      `the catalog never said ladder ${ladder} now produces ${survivingRungs.length} rungs, even ` +
-        'though the master it points at does. Either the entry was not repointed, which leaves a ' +
-        'viewer reading the previous master, or the line moved and this pattern is stale: it is an ' +
-        'inline string in StreamCatalog rather than part of the shared log contract',
-    );
+      await waitFor(async () => refusalsFor(await log(), drainedStreamId).length > 0, {
+        timeoutMs: DRAIN_WAIT_MS,
+        intervalMs: 3_000,
+        label:
+          `bee refuses ${drainedRung}'s batch ${armed.batch} on ${drainedStreamId}. A depth ` +
+          '17 batch stops accepting chunks after about 3000 of them, roughly twenty seconds of 1080p, ' +
+          'so a whole ceiling spent here means the rung is not spending the batch that was armed: read ' +
+          "the uploader's /health publishers, and check the arm redeployed the container",
+      }).catch(async (error) => {
+        throw new Error(`${(error as Error).message}\n  ${whatWasSeen(await log(), drainedStreamId)}`);
+      });
 
-    // ⛔ A drained batch has to cost one rung and never the service.
-    const restarted = uploaderRestartRefusal(processBefore, await readUploaderProcess(host, uploader));
-    assert.equal(restarted, null, `the uploader did not survive one rung losing its postage: ${restarted}`);
+      const refusal = refusalsFor(await log(), drainedStreamId)[0];
+      console.log(`  bee answered ${refusal.status} ${refusal.message} for batch ${refusal.batch}`);
 
-    const notDegraded = segmentUploadFailureRefusal(await uploaderHealth(host, cfg));
-    assert.equal(notDegraded, null, `the uploader did not report the segments it lost: ${notDegraded}`);
+      // ⛔⛔ The refusal is the start of a ramp and not the end of anything, so nothing is asserted
+      // here. The wait below is for the rung to be dead by the product's own definition: the master
+      // offering exactly the three survivors. Its ceiling is four minutes of patience from this
+      // moment, which is within one poll of the refusal itself.
+      //
+      // ⭐ The master read is what the assertion rests on and the catalog line below is the narration,
+      // so the wait is on the master. The other order would time out on a reworded log line rather
+      // than failing on one, and the line is an inline string in `StreamCatalog` rather than part of
+      // the log contract in `packages/shared/src/uploaderLog.ts`.
+      const ladder = ladderGroupOf(await log());
+      const { owner } = await discoverCatalogFeed(host, cfg);
+      const master = await waitForSurvivingMaster(host, cfg, {
+        owner,
+        ladder,
+        survivingRungs,
+        readTopics: async () => topicsOf(await log()),
+      });
+      const rewrittenAtIso = await host.nowIso();
+      console.log(
+        `  the master is down to ${survivingRungs.join(', ')}, inside the ` +
+          `${DEAD_RUNG_MASTER_WAIT_MS / 1_000}s of patience this suite gives the ramp`,
+      );
 
-    const { stdout } = await host.run(uploaderMetricsCommand(uploader));
-    const dropped = rungCountersOf(stdout, DROPPED_SEGMENTS_METRIC);
-    const wrongRungLostThem = droppedSegmentsRefusal(dropped, { drainedRung, survivingRungs });
-    assert.equal(wrongRungLostThem, null, `the drop counter does not describe one drained rung: ${wrongRungLostThem}`);
+      // ⭐ Every survivor keeps going AFTER the rung is gone, which is the half that makes the
+      // isolation worth anything. Per rung, because a merged count is satisfied by one rung running
+      // ahead, and counted from the rewrite so the window judged below holds a run rather than a
+      // segment each.
+      const publishedAtRewrite = countsOf(await log());
+      await waitFor(
+        async () => {
+          const counts = countsOf(await log());
+          return survivingStreamIds.every(
+            (streamId) => (counts.get(streamId) ?? 0) >= (publishedAtRewrite.get(streamId) ?? 0) + POST_DRAIN_SEGMENTS,
+          );
+        },
+        {
+          timeoutMs: SEGMENT_WAIT_MS,
+          intervalMs: 3_000,
+          label: `every surviving rung publishes ${POST_DRAIN_SEGMENTS} more segments after the master rewrite`,
+        },
+      );
 
-    const stamped = timestampedMessages(settled);
-    const refusedAtMs = firstRefusalAtMs(stamped, drainedStreamId);
-    const rewrittenAtMs = firstMatchAtMs(stamped, rewrite);
-    console.log(
-      '  observations, none of them asserted. the batch took ' +
-        `${describeGap(Date.parse(startedAt), refusedAtMs)} of broadcast to fill, and the master was ` +
-        `rewritten ${describeGap(refusedAtMs, rewrittenAtMs)} after the first refusal. ` +
-        `${dropped.get(drainedRung) ?? 0} segments dropped on ${drainedRung} over the whole broadcast`,
-    );
-    console.log(
-      `  observations, none of them asserted. the ramp of ${drainedStreamId} in ten second buckets: ` +
-        `${
-          refusedAtMs === null
-            ? 'the first refusal carried no readable timestamp, so the ramp could not be bucketed'
-            : describeDrainRamp(drainRampOf(stamped, drainedStreamId, refusedAtMs))
-        }`,
-    );
-  });
-});
+      // One log read for every verdict below, so they all describe the same moment rather than several
+      // fetches apart.
+      const settled = await log();
+      const sinceRewrite = await host.logsSince(uploader, rewrittenAtIso);
+
+      // ⛔ First. It settles whether this run is one batch running out at all, and every reading below
+      // it is about a fault of some other shape if it is not.
+      const notOneDrain = singleRefusalRefusal(parseUploaderLog(settled).batchRefusals, {
+        drainedStreamId,
+        survivingStreamIds,
+      });
+      assert.equal(notOneDrain, null, `this run is not one rung's batch running out: ${notOneDrain}`);
+
+      // ⭐ The assertion the per-rung split exists for. Judged per stream and never on the merge, for
+      // the reason abr-ladder records: four rungs are four independent counters, and a merged
+      // deduplicated view can mask a one-rung gap behind a sibling's healthy index.
+      const indices = segmentIndicesByStream(sinceRewrite);
+      for (const streamId of survivingStreamIds) {
+        const run = indices.get(streamId) ?? [];
+        assert.ok(
+          run.length > 0,
+          `${streamId} published nothing at all after the master lost the drained rung, so it did not survive it`,
+        );
+        assert.ok(
+          isContiguous(run),
+          `${streamId} lost a segment after the ladder was down to the rungs that kept their postage; ` +
+            `got: ${run.join(',')}`,
+        );
+      }
+
+      const masterRead = masterRungsOf(master, topicsOf(settled));
+      console.log(`  ${describeMaster(masterRead, master)}`);
+      const wrongLadder = masterRungRefusal(masterRead, survivingRungs);
+      assert.equal(wrongLadder, null, `the master is not offering the rungs that survived: ${wrongLadder}`);
+
+      // ⛔ Asserted rather than waited on, so a reworded line fails as an absent line rather than as a
+      // timeout blaming the product. The master above is the witness that carries the verdict.
+      const rewrite = ladderRewrittenPattern(ladder, survivingRungs.length);
+      assert.match(
+        settled,
+        rewrite,
+        `the catalog never said ladder ${ladder} now produces ${survivingRungs.length} rungs, even ` +
+          'though the master it points at does. Either the entry was not repointed, which leaves a ' +
+          'viewer reading the previous master, or the line moved and this pattern is stale: it is an ' +
+          'inline string in StreamCatalog rather than part of the shared log contract',
+      );
+
+      // ⛔ A drained batch has to cost one rung and never the service.
+      const restarted = uploaderRestartRefusal(processBefore, await readUploaderProcess(host, uploader));
+      assert.equal(restarted, null, `the uploader did not survive one rung losing its postage: ${restarted}`);
+
+      const notDegraded = segmentUploadFailureRefusal(await uploaderHealth(host, cfg));
+      assert.equal(notDegraded, null, `the uploader did not report the segments it lost: ${notDegraded}`);
+
+      const { stdout } = await host.run(uploaderMetricsCommand(uploader));
+      const dropped = rungCountersOf(stdout, DROPPED_SEGMENTS_METRIC);
+      const wrongRungLostThem = droppedSegmentsRefusal(dropped, { drainedRung, survivingRungs });
+      assert.equal(
+        wrongRungLostThem,
+        null,
+        `the drop counter does not describe one drained rung: ${wrongRungLostThem}`,
+      );
+
+      const stamped = timestampedMessages(settled);
+      const refusedAtMs = firstRefusalAtMs(stamped, drainedStreamId);
+      const rewrittenAtMs = firstMatchAtMs(stamped, rewrite);
+      console.log(
+        '  observations, none of them asserted. the batch took ' +
+          `${describeGap(Date.parse(startedAt), refusedAtMs)} of broadcast to fill, and the master was ` +
+          `rewritten ${describeGap(refusedAtMs, rewrittenAtMs)} after the first refusal. ` +
+          `${dropped.get(drainedRung) ?? 0} segments dropped on ${drainedRung} over the whole broadcast`,
+      );
+      console.log(
+        `  observations, none of them asserted. the ramp of ${drainedStreamId} in ten second buckets: ` +
+          `${
+            refusedAtMs === null
+              ? 'the first refusal carried no readable timestamp, so the ramp could not be bucketed'
+              : describeDrainRamp(drainRampOf(stamped, drainedStreamId, refusedAtMs))
+          }`,
+      );
+    });
+  },
+);
 
 /** The reason a single-rendition deployment skips, or `false` to run. */
 function abrOff({ abrEnabled }: { abrEnabled: boolean }): string | false {
