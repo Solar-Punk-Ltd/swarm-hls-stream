@@ -201,12 +201,12 @@ export interface ArmedStageReading {
  */
 export function armedStageRefusal(reading: ArmedStageReading): string | null {
   const who = `The ${reading.rung} rung on :${reading.port}`;
-  const said = reading.problem ?? 'said nothing about why';
+  const said = reading.problem ?? 'nothing it recorded';
 
   if (reading.state !== 'held') {
     return (
       `${who} is not holding a batch this run could drain. It is configured with ${reading.batch} and ` +
-      `the node ${said}. A drain needs that rung pointed at a fresh depth ${DRAIN_BATCH_DEPTH} batch ` +
+      `the node's answer was: ${said}. A drain needs that rung pointed at a fresh depth ${DRAIN_BATCH_DEPTH} batch ` +
       `of its own, which is what \`${ARM_COMMAND}\` writes into BEE_PUBLISHERS before it redeploys ` +
       `the uploader. ${NOTHING_SPENT}`
     );
