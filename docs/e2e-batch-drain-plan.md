@@ -105,6 +105,9 @@ redeploys per sitting, free.
 
 ## Decisions for the owner
 
+**Ruled 2026-09-04 by the owner: all six as recommended** ("1-6 go as recommended on each").
+The recommendations below are therefore the decisions.
+
 1. **What a drained rung should do.** Keep the behaviour the code already has, the rung goes quiet
    and the dead-rung rule removes it, and add the one named log line and the per-rung dropped count so
    the harness and an operator can tell a drained batch from a dead encoder. The alternative is the
