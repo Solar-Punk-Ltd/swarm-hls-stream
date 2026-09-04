@@ -54,8 +54,13 @@ import {
 import type { UploaderEvents } from './logwatch.js';
 import { BEE_SERVICE_BY_RUNG, COORDINATOR_RUNG, nodesBehind } from './publishers.js';
 
-/** Where a run says which rung to drain. */
-export const DRAIN_RUNG_VAR = 'E2E_DRAIN_RUNG';
+/**
+ * Where a run says which rung to drain.
+ *
+ * Not exported: every caller goes through {@link drainRung}, and a name nothing imports is a promise
+ * to nobody. The same reason `BatchRefusal` is unexported in `logwatch.ts`.
+ */
+const DRAIN_RUNG_VAR = 'E2E_DRAIN_RUNG';
 
 /**
  * The rung a drain aims at when a run names none.
@@ -252,8 +257,10 @@ export function armedStageRefusal(reading: ArmedStageReading): string | null {
  * Polled rather than read once, the same window `stageStamps.ts` gives every node: a bee that
  * restarted reports its batches unusable for tens of seconds while they re-sync, and an arming ends
  * in a redeploy.
+ *
+ * Not exported: {@link requireArmedStage} is what a suite calls, and it hands the reading back.
  */
-export async function readArmedStage(host: Host, cfg: E2EConfig, rung: string): Promise<ArmedStageReading> {
+async function readArmedStage(host: Host, cfg: E2EConfig, rung: string): Promise<ArmedStageReading> {
   const nodes = nodesBehind((await uploaderHealth(host, cfg)).publishers, cfg.ports.beeUploaderApi);
   const node = nodes.find((candidate) => candidate.rungs.includes(rung));
 

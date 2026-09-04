@@ -61,8 +61,14 @@ const MASTER_RETRY_INTERVAL_MS = 2_000;
 /** Enough of a body to recognise it in a failure, without pasting a whole playlist into one. */
 const BODY_EXCERPT_CHARS = 120;
 
-/** What one master playlist is offering, and what it names that this ladder cannot account for. */
-export interface MasterRungs {
+/**
+ * What one master playlist is offering, and what it names that this ladder cannot account for.
+ *
+ * Not exported: every caller gets it from {@link masterRungsOf} and passes it straight to
+ * {@link masterRungRefusal} or {@link describeMaster}, so a name here would be a promise nothing
+ * imports. The same reason `BatchRefusal` is unexported in `logwatch.ts`.
+ */
+interface MasterRungs {
   /**
    * Whether the body is a multivariant playlist at all.
    *
