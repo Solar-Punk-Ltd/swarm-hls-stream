@@ -60,8 +60,13 @@ const EVERY_RUNG = 'all';
  *
  * `AbrLadder.rungs()` sorts ascending by height, so this is the pool's coordinator, and the catalog
  * and every ladder master go through it.
+ *
+ * Exported because that last sentence is a constraint on more than this file. A fault aimed at the
+ * coordinator's postage takes the catalog write and every master rewrite down with it, for all four
+ * rungs at once, which nothing in this repo implements a failover for. `harness/batchDrain.ts`
+ * refuses it by name for that reason.
  */
-const COORDINATOR_RUNG = '360p';
+export const COORDINATOR_RUNG = '360p';
 
 /**
  * Every compose service that would have to go down to take this routing's publishing with it.
