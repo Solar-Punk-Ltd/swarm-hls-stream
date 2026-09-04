@@ -364,7 +364,7 @@ answer("OK", reading)
 publisher_entry() {
   local mode="$1" new_batch="${2:-}"
   python3 - "$ENV_FILE" "$RUNG" "$mode" "$new_batch" <<'PY'
-import sys
+import os, sys
 
 path, rung, mode, new_batch = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 KEY = "BEE_PUBLISHERS="
@@ -428,8 +428,24 @@ for entry, fields in parsed:
     rebuilt.append(f"{rung}@{url}<{new_batch}>" if separator == "<>" else f"{rung}@{url}#{new_batch}")
 
 lines[index] = KEY + " ".join(rebuilt)
-with open(path, "w") as handle:
-    handle.write("\n".join(lines) + "\n")
+
+# ⛔ Written beside the env file and renamed over it, never into it. Opening the env file itself for
+# writing truncates it before a byte of the new content is written, so a write that died part way
+# through left the whole profile env empty or half written while the caller reported that the entry
+# could not be rewritten, which reads as the file being as it was. os.replace is atomic inside one
+# directory, so the file an operator reads is either the old one or the new one.
+temporary = path + ".drain-stage-" + str(os.getpid()) + ".new"
+try:
+    with open(temporary, "w") as handle:
+        handle.write("\n".join(lines) + "\n")
+    # A rename replaces the file's permissions along with its contents, and this one holds a stamp
+    # and a stream key.
+    os.chmod(temporary, os.stat(path).st_mode & 0o7777)
+    os.replace(temporary, path)
+except BaseException:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+    raise
 
 answer("OK", hit[2])
 PY
@@ -710,7 +726,7 @@ do_arm() {
 
   written="$(publisher_entry write "$BATCH")"
   if [ "$(verdict_of "$written")" != "OK" ]; then
-    fail "the ${RUNG} entry could not be rewritten: $(text_of "$written")."
+    fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(text_of "$written")."
   fi
   log_ok "BEE_PUBLISHERS now names $(short_id "$BATCH") for ${RUNG}, and the other rungs are untouched"
 
@@ -739,7 +755,7 @@ do_restore() {
 
   written="$(publisher_entry write "$original")"
   if [ "$(verdict_of "$written")" != "OK" ]; then
-    fail "the ${RUNG} entry could not be rewritten: $(text_of "$written")."
+    fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(text_of "$written")."
   fi
   log_ok "BEE_PUBLISHERS names $(short_id "$original") for ${RUNG} again, and $(short_id "$(text_of "$written")") is spent"
 

@@ -172,6 +172,44 @@ function backups(sandbox) {
   return readdirSync(sandbox.root).filter((name) => name.startsWith(`.env.${PROFILE}.bak-`));
 }
 
+/**
+ * Anything beside the profile env that shares its name and is not one of the copies it takes, which
+ * is what a rewrite that wrote somewhere else and did not clean up after itself leaves behind.
+ */
+function halfWrittenEnvFiles(sandbox) {
+  return readdirSync(sandbox.root).filter(
+    (name) => name.startsWith(`.env.${PROFILE}.`) && !name.startsWith(`.env.${PROFILE}.bak-`),
+  );
+}
+
+/**
+ * A directory for `PYTHONPATH` whose `sitecustomize.py` makes the first write to the profile env
+ * raise, and returns its path. See the test that uses it for why the fault has to be injected here.
+ */
+function failingEnvWrite(sandbox) {
+  const directory = join(sandbox.root, 'python-path');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, 'sitecustomize.py'),
+    `import builtins
+
+NAME = ${JSON.stringify(`.env.${PROFILE}`)}
+real_open = builtins.open
+
+
+def guarded_open(file, mode="r", *args, **kwargs):
+    handle = real_open(file, mode, *args, **kwargs)
+    if isinstance(file, str) and "w" in mode and file.split("/")[-1].startswith(NAME):
+        raise OSError(28, "No space left on device")
+    return handle
+
+
+builtins.open = guarded_open
+`,
+  );
+  return directory;
+}
+
 function recordPath(sandbox) {
   return join(sandbox.root, RECORD);
 }
@@ -457,6 +495,34 @@ describe('drain-stage arm refuses to arm a stage it cannot put back', () => {
     assert.match(run.stderr, /could not record/);
     assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten with nothing to put back');
     assert.deepEqual(redeployedServices(sandbox), [], 'a failed record still redeployed the uploader');
+  });
+
+  /**
+   * ⛔⛔⛔ The profile env carries every setting the stage runs on, and a rewrite used to truncate it
+   * before writing a byte. A write that died part way through left it empty or half written while the
+   * script reported that the entry could not be rewritten, which an operator reads as nothing changed.
+   *
+   * The write is driven to fail here through `PYTHONPATH`, because a write that has begun and cannot
+   * finish is not a state a sandbox can reach any other way. `sitecustomize.py` is imported by
+   * python's own startup, so the wrapper below is in place before the program the script pipes in
+   * runs a line. It lets the truncating open happen and then raises, which is the shape of a
+   * filesystem that fills between the two, and it fires on any file beside the env file whose name
+   * starts the same way, so it catches the rewrite wherever the rewrite chooses to land.
+   */
+  it('leaves the env file as it was when the rewrite cannot finish, rather than truncating it first', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    const before = envText(sandbox);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], {
+      HOME: sandbox.root,
+      PYTHONPATH: failingEnvWrite(sandbox),
+    });
+
+    assert.notEqual(run.exitCode, 0, 'a rewrite that could not finish reported an armed rung');
+    assert.equal(envText(sandbox), before, 'the profile env did not survive a rewrite that could not finish');
+    assert.match(run.stderr, /could not be rewritten/);
+    assert.deepEqual(halfWrittenEnvFiles(sandbox), [], 'a half-written env file was left beside the real one');
+    assert.deepEqual(redeployedServices(sandbox), [], 'a failed rewrite still redeployed the uploader');
   });
 });
 
