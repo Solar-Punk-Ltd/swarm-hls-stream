@@ -198,9 +198,11 @@ One consequence for anyone reading the output: a run now prints **two** TAP docu
 two `# tests` / `# pass` / `# fail` blocks in one log. Sum them. Reading the totals off either block
 alone reports part of a run as the whole of it.
 
-Browser drivers launched through `deploy/scripts/bench-on-host.sh`, which is every sitting run on the
-deployment host, run the same ten gates first. They were the one path with nothing in front of them
-until 2026-09-04. A refusal starts no browser, spends nothing and exits non-zero. The run profile
+Browser drivers launched through `deploy/scripts/bench-on-host.sh`, directly or through
+`browser-on-host.sh`, run the same ten gates first. They were the one path with nothing in front of
+them until 2026-09-04. The August sitting scripts under `deploy/scripts/` that `docker run` the
+browser image on the host themselves (`byte-source-arms.sh` and its siblings) stay ungated, a decision
+of 2026-09-04 taken because the suites here replace them. A refusal starts no browser, spends nothing and exits non-zero. The run profile
 decides what the gates are asked to agree with, and it defaults to `in-browser`: bytes from a node in
 the viewer's own tab, against a stage cutting 2 s segments. A gateway arm, or any stage cutting 1.0 s,
 declares `E2E_RUN_PROFILE=light-client` in the environment or as the single key after `--`, and the
