@@ -99,11 +99,17 @@ describe('preflight — the deployed client is built from the sources this harne
   it('serves a build stamp that matches this checkout', async () => {
     const expectation = readClientShapeExpectation(process.env, readGitTrees);
 
-    const url = `http://127.0.0.1:${cfg.ports.client}${BUILD_STAMP_PATH}`;
-    // `-sS` keeps the progress meter out of stdout and lets an error still print, and a missing
-    // stamp is a 200 carrying the app index rather than a 404, so no `-f` here: the body is what
-    // decides, and `clientShapeRefusal` reads an HTML page as no stamp.
-    const { stdout } = await host.run(`curl -sS -m ${STAMP_FETCH_TIMEOUT_S} ${url}`);
+    // ⛔ Through `localText` rather than a hand-built loopback URL, because the container this runs
+    // in does not always have the deployment on its own loopback. Under `--own-network` the client
+    // is a hop away on the docker bridge and `Host.serviceAddress` is what knows that, from
+    // `E2E_LOCAL_HOST_ADDRESS`. A shaped browser arm runs the whole preflight inside exactly that
+    // container, so a hardcoded 127.0.0.1 here would have refused every one of them on an empty
+    // loopback and blamed the client.
+    //
+    // `Host.curl` passes `-s` and `--max-time` and no `-f`, which is what this needs: a missing
+    // stamp is a 200 carrying the app index rather than a 404, so the body is what decides, and
+    // `clientShapeRefusal` reads an HTML page as no stamp.
+    const stdout = await host.localText(cfg.ports.client, BUILD_STAMP_PATH, STAMP_FETCH_TIMEOUT_S);
 
     const refusal = clientShapeRefusal(expectation, stdout);
     assert.equal(refusal, null, String(refusal));
