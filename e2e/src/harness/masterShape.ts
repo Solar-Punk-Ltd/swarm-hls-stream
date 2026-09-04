@@ -62,6 +62,18 @@ const MASTER_RETRY_INTERVAL_MS = 2_000;
 const BODY_EXCERPT_CHARS = 120;
 
 /**
+ * Why a caller expecting no rungs is refused, said once for the two places that must refuse it.
+ *
+ * {@link masterRungRefusal} is the verdict, and `waitForSurvivingMaster` is the wait built on it: an
+ * expectation that can never be satisfied would otherwise spend the whole four minute ceiling on a
+ * paid broadcast and then time out naming an empty list of rungs.
+ */
+export const NOTHING_EXPECTED =
+  'this run expects the master to offer no rungs at all, which is not a question about the master. A ' +
+  'ladder always has at least one rung, so an empty expectation is a caller that could not work out ' +
+  'which rungs should have survived, and every reading is judged against it.';
+
+/**
  * What one master playlist is offering, and what it names that this ladder cannot account for.
  *
  * Not exported: every caller gets it from {@link masterRungsOf} and passes it straight to
@@ -147,15 +159,27 @@ function masterVariantTopics(masterText: string): string[] {
 /**
  * Why the master is not offering the rungs it should be, or null.
  *
- * ⛔ Three causes kept apart, because they have three different fixes. A body that is not a master
- * means the feed read is wrong or the ladder never published one. A stranger topic means the master
- * read belongs to another broadcast. A wrong rung set is the product, and both directions of it are
- * real: still offering a dead rung hands a joining viewer a quality with nothing behind it, and
- * dropping a live one takes a rung away from viewers who were watching it.
+ * ⛔ Four causes kept apart, because they have four different fixes. An empty expectation is the
+ * CALLER, and it comes first for that reason. A body that is not a master means the feed read is
+ * wrong or the ladder never published one. A stranger topic means the master read belongs to another
+ * broadcast. A wrong rung set is the product, and both directions of it are real: still offering a
+ * dead rung hands a joining viewer a quality with nothing behind it, and dropping a live one takes a
+ * rung away from viewers who were watching it.
+ *
+ * ⛔⛔ **Nothing expected refuses, whatever the master holds.** No caller may legitimately expect
+ * zero rungs, and the three product causes below all guard the READING, so an expectation of none
+ * paired with a master offering none agreed on nothing and returned null. Both drain suites derive
+ * their expectation by removing the drained rung from the configured ladder, so a single-rung ladder
+ * makes their whole ladder assertion vacuous, and a master whose variant URIs carry an empty owner
+ * offers none. Latent on a four-rung stage, and a gate either way.
  *
  * ⚠️ Order is not judged. It is the uploader's to choose and a player reads the whole list.
  */
 export function masterRungRefusal(read: MasterRungs, expected: readonly string[]): string | null {
+  if (expected.length === 0) {
+    return `${NOTHING_EXPECTED} What the master offered: ${read.offered.join(', ') || 'nothing'}.`;
+  }
+
   if (!read.isMaster) {
     return (
       `the ladder's master feed answered no multivariant playlist: nothing in the body carries ` +

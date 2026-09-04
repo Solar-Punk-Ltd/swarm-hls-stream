@@ -186,6 +186,66 @@ describe('masterRungRefusal', () => {
     assert.ok(refusal, 'a stranger feed in the master has to be surfaced');
     assert.match(refusal, /99999999/);
   });
+
+  /**
+   * ⛔⛔ An expectation of no rungs is a caller that could not work out what to expect, and it must
+   * never read as agreement. Both drain suites derive their expectation by removing the drained rung
+   * from the configured ladder, so a single-rung ladder hands this an empty list, and a master whose
+   * variant URIs carry an empty owner offers none: the pair agree on nothing and pass.
+   */
+  it('refuses an expectation of no rungs rather than agreeing with a master that offers none', () => {
+    const empty = [
+      '#EXTM3U',
+      '#EXT-X-STREAM-INF:BANDWIDTH=700000,AVERAGE-BANDWIDTH=650000,RESOLUTION=640x360',
+      `swarm:///${TOPICS['360p']}`,
+      '',
+    ].join('\n');
+    const read = masterRungsOf(empty, RUNG_BY_TOPIC);
+
+    assert.deepEqual(read.offered, [], 'an empty owner names no feed this ladder can claim');
+
+    const refusal = masterRungRefusal(read, []);
+
+    assert.ok(refusal, 'no caller may legitimately expect zero rungs');
+    assert.match(refusal, /no rungs/);
+  });
+});
+
+/**
+ * ⛔⛔ A relative URI is not a stranger topic. `parseSwarmUri` tolerates the bare `owner/topic` form,
+ * so `360p/index.m3u8` under a rendition tag parses as owner `360p` and topic `index.m3u8`, and a
+ * master written that way would read as another broadcast's master. That is a wrong cause for the one
+ * conclusion the drain suites exist to reach: a stranger topic sends its reader after a second
+ * broadcast on the deployment, where the fault is a master pointing at nothing this ladder published.
+ */
+describe('masterRungsOf, on a URI that carries no scheme', () => {
+  const relative = (uri: string): string =>
+    ['#EXTM3U', '#EXT-X-STREAM-INF:BANDWIDTH=700000,AVERAGE-BANDWIDTH=650000,RESOLUTION=640x360', uri, ''].join('\n');
+
+  it('credits no topic to a relative path', () => {
+    const read = masterRungsOf(relative('360p/index.m3u8'), RUNG_BY_TOPIC);
+
+    assert.deepEqual(read.offered, []);
+    assert.deepEqual(read.unclaimedTopics, [], 'a relative path is not another broadcast');
+  });
+
+  it('credits no topic to a bare owner and topic pair', () => {
+    const read = masterRungsOf(relative(`${OWNER}/${TOPICS['360p']}`), RUNG_BY_TOPIC);
+
+    assert.deepEqual(read.offered, [], 'a master carries the scheme, and only the scheme names a feed');
+    assert.deepEqual(read.unclaimedTopics, []);
+  });
+
+  it('still reads the rungs of a master whose other variants carry the scheme', () => {
+    const half = [
+      master(['360p']).trimEnd(),
+      '#EXT-X-STREAM-INF:BANDWIDTH=5000000,AVERAGE-BANDWIDTH=4800000,RESOLUTION=1920x1080',
+      '1080p/index.m3u8',
+      '',
+    ].join('\n');
+
+    assert.deepEqual(masterRungsOf(half, RUNG_BY_TOPIC).offered, ['360p']);
+  });
 });
 
 /**

@@ -68,7 +68,7 @@ import {
   uploaderHealth,
 } from './host.js';
 import type { TimestampedMessage, UploaderEvents } from './logwatch.js';
-import { describeMaster, masterRungRefusal, masterRungsOf, readLadderMaster } from './masterShape.js';
+import { describeMaster, masterRungRefusal, masterRungsOf, NOTHING_EXPECTED, readLadderMaster } from './masterShape.js';
 import { BEE_SERVICE_BY_RUNG, COORDINATOR_RUNG, nodesBehind } from './publishers.js';
 import { waitFor } from './wait.js';
 
@@ -444,6 +444,13 @@ export async function waitForSurvivingMaster(
   cfg: E2EConfig,
   { owner, ladder, survivingRungs, readTopics }: SurvivingMasterWait,
 ): Promise<string> {
+  // ⛔ Before the polling and not inside it. The predicate below can never be satisfied by an empty
+  // expectation, so the run would spend the whole ceiling on a paid broadcast and then time out
+  // naming no rungs at all, which is a red with no cause in it.
+  if (survivingRungs.length === 0) {
+    throw new Error(`${NOTHING_EXPECTED} Nothing was waited for on ladder ${ladder}.`);
+  }
+
   let master = '';
   let seen: string | null = null;
 

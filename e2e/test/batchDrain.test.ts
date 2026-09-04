@@ -232,6 +232,27 @@ describe('armedStageRefusal', () => {
   });
 });
 
+/**
+ * ⛔⛔ The one branch of the wait that is worth covering without a deployment, and the reason it is
+ * worth covering: `masterRungRefusal` can never clear an empty expectation, so a wait that started
+ * polling on one would spend its whole four minute ceiling on a paid broadcast and then time out
+ * naming no rungs at all. The host and the config are null here, which is the assertion: an
+ * expectation nobody could satisfy is refused before anything is dialled.
+ */
+describe('waitForSurvivingMaster, before it dials anything', () => {
+  it('refuses an expectation of no surviving rungs rather than polling for one', async () => {
+    await assert.rejects(
+      waitForSurvivingMaster(null as never, null as never, {
+        owner: 'a'.repeat(40),
+        ladder: 'ladder-1',
+        survivingRungs: [],
+        readTopics: async () => new Map(),
+      }),
+      /no rungs/,
+    );
+  });
+});
+
 describe('singleRefusalRefusal', () => {
   const DRAINED = 'stream_1080p';
   const SURVIVORS = ['stream_360p', 'stream_480p', 'stream_720p'];
