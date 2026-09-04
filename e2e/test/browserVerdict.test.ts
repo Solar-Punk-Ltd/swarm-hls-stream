@@ -3,7 +3,12 @@ import { describe, it } from 'node:test';
 
 import { GATEWAY_BYTES, WEEB3_BYTES } from '../src/browser/fetchBackendSweep.js';
 import { type BrowserArmResult, parseBrowserArmState } from '../src/harness/browser.js';
-import { ladderResolutionRefusal, viewerPlaybackRefusal, weeb3ArmRefusal } from '../src/harness/browserVerdict.js';
+import {
+  byteSourceArmRefusal,
+  ladderResolutionRefusal,
+  viewerPlaybackRefusal,
+  weeb3ArmRefusal,
+} from '../src/harness/browserVerdict.js';
 
 import { armState } from './helpers/browserArmFixtures.js';
 
@@ -127,6 +132,72 @@ describe('whether the arm was the in-tab node it is filed as', () => {
 
   it('accepts an arm sitting exactly on the ceiling', () => {
     assert.equal(weeb3ArmRefusal(watched({ segmentRequests: 9 }), SINGLE_DIGIT), null);
+  });
+});
+
+/**
+ * The three-branch rule every viewer suite applies to its arm, stated once.
+ *
+ * ⛔⛔ It was stated four times before: inline in `qualityArm`, `rungArm` and `crashArm`, and
+ * nowhere at all for V4 and V5, which is how those two came to pass in the in-browser profile
+ * whatever served them. A rule with four copies and two gaps is the shape the copies produce.
+ *
+ * ⭐ The gateway condition passes with no ceiling applied, and that is the branch worth a test of
+ * its own. A gateway arm reads every segment through the gateway by definition, so holding one to
+ * the in-tab ceiling would refuse the only arm the in-tab readings are ever compared against.
+ */
+describe('whether an arm was the byte source it is filed as, in either condition', () => {
+  const SINGLE_DIGIT = { maxSegmentRequests: 9 };
+
+  it('passes an in-tab arm that asked for the node, landed on it and barely touched the gateway', () => {
+    assert.equal(byteSourceArmRefusal(CLEAN, SINGLE_DIGIT), null);
+  });
+
+  it('passes a gateway arm that landed on the gateway, however many segments it read there', () => {
+    const gateway = parseBrowserArmState(armState({ backend: GATEWAY_BYTES, segmentRequests: 512 }));
+
+    assert.equal(byteSourceArmRefusal(gateway, SINGLE_DIGIT), null);
+  });
+
+  /** A verdict filed against a condition nobody chose is a verdict about nothing. */
+  it('refuses an arm that named no byte source at all', () => {
+    const unswitched = parseBrowserArmState(armState({ byteSource: null }));
+
+    assert.match(String(byteSourceArmRefusal(unswitched, SINGLE_DIGIT)), /named no byte source/);
+  });
+
+  /**
+   * ⛔ A switch that silently did nothing puts both conditions on one, every metric agrees, and the
+   * run reports that an in-tab Swarm node performs exactly like a gateway. That is the most
+   * attractive headline this line of work has, produced by nothing happening.
+   */
+  it('refuses an arm that asked for the node and landed on the gateway', () => {
+    const landedElsewhere = watched({
+      proof: { requested: WEEB3_BYTES, reported: GATEWAY_BYTES, settledForMs: 60_000 },
+    });
+
+    assert.match(String(byteSourceArmRefusal(landedElsewhere, SINGLE_DIGIT)), /switch did not take/);
+  });
+
+  /** Both directions, because the control condition drifting is as wrong as the subject drifting. */
+  it('refuses an arm that asked for the gateway and landed on the node', () => {
+    const landedElsewhere = watched({
+      proof: { requested: GATEWAY_BYTES, reported: WEEB3_BYTES, settledForMs: 60_000 },
+    });
+
+    assert.match(String(byteSourceArmRefusal(landedElsewhere, SINGLE_DIGIT)), /switch did not take/);
+  });
+
+  /**
+   * ⭐ The readback above is what the client BELIEVES. This is what the network DID, and on
+   * 2026-08-13 those disagreed while both arms of a paid sitting fetched all their video from one
+   * node.
+   */
+  it('refuses an in-tab arm that went on reading segments from the gateway', () => {
+    const refusal = byteSourceArmRefusal(watched({ segmentRequests: 512 }), SINGLE_DIGIT);
+
+    assert.match(String(refusal), /512/);
+    assert.match(String(refusal), /9/);
   });
 });
 

@@ -121,6 +121,46 @@ export function weeb3ArmRefusal(result: BrowserArmResult, { maxSegmentRequests }
 }
 
 /**
+ * Why this arm is not the condition it is filed as, whichever condition that is, or null.
+ *
+ * ⛔⛔ **The rule was written four times and reached only eight of the ten viewer suites.**
+ * `qualityArm`, `rungArm` and `crashArm` each carry their own identical copy of these three
+ * branches. V4 and V5 carried none, so in the in-browser profile they passed whatever served them,
+ * which is the exact failure `browser/byteSourceArm.ts` exists to prevent one layer down: an unread
+ * setting looks precisely like a setting at its default. This is the one statement of it the two
+ * suites that were missing it now share.
+ *
+ * ⭐ **A gateway arm is passed with no ceiling applied**, and that is deliberate rather than an
+ * omission. A gateway viewer reads every segment through the gateway by definition, so the in-tab
+ * ceiling is meaningless for it, and applying one would refuse the only arm the in-tab readings are
+ * ever compared against. What a gateway arm still has to be is a gateway arm: the driver's own
+ * `armBytesCameFromItsSource` refuses one that made no gateway request inside its window, so the
+ * missing half is already covered where it can be measured.
+ *
+ * ⛔ Says nothing about whether the viewer watched, the recording played or the picture moved. Those
+ * are the suite's own questions and each one is better answered by the check that owns it.
+ */
+export function byteSourceArmRefusal(
+  result: BrowserArmResult,
+  { maxSegmentRequests }: Weeb3ArmExpectation,
+): string | null {
+  const { requested, reported } = result.proof;
+
+  if (requested === null) {
+    return 'this arm named no byte source, so its verdict would be filed against a condition nobody chose';
+  }
+
+  if (reported !== requested) {
+    return (
+      `this arm asked for ${requested} and the client reports ${reported}, so the switch did not take and ` +
+      'both conditions of the matrix would be one'
+    );
+  }
+
+  return requested === WEEB3_BYTES ? weeb3ArmRefusal(result, { maxSegmentRequests }) : null;
+}
+
+/**
  * The multiplication sign the client renders between the two numbers.
  *
  * ⛔ U+00D7, not the letter x. `useHlsQoeMetrics` builds the string as `${videoWidth}×${videoHeight}`,
