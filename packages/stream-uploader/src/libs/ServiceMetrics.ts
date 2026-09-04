@@ -44,7 +44,9 @@ export class ServiceMetrics {
    * costs one quality and leaves the other three publishing. The total climbs identically whether one
    * rung of four lost everything or all four lost a little, so on a ladder it cannot say which quality
    * a viewer stopped being offered. Read next to `segmentsUploadedByRung`: one rung's drops climbing
-   * while its uploads sit still is the drained-batch signature.
+   * while its uploads thin out is the drained-batch signature, and they thin rather than stop because
+   * a filling batch refuses a growing share of segments over a minute or two rather than all of them
+   * at once.
    *
    * Keyed and bounded exactly as its sibling above, and a rung only appears once it has lost something.
    */
@@ -74,7 +76,7 @@ export class ServiceMetrics {
    * `rung` is read exactly as {@link recordSegmentUploaded} reads it: absent on a single-rendition
    * stream, and absent means counted in the total and nowhere in the breakdown rather than counted
    * under a rung the deployment does not have. The two breakdowns are label-comparable because of it,
-   * which is what makes "this rung's drops climbing while its uploads sit still" a readable query.
+   * which is what makes "this rung's drops climbing while its uploads thin out" a readable query.
    */
   public recordSegmentDropped(rung?: string): void {
     this.segmentsDropped += 1;

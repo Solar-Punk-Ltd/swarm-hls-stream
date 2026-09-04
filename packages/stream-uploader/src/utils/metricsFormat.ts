@@ -182,7 +182,7 @@ function describeByRung(snapshot: MetricsSnapshot): LabelledMetric[] {
     {
       name: 'rung_segments_dropped_total',
       type: 'counter',
-      help: 'Segments dropped because the upload retry window was spent, by ABR rung. Read next to rung_segments_uploaded_total on the same label: one rung dropping while its uploads sit still and the other rungs hold is a postage batch that ran dry, and the uploader logs the batch it was refused with. segments_dropped_total climbs the same whether one rung of four lost everything or all four lost a little, which is what this separates. Empty on a single-rendition deployment, where a segment belongs to no rung, and empty on a ladder that has lost nothing.',
+      help: 'Segments dropped after their upload was given up on, by ABR rung. Read next to rung_segments_uploaded_total on the same label: one rung dropping while its uploads thin out and the others hold is a postage batch running dry, which refuses a growing share of segments over a minute or two rather than all of them at once. A refused batch spends no retry window at all, since bee answers it with a status the uploader does not retry.',
       labelName: 'rung',
       byLabel: snapshot.segmentsDroppedByRung,
     },
