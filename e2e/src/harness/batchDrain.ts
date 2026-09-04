@@ -54,7 +54,7 @@
  * wiring, and both are wiring.
  */
 
-import { segmentUploadedPattern, segmentUploadFailedPattern } from '@swarm-hls-stream/shared';
+import { rungBatchRefusedPattern, segmentUploadedPattern, segmentUploadFailedPattern } from '@swarm-hls-stream/shared';
 
 import type { E2EConfig } from '../config.js';
 
@@ -393,6 +393,23 @@ export async function waitForSurvivingMaster(
 
 /** How long one bucket of the ramp covers. Ten seconds, so a fifty second ramp reads as five rows. */
 const RAMP_BUCKET_MS = 10_000;
+
+/**
+ * When bee first refused THIS stream's batch, on the uploader host's own clock, or null.
+ *
+ * ⛔ Scoped to the stream rather than taken off the first refusal line in the window. Every duration
+ * a drain suite prints is measured from this instant, and on this shared host a co-tenant's own
+ * drained rung refused a minute earlier would put a stranger's clock under all of them.
+ */
+export function firstRefusalAtMs(stamped: readonly TimestampedMessage[], streamId: string): number | null {
+  const pattern = rungBatchRefusedPattern();
+  for (const line of stamped) {
+    if (pattern.exec(line.message)?.[2] === streamId) {
+      return line.atMs;
+    }
+  }
+  return null;
+}
 
 /**
  * One bucket of the ramp: what the drained rung landed and what it lost in those ten seconds.

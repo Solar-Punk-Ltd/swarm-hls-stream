@@ -1,4 +1,3 @@
-import { rungBatchRefusedPattern } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 
@@ -11,6 +10,7 @@ import {
   drainRung,
   DROPPED_SEGMENTS_METRIC,
   droppedSegmentsRefusal,
+  firstRefusalAtMs,
   readUploaderProcess,
   requireArmedStage,
   segmentUploadFailureRefusal,
@@ -418,23 +418,6 @@ function ladderRewrittenPattern(ladder: string, rungs: number): RegExp {
 /** When the first line matching `pattern` was written, on the uploader host's own clock. */
 function firstMatchAtMs(stamped: readonly TimestampedMessage[], pattern: RegExp): number | null {
   return stamped.find((line) => pattern.test(line.message))?.atMs ?? null;
-}
-
-/**
- * When bee first refused THIS stream's batch, on the uploader host's own clock.
- *
- * ⛔ Scoped to the stream rather than taken off the first refusal line in the window. Every duration
- * below is measured from this instant, and a co-tenant's drained rung refused a minute earlier would
- * put a stranger's clock under all of them.
- */
-function firstRefusalAtMs(stamped: readonly TimestampedMessage[], streamId: string): number | null {
-  const pattern = rungBatchRefusedPattern();
-  for (const line of stamped) {
-    if (pattern.exec(line.message)?.[2] === streamId) {
-      return line.atMs;
-    }
-  }
-  return null;
 }
 
 /** A duration for a person, or the plain fact that one end of it was never read. */

@@ -4,13 +4,21 @@ import { after, before, describe, it } from 'node:test';
 import { FEED_STATE_ENDED } from '../../src/browser/feedState.js';
 import { byteSourceFromEnv, WEEB3_BYTES } from '../../src/browser/fetchBackendSweep.js';
 import { containerName, loadConfig } from '../../src/config.js';
-import { type ArmedStageReading, drainRung, requireArmedStage } from '../../src/harness/batchDrain.js';
+import {
+  type ArmedStageReading,
+  describeDrainRamp,
+  drainRampOf,
+  drainRung,
+  firstRefusalAtMs,
+  requireArmedStage,
+  waitForSurvivingMaster,
+} from '../../src/harness/batchDrain.js';
 import { runBrowserArm } from '../../src/harness/browser.js';
 import { ladderResolutionRefusal, viewerPlaybackRefusal, weeb3ArmRefusal } from '../../src/harness/browserVerdict.js';
 import { MAX_WEEB3_SEGMENT_REQUESTS } from '../../src/harness/crashArm.js';
 import { makeHost, waitForIdle } from '../../src/harness/host.js';
-import { announcedRungs, parseUploaderLog } from '../../src/harness/logwatch.js';
-import { describeMaster, masterRungRefusal, masterRungsOf, readLadderMaster } from '../../src/harness/masterShape.js';
+import { announcedRungs, parseUploaderLog, timestampedMessages } from '../../src/harness/logwatch.js';
+import { describeMaster, masterRungRefusal, masterRungsOf } from '../../src/harness/masterShape.js';
 import { type Publisher, startPublisher } from '../../src/harness/publisher.js';
 import { rungArmMinutes } from '../../src/harness/rungArm.js';
 import { requireStageStamps } from '../../src/harness/stageStamps.js';
@@ -45,12 +53,19 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
  *
  * ## ⛔ When the drain lands is the stage's choice, not this suite's
  *
- * A depth 17 batch stops accepting chunks after about 3000 of them, which is roughly twenty seconds
- * of 1080p, and the byte-source settle alone is longer than that. So the rung usually goes quiet
- * while the player is still settling, and this suite cannot arrange for the viewer to be riding the
- * drained rung at the moment it dies. Whether they ever decoded it at all is **recorded as an
- * observation** rather than asserted. Proving that a viewer riding a dead rung moves off it is V3's
- * question, and V3 answers it with a fault whose instant it controls.
+ * A depth 17 batch starts refusing chunks after about 3000 of them, which is roughly twenty seconds
+ * of 1080p, and the byte-source settle alone is longer than that. So the rung is usually already
+ * declining while the player is still settling, and this suite cannot arrange for the viewer to be
+ * riding the drained rung at the moment it dies. Whether they ever decoded it at all is **recorded
+ * as an observation** rather than asserted. Proving that a viewer riding a dead rung moves off it is
+ * V3's question, and V3 answers it with a fault whose instant it controls.
+ *
+ * ⛔⛔ And it declines rather than stopping. Measured on the first live drain, 2026-09-04: bee refused
+ * that rung's batch four times in about fifty seconds with segments landing in between, because a
+ * chunk is refused only when its own bucket is full. Every segment that still gets through resets the
+ * rung's lag, so the master keeps offering it until the ramp has finished. The master read below is
+ * therefore waited on until it offers EXACTLY the survivors, and what the ramp did is printed as an
+ * observation beside the player's own figures.
  *
  * ## What this asserts
  *
@@ -84,7 +99,6 @@ import { requireByteSource, viewerGate } from '../../src/viewerCoverage.js';
 /** The broadcast has to be established before a viewer joins it, or the join is what gets broken. */
 const WARMUP_SEGMENTS = 4;
 const SEGMENT_WAIT_MS = 180_000;
-const MASTER_DROP_WAIT_MS = 180_000;
 const MIN_STAMP_TTL_S = 600;
 
 /**
@@ -180,23 +194,19 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
     }
 
     // ⭐ The ladder half, read off the published master because that is where the drop is decided.
-    // Waited on rather than read once: the master is rewritten on the next segment another rung
-    // lands after the dead-rung rule fires, and this is the ceiling on that write becoming readable.
+    // Waited on rather than read once, and waited on until the master offers EXACTLY the survivors,
+    // which is the same question the assertion below asks. A batch that is filling refuses a growing
+    // share of segments rather than all of them, so the drained rung goes on landing the occasional
+    // one and every one of those resets its lag and postpones the drop. See `waitForSurvivingMaster`.
     const survivingRungs = cfg.abrRungs.filter((rung) => rung !== drainedRung);
     const { owner } = await discoverCatalogFeed(host, cfg);
     const ladder = ladderGroupOf(await log());
-    let master = '';
-    await waitFor(
-      async () => {
-        master = await readLadderMaster(host, cfg, owner, ladder);
-        return !masterRungsOf(master, topicsOf(await log())).offered.includes(drainedRung);
-      },
-      {
-        timeoutMs: MASTER_DROP_WAIT_MS,
-        intervalMs: 3_000,
-        label: `the master of ladder ${ladder} stops offering ${drainedRung}, whose batch was drained`,
-      },
-    );
+    const master = await waitForSurvivingMaster(host, cfg, {
+      owner,
+      ladder,
+      survivingRungs,
+      readTopics: async () => topicsOf(await log()),
+    });
 
     const masterRead = masterRungsOf(master, topicsOf(await log()));
     console.log(`  ${describeMaster(masterRead, master)}`);
@@ -216,8 +226,35 @@ describe('V11, a viewer watches through one rung losing its postage', { skip }, 
         `${result.advanceRatio.toFixed(3)}, ${result.rebufferCount} rebuffers, ` +
         `${result.behindLive.medianS?.toFixed(2) ?? '—'}s behind live, ${result.segmentRequests} segment requests`,
     );
+
+    // The same ramp reading scenario L prints, because a player's figures are only readable beside
+    // what the rung under it was actually doing while they were taken.
+    const settled = await log();
+    const stamped = timestampedMessages(settled);
+    const drainedStreamId = newestStreamIdOf(settled, drainedRung);
+    const refusedAtMs = drainedStreamId === null ? null : firstRefusalAtMs(stamped, drainedStreamId);
+    console.log(
+      '  observations, none of them asserted. the ramp of ' +
+        `${drainedStreamId ?? drainedRung} in ten second buckets: ${
+          drainedStreamId === null || refusedAtMs === null
+            ? 'this window holds no dated refusal for the drained rung, so there is no ramp to bucket'
+            : describeDrainRamp(drainRampOf(stamped, drainedStreamId, refusedAtMs))
+        }`,
+    );
   });
 });
+
+/**
+ * The newest announce for one rung, which is the session this broadcast published on it, or null.
+ *
+ * ⛔ Newest, for the reason `newestStreamIdByRung` in the scenario suite records: a session an engine
+ * restart replaced announces again on a fresh topic while the retired one keeps its own, and the
+ * retired stream is mid-finalize as the read happens.
+ */
+function newestStreamIdOf(logText: string, rung: string): string | null {
+  const mine = announcedRungs(logText).filter((announce) => announce.rung === rung);
+  return mine.at(-1)?.streamId ?? null;
+}
 
 /** The reason a single-rendition deployment skips, or `false` to run. */
 function abrOff(enabled: boolean): string | false {
