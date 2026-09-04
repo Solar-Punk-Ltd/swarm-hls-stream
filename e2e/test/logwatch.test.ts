@@ -3,6 +3,7 @@ import {
   finalizeResumed,
   ladderFinalized,
   manifestUploaded,
+  rungBatchRefused,
   segmentUploaded,
 } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
@@ -57,6 +58,10 @@ const UPLOADED = (index: number) => segmentUploaded('live/stream', index, 'bzz:/
 const MANIFEST = (index: number, streamId = 'live/stream') => manifestUploaded(streamId, index);
 const DISCONTINUITY = (index: number) =>
   `Failed to upload segment ${index} for stream stream-7 within the retry window; marking a discontinuity`;
+/** A postage batch id is 64 hex characters. One repeated group, so nothing here reads as a real one. */
+const BATCH = 'ba7c4de1'.repeat(8);
+/** `StreamUploader.uploadDataToBee` on the first upload bee refuses with a status it will not retry. */
+const BATCH_REFUSED = (streamId: string) => rungBatchRefused(BATCH, streamId, 402, 'batch is not usable');
 /** `handleSegmentLoss`, count 1. Arms a discontinuity and names no index the harness can capture. */
 const SEGMENT_LOST = (index: number) =>
   `Segment ${index} for stream stream-7 never reached the uploader, marking a discontinuity`;
@@ -122,6 +127,7 @@ describe('parseUploaderLog reads the text format', () => {
       staleWarnings: 0,
       retries: 0,
       videolessSegments: [],
+      batchRefusals: [],
     });
   });
 
@@ -145,6 +151,7 @@ describe('parseUploaderLog reads the json format', () => {
     jsonLine('error', DISCONTINUITY(1)),
     jsonLine('warn', STALE(2)),
     jsonLine('info', RETRY),
+    jsonLine('error', BATCH_REFUSED('live/stream_1080p')),
   ].join('\n');
 
   it('finds the same events it finds in text', () => {
@@ -157,7 +164,64 @@ describe('parseUploaderLog reads the json format', () => {
       staleWarnings: 1,
       retries: 1,
       videolessSegments: [],
+      batchRefusals: [
+        { streamId: 'live/stream_1080p', batch: 'ba7c4de1', status: 402, message: 'batch is not usable' },
+      ],
     });
+  });
+});
+
+/**
+ * ⛔ The reading that separates a drained postage batch from a dead encoder. Both stop one rung's
+ * uploads and both let the master drop it, so without this line the batch-drain suite could not tell
+ * the fault it induced from the fault it is meant to rule out.
+ *
+ * Composed with the uploader's own composer rather than written out, so a reword cannot leave this
+ * matching nothing. That failure is silent and has already happened in this file once, over JSON
+ * envelopes.
+ */
+describe('the postage batch refusals in a log', () => {
+  it('reads the batch, stream, status and bee answer off the line', () => {
+    const events = parseUploaderLog(textLine('error', BATCH_REFUSED('live/stream_1080p')));
+
+    assert.deepEqual(events.batchRefusals, [
+      { streamId: 'live/stream_1080p', batch: 'ba7c4de1', status: 402, message: 'batch is not usable' },
+    ]);
+  });
+
+  it('reads one refusal per rung, in the order they were refused', () => {
+    const log = [
+      textLine('log', UPLOADED(0)),
+      textLine('error', BATCH_REFUSED('live/stream_1080p')),
+      textLine('error', BATCH_REFUSED('live/stream_720p')),
+    ].join('\n');
+
+    assert.deepEqual(
+      parseUploaderLog(log).batchRefusals.map((refusal) => refusal.streamId),
+      ['live/stream_1080p', 'live/stream_720p'],
+    );
+  });
+
+  /**
+   * ⛔ The status is what the first live drain is for. Nothing in this repo records which family bee
+   * 2.8.2 answers a full batch with, so the parse has to hand back whatever arrived rather than the
+   * 402 every unit test assumes.
+   */
+  it('hands back whatever status bee answered rather than the one the tests assume', () => {
+    const line = rungBatchRefused(BATCH, 'live/stream_1080p', 400, 'batch not usable');
+
+    assert.deepEqual(parseUploaderLog(textLine('error', line)).batchRefusals, [
+      { streamId: 'live/stream_1080p', batch: 'ba7c4de1', status: 400, message: 'batch not usable' },
+    ]);
+  });
+
+  /** ⛔ A refused batch is a cause, not an arming. Counting it as one would double the armed total. */
+  it('does not count a refusal as a discontinuity, and reports none on a clean log', () => {
+    const refused = parseUploaderLog(textLine('error', BATCH_REFUSED('live/stream_1080p')));
+    assert.equal(refused.discontinuitiesArmed, 0);
+
+    const clean = parseUploaderLog([textLine('log', UPLOADED(0)), textLine('error', DISCONTINUITY(1))].join('\n'));
+    assert.deepEqual(clean.batchRefusals, [], 'a spent retry window is not a batch bee refused');
   });
 });
 

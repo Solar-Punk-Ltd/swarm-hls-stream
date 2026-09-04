@@ -25,6 +25,8 @@ import {
   replacedSessionFinalizedPattern,
   rungAnnounced,
   rungAnnouncedPattern,
+  rungBatchRefused,
+  rungBatchRefusedPattern,
   segmentDurationUnread,
   segmentsNeverArrived,
   segmentsNeverArrivedPattern,
@@ -552,6 +554,148 @@ describe('the message for a segment whose duration could not be read', () => {
       `[StreamOrchestrator] Segment 3 of ${STREAM} carries no video, so it is withheld rather than published`,
     ]) {
       assert.equal(videolessSegmentPattern().test(message), false, message);
+    }
+  });
+});
+
+/**
+ * ⛔ The line that separates a drained postage batch from a dead encoder, which every other
+ * instrument reports identically: the rung's uploads stop, its dropped count climbs, and the master
+ * stops offering it. `segmentUploadFailed` fires for each dropped segment and says only that the
+ * retry window is spent, which a node that went away produces just as well.
+ *
+ * It is not one of the arming lines and must never be counted as one, so the cross-check below runs
+ * both ways. Six suites assert that a clean broadcast armed none, and a pattern that grew into this
+ * line would make that count mean nothing on any stage whose batch ran dry.
+ */
+describe('the message for a postage batch bee refused', () => {
+  const STREAM = 'live/stream_1080p';
+  /** A batch id is 64 hex characters. One repeated group, so nothing here reads as a real one. */
+  const BATCH = 'ba7c4de1'.repeat(8);
+  /** Bee's own answer, whatever it turns out to be. The first live drain is what settles the wording. */
+  const REFUSAL = 'batch is not usable';
+
+  it('round-trips the batch, stream, status and message through the derived pattern', () => {
+    const found = rungBatchRefusedPattern().exec(rungBatchRefused(BATCH, STREAM, 402, REFUSAL));
+
+    assert.ok(found, 'the pattern does not match the message it was derived from');
+    assert.equal(found[1], 'ba7c4de1');
+    assert.equal(found[2], STREAM);
+    assert.equal(found[3], '402');
+    assert.equal(found[4], REFUSAL);
+  });
+
+  /**
+   * ⛔ The one assertion on the words themselves. Everything else here reads the composer against its
+   * own derived pattern, which agrees with itself however the line is worded, so a reword that broke
+   * an operator's grep would pass every other test in this block.
+   */
+  it('composes the line an operator greps for, word for word', () => {
+    assert.equal(
+      rungBatchRefused(BATCH, STREAM, 402, REFUSAL),
+      'Postage batch ba7c4de1 of live/stream_1080p refused by bee (402 batch is not usable), the rung publishes ' +
+        'nothing until the batch is replaced',
+    );
+  });
+
+  /**
+   * A whole batch id is 64 hex characters, and four rungs' ids differ from the first one, so the line
+   * carries a prefix rather than the lot. Long enough to name which batch, short enough to read.
+   */
+  it('shortens the batch id to its first eight characters', () => {
+    const composed = rungBatchRefused(BATCH, STREAM, 402, REFUSAL);
+
+    assert.match(composed, /Postage batch ba7c4de1 of/);
+    assert.equal(
+      composed.includes(BATCH),
+      false,
+      'the whole 64 character id reached the line, which is what the shortening exists to avoid',
+    );
+  });
+
+  /** A batch id already shorter than the prefix is left as it is rather than padded or refused. */
+  it('keeps a batch id shorter than the prefix whole', () => {
+    assert.equal(rungBatchRefusedPattern().exec(rungBatchRefused('abc', STREAM, 402, REFUSAL))?.[1], 'abc');
+  });
+
+  /**
+   * ⛔ Which family bee 2.8.2 answers for a full batch is recorded nowhere in this repo and the unit
+   * tests assume 402. The line carries the status and the message verbatim so that the first live
+   * drain settles it off the log rather than needing a second sitting.
+   */
+  it('carries any status and any wording bee answers with, uninterpreted', () => {
+    for (const [status, message] of [
+      [400, 'batch not usable'],
+      [402, 'payment required'],
+      [403, 'stamp issuer does not exist'],
+    ] as const) {
+      const found = rungBatchRefusedPattern().exec(rungBatchRefused(BATCH, STREAM, status, message));
+
+      assert.ok(found, `the pattern does not match a ${status} refusal`);
+      assert.equal(found[3], String(status));
+      assert.equal(found[4], message);
+    }
+  });
+
+  /** Bee's message carries spaces, colons and a full stop, and none of them may cut the capture short. */
+  it('captures a message carrying punctuation and spaces whole', () => {
+    const wordy = 'batch 1a2b: not usable, insufficient balance for depth 17.';
+
+    assert.equal(rungBatchRefusedPattern().exec(rungBatchRefused(BATCH, STREAM, 402, wordy))?.[4], wordy);
+  });
+
+  it('reads a message the error carried nothing for as empty rather than failing to match', () => {
+    const found = rungBatchRefusedPattern().exec(rungBatchRefused(BATCH, STREAM, 402, ''));
+
+    assert.ok(found, 'an error with no words of its own must still produce a matchable line');
+    assert.equal(found[4], '');
+  });
+
+  it('scopes the refusal to its own rung across an interleaved ladder log', () => {
+    const log = [
+      rungBatchRefused(BATCH, 'live/stream_1080p', 402, REFUSAL),
+      segmentUploaded('live/stream_360p', 12, 'ref12'),
+      rungBatchRefused('00112233445566778899', 'live/stream_720p', 402, REFUSAL),
+    ].join('\n');
+
+    const found = [...log.matchAll(rungBatchRefusedPattern('g'))];
+
+    assert.deepEqual(
+      found.map((match) => [match[2], match[1]]),
+      [
+        ['live/stream_1080p', 'ba7c4de1'],
+        ['live/stream_720p', '00112233'],
+      ],
+    );
+  });
+
+  /**
+   * ⛔ Both ways round, because both directions fail silently. This line counted as an arming would
+   * make six suites' zero-arm assertion meaningless on a drained stage, and an arming line read as a
+   * refusal would report a batch bee never refused.
+   */
+  it('is not one of the messages that mean a discontinuity was armed', () => {
+    const message = rungBatchRefused(BATCH, STREAM, 402, REFUSAL);
+    const armingPatterns = [
+      segmentUploadFailedPattern('g'),
+      segmentsNeverArrivedPattern('g'),
+      originDeclaredDiscontinuityPattern('g'),
+      omeSegmentLossReportedPattern('g'),
+      datingReanchoredPattern('g'),
+      engineSkippedSegmentsPattern('g'),
+    ];
+    const hits = armingPatterns.reduce((total, re) => total + [...message.matchAll(re)].length, 0);
+
+    assert.equal(hits, 0, 'a refused batch was counted as a discontinuity nothing armed');
+  });
+
+  it('does not read a dropped segment, an ordinary upload or a mere mention of a batch as a refusal', () => {
+    for (const message of [
+      segmentUploadFailed(STREAM, 41),
+      segmentUploaded(STREAM, 41, 'abc123'),
+      `Postage batch ba7c4de1 of ${STREAM} has 4 days to live`,
+    ]) {
+      assert.equal(rungBatchRefusedPattern().test(message), false, message);
     }
   });
 });

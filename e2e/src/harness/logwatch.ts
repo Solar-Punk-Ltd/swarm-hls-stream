@@ -33,6 +33,7 @@ import {
   publishingRenditionPattern,
   replacedSessionFinalizedPattern,
   rungAnnouncedPattern,
+  rungBatchRefusedPattern,
   segmentsNeverArrivedPattern,
   segmentUploadedPattern,
   segmentUploadFailedPattern,
@@ -81,6 +82,37 @@ export interface UploaderEvents {
    * Presence is the signal; the length is not a rate.
    */
   videolessSegments: number[];
+  /**
+   * Every rung whose postage batch bee refused, with the answer it refused with. Empty on any
+   * broadcast whose batches held.
+   *
+   * ⛔ **The only reading that tells a drained batch from a dead encoder.** Both stop one rung's
+   * uploads, both climb its dropped count, and both let the dead-rung rule take it out of the master,
+   * so every other instrument reports the two identically. `discontinuitySegments` names the segments
+   * that were dropped and says nothing about why.
+   *
+   * ⚠️ One entry per rung per drain, not one per dropped segment. The uploader writes the line the
+   * first time an upload is refused and again only after a segment has landed in between, so the
+   * length counts drains rather than losses.
+   */
+  batchRefusals: BatchRefusal[];
+}
+
+/**
+ * One rung's postage batch as bee refused it: which batch, on which stream, and with what answer.
+ *
+ * Not exported, the same as {@link PublishedRendition} and the segment upload row below it: callers
+ * take it from {@link UploaderEvents.batchRefusals}'s own type, and exporting it would add a name to
+ * the surface that nothing imports.
+ */
+interface BatchRefusal {
+  streamId: string;
+  /** The first characters of the batch id, which is all the line carries. See `rungBatchRefused`. */
+  batch: string;
+  /** The HTTP status bee answered with, kept as the number so a suite can assert on the family. */
+  status: number;
+  /** Bee's own words, uninterpreted. What the first live drain is read off. */
+  message: string;
 }
 
 /**
@@ -140,6 +172,29 @@ const RE_RETRY = /Retrying in ~/g;
  * uploader writes with, so a reword cannot do that silently.
  */
 const videolessPattern = () => videolessSegmentPattern('g');
+
+/**
+ * ⛔ Derived from the composer rather than written out, for the reason the arming patterns are: the
+ * batch-drain suite tells the fault it induced from a dead encoder by this line alone, and a reworded
+ * message would leave it reading zero refusals on a stage whose batch it had just drained. That is a
+ * suite blaming the encoder for a batch it emptied itself.
+ */
+const batchRefusalPattern = () => rungBatchRefusedPattern('g');
+
+/**
+ * The batch refusals in a log, in the order bee refused them.
+ *
+ * The status is a number here and a captured string on the line, because a suite asserting on the
+ * family bee answers with compares against a status rather than against its digits.
+ */
+function batchRefusals(source: string): BatchRefusal[] {
+  return [...source.matchAll(batchRefusalPattern())].map((match) => ({
+    streamId: match[2],
+    batch: match[1],
+    status: Number(match[3]),
+    message: match[4],
+  }));
+}
 
 /** One line of `LOG_FORMAT=json` output, as `Logger` writes it. */
 interface StructuredLogLine {
@@ -267,6 +322,7 @@ export function parseUploaderLog(text: string): UploaderEvents {
     staleWarnings: countMatches(messages, RE_STALE),
     retries: countMatches(messages, RE_RETRY),
     videolessSegments: captureNumbers(messages, videolessPattern()),
+    batchRefusals: batchRefusals(messages),
   };
 }
 

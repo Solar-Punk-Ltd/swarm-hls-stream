@@ -519,3 +519,82 @@ export function videolessSegmentPattern(flags = ''): RegExp {
     flags,
   );
 }
+
+/**
+ * How much of a postage batch id {@link rungBatchRefused} carries. A whole id is 64 hex characters
+ * and the four rungs' ids differ from the first one, so a prefix names which batch without filling
+ * the line with it.
+ */
+const BATCH_ID_PREFIX_LENGTH = 8;
+
+/**
+ * Stand-in for the batch id, exactly {@link BATCH_ID_PREFIX_LENGTH} characters so the composer's own
+ * shortening leaves it whole.
+ *
+ * ⚠️ One character longer and the pattern builder would be substituting into a stand-in the composer
+ * had already cut short, so it would find nothing, leave the truncated stand-in in the literal half,
+ * and match no line at all. The round-trip test is what catches that.
+ */
+const BATCH_SLOT = 'BATCHSLT';
+/** Free-text stand-in for bee's own words, which carry spaces, a colon and a full stop. */
+const BEE_ANSWER_SLOT = 'BEEANSWERSLOT';
+/** A numeric stand-in for the status, distinct from the others so a message carrying two substitutes each. */
+const STATUS_SLOT = 464646464646;
+
+/**
+ * Written once per stream when bee refuses a segment upload with a status the retry policy will not
+ * retry, which on this deployment means the rung's postage batch has no stamps left. The rung then
+ * publishes nothing until its batch is replaced, and the dead-rung rule drops it from the master a
+ * few segments later.
+ *
+ * ⛔ **This is the only thing that tells a drained batch from a dead encoder.** Every other instrument
+ * reports the two identically: the rung's uploads stop, its dropped count climbs, and the master stops
+ * offering it. {@link segmentUploadFailed} fires for each dropped segment and says only that the retry
+ * window is spent, which a node that went away produces just as well.
+ *
+ * ⚠️ **Not a classification of bee's answer, and deliberately so.** Which status family bee 2.8.2
+ * answers a full batch with is recorded nowhere in this repo, and the unit tests assume 402. The
+ * status and the message are reproduced verbatim so the first live drain settles that off the log
+ * rather than costing a second sitting.
+ *
+ * ⚠️ Written once per stream and re-armed by a segment that lands, so a batch replaced by a redeploy
+ * and a later second drain each get their own line.
+ *
+ * ⛔ One template literal, never split across a `+`, for the reason {@link catalogStateLost} records
+ * at length: `tsc` keeps a join exactly as written, so the fragment spanning it reaches no built file
+ * and the preflight gate then refuses a deployment that writes the line perfectly.
+ *
+ * @param batch the rung's whole postage batch id, which this shortens to its first characters
+ * @param status the HTTP status bee answered the upload with
+ * @param message bee's own words for it
+ */
+export function rungBatchRefused(batch: string, streamId: string, status: number, message: string): string {
+  return `Postage batch ${batch.slice(
+    0,
+    BATCH_ID_PREFIX_LENGTH,
+  )} of ${streamId} refused by bee (${status} ${message}), the rung publishes nothing until the batch is replaced`;
+}
+
+/**
+ * {@link rungBatchRefused} as a matcher: the shortened batch, the stream, the status and bee's answer
+ * as capture groups 1 to 4, in the order the message names them and so in the composer's own
+ * argument order.
+ *
+ * ⚠️ Bee's answer is captured lazily and bounded by the words after it, rather than run to the end of
+ * the line the way {@link updatingStreamToVodPattern} does. It carries spaces and the line does not
+ * end with it, so a greedy capture would swallow the fixed half that follows and match nothing.
+ */
+export function rungBatchRefusedPattern(flags = ''): RegExp {
+  const escaped = rungBatchRefused(BATCH_SLOT, STREAM_SLOT, STATUS_SLOT, BEE_ANSWER_SLOT).replace(
+    REGEX_SPECIAL,
+    '\\$&',
+  );
+  return new RegExp(
+    escaped
+      .replace(BATCH_SLOT, '(\\S+)')
+      .replace(STREAM_SLOT, '(\\S+)')
+      .replace(String(STATUS_SLOT), '(\\d+)')
+      .replace(BEE_ANSWER_SLOT, '([^\\n]*?)'),
+    flags,
+  );
+}
