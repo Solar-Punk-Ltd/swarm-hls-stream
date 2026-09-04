@@ -28,6 +28,14 @@
 # `uploader-log-shape` now refuses that before the first frame, but it only covers the log messages.
 # Deploy first whenever the change is in the uploader rather than in the suite.
 #
+# ⛔ SINCE 2026-09-04 EVERY `browser:*` SCRIPT RUNS THE TEN PREFLIGHT GATES FIRST, in the container,
+# before the driver starts. The suite's own scripts have always chained them with `&&`, and the
+# browser drivers were the one path with nothing in front of them at all. It cost twice: the served
+# client sat fifteen days stale between 2026-08-13 and 08-28 and every browser sitting in between
+# measured the old build, and the 2026-09-01 sitting above was lost to a stale uploader. `client-shape`
+# and `uploader-log-shape` both answer that, and neither ran here. There is no flag to switch it off,
+# because a gate that can be switched off from the command line is a warning.
+#
 # Anything after `--` is passed to the container as environment, so a knob sweep reads:
 #   deploy/scripts/bench-on-host.sh -- BENCH_GOP_SECONDS=4 BENCH_BITRATE_KBPS=1200
 #
@@ -249,14 +257,49 @@ for pair in ${BENCH_ENV[@]+"${BENCH_ENV[@]}"}; do
   RUN_ENV="${RUN_ENV} -e ${pair}"
 done
 
-# ⛔ The shaper runs in the same shell as the script it shapes, and `&&` is what makes it a gate: a
-# refusal exits non-zero and the driver never starts, so a shaped arm cannot fall back to measuring
-# an unshaped link. Sourcing the file the shaper wrote is what carries the PROVED rate into the
-# driver's environment, which is the only cap figure a report may print.
-CONTAINER_CMD="pnpm ${SCRIPT}"
+# What runs in the container ahead of the driver, each step ending in the `&&` that makes it a gate
+# rather than a warning: a refusal exits non-zero and nothing after it runs.
+CONTAINER_PRELUDE=""
+
+# ⛔ The ten gates in `e2e/suites/preflight` judge the stage a viewer arm is about to measure, and
+# until 2026-09-04 the browser drivers were the one path that ran none of them. See this file's
+# header for the two sittings that cost. No flag turns this off: a gate that can be switched off
+# from the command line is a warning, and `browser:selfcheck` is not exempt either, since a stage
+# fault is exactly what the selfcheck would otherwise be blamed for.
+RUNS_PREFLIGHT=0
+case "${SCRIPT}" in
+  browser:*)
+    RUNS_PREFLIGHT=1
+    CONTAINER_PRELUDE="pnpm e2e:preflight && "
+    ;;
+esac
+
+# ⛔ The shaper runs in the same shell as the script it shapes, and after the gates: they judge the
+# stage rather than the link, so a refusal should install nothing on the interface. Sourcing the file
+# the shaper wrote is what carries the PROVED rate into the driver's environment, which is the only
+# cap figure a report may print.
 if [ -n "${SHAPE_KBPS}" ]; then
-  CONTAINER_CMD="bash -c 'deploy/scripts/shape-container-ingress.sh && . ${SHAPE_ENV_FILE} && exec pnpm ${SCRIPT}'"
+  CONTAINER_PRELUDE="${CONTAINER_PRELUDE}deploy/scripts/shape-container-ingress.sh && . ${SHAPE_ENV_FILE} && "
 fi
+
+CONTAINER_CMD="pnpm ${SCRIPT}"
+if [ -n "${CONTAINER_PRELUDE}" ]; then
+  CONTAINER_CMD="bash -c '${CONTAINER_PRELUDE}exec pnpm ${SCRIPT}'"
+fi
+
+# Which run profile the gated driver will resolve, which decides the byte source it measures and the
+# segment length it expects. Passed in as one of the `--` pairs, where nothing else announces it, and
+# last wins here as it does in docker. `e2e/src/profiles.ts` is the authority on the default, and
+# `deploy/test/browserPreflightGate.test.js` holds this line to what that file declares.
+declared_run_profile() {
+  local pair profile="in-browser, the harness default"
+  for pair in ${BENCH_ENV[@]+"${BENCH_ENV[@]}"}; do
+    case "${pair}" in
+      E2E_RUN_PROFILE=*) profile="${pair#E2E_RUN_PROFILE=}" ;;
+    esac
+  done
+  printf '%s' "${profile}"
+}
 
 # The network mode is printed because it decides every address inside the container, and this repo
 # has already paid for a run whose report named a setting the container never read.
@@ -265,6 +308,9 @@ if [ "${OWN_NETWORK}" -eq 1 ]; then
 fi
 if [ -n "${SHAPE_KBPS}" ]; then
   echo "bench-on-host: shaping inbound at ${SHAPE_KBPS} kbit/s, and refusing the run if it cannot be proved"
+fi
+if [ "${RUNS_PREFLIGHT}" -eq 1 ]; then
+  echo "bench-on-host: ${SCRIPT} runs behind the ten preflight gates (pnpm e2e:preflight), run profile $(declared_run_profile)"
 fi
 echo "bench-on-host: running ${SCRIPT} on ${TARGET} (profile ${PROFILE}, slot ${PORT_SLOT})"
 # ⛔ The run's exit code is kept, not obeyed. Under `set -e` a red suite used to end this script here,
