@@ -196,14 +196,23 @@ export class StreamUploader {
   private consecutiveManifestFailures = 0;
   private consecutiveSegmentFailures = 0;
   /**
-   * Whether this stream has already said its postage batch was refused, so it says it once for the
-   * life of the process rather than once per segment a filling batch loses.
+   * The upload statuses this stream has already reported a postage refusal for, so the line is said
+   * once for each answer bee gives rather than once per segment a filling batch loses.
+   *
+   * ⛔⛔ Keyed on the status rather than on a single flag, and that is the difference between a
+   * diagnosis and a wrong one. A batch fills over a minute or two, so identical refusals repeat and
+   * one line is right for them. A DIFFERENT status is a different condition, and a flag would let an
+   * early 413 or 404 claim the report for the whole process and silence the postage refusal that
+   * followed it: the log would then carry one refusal naming the wrong answer, a harness counting
+   * refusals would still count one, and a drain would be filed as proven against evidence of
+   * something else.
    *
    * Deliberately not persisted with the rest of the stream state. A restart is the only way the batch
-   * changes, because `BEE_PUBLISHERS` is read once at process start, and a restart starts this flag at
-   * false again, so the first refusal of a batch this process has never uploaded against is still said.
+   * changes, because `BEE_PUBLISHERS` is read once at process start, and a restart starts this set
+   * empty again, so the first refusal of a batch this process has never uploaded against is still
+   * said.
    */
-  private batchRefusalReported = false;
+  private readonly batchRefusalStatuses = new Set<number>();
   /**
    * The newest segment index a published live manifest has named, or null before the first publish.
    *
@@ -1000,10 +1009,10 @@ export class StreamUploader {
    */
   private reportBatchRefusal(error: unknown): void {
     const status = nonRetryableStatus(error);
-    if (status === undefined || this.batchRefusalReported) {
+    if (status === undefined || this.batchRefusalStatuses.has(status)) {
       return;
     }
-    this.batchRefusalReported = true;
+    this.batchRefusalStatuses.add(status);
     this.logger.error(rungBatchRefused(this.stamp, this.streamId, status, getErrorMessage(error)));
   }
 

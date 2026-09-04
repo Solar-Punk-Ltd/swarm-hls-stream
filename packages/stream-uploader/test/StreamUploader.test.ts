@@ -642,6 +642,49 @@ describe('StreamUploader names the postage batch bee refused', () => {
   });
 
   /**
+   * ⛔⛔⛔ **The case a single flag lost, and it lost the finding this whole line exists to produce.**
+   * Anything outside the retryable set arms the report, so one 413 on an oversized segment early in
+   * a broadcast would have claimed it for the life of the process. The postage refusal that came ten
+   * minutes later would then have been silent, the log would have carried one refusal naming 413,
+   * and a harness counting refusals would still have counted one and filed the drain as proven
+   * against evidence of something else entirely. Keyed on the status, a different answer gets its
+   * own line and the ramp of identical answers still gets one.
+   */
+  it('says a different status even after one refusal has been reported', async () => {
+    await withCapturedLog(async (lines) => {
+      const control: SegmentUploadControl = { fail: batchRefused(413) };
+      const uploader = newUploader(control, { stamp: BATCH });
+
+      uploader.handleSegment(0, 2, Buffer.from('seg0'));
+      await drain(uploader);
+
+      assert.equal(refusalLines(lines).length, 1, 'precondition: the first answer wrote its line');
+
+      control.fail = batchRefused(402);
+      uploader.handleSegment(1, 2, Buffer.from('seg1'));
+      await drain(uploader);
+
+      const statuses = refusalLines(lines).map((line) => rungBatchRefusedPattern().exec(line)?.[3]);
+      assert.deepEqual(
+        statuses,
+        ['413', '402'],
+        'the second answer is a different condition and the log has to carry it, or the drain is ' +
+          'filed against whatever happened to fail first',
+      );
+
+      control.fail = batchRefused(402);
+      uploader.handleSegment(2, 2, Buffer.from('seg2'));
+      await drain(uploader);
+
+      assert.equal(
+        refusalLines(lines).length,
+        2,
+        'and a repeat of an answer already reported is the ramp, which stays one line',
+      );
+    });
+  });
+
+  /**
    * ⛔ Which status family bee 2.8.2 answers a full batch with is recorded nowhere in this repo, and
    * every test here assumes 402 because that is what the fixtures throw. The line carries whatever
    * arrived so the first live drain settles it, and a status read off anything but the error itself
