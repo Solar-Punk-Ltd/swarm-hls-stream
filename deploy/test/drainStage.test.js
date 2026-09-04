@@ -84,6 +84,17 @@ function publishersLine(batches = ORIGINAL) {
   return entries.join(' ');
 }
 
+/**
+ * The same line in the older `rung@url#batch` form. `parsePublisherSpecs` in the uploader still
+ * accepts it and this script preserves whichever form it finds, so a rewrite that normalised every
+ * entry to the bracket form would be a change to three rungs nobody asked for.
+ */
+function hashPublishersLine(batches = ORIGINAL) {
+  return Object.entries(PORTS)
+    .map(([rung, port]) => `${rung}@http://127.0.0.1:${port}#${batches[rung]}`)
+    .join(' ');
+}
+
 function envFiles({ publishers = publishersLine(), extra = '' } = {}) {
   return {
     '.env': 'STAMP=stamp\nSTREAM_KEY=key\n',
@@ -459,6 +470,42 @@ describe('drain-stage arm refuses every batch that would not run dry', () => {
     assert.notEqual(run.exitCode, 0, 'a rung with no entry was armed');
     assert.match(run.stderr, /no entry for rung 1080p/);
   });
+
+  /** No line at all is a profile whose uploader publishes through nothing this script can swap. */
+  it('refuses an env file with no BEE_PUBLISHERS line in it', async () => {
+    const sandbox = makeSandbox({
+      config: ALL_REMOTE,
+      project: PROFILE,
+      envFiles: {
+        '.env': 'STAMP=stamp\nSTREAM_KEY=key\n',
+        [`.env.${PROFILE}`]: 'STAMP=stamp\nSTREAM_KEY=key\nABR_ENABLED=true\n',
+      },
+    });
+    stubCurl(sandbox, { stamps: [ARMABLE] });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a profile with no publishers line was armed');
+    assert.match(run.stderr, /no BEE_PUBLISHERS line/);
+  });
+
+  /**
+   * ⛔ Two lines is the one case where rewriting the right line is not enough, because which of them
+   * the uploader reads is decided by dotenv rather than by the operator. Rewriting the first would
+   * arm cleanly and change nothing the container sees.
+   */
+  it('refuses an env file carrying two BEE_PUBLISHERS lines, rather than picking one', async () => {
+    const sandbox = remoteSandbox({
+      extra: `BEE_PUBLISHERS=${publishersLine()}\n`,
+      readings: { stamps: [ARMABLE] },
+    });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a profile with two publishers lines was armed');
+    assert.match(run.stderr, /2 BEE_PUBLISHERS lines/);
+    assert.match(run.stderr, /dotenv/);
+  });
 });
 
 /**
@@ -565,6 +612,20 @@ describe('drain-stage arm swaps one rung and nothing else', () => {
       publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
       `the line parses as ${JSON.stringify(publishersOf(sandbox))}`,
     );
+  });
+
+  /**
+   * ⛔ The older separator, which no other fixture in this file uses. A rewrite that normalised every
+   * entry to the bracket form would be a change to three rungs nobody asked for, and one that
+   * normalised only the rung it touched would leave a line in two forms at once.
+   */
+  it('keeps the older # separator, on the entry it rewrites and on the three it does not', async () => {
+    const sandbox = localSandbox({ publishers: hashPublishersLine(), readings: { stamps: [ARMABLE] } });
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+    assert.equal(run.exitCode, 0, `arm failed: ${run.stdout}${run.stderr}`);
+    assert.equal(publishersLineOf(sandbox), hashPublishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }));
   });
 
   it('keeps the line where it was rather than appending a second one', async () => {
@@ -870,6 +931,29 @@ describe('drain-stage tells a read that failed from a node that answered', () =>
       /unreadable/,
       'a read this script cut short was reported as the node answering badly',
     );
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten on a read that failed');
+  });
+
+  /**
+   * ⛔⛔⛔ THE BRANCH THIS REPO HAS ALREADY PAID FOR. On 2026-08-31 a wedged 1Password SSH agent made
+   * `bee-publishers.sh` report that the uploader was not deployed, which was false, and a whole
+   * measurement arm was lost to reading a failed transport as a silent service. ssh exits 255 for
+   * connection and authentication failures and passes the remote command's status through otherwise,
+   * which is what makes the two separable at all.
+   */
+  it('refuses an unreachable host as the transport, not as a node that said nothing', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+    // An ssh that fails the way it fails when the agent will not sign, rather than one that runs the
+    // command it is handed.
+    writeFileSync(join(sandbox.binDir, 'ssh'), '#!/bin/sh\nexit 255\n');
+    chmodSync(join(sandbox.binDir, 'ssh'), 0o755);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`]);
+
+    assert.notEqual(run.exitCode, 0, 'a host that could not be reached was armed on anyway');
+    assert.match(run.stderr, /the transport and not the node/);
+    assert.match(run.stderr, /ssh-add -l/, 'the refusal did not say how to check the usual cause');
+    assert.doesNotMatch(run.stderr, /did not answer/, 'an unreachable host was reported as a silent node');
     assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten on a read that failed');
   });
 });
