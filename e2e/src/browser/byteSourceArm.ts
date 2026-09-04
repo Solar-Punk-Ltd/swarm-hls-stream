@@ -71,6 +71,7 @@ export async function openByteSourceArmSession({
   playbackStartedAtMs,
   settleMs,
   proofWindow = PROOF_WINDOW_AFTER_SETTLE,
+  clock,
 }: {
   page: Page;
   /** `null` leaves the build's own default in place, which is what an unset variable means. */
@@ -82,12 +83,19 @@ export async function openByteSourceArmSession({
    * that names nothing behaves exactly as every live driver always has.
    */
   proofWindow?: ProofWindow;
+  /**
+   * The wall clock the settle is measured against. Omitted by every driver, which gets the real one.
+   *
+   * ⛔ Only a test hands one in, and it hands one in so its assertions are exact arithmetic rather
+   * than inequalities against real elapsed time. See `openByteSourceArm`.
+   */
+  clock?: Parameters<typeof openByteSourceArm>[0]['clock'];
 }): Promise<ByteSourceArmSession> {
   if (source === null) {
     return UNSWITCHED;
   }
 
-  const arm = await openByteSourceArm({ page, source, playbackStartedAtMs, settleMs, proofWindow });
+  const arm = await openByteSourceArm({ page, source, playbackStartedAtMs, settleMs, proofWindow, clock });
   console.log(
     `browser: bytes come from ${arm.reported}, settled for ${(arm.settledForMs / 1000).toFixed(1)}s, ` +
       `and the proof window opens ` +

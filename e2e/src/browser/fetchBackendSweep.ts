@@ -255,6 +255,26 @@ export interface ByteSourceArm {
 }
 
 /**
+ * The wall clock an arm measures its settle against, injected so a test is not paced by real time.
+ *
+ * ⛔⛔ Every instant this module reports is arithmetic on these two calls, and the arithmetic is what
+ * decides whether the two byte sources hold players of the same age. Read from `Date.now()` directly,
+ * the assertions could only be inequalities against a budget, and a unit test on a loaded machine
+ * loses tens of milliseconds to the event loop between the reading a case hands in and the reading
+ * the code takes. `which instant an arm is proved from` flaked exactly that way twice, at a forty
+ * millisecond settle in August and at a one second settle on 2026-09-04.
+ */
+interface ArmClock {
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+}
+
+const REAL_CLOCK: ArmClock = {
+  now: () => Date.now(),
+  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
  * Put an arm on its byte source, then hold it there until its measurement window should open.
  *
  * ## ⛔⛔ Why an arm is switched here rather than seeded before navigation
@@ -293,12 +313,14 @@ export async function openByteSourceArm({
   playbackStartedAtMs,
   settleMs,
   proofWindow = PROOF_WINDOW_AFTER_SETTLE,
+  clock = REAL_CLOCK,
 }: {
   page: Page;
   source: ByteSource;
   playbackStartedAtMs: number;
   settleMs: number;
   proofWindow?: ProofWindow;
+  clock?: ArmClock;
 }): Promise<ByteSourceArm> {
   if (source === WEEB3_BYTES) {
     const failure = await prewarmByteSource(page);
@@ -313,16 +335,16 @@ export async function openByteSourceArm({
     throw new Error(`arm ${source} is not the condition it claims: ${notComparable}`);
   }
 
-  const remainingMs = playbackStartedAtMs + settleMs - Date.now();
+  const remainingMs = playbackStartedAtMs + settleMs - clock.now();
   if (remainingMs < 0) {
     throw new Error(
       `arm ${source} took ${((settleMs - remainingMs) / 1000).toFixed(1)}s to reach its byte source, past ` +
         `its ${(settleMs / 1000).toFixed(0)}s settle, so its player is older than the other condition's`,
     );
   }
-  await new Promise((resolve) => setTimeout(resolve, remainingMs));
+  await clock.wait(remainingMs);
 
-  const settledUntilMs = Date.now();
+  const settledUntilMs = clock.now();
   return {
     requested: source,
     reported: setup.byteSource as string,
