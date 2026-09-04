@@ -8,6 +8,7 @@ import {
   DEFAULT_LOCAL_HOST_ADDRESS,
   Host,
   LOCAL_TARGET,
+  pollConfiguredStamp,
   readConfiguredBatch,
   type Stamp,
 } from '../src/harness/host.js';
@@ -408,5 +409,112 @@ describe('readConfiguredBatch', () => {
   it('refuses a configured id it cannot read eight hex characters out of', () => {
     assert.throws(() => readConfiguredBatch([stamp()], '…'), /eight hex/);
     assert.throws(() => readConfiguredBatch([stamp()], '1111…'), /eight hex/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ The two answers this poll must never confuse, and it confused them until 2026-09-05.
+ *
+ * `absent` says a node's batch list was read and the configured batch was not in it, which tells an
+ * operator to point the rung at a batch it actually holds. `unread` says nothing about that node's
+ * postage is known, which tells them to go and look at the node. A bee answering its own error
+ * envelope is valid JSON with no `stamps` key in it, and a nullish default read that as a node
+ * holding no batches at all, so the refusal named the wrong fix on the one reading it had.
+ */
+describe('pollConfiguredStamp', () => {
+  const CONFIGURED = '11111111…';
+
+  function stamp(over: Partial<Stamp> = {}): Stamp {
+    return {
+      batchID: '1'.repeat(64),
+      utilization: 0,
+      usable: true,
+      depth: 17,
+      amount: '100000000',
+      bucketDepth: 16,
+      immutableFlag: true,
+      exists: true,
+      batchTTL: 86_400,
+      ...over,
+    };
+  }
+
+  /** One answer per poll, the last of them repeating, which is what a node that stays broken does. */
+  type Answer = { readonly body: unknown } | { readonly throws: string };
+
+  function nodeAnswering(...answers: readonly Answer[]): Host {
+    let asked = 0;
+    return {
+      localJson: async (): Promise<unknown> => {
+        const answer = answers[Math.min(asked++, answers.length - 1)];
+        if ('throws' in answer) {
+          throw new Error(answer.throws);
+        }
+        return answer.body;
+      },
+    } as unknown as Host;
+  }
+
+  /** Drives the whole polling window in no real time, so the deadline is reached rather than waited. */
+  function fakeClock(): { now: () => number; wait: (ms: number) => Promise<void> } {
+    let atMs = 0;
+    return {
+      now: () => atMs,
+      wait: async (ms: number) => {
+        atMs += ms;
+      },
+    };
+  }
+
+  it('returns on the first poll that offers the configured batch usable', async () => {
+    const read = await pollConfiguredStamp(nodeAnswering({ body: { stamps: [stamp()] } }), 11075, CONFIGURED, {
+      now: () => 0,
+      wait: async () => assert.fail('a held batch must not cost a second poll'),
+    });
+
+    assert.equal(read.state, 'held');
+    assert.equal(read.stamp?.depth, 17);
+  });
+
+  /**
+   * ⛔ The error envelope, which is the whole finding. It parses, it carries no list, and reading it
+   * as an empty list tells an operator the node does not hold a batch it may well be holding.
+   */
+  it('answers unread for a body that carries no stamps list, never that the node holds none', async () => {
+    const read = await pollConfiguredStamp(
+      nodeAnswering({ body: { code: 500, message: 'cannot get batches' } }),
+      11075,
+      CONFIGURED,
+      fakeClock(),
+    );
+
+    assert.equal(read.state, 'unread');
+    assert.match(read.lastSeen ?? '', /cannot get batches/);
+    assert.doesNotMatch(read.lastSeen ?? '', /no batches at all/);
+  });
+
+  it('answers unread when no poll ever reached the node', async () => {
+    const read = await pollConfiguredStamp(nodeAnswering({ throws: 'curl exited 7' }), 11075, CONFIGURED, fakeClock());
+
+    assert.equal(read.state, 'unread');
+    assert.match(read.lastSeen ?? '', /curl exited 7/);
+  });
+
+  /**
+   * ⛔ The reading wins over the transport failure that followed it. A node that answered `absent`
+   * for most of the window and dropped one connection at the end of it is a node whose postage was
+   * read, and reporting that as a transport failure sends the reader to the wrong machine.
+   */
+  it('keeps the batch list it did read when a later poll cannot read one at all', async () => {
+    const read = await pollConfiguredStamp(
+      nodeAnswering({ body: { stamps: [stamp({ batchID: '9'.repeat(64) })] } }, { throws: 'curl exited 7' }),
+      11075,
+      CONFIGURED,
+      fakeClock(),
+    );
+
+    assert.equal(read.state, 'absent');
+    assert.match(read.lastSeen ?? '', /99999999/);
+    assert.match(read.lastSeen ?? '', /curl exited 7/);
   });
 });

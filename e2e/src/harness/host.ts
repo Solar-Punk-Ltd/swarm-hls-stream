@@ -439,27 +439,82 @@ export function readConfiguredBatch(stamps: readonly Stamp[], configured: string
  * ask the COORDINATOR alone, which on a stage with one Bee node per rung is an answer about one node
  * of four wearing a statement about the stage. Its last caller moved to `requireStageStamps` on
  * 2026-09-02 and it went with them, so nothing can reach for the single-node answer by accident.
+ *
+ * ⛔⛔ A body carrying no `stamps` array answers `unread` and never `absent`. Bee's own error
+ * envelope is valid JSON with a `code` and a `message` and no list in it, so a default of `[]` turned
+ * "the list could not be read" into "the node holds no batches", which sends an operator off to
+ * re-select a batch that was never missing. The key is required rather than defaulted.
+ *
+ * ⛔ A poll that read the list wins over a poll that could not, whichever came last. A node
+ * answering `absent` for fifty-seven seconds and dropping one connection at fifty-nine is a node
+ * whose postage was read, so the reading is kept and the transport failure is appended to it rather
+ * than replacing it.
+ *
+ * @param clock injected so a test drives the polling window instead of waiting it out
  */
-export async function pollConfiguredStamp(host: Host, port: number, configured: string): Promise<ConfiguredStampRead> {
+export async function pollConfiguredStamp(
+  host: Host,
+  port: number,
+  configured: string,
+  clock: { now: () => number; wait: (ms: number) => Promise<void> } = { now: () => Date.now(), wait: sleep },
+): Promise<ConfiguredStampRead> {
   const prefix = batchIdPrefix(configured);
-  const deadline = Date.now() + STAMP_READY_TIMEOUT_MS;
-  let last: ConfiguredStampRead = { state: 'unread', stamp: null, lastSeen: 'no response' };
+  const deadline = clock.now() + STAMP_READY_TIMEOUT_MS;
+  let listed: ConfiguredStampRead | null = null;
+  let unread: string | null = null;
+
   for (;;) {
     try {
-      const body = await host.localJson<{ stamps: Stamp[] }>(port, '/stamps');
-      const read = readConfiguredBatch(body.stamps ?? [], prefix);
-      if (read.state === 'held') {
-        return read;
+      const body = await host.localJson<{ stamps?: unknown }>(port, '/stamps');
+      if (!Array.isArray(body.stamps)) {
+        unread = `no stamps array in what it answered, which was ${bodyExcerpt(body)}`;
+      } else {
+        const read = readConfiguredBatch(body.stamps as Stamp[], prefix);
+        if (read.state === 'held') {
+          return read;
+        }
+        listed = read;
       }
-      last = read;
     } catch (error) {
-      last = { state: 'unread', stamp: null, lastSeen: (error as Error).message };
+      unread = (error as Error).message;
     }
-    if (Date.now() >= deadline) {
-      return last;
+    if (clock.now() >= deadline) {
+      return lastAnswer(listed, unread);
     }
-    await sleep(3_000);
+    await clock.wait(STAMP_POLL_INTERVAL_MS);
   }
+}
+
+/** How long between polls of one node's `/stamps`, which is bee's own re-sync granularity. */
+const STAMP_POLL_INTERVAL_MS = 3_000;
+
+/** Enough of a body to recognise it in a refusal, without pasting a whole answer into one. */
+const STAMPS_BODY_EXCERPT_CHARS = 200;
+
+function bodyExcerpt(body: unknown): string {
+  return JSON.stringify(body).slice(0, STAMPS_BODY_EXCERPT_CHARS);
+}
+
+/**
+ * What the polling window ended on, saying both when it read the list and then lost the node.
+ *
+ * ⛔ `unread` only where no poll ever read the list. The two answers mean different things to an
+ * operator, one about the node's postage and one about reaching the node at all, and collapsing them
+ * either way sends the reader to fix the wrong thing.
+ */
+function lastAnswer(listed: ConfiguredStampRead | null, unread: string | null): ConfiguredStampRead {
+  if (listed === null) {
+    return { state: 'unread', stamp: null, lastSeen: unread ?? 'no response' };
+  }
+  if (unread === null) {
+    return listed;
+  }
+  return {
+    ...listed,
+    lastSeen: `${
+      listed.lastSeen ?? 'nothing it recorded'
+    }, and a later poll could not read its batch list at all: ${unread}`,
+  };
 }
 
 /** bee's on-chain SWAP chequebook balances, as PLUR integer strings (1 BZZ = 1e16 PLUR). */
