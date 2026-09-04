@@ -263,6 +263,19 @@ text_of() {
   printf '%s' "${1#*$'\t'}"
 }
 
+# The whole sentence to hand a refusal, for a reading that is not OK.
+#
+# ⛔ An EMPTY reading has no verdict and no text, so `text_of` on it is empty too and the refusal came
+# out as a lone full stop. That is the case where the reason matters most: the reading is empty
+# because the reader itself died, which is this script and never the node.
+reason_of() {
+  if [ -z "$1" ]; then
+    printf '%s' "the reading produced no answer at all, so the reader in this script died rather than the node or the env file refusing anything, and whatever it printed on stderr above is the reason"
+    return 0
+  fi
+  text_of "$1"
+}
+
 short_id() {
   printf '%s…' "${1:0:8}"
 }
@@ -796,6 +809,15 @@ do_status() {
   read_node "/stamps"
   require_node_answer "/stamps"
   reading="$(read_batch read "$configured")"
+  # A batch the node does not list is an ABSENT verdict carrying a whole sentence, and that sentence
+  # is a legitimate status report: it is what an armed rung looks like once its batch has gone. An
+  # EMPTY reading is neither verdict and is this script rather than the node, and printing it left
+  # `/stamps: ` on stdout and exit zero, on the one subcommand an operator runs to decide whether a
+  # stage is safe to publish against.
+  case "$(verdict_of "$reading")" in
+    OK | ABSENT) ;;
+    *) fail "$(reason_of "$reading")." ;;
+  esac
   echo "  /stamps: $(text_of "$reading")"
   echo ""
 }

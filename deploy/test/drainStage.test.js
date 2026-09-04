@@ -892,6 +892,38 @@ describe('drain-stage status reads all three places at once', () => {
     assert.deepEqual(backups(sandbox), []);
     assert.deepEqual(redeployedServices(sandbox), []);
   });
+
+  /**
+   * ⛔⛔ `status` is the read-only subcommand an operator runs to decide whether a stage is safe to
+   * publish against, and it printed the reading it was handed without ever looking at the verdict on
+   * it. A reader that died outright made it print `/stamps: ` and report success, so the one question
+   * it exists to answer came back blank and zero.
+   */
+  it('refuses when the node reading produced no answer, rather than reporting an empty one', async () => {
+    // An answer in the right shape whose entries are not objects, which the parser reads far enough
+    // into to die on.
+    const sandbox = remoteSandbox({ readings: { stamps: ['not-an-object'] } });
+
+    const run = await drainStage(sandbox, ['status']);
+
+    assert.notEqual(run.exitCode, 0, 'a status that read nothing off the node reported success');
+    assert.doesNotMatch(run.stdout, /\/stamps:\s*$/m, 'the empty reading was printed as a reading');
+    assert.match(run.stderr, /no answer/);
+  });
+
+  /**
+   * ⛔ And the other side of it. A batch the node does not list is a whole-sentence answer and a
+   * legitimate thing for a status to report, which is exactly what an armed rung looks like once its
+   * batch has expired off the node. Only an EMPTY reading is this script failing.
+   */
+  it('reports a batch the node does not list, which is an answer rather than a failure', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [] } });
+
+    const run = await drainStage(sandbox, ['status']);
+
+    assert.equal(run.exitCode, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, /\/stamps: .*is not on the 1080p node/);
+  });
 });
 
 describe('drain-stage argument handling', () => {
