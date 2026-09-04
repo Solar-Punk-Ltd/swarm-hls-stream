@@ -14,6 +14,7 @@ import {
   firstRefusalAtMs,
   readUploaderProcess,
   requireArmedStage,
+  RUNG_LABEL,
   segmentUploadFailureRefusal,
   singleRefusalRefusal,
   type UploaderProcess,
@@ -308,7 +309,7 @@ describe(
       assert.equal(notDegraded, null, `the uploader did not report the segments it lost: ${notDegraded}`);
 
       const { stdout } = await host.run(uploaderMetricsCommand(uploader));
-      const dropped = rungCountersOf(stdout, DROPPED_SEGMENTS_METRIC);
+      const dropped = rungCountersOf(stdout, DROPPED_SEGMENTS_METRIC, RUNG_LABEL);
       const wrongRungLostThem = droppedSegmentsRefusal(dropped, { drainedRung, survivingRungs });
       assert.equal(
         wrongRungLostThem,

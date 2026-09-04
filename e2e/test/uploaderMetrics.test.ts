@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { DROPPED_SEGMENTS_METRIC, METRICS_PREFIX } from '../src/harness/batchDrain.js';
+import { DROPPED_SEGMENTS_METRIC, METRICS_PREFIX, RUNG_LABEL } from '../src/harness/batchDrain.js';
 import { rungCountersOf, uploaderMetricsCommand } from '../src/harness/uploaderMetrics.js';
 
 /**
@@ -46,12 +46,12 @@ const SCRAPE = [
 
 describe('rungCountersOf', () => {
   it('reads the labelled samples of the family it was asked for', () => {
-    assert.deepEqual([...rungCountersOf(SCRAPE, DROPPED_SEGMENTS_METRIC)], [['1080p', 82]]);
+    assert.deepEqual([...rungCountersOf(SCRAPE, DROPPED_SEGMENTS_METRIC, RUNG_LABEL)], [['1080p', 82]]);
   });
 
   it('reads a sibling family off the same scrape without confusing the two', () => {
     assert.deepEqual(
-      [...rungCountersOf(SCRAPE, `${METRICS_PREFIX}_rung_segments_uploaded_total`)],
+      [...rungCountersOf(SCRAPE, `${METRICS_PREFIX}_rung_segments_uploaded_total`, RUNG_LABEL)],
       [
         ['1080p', 21],
         ['360p', 103],
@@ -70,7 +70,7 @@ describe('rungCountersOf', () => {
       '',
     ].join('\n');
 
-    assert.equal(rungCountersOf(helpOnly, DROPPED_SEGMENTS_METRIC).size, 0);
+    assert.equal(rungCountersOf(helpOnly, DROPPED_SEGMENTS_METRIC, RUNG_LABEL).size, 0);
   });
 
   /**
@@ -78,13 +78,13 @@ describe('rungCountersOf', () => {
    * one is a scrape that did not answer and the other is a ladder that lost nothing.
    */
   it('is empty for a family the scrape does not carry at all', () => {
-    assert.equal(rungCountersOf(SCRAPE, `${METRICS_PREFIX}_nothing_like_this_total`).size, 0);
+    assert.equal(rungCountersOf(SCRAPE, `${METRICS_PREFIX}_nothing_like_this_total`, RUNG_LABEL).size, 0);
   });
 
   it('keeps an explicit zero, which is a rung that lost nothing rather than a rung with no label', () => {
     const withZero = `${SCRAPE}${DROPPED_SEGMENTS_METRIC}{rung="720p"} 0\n`;
 
-    assert.equal(rungCountersOf(withZero, DROPPED_SEGMENTS_METRIC).get('720p'), 0);
+    assert.equal(rungCountersOf(withZero, DROPPED_SEGMENTS_METRIC, RUNG_LABEL).get('720p'), 0);
   });
 
   /** The unlabelled total of a family shares its name with the labelled samples and is not a rung. */
@@ -93,14 +93,44 @@ describe('rungCountersOf', () => {
       '\n',
     );
 
-    assert.deepEqual([...rungCountersOf(both, `${METRICS_PREFIX}_segments_dropped_total`)], []);
-    assert.deepEqual([...rungCountersOf(both, DROPPED_SEGMENTS_METRIC)], [['1080p', 4]]);
+    assert.deepEqual([...rungCountersOf(both, `${METRICS_PREFIX}_segments_dropped_total`, RUNG_LABEL)], []);
+    assert.deepEqual([...rungCountersOf(both, DROPPED_SEGMENTS_METRIC, RUNG_LABEL)], [['1080p', 4]]);
+  });
+
+  /**
+   * ⛔⛔ The trap a greedy label class walks into. `{[^}]*="([^"]*)"}` captures whatever label comes
+   * LAST, so a family that gains a second dimension is read by that one and the map is keyed by
+   * stream instead of by rung. Nothing in the exposition looks wrong, and the drain suite refuses
+   * with "the rung whose batch was drained is not the rung that lost segments", naming the product
+   * for a label somebody added to a counter.
+   */
+  it('reads the label it was asked for by name, whichever position it sits in', () => {
+    const twoLabels = [
+      `${DROPPED_SEGMENTS_METRIC}{rung="1080p",stream="live/stream_1080p"} 82`,
+      `${DROPPED_SEGMENTS_METRIC}{stream="live/stream_720p",rung="720p"} 3`,
+      '',
+    ].join('\n');
+
+    assert.deepEqual(
+      [...rungCountersOf(twoLabels, DROPPED_SEGMENTS_METRIC, RUNG_LABEL)],
+      [
+        ['1080p', 82],
+        ['720p', 3],
+      ],
+    );
+  });
+
+  /** A family that does not carry the dimension asked for is empty, never keyed by another one. */
+  it('is empty for a family that carries no label of that name', () => {
+    const otherDimension = `${DROPPED_SEGMENTS_METRIC}{stream="live/stream_1080p"} 82\n`;
+
+    assert.equal(rungCountersOf(otherDimension, DROPPED_SEGMENTS_METRIC, RUNG_LABEL).size, 0);
   });
 
   it('drops a sample whose value is not a number rather than reading it as zero', () => {
     const broken = `${DROPPED_SEGMENTS_METRIC}{rung="1080p"} NaN\n`;
 
-    assert.equal(rungCountersOf(broken, DROPPED_SEGMENTS_METRIC).size, 0);
+    assert.equal(rungCountersOf(broken, DROPPED_SEGMENTS_METRIC, RUNG_LABEL).size, 0);
   });
 });
 

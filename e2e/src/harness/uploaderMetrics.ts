@@ -41,17 +41,31 @@ import { shellQuoted } from './shellQuote.js';
  */
 const DEFAULT_API_PORT = 3000;
 
+function escapedForRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
- * One Prometheus sample of a labelled family, or nothing.
+ * One Prometheus sample of a labelled family, read off the label it was asked for by name.
  *
  * ⛔ Anchored at the start of the line and requiring the brace immediately after the family name.
  * The drop family's own HELP text names the upload family in prose, so a reader matching the name
  * anywhere on a line would count a documentation sentence as a sample, and a family with an
  * unlabelled total beside its labelled ones would count that total as a rung.
+ *
+ * ⛔⛔ And anchored on the LABEL NAME, not on whatever label comes last. `[^}]*="([^"]*)"` is greedy,
+ * so on `{rung="1080p",stream="live/x"}` it captures the stream and the map is keyed by the wrong
+ * dimension entirely. Nothing in the exposition would look wrong: the drain suite would refuse with
+ * "the rung whose batch was drained is not the rung that lost segments", which is a false red naming
+ * the product for a second label somebody added to a counter. The renderer declares a `labelName`
+ * per family and this is where it belongs.
  */
-function samplePattern(family: string): RegExp {
-  const escaped = family.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${escaped}\\{[^}]*="([^"]*)"\\}\\s+(\\S+)$`);
+function samplePattern(family: string, labelName: string): RegExp {
+  const anyOtherLabels = '[^}]*';
+  return new RegExp(
+    `^${escapedForRegExp(family)}\\{(?:${anyOtherLabels},)?${escapedForRegExp(labelName)}=` +
+      `"([^"]*)"(?:,${anyOtherLabels})?\\}\\s+(\\S+)$`,
+  );
 }
 
 /**
@@ -64,9 +78,13 @@ function samplePattern(family: string): RegExp {
  * ⚠️ A sample whose value is not a finite number is dropped rather than read as zero. Zero is a
  * legitimate value of every counter here, and a rung reading zero because its line was unparseable
  * would be reported as a rung that lost nothing.
+ *
+ * @param labelName the dimension to key the map by, which the renderer declares per family. Mirrored
+ * as `RUNG_LABEL` in `batchDrain.ts` and held against the rendered exposition by
+ * `batchDrainMirrors.test.ts`.
  */
-export function rungCountersOf(body: string, family: string): ReadonlyMap<string, number> {
-  const pattern = samplePattern(family);
+export function rungCountersOf(body: string, family: string, labelName: string): ReadonlyMap<string, number> {
+  const pattern = samplePattern(family, labelName);
   const counters = new Map<string, number>();
 
   for (const line of body.split('\n')) {

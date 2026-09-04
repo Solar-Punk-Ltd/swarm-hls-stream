@@ -109,6 +109,17 @@ export const DRAIN_BATCH_DEPTH = 17;
 export const METRICS_PREFIX = 'swarm_hls';
 export const DROPPED_SEGMENTS_FAMILY = 'rung_segments_dropped_total';
 
+/**
+ * The label dimension the per-rung families carry, which is the third half of the same name.
+ *
+ * ⛔ Read by name rather than taken as whichever label a sample ends with. A second label on this
+ * family would key the counter map by that one instead, and the suite would then refuse with "the
+ * rung whose batch was drained is not the rung that lost segments" after a paid drain, which names
+ * the product for a label somebody added. `rungCountersOf` anchors on this and
+ * `test/batchDrainMirrors.test.ts` holds it against what the uploader actually renders.
+ */
+export const RUNG_LABEL = 'rung';
+
 /** The per-rung counter a drained rung's losses show up under. See `utils/metricsFormat.ts`. */
 export const DROPPED_SEGMENTS_METRIC = `${METRICS_PREFIX}_${DROPPED_SEGMENTS_FAMILY}`;
 
