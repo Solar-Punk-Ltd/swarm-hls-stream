@@ -116,6 +116,16 @@ value_of() {
   fi
 }
 
+# ⛔ `_lib.sh` requires jq and this script requires python3, which nothing checked. Every reading it
+# takes is parsed by an inline python program, so on a host without a working one each reading came
+# back empty and every subcommand refused with a lone full stop and no reason at all. Run rather than
+# looked up, because a python3 that is present and cannot start is exactly as fatal as a missing one.
+require_python3() {
+  if ! python3 -c "" > /dev/null 2>&1; then
+    refuse "python3 is not on the PATH or cannot run, and every reading this script takes is parsed by an inline python program, so no subcommand of it works without one."
+  fi
+}
+
 parse_profile_args "$@"
 # ⛔ `${arr[@]+"${arr[@]}"}` rather than `"${REST_ARGS[@]}"`, because macOS ships bash 3.2 and there an
 # EMPTY array expanded under `set -u` is an unbound variable, not an empty list. That regression made
@@ -157,6 +167,7 @@ if [ "$SUBCOMMAND" != "print-buy" ] && [ "$DAYS_GIVEN" = "1" ]; then
 fi
 
 require_jq
+require_python3
 require_config
 require_env
 load_env
@@ -263,14 +274,14 @@ text_of() {
   printf '%s' "${1#*$'\t'}"
 }
 
-# The whole sentence to hand a refusal, for a reading that is not OK.
+# The whole sentence to hand a refusal, for an answer that is not OK.
 #
-# ⛔ An EMPTY reading has no verdict and no text, so `text_of` on it is empty too and the refusal came
-# out as a lone full stop. That is the case where the reason matters most: the reading is empty
-# because the reader itself died, which is this script and never the node.
+# ⛔ An EMPTY answer has no verdict and no text, so `text_of` on it is empty too and the refusal came
+# out as a lone full stop. That is the case where the reason matters most: the answer is empty because
+# the program that produces it died, which is this script and never the node.
 reason_of() {
   if [ -z "$1" ]; then
-    printf '%s' "the reading produced no answer at all, so the reader in this script died rather than the node or the env file refusing anything, and whatever it printed on stderr above is the reason"
+    printf '%s' "no answer came back at all, which is this script rather than the node or the env file, because the program that reads them died before it printed a verdict, and its own error is on stderr above"
     return 0
   fi
   text_of "$1"
@@ -684,7 +695,7 @@ answer(
 
   first="${quote%%$'\n'*}"
   if [ "$(verdict_of "$first")" != "OK" ]; then
-    refuse "$(text_of "$first")."
+    refuse "$(reason_of "$first")."
   fi
   amount="$(text_of "$first")"
   rows="${quote#*$'\n'}"
@@ -721,7 +732,7 @@ do_arm() {
 
   entry="$(publisher_entry read)"
   if [ "$(verdict_of "$entry")" != "OK" ]; then
-    refuse "$(text_of "$entry")."
+    refuse "$(reason_of "$entry")."
   fi
   original="$(text_of "$entry")"
 
@@ -729,7 +740,7 @@ do_arm() {
   require_node_answer "/stamps"
   reading="$(read_batch check "$BATCH")"
   if [ "$(verdict_of "$reading")" != "OK" ]; then
-    refuse "$(text_of "$reading")."
+    refuse "$(reason_of "$reading")."
   fi
 
   heading
@@ -747,7 +758,7 @@ do_arm() {
 
   written="$(publisher_entry write "$BATCH")"
   if [ "$(verdict_of "$written")" != "OK" ]; then
-    fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(text_of "$written")."
+    fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(reason_of "$written")."
   fi
   log_ok "BEE_PUBLISHERS now names $(short_id "$BATCH") for ${RUNG}, and the other rungs are untouched"
 
@@ -768,7 +779,7 @@ do_restore() {
 
   entry="$(publisher_entry read)"
   if [ "$(verdict_of "$entry")" != "OK" ]; then
-    refuse "$(text_of "$entry")."
+    refuse "$(reason_of "$entry")."
   fi
 
   heading
@@ -776,7 +787,7 @@ do_restore() {
 
   written="$(publisher_entry write "$original")"
   if [ "$(verdict_of "$written")" != "OK" ]; then
-    fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(text_of "$written")."
+    fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(reason_of "$written")."
   fi
   log_ok "BEE_PUBLISHERS names $(short_id "$original") for ${RUNG} again, and $(short_id "$(text_of "$written")") is spent"
 
@@ -794,7 +805,7 @@ do_status() {
   local entry configured original reading
   entry="$(publisher_entry read)"
   if [ "$(verdict_of "$entry")" != "OK" ]; then
-    refuse "$(text_of "$entry")."
+    refuse "$(reason_of "$entry")."
   fi
   configured="$(text_of "$entry")"
 

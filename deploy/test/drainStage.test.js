@@ -855,6 +855,45 @@ describe('drain-stage tells a read that failed from a node that answered', () =>
   });
 });
 
+/**
+ * ⛔⛔⛔ THE ONE FAILURE THIS SCRIPT COULD NOT NAME WAS ITS OWN. Every reading it takes is parsed by an
+ * inline python program, and python3 was never required, only jq. On a host without one each reading
+ * came back empty, and an empty reading has no verdict and no text, so every subcommand refused with
+ * `REFUSING, .` and an exit code. A lone full stop is the least useful sentence in the file, and it
+ * arrived in the case where the reason matters most.
+ */
+describe('drain-stage names its own reader when its own reader is what failed', () => {
+  /** A python3 that cannot run, which is what a host without one looks like to every call below. */
+  it('refuses up front when python3 cannot run, naming python3', async () => {
+    const sandbox = remoteSandbox({ readings: { stamps: [ARMABLE] } });
+    writeFileSync(join(sandbox.binDir, 'python3'), '#!/bin/sh\nexit 127\n');
+    chmodSync(join(sandbox.binDir, 'python3'), 0o755);
+
+    const run = await drainStage(sandbox, ['status']);
+
+    assert.notEqual(run.exitCode, 0, 'a host with no working python3 was allowed to read a stage');
+    assert.match(run.stderr, /python3/);
+  });
+
+  /**
+   * ⛔ And when a reader dies with the requirement satisfied, which is any raise inside one of the
+   * programs. The refusal has to say the answer was empty rather than print the emptiness.
+   */
+  it('says the answer came back empty, rather than refusing with a lone full stop', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    // A python3 that runs and answers nothing, which is every reading in the file coming back empty.
+    writeFileSync(join(sandbox.binDir, 'python3'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(sandbox.binDir, 'python3'), 0o755);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a reading that came back empty was armed on');
+    assert.match(run.stderr, /no answer/);
+    assert.doesNotMatch(run.stderr, /REFUSING, \.\s*$/, 'the refusal was a lone full stop');
+    assert.equal(publishersOf(sandbox)[RUNG], ORIGINAL[RUNG], 'the env file was rewritten on an empty reading');
+  });
+});
+
 describe('drain-stage status reads all three places at once', () => {
   it('reports the configured batch, the record and the node’s own reading', async () => {
     const sandbox = remoteSandbox({
