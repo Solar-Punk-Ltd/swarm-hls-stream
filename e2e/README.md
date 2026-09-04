@@ -215,6 +215,66 @@ the viewer's own tab, against a stage cutting 2 s segments. A gateway arm, or an
 declares `E2E_RUN_PROFILE=light-client` in the environment or as the single key after `--`, and the
 run line prints whichever it resolved.
 
+### One rung's postage runs out: the drain sitting
+
+Every rung of the ABR ladder publishes through its own Bee node with its own **postage batch**, which
+is a prepaid allowance for storing chunks. The split exists so that one batch running out costs one
+quality rather than the broadcast, and two suites read that: `scenarios/batch-drain` (L) on the
+uploader side, and `viewer/batch-drain-viewer` (V11) with a real player watching.
+
+A batch cannot be made to expire inside a test, because Bee refuses to create one that would live
+under 24 hours. Filling one is the lever that works, and the smallest batch Bee allows fills in about
+twenty seconds of 1080p. Nothing in a suite can arm that, so the sitting has three steps and two
+owners:
+
+```bash
+# 1. the owner buys the batch. print-buy prints the command and the price and never runs it
+deploy/scripts/drain-stage.sh --profile=<p> --portSlot=<n> --rung=1080p print-buy
+
+# 2. the script wires that batch into one rung and redeploys the uploader
+deploy/scripts/drain-stage.sh --profile=<p> --portSlot=<n> --rung=1080p arm --batch=<64 hex>
+
+# 3. ONE suite runs, then the stage goes back
+pnpm e2e:batch-drain                # scenario L, the uploader side
+pnpm e2e:batch-drain-viewer         # V11, a viewer watching the same fault
+deploy/scripts/drain-stage.sh --profile=<p> --portSlot=<n> --rung=1080p restore
+pnpm e2e:abr-ladder                 # proves all four rungs publish again after the restore
+```
+
+⛔ **The agent never buys anything.** Step 1 prints a command and stops. The owner runs it from their
+own shell, and the id it returns is what step 2 takes.
+
+⛔ **One arming carries one suite.** The batch is spent by whichever suite fills it, and both L and
+V11 need a four-rung ladder to lose a rung under them, so each has its own script and its own
+arming. `restore` reads the original batch back out of the record `arm` left beside the env file, and
+refuses when there is nothing recorded rather than guessing.
+
+⛔ **`E2E_DRAIN_RUNG` names the rung, and never the coordinator.** It defaults to `1080p`, which is
+the isolated case and the fastest to fill. 360p is the pool's coordinator, so its batch also writes
+the catalog and every master playlist, and draining it would stop the master being rewritten for all
+four rungs at once. The suites refuse it by name and `docs/e2e-batch-drain-plan.md` files that as a
+known product gap.
+
+Two refusals keep a drain sitting apart from an ordinary one, and they point in opposite directions:
+
+| the run                                | what happens                                                                                                                       |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| a drain script on a stage nobody armed | **refused** in `before()`, before a broadcast starts, naming the batch the rung is actually spending and the command that arms one |
+| any other run, `pnpm e2e:run` included | the two suites **skip**, because only the two drain scripts set `E2E_DRAIN_ARMED`                                                  |
+
+The skip is the half that matters for every other sitting: both files sit under `suites/scenarios/`
+and `suites/viewer/`, which `test:e2e` matches by glob, so being absent from its list keeps them out
+of nothing. Without the declaration an otherwise correct full suite would report two failures after
+an hour of paid broadcast, and the ordinary full suite must never depend on a stage somebody broke on
+purpose.
+
+The refusal is the other half. An unarmed stage does not fail these suites, it makes them wait out
+their whole ceiling for a refusal that was never going to come and then report the uploader for a
+batch nobody drained. Every minute of that is a paid broadcast. It also refuses a drain batch a
+previous run already spent, because a rung armed onto a spent batch is refused on its FIRST upload,
+before all four rungs have published, and the suite would then read a ladder that never had four
+rungs as one that lost a rung.
+
 ## What it covers
 
 Preflight:
@@ -229,23 +289,24 @@ Preflight:
 | `preflight/profile`            | the run profile parses and declared something. Config only, dials no host, refuses while the stack is cold                                                                              |
 | `preflight/segment-length`     | the deployed stage cuts at the length this run declares, and its uploader dates by the same one. One `docker exec cat` of the SRS config and two `docker inspect` reads, spends nothing |
 | `preflight/announcement-rate`  | the ladder does not ask SRS for more announcements a second than it has sustained, which silently kills the top rung. One `docker exec`, spends nothing                                 |
-| `preflight/uploader-log-shape` | the deployed uploader writes all fifteen parsed log families. One `docker exec` against its built code, spends nothing                                                                  |
+| `preflight/uploader-log-shape` | the deployed uploader writes every log family this harness parses, and prints how many it confirmed. One `docker exec` against its built code, spends nothing                           |
 
 Fault scenarios:
 
-| file                                    | proves                                                                             |
-| --------------------------------------- | ---------------------------------------------------------------------------------- |
-| `scenarios/bee-outage-short` (A)        | bee frozen under the 15s retry window → buffers, zero loss, **no** discontinuity   |
-| `scenarios/bee-outage-long` (B)         | bee down past the window → **arms** a discontinuity, gap, clean resume             |
-| `scenarios/publish-stop-to-vod` (D)     | clean broadcaster stop → immediate VOD finalize                                    |
-| `scenarios/gateway-outage-viewer` (G)   | viewer gateway down → uploads unaffected                                           |
-| `scenarios/engine-restart` (E)          | media engine restart → orchestrator re-announces, a fresh `live` topic resumes     |
-| `scenarios/uploader-crash-recovery` (F) | uploader SIGKILL → same stream recovers and is not VOD-ed by the 60s timer         |
-| `scenarios/finalize-crash` (H)          | killed inside `finalize` → after restart exactly one VOD, and the catalog names it |
-| `scenarios/whole-stack-restart` (I)     | host reboot: finalize races a cold bee → one VOD, no recovery entry left behind    |
-| `scenarios/recovery-entry-corrupt` (J)  | a bad recovery entry quarantines loudly, never silently deleted, health degrades   |
-| `scenarios/reconnect-during-drain` (K)  | reconnect mid-drain → two VODs on two topics, the live session keeps its entry     |
-| `scenarios/abr-engine-restart`          | engine restart under a ladder → every rung returns, as **one** ladder not four     |
+| file                                    | proves                                                                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scenarios/bee-outage-short` (A)        | bee frozen under the 15s retry window → buffers, zero loss, **no** discontinuity                                                           |
+| `scenarios/bee-outage-long` (B)         | bee down past the window → **arms** a discontinuity, gap, clean resume                                                                     |
+| `scenarios/publish-stop-to-vod` (D)     | clean broadcaster stop → immediate VOD finalize                                                                                            |
+| `scenarios/gateway-outage-viewer` (G)   | viewer gateway down → uploads unaffected                                                                                                   |
+| `scenarios/engine-restart` (E)          | media engine restart → orchestrator re-announces, a fresh `live` topic resumes                                                             |
+| `scenarios/uploader-crash-recovery` (F) | uploader SIGKILL → same stream recovers and is not VOD-ed by the 60s timer                                                                 |
+| `scenarios/finalize-crash` (H)          | killed inside `finalize` → after restart exactly one VOD, and the catalog names it                                                         |
+| `scenarios/whole-stack-restart` (I)     | host reboot: finalize races a cold bee → one VOD, no recovery entry left behind                                                            |
+| `scenarios/recovery-entry-corrupt` (J)  | a bad recovery entry quarantines loudly, never silently deleted, health degrades                                                           |
+| `scenarios/reconnect-during-drain` (K)  | reconnect mid-drain → two VODs on two topics, the live session keeps its entry                                                             |
+| `scenarios/abr-engine-restart`          | engine restart under a ladder → every rung returns, as **one** ladder not four                                                             |
+| `scenarios/batch-drain` (L)             | one rung's prepaid postage runs out → that rung alone goes quiet, three carry on, the master drops it. **Needs an armed stage**, see below |
 
 Service coverage, no faults:
 
@@ -261,16 +322,17 @@ Viewer coverage, in a real browser. These are the only suites here that open a p
 the only ones that can say what a viewer got rather than what one could have fetched. They need the
 browser image on the host and the settings under **Saying whether a real browser watches**:
 
-| file                             | proves                                                                                                                             |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `viewer/live-playback`           | (V1) a real viewer keeps up with a live broadcast, decodes a picture, errors at nothing, and is the byte-source arm it is filed as |
-| `viewer/vod-playback`            | (V4) a finished recording plays through, offers every rung it was published as, and every rung ends at the uploader's last segment |
-| `viewer/broadcast-ended`         | (V5) the broadcaster stops under a watching viewer and the viewer is told, rather than left on a frozen last frame                 |
-| `viewer/crash-gateway-outage`    | (V6) the gateway is taken away for 20s: the picture plays out its buffer, says why it stopped, and comes back on its own           |
-| `viewer/crash-uploader-killed`   | (V7) the uploader is killed: the viewer waits **in silence**, which is issue #100, and resumes when it answers again               |
-| `viewer/crash-writer-bee-pause`  | (V8) an 8s pause of the writer's node costs a viewer no more than the pause itself, and needs telling nothing                      |
-| `viewer/crash-writer-bee-outage` | (V9) a 20s writer outage arms a discontinuity and the viewer plays through it, **in silence**, which is #100 again                 |
-| `viewer/crash-engine-restart`    | (V10) the engine restart ends the broadcast, and the reap's terminal message reaches the screen                                    |
+| file                             | proves                                                                                                                                                                                                                                 |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `viewer/live-playback`           | (V1) a real viewer keeps up with a live broadcast, decodes a picture, errors at nothing, and is the byte-source arm it is filed as                                                                                                     |
+| `viewer/vod-playback`            | (V4) a finished recording plays through, offers every rung it was published as, and every rung ends at the uploader's last segment                                                                                                     |
+| `viewer/broadcast-ended`         | (V5) the broadcaster stops under a watching viewer and the viewer is told, rather than left on a frozen last frame                                                                                                                     |
+| `viewer/crash-gateway-outage`    | (V6) the gateway is taken away for 20s: the picture plays out its buffer, says why it stopped, and comes back on its own                                                                                                               |
+| `viewer/crash-uploader-killed`   | (V7) the uploader is killed: the viewer waits **in silence**, which is issue #100, and resumes when it answers again                                                                                                                   |
+| `viewer/crash-writer-bee-pause`  | (V8) an 8s pause of the writer's node costs a viewer no more than the pause itself, and needs telling nothing                                                                                                                          |
+| `viewer/crash-writer-bee-outage` | (V9) a 20s writer outage arms a discontinuity and the viewer plays through it, **in silence**, which is #100 again                                                                                                                     |
+| `viewer/crash-engine-restart`    | (V10) the engine restart ends the broadcast, and the reap's terminal message reaches the screen                                                                                                                                        |
+| `viewer/batch-drain-viewer`      | (V11) a viewer watches through one rung's prepaid postage running out: the picture keeps moving, they are never told the broadcast ended, and the ladder they are offered loses exactly that rung. **Needs an armed stage**, see below |
 
 ⛔ None of them asserts how far behind live the player sat. That figure is printed and filed, and
 turning it into a threshold is a product decision about what latency this deployment promises.
