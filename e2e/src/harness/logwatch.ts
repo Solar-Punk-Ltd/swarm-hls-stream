@@ -91,9 +91,11 @@ export interface UploaderEvents {
    * so every other instrument reports the two identically. `discontinuitySegments` names the segments
    * that were dropped and says nothing about why.
    *
-   * ⚠️ One entry per rung per drain, not one per dropped segment. The uploader writes the line the
-   * first time an upload is refused and again only after a segment has landed in between, so the
-   * length counts drains rather than losses.
+   * ⚠️ One entry per rung per uploader process, not one per dropped segment. The uploader writes the
+   * line the first time an upload is refused and never again, because a batch that is filling refuses
+   * a growing share of segments rather than all of them and a segment that lands is that ramp rather
+   * than a new batch. So the length counts drained rungs, and `discontinuitySegments` counts what the
+   * ramp cost them.
    */
   batchRefusals: BatchRefusal[];
 }

@@ -1,3 +1,4 @@
+import { segmentUploaded, segmentUploadFailed } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -5,7 +6,9 @@ import {
   type ArmedStageReading,
   armedStageRefusal,
   DEFAULT_DRAIN_RUNG,
+  describeDrainRamp,
   DRAIN_BATCH_DEPTH,
+  drainRampOf,
   drainRung,
   drainRungRefusal,
   DROPPED_SEGMENTS_METRIC,
@@ -221,11 +224,11 @@ describe('singleRefusalRefusal', () => {
   });
 
   /**
-   * ⚠️ The line is written once per drain and re-armed only by a segment that lands, so a second one
-   * means the rung published again in between. On an armed stage there is no fresh batch behind it,
-   * so that is the harness or the uploader doing something the plan does not describe.
+   * ⚠️ The line is written once per stream for the life of an uploader process and a segment that
+   * lands does not re-arm it, so a second one means a second process or a second session of that
+   * stream: a redeploy mid-run, or an engine reconnect that built a fresh uploader for the same id.
    */
-  it('refuses two refusals on one stream, which means the rung published again in between', () => {
+  it('refuses two refusals on one stream, which means two uploader processes in the window', () => {
     const twice = [
       { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
       { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
@@ -238,7 +241,56 @@ describe('singleRefusalRefusal', () => {
   });
 
   /**
-   * ⛔⛔ The assertion the whole feature rests on. One batch running dry must cost one quality, so a
+   * ⛔⛔⛔ The refusal that would have been worth a sitting. The 2026-09-04 drain lost the uploader's
+   * container log to the restore that followed it, so all anyone had afterwards was a count of
+   * refusals, which says nothing about which batch bee refused or what bee answered. Every branch
+   * quotes the entries, and this holds each one to it.
+   */
+  for (const [what, refusals] of [
+    [
+      'nothing on the drained stream',
+      [{ streamId: 'stream_from_somewhere_else', batch: 'ffffffff', status: 400, message: 'batch is not usable' }],
+    ],
+    [
+      'a second refusal on the drained stream',
+      [
+        { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
+        { streamId: DRAINED, batch: ARMED_BATCH, status: 400, message: 'batch is not usable' },
+      ],
+    ],
+    [
+      'a refusal on a surviving rung',
+      [
+        { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
+        { streamId: 'stream_720p', batch: 'ffffffff', status: 400, message: 'batch is not usable' },
+      ],
+    ],
+    [
+      'a refusal on a stream nobody accounted for',
+      [
+        { streamId: DRAINED, batch: ARMED_BATCH, status: 402, message: 'payment required' },
+        { streamId: 'stream_from_somewhere_else', batch: 'ffffffff', status: 400, message: 'batch is not usable' },
+      ],
+    ],
+  ] as const) {
+    it(`quotes the stream, the batch, the status and bee's own words for ${what}`, () => {
+      const refusal = singleRefusalRefusal([...refusals], {
+        drainedStreamId: DRAINED,
+        survivingStreamIds: SURVIVORS,
+      });
+
+      assert.ok(refusal, `${what} has to fail this run`);
+      for (const entry of refusals) {
+        assert.match(refusal, new RegExp(entry.streamId));
+        assert.match(refusal, new RegExp(entry.batch));
+        assert.match(refusal, new RegExp(String(entry.status)));
+        assert.match(refusal, new RegExp(entry.message));
+      }
+    });
+  }
+
+  /**
+   * ⛔⛔ The assertion the whole feature rests on. One batch running out must cost one quality, so a
    * refusal on any other rung means the split is not isolating anything.
    */
   it('refuses a refusal on a rung nobody drained', () => {
@@ -264,6 +316,94 @@ describe('singleRefusalRefusal', () => {
 
     assert.ok(refusal, 'a refusal on an unaccounted stream has to be surfaced');
     assert.match(refusal, /stream_from_somewhere_else/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ The reading the model was wrong about, which is why it is measured on every run.
+ *
+ * Until the first live drain on 2026-09-04 the story was "a batch runs dry and the rung falls
+ * silent". What bee actually did was refuse the rung's batch four times in about fifty seconds with
+ * segments landing in between, because a chunk is refused only when the bucket its own address falls
+ * in is full. So the shape worth filing is not when the rung died, it is how it declined: what landed
+ * and what was lost in each ten seconds after the first refusal.
+ *
+ * ⛔ Nothing asserts on any of it, per the owner ruling of 2026-08-29. These tests hold the
+ * arithmetic, not a threshold.
+ */
+describe('drainRampOf', () => {
+  const DRAINED = 'live/stream_1080p';
+  const REFUSED_AT = Date.parse('2026-09-04T14:22:00.000Z');
+  const at = (offsetS: number, message: string) => ({ atMs: REFUSED_AT + offsetS * 1_000, message });
+  const landed = (offsetS: number, index: number, streamId = DRAINED) =>
+    at(offsetS, segmentUploaded(streamId, index, 'ref'));
+  const dropped = (offsetS: number, index: number, streamId = DRAINED) =>
+    at(offsetS, segmentUploadFailed(streamId, index));
+
+  it('buckets what landed and what was lost by ten seconds from the first refusal', () => {
+    const ramp = drainRampOf([landed(1, 10), dropped(2, 11), dropped(3, 12), dropped(14, 13)], DRAINED, REFUSED_AT);
+
+    assert.deepEqual(ramp.buckets, [
+      { fromS: 0, landed: 1, dropped: 2 },
+      { fromS: 10, landed: 0, dropped: 1 },
+    ]);
+  });
+
+  it('reports how long after the first refusal the rung last landed anything', () => {
+    const ramp = drainRampOf([dropped(1, 10), landed(27.5, 11), dropped(31, 12)], DRAINED, REFUSED_AT);
+
+    assert.equal(ramp.lastLandedAfterS, 27.5);
+  });
+
+  /** A rung that was already silent when bee first answered has no ramp, and that is a reading too. */
+  it('says nothing landed where nothing did', () => {
+    const ramp = drainRampOf([dropped(1, 10), dropped(2, 11)], DRAINED, REFUSED_AT);
+
+    assert.equal(ramp.lastLandedAfterS, null);
+  });
+
+  /**
+   * ⛔ A quiet stretch is a row of zeros rather than a missing row. The gap is the interesting part
+   * of a ramp, and a table that skipped it would read as a rung declining smoothly.
+   */
+  it('keeps the empty buckets in between, so a quiet stretch is visible', () => {
+    const ramp = drainRampOf([dropped(1, 10), landed(25, 11)], DRAINED, REFUSED_AT);
+
+    assert.deepEqual(
+      ramp.buckets.map((bucket) => bucket.fromS),
+      [0, 10, 20],
+    );
+    assert.deepEqual(ramp.buckets[1], { fromS: 10, landed: 0, dropped: 0 });
+  });
+
+  /** ⛔ One rung of four. The other three publish throughout, and counting them would be a ladder's rate. */
+  it('counts the drained stream alone, not the rungs that kept their postage', () => {
+    const ramp = drainRampOf(
+      [landed(1, 10), landed(1, 40, 'live/stream_720p'), dropped(2, 41, 'live/stream_720p')],
+      DRAINED,
+      REFUSED_AT,
+    );
+
+    assert.deepEqual(ramp.buckets, [{ fromS: 0, landed: 1, dropped: 0 }]);
+  });
+
+  /** ⛔ Everything before the refusal belongs to a healthy rung, and the ramp starts at the refusal. */
+  it('ignores the segments the rung published before bee refused anything', () => {
+    const ramp = drainRampOf([landed(-30, 1), landed(-5, 2), dropped(1, 3)], DRAINED, REFUSED_AT);
+
+    assert.deepEqual(ramp.buckets, [{ fromS: 0, landed: 0, dropped: 1 }]);
+  });
+
+  it('reads as a person can, with the tail said in words where nothing landed', () => {
+    const said = describeDrainRamp(drainRampOf([landed(1, 10), dropped(2, 11)], DRAINED, REFUSED_AT));
+
+    assert.match(said, /0-10s 1 landed, 1 dropped/);
+    assert.match(said, /last segment landed 1\.0s after the first refusal/);
+    assert.match(describeDrainRamp(drainRampOf([], DRAINED, REFUSED_AT)), /neither landed nor lost/);
+    assert.match(
+      describeDrainRamp(drainRampOf([dropped(1, 10)], DRAINED, REFUSED_AT)),
+      /nothing of that stream landed after the first refusal/,
+    );
   });
 });
 

@@ -36,9 +36,25 @@
  * handle and which nothing in this repo implements a failover for. Decision 2 of
  * `docs/e2e-batch-drain-plan.md` files it as a known product gap, to be priced separately.
  *
+ * ## ⛔⛔⛔ A batch that runs out RAMPS, it does not stop
+ *
+ * Measured on the first live drain, 2026-09-04: bee refused the 1080p rung's fresh depth 17 batch
+ * four times in about fifty seconds, with segments landing in between. A chunk is refused only when
+ * the bucket its own address falls in is full, and a depth 17 batch has 65536 buckets of two slots,
+ * so at the first overflow around a thousandth of them are full and a segment of about 300 chunks
+ * gets through most of the time. By 6000 chunks roughly seven segments in ten are refused, and by
+ * 10000 almost all of them. So the rung degrades over a minute or two before it is silent, every
+ * refused segment costs a dropped segment and a discontinuity exactly as it always did, and the
+ * master cannot drop the rung until the ramp has actually finished, because each segment that gets
+ * through resets that rung's lag to zero. Anything here that expected a cliff was wrong about the
+ * shape rather than about the product.
+ *
  * Every verdict below is pure, so `test/batchDrain.test.ts` covers it under `pnpm verify`, which
- * nothing under `suites/` is. {@link readArmedStage} is the only wiring, and it is wiring.
+ * nothing under `suites/` is. {@link readArmedStage} and {@link waitForSurvivingMaster} are the only
+ * wiring, and both are wiring.
  */
+
+import { segmentUploadedPattern, segmentUploadFailedPattern } from '@swarm-hls-stream/shared';
 
 import type { E2EConfig } from '../config.js';
 
@@ -51,8 +67,10 @@ import {
   type UploaderHealth,
   uploaderHealth,
 } from './host.js';
-import type { UploaderEvents } from './logwatch.js';
+import type { TimestampedMessage, UploaderEvents } from './logwatch.js';
+import { masterRungRefusal, masterRungsOf, readLadderMaster } from './masterShape.js';
 import { BEE_SERVICE_BY_RUNG, COORDINATOR_RUNG, nodesBehind } from './publishers.js';
+import { waitFor } from './wait.js';
 
 /**
  * Where a run says which rung to drain.
@@ -306,6 +324,178 @@ export async function requireArmedStage(host: Host, cfg: E2EConfig, rung: string
   return reading;
 }
 
+/**
+ * How long a drain suite waits for the master to be down to the surviving rungs.
+ *
+ * ⛔⛔ Patience, never a measurement, and it is a ceiling on the RAMP rather than on the dead-rung
+ * rule. That rule is not a clock: the master drops a rung once the ladder has delivered four segments
+ * past that rung's last delivery, at most one rung, and the drop is triggered by the next segment
+ * another rung lands. But every segment the filling batch still squeezes through resets the drained
+ * rung's lag to zero, so the master cannot be down to the survivors until the ramp has finished. The
+ * 2026-09-04 sitting saw a ramp of about fifty seconds, and four minutes is the same ceiling the fill
+ * itself is given, so a ramp as long as the fill still fits inside it. What the ramp actually took is
+ * printed as an observation.
+ */
+export const DEAD_RUNG_MASTER_WAIT_MS = 240_000;
+
+/** Which ladder to read, whose rungs are expected to be left, and how to learn their feed topics. */
+interface SurvivingMasterWait {
+  /** The signer's address, as `discoverCatalogFeed` reads it off the catalog line. */
+  owner: string;
+  /** The ladder group, which is also the master feed's topic. */
+  ladder: string;
+  survivingRungs: readonly string[];
+  /**
+   * Every rung of this ladder by its raw feed topic, re-read on each poll.
+   *
+   * A function rather than a map, because the master is joined to rung names through the announces in
+   * the uploader's log and a rung that announces late would otherwise read for ever as a stranger
+   * topic on a master that is perfectly correct.
+   */
+  readTopics: () => Promise<ReadonlyMap<string, string>>;
+}
+
+/**
+ * Wait until one ladder's master offers exactly the rungs that kept their postage, and hand it back.
+ *
+ * ⛔ Exactly, not "no longer the drained one". A master down to two rungs has taken a healthy quality
+ * away from viewers who were watching it, which is the failure the owner's ruling of 2026-09-01
+ * capped the drop at one to prevent, and a wait that only asked about the drained rung would sail
+ * past it and then assert on a master read seconds later. So the wait and the assertion ask the same
+ * question, {@link masterRungRefusal}, of the same body.
+ *
+ * Hands the body back so the caller asserts on the one it waited on rather than on a fresh read that
+ * could have moved.
+ */
+export async function waitForSurvivingMaster(
+  host: Host,
+  cfg: E2EConfig,
+  { owner, ladder, survivingRungs, readTopics }: SurvivingMasterWait,
+): Promise<string> {
+  let master = '';
+  await waitFor(
+    async () => {
+      master = await readLadderMaster(host, cfg, owner, ladder);
+      return masterRungRefusal(masterRungsOf(master, await readTopics()), survivingRungs) === null;
+    },
+    {
+      timeoutMs: DEAD_RUNG_MASTER_WAIT_MS,
+      intervalMs: 3_000,
+      label:
+        `the master of ladder ${ladder} offers exactly ${survivingRungs.join(', ')}, the rungs that ` +
+        'kept their postage. A filling batch still lands a segment now and then, and every one of ' +
+        "those resets the drained rung's lag, so this waits out the ramp as well as the four " +
+        'segments of ladder progress the dead-rung rule needs and the feed write becoming readable',
+    },
+  );
+  return master;
+}
+
+/** How long one bucket of the ramp covers. Ten seconds, so a fifty second ramp reads as five rows. */
+const RAMP_BUCKET_MS = 10_000;
+
+/**
+ * One bucket of the ramp: what the drained rung landed and what it lost in those ten seconds.
+ *
+ * Not exported, the same as `BatchRefusal` in `logwatch.ts`: a caller takes it from
+ * {@link drainRampOf}'s own return type, and a name nothing imports is a promise to nobody.
+ */
+interface RampBucket {
+  /** Seconds after the first refusal this bucket starts at. */
+  readonly fromS: number;
+  readonly landed: number;
+  readonly dropped: number;
+}
+
+/** What a filling batch did to one rung after it first refused it. Observation only, nothing asserts on it. */
+interface DrainRamp {
+  /** Contiguous buckets from the first refusal to the last bucket that saw anything at all. */
+  readonly buckets: readonly RampBucket[];
+  /** Seconds from the first refusal to the last segment of that stream that landed, or null if none did. */
+  readonly lastLandedAfterS: number | null;
+}
+
+/**
+ * The ramp of one filling batch, out of the uploader's own log.
+ *
+ * ⛔⛔⛔ The reading the model was wrong about, so it is measured on every run. Until the 2026-09-04
+ * sitting the story was "a batch runs dry and the rung falls silent", and what bee actually does is
+ * refuse a growing share of segments while accepting the rest, because a chunk is refused only when
+ * its own bucket is full. So the shape worth filing is not when the rung died but how it declined:
+ * how many segments landed and how many were lost in each ten seconds after the first refusal.
+ *
+ * ⛔ Never asserted, per the owner ruling of 2026-08-29. It is printed under a heading that says so
+ * and filed with the artifact.
+ *
+ * @param firstRefusalAtMs when bee first refused this stream, on the uploader host's own clock
+ */
+export function drainRampOf(
+  stamped: readonly TimestampedMessage[],
+  streamId: string,
+  firstRefusalAtMs: number,
+): DrainRamp {
+  const landed = segmentUploadedPattern();
+  const dropped = segmentUploadFailedPattern();
+  const buckets = new Map<number, { landed: number; dropped: number }>();
+  let lastLandedAtMs: number | null = null;
+
+  for (const line of stamped) {
+    if (line.atMs < firstRefusalAtMs) {
+      continue;
+    }
+    const isLanded = landed.exec(line.message)?.[2] === streamId;
+    const isDropped = !isLanded && dropped.exec(line.message)?.[2] === streamId;
+    if (!isLanded && !isDropped) {
+      continue;
+    }
+
+    const bucket = Math.floor((line.atMs - firstRefusalAtMs) / RAMP_BUCKET_MS);
+    const counted = buckets.get(bucket) ?? { landed: 0, dropped: 0 };
+    buckets.set(bucket, {
+      landed: counted.landed + (isLanded ? 1 : 0),
+      dropped: counted.dropped + (isDropped ? 1 : 0),
+    });
+    if (isLanded) {
+      lastLandedAtMs = line.atMs;
+    }
+  }
+
+  const last = Math.max(...buckets.keys(), -1);
+  const rows: RampBucket[] = [];
+  // Every bucket up to the last that saw anything, so a stretch where the rung did nothing at all
+  // reads as a row of zeros rather than as a missing row.
+  for (let bucket = 0; bucket <= last; bucket++) {
+    const counted = buckets.get(bucket) ?? { landed: 0, dropped: 0 };
+    rows.push({ fromS: (bucket * RAMP_BUCKET_MS) / 1_000, landed: counted.landed, dropped: counted.dropped });
+  }
+
+  return {
+    buckets: rows,
+    lastLandedAfterS: lastLandedAtMs === null ? null : (lastLandedAtMs - firstRefusalAtMs) / 1_000,
+  };
+}
+
+/** The ramp as one line for a person, which is what a suite prints under its observations heading. */
+export function describeDrainRamp({ buckets, lastLandedAfterS }: DrainRamp): string {
+  if (buckets.length === 0) {
+    return 'the drained rung neither landed nor lost a segment after the first refusal';
+  }
+
+  const rows = buckets
+    .map(
+      (bucket) =>
+        `${bucket.fromS.toFixed(0)}-${(bucket.fromS + RAMP_BUCKET_MS / 1_000).toFixed(0)}s ` +
+        `${bucket.landed} landed, ${bucket.dropped} dropped`,
+    )
+    .join(' | ');
+  const tail =
+    lastLandedAfterS === null
+      ? 'nothing of that stream landed after the first refusal'
+      : `its last segment landed ${lastLandedAfterS.toFixed(1)}s after the first refusal`;
+
+  return `${rows}. ${tail}`;
+}
+
 /** Which stream is expected to be refused, and which are expected to publish through it untouched. */
 interface RefusalExpectation {
   /** The uploader's stream id for the drained rung, out of its own rung announce. */
@@ -314,14 +504,37 @@ interface RefusalExpectation {
 }
 
 /**
- * Why the refusal lines in this log are not one rung's batch running dry, or null.
+ * Every refusal read, quoted as bee answered it, for a reader who no longer has the log.
+ *
+ * ⛔⛔ Written out in full in every refusal below rather than counted. The 2026-09-04 sitting lost
+ * the uploader's container log to the restore that followed it, and the counts it had reported said
+ * nothing about which batch on which stream bee had refused or what bee said, which is the one thing
+ * this whole feature was built to record. A refusal that only counts spends another sitting.
+ */
+function quoteRefusals(refusals: UploaderEvents['batchRefusals']): string {
+  if (refusals.length === 0) {
+    return 'no refusal line at all';
+  }
+  return refusals
+    .map(
+      (refusal) => `${refusal.streamId} on batch ${refusal.batch}, bee answered ${refusal.status} ${refusal.message}`,
+    )
+    .join('; ');
+}
+
+/**
+ * Why the refusal lines in this log are not one rung's batch running out, or null.
  *
  * ⛔ Four different wrongnesses, kept apart because they have four different causes. Nothing refused
- * at all is an unarmed stage or a broadcast too short to fill the batch. Refused twice is a rung that
- * published again in between, which on an armed stage means something replaced the batch mid-run.
- * A refusal on a surviving rung is the split failing to isolate anything, which is the whole feature.
- * A refusal on a stream this run never accounted for is a co-tenant's broadcast in the window, and
- * reporting it as one of the three above would name the wrong cause.
+ * at all is an unarmed stage or a broadcast too short to fill the batch. Refused twice is a second
+ * uploader process in the window, since the line is written once per stream per process and a segment
+ * that lands does not re-arm it. A refusal on a surviving rung is the split failing to isolate
+ * anything, which is the whole feature. A refusal on a stream this run never accounted for is a
+ * co-tenant's broadcast in the window, and reporting it as one of the three above would name the
+ * wrong cause.
+ *
+ * ⛔ Each of the four quotes the entries themselves, stream, batch, status and bee's own words. See
+ * {@link quoteRefusals}.
  */
 export function singleRefusalRefusal(
   refusals: UploaderEvents['batchRefusals'],
@@ -332,17 +545,18 @@ export function singleRefusalRefusal(
   if (drained.length === 0) {
     return (
       `nothing in this window says bee refused a batch on ${drainedStreamId}, which is the drained ` +
-      `rung's stream. ${refusals.length} refusal line(s) were read in total. Either the stage was ` +
-      'never armed, or the broadcast did not run long enough to fill the batch, or the deployed ' +
-      'uploader cannot write the line at all, which the preflight log-shape gate answers.'
+      `rung's stream. What was read instead: ${quoteRefusals(refusals)}. Either the stage was never ` +
+      'armed, or the broadcast did not run long enough to fill the batch, or the deployed uploader ' +
+      'cannot write the line at all, which the preflight log-shape gate answers.'
     );
   }
   if (drained.length > 1) {
     return (
-      `bee refused ${drainedStreamId}'s batch ${drained.length} times in one broadcast, and the line ` +
-      'is written once per drain and re-armed only by a segment that lands. So the rung published ' +
-      'again in between, which on an armed stage means the batch it was spending changed mid-run. ' +
-      `The answers were: ${drained.map((refusal) => `${refusal.status} ${refusal.message}`).join(' then ')}.`
+      `bee refused ${drainedStreamId}'s batch ${drained.length} times in one window, and the line is ` +
+      'written once per stream for the life of an uploader process: a segment landing in between is ' +
+      'the ramp of a filling batch and does not re-arm it. So this window holds two uploader ' +
+      'processes or two sessions of that stream, which is a redeploy mid-run or an engine reconnect ' +
+      `that built a fresh uploader for the same id. Refused: ${quoteRefusals(drained)}.`
     );
   }
 
@@ -350,9 +564,9 @@ export function singleRefusalRefusal(
   if (survivors.length > 0) {
     return (
       `bee also refused ${survivors.map((refusal) => refusal.streamId).join(', ')}, which are rungs ` +
-      'nothing drained. One batch running dry is supposed to cost one quality, so a refusal on a ' +
+      'nothing drained. One batch running out is supposed to cost one quality, so a refusal on a ' +
       'surviving rung means the per-rung split is not isolating the failure it exists to isolate. ' +
-      `Batches refused: ${survivors.map((refusal) => `${refusal.batch} (${refusal.status})`).join(', ')}.`
+      `Refused: ${quoteRefusals(survivors)}. The drained rung's own: ${quoteRefusals(drained)}.`
     );
   }
 
@@ -365,7 +579,8 @@ export function singleRefusalRefusal(
         .map((refusal) => refusal.streamId)
         .join(', ')}, which this run never accounted for as a rung of its own ladder. Another ` +
       'broadcast was running on this deployment, so the counts here are not all about the drain, and ' +
-      'a co-tenant is not a product fault.'
+      `a co-tenant is not a product fault. Refused: ${quoteRefusals(strangers)}. The drained rung's ` +
+      `own: ${quoteRefusals(drained)}.`
     );
   }
 
