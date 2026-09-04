@@ -30,6 +30,20 @@ const SEGMENT = deployedMessage(
 /** The uploader as it stood before the manifest line named its rung. */
 const STALE_DIST = 'log(`Manifest uploaded at SOC index ${nextIndex}`)';
 
+/**
+ * The shortest prefix of the stand-in that `deployedLogShape.ts` can still recognise.
+ *
+ * ⛔ The guards below look for THIS rather than for the whole stand-in. The split recognises every
+ * prefix from ten characters down to four, so a composer that cuts its argument to five leaves
+ * `SHAPE` behind and one that cuts to four leaves `SHAP`, and a guard written against `SHAPE` misses
+ * the second of those. Every longer prefix begins with this one, so one check covers the whole range
+ * the code handles.
+ *
+ * ⚠️ Mirrors `SAMPLE_TEXT` and `MIN_USEFUL_FRAGMENT` in `src/deployedLogShape.ts`, the same way the
+ * whole stand-in is already written out below.
+ */
+const SHORTEST_STAND_IN_PREFIX = 'SHAP';
+
 describe('splitting a composed message into the parts a deployment must contain', () => {
   it('keeps the fixed halves and drops the values', () => {
     const literals = messageLiterals(MANIFEST.composed);
@@ -39,7 +53,7 @@ describe('splitting a composed message into the parts a deployment must contain'
       `the distinctive half was lost: ${literals.join(' | ')}`,
     );
     assert.equal(
-      literals.some((l) => l.includes('SHAPEPROBE') || l.includes('909090909090')),
+      literals.some((l) => l.includes(SHORTEST_STAND_IN_PREFIX) || l.includes('909090909090')),
       false,
       'a placeholder leaked into what the deployment is checked for',
     );
@@ -82,7 +96,34 @@ describe('splitting a composed message into the parts a deployment must contain'
     for (const literal of literals) {
       assert.doesNotMatch(
         literal,
-        /SHAPE/,
+        new RegExp(SHORTEST_STAND_IN_PREFIX),
+        `"${literal}" carries a placeholder, so the gate would demand it of every deployment`,
+      );
+    }
+  });
+
+  /**
+   * ⛔⛔ The boundary of what the split can recognise, which is where a guard against the WHOLE
+   * stand-in stops working. `rungBatchRefused` cuts its batch id to eight characters and is the
+   * shortest cut the contract has today, so nothing in it distinguishes a split that recognises
+   * prefixes down to four from one that stops at five. A composer that cut to four would leave
+   * `SHAP` as a literal every deployment is required to contain, and break the gate shut the way
+   * `SHAPEPRO` did.
+   *
+   * ⚠️ The composer is a stand-in for one this contract does not have yet. That is the point: the
+   * guard has to be at least as wide as the code, rather than as wide as today's shortest cut.
+   */
+  it('leaves nothing behind for a composer that cuts its argument to the shortest prefix', () => {
+    const cutToFour = deployedMessage(
+      'a composer that truncates hard',
+      (text, index) => `Postage batch ${text.slice(0, SHORTEST_STAND_IN_PREFIX.length)} of ${index}`,
+      'nothing yet, this is the boundary case',
+    );
+
+    for (const literal of messageLiterals(cutToFour.composed)) {
+      assert.doesNotMatch(
+        literal,
+        new RegExp(SHORTEST_STAND_IN_PREFIX),
         `"${literal}" carries a placeholder, so the gate would demand it of every deployment`,
       );
     }
