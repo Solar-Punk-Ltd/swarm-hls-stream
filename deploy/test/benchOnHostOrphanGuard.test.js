@@ -99,7 +99,9 @@ function sleep(ms) {
 async function waitForFile(path) {
   const until = Date.now() + INTERRUPT_DEADLINE_MS;
   while (Date.now() < until) {
-    if (existsSync(path)) return;
+    if (existsSync(path)) {
+      return;
+    }
     await sleep(POLL_MS);
   }
   throw new Error(`the stubbed container never started: ${path} was never written`);
