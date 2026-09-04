@@ -580,11 +580,17 @@ dump_uploader_log() {
 
 # The uploader reads BEE_PUBLISHERS once at process start, so an env rewrite that does not redeploy is
 # inert. Only the uploader, because nothing else on the stage reads that line.
+#
+# ⛔ The two batches are named by the caller, because a redeploy that fails leaves the env file naming
+# one and the container publishing through the other, and which is which is the opposite way round on
+# a restore from on an arm. One fixed sentence written for the arm told a restoring operator the exact
+# inverse of their own state.
 redeploy_uploader() {
+  local now_configured="$1" still_publishing="$2"
   log_info "redeploying the uploader, which is what adopts the line:"
   echo "    deploy/scripts/deploy.sh --profile=${PROFILE} --portSlot=${PORT_SLOT} ${SVC_UPLOADER}"
   if ! "$SCRIPT_DIR/deploy.sh" "--profile=${PROFILE}" "--portSlot=${PORT_SLOT}" "$SVC_UPLOADER"; then
-    fail "the env file already names the new batch and the redeploy failed, so the container is still running the old one, and the fix is to run that deploy command again."
+    fail "${ENV_FILE##*/} already names the ${now_configured} and the redeploy failed, so the container is still publishing through the ${still_publishing}, and the fix is to run that deploy command again."
   fi
 }
 
@@ -765,14 +771,14 @@ do_arm() {
   # Before the redeploy, because it is the redeploy that ends the process this log belongs to. The
   # arm keeps the life that ran on the ORIGINAL batch, and the restore keeps the drained one.
   dump_uploader_log "-before-arm"
-  redeploy_uploader
+  redeploy_uploader "small batch $(short_id "$BATCH")" "original batch $(short_id "$original")"
   echo ""
   log_warn "The stage is armed. Put it back with the same flags and restore, whatever the sitting reports."
   echo ""
 }
 
 do_restore() {
-  local original entry written
+  local original entry written spent
   if ! original="$(recorded_original)"; then
     refuse "nothing is armed for rung ${RUNG} in ${RECORD_FILE##*/}, so there is no original batch to put back and guessing the healthiest one on the node would be a different answer from the one that was swapped out."
   fi
@@ -789,15 +795,20 @@ do_restore() {
   if [ "$(verdict_of "$written")" != "OK" ]; then
     fail "the ${RUNG} entry could not be rewritten and ${ENV_FILE##*/} is as it was: $(reason_of "$written")."
   fi
-  log_ok "BEE_PUBLISHERS names $(short_id "$original") for ${RUNG} again, and $(short_id "$(text_of "$written")") is spent"
-
-  forget_original
-  log_ok "removed the record for ${RUNG} from ${RECORD_FILE##*/}"
+  spent="$(text_of "$written")"
+  log_ok "BEE_PUBLISHERS names $(short_id "$original") for ${RUNG} again, and $(short_id "$spent") is spent"
 
   # ⛔ Before the redeploy. This is the log of the process that spent the drained batch, which is the
   # whole evidence of the sitting, and the redeploy replaces the container it lives in.
   dump_uploader_log ""
-  redeploy_uploader
+  redeploy_uploader "original batch $(short_id "$original")" "drained batch $(short_id "$spent")"
+
+  # ⛔ After the redeploy, because the record is what makes a failed restore recoverable. Forgetting it
+  # first meant a restore that could not bring the container up deleted the only note of which batch
+  # the rung had been publishing through, and running the same restore again refused with nothing
+  # armed. Running it again is now the whole recovery.
+  forget_original
+  log_ok "removed the record for ${RUNG} from ${RECORD_FILE##*/}"
   echo ""
 }
 

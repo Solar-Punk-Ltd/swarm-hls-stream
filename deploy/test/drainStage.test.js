@@ -856,6 +856,79 @@ describe('drain-stage tells a read that failed from a node that answered', () =>
 });
 
 /**
+ * ⛔⛔ A REDEPLOY THAT FAILS LEAVES THE STAGE HALF CHANGED, with the env file naming one batch and the
+ * container still publishing through the other. Which batch is which is the opposite way round on a
+ * restore from on an arm, and one fixed sentence written for the arm told a restoring operator the
+ * exact inverse of their own state, at the moment they most need to act on it.
+ */
+describe('drain-stage says which batch is where when the redeploy fails', () => {
+  /** A docker that journals every call the way the ordinary stub does and then fails the one that
+   * brings the stack up, which is the only step of a redeploy that can leave a stage half changed. */
+  function failingRedeploy(sandbox) {
+    writeFileSync(
+      join(sandbox.binDir, 'docker'),
+      '#!/bin/sh\nnode -- "$0.cjs" "$@" || exit $?\nfor arg in "$@"; do\n  if [ "$arg" = "up" ]; then exit 3; fi\ndone\n',
+    );
+    chmodSync(join(sandbox.binDir, 'docker'), 0o755);
+  }
+
+  const SMALL = SMALL_BATCH.slice(0, 8);
+  const ORIGINAL_RUNG = ORIGINAL[RUNG].slice(0, 8);
+
+  it('names the small batch as configured and the rung’s own as still publishing, on an arm', async () => {
+    const sandbox = localSandbox({ readings: { stamps: [ARMABLE] } });
+    failingRedeploy(sandbox);
+
+    const run = await drainStage(sandbox, ['arm', `--batch=${SMALL_BATCH}`], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a redeploy that failed reported an armed stage');
+    assert.match(
+      run.stderr,
+      new RegExp(`names the small batch ${SMALL}[\\s\\S]*still publishing through .*${ORIGINAL_RUNG}`),
+    );
+  });
+
+  it('names the original as configured and the drained one as still publishing, on a restore', async () => {
+    const sandbox = localSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+    writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n`);
+    failingRedeploy(sandbox);
+
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a redeploy that failed reported a restored stage');
+    assert.match(
+      run.stderr,
+      new RegExp(
+        `names the original batch ${ORIGINAL_RUNG}[\\s\\S]*still publishing through the drained batch ${SMALL}`,
+      ),
+    );
+  });
+
+  /**
+   * ⛔ And the record has to survive it. `forget_original` ran before the redeploy, so a restore that
+   * could not bring the container up deleted the only record of which batch the rung had been
+   * publishing through, and the second attempt at the same restore refused with nothing armed.
+   */
+  it('keeps the record when the redeploy fails, so the same restore can be run again', async () => {
+    const sandbox = localSandbox({
+      publishers: publishersLine({ ...ORIGINAL, [RUNG]: SMALL_BATCH }),
+      readings: { stamps: [ARMABLE] },
+    });
+    writeFileSync(recordPath(sandbox), `${RUNG}=${ORIGINAL[RUNG]}\n`);
+    failingRedeploy(sandbox);
+
+    const run = await drainStage(sandbox, ['restore'], { HOME: sandbox.root });
+
+    assert.notEqual(run.exitCode, 0, 'a redeploy that failed reported a restored stage');
+    assert.equal(existsSync(recordPath(sandbox)), true, 'a restore that could not redeploy deleted its own record');
+    assert.match(readFileSync(recordPath(sandbox), 'utf8'), new RegExp(`${RUNG}=${ORIGINAL[RUNG]}`));
+  });
+});
+
+/**
  * ⛔⛔⛔ THE ONE FAILURE THIS SCRIPT COULD NOT NAME WAS ITS OWN. Every reading it takes is parsed by an
  * inline python program, and python3 was never required, only jq. On a host without one each reading
  * came back empty, and an empty reading has no verdict and no text, so every subcommand refused with
