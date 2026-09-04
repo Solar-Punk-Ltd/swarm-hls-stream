@@ -542,9 +542,11 @@ const BEE_ANSWER_SLOT = 'BEEANSWERSLOT';
 const STATUS_SLOT = 464646464646;
 
 /**
- * Written once per stream per uploader process when bee refuses a segment upload with a status the
- * retry policy will not retry, which on this deployment means the rung's postage batch has no room
- * left. The rung then publishes less and less until it publishes nothing, and the dead-rung rule
+ * Written when bee refuses a segment upload with a status the retry policy will not retry, which on
+ * this deployment means the rung's postage batch has no room left. Once per answer bee gives, per
+ * stream, for the life of an uploader process: a filling batch answers the same way for its whole
+ * ramp and that is one line, while a genuinely different answer is a different condition and gets
+ * its own. ⚠️ So a reader counting these cannot read the count as a number of drained rungs. The rung then publishes less and less until it publishes nothing, and the dead-rung rule
  * drops it from the master a few segments after its last delivery.
  *
  * ⛔ **This is the only thing that tells a drained batch from a dead encoder.** Every other instrument
