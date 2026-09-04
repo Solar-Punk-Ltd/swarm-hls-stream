@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { feedTopicHexOf } from '../src/browser/rungManifest.js';
-import { masterRungRefusal, masterRungsOf } from '../src/harness/masterShape.js';
+import { describeMaster, masterRungRefusal, masterRungsOf } from '../src/harness/masterShape.js';
 
 /**
  * Which qualities a ladder's master playlist is offering a viewer who joins now.
@@ -185,5 +185,83 @@ describe('masterRungRefusal', () => {
 
     assert.ok(refusal, 'a stranger feed in the master has to be surfaced');
     assert.match(refusal, /99999999/);
+  });
+});
+
+/**
+ * ⛔⛔⛔ The only thing filed about the master in either drain suite's artifact.
+ *
+ * It is what a suite prints beside its verdict and, since 2026-09-05, what a four minute wait says
+ * when it ends in a timeout. So this sentence is the whole of what a reader has afterwards about what
+ * a viewer was being offered, and it had no test at all.
+ *
+ * ⛔ Its "this is not a master" branch matters most and looks least important. It is what prints when
+ * the gateway answered its own error envelope, and without the excerpt the line would read as a
+ * broadcast offering no qualities at all, on a stage that was publishing perfectly.
+ */
+describe('describeMaster', () => {
+  it('names how many rungs the master offers and which ones', () => {
+    const body = master(FULL_LADDER);
+
+    assert.equal(
+      describeMaster(masterRungsOf(body, RUNG_BY_TOPIC), body),
+      'the master offers 4 rung(s): 360p, 480p, 720p, 1080p',
+    );
+  });
+
+  it('names the survivors after a rung has been dropped', () => {
+    const body = master(SURVIVORS);
+
+    assert.equal(
+      describeMaster(masterRungsOf(body, RUNG_BY_TOPIC), body),
+      'the master offers 3 rung(s): 360p, 480p, 720p',
+    );
+  });
+
+  /**
+   * ⛔ A master naming a feed no rung of this ladder announced is another broadcast's master, and
+   * saying only which rungs were recognised would report a ladder short of a rung.
+   */
+  it('counts the feeds this ladder never announced, rather than passing over them', () => {
+    const stranger = `${master(SURVIVORS)}#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1x1\nswarm://${OWNER}/${'9'.repeat(
+      36,
+    )}\n`;
+
+    const said = describeMaster(masterRungsOf(stranger, RUNG_BY_TOPIC), stranger);
+
+    assert.match(said, /the master offers 3 rung\(s\): 360p, 480p, 720p/);
+    assert.match(said, /plus 1 unclaimed feed\(s\)/);
+  });
+
+  /**
+   * ⛔ The branch that carries the whole reading when the read went wrong. A gateway error envelope
+   * is not a master, and it must not be described as one offering nothing.
+   */
+  it('says the feed answered no playlist, and quotes what it did answer', () => {
+    const envelope = '{"code":404,"message":"chunk not found"}';
+
+    const said = describeMaster(masterRungsOf(envelope, RUNG_BY_TOPIC), envelope);
+
+    assert.match(said, /answered no playlist/);
+    assert.match(said, /chunk not found/);
+    assert.doesNotMatch(said, /0 rung/, 'an unreadable body must not read as a ladder offering nothing');
+  });
+
+  it('says so plainly when the body was empty rather than quoting nothing', () => {
+    assert.equal(
+      describeMaster(masterRungsOf('', RUNG_BY_TOPIC), '   '),
+      'the master feed answered no playlist, but nothing at all',
+    );
+  });
+
+  /** ⚠️ Bounded and on one line, because this goes into a scrollback beside a verdict. */
+  it('excerpts a long body onto one line rather than pasting a whole playlist into a verdict', () => {
+    const long = `not a master\n${'x'.repeat(500)}`;
+
+    const said = describeMaster(masterRungsOf(long, RUNG_BY_TOPIC), long);
+
+    assert.ok(said.length < 200, `the excerpt ran to ${said.length} characters`);
+    assert.doesNotMatch(said, /\n/, 'a verdict line has to stay on one line');
+    assert.match(said, /not a master x/, 'the newline should read as a space rather than being dropped');
   });
 });

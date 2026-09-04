@@ -1,4 +1,4 @@
-import { segmentUploaded, segmentUploadFailed } from '@swarm-hls-stream/shared';
+import { rungBatchRefused, segmentUploaded, segmentUploadFailed } from '@swarm-hls-stream/shared';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -15,6 +15,7 @@ import {
   drainRungRefusal,
   DROPPED_SEGMENTS_METRIC,
   droppedSegmentsRefusal,
+  firstRefusalAtMs,
   parseUploaderProcess,
   segmentUploadFailureRefusal,
   singleRefusalRefusal,
@@ -747,5 +748,65 @@ describe('what a surviving-master wait reports when it never sees one', () => {
       assert.match(error.message, /the reading of it is what failed/);
       return true;
     });
+  });
+});
+
+/**
+ * ⛔⛔⛔ The instant every printed duration in both drain suites is measured from.
+ *
+ * How long the batch took to fill, how long the master took to be rewritten after the first refusal,
+ * and every bucket of the ramp are all offsets from this one number, and it had no test at all.
+ *
+ * ⛔ It is scoped to a STREAM rather than taken off the first refusal line in the window, and that is
+ * the whole of what it is for. This bench host is shared, so a co-tenant's own drained rung refusing
+ * a minute before ours would put a stranger's clock under every figure the suite files, and every one
+ * of them would look plausible.
+ */
+describe('firstRefusalAtMs', () => {
+  const OURS = 'live/stream_1080p';
+  const A_STRANGER = 'live/someone_elses_1080p';
+  const BATCH = 'a1b2c3d4e5f60718';
+  const START = Date.parse('2026-09-04T14:22:00.000Z');
+  const at = (offsetS: number, message: string) => ({ atMs: START + offsetS * 1_000, message });
+  const refused = (offsetS: number, streamId: string) =>
+    at(offsetS, rungBatchRefused(BATCH, streamId, 402, 'payment required'));
+
+  it('is when bee first refused this stream, on the host clock the line was stamped with', () => {
+    assert.equal(firstRefusalAtMs([refused(30, OURS)], OURS), START + 30_000);
+  });
+
+  it('is the FIRST of several, because a filling batch refuses again as it fills', () => {
+    assert.equal(firstRefusalAtMs([refused(30, OURS), refused(48, OURS), refused(61, OURS)], OURS), START + 30_000);
+  });
+
+  /**
+   * ⛔ The case this exists for. A co-tenant's refusal earlier in the same window would otherwise
+   * become the zero of every duration filed, and a ramp measured from it reads as a rung that
+   * declined for a minute before anything happened to it.
+   */
+  it("ignores another broadcast's refusal, however much earlier it was", () => {
+    const window = [refused(5, A_STRANGER), refused(30, OURS)];
+
+    assert.equal(firstRefusalAtMs(window, OURS), START + 30_000);
+  });
+
+  it('is null when nothing in the window refused this stream', () => {
+    assert.equal(firstRefusalAtMs([refused(5, A_STRANGER)], OURS), null);
+    assert.equal(firstRefusalAtMs([], OURS), null);
+  });
+
+  /** Every other line the uploader writes about the same stream is not a refusal. */
+  it('ignores lines that are about this stream and are not refusals', () => {
+    const window = [at(10, segmentUploaded(OURS, 41, 'ref')), at(12, segmentUploadFailed(OURS, 42)), refused(30, OURS)];
+
+    assert.equal(firstRefusalAtMs(window, OURS), START + 30_000);
+  });
+
+  /**
+   * ⚠️ Exact, not a prefix. Stream ids are composed, and a suite that matched loosely would take a
+   * sibling rung's refusal as its own on any deployment whose ids share a stem.
+   */
+  it('matches the stream id exactly rather than as a stem', () => {
+    assert.equal(firstRefusalAtMs([refused(30, `${OURS}_extra`)], OURS), null);
   });
 });
