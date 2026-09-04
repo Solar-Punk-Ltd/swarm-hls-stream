@@ -49,9 +49,11 @@ async function benchOnHost(args) {
   const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup', ...args]);
   assert.equal(run.exitCode, 0, `bench-on-host.sh failed: ${run.stdout}${run.stderr}`);
 
+  // Two reads even with `--no-setup`: the busy-target guard's `docker ps`, then the run itself. The
+  // guard is `benchOnHostOrphanGuard.test.js`'s question, and the run is the last one either way.
   const commands = sandbox.sshCommands();
-  assert.equal(commands.length, 1, `expected one ssh command with --no-setup, got ${commands.length}`);
-  return { run, command: commands[0] };
+  assert.equal(commands.length, 2, `expected the guard read and the run with --no-setup, got ${commands.length}`);
+  return { run, command: commands[commands.length - 1] };
 }
 
 describe('bench-on-host puts the preflight gates in front of every browser driver', () => {

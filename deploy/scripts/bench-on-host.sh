@@ -176,6 +176,24 @@ if [ ! -f "${SPEND_LEDGER_FILE}" ]; then
   exit 2
 fi
 
+# ⛔⛔ ONE stage, ONE harness. On 2026-09-04 a second launch went out against the same host, profile
+# and slot while the first one's container was still broadcasting, and two harness runs then drove one
+# stage: each read the other's segments as its own, on a postage batch the owner had paid for.
+#
+# Read before the rsync, because that rsync runs with `--delete` and would replace the tree the live
+# container is running from. There is no flag to override this, because an override is a warning.
+#
+# The filter is anchored on the whole name, since `--filter name=` is a substring match by default and
+# slot 7 would otherwise see slot 70's container as its own. An unreachable host stops the run here
+# with ssh's own message, which is the honest answer: a target that cannot be read cannot be called
+# free.
+RUNNING_HARNESS="$(ssh "${SSH_OPTS[@]}" "${TARGET}" "docker ps --filter 'name=^${HARNESS_CONTAINER}$' --format '{{.Names}}'")"
+if [ -n "${RUNNING_HARNESS}" ]; then
+  echo "bench-on-host: ${HARNESS_CONTAINER} is already running on ${TARGET}, and two harness runs on one stage read each other's broadcasts." >&2
+  echo "bench-on-host: stop it with: ssh ${TARGET} 'docker stop ${HARNESS_CONTAINER}'" >&2
+  exit 2
+fi
+
 # Runs as the invoking user so the installed tree and the written reports do not come back owned by
 # root, and joins the host network so the publisher and the gateway are both reached over loopback.
 #

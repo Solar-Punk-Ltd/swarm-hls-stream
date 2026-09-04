@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,26 @@ function benchSandbox() {
   mkdirSync(join(sandbox.remoteHome, REMOTE_BENCH_DIR), { recursive: true });
   writeFileSync(join(sandbox.root, SPEND_LEDGER), OWNER_LEDGER);
   return sandbox;
+}
+
+function writeExecutable(path, body) {
+  writeFileSync(path, body);
+  chmodSync(path, 0o755);
+}
+
+/**
+ * A `docker` that answers `ps` with one running harness container and hands every other call to the
+ * ordinary stub, which journals it.
+ *
+ * The sandbox's own stub reads compose label filters and nothing else, so the guard's `--filter
+ * name=` read comes back empty there. That is the free target every other test in this file sees,
+ * and it is why a busy one has to be arranged.
+ */
+function dockerReportsRunning(sandbox, name) {
+  writeExecutable(
+    join(sandbox.binDir, 'docker'),
+    `#!/bin/sh\nif [ "$1" = "ps" ]; then echo ${name}; exit 0; fi\nexec node -- "$0.cjs" "$@"\n`,
+  );
 }
 
 describe('bench-on-host names its container after the profile and the slot', () => {
@@ -126,5 +146,58 @@ describe('bench-on-host names its container after the profile and the slot', () 
     assert.notEqual(run.exitCode, 0, 'a slot that is not a whole number was accepted');
     assert.match(run.stderr, /--portSlot/);
     assert.equal(sandbox.sshCommands().length, 0, 'the refusal came after a read of the host');
+  });
+});
+
+describe('bench-on-host refuses a target that is already running a harness container', () => {
+  /**
+   * ⛔ Before the rsync, which runs with `--delete`. A second launch that got as far as the sync
+   * would have replaced the tree the live container is running from, under a broadcast that is
+   * already being paid for.
+   */
+  it('stops before anything is copied to the host', async () => {
+    const sandbox = makeSandbox();
+    writeFileSync(join(sandbox.root, SPEND_LEDGER), OWNER_LEDGER);
+    dockerReportsRunning(sandbox, DEFAULT_CONTAINER);
+
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--script', 'bench:latency']);
+
+    assert.notEqual(run.exitCode, 0, 'a second run was allowed onto a busy stage');
+    assert.equal(existsSync(join(sandbox.remoteHome, REMOTE_BENCH_DIR)), false, 'the rsync ran before the refusal');
+    const reads = sandbox.sshCommands();
+    assert.equal(reads.length, 1, `the refusal reached the host more than once: ${reads.join(' | ')}`);
+    assert.match(reads[0], /docker ps/);
+  });
+
+  /**
+   * ⛔ `--no-setup` is the repeat-run path a sweep takes, and an overlap does the same harm there.
+   * The operator also has to be able to act on the message without reading `docker ps` and guessing,
+   * which is the half of this that a bare refusal would miss.
+   */
+  it('refuses --no-setup too, and names the container and the command that stops it', async () => {
+    const sandbox = benchSandbox();
+    dockerReportsRunning(sandbox, DEFAULT_CONTAINER);
+
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup']);
+
+    assert.notEqual(run.exitCode, 0, '--no-setup was allowed onto a busy stage');
+    assert.equal(sandbox.sshCommands().length, 1, 'the run went out anyway');
+    assert.match(run.stderr, new RegExp(`${DEFAULT_CONTAINER} is already running`));
+    assert.match(run.stderr, /two harness runs on one stage read each other's broadcasts/);
+    assert.match(run.stderr, new RegExp(`ssh manager-host 'docker stop ${DEFAULT_CONTAINER}'`));
+  });
+
+  /**
+   * A different slot on the same host is a different stage and a co-tenant's container is not ours
+   * at all, so the read is anchored on the whole name rather than left as the substring match
+   * `--filter name=` is by default.
+   */
+  it('reads only the container this profile and slot would launch', async () => {
+    const sandbox = benchSandbox();
+
+    const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup', '--portSlot', '1']);
+
+    assert.equal(run.exitCode, 0, `a free target was refused: ${run.stdout}${run.stderr}`);
+    assert.match(sandbox.sshCommands()[0], /docker ps --filter 'name=\^latbench-harness-slot1\$'/);
   });
 });

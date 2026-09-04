@@ -62,7 +62,9 @@ describe('bench-on-host refuses a checkout that holds no spend ledger', () => {
     const run = await runScript(sandbox, 'bench-on-host.sh', ['--no-setup', '--script', 'browser:watch']);
 
     assert.equal(run.exitCode, 0, `bench-on-host.sh failed: ${run.stdout}${run.stderr}`);
-    assert.equal(sandbox.sshCommands().length, 1);
+    // The busy-target guard's `docker ps` and then the run, which is what a checkout with a ledger
+    // reaches the host for. See `benchOnHostOrphanGuard.test.js`.
+    assert.equal(sandbox.sshCommands().length, 2);
     assert.doesNotMatch(run.stderr, /spend-ledger/);
   });
 });
