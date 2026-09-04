@@ -257,6 +257,25 @@ health.sh [--profile=<name>]                # check service health across all ta
 Both commands take the same service names as `clean.sh`, and both spend money is
 not involved: `stop.sh` stops, it does not remove volumes.
 
+### drain-stage.sh
+
+```bash
+drain-stage.sh --profile=<name> --portSlot=<N> --rung=<name> print-buy [--days=2]
+drain-stage.sh --profile=<name> --portSlot=<N> --rung=<name> arm --batch=<64 hex>
+drain-stage.sh --profile=<name> --portSlot=<N> --rung=<name> restore
+drain-stage.sh --profile=<name> --portSlot=<N> --rung=<name> status
+```
+
+Points one ABR rung at a deliberately tiny postage batch so the batch runs dry mid-broadcast, then puts the original back. That is the one failure the per-rung split was asked for and the one nothing tests: the node is up, the encoder is up, and every upload comes back refused. The sitting it arms is `docs/e2e-batch-drain-plan.md`.
+
+**The owner buys the batch. The script wires it in.** `print-buy` reads the chain price off the rung's own node and prints one purchase command, the cost in BZZ, and how many chunks the batch takes before it starts refusing. It never runs that command, and says so. `arm` takes the id the purchase returns, rewrites that one rung's entry of `BEE_PUBLISHERS` in `.env.<profile>`, and redeploys the uploader, which is what adopts the line. `restore` writes the original back the same way.
+
+`arm` refuses a batch that would not run dry when the sitting expects it to: one the node does not hold, one it will not spend, one deeper than 17 (the smallest depth Bee allows, and the only one a test broadcast can fill), one expiring inside the uploader's own 24 hour startup floor, and one that already holds chunks. It also refuses a second arm on a rung that is already armed, because the record of the original batch is the only copy of it.
+
+The env file is copied to `.env.<profile>.bak-<timestamp>` before either rewrite, and the rung's original batch id is recorded in `.drain-stage.<profile>.env` beside it. That record is gitignored, is what `restore` reads, and is deleted once the last armed rung has been restored. No batch id is printed whole, only its first eight characters.
+
+`bee-publishers.sh` cannot do this job: it asks each node for its **healthiest** batch by design, which is the opposite of a batch meant to run out. There is no spend-ledger gate here, unlike `bench-on-host.sh`, because nothing in this script spends from a chequebook. The one purchase is the owner running the printed command, and the broadcast that follows is launched through `bench-on-host.sh`, behind that gate.
+
 ### Node & stamp CLI
 
 ```bash
