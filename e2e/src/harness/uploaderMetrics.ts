@@ -21,9 +21,10 @@
  * The unlabelled totals cannot answer a per-rung question: `segments_dropped_total` climbs the same
  * whether one rung of four lost everything or all four lost a little, which is the whole reason the
  * labelled families exist. ⚠️ They are also **lifetime** counters, so a suite comparing one run
- * against another has to difference two scrapes rather than read one. The drain suite reads a single
- * scrape on purpose, because its broadcast is the only one that has ever drained a batch on this
- * stage and a non-zero label is therefore attributable on its own.
+ * against another has to difference two scrapes rather than read one, and the drain suite does: it
+ * scrapes in `before()` and again once the drain has been read, and `droppedSegmentsRefusal` judges
+ * the movement. A non-zero label is attributable to nothing on its own, because every fault suite
+ * here loses segments on the rungs that suite calls survivors.
  *
  * The parse is pure so `test/uploaderMetrics.test.ts` covers it under `pnpm verify`, which nothing
  * under `suites/` is.

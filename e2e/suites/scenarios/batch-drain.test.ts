@@ -10,6 +10,7 @@ import {
   drainRampOf,
   drainRung,
   DROPPED_SEGMENTS_METRIC,
+  droppedSegmentsCost,
   droppedSegmentsRefusal,
   firstRefusalAtMs,
   readUploaderProcess,
@@ -21,7 +22,7 @@ import {
   uploaderRestartRefusal,
   waitForSurvivingMaster,
 } from '../../src/harness/batchDrain.js';
-import { makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
+import { type Host, makeHost, uploaderHealth, waitForIdle } from '../../src/harness/host.js';
 import {
   announcedRungs,
   isContiguous,
@@ -83,10 +84,12 @@ import { waitFor } from '../../src/harness/wait.js';
  * ## What this asserts
  *
  * That bee refused the drained rung's batch, once for each answer it gave and no answer twice, which
- * is what one uploader process writes, and no other rung's at all. That the three survivors published a gapless run from the
- * master rewrite onward. That the master offers exactly the three rungs that kept their postage, and
- * that the catalog said so. That the uploader process stayed up, and that it reported itself degraded
- * for the segments it lost. And that the per-rung drop counter climbed on the drained label alone.
+ * is what one uploader process writes, and no other rung's at all. That the three survivors published
+ * a gapless run from the master rewrite onward. That the master offers exactly the three rungs that
+ * kept their postage, and that the catalog said so. That the uploader process stayed up, and that it
+ * reported itself degraded for the segments it lost. And that the per-rung drop counter moved on the
+ * drained label alone ACROSS THIS RUN, which is two scrapes differenced rather than one read: the
+ * counters are lifetime totals and every other fault suite here loses segments on these same rungs.
  *
  * ## What this does not assert
  *
@@ -144,6 +147,15 @@ describe(
     let startedAt: string;
     let armed: ArmedStageReading;
     let processBefore: UploaderProcess;
+    /**
+     * ⛔ The per-rung drop counters as they stood before this broadcast.
+     *
+     * They are lifetime totals, so the assertion at the end is the movement across this run and not
+     * the reading. Every other fault suite here drops segments on rungs this one calls survivors, and
+     * a sitting that ran L after them on the same uploader process would otherwise read their losses
+     * as tonight's.
+     */
+    let droppedBefore: ReadonlyMap<string, number>;
 
     before(async () => {
       await requireStageStamps(host, cfg, MIN_STAMP_TTL_S);
@@ -157,6 +169,7 @@ describe(
       );
 
       processBefore = await readUploaderProcess(host, uploader);
+      droppedBefore = await scrapeDropped(host, uploader);
       await waitForIdle(host, cfg);
       startedAt = await host.nowIso();
       publisher = startPublisher(cfg);
@@ -322,9 +335,10 @@ describe(
       const notDegraded = segmentUploadFailureRefusal(await uploaderHealth(host, cfg));
       assert.equal(notDegraded, null, `the uploader did not report the segments it lost: ${notDegraded}`);
 
-      const { stdout } = await host.run(uploaderMetricsCommand(uploader));
-      const dropped = rungCountersOf(stdout, DROPPED_SEGMENTS_METRIC, RUNG_LABEL);
-      const wrongRungLostThem = droppedSegmentsRefusal(dropped, { drainedRung, survivingRungs });
+      // ⛔ Differenced against the scrape taken in `before()`, because these are lifetime totals. See
+      // `droppedSegmentsRefusal` and the header of `harness/uploaderMetrics.ts`.
+      const droppedAfter = await scrapeDropped(host, uploader);
+      const wrongRungLostThem = droppedSegmentsRefusal(droppedBefore, droppedAfter, { drainedRung, survivingRungs });
       assert.equal(
         wrongRungLostThem,
         null,
@@ -338,7 +352,8 @@ describe(
         '  observations, none of them asserted. the batch took ' +
           `${describeGap(Date.parse(startedAt), refusedAtMs)} of broadcast to fill, and the master was ` +
           `rewritten ${describeGap(refusedAtMs, rewrittenAtMs)} after the first refusal. ` +
-          `${dropped.get(drainedRung) ?? 0} segments dropped on ${drainedRung} over the whole broadcast`,
+          `${droppedSegmentsCost(droppedBefore, droppedAfter, drainedRung)} segments dropped on ` +
+          `${drainedRung} across this broadcast`,
       );
       console.log(
         `  observations, none of them asserted. the ramp of ${drainedStreamId} in ten second buckets: ` +
@@ -351,6 +366,17 @@ describe(
     });
   },
 );
+
+/**
+ * The per-rung drop counters as the uploader reports them now.
+ *
+ * Its own function because the verdict differences two of these, and a second inline scrape is how
+ * one of the pair comes to read a different family from the other.
+ */
+async function scrapeDropped(host: Host, container: string): Promise<ReadonlyMap<string, number>> {
+  const { stdout } = await host.run(uploaderMetricsCommand(container));
+  return rungCountersOf(stdout, DROPPED_SEGMENTS_METRIC, RUNG_LABEL);
+}
 
 /** The reason a single-rendition deployment skips, or `false` to run. */
 function abrOff({ abrEnabled }: { abrEnabled: boolean }): string | false {

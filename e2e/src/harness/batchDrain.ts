@@ -823,21 +823,58 @@ interface DroppedExpectation {
   survivingRungs: readonly string[];
 }
 
+/** One rung's losses across a run: what the counter stood at either side, and what it cost. */
+interface RungLosses {
+  readonly before: number;
+  readonly after: number;
+  readonly cost: number;
+}
+
+/**
+ * What one rung lost between two scrapes.
+ *
+ * An absent label reads as zero on either side. The counter carries a label only once that rung has
+ * lost something, so absence is the shape a rung that has lost nothing has.
+ */
+function lossesOf(before: ReadonlyMap<string, number>, after: ReadonlyMap<string, number>, rung: string): RungLosses {
+  const wasAt = before.get(rung) ?? 0;
+  const isAt = after.get(rung) ?? 0;
+  return { before: wasAt, after: isAt, cost: isAt - wasAt };
+}
+
+/** One rung's losses as a reader needs them, which is the movement and both ends of it. */
+function describeLosses(rung: string, { before, after, cost }: RungLosses): string {
+  return `${rung} lost ${cost} (${before} to ${after})`;
+}
+
 /**
  * Why the per-rung drop counter does not describe one drained rung, or null.
  *
- * ⛔ An empty reading refuses. `swarm_hls_rung_segments_dropped_total` is labelled the moment a rung
- * loses anything, so no labels at all on a stage whose batch was just drained means the scrape
- * failed rather than that nothing was lost, and the two must not read the same way.
+ * ⛔⛔⛔ **Two scrapes, differenced, because these are LIFETIME totals.** `uploaderMetrics.ts` says so
+ * in its own header. Every fault suite in this harness drops segments on rungs scenario L treats as
+ * survivors, so an earlier sitting on the same uploader process either satisfies the drained rung's
+ * assertion on its own or fails a survivor that lost nothing tonight. Reading one scrape held only
+ * because arming redeploys the uploader and resets every counter, which is the operator's flow rather
+ * than anything this code can rely on.
  *
- * ⚠️ A surviving rung with no label is a genuine zero and clears. The counter carries a label only
- * once that rung has lost something, so an absent label is the shape a rung that lost nothing has.
+ * ⛔ An empty LATER reading refuses. The family is labelled the moment a rung loses anything, so no
+ * labels at all on a stage whose batch was just drained means the scrape failed rather than that
+ * nothing was lost, and the two must not read the same way. The earlier reading is legitimately empty
+ * on an uploader that has lost nothing yet.
+ *
+ * ⛔ A counter that fell is named as the restart it is. These reset to zero with the process, and
+ * reporting a negative movement as a rung that lost nothing would send an operator to the postage
+ * side of a service that was replaced. `uploaderRestartRefusal` is the witness that proves it.
+ *
+ * @param before the same family scraped before the broadcast started
+ * @param after the same family scraped once the drain has been read
  */
 export function droppedSegmentsRefusal(
-  counted: ReadonlyMap<string, number>,
+  before: ReadonlyMap<string, number>,
+  after: ReadonlyMap<string, number>,
   { drainedRung, survivingRungs }: DroppedExpectation,
 ): string | null {
-  if (counted.size === 0) {
+  if (after.size === 0) {
     return (
       `${DROPPED_SEGMENTS_METRIC} carries no rung label at all. The counter is labelled as soon as a ` +
       'rung loses a segment, so on a stage whose batch was just drained an empty family means the ' +
@@ -846,23 +883,44 @@ export function droppedSegmentsRefusal(
     );
   }
 
-  const dropped = counted.get(drainedRung) ?? 0;
-  if (dropped <= 0) {
+  const everyRung = [drainedRung, ...survivingRungs];
+  const fell = everyRung.filter((rung) => lossesOf(before, after, rung).cost < 0);
+  if (fell.length > 0) {
     return (
-      `${DROPPED_SEGMENTS_METRIC}{rung="${drainedRung}"} is ${dropped}, so the rung whose batch was ` +
-      'drained is not the rung that lost segments. The counter read ' +
-      `${[...counted].map(([rung, count]) => `${rung}=${count}`).join(', ')}.`
+      `${fell.map((rung) => describeLosses(rung, lossesOf(before, after, rung))).join(', ')}, and a ` +
+      'counter cannot fall while one process holds it. These are lifetime totals that reset with the ' +
+      'process, so the uploader was restarted or replaced mid-run and every reading after it is of a ' +
+      'drain this run did not watch the beginning of.'
     );
   }
 
-  const bystanders = survivingRungs.filter((rung) => (counted.get(rung) ?? 0) > 0);
+  const drained = lossesOf(before, after, drainedRung);
+  if (drained.cost <= 0) {
+    return (
+      `${DROPPED_SEGMENTS_METRIC}{rung="${drainedRung}"} moved by ${drained.cost} across this run, ` +
+      `standing at ${drained.after} where it stood at ${drained.before}, so the rung whose batch was ` +
+      'drained is not the rung that lost segments. What every rung cost this run: ' +
+      `${everyRung.map((rung) => describeLosses(rung, lossesOf(before, after, rung))).join(', ')}.`
+    );
+  }
+
+  const bystanders = survivingRungs.filter((rung) => lossesOf(before, after, rung).cost > 0);
   if (bystanders.length > 0) {
     return (
-      `${bystanders.map((rung) => `${rung} lost ${counted.get(rung) ?? 0}`).join(', ')}, and nothing ` +
-      `drained those rungs. One batch running dry is supposed to cost one quality. ${drainedRung} lost ` +
-      `${dropped}.`
+      `${bystanders.map((rung) => describeLosses(rung, lossesOf(before, after, rung))).join(', ')}, and ` +
+      'nothing drained those rungs. One batch running dry is supposed to cost one quality. ' +
+      `${describeLosses(drainedRung, drained)}.`
     );
   }
 
   return null;
+}
+
+/** What this run cost one rung, for the observation line beside the verdict. See {@link droppedSegmentsRefusal}. */
+export function droppedSegmentsCost(
+  before: ReadonlyMap<string, number>,
+  after: ReadonlyMap<string, number>,
+  rung: string,
+): number {
+  return lossesOf(before, after, rung).cost;
 }

@@ -595,18 +595,58 @@ describe('segmentUploadFailureRefusal', () => {
   });
 });
 
+/**
+ * ⛔⛔⛔ **These are LIFETIME counters, so the verdict is about two scrapes and never one.**
+ * `uploaderMetrics.ts` says so in its own header: a suite comparing one run against another has to
+ * difference two readings. Every fault suite in this harness drops segments on rungs that scenario L
+ * treats as survivors, so an earlier sitting on the same uploader process either satisfies the
+ * drained rung's assertion on its own or fails a survivor that lost nothing tonight. A single scrape
+ * held only because arming redeploys the uploader, which is the operator's flow rather than anything
+ * the code enforces.
+ */
 describe('droppedSegmentsRefusal', () => {
   const survivors = ['360p', '480p', '720p'];
+  const expectation = { drainedRung: DEFAULT_DRAIN_RUNG, survivingRungs: survivors };
 
   it('clears a drop count that climbed on the drained rung alone', () => {
-    const counted = new Map([
+    const before = new Map([
+      ['1080p', 0],
+      ['360p', 0],
+      ['480p', 0],
+      ['720p', 0],
+    ]);
+    const after = new Map([
       ['1080p', 12],
       ['360p', 0],
       ['480p', 0],
       ['720p', 0],
     ]);
 
-    assert.equal(droppedSegmentsRefusal(counted, { drainedRung: DEFAULT_DRAIN_RUNG, survivingRungs: survivors }), null);
+    assert.equal(droppedSegmentsRefusal(before, after, expectation), null);
+  });
+
+  /**
+   * ⛔⛔ The reading an earlier sitting on the same process leaves behind, and the one a single
+   * scrape got wrong in both directions at once. Every survivor already carries losses from a
+   * previous fault suite and the drained rung already carries some of its own, so one scrape reports
+   * three survivors that lost segments tonight and a drained rung that was drained before the
+   * broadcast started.
+   */
+  it('clears losses an earlier sitting left on every rung, counting only what this run cost', () => {
+    const before = new Map([
+      ['1080p', 40],
+      ['360p', 7],
+      ['480p', 9],
+      ['720p', 11],
+    ]);
+    const after = new Map([
+      ['1080p', 52],
+      ['360p', 7],
+      ['480p', 9],
+      ['720p', 11],
+    ]);
+
+    assert.equal(droppedSegmentsRefusal(before, after, expectation), null);
   });
 
   /**
@@ -614,36 +654,36 @@ describe('droppedSegmentsRefusal', () => {
    * counter is only labelled once a rung has lost something.
    */
   it('clears surviving rungs that carry no label at all', () => {
-    assert.equal(
-      droppedSegmentsRefusal(new Map([['1080p', 12]]), {
-        drainedRung: DEFAULT_DRAIN_RUNG,
-        survivingRungs: survivors,
-      }),
-      null,
-    );
+    assert.equal(droppedSegmentsRefusal(new Map(), new Map([['1080p', 12]]), expectation), null);
   });
 
   it('refuses a drained rung whose drop count never moved', () => {
-    const refusal = droppedSegmentsRefusal(new Map([['1080p', 0]]), {
-      drainedRung: DEFAULT_DRAIN_RUNG,
-      survivingRungs: survivors,
-    });
+    const refusal = droppedSegmentsRefusal(new Map([['1080p', 12]]), new Map([['1080p', 12]]), expectation);
 
-    assert.ok(refusal, 'a drained rung that lost nothing is not drained');
+    assert.ok(refusal, 'a drained rung that lost nothing during this run is not drained');
     assert.match(refusal, new RegExp(DROPPED_SEGMENTS_METRIC));
     assert.match(refusal, new RegExp(DEFAULT_DRAIN_RUNG));
   });
 
+  /**
+   * ⛔ A rung whose lifetime total climbed before the broadcast but not during it. One scrape reads
+   * that as the drain it was asked about, on a rung nothing drained tonight.
+   */
+  it('refuses a drained rung whose losses all predate this run', () => {
+    const refusal = droppedSegmentsRefusal(new Map([['1080p', 765]]), new Map([['1080p', 765]]), expectation);
+
+    assert.ok(refusal, 'a count that never moved is not a drain, whatever it stands at');
+    assert.match(refusal, /765/);
+  });
+
   it('refuses a surviving rung that lost segments of its own', () => {
-    const counted = new Map([
+    const before = new Map([['1080p', 0]]);
+    const after = new Map([
       ['1080p', 12],
       ['720p', 3],
     ]);
 
-    const refusal = droppedSegmentsRefusal(counted, {
-      drainedRung: DEFAULT_DRAIN_RUNG,
-      survivingRungs: survivors,
-    });
+    const refusal = droppedSegmentsRefusal(before, after, expectation);
 
     assert.ok(refusal, 'a survivor losing segments has to fail this run');
     assert.match(refusal, /720p/);
@@ -654,15 +694,27 @@ describe('droppedSegmentsRefusal', () => {
    * ⛔ An empty family refuses. On a ladder deployment the counter is labelled the moment anything is
    * lost, so nothing at all means the reading failed rather than that nothing was lost, and the
    * drained rung's own zero above would have said so anyway.
+   *
+   * ⚠️ Judged on the LATER scrape. The earlier one is legitimately empty on an uploader that has
+   * lost nothing yet, which is what a freshly redeployed one looks like.
    */
   it('refuses a metrics read that produced no labels at all', () => {
-    const refusal = droppedSegmentsRefusal(new Map(), {
-      drainedRung: DEFAULT_DRAIN_RUNG,
-      survivingRungs: survivors,
-    });
+    const refusal = droppedSegmentsRefusal(new Map([['1080p', 4]]), new Map(), expectation);
 
     assert.ok(refusal, 'an empty reading is not a passing one');
     assert.match(refusal, new RegExp(DROPPED_SEGMENTS_METRIC));
+  });
+
+  /**
+   * ⛔⛔ A counter that went backwards is a process that restarted, which resets every one of these
+   * to zero. `uploaderRestartRefusal` is the witness that names it, and reporting it here as a rung
+   * that lost nothing would send its reader to the postage side of a service that was replaced.
+   */
+  it('refuses a counter that went backwards, which is a restarted process and not a rung', () => {
+    const refusal = droppedSegmentsRefusal(new Map([['1080p', 52]]), new Map([['1080p', 4]]), expectation);
+
+    assert.ok(refusal, 'a counter cannot fall while one process holds it');
+    assert.match(refusal, /restart/);
   });
 });
 
