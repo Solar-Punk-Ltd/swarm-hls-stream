@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
@@ -98,5 +99,59 @@ describe('an operator can run every single-suite e2e script from the repo root',
         `${name} does not run the preflight gates before the suite it buys a broadcast for`,
       );
     }
+  });
+});
+
+/**
+ * That a drain script's declaration actually reaches the suite it launches.
+ *
+ * ⛔⛔⛔ **A variable written in front of a command applies to that command alone.** The drain
+ * scripts are two commands joined by `&&`, the preflight and then the suite, so
+ * `E2E_DRAIN_ARMED=1 tsx <preflight> && tsx <suite>` declares the arming to the gates and to nothing
+ * else. The suites then read no declaration, `drainNotDeclared` skips them both, and a sitting that
+ * armed a batch the owner paid for and bought a broadcast reports zero tests as a green run. Written
+ * and shipped that way on 2026-09-05 and caught by review rather than by a run.
+ *
+ * ⭐ The rule is proven here by running `sh` rather than asserted from memory of it, because the
+ * whole defect was a wrong belief about the shell, and a structural check written by the same belief
+ * would have agreed with the bug.
+ */
+describe('a drain script declares the arming to the suite and not only to the gates', () => {
+  const DECLARATION = 'E2E_DRAIN_ARMED';
+
+  function drainScripts() {
+    const { e2e } = manifests();
+    const found = Object.entries(e2e).filter(([name]) => name.startsWith('test:e2e:batch-drain'));
+    assert.ok(found.length >= 2, 'the drain scripts themselves are missing');
+    return found;
+  }
+
+  it('is the shell rule this shape rests on, proven by running it', () => {
+    const read = `node -e "process.stdout.write(String(process.env.${DECLARATION}))"`;
+
+    const prefixed = execFileSync('sh', ['-c', `${DECLARATION}=1 true && ${read}`], { encoding: 'utf8' });
+    const exported = execFileSync('sh', ['-c', `export ${DECLARATION}=1 && true && ${read}`], { encoding: 'utf8' });
+
+    assert.equal(prefixed, 'undefined', 'a prefix reaching the second command would make this whole gate pointless');
+    assert.equal(exported, '1');
+  });
+
+  it('exports before the chain, so every command in it is a drain run', () => {
+    for (const [name, script] of drainScripts()) {
+      assert.match(
+        script,
+        new RegExp(`^export ${DECLARATION}=1 &&`),
+        `${name} has to export the declaration before its first command, or the suite half runs without it`,
+      );
+    }
+  });
+
+  it('leaves no other script declaring an arming, so nothing else can reach the drain suites', () => {
+    const { e2e, root } = manifests();
+    const others = [...Object.entries(e2e), ...Object.entries(root)].filter(
+      ([name, script]) => !name.includes('batch-drain') && script.includes(DECLARATION),
+    );
+
+    assert.deepEqual(others, [], 'a script that arms without being a drain sitting would run the suites on any stage');
   });
 });
