@@ -38,7 +38,7 @@
  * which nothing under `suites/` is. {@link readLadderMaster} is the only wiring.
  */
 
-import { HLS_STREAM_INF, parseSwarmUri } from '@swarm-hls-stream/shared';
+import { HLS_STREAM_INF, parseSwarmUri, SWARM_SCHEME } from '@swarm-hls-stream/shared';
 
 import { feedTopicHexOf } from '../browser/rungManifest.js';
 import type { E2EConfig } from '../config.js';
@@ -134,6 +134,14 @@ export function masterRungsOf(masterText: string, rungByTopic: ReadonlyMap<strin
  * The URI is on the line AFTER each rendition tag, which is what the HLS format says and what
  * `buildMasterPlaylist` writes. A tag with nothing under it, or another tag under it, names no feed
  * and is skipped rather than credited to whichever line followed.
+ *
+ * ⛔⛔ **The scheme is required before the tail is read as a topic.** `parseSwarmUri` is deliberately
+ * tolerant of the bare `owner/topic` form and splits any string on a slash, so a relative variant URI
+ * such as `1080p/index.m3u8` parses as an owner and a topic and would be credited as a feed no rung
+ * of this ladder announced. That reads as another broadcast's master, which is a wrong cause for the
+ * one conclusion the drain suites exist to reach: it sends the reader after a co-tenant broadcast
+ * when the fault is a master pointing at nothing this ladder published. A URI with no scheme names no
+ * feed here, so it is skipped the same way a missing line is.
  */
 function masterVariantTopics(masterText: string): string[] {
   const lines = masterText.split('\n').map((line) => line.trim());
@@ -144,7 +152,7 @@ function masterVariantTopics(masterText: string): string[] {
       continue;
     }
     const uri = lines[i + 1];
-    if (uri === undefined || uri === '' || uri.startsWith('#')) {
+    if (uri === undefined || !uri.startsWith(SWARM_SCHEME)) {
       continue;
     }
     const { owner, topic } = parseSwarmUri(uri);
