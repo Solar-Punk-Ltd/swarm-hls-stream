@@ -24,7 +24,7 @@ The byte source is the only condition that differs between the two, and the segm
 partly **because** of it. Both declare that the run covers the ABR ladder.
 
 ⛔⛔⛔ **Do not reconcile the two segment lengths.** `in-browser` declares `E2E_EXPECT_SEGMENT_S=2`
-and `light-client` declares `1.0`, and that is a product trade rather than a drift.
+and `light-client` declares `1.0`, and that is a product trade rather than a drift. The owner confirmed it on 2026-09-04: a run that switches arms on one stage states the length it accepts, or the stage is redeployed.
 
 ⚠️ **light-client moved from 0.5 to 1.0 on 2026-09-01, and NOT because the byte-source measurement
 changed.** SRS announces each closed segment once per rung, so a four-rung ladder asks for
