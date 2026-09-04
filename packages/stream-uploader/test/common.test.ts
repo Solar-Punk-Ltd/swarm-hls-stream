@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { BeeResponseError } from '@ethersphere/bee-js';
 import { describe, it } from 'node:test';
 
 import {
   backoffDelayMs,
+  beeAnswer,
   getErrorMessage,
   isRetryableError,
   jitteredDelayMs,
@@ -79,6 +81,47 @@ describe('nonRetryableStatus', () => {
   it('names nothing for a transport failure carrying no status', () => {
     assert.equal(nonRetryableStatus(new Error('ECONNREFUSED')), undefined);
     assert.equal(nonRetryableStatus('boom'), undefined);
+  });
+
+  /**
+   * ⛔⛔⛔ **`error.message` on a bee failure is the HTTP client's sentence, not bee's.** bee-js builds
+   * its `BeeResponseError` with axios's message and puts bee's own body in `responseBody`, which
+   * nothing read. So the line written to record what bee answered a refused upload with was
+   * recording "Request failed with status code 402", a restatement of the status printed beside it,
+   * and the question that line exists to settle stayed exactly as open as it was.
+   *
+   * ⭐ Every fixture in this file builds its errors by hand, which is why no test could see it. These
+   * four use the class bee-js actually throws.
+   */
+  it("reads bee's own words off the response body rather than the client's sentence", () => {
+    const refused = new BeeResponseError(
+      'post',
+      '/bytes',
+      'Request failed with status code 402',
+      { code: 402, message: 'batch is not usable' },
+      402,
+      'ERR_BAD_REQUEST',
+    );
+
+    assert.equal(beeAnswer(refused), 'batch is not usable');
+  });
+
+  it('takes a body bee sent as plain text', () => {
+    const refused = new BeeResponseError('post', '/bytes', 'Request failed', 'batch is overissued', 402, 'E');
+
+    assert.equal(beeAnswer(refused), 'batch is overissued');
+  });
+
+  /** No body is the shape a node that never answered leaves, and then the client's sentence is all there is. */
+  it("falls back to the client's sentence when bee sent no body", () => {
+    const refused = new BeeResponseError('post', '/bytes', 'socket hang up', undefined, undefined, 'ECONNRESET');
+
+    assert.equal(beeAnswer(refused), 'socket hang up');
+  });
+
+  it('reads an ordinary error the way everything else here does', () => {
+    assert.equal(beeAnswer(new Error('boom')), 'boom');
+    assert.equal(beeAnswer('boom'), 'boom');
   });
 
   it('agrees with isRetryableError on every shape, since one is defined from the other', () => {

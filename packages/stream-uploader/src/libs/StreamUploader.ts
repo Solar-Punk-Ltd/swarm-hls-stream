@@ -25,7 +25,7 @@ import {
   STREAM_STATUS_VOD,
   StreamState,
 } from '../types.js';
-import { getErrorMessage, nonRetryableStatus, retryUntilDeadlineAsync } from '../utils/common.js';
+import { beeAnswer, getErrorMessage, nonRetryableStatus, retryUntilDeadlineAsync } from '../utils/common.js';
 import { HLS_ENDLIST, HLS_PLAYLIST_TYPE_VOD } from '../utils/hlsTags.js';
 
 import {
@@ -1013,7 +1013,7 @@ export class StreamUploader {
       return;
     }
     this.batchRefusalStatuses.add(status);
-    this.logger.error(rungBatchRefused(this.stamp, this.streamId, status, getErrorMessage(error)));
+    this.logger.error(rungBatchRefused(this.stamp, this.streamId, status, beeAnswer(error)));
   }
 
   private getFormattedDate(): string {

@@ -73,6 +73,46 @@ function extractHttpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
+/** The longest of a response body this reads, so a whole page cannot become a log line. */
+const BEE_ANSWER_LIMIT = 200;
+
+/**
+ * Bee's own words for a failure, rather than the HTTP client's.
+ *
+ * ⛔⛔⛔ **`error.message` on a bee failure is axios's sentence, not bee's.** bee-js builds its
+ * `BeeResponseError` with the client's message and puts the response body in a separate field
+ * nothing was reading, so a line meant to record what bee answered was recording "Request failed
+ * with status code 402", which is a restatement of the status beside it. The whole point of carrying
+ * the answer is that which family bee names a full postage batch with is not written down anywhere
+ * in this repo, and a sitting that reports the client's words leaves that question exactly as open as
+ * it found it.
+ *
+ * Bee answers a refusal as JSON with its own `message`, so that is preferred, then a body that is
+ * already a string, then the client's sentence as the last resort. Never throws: every caller is
+ * reporting some other failure and a throw here would replace it.
+ */
+export function beeAnswer(error: unknown): string {
+  const body = error instanceof BeeResponseError ? error.responseBody : undefined;
+
+  if (typeof body === 'string' && body.trim() !== '') {
+    return body.slice(0, BEE_ANSWER_LIMIT);
+  }
+
+  if (typeof body === 'object' && body !== null) {
+    const { message } = body as { message?: unknown };
+    if (typeof message === 'string' && message.trim() !== '') {
+      return message.slice(0, BEE_ANSWER_LIMIT);
+    }
+    try {
+      return JSON.stringify(body).slice(0, BEE_ANSWER_LIMIT);
+    } catch {
+      return getErrorMessage(error);
+    }
+  }
+
+  return getErrorMessage(error);
+}
+
 /**
  * The HTTP status of a failure this policy will not retry, and undefined for everything it will.
  *
