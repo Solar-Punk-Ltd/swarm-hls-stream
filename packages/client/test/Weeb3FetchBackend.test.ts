@@ -191,7 +191,7 @@ describe('Weeb3FetchBackend retrieving a segment', () => {
 
     new Weeb3FetchBackend(loadModule);
 
-    assert.equal(loadModule.mock.calls.length, 0, 'constructing the backend already pulled in 4.5 MB of wasm');
+    assert.equal(loadModule.mock.calls.length, 0, 'constructing the backend already pulled in megabytes of wasm');
   });
 });
 
